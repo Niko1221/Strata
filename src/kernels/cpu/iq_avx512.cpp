@@ -37,12 +37,22 @@ inline uint64_t u64(const uint8_t* p) { uint64_t v; std::memcpy(&v, p, 8); retur
 
 // E-2: the IQ3 grids by one AVX-512 gather (the same words, the same results) - measured 3-5% SLOWER than the scalar
 // lookups on a Ryzen 5 7600 (Zen 4 gathers are microcoded), so opt-in: STRATA_IQ_GATHER=1
-// 0.2.5: DEFAULT on where gathers are fast (Intel server and HEDT cores with AVX-512: cpu_gather_fast), off on Zen 4 (microcoded);
-// STRATA_IQ_GATHER=1 / 0 force it either way.  The same words are loaded, so the results are bit for bit the scalar decode's.
+// 0.2.5: DEFAULT on where gathers are fast (Intel server and HEDT cores with AVX-512: cpu_gather_fast). Off on Zen 4
+// (microcoded) and on Zen 5 until STRATA_IQ_GATHER=1.  STRATA_IQ_GATHER=0 forces the scalar loads.  The same words are
+// loaded, so the results are bit for bit the scalar decode's.
 const bool gather = [] {
     const char* v = std::getenv("STRATA_IQ_GATHER");
+    // Default stays the Intel gather probe. Zen 5 is off until STRATA_IQ_GATHER=1.
     return v != nullptr && v[0] != '\0' ? std::atoi(v) != 0 : cpu_gather_fast();
 }();
+inline __mmask64 sign_mask_from_idx(__m256i si) {
+    const __m256i par = _mm256_slli_epi32(_mm256_and_si256(_mm256_popcnt_epi32(si), _mm256_set1_epi32(1)), 7);
+    return _cvtu64_mask64((uint64_t) _mm_cvtsi128_si64(_mm256_cvtepi32_epi8(_mm256_or_si256(si, par))));
+}
+inline __m256i sign_idx_xxs(uint32_t lo4, uint32_t hi4) {   // four 7-bit fields of each of two words -> eight dwords
+    const __m256i w = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_set1_epi32((int) lo4)), _mm_set1_epi32((int) hi4), 1);
+    return _mm256_and_si256(_mm256_srlv_epi32(w, _mm256_setr_epi32(0, 7, 14, 21, 0, 7, 14, 21)), _mm256_set1_epi32(127));
+}
 // the grid lookups by one 64-bit gather of eight entries (IQ2_XXS / IQ2_XS / IQ2_S): `idx` = eight 32-bit indices
 inline __m512i gather64(__m256i idx, const void* grid) { return _mm512_i32gather_epi64(idx, grid, 8); }
 // E-2: software prefetch distance in bytes (STRATA_IQ_PREFETCH; 0 = off): -2-3% gate/up time on IQ3_S decode
@@ -59,6 +69,12 @@ inline __m512i scales4(int s0, int s1, int s2, int s3) {
     const uint64_t packed = (uint64_t) (uint16_t) s0 | ((uint64_t) (uint16_t) s1 << 16) |
                             ((uint64_t) (uint16_t) s2 << 32) | ((uint64_t) (uint16_t) s3 << 48);
     return _mm512_permutexvar_epi16(idx, _mm512_set1_epi64((long long) packed));
+}
+
+// lanes 0-15 -> sa, 16-31 -> sb (two 32-value halves of a 64-value step: IQ2_XXS, IQ3_XXS, IQ3_S)
+inline __m512i scales2(int sa, int sb) {
+    return _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_set1_epi16((short) sa)),
+                              _mm256_set1_epi16((short) sb), 1);
 }
 
 // ---- per format: 64 values (chunk j of a 256-value block) -> grid magnitudes, sign mask, scales
@@ -81,7 +97,7 @@ template <> struct Fmt<16> {   // IQ2_XXS: d, qs[32] u16
                            ((uint64_t) ksigns_iq2xs[(b1 >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(b1 >> 21) & 127] << 56);
         m = _cvtu64_mask64(s);
         const int sa = 2 * (int) (a1 >> 28) + 1, sb = 2 * (int) (b1 >> 28) + 1;
-        sc = scales4(sa, sa, sb, sb);
+        sc = scales2(sa, sb);
     }
 };
 
@@ -131,7 +147,7 @@ template <> struct Fmt<18> {   // IQ3_XXS: d, qs[64] grid bytes, 8 x u32 (4 x 7-
     static constexpr float K = 0.25f;
     static inline void decode(const uint8_t* b, int j, __m512i& g, __mmask64& m, __m512i& sc) {
         const uint8_t* q = b + 2 + 16 * j;
-        // E-2: one gather of the 16 grid words (the scalar lookups assembled with set_epi32 cost ~30 uops)
+        // E-2: one gather of the 16 grid words (on Intel gather-fast CPUs; on Zen 5, 16-lane 32-bit gather is slower than scalar loads)
         g = gather ? _mm512_i32gather_epi32(_mm512_cvtepu8_epi32(_mm_loadu_si128((const __m128i*) q)), iq3xxs_grid, 4)
                    : _mm512_set_epi32((int) iq3xxs_grid[q[15]], (int) iq3xxs_grid[q[14]], (int) iq3xxs_grid[q[13]], (int) iq3xxs_grid[q[12]],
                              (int) iq3xxs_grid[q[11]], (int) iq3xxs_grid[q[10]], (int) iq3xxs_grid[q[9]], (int) iq3xxs_grid[q[8]],
@@ -144,7 +160,7 @@ template <> struct Fmt<18> {   // IQ3_XXS: d, qs[64] grid bytes, 8 x u32 (4 x 7-
                            ((uint64_t) ksigns_iq2xs[(c >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(c >> 21) & 127] << 56);
         m = _cvtu64_mask64(s);
         const int sa = 2 * (int) (a >> 28) + 1, sb = 2 * (int) (c >> 28) + 1;
-        sc = scales4(sa, sa, sb, sb);
+        sc = scales2(sa, sb);
     }
 };
 
@@ -159,17 +175,19 @@ template <> struct Fmt<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
             idx = _mm512_mask_add_epi32(idx, (__mmask16) (h0 | (h1 << 8)), idx, _mm512_set1_epi32(256));
             g = _mm512_i32gather_epi32(idx, iq3s_grid, 4);
         } else {
-#define G3(k, h, kk) (int) iq3s_grid[q[k] | (((h >> kk) & 1) << 8)]
-        g = _mm512_set_epi32(G3(15, h1, 7), G3(14, h1, 6), G3(13, h1, 5), G3(12, h1, 4),
-                             G3(11, h1, 3), G3(10, h1, 2), G3(9, h1, 1), G3(8, h1, 0),
-                             G3(7, h0, 7), G3(6, h0, 6), G3(5, h0, 5), G3(4, h0, 4),
-                             G3(3, h0, 3), G3(2, h0, 2), G3(1, h0, 1), G3(0, h0, 0));
-#undef G3
+            const __m256i lo = _mm256_cvtepu8_epi16(_mm_loadu_si128((const __m128i*) q));
+            alignas(32) uint16_t sp[16];
+            _mm256_store_si256((__m256i*) sp,
+                               _mm256_mask_add_epi16(lo, (__mmask16) (h0 | (h1 << 8)), lo, _mm256_set1_epi16(256)));
+            g = _mm512_set_epi32((int) iq3s_grid[sp[15]], (int) iq3s_grid[sp[14]], (int) iq3s_grid[sp[13]], (int) iq3s_grid[sp[12]],
+                                 (int) iq3s_grid[sp[11]], (int) iq3s_grid[sp[10]], (int) iq3s_grid[sp[9]],  (int) iq3s_grid[sp[8]],
+                                 (int) iq3s_grid[sp[7]],  (int) iq3s_grid[sp[6]],  (int) iq3s_grid[sp[5]],  (int) iq3s_grid[sp[4]],
+                                 (int) iq3s_grid[sp[3]],  (int) iq3s_grid[sp[2]],  (int) iq3s_grid[sp[1]],  (int) iq3s_grid[sp[0]]);
         }
         m = _cvtu64_mask64(u64(b + 74 + 8 * j));
         const uint8_t s = b[106 + j];
         const int sa = 2 * (s & 15) + 1, sb = 2 * (s >> 4) + 1;
-        sc = scales4(sa, sa, sb, sb);
+        sc = scales2(sa, sb);
     }
 };
 
@@ -177,7 +195,13 @@ template <bool Singleton> struct RowAccumulator;
 template <> struct RowAccumulator<false> { using Type = __m512; };
 template <> struct RowAccumulator<true> { using Type = __m256; };
 
-template <int TY, int NT, bool Singleton = false>
+template <bool VNNI>
+inline __m512i madd_add512(__m512i acc, __m512i p16, __m512i sc) {
+    if constexpr (VNNI) return _mm512_dpwssd_epi32(acc, p16, sc);
+    else return _mm512_add_epi32(acc, _mm512_madd_epi16(p16, sc));
+}
+
+template <int TY, int NT, bool Singleton = false, bool VNNI = true>
 inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
     // Decode weights once for the group; select the accumulation order at compile time.
     using Acc = typename RowAccumulator<Singleton>::Type;
@@ -187,6 +211,7 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
         else accf[t] = _mm512_setzero_ps();
     }
     const __m512i zero = _mm512_setzero_si512();
+    constexpr int A = NT <= 2 ? 2 : 1;
     for (int i = 0; i < nblocks; ++i) {
         const uint8_t* blk = row + (size_t) i * Fmt<TY>::bytes;
         // E-2: the weight rows stream from DRAM (4 KB pages when large pages are refused): ask for the bytes a few
@@ -196,8 +221,9 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
             _mm_prefetch((const char*) ahead, _MM_HINT_T0);
             _mm_prefetch((const char*) ahead + 64, _MM_HINT_T0);
         }
-        __m512i acci[NT];
-        for (int t = 0; t < NT; ++t) acci[t] = _mm512_setzero_si512();
+        __m512i acci[NT][A];
+        for (int t = 0; t < NT; ++t)
+            for (int a = 0; a < A; ++a) acci[t][a] = _mm512_setzero_si512();
         for (int j = 0; j < 4; ++j) {
             __m512i g, sc;
             __mmask64 m;
@@ -205,22 +231,25 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
             for (int t = 0; t < NT; ++t) {
                 const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
                 const __m512i ys = _mm512_mask_sub_epi8(yv, m, zero, yv);
-                acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(g, ys), sc));
+                acci[t][j % A] = madd_add512<VNNI>(acci[t][j % A], _mm512_maddubs_epi16(g, ys), sc);
             }
+        }
+        if constexpr (A == 2) {
+            for (int t = 0; t < NT; ++t) acci[t][0] = _mm512_add_epi32(acci[t][0], acci[t][1]);
         }
         if constexpr (Singleton) {
             const float dx = h2f(u16(blk));
             for (int t = 0; t < NT; ++t) {
                 // Preserve ggml AVX2's eight integer lanes BEFORE floating conversion.
-                const __m256i folded = _mm256_add_epi32(_mm512_castsi512_si256(acci[t]),
-                                                       _mm512_extracti64x4_epi64(acci[t], 1));
+                const __m256i folded = _mm256_add_epi32(_mm512_castsi512_si256(acci[t][0]),
+                                                       _mm512_extracti64x4_epi64(acci[t][0], 1));
                 accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[t][i].d),
                                          _mm256_cvtepi32_ps(folded), accf[t]);
             }
         } else {
             const float dx = h2f(u16(blk)) * Fmt<TY>::K;
             for (int t = 0; t < NT; ++t)
-                accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+                accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t][0]), accf[t]);
         }
     }
     if constexpr (Singleton) {
@@ -236,6 +265,96 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
     }
 }
 
+// Fused gate + up block dot for NT <= 4: each block's activation y[t][i] is loaded once from L1D for both gate and up,
+// and the independent gate/up integer accumulators break the vpdpwssd latency chain while keeping bit-for-bit parity.
+template <int TY, int NT, bool Singleton = false>
+inline void row_dot_gu(const uint8_t* row_g, const uint8_t* row_u, int nblocks, const block_q8_K* const* y,
+                       float* g_out, float* u_out) {
+    using Acc = typename RowAccumulator<Singleton>::Type;
+    Acc accf_g[NT], accf_u[NT];
+    for (int t = 0; t < NT; ++t) {
+        if constexpr (Singleton) {
+            accf_g[t] = _mm256_setzero_ps();
+            accf_u[t] = _mm256_setzero_ps();
+        } else {
+            accf_g[t] = _mm512_setzero_ps();
+            accf_u[t] = _mm512_setzero_ps();
+        }
+    }
+    const __m512i zero = _mm512_setzero_si512();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk_g = row_g + (size_t) i * Fmt<TY>::bytes;
+        const uint8_t* blk_u = row_u + (size_t) i * Fmt<TY>::bytes;
+        if (prefetch_ahead > 0) {
+            const uint8_t* ahead_g = blk_g + (size_t) prefetch_ahead;
+            const uint8_t* ahead_u = blk_u + (size_t) prefetch_ahead;
+            _mm_prefetch((const char*) ahead_g, _MM_HINT_T0);
+            _mm_prefetch((const char*) ahead_g + 64, _MM_HINT_T0);
+            _mm_prefetch((const char*) ahead_u, _MM_HINT_T0);
+            _mm_prefetch((const char*) ahead_u + 64, _MM_HINT_T0);
+        }
+        __m512i acci_g[NT], acci_u[NT];
+        for (int t = 0; t < NT; ++t) {
+            acci_g[t] = _mm512_setzero_si512();
+            acci_u[t] = _mm512_setzero_si512();
+        }
+        for (int j = 0; j < 4; ++j) {
+            __m512i gg, scg, gu, scu;
+            __mmask64 mg, mu;
+            Fmt<TY>::decode(blk_g, j, gg, mg, scg);
+            Fmt<TY>::decode(blk_u, j, gu, mu, scu);
+            for (int t = 0; t < NT; ++t) {
+                const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
+                const __m512i ysg = _mm512_mask_sub_epi8(yv, mg, zero, yv);
+                const __m512i ysu = _mm512_mask_sub_epi8(yv, mu, zero, yv);
+                acci_g[t] = _mm512_dpwssd_epi32(acci_g[t], _mm512_maddubs_epi16(gg, ysg), scg);
+                acci_u[t] = _mm512_dpwssd_epi32(acci_u[t], _mm512_maddubs_epi16(gu, ysu), scu);
+            }
+        }
+        if constexpr (Singleton) {
+            const float dxg = h2f(u16(blk_g));
+            const float dxu = h2f(u16(blk_u));
+            for (int t = 0; t < NT; ++t) {
+                const float dy = y[t][i].d;
+                const __m256i fg = _mm256_add_epi32(_mm512_castsi512_si256(acci_g[t]),
+                                                    _mm512_extracti64x4_epi64(acci_g[t], 1));
+                const __m256i fu = _mm256_add_epi32(_mm512_castsi512_si256(acci_u[t]),
+                                                    _mm512_extracti64x4_epi64(acci_u[t], 1));
+                accf_g[t] = _mm256_fmadd_ps(_mm256_set1_ps(dxg * dy), _mm256_cvtepi32_ps(fg), accf_g[t]);
+                accf_u[t] = _mm256_fmadd_ps(_mm256_set1_ps(dxu * dy), _mm256_cvtepi32_ps(fu), accf_u[t]);
+            }
+        } else {
+            const float dxg = h2f(u16(blk_g)) * Fmt<TY>::K;
+            const float dxu = h2f(u16(blk_u)) * Fmt<TY>::K;
+            for (int t = 0; t < NT; ++t) {
+                const float dy = y[t][i].d;
+                accf_g[t] = _mm512_fmadd_ps(_mm512_set1_ps(dxg * dy), _mm512_cvtepi32_ps(acci_g[t]), accf_g[t]);
+                accf_u[t] = _mm512_fmadd_ps(_mm512_set1_ps(dxu * dy), _mm512_cvtepi32_ps(acci_u[t]), accf_u[t]);
+            }
+        }
+    }
+    if constexpr (Singleton) {
+        for (int t = 0; t < NT; ++t) {
+            auto hsum = [](__m256 x) {
+                __m128 sum = _mm256_extractf128_ps(x, 1);
+                sum = _mm_add_ps(sum, _mm256_castps256_ps128(x));
+                sum = _mm_add_ps(sum, _mm_movehl_ps(sum, sum));
+                sum = _mm_add_ss(sum, _mm_movehdup_ps(sum));
+                return _mm_cvtss_f32(sum);
+            };
+            g_out[t] = Fmt<TY>::K * hsum(accf_g[t]);
+            u_out[t] = Fmt<TY>::K * hsum(accf_u[t]);
+        }
+    } else {
+        for (int t = 0; t < NT; ++t) {
+            g_out[t] = _mm512_reduce_add_ps(accf_g[t]);
+            u_out[t] = _mm512_reduce_add_ps(accf_u[t]);
+        }
+    }
+}
+
+const bool fused_gu = vcache_pool_opt_in();
+
 template <int TY, int NT, bool Singleton = false>
 void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff,
              int r0, int r1) {
@@ -243,20 +362,29 @@ void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const voi
     for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
     const int nb = n / QK_K;
     float g[NT], u[NT];
+    if constexpr (NT <= 4) {
+        if (fused_gu) {
+            for (int r = r0; r < r1; ++r) {
+                row_dot_gu<TY, NT, Singleton>(blob + (size_t) r * gu_row, blob + up_off + (size_t) r * gu_row, nb, y, g, u);
+                for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+            }
+            return;
+        }
+    }
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT, Singleton>(blob + (size_t) r * gu_row, nb, y, g);
-        row_dot<TY, NT, Singleton>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        row_dot<TY, NT, Singleton, true>(blob + (size_t) r * gu_row, nb, y, g);
+        row_dot<TY, NT, Singleton, true>(blob + up_off + (size_t) r * gu_row, nb, y, u);
         for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
     }
 }
 
-template <int TY, int NT>
+template <int TY, int NT, bool VNNI>
 void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1) {
     const block_q8_K* y[NT];
     for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
     float res[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(w + (size_t) r * row_bytes, n / QK_K, y, res);
+        row_dot<TY, NT, false, VNNI>(w + (size_t) r * row_bytes, n / QK_K, y, res);
         for (int t = 0; t < NT; ++t) out[t][r] = res[t];
     }
 }
@@ -279,11 +407,12 @@ void gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n
 template <int TY>
 void dot_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0,
                  int r1) {
+    const bool vnni = cpu_avx512_ok();
     switch (nt) {
-        case 1: dot_rows<TY, 1>(w, row_bytes, n, act, out, r0, r1); break;
-        case 2: dot_rows<TY, 2>(w, row_bytes, n, act, out, r0, r1); break;
-        case 3: dot_rows<TY, 3>(w, row_bytes, n, act, out, r0, r1); break;
-        case 4: dot_rows<TY, 4>(w, row_bytes, n, act, out, r0, r1); break;
+        case 1: if (vnni) dot_rows<TY, 1, true>(w, row_bytes, n, act, out, r0, r1); else dot_rows<TY, 1, false>(w, row_bytes, n, act, out, r0, r1); break;
+        case 2: if (vnni) dot_rows<TY, 2, true>(w, row_bytes, n, act, out, r0, r1); else dot_rows<TY, 2, false>(w, row_bytes, n, act, out, r0, r1); break;
+        case 3: if (vnni) dot_rows<TY, 3, true>(w, row_bytes, n, act, out, r0, r1); else dot_rows<TY, 3, false>(w, row_bytes, n, act, out, r0, r1); break;
+        case 4: if (vnni) dot_rows<TY, 4, true>(w, row_bytes, n, act, out, r0, r1); else dot_rows<TY, 4, false>(w, row_bytes, n, act, out, r0, r1); break;
         default: for (int t0 = 0; t0 < nt; t0 += 4) {
             const int k = nt - t0 < 4 ? nt - t0 : 4;
             dot_rows_nt<TY>(k, w, row_bytes, n, act + t0, out + t0, r0, r1);
@@ -291,19 +420,6 @@ void dot_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* 
     }
 }
 
-
-// The sign masks of IQ2_XXS / IQ2_XS / IQ3_XXS come from a 7-bit index whose 8th bit is the parity of the other seven (ksigns_iq2xs[i] =
-// i | parity(i) << 7).  The table needs a load and a few shifts and ors a group of eight values; popcount does it for all eight groups
-// of 64 values in one vector: measured on Zen 5, one-token IQ2_XXS rows 33 -> 45-50 GB/s (16 threads, DRAM-sized), cache-resident 16.8 -> 13.4 ns a block.
-// (AVX512_VPOPCNTDQ + VL: Zen 4, Zen 5, Ice Lake and later; iq512x_supported() asks for it.)
-inline __mmask64 sign_mask_from_idx(__m256i si) {
-    const __m256i par = _mm256_slli_epi32(_mm256_and_si256(_mm256_popcnt_epi32(si), _mm256_set1_epi32(1)), 7);
-    return _cvtu64_mask64((uint64_t) _mm_cvtsi128_si64(_mm256_cvtepi32_epi8(_mm256_or_si256(si, par))));
-}
-inline __m256i sign_idx_xxs(uint32_t lo4, uint32_t hi4) {   // four 7-bit fields of each of two words -> eight dwords
-    const __m256i w = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_set1_epi32((int) lo4)), _mm_set1_epi32((int) hi4), 1);
-    return _mm256_and_si256(_mm256_srlv_epi32(w, _mm256_setr_epi32(0, 7, 14, 21, 0, 7, 14, 21)), _mm256_set1_epi32(127));
-}
 
 template <int TY> struct FmtX : Fmt<TY> {};
 template <> struct FmtX<16> : Fmt<16> {
@@ -317,7 +433,7 @@ template <> struct FmtX<16> : Fmt<16> {
                              (long long) iq2xxs_grid[(a0 >> 8) & 255], (long long) iq2xxs_grid[a0 & 255]);
         m = sign_mask_from_idx(sign_idx_xxs(a1, b1));
         const int sa = 2 * (int) (a1 >> 28) + 1, sb = 2 * (int) (b1 >> 28) + 1;
-        sc = scales4(sa, sa, sb, sb);
+        sc = scales2(sa, sb);
     }
 };
 template <> struct FmtX<17> : Fmt<17> {
@@ -346,7 +462,7 @@ template <> struct FmtX<18> : Fmt<18> {
         const uint32_t a = u32(b + 2 + 64 + 8 * j), c = u32(b + 2 + 64 + 8 * j + 4);
         m = sign_mask_from_idx(sign_idx_xxs(a, c));
         const int sa = 2 * (int) (a >> 28) + 1, sb = 2 * (int) (c >> 28) + 1;
-        sc = scales4(sa, sa, sb, sb);
+        sc = scales2(sa, sb);
     }
 };
 
@@ -368,6 +484,7 @@ inline void row_dot_x(const uint8_t* row, int nblocks, const block_q8_K* const* 
     __m256 accf[NT];
     for (int t = 0; t < NT; ++t) accf[t] = _mm256_setzero_ps();
     const __m512i zero = _mm512_setzero_si512();
+    constexpr int A = NT <= 2 ? 2 : 1;
     for (int i = 0; i < nblocks; ++i) {
         const uint8_t* blk = row + (size_t) i * FmtX<TY>::bytes;
         if (prefetch_ahead > 0) {
@@ -375,8 +492,9 @@ inline void row_dot_x(const uint8_t* row, int nblocks, const block_q8_K* const* 
             _mm_prefetch((const char*) ahead, _MM_HINT_T0);
             _mm_prefetch((const char*) ahead + 64, _MM_HINT_T0);
         }
-        __m512i acci[NT];
-        for (int t = 0; t < NT; ++t) acci[t] = _mm512_setzero_si512();
+        __m512i acci[NT][A];
+        for (int t = 0; t < NT; ++t)
+            for (int a = 0; a < A; ++a) acci[t][a] = _mm512_setzero_si512();
         for (int j = 0; j < 4; ++j) {
             __m512i g, sc;
             __mmask64 m;
@@ -384,12 +502,15 @@ inline void row_dot_x(const uint8_t* row, int nblocks, const block_q8_K* const* 
             for (int t = 0; t < NT; ++t) {
                 const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
                 const __m512i ys = _mm512_mask_sub_epi8(yv, m, zero, yv);
-                acci[t] = _mm512_dpwssd_epi32(acci[t], _mm512_maddubs_epi16(g, ys), sc);
+                acci[t][j % A] = _mm512_dpwssd_epi32(acci[t][j % A], _mm512_maddubs_epi16(g, ys), sc);
             }
+        }
+        if constexpr (A == 2) {
+            for (int t = 0; t < NT; ++t) acci[t][0] = _mm512_add_epi32(acci[t][0], acci[t][1]);
         }
         const float dx = h2f(u16(blk));
         for (int t = 0; t < NT; ++t)
-            accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[t][i].d), _mm256_cvtepi32_ps(fold256(acci[t])), accf[t]);
+            accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[t][i].d), _mm256_cvtepi32_ps(fold256(acci[t][0])), accf[t]);
     }
     for (int t = 0; t < NT; ++t) res[t] = FmtX<TY>::K * hsum8_ggml(accf[t]);
 }
@@ -587,6 +708,110 @@ void rows_m_nt(int nt, const uint8_t* w, size_t rb, int n, const void* const* ac
     }
 }
 
+// ---- IQ4_NL (type 20) down rows in 512-bit AVX-512-VNNI lanes: two 32-value blocks (64 weights) decoded per step with
+// _mm512_shuffle_epi8 and accumulated with _mm512_dpbusd_epi32.  The low 256-bit half of `acc[t]` holds ggml's `accum1`
+// (even blocks) and the high 256-bit half holds `accum2` (odd blocks), so every token's output is bit-for-bit identical
+// to ggml_vec_dot_iq4_nl_q8_0 and iq4nl_reference_rows at any group width (1..8 tokens).
+template <int NT>
+void iq4nl512_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, float* const* out, int r0, int r1) {
+    alignas(16) static constexpr uint8_t kAbsValuesIq4nl[16] = {
+        127, 104, 83, 65, 49, 35, 22, 10, 1, 13, 25, 38, 53, 69, 89, 113
+    };
+    const __m512i abs_values = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i*) kAbsValuesIq4nl));
+    const __m512i m4 = _mm512_set1_epi8(0x0f);
+    const __m512i bit3 = _mm512_set1_epi8(0x08);
+    const __m512i zero = _mm512_setzero_si512();
+    const int nb = n / QK4_NL;
+    for (int r = r0; r < r1; ++r) {
+        const auto* x = (const block_iq4_nl*) (w + (size_t) r * row_bytes);
+        __m512 acc[NT];
+        for (int t = 0; t < NT; ++t) acc[t] = _mm512_setzero_ps();
+        int ib = 0;
+        for (; ib + 1 < nb; ib += 2) {
+            if (prefetch_ahead > 0 && (ib & 7) == 0) {
+                const char* pf = (const char*) &x[ib] + prefetch_ahead;
+                _mm_prefetch(pf, _MM_HINT_T0);
+                _mm_prefetch(pf + 64, _MM_HINT_T0);
+            }
+            const __m256i b0 = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*) x[ib].qs));
+            const __m256i b1 = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i*) x[ib + 1].qs));
+            const __m512i b01 = _mm512_inserti64x4(_mm512_castsi256_si512(b0), b1, 1);
+            const __m512i nib = _mm512_and_si512(_mm512_mask_srli_epi16(b01, 0xFF00FF00u, b01, 4), m4);
+            const __m512i aq = _mm512_shuffle_epi8(abs_values, nib);
+            const __mmask64 neg = _mm512_testn_epi8_mask(nib, bit3);
+            const float d0 = h2f(u16((const uint8_t*) &x[ib].d));
+            const float d1 = h2f(u16((const uint8_t*) &x[ib + 1].d));
+            for (int t = 0; t < NT; ++t) {
+                const auto* y = (const block_q8_0*) hq[t];
+                const __m256i y0 = _mm256_loadu_si256((const __m256i*) y[ib].qs);
+                const __m256i y1 = _mm256_loadu_si256((const __m256i*) y[ib + 1].qs);
+                const __m512i y01 = _mm512_inserti64x4(_mm512_castsi256_si512(y0), y1, 1);
+                const __m512i ys = _mm512_mask_sub_epi8(y01, neg, zero, y01);
+                const __m512i p01 = _mm512_dpbusd_epi32(zero, aq, ys);
+                const float s0 = h2f(u16((const uint8_t*) &y[ib].d)) * d0;
+                const float s1 = h2f(u16((const uint8_t*) &y[ib + 1].d)) * d1;
+                const __m512 sd = _mm512_insertf32x8(_mm512_castps256_ps512(_mm256_set1_ps(s0)), _mm256_set1_ps(s1), 1);
+                acc[t] = _mm512_fmadd_ps(sd, _mm512_cvtepi32_ps(p01), acc[t]);
+            }
+        }
+        for (int t = 0; t < NT; ++t) {
+            const __m256 sum256 = _mm256_add_ps(_mm512_castps512_ps256(acc[t]), _mm512_extractf32x8_ps(acc[t], 1));
+            float s = hsum8_ggml(sum256);
+            if (ib < nb) {
+                const auto* y = (const block_q8_0*) hq[t];
+                int a = 0, b = 0;
+                for (int j = 0; j < QK4_NL / 2; ++j) {
+                    a += kvalues_iq4nl[x[ib].qs[j] & 15] * y[ib].qs[j];
+                    b += kvalues_iq4nl[x[ib].qs[j] >> 4] * y[ib].qs[j + QK4_NL / 2];
+                }
+                const float d = h2f(u16((const uint8_t*) &y[ib].d)) * h2f(u16((const uint8_t*) &x[ib].d));
+                s += d * (a + b);
+            }
+            out[t][r] = s;
+        }
+    }
+}
+
+void hadamard512_impl(float* x, int n, int block, const float* signs) {
+    if (signs) {
+        for (int i = 0; i < n; i += 16)
+            _mm512_storeu_ps(x + i, _mm512_mul_ps(_mm512_loadu_ps(x + i), _mm512_loadu_ps(signs + i)));
+    }
+    const __m512 vscale = _mm512_set1_ps(1.0f / std::sqrt((float) block));
+    for (int b0 = 0; b0 < n; b0 += block) {
+        float* v = x + b0;
+        // In-register butterflies for len = 1, 2, 4, 8 on each 16-float ZMM vector:
+        for (int i = 0; i < block; i += 16) {
+            __m512 w = _mm512_loadu_ps(v + i);
+            // len = 1: pairs (0,1), (2,3), ...
+            const __m512 a1 = _mm512_moveldup_ps(w), c1 = _mm512_movehdup_ps(w);
+            w = _mm512_mask_sub_ps(_mm512_add_ps(a1, c1), (__mmask16) 0xAAAAu, a1, c1);
+            // len = 2: pairs (0..1, 2..3), (4..5, 6..7), ...
+            const __m512 a2 = _mm512_permute_ps(w, 0x44), c2 = _mm512_permute_ps(w, 0xEE);
+            w = _mm512_mask_sub_ps(_mm512_add_ps(a2, c2), (__mmask16) 0xCCCCu, a2, c2);
+            // len = 4: pairs (0..3, 4..7), (8..11, 12..15)
+            const __m512 a4 = _mm512_castpd_ps(_mm512_permutex_pd(_mm512_castps_pd(w), 0x44));
+            const __m512 c4 = _mm512_castpd_ps(_mm512_permutex_pd(_mm512_castps_pd(w), 0xEE));
+            w = _mm512_mask_sub_ps(_mm512_add_ps(a4, c4), (__mmask16) 0xF0F0u, a4, c4);
+            // len = 8: pairs (0..7, 8..15)
+            const __m512 a8 = _mm512_shuffle_f32x4(w, w, 0x44);
+            const __m512 c8 = _mm512_shuffle_f32x4(w, w, 0xEE);
+            w = _mm512_mask_sub_ps(_mm512_add_ps(a8, c8), (__mmask16) 0xFF00u, a8, c8);
+            _mm512_storeu_ps(v + i, w);
+        }
+        for (int len = 16; len < block; len <<= 1)
+            for (int i = 0; i < block; i += len << 1)
+                for (int j = i; j < i + len; j += 16) {
+                    const __m512 a = _mm512_loadu_ps(v + j);
+                    const __m512 c = _mm512_loadu_ps(v + j + len);
+                    _mm512_storeu_ps(v + j, _mm512_add_ps(a, c));
+                    _mm512_storeu_ps(v + j + len, _mm512_sub_ps(a, c));
+                }
+        for (int i = 0; i < block; i += 16)
+            _mm512_storeu_ps(v + i, _mm512_mul_ps(_mm512_loadu_ps(v + i), vscale));
+    }
+}
+
 }  // namespace
 
 void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
@@ -655,6 +880,23 @@ void iq512x_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void
         case 29: rows_m_nt(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
     }
+}
+
+void iq4nl512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out,
+                        int r0, int r1) {
+    for (int at = 0; at < nt; at += 4) {
+        const int k = nt - at < 4 ? nt - at : 4;
+        switch (k) {
+            case 1: iq4nl512_rows<1>(w, row_bytes, n, hq + at, out + at, r0, r1); break;
+            case 2: iq4nl512_rows<2>(w, row_bytes, n, hq + at, out + at, r0, r1); break;
+            case 3: iq4nl512_rows<3>(w, row_bytes, n, hq + at, out + at, r0, r1); break;
+            default: iq4nl512_rows<4>(w, row_bytes, n, hq + at, out + at, r0, r1); break;
+        }
+    }
+}
+
+void hadamard_rotate_avx512(float* x, int n, int block, const float* signs) {
+    hadamard512_impl(x, n, block, signs);
 }
 
 }  // namespace strata::kernels::cpu

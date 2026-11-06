@@ -75,6 +75,40 @@ bool iq4nl_reference_ok() {
     return ok;
 }
 
+#if defined(__x86_64__) || defined(_M_X64)
+bool iq4nl512_ok() {
+    static const bool ok = [] {
+        const ggml_type_traits_cpu* tr = traits(GGML_TYPE_IQ4_NL);
+        const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_0);
+        if (tr == nullptr || tr->vec_dot == nullptr || t8 == nullptr || t8->from_float == nullptr) return false;
+        uint32_t seed = 4242u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (const int n : {64, 96, 160, 640}) {
+            constexpr int rows = 16;
+            const size_t rb = ggml_row_size(GGML_TYPE_IQ4_NL, (int64_t) n), nb = (size_t) n / 32, bb = rb / nb;
+            std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(GGML_TYPE_Q8_0, (int64_t) n));
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+            std::vector<float> x((size_t) n);
+            for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+            t8->from_float(x.data(), act.data(), n);
+            std::vector<float> got((size_t) rows), want((size_t) rows);
+            const void* hp[1] = {act.data()};
+            float* op[1] = {got.data()};
+            iq4nl512_down_rows(w.data(), rb, n, hp, 1, op, 0, rows);
+            for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+            if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {
+                std::fprintf(stderr, "strata: the 512-bit IQ4_NL rows differ from this ggml-cpu's dot (n=%d): not used\n", n);
+                return false;
+            }
+        }
+        return true;
+    }();
+    return ok;
+}
+#endif
+
 // The same check for the AVX-512 accumulation of IQ3_XXS / IQ3_S / IQ2_S gate/up rows (types 18, 21, 22), SwiGLU included.
 bool iq512_reference_ok(int type) {
     static std::mutex mu;
@@ -533,6 +567,16 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
+#if defined(__x86_64__) || defined(_M_X64)
+    static const bool avx512_iq4nl = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr && [] {
+        const char* v = std::getenv("STRATA_IQ4NL512");
+        return v != nullptr && v[0] == '1' && v[1] == '\0';
+    }();
+    if (avx512_iq4nl && f.d_type == 20 && iq4nl_mt && iq4nl512_ok()) {
+        iq4nl512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+#endif
     if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
         if (Arithmetic == NativeArithmetic::Default || mt_min <= 1) {
             iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);

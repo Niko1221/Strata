@@ -121,6 +121,12 @@ bool iq512x_supported(int) noexcept { return false; }
 void iq512x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     unsupported("the AVX-512 exact i-quant kernel");
 }
+void iq4nl512_down_rows(const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
+    unsupported("the AVX-512 IQ4_NL kernel");
+}
+void hadamard_rotate_avx512(float*, int, int, const float*) {
+    unsupported("the AVX-512 Hadamard rotation");
+}
 bool iq256x_supported(int) noexcept { return false; }   // (the DeepSeek CPU lane's multi-token rows: ggml-cpu's NEON dots instead)
 void iq256x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     unsupported("the AVX2 multi-token i-quant rows");

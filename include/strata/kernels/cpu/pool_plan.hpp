@@ -30,6 +30,9 @@ inline constexpr int kPoolWorkersCap = 32;
 /// least `kPoolReserveFrom` cores that the pool may use (besides the host's).  Small CPUs keep every core.
 inline constexpr int kPoolReserveFrom = 16;
 inline constexpr int kPoolReserve = 1;
+/// Threshold for an AMD 3D V-Cache L3 domain: 64 MiB (65536 KiB).  Standard Zen CCDs have 16 or 32 MiB L3 per CCD;
+/// 3D V-Cache CCDs have 96 MiB (Zen 3/4/5 X3D: 5800X3D, 7800X3D, 7900X3D, 7950X3D, 9800X3D, 9900X3D, 9950X3D).
+inline constexpr long kX3dL3ThresholdKb = 64 * 1024;
 
 struct PoolPlanInput {
     int logical = 0;                    ///< logical processors this process may run on
@@ -43,6 +46,12 @@ struct PoolPlanInput {
     /// +12.6% over the 19 of one-per-core, 24 workers -44%: notes-152-users.md).
     int p_cores = 0;
     int e_cores = 0;
+    /// Physical cores on 3D V-Cache L3 domains (>= 64 MiB per CCD) and on standard L3 domains (< 64 MiB) of the host
+    /// package.  Both > 0 on an asymmetric 2-CCD X3D CPU (7900X3D, 7950X3D, 9900X3D, 9950X3D).
+    int vcache_cores = 0;
+    int std_l3_cores = 0;
+    /// STRATA_X3D_SINGLE_CCD=1 (opt-in on asymmetric 2-CCD X3D): keep default workers inside the 3D V-Cache CCD.
+    bool x3d_single_ccd = false;
     /// STRATA_NUMA_SPLIT (opt-in): the split needs workers on both NUMA nodes, so the default may use the cores of
     /// every package instead of the host's only, and a configured count above the host's socket is not warned about.
     /// The other bounds (reserve, hybrid, quota, cap) stay.  False: the plan above, unchanged.
@@ -107,6 +116,12 @@ inline PoolPlan plan_pool_workers(const PoolPlanInput& in) {
             p.limit = "the performance cores and half of the efficiency cores";
         }
     }
+    if (in.x3d_single_ccd && in.vcache_cores > 0 && in.std_l3_cores > 0) {
+        if (in.vcache_cores < n) {
+            n = in.vcache_cores;
+            p.limit = "the 3D V-Cache CCD cores (STRATA_X3D_SINGLE_CCD)";
+        }
+    }
     if (in.cpu_quota > 0.0) {
         const int q = std::max(1, (int) in.cpu_quota - 1);
         if (q < n) {
@@ -157,7 +172,54 @@ inline std::string pool_workers_warning(int requested, const PoolPlanInput& in, 
 struct LogicalCpuInfo {
     int cpu = -1;
     long core = -1;
+    long l3_id = -1;    ///< L3 cache domain (CCD) id (-1: unknown)
+    long l3_kb = 0;     ///< L3 cache size of this domain in KiB (0: unknown)
 };
+
+/// One physical core for `plan_x3d_core_order`: its primary logical processor, optional first SMT sibling (-1: none),
+/// and L3 cache size in KiB.
+struct X3dPhysCore {
+    int primary = -1;
+    int sibling = -1;
+    long l3_kb = 0;
+};
+
+/// Asymmetric multi-CCD X3D placement (Ryzen 9 7900X3D, 7950X3D, 9900X3D, 9950X3D: one CCD has 96 MiB 3D V-Cache and
+/// the other has 32 MiB standard L3).  When both 3D V-Cache (`l3_kb >= kX3dL3ThresholdKb`) and standard-L3 (`0 < l3_kb
+/// < kX3dL3ThresholdKb`) physical cores exist:
+///   * if `skip_first` is true, `host_core` is taken from the first standard-L3 core instead of Core 0, so all 8 (or 6)
+///     physical cores of the 96 MiB 3D V-Cache CCD remain available as worker cores;
+///   * `worker_cores` places all 3D V-Cache physical cores first, followed by the remaining standard-L3 physical cores.
+/// On a symmetric CPU (1-CCD 9800X3D / 7800X3D where all cores have 96 MiB L3, or a non-X3D CPU), returns false and
+/// leaves the caller's default order unchanged. The engine calls this only when STRATA_VCACHE_POOL=1.
+inline bool plan_x3d_core_order(const std::vector<X3dPhysCore>& phys, bool skip_first, std::vector<int>& worker_cores,
+                                int& host_core, int& host_sibling, int& vcache_cores, int& std_l3_cores) {
+    vcache_cores = 0;
+    std_l3_cores = 0;
+    for (const auto& c : phys) {
+        if (c.l3_kb >= kX3dL3ThresholdKb) ++vcache_cores;
+        else if (c.l3_kb > 0) ++std_l3_cores;
+    }
+    if (vcache_cores == 0 || std_l3_cores == 0) return false;
+    worker_cores.clear();
+    host_core = -1;
+    host_sibling = -1;
+    bool host_picked = !skip_first;
+    std::vector<int> std_workers;
+    for (const auto& c : phys) {
+        if (c.l3_kb >= kX3dL3ThresholdKb) {
+            worker_cores.push_back(c.primary);
+        } else if (!host_picked) {
+            host_core = c.primary;
+            host_sibling = c.sibling;
+            host_picked = true;
+        } else {
+            std_workers.push_back(c.primary);
+        }
+    }
+    worker_cores.insert(worker_cores.end(), std_workers.begin(), std_workers.end());
+    return true;
+}
 
 /// "2,4,6,8,10,12" -> "2,4,...,12" when the numbers step by a constant from the second on and there are at least four of
 /// them; "0,1,2,3" -> "0-3"; anything else is written out in full (at most 64 numbers, then "... and N more").
@@ -320,6 +382,22 @@ inline std::string describe_worker_placement(const std::vector<int>& workers, in
         }
         if (host_core >= 0 && std::find(cores.begin(), cores.end(), host_core) != cores.end())
             s += "; a worker shares the host's core";
+    }
+    // Note 3D V-Cache L3 capacity when the layout reports an X3D L3 domain (>= 64 MiB).
+    int vcache_w = 0, std_w = 0;
+    long vcache_mb = 0, std_mb = 0;
+    for (int w : workers) {
+        for (const auto& l : layout)
+            if (l.cpu == w && l.l3_kb > 0) {
+                if (l.l3_kb >= kX3dL3ThresholdKb) { ++vcache_w; vcache_mb = l.l3_kb / 1024; }
+                else { ++std_w; std_mb = l.l3_kb / 1024; }
+                break;
+            }
+    }
+    if (vcache_w > 0) {
+        if (std_w == 0) s += ", " + std::to_string(vcache_mb) + " MB 3D V-Cache";
+        else s += ", " + std::to_string(vcache_w) + " on " + std::to_string(vcache_mb) + " MB 3D V-Cache + " +
+                  std::to_string(std_w) + " on " + std::to_string(std_mb) + " MB L3";
     }
     s += host_cpu >= 0 ? "; host on " + std::to_string(host_cpu) : "; host not pinned";
     return s + ")";

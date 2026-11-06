@@ -30,4 +30,14 @@ void iq512x_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const
 void iq512_reference_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
                              const void* const* act, int nt, float* const* ff, int r0, int r1);
 
+/// out[t][r] = w_r . h[t] for IQ4_NL (type 20) rows against Q8_0 activations (ggml's block_q8_0), 64 values (two blocks) per
+/// 512-bit step, in ggml-cpu's AVX2 even/odd block accumulation order (bit-identical at one token and at any group width).
+/// The caller checks cpu_avx512_ok().
+void iq4nl512_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,
+                        float* const* out, int r0, int r1);
+
+/// In-place fast Walsh-Hadamard transform (hadamard.hpp) in 512-bit float lanes; bit-identical to the scalar reference.
+/// The caller checks cpu_avx512_ok() && block >= 16 && (n & 15) == 0.
+void hadamard_rotate_avx512(float* x, int n, int block, const float* signs);
+
 }  // namespace strata::kernels::cpu
