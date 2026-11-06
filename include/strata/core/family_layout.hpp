@@ -33,7 +33,10 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
     if (!err.empty()) return false;
     const strata::ModelFamily family = strata::model_family(meta);
     const std::string p = std::string(strata::model_family_arch(family)) + ".";
-    g = ModelGeometry{};
+    // qwen4exp: absent keys keep Flash-Next's values (the struct defaults, which every published qwen4exp file
+    // matches).  qwen3next: absent keys keep the FACTORY's - a family that has no indexer and no hyper-connections
+    // must not inherit Flash-Next's 4 and 4 from the struct defaults.
+    g = family == ModelFamily::Qwen3Next ? ModelGeometry::qwen3next() : ModelGeometry{};
     g.family = family;
     // a key the file carries replaces the default; `required` keys were checked present by the guard
     auto num = [&](const char* key, int64_t& dst) {
@@ -93,8 +96,9 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
     return true;
 }
 
-/// The first geometry field that differs from the shapes this engine's kernels are built for (ModelGeometry's
-/// defaults, Flash-Next's), as "<what> is <got>, this engine's kernels are built for <want>"; empty when none.
+/// The first geometry field that differs from the shapes this engine's kernels are built for
+/// (`kCompiledGeometry` - the one shape one build compiles), as "<what> is <got>, this engine's kernels
+/// are built for <want>"; empty when none.
 /// n_expert and top-k are run-time sizes (the Coder ships 256 experts) and n_vocab is the embedding's business.
 inline std::string compiled_geometry_mismatch(const ModelGeometry& g) {
     const ModelGeometry& c = kCompiledGeometry;

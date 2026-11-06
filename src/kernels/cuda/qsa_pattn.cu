@@ -54,7 +54,11 @@ int pattn_mode() {
 namespace {
 
 constexpr int HD = 256;
+#if defined(STRATA_GEOMETRY_QWEN3NEXT)
+constexpr int G = 8;              // qwen3next: 16 query heads / 2 KV heads
+#else
 constexpr int G = 12;
+#endif
 static_assert(HD == strata::core::kCompiledGeometry.head_dim &&
               G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv,
               "qsa_pattn is compiled for core/geometry.hpp");
@@ -318,8 +322,15 @@ __global__ void __launch_bounds__(64) ps_value_d4_kernel(QsaAttnPools p, const i
             const float v0 = (float) (int8_t) (codes & 0xFF) * sc, v1 = (float) (int8_t) ((codes >> 8) & 0xFF) * sc;
             const float v2 = (float) (int8_t) ((codes >> 16) & 0xFF) * sc, v3 = (float) (int8_t) (codes >> 24) * sc;
             const float4* w4 = reinterpret_cast<const float4*>(spt[cl]);
-            const float4 w0 = w4[0], w1 = w4[1], w2 = w4[2];
-            const float ww[G] = {w0.x, w0.y, w0.z, w0.w, w1.x, w1.y, w1.z, w1.w, w2.x, w2.y, w2.z, w2.w};
+            // G weights per cell = G/4 float4s.  Written as a loop, not three named loads: the count is a
+            // property of the geometry (12 for qwen4exp, 8 for qwen3next), and a third float4 read past an
+            // 8-wide row would compile and be silently wrong.
+            float ww[G];
+#pragma unroll
+            for (int i = 0; i < G / 4; ++i) {
+                const float4 w = w4[i];
+                ww[4 * i] = w.x; ww[4 * i + 1] = w.y; ww[4 * i + 2] = w.z; ww[4 * i + 3] = w.w;
+            }
 #pragma unroll
             for (int h = 0; h < G; ++h) {
                 a[0][h] = fmaf(ww[h], v0, a[0][h]);

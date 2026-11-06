@@ -765,7 +765,7 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
     if (g.n_expert_used > g.n_expert || g.n_expert_used > 64)
         return p + "expert_used_count = " + std::to_string(g.n_expert_used) + ", the router takes 1.." +
                std::to_string(std::min<int64_t>(g.n_expert, 64)) + " of " + std::to_string(g.n_expert) + " experts";
-    if (g.n_rot > g.head_dim || g.n_rot > g.idx_key_dim || g.n_rot % 2)
+    if (g.n_rot > g.head_dim || (g.has_indexer() && g.n_rot > g.idx_key_dim) || g.n_rot % 2)
         return p + "rope.dimension_count = " + std::to_string(g.n_rot) + " is not an even slice of the head widths";
 
     // The layer split, twice over: the interval, and a ratio per layer that is non-zero (the indexer's pooling

@@ -241,8 +241,12 @@ q8k_bytes(V),
 // state
 (uint64_t) C * (g.ssm_d_conv - 1) * 4,
 // conv_state
+(uint64_t) (C + V) * 4,
+// qkvz (fused families)
+(uint64_t) 2 * g.ssm_v_heads * 4,
+// ab_scr (fused families)
 };    uint64_t total = 0;    for (uint64_t v : parts) total += (v + 15) & ~(uint64_t) 15;    return total;}
-uint64_t gdn_buffers_init(const ModelGeometry& g, void* base, GdnBuffers& b) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd), (uint64_t) (g.n_embd / 32) * 34, (uint64_t) g.n_embd * 2, (uint64_t) C * 4,        (uint64_t) C * 4, (uint64_t) C * 4,        (uint64_t) g.ssm_v_heads * 4, (uint64_t) g.ssm_v_heads * 4, (uint64_t) g.ssm_v_heads * 4,        (uint64_t) g.ssm_v_heads * g.ssm_state_size * 4, (uint64_t) V * 4, (uint64_t) V * 4, q8k_bytes(V),        (uint64_t) (V / 32) * 34,        (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size * 4, (uint64_t) C * (g.ssm_d_conv - 1) * 4,    };    uint8_t* p = (uint8_t*) base;    void* ptr[16];    uint64_t total = 0;    for (int i = 0; i < 16; ++i) {        ptr[i] = p;        const uint64_t al = (parts[i] + 15) & ~(uint64_t) 15;        p += al;        total += al;    }    b.x_q8k = (uint8_t*) ptr[0];    b.x_q8_0 = (uint8_t*) ptr[1];    b.x_bf16 = (uint16_t*) ptr[2];    b.qkv = (float*) ptr[3];    b.conv_out = (float*) ptr[4];    b.h = (float*) ptr[5];    b.alpha = (float*) ptr[6];    b.beta = (float*) ptr[7];    b.gate = (float*) ptr[8];    b.o = (float*) ptr[9];    b.z = (float*) ptr[10];    b.y = (float*) ptr[11];    b.y_q8k = (uint8_t*) ptr[12];    b.y_q8_0 = (uint8_t*) ptr[13];    b.state = (float*) ptr[14];    b.conv_state = (float*) ptr[15];    return total;}
+uint64_t gdn_buffers_init(const ModelGeometry& g, void* base, GdnBuffers& b) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd), (uint64_t) (g.n_embd / 32) * 34, (uint64_t) g.n_embd * 2, (uint64_t) C * 4,        (uint64_t) C * 4, (uint64_t) C * 4,        (uint64_t) g.ssm_v_heads * 4, (uint64_t) g.ssm_v_heads * 4, (uint64_t) g.ssm_v_heads * 4,        (uint64_t) g.ssm_v_heads * g.ssm_state_size * 4, (uint64_t) V * 4, (uint64_t) V * 4, q8k_bytes(V),        (uint64_t) (V / 32) * 34,        (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size * 4, (uint64_t) C * (g.ssm_d_conv - 1) * 4,        (uint64_t) (C + V) * 4, (uint64_t) 2 * g.ssm_v_heads * 4,    };    uint8_t* p = (uint8_t*) base;    void* ptr[18];    uint64_t total = 0;    for (int i = 0; i < 18; ++i) {        ptr[i] = p;        const uint64_t al = (parts[i] + 15) & ~(uint64_t) 15;        p += al;        total += al;    }    b.x_q8k = (uint8_t*) ptr[0];    b.x_q8_0 = (uint8_t*) ptr[1];    b.x_bf16 = (uint16_t*) ptr[2];    b.qkv = (float*) ptr[3];    b.conv_out = (float*) ptr[4];    b.h = (float*) ptr[5];    b.alpha = (float*) ptr[6];    b.beta = (float*) ptr[7];    b.gate = (float*) ptr[8];    b.o = (float*) ptr[9];    b.z = (float*) ptr[10];    b.y = (float*) ptr[11];    b.y_q8k = (uint8_t*) ptr[12];    b.y_q8_0 = (uint8_t*) ptr[13];    b.state = (float*) ptr[14];    b.conv_state = (float*) ptr[15];    b.qkvz = (float*) ptr[16];    b.ab_scr = (float*) ptr[17];    return total;}
 void gdn_buffers_zero_state(const GdnBuffers& b, const ModelGeometry& g, void* stream) {    const uint64_t st = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size * sizeof(float);    const uint64_t cs = (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * sizeof(float);    cudaMemsetAsync(b.state, 0, st, (cudaStream_t) stream);    cudaMemsetAsync(b.conv_state, 0, cs, (cudaStream_t) stream);}
 // Forward-declared because `gdn_layer` and `qsa_layer` are both defined above the timer's own definition, and
 // the sub-stage marks live inside them.
@@ -251,10 +255,29 @@ static void st_end(int64_t layer, int slot, void* stream);
 bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const GdnBuffers& b,               const float* mixed, float* out, void* stream, std::string& err) {    const LayerView v(tables, layer);    const int64_t C = g.ssm_conv_channels;
 // ---- resolve.  Every one of these was shape-checked by `check_layer` at load time, so a miss here is a
 //      NAME problem and not a geometry one, and the message says which name.
-const WeightRef* w_qkv = v.get("attn_qkv.weight");    const WeightRef* w_gate = v.get("attn_gate.weight");    const WeightRef* w_out = v.get("ssm_out.weight");    const WeightRef* w_alpha = v.get("ssm_alpha.weight");    const WeightRef* w_beta = v.get("ssm_beta.weight");    const WeightRef* w_conv = v.get("ssm_conv1d.weight");    const WeightRef* w_norm = v.get("ssm_norm.weight");    const WeightRef* w_dt = v.get("ssm_dt.bias");    const WeightRef* w_a = v.get("ssm_a");    const char* missing = !w_qkv ? "attn_qkv.weight" : !w_gate ? "attn_gate.weight"                          : !w_out ? "ssm_out.weight" : !w_alpha ? "ssm_alpha.weight"                          : !w_beta ? "ssm_beta.weight" : !w_conv ? "ssm_conv1d.weight"                          : !w_norm ? "ssm_norm.weight" : !w_dt ? "ssm_dt.bias"                          : !w_a ? "ssm_a" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }
+const bool fused_in = g.family == ModelFamily::Qwen3Next;   // qwen3next ships the same roles fused: ssm_in = qkv|z, ssm_ba = beta|alpha
+const WeightRef* w_qkv = fused_in ? v.get("ssm_in.weight") : v.get("attn_qkv.weight");    const WeightRef* w_gate = fused_in ? w_qkv : v.get("attn_gate.weight");    const WeightRef* w_out = v.get("ssm_out.weight");    const WeightRef* w_alpha = fused_in ? v.get("ssm_ba.weight") : v.get("ssm_alpha.weight");    const WeightRef* w_beta = fused_in ? w_alpha : v.get("ssm_beta.weight");    const WeightRef* w_conv = v.get("ssm_conv1d.weight");    const WeightRef* w_norm = v.get("ssm_norm.weight");    const WeightRef* w_dt = v.get("ssm_dt.bias");    const WeightRef* w_a = v.get("ssm_a");    const char* missing = !w_qkv ? (fused_in ? "ssm_in.weight" : "attn_qkv.weight") : !w_out ? "ssm_out.weight"                          : !w_alpha ? (fused_in ? "ssm_ba.weight" : "ssm_alpha.weight")                          : !w_conv ? "ssm_conv1d.weight"                          : !w_norm ? "ssm_norm.weight" : !w_dt ? "ssm_dt.bias"                          : !w_a ? "ssm_a" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }
+// The fused projections are computed at their FULL width - which is exactly what the native path checks
+// n_out against - and the role pointers below alias into the fused scratch. `ssm_in` is qkv|z and `ssm_ba`
+// is beta|alpha, in name order; the split points are the geometry's own widths, never stored numbers.
+const float *qkv_src = b.qkv, *z_src = b.z;    float *alpha_src = b.alpha, *beta_src = b.beta;
+if (fused_in) { qkv_src = b.qkvz; z_src = b.qkvz + C; beta_src = b.ab_scr; alpha_src = b.ab_scr + g.ssm_v_heads; }
 // The conv kernel and the two norms are F32 source types, and the loader copied them verbatim - so their
 // device bytes ARE f32 and can be handed straight to the kernels that want `const float*`.
-const float* conv_kernel = (const float*) w_conv->data;    const float* ssm_norm = (const float*) w_norm->data;    const float* dt = (const float*) w_dt->data;    const float* ssm_a = (const float*) w_a->data;    strata::kernels::SForm f_qkv, f_gate, f_out;    if (!sform_of(*w_qkv, f_qkv, v.name("attn_qkv.weight"), err)) return false;    if (!sform_of(*w_gate, f_gate, v.name("attn_gate.weight"), err)) return false;    if (!sform_of(*w_out, f_out, v.name("ssm_out.weight"), err)) return false;    Planes p_qkv, p_gate, p_out;    if (!plane_ptrs(*w_qkv, v.name("attn_qkv.weight"), p_qkv, err)) return false;    if (!plane_ptrs(*w_gate, v.name("attn_gate.weight"), p_gate, err)) return false;    if (!plane_ptrs(*w_out, v.name("ssm_out.weight"), p_out, err)) return false;    using namespace strata::kernels;    cudaStream_t st = (cudaStream_t) stream;
+const float* conv_kernel = (const float*) w_conv->data;    const float* ssm_norm = (const float*) w_norm->data;    const float* dt = (const float*) w_dt->data;    const float* ssm_a = (const float*) w_a->data;
+strata::kernels::SForm f_qkv, f_gate, f_out, f_ba;    Planes p_qkv, p_gate, p_out, p_ba;
+    if (fused_in) {
+        if (!sform_of(*w_qkv, f_qkv, v.name("ssm_in.weight"), err)) return false;
+        if (!sform_of(*w_alpha, f_ba, v.name("ssm_ba.weight"), err)) return false;
+        f_gate = f_qkv;
+        if (!plane_ptrs(*w_qkv, v.name("ssm_in.weight"), p_qkv, err)) return false;
+        if (!plane_ptrs(*w_alpha, v.name("ssm_ba.weight"), p_ba, err)) return false;
+        p_gate = p_qkv;   // the z half is already in the fused output; the gemv below ran the whole matrix
+    } else {
+    if (!sform_of(*w_qkv, f_qkv, v.name("attn_qkv.weight"), err)) return false;    if (!sform_of(*w_gate, f_gate, v.name("attn_gate.weight"), err)) return false;    if (!plane_ptrs(*w_qkv, v.name("attn_qkv.weight"), p_qkv, err)) return false;    if (!plane_ptrs(*w_gate, v.name("attn_gate.weight"), p_gate, err)) return false;
+    }
+    if (!sform_of(*w_out, f_out, v.name("ssm_out.weight"), err)) return false;    if (!plane_ptrs(*w_out, v.name("ssm_out.weight"), p_out, err)) return false;
+    using namespace strata::kernels;    cudaStream_t st = (cudaStream_t) stream;
 // ---- 1. the activation, in EVERY format a weight on this layer might ask for.  BOTH quantized images are
 //         produced, because which one is wanted is a property of the TENSOR and the pack mixes them by
 //         layer - producing only the "right" one is how the per-role assumption gets baked back in.
@@ -272,8 +295,9 @@ st_begin(layer, 8, stream);
     }
     }
     st_end(layer, 8, stream);
-// ---- 2. qkv = wqkv @ x, with the activation THIS layer's `attn_qkv` asks for
-st_begin(layer, 9, stream);    if (!gemv_quantized(*w_qkv, p_qkv, f_qkv, b.x_q8_0, b.x_q8k, b.qkv, g.n_embd, C,                        v.name("attn_qkv.weight"), stream, err, mixed)) return false;    st_end(layer, 9, stream);
+// ---- 2. qkv = wqkv @ x, with the activation THIS layer's `attn_qkv` asks for.  Under fusion this ONE gemv
+//         is the whole `ssm_in` - qkv and z together - and the roles alias into it below.
+st_begin(layer, 9, stream);    if (!gemv_quantized(*w_qkv, p_qkv, f_qkv, b.x_q8_0, b.x_q8k, fused_in ? (float*) qkv_src : b.qkv, g.n_embd,                        fused_in ? C + g.ssm_value_dim : C, fused_in ? v.name("ssm_in.weight") : v.name("attn_qkv.weight"), stream, err, mixed)) return false;    st_end(layer, 9, stream);
 // ---- 3. conv, then SiLU on the WHOLE conv output - before the q|k|v split, which is what
 //         `ref/gdn.py` L262 says and what makes the split a reshape rather than a copy.
 st_begin(layer, 10, stream);
@@ -281,13 +305,16 @@ st_begin(layer, 10, stream);
 // epilogues another (`fused_gdn.hpp`).
 const bool fused_pre = g_fused_gdn && native_gdn_enabled() && native_bf16_projections && g.ssm_d_conv == 4 &&
                        g.ssm_state_size == 128;
+// The fused ab kernel takes BF16 weight POINTERS; qwen3next's ab is a quantized matrix read as column
+// ranges, so its conv/l2 may fuse but its ab goes through the quantized gemv like every other projection.
+const bool fused_ab = fused_pre && !fused_in;
 if (fused_pre) {
-    fused_gdn_conv_l2(b.conv_state, b.qkv, conv_kernel, b.h, (int) C, (int) (2 * g.ssm_k_heads), RMS_EPS, stream);
+    fused_gdn_conv_l2(b.conv_state, qkv_src, conv_kernel, b.h, (int) C, (int) (2 * g.ssm_k_heads), RMS_EPS, stream);
 } else
 try {
-    if (native_gdn_enabled()) native_gdn_conv_silu(b.conv_state, b.qkv, conv_kernel, b.conv_out, b.h, C, g.ssm_d_conv, stream);
+    if (native_gdn_enabled()) native_gdn_conv_silu(b.conv_state, qkv_src, conv_kernel, b.conv_out, b.h, C, g.ssm_d_conv, stream);
     else {
-        gdn_conv_step(b.conv_state, b.qkv, conv_kernel, b.conv_out, C, g.ssm_d_conv, stream);
+        gdn_conv_step(b.conv_state, qkv_src, conv_kernel, b.conv_out, C, g.ssm_d_conv, stream);
         cudaMemcpyAsync(b.h, b.conv_out, (size_t) C * 4, cudaMemcpyDeviceToDevice, st);
         silu_inplace(b.h, C, stream);
     }
@@ -318,9 +345,14 @@ st_end(layer, 11, stream);
 //         alone.  Measured 0.1072 ms each, against 0.0277 for the split - and there are two of them, in all
 //         36 GDN layers.
 st_begin(layer, 12, stream);
-    if (fused_pre) {
+    if (fused_ab) {
         fused_gdn_ab(mixed, (const uint16_t*) w_alpha->data, (const uint16_t*) w_beta->data, dt, ssm_a, b.gate, b.beta,
                      (int) g.n_embd, (int) g.ssm_v_heads, stream);
+    } else if (fused_in) {
+        // ONE gemv is the whole `ssm_ba` (beta|alpha); the epilogues below read the halves through the
+        // role pointers set at the top.
+        if (!gemv_quantized(*w_alpha, p_ba, f_ba, b.x_q8_0, b.x_q8k, b.ab_scr, g.n_embd, 2 * g.ssm_v_heads,
+                            v.name("ssm_ba.weight"), stream, err, mixed)) return false;
     } else {
     if (!native_bf16_projections) f32_to_bf16_bulk(mixed, b.x_bf16, g.n_embd, stream);
 #if defined(STRATA_EXPERIMENTAL_SM60)
@@ -334,13 +366,13 @@ st_begin(layer, 12, stream);
     project_bf16(mixed, b.x_bf16, (const uint16_t*) w_beta->data, b.beta, g.n_embd, g.ssm_v_heads, true, stream);
     }
     }
-    if (!fused_pre) try {
+    if (!fused_ab) try {
         if (native_gdn_enabled()) {
-            native_gdn_beta_gate(b.beta, g.ssm_v_heads, stream);
-            native_gdn_gate(b.alpha, dt, ssm_a, b.gate, g.ssm_v_heads, stream);
+            native_gdn_beta_gate(beta_src, g.ssm_v_heads, stream);
+            native_gdn_gate(alpha_src, dt, ssm_a, b.gate, g.ssm_v_heads, stream);
         } else {
-            gdn_beta_gate(b.beta, g.ssm_v_heads, stream);
-            gdn_gate(b.alpha, dt, ssm_a, b.gate, 1, g.ssm_v_heads, stream);
+            gdn_beta_gate(beta_src, g.ssm_v_heads, stream);
+            gdn_gate(alpha_src, dt, ssm_a, b.gate, 1, g.ssm_v_heads, stream);
         }
     } catch (const std::exception& error) { err = v.name("gdn_gate") + ": " + error.what(); return false; }
     st_end(layer, 12, stream); st_begin(layer, 13, stream);
@@ -348,8 +380,8 @@ st_begin(layer, 12, stream);
     // Plan v0.3 P3: with the native contract the step and the output norm are one kernel (after the z GEMV).
     const bool fused_gdn = g_fused_gdn && native_gdn_enabled() && g.ssm_state_size == 128;
     if (!fused_gdn) try {
-        if (native_gdn_enabled()) native_gdn_step(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, b.beta, b.o, gs, stream);
-        else gdn_step(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, b.beta, b.o, gs, stream);
+        if (native_gdn_enabled()) native_gdn_step(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, beta_src, b.o, gs, stream);
+        else gdn_step(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, beta_src, b.o, gs, stream);
     } catch (const std::exception& error) {
         err = v.name("gdn_step") + ": " + error.what();
         return false;
@@ -357,15 +389,16 @@ st_begin(layer, 12, stream);
     st_end(layer, 13, stream); st_begin(layer, 14, stream);
 // ---- 6. the recurrence.  q and k are the (16, 128) views; v is the (48, 128) view.  The stage marks for
 // it live at the end of the alpha/beta/gate line above, because the gate and the step are one sequence.
-// ---- 7. z, then y = rms_norm(o) * ssm_norm * sigmoid(z).  SIGMOID, not SiLU.
+// ---- 7. z, then y = rms_norm(o) * ssm_norm * sigmoid(z).  SIGMOID, not SiLU.  Under fusion z is the far
+// half of the `ssm_in` output already computed in step 2 - no second gemv.
 // qkv's native quantize of `mixed` is still in the shared q8_1 scratch: nothing native ran in between.
-if (!gemv_quantized(*w_gate, p_gate, f_gate, b.x_q8_0, b.x_q8k, b.z, g.n_embd, g.ssm_value_dim, v.name("attn_gate.weight"), stream, err, mixed,
+if (!fused_in && !gemv_quantized(*w_gate, p_gate, f_gate, b.x_q8_0, b.x_q8k, b.z, g.n_embd, g.ssm_value_dim, v.name("attn_gate.weight"), stream, err, mixed,
                     w_qkv->native_data != nullptr && w_gate->native_data != nullptr)) return false;
 try {
-    if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, b.beta, b.z, ssm_norm, RMS_EPS, b.y,
+    if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, beta_src, z_src, ssm_norm, RMS_EPS, b.y,
                                        (int) g.ssm_k_heads, (int) g.ssm_v_heads, stream);
-    else if (native_gdn_enabled()) native_gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
-    else gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
+    else if (native_gdn_enabled()) native_gdn_out_norm(b.o, z_src, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
+    else gdn_out_norm(b.o, z_src, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
 } catch (const std::exception& error) { err = v.name("gdn_out_norm") + ": " + error.what(); return false; }
 st_end(layer, 14, stream);
 // ---- 8. out = ssm_out @ y, whose activation is whatever THIS layer's `ssm_out` asks for
@@ -739,7 +772,7 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     KvPlan p;
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
-    p.pooled_rows = max_cells / s.idx_block + 2;
+    p.pooled_rows = s.idx_block == 0 ? 0 : max_cells / s.idx_block + 2;   // dense family: no pooled rows
     if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
     // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
     static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
@@ -1156,10 +1189,11 @@ const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, 
 };
 // ---- resolve every tensor by name, and REFUSE rather than reading a null.  `check_layer` has already
 // asserted the shapes at load time; a missing name here is a wiring mistake.
-struct Req { const char* suf; };    const WeightRef* w_idxk = v.get("indexer.k_proj.weight");    const WeightRef* w_attnq = v.get("attn_q.weight");    const WeightRef* w_attnk = v.get("attn_k.weight");    const WeightRef* w_attnv = v.get("attn_v.weight");    const WeightRef* w_attno = v.get("attn_output.weight");    const WeightRef* w_idxq = v.get("indexer.q_proj.weight");    const WeightRef* w_qn = v.get("attn_q_norm.weight");    const WeightRef* w_kn = v.get("attn_k_norm.weight");    const WeightRef* w_iqn = v.get("indexer.q_norm.weight");    const WeightRef* w_ikn = v.get("indexer.k_norm.weight");    const char* missing = !w_idxk ? "indexer.k_proj.weight" : !w_attnq ? "attn_q.weight"                          : !w_attnk ? "attn_k.weight" : !w_attnv ? "attn_v.weight"                          : !w_attno ? "attn_output.weight" : !w_idxq ? "indexer.q_proj.weight"                          : !w_qn ? "attn_q_norm.weight" : !w_kn ? "attn_k_norm.weight"                          : !w_iqn ? "indexer.q_norm.weight" : !w_ikn ? "indexer.k_norm.weight" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }    if (pos < 0 || pos >= st.max_cells) {        err = "qsa_layer: pos " + std::to_string(pos) + " is outside the state's 0.." +              std::to_string(st.max_cells - 1);        return false;    }
+struct Req { const char* suf; };    const WeightRef* w_idxk = v.get("indexer.k_proj.weight");    const WeightRef* w_attnq = v.get("attn_q.weight");    const WeightRef* w_attnk = v.get("attn_k.weight");    const WeightRef* w_attnv = v.get("attn_v.weight");    const WeightRef* w_attno = v.get("attn_output.weight");    const WeightRef* w_idxq = v.get("indexer.q_proj.weight");    const WeightRef* w_qn = v.get("attn_q_norm.weight");    const WeightRef* w_kn = v.get("attn_k_norm.weight");    const WeightRef* w_iqn = v.get("indexer.q_norm.weight");    const WeightRef* w_ikn = v.get("indexer.k_norm.weight");    const bool dense = !g.has_indexer();   // dense family: no indexer tensors, selection is the identity
+    const char* missing = (!dense && !w_idxk) ? "indexer.k_proj.weight" : !w_attnq ? "attn_q.weight"                          : !w_attnk ? "attn_k.weight" : !w_attnv ? "attn_v.weight"                          : !w_attno ? "attn_output.weight" : (!dense && !w_idxq) ? "indexer.q_proj.weight"                          : !w_qn ? "attn_q_norm.weight" : !w_kn ? "attn_k_norm.weight"                          : (!dense && !w_iqn) ? "indexer.q_norm.weight" : (!dense && !w_ikn) ? "indexer.k_norm.weight" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }    if (pos < 0 || pos >= st.max_cells) {        err = "qsa_layer: pos " + std::to_string(pos) + " is outside the state's 0.." +              std::to_string(st.max_cells - 1);        return false;    }
 // THE TWO BF16 PROJECTIONS: the arena holds them re-rounded to 2 B/elem, which is what `bf16_gemv` wants.
 // Reading one as f32 would walk 2x its length inside the arena without faulting.
-if (w_idxk->kind != WeightKind::Bf16InF32 || w_idxq->kind != WeightKind::Bf16InF32) {        err = v.name("indexer.*_proj.weight") + " must be engine form 1 (bf16); they are " +              std::to_string((int) w_idxk->kind) + " and " + std::to_string((int) w_idxq->kind);        return false;    }
+if (!dense && (w_idxk->kind != WeightKind::Bf16InF32 || w_idxq->kind != WeightKind::Bf16InF32)) {        err = v.name("indexer.*_proj.weight") + " must be engine form 1 (bf16); they are " +              std::to_string((int) w_idxk->kind) + " and " + std::to_string((int) w_idxq->kind);        return false;    }
 // ---- 1. the three activation formats, once each
 bool images_fused = false;
 #if defined(STRATA_EXPERIMENTAL_SM60)
@@ -1195,7 +1229,7 @@ if (!images_fused) {
 // ---- 3. the indexer's RAW key (and, with the V100 switch, its QUERY in the same kernel; was two launches)
 bool idx_pair = false;
 #if defined(STRATA_EXPERIMENTAL_SM60)
-if (strata::kernels::fuse_decode()) {
+if (!dense && strata::kernels::fuse_decode()) {
     // two BF16 projections of the same x in ONE kernel: the query is needed only at step 7 and nothing in between
     // touches it, so computing it here changes no order that matters; `idx_raw` is still appended at step 5.
     project_bf16_pair(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.idx_key_dim,
@@ -1204,7 +1238,7 @@ if (strata::kernels::fuse_decode()) {
     idx_pair = true;
 }
 #endif
-if (!idx_pair)
+if (!dense && !idx_pair)
     project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
 // ---- 4. K and V, in Q8_K, then norm and rotate K only
 SForm f_k, f_v, f_o, f_q;    if (!sform_of(*w_attnk, f_k, v.name("attn_k.weight"), err)) return false;    if (!sform_of(*w_attnv, f_v, v.name("attn_v.weight"), err)) return false;    if (!sform_of(*w_attno, f_o, v.name("attn_output.weight"), err)) return false;    if (!sform_of(*w_attnq, f_q, v.name("attn_q.weight"), err)) return false;    Planes p_k, p_v, p_o, p_q;    if (!plane_ptrs(*w_attnk, v.name("attn_k.weight"), p_k, err)) return false;    if (!plane_ptrs(*w_attnv, v.name("attn_v.weight"), p_v, err)) return false;    if (!plane_ptrs(*w_attno, v.name("attn_output.weight"), p_o, err)) return false;    if (!plane_ptrs(*w_attnq, v.name("attn_q.weight"), p_q, err)) return false;
@@ -1238,7 +1272,7 @@ if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV
 }
 if (st.kv_q4) {
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
-} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
+} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    if (!dense) {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
             (const float*) w_ikn->data, RMS_EPS, ib, s, st.max_cells, rope_scaling(), stream);
@@ -1258,12 +1292,16 @@ if (!gemv_quantized(*w_attnq, p_q, f_q, b.x_q8_0, b.x_q8k, b.q_full, g.n_embd, g
 if (cudaMemcpy2DAsync(b.qcur, (size_t) g.head_dim * 4, b.q_full, (size_t) g.head_dim * 2 * 4,                          (size_t) g.head_dim * 4, (size_t) g.n_head, cudaMemcpyDeviceToDevice,                          (cudaStream_t) stream) != cudaSuccess) {        err = "qsa_layer: the q/gate split failed";        return false;    }    if (!normalize_rotate(b.qcur, w_qn, (int) g.n_head, (int) g.head_dim)) return false;
 // ---- 7. the indexer's query: with the V100 switch it was projected at step 3 (paired with the raw key);
 // the trunk projects it here.  Either way, norm and rotate it now.
-if (!idx_pair) project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim,
+if (!dense && !idx_pair) project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim,
              false, stream);
-if (!normalize_rotate(b.q_idx, w_iqn, (int) g.idx_q_heads, (int) g.idx_key_dim)) return false;
+if (!dense && !normalize_rotate(b.q_idx, w_iqn, (int) g.idx_q_heads, (int) g.idx_key_dim)) return false;
 // ---- 8. score, select, gather, attend.  `max_blocks` and `cap` are CAPACITIES from the state, not this
 // token's counts: a grid or a shared-memory size that follows the sequence length is baked into a captured
-// graph, and the kernels guard for the surplus.    const
+// graph, and the kernels guard for the surplus.
+    if (dense) {
+        qsa_dense_ids(b.ids, st.step, 1, cap, stream);   // the identity selection; the widths come from the step
+    } else {
+    const
 int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     if (g_fast_select) {
         // Plan v0.3 P7: block-level FP32 scores and a radix selection over blocks (qsa_select.hpp).
@@ -1271,6 +1309,7 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
         qsa_block_topk(b.cell_scores, st.step, 1, max_blocks, cap, s, b.ids, stream);
     } else {
     qsa_index_step(st.idx_pooled, b.q_idx, nullptr, s, st.step, max_blocks, b.cell_scores, stream);    topk_512_step(b.cell_scores, s, cap, st.step, b.ids, stream);
+    }
     }
     // KV streaming: every block the selection names is made resident before anything reads it
     qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);

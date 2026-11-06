@@ -49,7 +49,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
-    const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
+    const int64_t pooled = index && s.idx_block != 0 && upto > 0 ? upto / s.idx_block + 1 : 0;   // dense family: no pooled rows
     // Format 3 identifies snapshot K8V4 only; never pass it to the block movers.  Rotated INT8 K/V (#293,
     // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.

@@ -41,7 +41,8 @@ constexpr int LR = strata::core::kCompiledGeometry.hc_lr;         // 320
 #else
 #define STRATA_GR_FAST_BUILD 0
 #endif
-static_assert(N == strata::core::kCompiledGeometry.n_embd && HC == strata::core::kCompiledGeometry.hc && LR == strata::core::kCompiledGeometry.hc_lr, "fused_gr is compiled for core/geometry.hpp");
+static_assert(!strata::core::kCompiledGeometry.has_hyper_connections() ||
+              (N == strata::core::kCompiledGeometry.n_embd && HC == strata::core::kCompiledGeometry.hc && LR == strata::core::kCompiledGeometry.hc_lr), "fused_gr is compiled for a hyper-connection geometry; a family without them must not call it");
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
 constexpr int DOWN_BLOCKS = LR / WARPS;          // 40 blocks of 8 rows; one more for the inject rows

@@ -944,7 +944,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
 
     const strata::kernels::QsaShapes s = shapes_of(g);
     cap_ = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    max_blocks_ = s.idx_block == 0 ? 0 : ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;   // dense family: no blocks
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
@@ -1794,12 +1794,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
                 const QsaState& st = ss.qsa_states[qi];
-                const WeightRef *wik = need(v, "indexer.k_proj.weight", err), *wq = need(v, "attn_q.weight", err),
+                const bool dense = s.idx_block == 0;   // dense family: no indexer tensors, selection is the identity
+                const WeightRef *wik = dense ? nullptr : need(v, "indexer.k_proj.weight", err), *wq = need(v, "attn_q.weight", err),
                                 *wk = need(v, "attn_k.weight", err), *wv = need(v, "attn_v.weight", err),
-                                *wo = need(v, "attn_output.weight", err), *wiq = need(v, "indexer.q_proj.weight", err),
+                                *wo = need(v, "attn_output.weight", err), *wiq = dense ? nullptr : need(v, "indexer.q_proj.weight", err),
                                 *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                *wiqn = need(v, "indexer.q_norm.weight", err), *wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wik || !wq || !wk || !wv || !wo || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                                *wiqn = dense ? nullptr : need(v, "indexer.q_norm.weight", err), *wikn = dense ? nullptr : need(v, "indexer.k_norm.weight", err);
+                if ((!dense && (!wik || !wiq || !wiqn || !wikn)) || !wq || !wk || !wv || !wo || !wqn || !wkn) return false;
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
@@ -1834,7 +1835,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     const char* e = std::getenv("STRATA_DF_QB_Q4");
                     return e == nullptr || std::atoi(e) != 0;
                 }();
-                const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && (!st.kv_q4 || qb_q4);
+                const bool qb = !dense && dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && (!st.kv_q4 || qb_q4);
                 if (!q8_attn) quant_in(xm, (int) N);
                 // STRATA_DF_BRANCH: the query side (q and its norm/RoPE/rotation on side 0, the indexer query on side 1)
                 // beside the K/V side; the indexer query joins before the block scores, the query before attention
@@ -1867,11 +1868,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     norm_rope_on(data, norm, rows, cols, pos, ns);
                 };
                 auto idx_key = [&](cudaStream_t ns) {
+                    if (dense) return;
                     if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, ns);
                     else for (int t = tb; t < te; ++t)
                         bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, ns);
                 };
                 auto idx_snap = [&](cudaStream_t ns) {
+                    if (dense) return;   // no indexer tail to snapshot
                     if (batch_rec_) {   // snapshot each slot's indexer tail before its first proposed row
                         for (int t = tb; t < te && !keep_rows; ++t)
                             if (t == tb || brow_[t] != brow_[t - 1])
@@ -1881,6 +1884,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, ns);
                 };
                 auto idx_append = [&](cudaStream_t ns) {
+                    if (dense) return;
                     if (dec_batch && !g_no_batch_kv && !batch_rec_) {
                         const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                         native_qsa_indexer_append_steps(idx_raw + tb * ID, step_ + tb * kStepCount + kStepPos, kStepCount,
@@ -1897,6 +1901,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     }
                 };
                 auto idx_query = [&](cudaStream_t ns) {
+                    if (dense) return;
                     if (qb) {
                         bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
                                                   N, IQ * ID, n, ns);
@@ -1909,6 +1914,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         }
                 };
                 auto idx_select = [&](cudaStream_t ns) {
+                    if (dense) {   // the identity selection, widths from each token's step
+                        qsa_dense_ids(sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, ns);
+                        return;
+                    }
                     if (sel_long_) {   // STRATA_SELECT_LONG: the long-context window graphs (the same ids)
                         qsa_block_scores_long(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n,
                                               max_blocks_, s, scores_ + (size_t) tb * max_blocks_, ns, -1);
@@ -2073,10 +2082,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         sr.dead[t - tb] = sx.idx_dead;
                         pr.p[t - tb] = qsa_attn_pools(sx);
                     }
+                    if (dense) qsa_dense_ids(sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n_rows, cap_, cs);
+                    else {
                     qsa_block_scores_rows(sr, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n_rows, max_blocks_, s,
                                           scores_ + (size_t) tb * max_blocks_, cs);
                     qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n_rows, max_blocks_, cap_,
                                    s, sel_ + (size_t) tb * cap_, cs);
+                    }
                     qsa_decode_attn_batch_rows(qcur_ + tb * NH * HD, pr, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount,
                                                cap_, s, attn_scratch_ + (size_t) tb * attn_scratch_floats_,
                                                attn_ + tb * NH * HD, n_rows, cs);
@@ -2097,6 +2109,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                             px.p[i] = qsa_attn_pools(sx);
                         }
                         // a launcher that would not run the per-row call's kernel launches nothing: per-row calls
+                        if (dense) qsa_dense_ids(sel_ + (size_t) t0 * cap_, step_ + t0 * kStepCount, m, cap_, cs);
+                        else {
                         if (!qsa_block_scores_slots(pooled, dead, qidx_ + t0 * IQ * ID, step_ + t0 * kStepCount, m,
                                                     max_blocks_, s, scores_ + (size_t) t0 * max_blocks_, cs))
                             for (int t = t0; t < t0 + m; ++t)
@@ -2104,6 +2118,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                                  1, max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) t0 * max_blocks_, step_ + t0 * kStepCount, m, max_blocks_,
                                        cap_, s, sel_ + (size_t) t0 * cap_, cs);
+                        }
                         if (!qsa_decode_attn_slots(qcur_ + t0 * NH * HD, px, sel_ + (size_t) t0 * cap_,
                                                    step_ + t0 * kStepCount, cap_, s,
                                                    attn_scratch_ + (size_t) t0 * attn_scratch_floats_,
@@ -2117,10 +2132,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 } else if (batch_rec_) {   // each row selects and attends over its own slot's K/V
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        if (dense) qsa_dense_ids(sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
+                        else {
                         qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
                                          max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
                         qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
                                        sel_ + (size_t) t * cap_, cs);
+                        }
                         qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
                         const QsaAttnPools px = qsa_attn_pools(sx);
                         qsa_decode_attn_batch(qcur_ + t * NH * HD, px, sel_ + (size_t) t * cap_, step_ + t * kStepCount,
@@ -2963,7 +2981,7 @@ bool Verifier::capture_commit(std::string& err) {
         }
         // the QSA layers' tail restore + indexer append, one launch for all of them (one block per layer)
         bool qsa_batched = false;
-        if (commit_batch && ok && !g_no_batch_kv) {
+        if (commit_batch && ok && !g_no_batch_kv && g.has_indexer()) {
             QsaIndexerLayers il;
             int nq = 0;
             int64_t mc = -1;
@@ -3014,8 +3032,9 @@ bool Verifier::capture_commit(std::string& err) {
                 ++gdn_index;
             } else {
                 const QsaState& st = ss.qsa_states[qsa_index];
-                const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wikn) { ok = false; break; }
+                const WeightRef* wikn = g.has_indexer() ? need(v, "indexer.k_norm.weight", err) : nullptr;
+                if (g.has_indexer() && !wikn) { ok = false; break; }
+                if (wikn) {
                 copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
                 const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                 if (!g_no_batch_kv) {
@@ -3026,6 +3045,7 @@ bool Verifier::capture_commit(std::string& err) {
                         native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
                                                   (const float*) wikn->data, EPS, ib, s, st.max_cells,
                                                   rope_scaling(), cs_);
+                }
                 }
                 ++qsa_index;
             }
@@ -4105,8 +4125,9 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                                          cs_);
                 ++gdn_index;
             } else {
-                const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wikn) { ok = false; break; }
+                const WeightRef* wikn = g.has_indexer() ? need(v, "indexer.k_norm.weight", err) : nullptr;
+                if (g.has_indexer() && !wikn) { ok = false; break; }
+                if (wikn) {
                 for (int t = 0; t < S;) {
                     const int first = t;
                     while (t < S && rows[t] == rows[first]) ++t;
@@ -4119,6 +4140,7 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                                                   commitb_ + (size_t) rows[first] * CB + 2 + (u - first),
                                                   0, (const float*) wikn->data, EPS, ib, s, st.max_cells,
                                                   rope_scaling(), cs_);
+                }
                 }
                 ++qsa_index;
             }

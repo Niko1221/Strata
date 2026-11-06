@@ -4377,6 +4377,7 @@ int main(int argc, char** argv) {
         if (n > 0 && n < o.adapt_every && wr > 0) { o.adapt_warm_every = n; o.adapt_warm_rounds = wr; }
     }
     strata::core::layer_set_shared_early(!o.shared_late);
+    strata::ModelFamily fam = strata::ModelFamily::Unknown;
     if (!o.native_preset.empty()) {
         try {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native).  A missing shard is an error
@@ -4386,33 +4387,40 @@ int main(int argc, char** argv) {
             // with a message that says so, before anything else about the file is judged
             {
                 const strata::GgufFile meta(o.native_shards.front());
-                const std::string why = strata::model_family_not_supported(strata::model_family(meta));
-                if (strata::model_family(meta) != strata::ModelFamily::Unknown && !why.empty()) {
+                fam = strata::model_family(meta);
+                const std::string why = strata::model_family_not_supported(fam);
+                if (fam != strata::ModelFamily::Unknown && !why.empty()) {
                     std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), why.c_str());
                     return 2;
                 }
             }
+            // PLE belongs to Flash-Next.  A family without it (qwen3next) has no table to point --ple-gguf at,
+            // and a requirement for one would refuse a model the engine runs.
+            const bool has_ple = fam == strata::ModelFamily::Qwen4Exp;
             // --ple-gguf defaults to the shard that holds the PLE table, found by name: shard 2 of the ISTA files
             // and of Unsloth's UD-Q4_K_XL, shard 1 of Swift's
-            if (o.ple_gguf.empty() && !o.no_ple) {
+            if (has_ple && o.ple_gguf.empty() && !o.no_ple) {
                 const strata::GgufModel model(o.native_shards);
                 size_t at = 0;
                 if (model.find("per_layer_token_embd.weight", &at) != nullptr) o.ple_gguf = o.native_shards[at];
+            }
+            if (has_ple && (o.no_ple || o.ple_gguf.empty())) {
+                std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too), and no "
+                                     "shard of the model holds per_layer_token_embd.weight\n");
+                return 2;
             }
         } catch (const std::exception& e) {
             std::fprintf(stderr, "strata generate: --native %s: %s\n", o.native_preset.c_str(), e.what());
             return 2;
         }
-        if (o.no_ple || o.ple_gguf.empty()) {
-            std::fprintf(stderr, "strata generate: --native requires --ple-gguf (the PLE key is native too), and no "
-                                 "shard of the model holds per_layer_token_embd.weight\n");
-            return 2;
-        }
         o.stream_token = true;
-        o.gr_native_mmvf = true;
+        // Flash-Next-only natives (gated residual, PLE key, the QSA indexer, PLE postops) stay off for a family
+        // that has none of those parts; the shared ones - MoE, GDN, dense QSA attention, rope - run for both.
+        const bool fam_ple = fam == strata::ModelFamily::Qwen4Exp;
+        o.gr_native_mmvf = fam_ple;
         o.native_bf16 = o.native_bf16_extra = true;
-        o.native_ple_key = o.native_moe_combine = o.native_gdn = o.native_router = true;
-        o.native_qsa = o.native_qsa_indexer = o.native_rope = o.native_ple_postops = true;
+        o.native_ple_key = fam_ple; o.native_moe_combine = o.native_gdn = o.native_router = true;
+        o.native_qsa = o.native_rope = true; o.native_qsa_indexer = o.native_ple_postops = fam_ple;
         if (o.native_head_gguf.empty()) o.native_head_gguf = o.native_preset;
         if (o.native_dense_gguf.empty()) {
             // every shard of the model (<name>-0000N-of-0000M.gguf beside --native), then the PLE shard: a split
@@ -4424,7 +4432,7 @@ int main(int argc, char** argv) {
                 strata::GgufFile pg(o.ple_gguf);
                 if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
             } catch (const std::exception&) {}
-            if (!ple_only &&
+            if (!ple_only && !o.ple_gguf.empty() &&
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }

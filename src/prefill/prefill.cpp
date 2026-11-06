@@ -2067,7 +2067,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    m.max_blocks = s.idx_block == 0 ? 0 : ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;   // dense family: no blocks
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
@@ -2918,7 +2918,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    const int64_t max_blocks = s.idx_block == 0 ? 0 : ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;   // dense family: no blocks
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, src)),
                                        hcr ? hc_set_bytes(T, f16_io) : (uint64_t) 0}), ok);

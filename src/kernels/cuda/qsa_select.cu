@@ -22,8 +22,9 @@ namespace strata::kernels {
 namespace {
 
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
-static_assert(IDX_DIM == strata::core::kCompiledGeometry.idx_key_dim && IDX_HEADS == strata::core::kCompiledGeometry.idx_q_heads && R == strata::core::kCompiledGeometry.idx_block,
-              "qsa_select is compiled for core/geometry.hpp");
+static_assert(!strata::core::kCompiledGeometry.has_indexer() ||
+              (IDX_DIM == strata::core::kCompiledGeometry.idx_key_dim && IDX_HEADS == strata::core::kCompiledGeometry.idx_q_heads && R == strata::core::kCompiledGeometry.idx_block),
+              "qsa_select is compiled for an indexer geometry; a family without an indexer must not call it");
 constexpr int SCORE_WARPS = 8;
 constexpr int TOPK_T = 256;
 

@@ -85,6 +85,11 @@ struct GdnBuffers {
     // the recurrent state, which outlives the call
     float* state = nullptr;        ///< S * h_v * S
     float* conv_state = nullptr;   ///< conv_channels * (d_conv-1)
+
+    // Fused-projection families (qwen3next) only: the native path computes one projection at its FULL width,
+    // so the fused outputs land here and the role pointers above alias into them.
+    float* qkvz = nullptr;         ///< conv_channels + value_dim: `ssm_in`'s output, qkv|z
+    float* ab_scr = nullptr;       ///< 2 * h_v: `ssm_ba`'s output, beta|alpha
 };
 
 /// Bytes needed for `b`, 16-byte aligned between regions.
