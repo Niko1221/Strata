@@ -156,10 +156,81 @@ def _live_probe(cfg: dict, backend: str) -> tuple[dict, list[dict]]:
              "scope": "host card inventory only; engine execution, CUDA compatibility and topology unverified"}, issues)
 
 
+CONTAINER_MARKERS = ("/.dockerenv", "/run/.containerenv")   # Docker, and Podman/systemd-nspawn
+CGROUP_PATH = "/proc/1/cgroup"
+BUNDLED_RUNTIMES = ("python/bin/python3", "python/bin/python", "python/python.exe")   # bin/strata pick_python
+
+
+def _container_evidence(environ: dict, markers=CONTAINER_MARKERS, cgroup_path=CGROUP_PATH) -> list[str]:
+    """The read-only hints that this process runs in a container: empty when it is a plain host."""
+    evidence = [marker for marker in markers if Path(marker).is_file()]
+    if environ.get("container"):
+        evidence.append("container=" + environ["container"])
+    try:
+        cgroup = Path(cgroup_path).read_text(encoding="utf-8", errors="replace")[:65536]
+    except OSError:
+        cgroup = ""
+    for name in ("docker", "containerd", "kubepods", "lxc", "podman"):
+        if name in cgroup:
+            evidence.append("cgroup/" + name)
+            break
+    strata = sorted(name for name in environ if name.startswith("STRATA_"))
+    if strata:
+        evidence.append("STRATA_* environment (" + ", ".join(strata[:3]) + ")")
+    return evidence
+
+
+def _runtime_report(path: Path, access, run) -> dict:
+    """Both permission tests the launcher's `[ -x ]` gets wrong under an old Docker seccomp profile (#4309)."""
+    allowed = bool(access(str(path), os.X_OK))
+    try:
+        result = run([str(path), "-V"], capture_output=True, text=True, errors="replace", timeout=10, check=False)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        result = None
+    runs = result is not None and result.returncode == 0
+    version = None
+    if runs:
+        lines = (result.stdout or result.stderr or "").strip().splitlines()
+        version = lines[0].strip()[:64] if lines and lines[0].strip().isprintable() else None
+    return {"path": str(path), "access_x_ok": allowed, "runs": runs, "version": version,
+            "permission_mismatch": runs and not allowed}
+
+
+def container_report(root=None, *, environ: dict | None = None, markers=CONTAINER_MARKERS,
+                     cgroup_path: str = CGROUP_PATH, access=os.access, run=subprocess.run) -> dict:
+    """Read-only container and bundled-runtime account; each present runtime is started once with `-V` (no download, no write, no engine)."""
+    root = Path(__file__).resolve().parents[1] if root is None else Path(root)
+    environ = dict(os.environ) if environ is None else environ
+    evidence = _container_evidence(environ, markers, cgroup_path)
+    runtimes = []
+    for relative in BUNDLED_RUNTIMES:
+        path = root / relative
+        try:
+            if path.is_file():
+                runtimes.append(_runtime_report(path, access, run))
+        except OSError:
+            continue
+    return {"detected": bool(evidence), "evidence": evidence, "runtimes": runtimes}
+
+
+def container_lines(report: dict) -> list[str]:
+    """The human section: the container answer, plus one sentence for each runtime whose two permission tests disagree.
+    Nothing else, so a normal system gets no warning."""
+    lines = ["Container: yes (" + ", ".join(report["evidence"]) + ")" if report["detected"] else "Container: no"]
+    for runtime in report["runtimes"]:
+        if not runtime["permission_mismatch"]:
+            continue
+        version = f" ({runtime['version']})" if runtime["version"] else ""
+        cause = ("the default seccomp profile of a Docker daemon older than 20.10 denies access(X_OK); start the container with "
+                 "--security-opt seccomp=unconfined" if report["detected"] else "the permission test is what fails, not the runtime")
+        lines.append(f"  {runtime['path']} is present and runs{version}, but os.access(X_OK) says no: {cause}")
+    return lines
+
+
 def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bool = False) -> dict:
     report = {"schema_version": 1, "profile": profile_id, "source_config": str(config_path) if config_path else None,
               "components": [], "issues": [], "backend": None, "devices_selected": None,
-              "live_gpu_probe": None}
+              "live_gpu_probe": None, "container": container_report()}
     components: list[dict] = report["components"]
     if config_path is None:
         report["issues"].append({"code": "PROFILE_NOT_SELECTED", "severity": "info",

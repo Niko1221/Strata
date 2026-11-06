@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 #: Backend families, as the engine package manifest records them. Kept here so the argument parsers
 #: stay declarative without importing the tuning module on every CLI start.
 BACKENDS = ("metal", "cuda", "hip", "sycl", "cpu")
-from strata_control.doctor import inspect as inspect_components
+from strata_control.doctor import container_lines, inspect as inspect_components
 from strata_control.profiles import ProfileError
 from strata_cli.client import ClientError, Endpoint
 from strata_cli import monitor_commands, tune_commands
@@ -1045,6 +1045,9 @@ def _doctor(a: argparse.Namespace) -> int:
             for card in live_probe["cards"]:
                 print(f"  GPU {card['index']}: {card['name']} | {str(card['memory_mib']) + ' MiB' if card['memory_mib'] is not None else 'unified memory'} | "
                       f"driver {card['driver_version']} | {card['uuid']}")
+        if getattr(a, "command", None) == "doctor":
+            for line in container_lines(report["container"]):
+                print(line)
     return 0 if report["ok"] else 5
 
 
