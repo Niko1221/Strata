@@ -15,10 +15,12 @@
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
+#include "strata/core/kv_pool.hpp"
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -235,12 +237,198 @@ bool run(int fmt) {
     }
     return bad == 0;
 }
+
+// Shared and private lanes execute the same appends, resolves and attention calls. The shared side
+// exercises the production KvPool's pinned allocation, physical copies and fixed device-table uploads.
+bool shared_branches(int fmt) {
+    using strata::core::KvChunkMap;
+    using strata::core::KvPool;
+    constexpr int64_t C=4096, cells=2*C+5, logical=3, blocks=logical*1024, slots=1024, width=8;
+    auto s=k::qsa_real_shapes();
+    strata::core::ModelGeometry g;
+    g.n_head=s.n_head; g.n_head_kv=s.n_head_kv; g.head_dim=s.head_dim;
+    std::array<strata::core::SessionState,4> sessions;
+    std::array<strata::core::QsaState,4> states;
+    for (size_t n=0;n<4;++n) {
+        auto& st=states[n];
+        st.kv_mode=1; st.kv_int8=fmt==k::kKvInt8; st.kv_q4=fmt==k::kKvQ4; st.kv_hybrid=fmt==k::kKvHybrid;
+        st.max_cells=logical*C; st.n_pages=blocks; st.n_slots=slots;
+        sessions[n].max_cells=logical*C; sessions[n].qsa_alloc=1; sessions[n].qsa_states=&st;
+    }
+    KvPool shared;
+    shared.set_share_prefix(true);
+    std::string error;
+    if (!shared.init(g,{{&sessions[0],-1}},14*C,error)) {
+        std::fprintf(stderr,"shared branch pool init: %s\n",error.c_str()); return false;
+    }
+    std::array<const int32_t*,4> stable{},stable_device{};
+    for (size_t n=0;n<4;++n) {
+        if (!shared.attach(sessions[n],error)) {
+            std::fprintf(stderr,"shared branch pool attach: %s\n",error.c_str()); return false;
+        }
+        stable[n]=states[n].host.chunk_host; stable_device[n]=states[n].host.chunk;
+    }
+    KvChunkMap private_map;
+    private_map.init(12);
+    std::array<KvChunkMap::Lane,4> plain{};
+    std::array<int32_t*,4> private_table{};
+    std::vector<void*> device;
+    auto alloc=[&](size_t bytes) {
+        auto* p=dalloc<uint8_t>(bytes); device.push_back(p); return p;
+    };
+    Pools shared_host,private_host,shared_slots,private_slots;
+    shared_host.p=states[0].host; // borrowed process-lifetime pinned storage; never free it as test memory
+    private_host.alloc(13*1024,s,fmt,true);
+    shared_slots.alloc(slots,s,fmt,false); private_slots.alloc(slots,s,fmt,false);
+    auto arrays=[&](const Pools& p) {
+        const size_t rows=C*s.n_head_kv, q4=rows*k::kv_q4_bytes_per_head((int)s.head_dim);
+        return std::array<std::pair<void*,size_t>,8>{{
+            {p.p.k_pool,rows*s.head_dim*2},{p.p.v_pool,rows*s.head_dim*2},
+            {p.p.k_q,rows*s.head_dim},{p.p.v_q,rows*s.head_dim},
+            {p.p.k_scale,rows*(s.head_dim/64)*2},{p.p.v_scale,rows*(s.head_dim/64)*2},
+            {p.p.k_q4,q4},{p.p.v_q4,q4}}};
+    };
+    auto copy=[&](const Pools& from,int32_t src,const Pools& to,int32_t dst) {
+        auto a=arrays(from),b=arrays(to);
+        for (size_t part=0;part<a.size();++part) if (a[part].first)
+            ck(cudaMemcpy(static_cast<uint8_t*>(b[part].first)+size_t(dst)*b[part].second,
+                          static_cast<uint8_t*>(a[part].first)+size_t(src)*a[part].second,
+                          a[part].second,cudaMemcpyDefault),"prefix physical copy");
+    };
+    auto upload=[&](const KvChunkMap& map,KvChunkMap::Lane lane,int32_t* dst) {
+        ck(cudaMemcpy(dst,map.table(lane),logical*sizeof(int32_t),cudaMemcpyHostToDevice),"prefix table upload");
+    };
+    for (size_t n=0;n<4;++n) {
+        plain[n]=private_map.add_lane(logical);
+        private_table[n]=reinterpret_cast<int32_t*>(alloc(logical*sizeof(int32_t)));
+    }
+    bool ok=shared.prepare_write(sessions[0],0,cells);
+    for (auto lane:plain) ok=private_map.reserve(lane,3) && ok;
+    auto make_map=[&]() {
+        k::KvStreamMap m;
+        m.page_table=reinterpret_cast<int32_t*>(alloc(blocks*4));
+        m.slot_block=reinterpret_cast<int32_t*>(alloc(slots*4));
+        m.slot_stamp=reinterpret_cast<int32_t*>(alloc(slots*4));
+        m.slot_ref=reinterpret_cast<int32_t*>(alloc(slots*4));
+        m.miss_block=reinterpret_cast<int32_t*>(alloc(slots*4));
+        m.miss_slot=reinterpret_cast<int32_t*>(alloc(slots*4));
+        m.ctl=reinterpret_cast<int32_t*>(alloc(k::kKvCtlInts*4));
+        m.n_blocks=blocks; m.n_slots=slots;
+        k::kv_stream_reset(m,nullptr);
+        return m;
+    };
+    auto sm=make_map(),pm=make_map();
+    const size_t kv=s.n_head_kv*s.head_dim, query=s.n_head*s.head_dim;
+    auto* kc=reinterpret_cast<float*>(alloc(kv*4));
+    auto* vc=reinterpret_cast<float*>(alloc(kv*4));
+    auto* step=reinterpret_cast<int32_t*>(alloc(k::kStepCount*4));
+    auto* ids=reinterpret_cast<int32_t*>(alloc(width*4));
+    auto* q=reinterpret_cast<float*>(alloc(query*4));
+    auto* scratch=reinterpret_cast<float*>(alloc(k::qsa_decode_attn_scratch_floats(width,s)*4));
+    auto* so=reinterpret_cast<float*>(alloc(query*4));
+    auto* po=reinterpret_cast<float*>(alloc(query*4));
+    std::vector<float> hk(kv),hv(kv),hq(query,0.125f),a(query),b(query);
+    ck(cudaMemcpy(q,hq.data(),query*4,cudaMemcpyHostToDevice),"branch queries");
+    auto host=[&](const Pools& p,int32_t* table) {
+        auto h=p.p; h.chunk=table; h.chunk_shift=10; return h;
+    };
+    auto append_pair=[&](size_t lane,int64_t pos,int salt) {
+        for (size_t j=0;j<kv;++j) {
+            hk[j]=float(int((j*7+pos*3+salt)%127)-63)/32.f;
+            hv[j]=float(int((j*11+pos+salt*3)%101)-50)/16.f;
+        }
+        const int32_t st[4]={int32_t(pos),int32_t(pos+1),int32_t((pos+1)/4),0};
+        ck(cudaMemcpy(kc,hk.data(),kv*4,cudaMemcpyHostToDevice),"branch K");
+        ck(cudaMemcpy(vc,hv.data(),kv*4,cudaMemcpyHostToDevice),"branch V");
+        ck(cudaMemcpy(step,st,sizeof(st),cudaMemcpyHostToDevice),"branch append step");
+        const auto& sh=states[lane].host;
+        auto ph=host(private_host,private_table[lane]);
+        append(shared_slots,sm.page_table,step,kc,vc,s,fmt,&sh);
+        append(private_slots,pm.page_table,step,kc,vc,s,fmt,&ph);
+    };
+    upload(private_map,plain[0],private_table[0]);
+    for (int64_t pos=0;pos<cells;++pos) append_pair(0,pos,0);
+    ck(cudaDeviceSynchronize(),"branch base");
+    auto prefix=shared.retain(states[0],cells);
+    ok=bool(prefix) && ok;
+    if (!prefix) return false;
+    for (size_t n=1;n<4;++n) {
+        ok=shared.share(sessions[0],sessions[n],cells) && ok;
+        for (int c=0;c<3;++c) copy(private_host,private_map.table(plain[0])[c],private_host,private_map.table(plain[n])[c]);
+        ok=states[n].host.chunk_host[0]==states[0].host.chunk_host[0] &&
+           states[n].host.chunk_host[1]==states[0].host.chunk_host[1] &&
+           states[n].host.chunk_host[2]!=states[0].host.chunk_host[2] && ok;
+        upload(private_map,plain[n],private_table[n]);
+    }
+    prefix.reset();
+    auto compare=[&](size_t n) {
+        auto sh=arrays(shared_host),ph=arrays(private_host);
+        for (size_t part=0;part<sh.size();++part) if (sh[part].first) {
+            const size_t stride=sh[part].second/C;
+            for (int64_t c=0;c<3;++c) {
+                const size_t bytes=size_t(std::min<int64_t>(C,cells-c*C))*stride;
+                std::vector<uint8_t> x(bytes),y(bytes);
+                ck(cudaMemcpy(x.data(),static_cast<uint8_t*>(sh[part].first)+
+                              size_t(states[n].host.chunk_host[c])*sh[part].second,bytes,cudaMemcpyDefault),"shared bytes");
+                ck(cudaMemcpy(y.data(),static_cast<uint8_t*>(ph[part].first)+
+                              size_t(private_map.table(plain[n])[c])*ph[part].second,bytes,cudaMemcpyDefault),"private bytes");
+                ok=(x==y) && ok;
+            }
+        }
+        // Force both readers through host resolve, not stale residency left by the preceding branch.
+        k::kv_stream_reset(sm,nullptr); k::kv_stream_reset(pm,nullptr);
+        const int32_t selected[width]={0,1,int32_t(C-2),int32_t(C-1),int32_t(C),int32_t(C+1),int32_t(2*C),int32_t(2*C+4)};
+        const int32_t st[4]={int32_t(cells-1),int32_t(cells),int32_t(cells/4),int32_t(width)};
+        ck(cudaMemcpy(ids,selected,sizeof(selected),cudaMemcpyHostToDevice),"branch selection");
+        ck(cudaMemcpy(step,st,sizeof(st),cudaMemcpyHostToDevice),"branch attend step");
+        const auto& hs=states[n].host;
+        auto hp=host(private_host,private_table[n]);
+        k::kv_stream_resolve(sm,shared_slots.attn(sm.page_table),hs,fmt,ids,step,1,width,s,nullptr);
+        k::kv_stream_resolve(pm,private_slots.attn(pm.page_table),hp,fmt,ids,step,1,width,s,nullptr);
+        k::qsa_decode_attn_batch(q,shared_slots.attn(sm.page_table),ids,step,width,s,scratch,so,1,nullptr);
+        k::qsa_decode_attn_batch(q,private_slots.attn(pm.page_table),ids,step,width,s,scratch,po,1,nullptr);
+        ck(cudaDeviceSynchronize(),"branch resolve and attend");
+        ck(cudaMemcpy(a.data(),so,query*4,cudaMemcpyDeviceToHost),"shared attention");
+        ck(cudaMemcpy(b.data(),po,query*4,cudaMemcpyDeviceToHost),"private attention");
+        ok=std::memcmp(a.data(),b.data(),query*4)==0 && !k::kv_stream_counters(sm).overflow &&
+           !k::kv_stream_counters(pm).overflow && ok;
+    };
+    for (size_t n=0;n<4;++n) compare(n);
+    for (size_t n=0;n<4;++n) {
+        const int32_t tail=states[n].host.chunk_host[2];
+        ok=shared.prepare_write(sessions[n],C-2,C+7) && ok;
+        ok=states[n].host.chunk_host[2]==tail && ok;
+        // Same rewind/speculative-window execution schedule; distinct branch candidates straddle 4096.
+        k::kv_stream_reset(sm,nullptr); k::kv_stream_reset(pm,nullptr);
+        for (int64_t pos=C-2;pos<C+7;++pos) append_pair(n,pos,int(n)+1);
+        ck(cudaDeviceSynchronize(),"branch candidates");
+        // Include untouched siblings after every branch write: delayed shared corruption cannot hide.
+        for (size_t sibling=0;sibling<4;++sibling) compare(sibling);
+    }
+    for (size_t n=0;n<4;++n) {
+        ok=stable[n]==states[n].host.chunk_host && stable_device[n]==states[n].host.chunk && ok;
+        shared.detach(sessions[n]); private_map.shrink(plain[n],0);
+    }
+    ok=shared.free_cells()==shared.total_cells() && private_map.free_chunks()==private_map.n_chunks() && ok;
+    for (auto* p:device) ck(cudaFree(p),"branch free");
+    for (const Pools* p:{&private_host,&shared_slots,&private_slots})
+        for (const auto& [ptr,bytes]:arrays(*p)) if (ptr) {
+            (void)bytes;
+            cudaPointerAttributes attr{}; ck(cudaPointerGetAttributes(&attr,ptr),"branch pointer");
+            if (attr.hostPointer) ck(cudaFreeHost(attr.hostPointer),"branch host free");
+            else ck(cudaFree(ptr),"branch pool free");
+        }
+    std::printf("  format %d four shared branches: %s\n",fmt,ok ? "bitwise identical" : "DIFFERS");
+    return ok;
+}
 }  // namespace
 
 int main() {
     std::printf("kv_stream_parity: streamed vs resident KV, bitwise\n");
     const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4), d = run(k::kKvHybrid);
     if (!a || !b || !c || !d) ++g_fail;
+    for (int fmt:{k::kKvF16,k::kKvInt8,k::kKvQ4,k::kKvHybrid})
+        if (!shared_branches(fmt)) ++g_fail;
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

@@ -1,5 +1,6 @@
 // src/core/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/core/session.hpp"
+#include "strata/core/kv_pool.hpp"
 #include "strata/core/pin_budget.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
@@ -48,7 +49,8 @@ static uint64_t ple_hist_bytes() {
     return (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float);
 }
 
-uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
+uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi,
+                       bool borrow_rope) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     // QSA layers are `l % interval == interval-1`, so exactly `bound / interval` of them live below `bound`
@@ -59,9 +61,10 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     uint64_t n = 0;
     n += gdn_buffers_bytes(g);
     n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
-    // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K).
+    // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K). A borrowing
+    // session carries none.
     if (g.n_qsa_layers() > 0)
-        n += qsa_state_bytes(g, max_cells, true) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
+        n += qsa_state_bytes(g, max_cells, !borrow_rope) + (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false);
     n += qsa_buffers_bytes(g, max_cells);
     n += moe_buffers_bytes(g, k);
     n += block_buffers_bytes(g);
@@ -70,7 +73,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 }
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
-                      int64_t layer_lo, int64_t layer_hi) {
+                      int64_t layer_lo, int64_t layer_hi, const QsaState* share_rope) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     uint8_t* p = (uint8_t*) base;
@@ -100,7 +103,8 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // same way, which is a coupling with nothing to gain.  Only the range's ordinals are initialized; the
     // rest stay value-initialized nulls.  The FIRST ALLOCATED one (the session's primary, ordinal qsa_ord0)
     // owns the RoPE table that the others - and the prefill staging identity, and the MTP drafter - borrow.
-    const uint64_t first = qsa_state_bytes(g, max_cells, true), rest = qsa_state_bytes(g, max_cells, false);
+    // With `share_rope` the primary borrows too, from the other session.
+    const uint64_t first = qsa_state_bytes(g, max_cells, share_rope == nullptr), rest = qsa_state_bytes(g, max_cells, false);
     s.qsa_state_arena = take(g.n_qsa_layers() > 0 ? first + (uint64_t) (s.qsa_alloc - 1) * rest : 0);
     s.qsa_states = new QsaState[(size_t) g.n_qsa_layers()]();
     s.qsa_buf_arena = take(qsa_buffers_bytes(g, max_cells));
@@ -110,7 +114,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // attention read null host pointers at the first request ("illegal memory access"), so the session fails here
     for (int64_t j = 0; j < s.qsa_alloc; ++j)
         if (qsa_state_init(g, max_cells, qp + (j == 0 ? 0 : first + (uint64_t) (j - 1) * rest),
-                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? nullptr : &s.qsa_states[s.qsa_ord0]) == 0)
+                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? share_rope : &s.qsa_states[s.qsa_ord0]) == 0)
             return 0;
     qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
 
@@ -127,9 +131,9 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 
 void session_release(SessionState& s) {
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
-        if (s.qsa_states[j].owns_rope) {
-            strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
-            s.qsa_states[j].owns_rope = false;
+        if (s.qsa_states[s.qsa_ord0 + j].owns_rope) {
+            strata::kernels::rope_table_release(s.qsa_states[s.qsa_ord0 + j].cos_tab);
+            s.qsa_states[s.qsa_ord0 + j].owns_rope = false;
         }
 }
 
@@ -186,15 +190,28 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
     s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
 }
 
+static bool prepare_token_kv(SessionState& s, int64_t pos, std::string& err) {
+    for (int64_t j = 0; j < s.qsa_alloc; ++j) {
+        const QsaState& q = s.qsa_states[s.qsa_ord0 + j];
+        if (!q.prefix_pool) continue;
+        if (q.prefix_pool->prepare_write(s, pos, pos + 1)) return true;
+        err = "session token: KV prefix pool full";
+        return false;
+    }
+    return true;
+}
+
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
-void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
+bool stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, std::string& err) {
+    if (!prepare_token_kv(s, pos, err)) return false;
     const strata::kernels::QsaShapes sh = qsa_shapes(g);
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);
         for (int64_t h = 0; h < g.n_head; ++h) q.host_pos[h] = (int32_t) (pos_base + pos);
     }
+    return true;
 }
 
 bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionState& s, const float* parts,
@@ -288,7 +305,7 @@ bool session_replay(const ModelGeometry& g, int64_t pos, int32_t pos_base, Sessi
                     void* stream, std::string& err) {
     if (!gr.captured || gr.n != g.n_layers) { err = "session_replay: not captured"; return false; }
     cudaStream_t cs = (cudaStream_t) stream;
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
     for (int64_t l = 0; l < g.n_layers; ++l) {
         const cudaError_t e = cudaGraphLaunch(gr.execs[l], cs);
         if (e != cudaSuccess) {
@@ -306,7 +323,7 @@ bool session_replay_full(const ModelGeometry& g, int64_t pos, int32_t pos_base, 
         return false;
     }
     cudaStream_t cs = (cudaStream_t) stream;
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
     for (int64_t l = 0; l < g.n_layers; ++l) {
         // `pre[l]` then `post[l]`, in the order `session_loop` uses.  The two are ordered on one stream, and
         // `post[l]` reads what `pre[l]` wrote, so they cannot be reordered or run concurrently.
@@ -332,7 +349,7 @@ bool session_replay_stages_per_layer(const ModelGeometry& g, int64_t pos, int32_
         return false;
     }
     cudaStream_t cs = (cudaStream_t) stream;
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
 
     // Four events PER LAYER rather than four reused ones: reusing them would need a synchronisation after
     // every layer to read them before the next launch overwrote them, and a per-layer sync would report the
@@ -389,7 +406,7 @@ bool session_replay_stage_sweep(const ModelGeometry& g, int64_t pos, int32_t pos
     }
     if (k < 1 || k > 5) { err = "session_replay_stage_sweep: k must be 1..5"; return false; }
     cudaStream_t cs = (cudaStream_t) stream;
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
 
     cudaEvent_t a, b;
     if (cudaEventCreate(&a) != cudaSuccess || cudaEventCreate(&b) != cudaSuccess) {
@@ -429,7 +446,7 @@ bool session_replay_stage_prefixes(const ModelGeometry& g, int64_t pos, int32_t 
         return false;
     }
     cudaStream_t cs = (cudaStream_t) stream;
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
     const int64_t n = g.n_layers;
     const size_t r_floats = (size_t) g.hc * (size_t) g.n_embd;
 
@@ -608,7 +625,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
     // value, and that is exactly why the buffers are pinned and fixed."  `session_replay` calls `stage_token`;
     // `session_loop` did not.  **A single-token test cannot see a position that never advances** - which is why
     // the whole suite passed while a 20-token prompt rotated every token at position 0.
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
 
     // ---- **THE TOKEN PATH ALLOCATES NOTHING (P2.T10, review finding H3).**
     //
@@ -802,6 +819,7 @@ bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t po
                    SessionState& s, const float* parts, void* stream, bool sync_every_layer,
                    std::string& err) {
     cudaStream_t cs = (cudaStream_t) stream;
+    if (!prepare_token_kv(s, pos, err)) return false; // direct path does not stage_token
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
 
@@ -926,7 +944,7 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
     if (y_miss_host != tg.y_src) { err = "session_run_token: the staging buffer is not the captured one"; return false; }
     cudaStream_t cs = (cudaStream_t) stream;
     ++tg.calls;
-    stage_token(g, pos, pos_base, s);
+    if (!stage_token(g, pos, pos_base, s, err)) return false;
     doorbell_reset(*s.db);
     const cudaError_t le = cudaGraphLaunch(tg.exec, cs);
     if (le != cudaSuccess) { err = std::string("session_run_token: launch: ") + cudaGetErrorString(le); return false; }

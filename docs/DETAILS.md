@@ -235,6 +235,8 @@ reported and, for files in your own folder, never deleted. Without `uvx`, `pip i
 | `--kv k8v4` | Keys at 8 bits, values as rotated 4-bit: 23% less KV memory than 8-bit, so more experts fit in VRAM. More precise than `q4_0` on long documents. Prompts are 2-5% slower. |
 | `--kv-streaming on\|off\|auto` | Keeps the context's KV cache in RAM and only the part attention reads in VRAM (`--kv-resident 32768`), so more experts fit on the GPU. Costs about 13.7 KB of RAM per context token (1.7 GB at 128K). Setup turns it on from 64K when the RAM has room; `on` overrides the RAM test with a note. Never under WSL. |
 | `--kv-grow` (or `STRATA_KV_GROW=1`; `--no-kv-grow` turns it off) | The KV takes VRAM only for the cells the requests reach; the expert cache holds the rest and gives slots back as the context grows. Needs one GPU, an expert profile, the whole KV in VRAM and every expert in RAM. Otherwise the engine says so and stays off. On HIP it uses virtual memory management (`STRATA_HIP_VMM=0` turns that off). It pays on cards of about 24 GB or less with contexts of 128K and more. |
+| `--kv-pool-tokens N` | CUDA/HIP: one pinned host K/V budget for all streaming sessions, allocated in 4,096-cell chunks. Needs `--kv-resident` and enough cells for one full context. [Host storage and capacity handling](BATCHING.md#sharing-host-kv-storage). |
+| `--kv-share-prefix` | Share completed host K/V prefix chunks between compatible sessions and RAM snapshots. Writes copy shared chunks first; partial tails and mutable state stay private. Needs `--kv-pool-tokens`. Default off. |
 
 `STRATA_KV_HOST_REGISTER=1` forces the KV host copy to be pinned with `cudaHostRegister` (the order WSL2 uses
 automatically); `0` forces `cudaHostAlloc` first.

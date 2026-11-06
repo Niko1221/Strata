@@ -156,6 +156,31 @@ card, 4 from 32 GB or on a split such as 2 x 16 GB; IQ3_S needs 32 GB or a split
 card alone) it stays at one at a time and setup says: "parallel N reduces waiting for several users but costs
 about 10-25% speed per request on this card". `--parallel N` is honoured as asked either way.
 
+## Sharing host K/V storage
+
+On CUDA and HIP, add these engine arguments to use one pinned host pool instead of a full host K/V
+allocation for every session:
+
+```text
+--kv-resident 32768 --kv-pool-tokens 524288
+```
+
+The pool budget counts cells across all sessions. It must hold at least one `--max-context`.
+The pool is pinned at startup; sessions take chunks of 4,096 cells as they grow. A layer split uses the
+same chunk ownership across its stages.
+
+Add `--kv-share-prefix` to share completed prompt-prefix chunks between compatible sessions and RAM
+conversation snapshots. The request still has to match the tokens, images and saved execution state.
+Each session keeps its partial tail; writing a shared chunk makes a private copy first. VRAM windows,
+indexer, GDN, PLE and the MTP or DFlash2 drafter state stay private.
+
+When the pool fills, idle cached conversations give way first. If the active requests hold the remaining
+space, a new request receives HTTP 503 with `Retry-After`; a running request that cannot grow ends with
+`finish_reason: "length"` and `truncated: true`. The last `POOL` line is available as `live.kv_pool`
+in `/metrics`.
+
+Both options are off by default.
+
 ## How the server uses the slots
 
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.

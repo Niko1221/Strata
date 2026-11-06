@@ -3,12 +3,14 @@
 #pragma once
 
 #include "strata/core/conversation_buffer.hpp"
+#include "strata/core/kv_chunks.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -79,6 +81,7 @@ struct ConversationKv {
     int format = 0;
     int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
     ConversationBuffer k, v, k_scale, v_scale, pooled;
+    std::shared_ptr<const KvChunkMap::Prefix> prefix; // runtime only; buffers alias its completed chunks
     // STRATA_PARK_VRAM_MIB: the tag this layer's parts were recorded under in the park's VRAM slot (0: none).  Set by
     // conversation_kv_save; a restore that finds the slot copies from it instead of from the buffers above.
     uint64_t dev_tag = 0;
@@ -88,7 +91,8 @@ struct ConversationKv {
     // any buffer.
     std::shared_ptr<void> pending;
     size_t bytes() const {
-        return k.bytes() + v.bytes() + k_scale.bytes() + v_scale.bytes() + pooled.bytes();
+        return k.bytes() + v.bytes() + k_scale.bytes() + v_scale.bytes() + pooled.bytes() +
+               (prefix ? prefix->bytes() : 0);
     }
 };
 
@@ -101,9 +105,10 @@ struct ConversationKvReuse {
     // The conversation the image was captured from (the first stage's only): a park reuses it only for the prefix it
     // shares with the conversation then in the main session (a batch slot may have replaced that session's K/V since).
     std::vector<int32_t> ids;
+    std::vector<ConversationImageKey> imgs;
     size_t bytes() const {
         size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse) +
-                   ids.capacity() * sizeof(int32_t);
+                   ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey);
         for (const auto& layer : kv) n += layer.bytes();
         for (const auto& s : stages) n += s.bytes();
         return n;
@@ -188,6 +193,25 @@ inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, 
     return true;
 }
 
+/// --kv-pool-tokens: a conversation changes lane (the main session <-> a batch slot) by moving its K/V chunks, so its
+/// running-state checkpoints must change lane with them - a checkpoint is only usable beside the K/V cells below it.
+/// Moves the checkpoints of `from` whose tokens are a prefix of `ids` onto the back of `to`, in their order; the others
+/// stay in `from` (the caller drops them).  Text only: a checkpoint with a picture is not carried (a slot never caches
+/// a conversation with pictures).  Returns how many moved.
+inline size_t conversation_checkpoints_carry(std::vector<ConversationCheckpoint>& from, const std::vector<int32_t>& ids,
+                                             std::vector<ConversationCheckpoint>& to) {
+    size_t moved = 0;
+    std::vector<ConversationCheckpoint> rest;
+    for (auto& c : from) {
+        const bool prefix = !c.ids.empty() && c.ids.size() <= ids.size() && c.imgs.empty() &&
+                            std::equal(c.ids.begin(), c.ids.end(), ids.begin());
+        if (prefix) { to.push_back(std::move(c)); ++moved; }
+        else rest.push_back(std::move(c));
+    }
+    from = std::move(rest);
+    return moved;
+}
+
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
@@ -204,6 +228,11 @@ struct SavedConversation {
     std::shared_ptr<void> pending;
     // STRATA_CKPT_ASYNC: the same for the background copy that fills `live.gdn` (the park's running state)
     std::shared_ptr<void> live_pending;
+    const KvChunkMap::Prefix* pool_prefix() const {
+        for (const auto& layer : kv) if (layer.prefix) return layer.prefix.get();
+        for (const auto& part : stage_images) if (const auto* p = part.pool_prefix()) return p;
+        return nullptr;
+    }
 
     /// Holds a pinned shared prefix (see ConversationCheckpoint::pinned): the parked-conversation budget keeps it.
     bool pinned() const {
@@ -254,6 +283,30 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+/// The leading cells two conversations provably share: equal token ids, and equal image keys wherever either
+/// carries one below that length (an image changes the K/V of every cell from its start on). The K/V bytes of
+/// the cells below the result are the same in both conversations of one model - what neither rewrote stays
+/// interchangeable storage. Both image lists are in `start` order, as the engine keeps them.
+template<class Token = int32_t>
+inline int64_t conversation_shared_prefix(const std::vector<int32_t>& a, const std::vector<ConversationImageKey>& a_imgs,
+                                          const std::vector<Token>& b, const std::vector<ConversationImageKey>& b_imgs) {
+    int64_t n = (int64_t) std::min(a.size(), b.size());
+    int64_t i = 0;
+    while (i < n && a[(size_t) i] == b[(size_t) i]) ++i;
+    n = i;
+    // the images below the token bound must agree; the first disagreement cuts the prefix at its start
+    size_t ja = 0, jb = 0;
+    while (ja < a_imgs.size() || jb < b_imgs.size()) {
+        const bool below_a = ja < a_imgs.size() && a_imgs[ja].start < n;
+        const bool below_b = jb < b_imgs.size() && b_imgs[jb].start < n;
+        if (!below_a && !below_b) break;
+        if (below_a && below_b && a_imgs[ja] == b_imgs[jb]) { ++ja; ++jb; continue; }
+        if (below_a) n = std::min(n, a_imgs[ja].start);
+        if (below_b) n = std::min(n, b_imgs[jb].start);
+    }
+    return n;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -284,29 +337,29 @@ public:
     // Retain only the restored K/V buffers, not duplicate running checkpoints.
     // This optimization never evicts a parked conversation to make itself fit.
     // `stage_kv`: with a layer split, the later stages' restored K/V (one per stage), retained with the first's.
-    // `ids`: the conversation the K/V belongs to (take_reuse_for refuses it for any other; none: never reused).
+    // `ids`/`imgs`: the conversation the K/V belongs to (none: never reused by take_reuse_for).
     void retain(std::vector<ConversationKv>&& kv, int64_t tokens,
-                std::vector<std::vector<ConversationKv>>&& stage_kv = {}, std::vector<int32_t> ids = {}) {
+                std::vector<std::vector<ConversationKv>>&& stage_kv = {},
+                std::vector<int32_t> ids = {}, std::vector<ConversationImageKey> imgs = {}) {
         reuse_ = {};
-        ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}, std::move(ids)};
-        for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}, {}});
+        ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}, std::move(ids), std::move(imgs)};
+        for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}, {}, {}});
         if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
         for (auto& s : reuse_.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
-        if (reuse_.unchanged_tokens <= 0) reuse_ = {};
+        if (reuse_.unchanged_tokens <= 0) drop_reuse();
     }
     ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
     // The retained K/V for parking `live`: limited to the prefix `live` shares with the conversation it was captured
     // from, and nothing when they share none.  Without this a park after a batch slot gave its conversation back to the
     // main session wrote the RESTORED conversation's K/V into the new one's image (#1503, a cross-conversation leak).
     template<class Token>
-    ConversationKvReuse take_reuse_for(const std::vector<Token>& live) {
+    ConversationKvReuse take_reuse_for(const std::vector<Token>& live,
+                                       const std::vector<ConversationImageKey>& imgs = {}) {
         ConversationKvReuse r = std::exchange(reuse_, {});
-        const int64_t n = std::min<int64_t>((int64_t) r.ids.size(), (int64_t) live.size());
-        int64_t same = 0;
-        while (same < n && (int64_t) r.ids[(size_t) same] == (int64_t) live[(size_t) same]) ++same;
+        const int64_t same = conversation_shared_prefix(r.ids, r.imgs, live, imgs);
         r.unchanged_tokens = std::min(r.unchanged_tokens, same);
         for (auto& st : r.stages) st.unchanged_tokens = std::min(st.unchanged_tokens, same);
         if (r.unchanged_tokens <= 0) return {};
@@ -408,7 +461,7 @@ public:
                 if (stays(i)) { ++kept; kept_bytes += entries_[i].bytes(); }
             if (kept >= slots_ || kept_bytes > budget_ - held - incoming) { guard_blocked_ = true; return false; }
         }
-        if (bytes() > budget_ - held - incoming) reuse_ = {};
+        if (bytes() > budget_ - held - incoming) drop_reuse();
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
@@ -431,6 +484,34 @@ public:
         return true;
     }
 
+    // Plan the first `count` evictable entries without dropping any owner. A Prefix is released only when these
+    // entries hold every strong reference (including the aliases inside their buffers and later stage images).
+    bool eviction_prefixes(size_t count, std::vector<const KvChunkMap::Prefix*>& released) const {
+        released.clear();
+        std::map<const KvChunkMap::Prefix*, std::pair<size_t, long>> refs;
+        auto note = [&](const std::shared_ptr<const KvChunkMap::Prefix>& p) {
+            if (!p) return;
+            auto& r = refs[p.get()];
+            ++r.first; r.second = p.use_count();
+        };
+        auto image_refs = [&](const auto& self, const SavedConversation& image) -> void {
+            for (const auto& k : image.kv) {
+                note(k.prefix);
+                for (const ConversationBuffer* b : {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled})
+                    note(b->prefix_owner());
+            }
+            for (const auto& part : image.stage_images) self(self, part);
+        };
+        for (size_t i = 0; i < entries_.size() && count; ++i) {
+            if (!can_evict(i)) continue;
+            image_refs(image_refs, entries_[i]);
+            --count;
+        }
+        if (count) return false;
+        for (const auto& [p, r] : refs) if (r.first == (size_t) r.second) released.push_back(p);
+        return true;
+    }
+
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
     // may carry the poison.  Returns how many were parked.
     size_t clear() {
@@ -438,7 +519,7 @@ public:
         entries_.clear();
         serials_.clear();
         bytes_ = 0;
-        reuse_ = {};
+        drop_reuse();
         return n;
     }
 
@@ -543,7 +624,7 @@ private:
     bool drop_oldest() {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (!can_evict(i)) continue;
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -551,10 +632,13 @@ private:
         }
         return false;
     }
+    bool can_evict(size_t i) const { return !entries_[i].pinned() && (guarded_ == 0 || serials_[i] != guarded_); }
     void erase(size_t index) {
         entries_.erase(entries_.begin() + (std::ptrdiff_t) index);
         serials_.erase(serials_.begin() + (std::ptrdiff_t) index);
     }
+    void drop_reuse() { reuse_ = {}; }
+
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0, borrowed_ = 0;
     int64_t min_tokens_ = 0;   // --conversation-cache-min-tokens: 0 parks every conversation, whatever its size
     std::deque<SavedConversation> entries_; // least recently active first

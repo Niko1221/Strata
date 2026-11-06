@@ -1,8 +1,10 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/kv_pool.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -13,6 +15,7 @@
 #include <cstdlib>
 #include <limits>
 #include <utility>
+#include <memory>
 #include <vector>
 
 using namespace strata::core;
@@ -62,10 +65,11 @@ struct Fixture {
             cuda_check(cudaMalloc(&raw, n)); device.push_back(raw); p = static_cast<T*>(raw);
         }
     }
-    Fixture(int fmt, int mode) {
+    Fixture(int fmt, int mode, int64_t cells = 96) {
+        if (cells != 96) { g.n_head_kv=1; g.head_dim=64; g.idx_key_dim=8; }
         auto& st = state;
         st.kv_mode = mode; st.kv_int8 = fmt==kKvInt8; st.kv_q4 = fmt==kKvQ4; st.kv_hybrid = fmt==3;
-        st.n_pages = 24; st.n_slots = mode ? 4 : st.n_pages;
+        st.n_pages = cells/4; st.n_slots = mode ? 4 : st.n_pages;
         st.max_cells = st.n_pages * 4; st.idx_pooled_rows = mode==2 ? 2 : st.max_cells/4+2;
         const size_t per = fmt==kKvQ4 ? kv_q4_bytes_per_head((int)g.head_dim) : g.head_dim*((st.kv_int8 || st.kv_hybrid) ? 1:2);
         const size_t rows = st.max_cells*g.n_head_kv, slot_rows = st.n_slots*4*g.n_head_kv;
@@ -74,8 +78,15 @@ struct Fixture {
         if (fmt==3) {
             sizes = {rows*per, rows*kv_q4_bytes_per_head((int)g.head_dim), rows*(g.head_dim/64)*2, 0,
                      (size_t)st.idx_pooled_rows*g.idx_key_dim*4};
-            alloc(st.k_q,sizes[0]); alloc(st.v_q4,sizes[1]); alloc(st.k_scale,sizes[2]);
-            sources[0]=st.k_q; sources[1]=st.v_q4; sources[2]=st.k_scale;
+            alloc(st.k_q,slot_rows*per);
+            alloc(st.v_q4,slot_rows*kv_q4_bytes_per_head((int)g.head_dim));
+            alloc(st.k_scale,slot_rows*(g.head_dim/64)*2);
+            if (mode) {
+                alloc(st.host.k_q,sizes[0],true); alloc(st.host.v_q4,sizes[1],true);
+                alloc(st.host.k_scale,sizes[2],true);
+            }
+            sources[0]=mode?st.host.k_q:st.k_q; sources[1]=mode?st.host.v_q4:st.v_q4;
+            sources[2]=mode?st.host.k_scale:st.k_scale;
         } else if (fmt==kKvQ4) {
             alloc(st.k_q4,slot_rows*per); alloc(st.v_q4,slot_rows*per);
             if (mode) {alloc(st.host.k_q4,sizes[0],true); alloc(st.host.v_q4,sizes[1],true);}
@@ -105,11 +116,53 @@ struct Fixture {
             kv_ring_table(st.page_table,st.n_pages,st.n_slots,nullptr);
         }
     }
+    // --kv-pool-tokens: the host copy of a streamed state lives in chunks of a pool shared with other states: block b of
+    // this state is block (table[b >> 2] << 2 | b & 3) of the arrays (KvHostPools::chunk_host)
+    static constexpr int kLanes = 3, kShift = 2;
+    std::vector<int32_t> table;
+    void make_pooled(Fixture* owner, int lane) {
+        auto& h = state.host;
+        if (owner == nullptr) {   // the pool: kLanes states' worth of blocks, in every host array
+            const size_t n = size_t(kLanes);
+            if (h.k_pool) { alloc(h.k_pool, sizes[0]*n, true); alloc(h.v_pool, sizes[1]*n, true); }
+            if (h.k_q4) { alloc(h.k_q4, sizes[0]*n, true); alloc(h.v_q4, sizes[1]*n, true); }
+            if (h.k_q) {
+                alloc(h.k_q, sizes[0]*n, true);
+                if (state.kv_hybrid) alloc(h.v_q4, sizes[1]*n, true);
+                else alloc(h.v_q, sizes[1]*n, true);
+                alloc(h.k_scale, sizes[2]*n, true); alloc(h.v_scale, sizes[3]*n, true);
+            }
+        } else {
+            h = owner->state.host;
+        }
+        if (h.k_pool) { sources[0] = h.k_pool; sources[1] = h.v_pool; }
+        if (h.k_q4) { sources[0] = h.k_q4; sources[1] = h.v_q4; }
+        if (h.k_q) {
+            sources[0] = h.k_q; sources[1] = state.kv_hybrid ? static_cast<void*>(h.v_q4) : h.v_q;
+            sources[2] = h.k_scale; sources[3] = h.v_scale;
+        }
+        table.resize(size_t(state.n_pages) >> kShift);
+        for (size_t c = 0; c < table.size(); ++c) table[c] = int32_t(c * kLanes + size_t(lane));   // interleaved: no two chunks adjacent
+        h.chunk_host = table.data();
+        h.chunk_shift = kShift;
+    }
+    // bytes [off, off + n) of array i of THIS state, written where its chunk table puts them
+    void put(size_t i, size_t off, const uint8_t* p, size_t n) {
+        if (table.empty() || i >= 4) { cuda_check(cudaMemcpy(static_cast<uint8_t*>(sources[i])+off,p,n,cudaMemcpyDefault)); return; }
+        const size_t block = sizes[i] / size_t(state.n_pages);
+        for (size_t done = 0; done < n;) {
+            const size_t pos = off + done, b = pos / block, in = pos % block;
+            const size_t len = std::min(block - in, n - done);
+            const size_t phys = (size_t(table[b >> kShift]) << kShift | (b & ((1u << kShift) - 1))) * block + in;
+            cuda_check(cudaMemcpy(static_cast<uint8_t*>(sources[i])+phys,p+done,len,cudaMemcpyDefault));
+            done += len;
+        }
+    }
     void fill(uint8_t salt) {
         for (size_t i=0;i<sources.size();++i) {
             std::vector<uint8_t> data(sizes[i]);
             for (size_t j=0;j<data.size();++j) data[j]=(uint8_t)(salt+i*31+j*7+j/257);
-            if (!data.empty()) cuda_check(cudaMemcpy(sources[i],data.data(),data.size(),cudaMemcpyDefault));
+            if (!data.empty()) put(i,0,data.data(),data.size());
         }
     }
     void fill_after(uint8_t salt, int64_t first_dirty) {
@@ -332,23 +385,218 @@ void full_session(int fmt, int mode, int experts) {
     check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
 }
+
+// Small geometry exercises production allocation/ownership without four model-sized contexts.
+void shared_pool_snapshot(int fmt) {
+    constexpr int64_t C=4096, cells=2*C+5, capacity=3*C;
+    std::array<std::unique_ptr<Fixture>,4> f;
+    std::array<SessionState,4> sessions;
+    for (size_t n=0;n<f.size();++n) {
+        f[n]=std::make_unique<Fixture>(fmt,1,capacity);
+        sessions[n].max_cells=capacity; sessions[n].qsa_alloc=1;
+        sessions[n].qsa_states=&f[n]->state;
+    }
+    KvPool pool;
+    pool.set_share_prefix(true);
+    std::string error;
+    check(pool.init(f[0]->g,{{&sessions[0],-1}},8*C,error),"initialize opt-in physical prefix pool");
+    for (size_t n=0;n<f.size();++n) {
+        check(pool.attach(sessions[n],error),"attach physical prefix lane");
+        auto& st=f[n]->state;
+        check(st.prefix_pool==&pool,"attach enables automatic snapshot prefix retention");
+        auto& h=st.host;
+        f[n]->sources={h.k_pool ? static_cast<void*>(h.k_pool) :
+                      h.k_q ? static_cast<void*>(h.k_q) : static_cast<void*>(h.k_q4),
+                      h.v_pool ? static_cast<void*>(h.v_pool) :
+                      h.v_q ? static_cast<void*>(h.v_q) : static_cast<void*>(h.v_q4),
+                      h.k_scale,h.v_scale,st.idx_pooled};
+    }
+    auto ids=[&](size_t lane) {
+        const auto* p=f[lane]->state.host.chunk_host;
+        return std::vector<int32_t>(p,p+3);
+    };
+    // Independent byte pattern in each physical array, including scales and the indexer's private rows.
+    auto write=[&](size_t lane,int64_t first,int64_t end,uint8_t salt) {
+        auto& x=*f[lane];
+        for (size_t part=0;part<5;++part) {
+            if (!x.sizes[part]) continue;
+            if (part==4) {
+                std::vector<uint8_t> data(x.sizes[part],salt);
+                cuda_check(cudaMemcpy(x.sources[part],data.data(),data.size(),cudaMemcpyDefault));
+                continue;
+            }
+            const size_t stride=x.sizes[part]/capacity;
+            for (int64_t at=first;at<end;) {
+                const int64_t stop=std::min(end,(at/C+1)*C);
+                std::vector<uint8_t> data(size_t(stop-at)*stride);
+                for (size_t j=0;j<data.size();++j) data[j]=uint8_t(salt+part*31+(size_t(at)*stride+j)*7);
+                const size_t off=(size_t(x.state.host.chunk_host[at/C])*C+size_t(at%C))*stride;
+                cuda_check(cudaMemcpy(static_cast<uint8_t*>(x.sources[part])+off,data.data(),data.size(),cudaMemcpyDefault));
+                at=stop;
+            }
+        }
+    };
+    check(pool.prepare_write(sessions[0],0,cells),"reserve source prefix and partial tail");
+    write(0,0,capacity,13);
+    ConversationKv image,expected;
+    // The legacy deep-copy path supplies an independent, immutable byte reference for every format.
+    auto flat=f[0]->state; flat.prefix_pool=nullptr;
+    check(conversation_kv_save(expected,flat,f[0]->g,cells,true,error),"capture independent full byte reference");
+    const auto original=ids(0);
+    const auto* table_address=f[0]->state.host.chunk;
+    check(conversation_kv_save(image,f[0]->state,f[0]->g,cells,true,error),"capture actual pool snapshot");
+    check(image.prefix && image.prefix->chunks()==std::vector<int32_t>(original.begin(),original.begin()+2),
+          "snapshot retains actual completed physical chunk IDs");
+    check(equal(image,expected),"aliased snapshot equals deep copy in all physical arrays");
+    check(image.bytes()<expected.bytes(),"cache accounting excludes already-budgeted pinned prefix payload");
+    const std::array<const ConversationBuffer*,4> parts{&image.k,&image.v,&image.k_scale,&image.v_scale};
+    for (size_t part=0;part<parts.size();++part) {
+        if (!parts[part]->size()) continue;
+        const auto& host = f[0]->state.host;
+        check(host.allocation_host && host.allocation_device, "pool retains the allocator's host/device mapping");
+        const size_t array_offset = reinterpret_cast<uintptr_t>(f[0]->sources[part]) -
+                                    reinterpret_cast<uintptr_t>(host.allocation_device);
+        const uint8_t* host_array = host.allocation_host + array_offset;
+        const size_t stride=f[0]->sizes[part]/capacity;
+        for (size_t c=0;c<2;++c)
+            check(parts[part]->visit(c*C*stride,1,[&](const uint8_t* p,size_t,size_t) {
+                return p==host_array+size_t(original[c])*C*stride;
+            }),"snapshot buffers alias native CPU pool chunk pointers");
+        check(parts[part]->visit(2*C*stride,1,[&](const uint8_t* p,size_t,size_t) {
+            return p!=host_array+size_t(original[2])*C*stride;
+        }),"snapshot partial tail is private");
+    }
+    for (size_t lane=1;lane<4;++lane) {
+        if (lane==1) {
+            check(pool.share(sessions[0],sessions[lane],cells),"production share creates sibling");
+            ConversationKv copied;
+            check(conversation_kv_save(copied,f[lane]->state,f[0]->g,cells,false,error),
+                  "capture direct-share bytes before snapshot restore");
+            check(copied.k==expected.k && copied.v==expected.v && copied.k_scale==expected.k_scale &&
+                  copied.v_scale==expected.v_scale,"direct share copies partial tail and retains every KV array");
+        }
+        // Lanes 2 and 3 are empty: their physical sharing must come from restore, not a prior share call.
+        check(conversation_kv_restore(image,f[lane]->state,f[0]->g,cells,true,error),"restore automatically shares retained prefix");
+        auto physical=ids(lane);
+        check(physical[0]==original[0] && physical[1]==original[1] && physical[2]!=original[2],
+              "siblings share two complete chunks and own their partial tail");
+        for (size_t other=1;other<lane;++other)
+            check(physical[2]!=ids(other)[2],"each sibling tail has a distinct physical chunk");
+        check(f[lane]->state.idx_pooled!=f[0]->state.idx_pooled,"indexer rows are never pooled");
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(expected,f[lane]->state,f[0]->g,cells,true,fingerprint,error),
+              "restored sibling has all original KV bytes and private index rows");
+    }
+    // A rewind followed by a speculative candidate window straddles the physical chunk boundary.
+    const auto before=ids(1);
+    check(pool.prepare_write(f[1]->state,C-2,C+7),"QsaState write barrier COWs every speculative-window chunk");
+    check(ids(1)[0]!=before[0] && ids(1)[1]!=before[1] && ids(1)[2]==before[2],
+          "rewind window detaches both touched shared chunks only");
+    {
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(expected,f[1]->state,f[0]->g,cells,true,fingerprint,error),
+              "COW copies every untouched KV byte, scale and private index row before writing");
+    }
+    write(1,C-2,C+7,201);
+    check(pool.free_cells()==0,"fixture consumes exactly the available COW chunks");
+    const auto victim=ids(2);
+    check(!pool.prepare_write(sessions[2],0,2*C+1),"exhausted COW reservation fails");
+    check(ids(2)==victim && ids(0)==original,"exhaustion preserves all physical identities");
+    check(f[0]->state.host.chunk==table_address,"device chunk-table address remains stable");
+    for (size_t lane : {size_t(0),size_t(2),size_t(3)}) {
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(expected,f[lane]->state,f[0]->g,cells,true,fingerprint,error),
+              "rewound speculative write cannot corrupt siblings or their index rows");
+    }
+    check(equal(image,expected),"COW leaves retained cache bytes and partial tail unchanged");
+    check(pool.prepare_write(sessions[0],2*C,cells),"original owner's private partial tail remains writable");
+    write(0,2*C,cells,91);
+    check(equal(image,expected),"snapshot's private partial tail survives source append/rewrite");
+    for (size_t lane : {size_t(2),size_t(3)}) {
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(expected,f[lane]->state,f[0]->g,cells,true,fingerprint,error),
+              "source tail rewrite does not change restored sibling tails or indexer rows");
+    }
+    {
+        ConversationKv short_expected,short_got;
+        // Branch 2 still holds the original bytes, so a deep-copy prefix supplies the byte oracle.
+        auto source=f[2]->state; source.prefix_pool=nullptr;
+        check(conversation_kv_save(short_expected,source,f[0]->g,C+3,true,error),"capture independent shorter prefix");
+        check(conversation_kv_restore_prefix(image,f[1]->state,f[0]->g,cells,C+3,true,error),
+              "restore a borrowed prefix ending inside the second shared chunk");
+        check(ids(1)[0]==original[0] && ids(1)[1]!=original[1],
+              "borrowed-prefix restore shares only completed chunks and privately copies its tail");
+        check(conversation_kv_save(short_got,f[1]->state,f[0]->g,C+3,true,error) &&
+              equal(short_got,short_expected),"borrowed prefix has exact KV, scales and private index bytes");
+    }
+    // The existing disk format expands shared segments, never serializes physical IDs or pointers.
+    {
+        SavedConversation shared,loaded;
+        shared.live.ids.resize(cells,1); shared.kv.push_back(image);
+        const auto path=std::filesystem::temp_directory_path()/
+            ("strata-shared-kv-"+std::to_string(fmt)+"-"+
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".bin");
+        const SessionFileIdentity identity{1,2};
+        size_t written=0,read=0;
+        check(session_file_write(path.string(),shared,identity,written,error),"serialize physical shared snapshot");
+        check(session_file_read(path.string(),identity,loaded,read,error),"read expanded shared snapshot");
+        check(written==read && loaded.kv.size()==1 && !loaded.kv[0].prefix && equal(loaded.kv[0],expected),
+              "disk round trip expands all shared bytes without ownership metadata");
+        std::error_code ec; std::filesystem::remove(path,ec);
+    }
+    {
+        // Pure pool exhaustion must be rejected before a restore writes even its first layer.
+        pool.shrink(sessions[2],2*C);
+        Fixture blocker(fmt,1,capacity);
+        SessionState held;
+        held.max_cells=capacity; held.qsa_alloc=1; held.qsa_states=&blocker.state;
+        check(pool.attach(held,error),"attach restore admission pressure lane");
+        check(pool.reserve(held,pool.free_cells()) && pool.free_cells()==0,"fill available private-tail capacity");
+        const auto before=ids(2);
+        const auto version=pool.version();
+        const auto refs=pool.reference_cells();
+        check(!pool.can_restore(sessions[2],*image.prefix,cells,cells+8),
+              "admission rejects a shared prefix whose private restore tail cannot fit");
+        check(ids(2)==before && pool.version()==version && pool.reference_cells()==refs && equal(image,expected),
+              "refused restore admission preserves destination mapping and retained cache ownership");
+        pool.detach(held);
+        check(pool.can_restore(sessions[2],*image.prefix,cells,cells+8),
+              "restore admission succeeds after genuine physical capacity is reclaimed");
+        check(conversation_kv_restore(image,f[2]->state,f[0]->g,cells,true,error),
+              "admitted restore applies the same physical mapping plan");
+        uint64_t fingerprint=0;
+        check(conversation_kv_verify(expected,f[2]->state,f[0]->g,cells,true,fingerprint,error),
+              "retry after capacity rejection restores exact authoritative bytes");
+    }
+    for (const auto& ss:sessions) pool.detach(ss);
+    check(pool.free_cells()==pool.total_cells()-2*C,"snapshot retains final completed chunks after all session owners detach");
+    image={};
+    check(pool.free_cells()==pool.total_cells(),"last snapshot owner releases final physical chunks");
+}
 }
 
 int main() {
     int devices=0;
     if (cudaGetDeviceCount(&devices)!=cudaSuccess || !devices) return 77;
-    for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode : {0,1,2}) {
-        if (fmt==3 && mode!=0) continue;
+    for (int fmt : std::array<int,4>{kKvF16,kKvInt8,kKvQ4,3}) for (int mode_id : {0,1,2,3}) {
+        // mode_id 3: a streamed state whose host copy is a chunk of a pool shared with `other` (--kv-pool-tokens)
+        const bool pooled = mode_id == 3;
+        const int mode = pooled ? 1 : mode_id;
+        if (fmt==3 && mode_id==2) continue;
         Fixture f(fmt,mode);
+        std::unique_ptr<Fixture> other;
+        if (pooled) {
+            f.make_pooled(nullptr,0);
+            other = std::make_unique<Fixture>(fmt,mode);
+            other->make_pooled(&f,1);
+        }
         if (fmt==3) {
             std::string err;
             ConversationKv invalid;
-            for (int unsupported : {1,2}) {
-                f.state.kv_mode=unsupported;
-                check(conversation_kv_bytes(f.state,f.g,9,true)==0,"hybrid streaming/ring rejected without block-mover abort");
-                check(!conversation_kv_save(invalid,f.state,f.g,9,true,err),"hybrid streaming/ring capture fails closed");
-            }
-            f.state.kv_mode=0;
+            f.state.kv_mode=2;
+            check(conversation_kv_bytes(f.state,f.g,9,true)==0,"hybrid ring rejected without block-mover abort");
+            check(!conversation_kv_save(invalid,f.state,f.g,9,true,err),"hybrid ring capture fails closed");
+            f.state.kv_mode=mode;
         }
         {
             std::string err;
@@ -376,6 +624,40 @@ int main() {
             check(equal(a,restored),"A/B/A byte-exact K/V and indexer state");
             uint64_t fingerprint = 0;
             check(conversation_kv_verify(a,f.state,f.g,upto,index,fingerprint,err),"verify restored authoritative and resident bytes without rewriting them");
+            if (pooled) {
+                // a second state in the same pool, its chunks interleaved with f's (--kv-pool-tokens): the direct copy
+                // between two chunk tables, a neighbour's writes, and a prefix restore all go through the tables
+                ConversationKv theirs, after, want, got;
+                other->fill(99);
+                check(conversation_kv_copy(f.state,other->state,f.g,upto,index,err,false),"direct copy between two pooled states");
+                cuda_check(cudaDeviceSynchronize());
+                check(conversation_kv_save(theirs,other->state,f.g,upto,index,err) && equal(a,theirs),
+                      "the direct copy between two pooled states is byte-exact");
+                other->fill(55);
+                check(conversation_kv_save(after,f.state,f.g,upto,index,err) && equal(a,after),
+                      "a neighbour's writes do not reach this state's chunks");
+                if (upto == 65) {
+                    Fixture resident(fmt, 0);
+                    ConversationKv resident_image, pooled_image;
+                    check(conversation_kv_copy(f.state,resident.state,f.g,upto,index,err,true),
+                          "queued direct copy from interleaved host chunks to resident K/V");
+                    cuda_check(cudaDeviceSynchronize());
+                    check(conversation_kv_save(resident_image,resident.state,f.g,upto,index,err) && equal(a,resident_image),
+                          "host-to-resident copy follows the source chunk map");
+                    check(conversation_kv_copy(resident.state,other->state,f.g,upto,index,err,true),
+                          "queued direct copy from resident K/V to interleaved host chunks");
+                    cuda_check(cudaDeviceSynchronize());
+                    check(conversation_kv_save(pooled_image,other->state,f.g,upto,index,err) && equal(a,pooled_image),
+                          "resident-to-host copy follows the target chunk map");
+                }
+                const int64_t part = upto / 2;
+                if (part > 0) {
+                    check(conversation_kv_restore_prefix(a,other->state,f.g,upto,part,index,err),"prefix restore into a pooled state");
+                    cuda_check(cudaDeviceSynchronize());
+                    check(conversation_kv_save(want,f.state,f.g,part,index,err) && conversation_kv_save(got,other->state,f.g,part,index,err) &&
+                          equal(want,got),"the prefix restored through the chunk table equals the source's prefix");
+                }
+            }
             {
                 // disk save streams the same bytes as a captured image, without the host copy
                 SessionKvSource src;
@@ -437,5 +719,6 @@ int main() {
     for (int fmt : {kKvF16,kKvInt8,kKvQ4}) for (int mode : {0,1}) for (int experts : {256,512})
         full_session(fmt,mode,experts);
     for (int experts : {256,512}) full_session(3,0,experts);
+    for (int fmt : {kKvF16,kKvInt8,kKvQ4,kKvHybrid}) shared_pool_snapshot(fmt);
     std::printf("conversation_snapshot_test: %d checks passed\n",checks);
 }

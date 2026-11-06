@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/core/progress.hpp"
+#include "strata/core/kv_chunks.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -8,14 +9,14 @@
 #include <cstring>
 #include <initializer_list>
 #include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace strata::core {
 
-// Snapshot-owned host storage. Appending never relocates existing payloads;
-// only the small segment directory can move. No sharing or copy-on-write is
-// needed because a parked image and its retained active buffers have one owner.
+// Snapshot-owned host storage. Completed pool chunks can be read-only aliases held by a runtime owner.
+// Mutable access materializes an alias; no caller can write a sibling's pinned prefix through this buffer.
 class ConversationBuffer {
 public:
     static constexpr size_t segment_bytes = 16 * 1024 * 1024;
@@ -29,26 +30,53 @@ public:
     }
     ConversationBuffer(const ConversationBuffer&) = default;
     ConversationBuffer& operator=(const ConversationBuffer&) = default;
-    ConversationBuffer(ConversationBuffer&& other) noexcept
-        : segments_(std::move(other.segments_)), size_(std::exchange(other.size_, 0)) {}
+    ConversationBuffer(ConversationBuffer&& other) noexcept { *this = std::move(other); }
     ConversationBuffer& operator=(ConversationBuffer&& other) noexcept {
         if (this == &other) return *this;
         segments_ = std::move(other.segments_);
         size_ = std::exchange(other.size_, 0);
+        aliases_ = std::move(other.aliases_);
+        alias_bytes_ = std::exchange(other.alias_bytes_, 0);
+        alias_chunk_bytes_ = std::exchange(other.alias_chunk_bytes_, 0);
+        alias_owner_ = std::move(other.alias_owner_);
         return *this;
     }
 
-    size_t size() const { return size_; }
-    bool empty() const { return size_ == 0; }
+    size_t size() const { return alias_bytes_ + size_; }
+    bool empty() const { return size() == 0; }
+    // Pinned payload is charged once to --kv-pool-tokens, not once per cache reference.
     size_t bytes() const {
-        size_t n = segments_.capacity() * sizeof(Segment);
+        size_t n = segments_.capacity() * sizeof(Segment) + aliases_.capacity() * sizeof(const uint8_t*);
         for (const auto& segment : segments_) n += segment.capacity();
         return n;
     }
+    void prepend_shared(std::shared_ptr<const KvChunkMap::Prefix> owner,
+                        std::vector<const uint8_t*> chunks, size_t chunk_bytes) {
+        alias_bytes_ = chunks.size() * chunk_bytes;
+        alias_chunk_bytes_ = chunk_bytes;
+        aliases_ = std::move(chunks);
+        alias_owner_ = std::move(owner);
+    }
+    const std::shared_ptr<const KvChunkMap::Prefix>& prefix_owner() const { return alias_owner_; }
     // Includes the old directory while reserve allocates its replacement.
     // Saturation makes an overflowing estimate fail admission before resize.
     size_t allocation_peak(size_t n) const {
         size_t total = bytes();
+        if (alias_bytes_) {
+            // materialize() first owns the old extent, then resize_impl grows it with the usual segment reserve.
+            const size_t held = size(), count = held / segment_bytes + (held % segment_bytes != 0);
+            if (!add(total, held) || count > SIZE_MAX / sizeof(Segment) ||
+                !add(total, count * sizeof(Segment))) return SIZE_MAX;
+            if (n <= held) return total;
+            const size_t extra = n - held, full = extra / segment_bytes, tail = extra % segment_bytes;
+            if (!add(total, full * segment_bytes)) return SIZE_MAX;
+            if (tail && !add(total, segment_capacity(tail, full ? segment_bytes :
+                    held % segment_bytes ? held % segment_bytes : segment_bytes, true, held))) return SIZE_MAX;
+            const size_t grown_count = count + full + (tail != 0);
+            if (grown_count > SIZE_MAX / sizeof(Segment) ||
+                !add(total, grown_count * sizeof(Segment))) return SIZE_MAX;
+            return total;
+        }
         if (n <= size_) return total;
         const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
         const size_t extra = n - size_ - std::min(n - size_, spare);
@@ -64,6 +92,7 @@ public:
     }
     void resize(size_t n, uint8_t value = 0) { resize_impl(n, &value); }
     void resize_impl(size_t n, const uint8_t* value) {
+        materialize();
         if (n > size_) {
             const size_t held = size_;
             const bool growing = held != 0;
@@ -96,13 +125,14 @@ public:
             size_ = n;
         }
     }
-    void pop_back() { resize(size_ - 1); }
+    void pop_back() { resize(size() - 1); }
     // resize() without the zero fill of what it adds (the fresh pages are not touched here): only for a caller that
     // writes every added byte before anything reads it (STRATA_PARK_ASYNC's background copy)
     void resize_for_overwrite(size_t n) { resize_impl(n, nullptr); }
 
     // fn(pointer, count, absolute_offset); false aborts a transfer immediately.
     template<class Fn> bool visit(size_t offset, size_t count, Fn fn) {
+        materialize();
         return visit_impl(*this, offset, count, fn);
     }
     template<class Fn> bool visit(size_t offset, size_t count, Fn fn) const {
@@ -115,6 +145,16 @@ public:
         });
     }
     bool operator==(const ConversationBuffer& other) const {
+        if (alias_bytes_ || other.alias_bytes_) {
+            if (size() != other.size()) return false;
+            uint8_t left[4096], right[4096];
+            for (size_t at = 0; at < size();) {
+                const size_t n = std::min(sizeof(left), size() - at);
+                if (!read(left, at, n) || !other.read(right, at, n) || std::memcmp(left, right, n)) return false;
+                at += n;
+            }
+            return true;
+        }
         if (size_ != other.size_) return false;
         size_t a = 0, b = 0, x = 0, y = 0;
         while (a < segments_.size() && b < other.segments_.size()) {
@@ -139,6 +179,14 @@ private:
         template<class U, class... A> void construct(U* p, A&&... a) { ::new ((void*) p) U(std::forward<A>(a)...); }
     };
     using Segment = std::vector<uint8_t, DefaultInit<uint8_t>>;
+    void materialize() {
+        if (!alias_bytes_) return;
+        ConversationBuffer owned;
+        owned.resize(size());
+        const ConversationBuffer& source = *this;
+        owned.visit(0, owned.size(), [&](uint8_t* p, size_t n, size_t at) { return source.read(p, at, n); });
+        *this = std::move(owned);
+    }
     // A fresh capture allocates exactly its payload. Later appends reserve
     // geometrically growing segments, bounded by 16 MiB. Small chat turns then
     // extend the final allocation instead of adding one transfer per turn.
@@ -157,8 +205,17 @@ private:
         return true;
     }
     template<class Self, class Fn> static bool visit_impl(Self& self, size_t offset, size_t count, Fn fn) {
-        if (offset > self.size_ || count > self.size_ - offset) return false;
-        size_t begin = 0;
+        if (offset > self.size() || count > self.size() - offset) return false;
+        while (count && offset < self.alias_bytes_) {
+            const size_t chunk = offset / self.alias_chunk_bytes_, in = offset % self.alias_chunk_bytes_;
+            const size_t n = std::min(count, self.alias_chunk_bytes_ - in);
+            // Mutable visit materializes first; only const visits can reach this branch.
+            if constexpr (std::is_const_v<Self>) {
+                if (!fn(self.aliases_[chunk] + in, n, offset)) return false;
+            }
+            offset += n; count -= n;
+        }
+        size_t begin = self.alias_bytes_;
         for (auto& segment : self.segments_) {
             if (!count) break;
             const size_t end = begin + segment.size();
@@ -173,6 +230,9 @@ private:
     }
     std::vector<Segment> segments_;
     size_t size_ = 0;
+    std::vector<const uint8_t*> aliases_;
+    size_t alias_bytes_ = 0, alias_chunk_bytes_ = 0;
+    std::shared_ptr<const KvChunkMap::Prefix> alias_owner_;
 };
 
 } // namespace strata::core

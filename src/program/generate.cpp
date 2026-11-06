@@ -53,6 +53,8 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/kv_pool.hpp"
+#include "strata/core/kv_pool_policy.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/cpu/expert.hpp"
@@ -671,6 +673,8 @@ struct Options {
     std::string kv = "fp16";           ///< plan v0.3 P7: KV storage, fp16 (default) or int8 (half the VRAM)
     int64_t kv_resident = 0;           ///< KV streaming: resident cells per QSA layer (0: all in VRAM)
     bool kv_grow = false;              ///< the elastic K/V (--kv-grow, STRATA_KV_GROW=1; kvg_ensure)
+    int64_t kv_pool_tokens = 0;        ///< KV streaming: one host pool of this many cells for all sessions (0: each its own)
+    bool kv_share_prefix = false;      ///< opt-in: completed host chunks shared by lanes and memory snapshots
     std::string dump_residual;
     /// The head input, `bb.mixed`.  It exists so the head can be SPLIT: steps 1-4 (the per-stream norm, the two
     /// bf16 projections and the stream mean) recompute cheaply in Python, and only the 794 MB GEMV does not.
@@ -1055,6 +1059,16 @@ void usage() {
                  "                       cache holds the rest, giving slots back as the context grows (one GPU, with\n"
                  "                       --expert-profile; STRATA_KV_GROW=1/0 also). Default: the whole --max-context\n"
                  "                       allocated at start\n"
+                 "  --kv-pool-tokens N   CUDA/HIP, with --kv-resident: the sessions (batch slots and the main one) share\n"
+                 "                       one pinned K/V pool of N cells instead of each pinning the whole context;\n"
+                 "                       a conversation holds what it has reached, in steps of 4096 cells (across the\n"
+                 "                       stages of a layer split alike). N must hold one whole context. When it is\n"
+                 "                       full an idle slot's cached conversation gives way, then a new request is\n"
+                 "                       refused and a decoding\n"
+                 "                       lane ends with finish \"pool\" (the server: \"length\", truncated)\n"
+                 "  --kv-share-prefix    with --kv-pool-tokens and streaming, share completed host prefix chunks\n"
+                 "                       across batch slots and RAM snapshots; private tails and copy-on-write.\n"
+                 "                       VRAM, indexer, recurrent state and drafter state remain per session\n"
                  "  --stream-token       enqueue token work on the session stream (experimental)\n"
                  "  --check-logits       copy and check all logits in the stream-token path\n"
                  "  --gr-fp32-activations  experimental CUDA-oracle GR activation precision\n"
@@ -3487,6 +3501,8 @@ int main(int argc, char** argv) {
         else if (a == "--kv-resident") o.kv_resident = std::atoll(next("--kv-resident"));
         else if (a == "--kv-grow") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
+        else if (a == "--kv-pool-tokens") o.kv_pool_tokens = std::atoll(next("--kv-pool-tokens"));
+        else if (a == "--kv-share-prefix") o.kv_share_prefix = true;
         else if (a == "--stream-token") o.stream_token = true;
         else if (a == "--check-logits") o.check_logits = true;
         else if (a == "--gr-fp32-activations") o.gr_fp32_activations = true;
@@ -4348,6 +4364,25 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    if (o.kv_pool_tokens != 0) {
+#if defined(STRATA_GPU_METAL)
+        std::fprintf(stderr, "strata generate: --kv-pool-tokens needs the CUDA or HIP streaming engine\n");
+        return 2;
+#endif
+        const char* bad = o.kv_pool_tokens < 0 ? "must be >= 0"
+                        : o.kv_resident <= 0 || o.max_context <= std::max(o.kv_resident, strata::core::qsa_kv_resident_min())
+                            ? "needs --kv-resident streaming (a context longer than the resident cells)"
+                        : o.kv_pool_tokens < o.max_context ? "must hold one whole context (--max-context)" : nullptr;
+        if (bad != nullptr) {
+            std::fprintf(stderr, "strata generate: --kv-pool-tokens %s\n", bad);
+            return 2;
+        }
+        strata::core::qsa_set_kv_shared_host(true);
+    }
+    if (o.kv_share_prefix && o.kv_pool_tokens <= 0) {
+        std::fprintf(stderr, "strata generate: --kv-share-prefix needs --kv-pool-tokens and --kv-resident streaming\n");
+        return 2;
+    }
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
@@ -6766,6 +6801,7 @@ int main(int argc, char** argv) {
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
+    strata::core::KvPool kv_pool;   // --kv-pool-tokens: the sessions' shared host K/V
     {
         const strata::core::OnDevice on0(primary_device);   // STRATA_PRIMARY_DEVICE (upstream: a literal 0)
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
@@ -6796,7 +6832,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
         }
-        if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1)
+        if (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1 && o.kv_pool_tokens <= 0)
             std::fprintf(stderr, "strata generate: KV streaming: %lld of %lld cells per QSA layer in VRAM, the K/V in "
                                  "%.2f GiB of pinned RAM\n",
                          (long long) (ss.qsa_states[ss.qsa_primary()].n_slots * 4),
@@ -6843,6 +6879,24 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: layer split: CUDA%d holds its weights, session [%lld, %lld)%s; "
                              "%.2f GiB free\n", st.dev, (long long) st.lb, (long long) st.le,
                      last ? " and the head" : "", (double) fb / 1073741824.0);
+    }
+    // --kv-pool-tokens: one pinned K/V pool for the main session, the batch slots and every stage of a layer split
+    // (each stage pins its own QSA layers' share, on its GPU's context; a lane's chunk table is the same on every stage)
+    if (o.kv_pool_tokens > 0) {
+        kv_pool.set_share_prefix(o.kv_share_prefix);
+        std::vector<strata::core::KvPool::StageRef> refs{{&ss, primary_device}};
+        for (const auto& st : stages) refs.push_back({&st->ss, st->dev});
+        bool ok = kv_pool.init(g, refs, o.kv_pool_tokens, err) && kv_pool.attach(ss, err);
+        for (size_t i = 0; ok && i < stages.size(); ++i) ok = kv_pool.attach_stage(ss, stages[i]->ss, i + 1, err);
+        if (!ok) {
+            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            return 1;
+        }
+        // outside --serve one sequence runs, from the prompt to the context's end
+        if (!o.serve) (void) kv_pool.reserve(ss, o.max_context);
+        std::fprintf(stderr, "strata generate: KV pool: %lld cells shared by the sessions%s, %.2f GiB of pinned RAM\n",
+                     (long long) kv_pool.total_cells(), stages.empty() ? "" : " and the stages of the layer split",
+                     (double) kv_pool.pinned_bytes() / 1073741824.0);
     }
 
     // --batch: every stage carves o.batch more sessions like its own (same layer range and context), one per
@@ -7013,16 +7067,24 @@ int main(int argc, char** argv) {
         int fit = o.batch;   // the slots every stage could carve
         uint64_t bytes0 = 0;
         for (size_t k = 0; k < bslot_ss.size(); ++k) {
-            const int dev = k == 0 ? 0 : stages[k - 1]->dev;
+            const int dev = k == 0 ? primary_device : stages[k - 1]->dev;
             const int64_t lo = k == 0 ? 0 : stages[k - 1]->lb;
             const int64_t hi = k == 0 ? (multi_gpu ? split_at[0] : -1) : stages[k - 1]->le;
             const strata::core::OnDevice on_k(dev);
-            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
+            // with --kv-pool-tokens the slots borrow the RoPE table of the session already on this device (the same
+            // context length); without it each slot keeps its own, as before, so the VRAM left to the expert cache and
+            // with it the output stay those of a build without the pool
+            const strata::core::SessionState& host_ss = k == 0 ? ss : stages[k - 1]->ss;
+            const strata::core::QsaState* rope = kv_pool.active() && g.n_qsa_layers() > 0 && host_ss.qsa_alloc > 0
+                                                     ? &host_ss.qsa_states[host_ss.qsa_primary()]
+                                                     : nullptr;
+            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, rope != nullptr);
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
-                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
+                if (cudaMalloc(&buf, bytes) != cudaSuccess ||
+                    strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi, rope) == 0) {
                     cudaGetLastError();
                     if (buf != nullptr) cudaFree(buf);
                     size_t fb = 0, tb = 0;
@@ -7033,6 +7095,11 @@ int main(int argc, char** argv) {
                     fit = b;
                     break;
                 }
+                // --kv-pool-tokens: slot b is one lane across the stages (stage k's session joins stage 0's)
+                if (kv_pool.active() && !(k == 0 ? kv_pool.attach(*u, err) : kv_pool.attach_stage(*bslot_ss[0][(size_t) b], *u, k, err))) {
+                    std::fprintf(stderr, "strata generate: --batch: slot %d: %s\n", b, err.c_str());
+                    return 1;
+                }
                 strata::core::session_zero(*u, g, nullptr, nullptr);
                 bslot_ss[k].push_back(std::move(u));
             }
@@ -7042,10 +7109,15 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --batch: %d slot sessions on CUDA%d (%.2f GiB each); %.2f GiB free\n",
                          (int) bslot_ss[k].size(), dev, (double) bytes / 1073741824.0, (double) fb / 1073741824.0);
         }
-        for (auto& v : bslot_ss) if ((int) v.size() > fit) v.resize((size_t) fit);   // the same count on every stage
+        for (auto& v : bslot_ss)   // the same count on every stage; a dropped session leaves the pool's lanes
+            if ((int) v.size() > fit) {
+                for (size_t b = (size_t) fit; b < v.size(); ++b) kv_pool.detach(*v[b]);
+                v.resize((size_t) fit);
+            }
         if (fit < 2) {
             std::fprintf(stderr, "strata generate: WARNING: --batch is off: not two slot sessions fit (a smaller "
                                  "--max-context or KV streaming, --kv-resident, makes them smaller)\n");
+            for (auto& v : bslot_ss) for (auto& u : v) kv_pool.detach(*u);
             bslot_ss.clear();
             o.batch = 0;
         } else {
@@ -7053,7 +7125,10 @@ int main(int argc, char** argv) {
             if (n < fit) {
                 std::fprintf(stderr, "strata generate: WARNING: --batch: %d slot sessions fit, and a batch window holds "
                                      "at most %d rows, so %d slots\n", fit, (int) strata::kernels::kVerifyMaxT, n);
-                for (auto& v : bslot_ss) v.resize((size_t) n);
+                for (auto& v : bslot_ss) {
+                    for (size_t b = (size_t) n; b < v.size(); ++b) kv_pool.detach(*v[b]);
+                    v.resize((size_t) n);
+                }
                 fit = n;
             }
             o.batch = fit;
@@ -11877,7 +11952,7 @@ int main(int argc, char** argv) {
                 std::vector<strata::core::SessionState*> ptrs;
                 for (auto& u : bslot_ss[k]) ptrs.push_back(u.get());
                 strata::core::Verifier& vk = k == 0 ? ver : stages[k - 1]->ver;
-                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
                 if (!vk.init_slots(ptrs, err)) {
                     std::fprintf(stderr, "strata serve: --batch, stage %zu: %s\n", k + 1, err.c_str());
                     return 1;
@@ -12252,7 +12327,7 @@ int main(int argc, char** argv) {
             const int64_t retained_n = src.with_reuse ? conversations.retained_tokens() : 0;
             // a batch slot's image carries no retained K/V (it describes the main session's conversation), and the
             // main session's stays retained for its own park
-            auto reuse = src.with_reuse ? conversations.take_reuse_for(src.ids)   // never another conversation's K/V
+            auto reuse = src.with_reuse ? conversations.take_reuse_for(src.ids, src.imgs)   // never another conversation's K/V
                                         : strata::core::ConversationKvReuse{};
             if (retained_n > 0 && reuse.unchanged_tokens < retained_n)
                 std::fprintf(stderr, "strata serve: conversation cache: retained K/V reused for %lld of its %lld tokens "
@@ -14342,6 +14417,7 @@ int main(int argc, char** argv) {
             // that state (a checkpoint, a parked conversation), so it is not kept as a cache when it ends
             bool tainted = false;
             ConvCheckpoint::PromptPlan partial_plan;   ///< --prefill-pipe: the segment it stopped in, read on in its chunks
+            int64_t used = 0;              ///< when it last ended a request (--kv-pool-tokens gives way oldest first)
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
         // STRATA_BATCH_DF2_DEFER=0: every round drafts for every slot, spare rows or not (the first measurement's behaviour, for the A/B)
@@ -14398,6 +14474,102 @@ int main(int argc, char** argv) {
         struct CoReq { int slot = -1; std::vector<int64_t> ids; };
         std::vector<CoReq> co_pending, co_set;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
+        int64_t slot_clock = 0;
+        std::vector<bool> pool_writers(bs.size(), false); // rows about to launch, including idle padding lanes
+        // --kv-pool-tokens: back cells [0, cells) of session `s` from the shared pool. When it is full idle slots give
+        // their K/V back: one holding nothing worth keeping first, then the cached conversation used longest ago, and
+        // last a prompt read that gave way (BYIELD; its request then reads the prompt from the start) - never `keep`
+        // (the slot this request reads from). False, with nothing given back, when all of them would not cover it.
+        auto pool_reserve = [&](const strata::core::SessionState& s, int64_t cells, int keep,
+                                int64_t first_write = -1,
+                                const strata::core::KvChunkMap::Prefix* restore_prefix = nullptr,
+                                int64_t restore_cells = 0) -> bool {
+            auto acquire = [&] {
+                if (restore_prefix) return kv_pool.can_restore(s, *restore_prefix, restore_cells, cells);
+                return first_write >= 0 && kv_pool.sharing() ? kv_pool.prepare_write(s, first_write, cells)
+                                                             : kv_pool.reserve(s, cells);
+            };
+            if (!kv_pool.active() || acquire()) return true;
+            const int64_t chunk = kv_pool.chunk_cells();
+            std::vector<strata::core::KvPoolLane> lanes(bs.size());
+            for (size_t b = 0; b < bs.size(); ++b) {
+                const BSlot& sl = bs[b];
+                const int64_t held = kv_pool.reserved_cells(*bslot_ss[0][b]);
+                lanes[b] = {!sl.active && !pool_writers[b] && (int) b != keep && &s != bslot_ss[0][b].get() && held > 0,
+                            sl.partial ? 2 : sl.cached ? 1 : 0, sl.used, held};
+            }
+            std::vector<int> victims;
+            if (kv_pool.sharing()) {
+                std::vector<int> order;
+                for (size_t b = 0; b < lanes.size(); ++b) if (lanes[b].can_give) order.push_back((int) b);
+                std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+                    return lanes[a].rank != lanes[b].rank ? lanes[a].rank < lanes[b].rank : lanes[a].used < lanes[b].used;
+                });
+                std::vector<const strata::core::SessionState*> giving;
+                std::vector<const strata::core::KvChunkMap::Prefix*> cache_prefixes;
+                size_t cache_victims = 0;
+                auto need = [&] {
+                    return first_write >= 0 ? kv_pool.write_need_cells(s, first_write, cells, giving, cache_prefixes)
+                        : std::max<int64_t>(0, (std::min(cells, s.max_cells) + chunk - 1) / chunk * chunk -
+                                              kv_pool.reserved_cells(s));
+                };
+                for (int b : order) giving.push_back(bslot_ss[0][(size_t) b].get());
+                auto enough = [&] {
+                    if (restore_prefix)
+                        return kv_pool.can_restore(s, *restore_prefix, restore_cells, cells, giving, cache_prefixes);
+                    return kv_pool.free_cells() + kv_pool.reclaimable_cells(giving, cache_prefixes) >= need();
+                };
+                // Simulate whole owner cohorts first. Evicting a cache entry often releases no physical chunk,
+                // because active lanes (or another image sharing the same Prefix lease) still hold it.
+                while (!enough()) {
+                    std::vector<const strata::core::KvChunkMap::Prefix*> next;
+                    if (!conversations.eviction_prefixes(cache_victims + 1, next)) return false;
+                    ++cache_victims;
+                    cache_prefixes.swap(next);
+                }
+                giving.clear();
+                for (int b : order) {
+                    if (enough()) break;
+                    victims.push_back(b);
+                    giving.push_back(bslot_ss[0][(size_t) b].get());
+                }
+                if (!enough()) return false;
+                for (size_t i = 0; i < cache_victims; ++i) conversations.evict_oldest();
+            } else if (!strata::core::kv_pool_eviction_plan(kv_pool.free_cells(), kv_pool.reserved_cells(s),
+                                                            (std::min(cells, s.max_cells) + chunk - 1) / chunk * chunk,
+                                                            lanes, victims)) return false;
+            for (const int victim : victims) {
+                BSlot& v = bs[(size_t) victim];
+                if (v.cached)
+                    std::fprintf(stderr, "strata batch: KV pool full: slot %d gives back %s (%lld tokens)\n", victim,
+                                 v.partial ? "a prompt read that gave way" : "its cached conversation",
+                                 (long long) v.ids.size());
+                v.cached = false;
+                v.partial = false;
+                v.ids.clear();
+                v.checks.clear();
+                kv_pool.release(*bslot_ss[0][(size_t) victim]);
+            }
+            return acquire();
+        };
+        // --kv-pool-tokens: `POOL <cells> <free> <main> <slot 0>,<slot 1>,...` (cells held) whenever it changed - the
+        // server keeps the last one for /metrics
+        uint64_t pool_said = ~0ull;
+        auto pool_report = [&] {
+            if (!kv_pool.active() || kv_pool.version() == pool_said) return;
+            pool_said = kv_pool.version();
+            std::string held;
+            for (size_t b = 0; b < bs.size(); ++b)
+                held += (b ? "," : "") + std::to_string(kv_pool.reserved_cells(*bslot_ss[0][b]));
+            std::printf("POOL %lld %lld %lld %s\n", (long long) kv_pool.total_cells(), (long long) kv_pool.free_cells(),
+                        (long long) kv_pool.reserved_cells(ss), held.empty() ? "-" : held.c_str());
+            if (kv_pool.sharing())
+                std::fprintf(stderr, "strata KV prefix pool: pinned_bytes=%llu capacity_cells=%lld unique_cells=%lld "
+                                     "reference_cells=%lld\n", (unsigned long long) kv_pool.pinned_bytes(),
+                             (long long) kv_pool.total_cells(), (long long) kv_pool.unique_cells(),
+                             (long long) kv_pool.reference_cells());
+            std::fflush(stdout);
+        };
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
             if (in_lines.empty()) return false;
@@ -14419,7 +14591,7 @@ int main(int argc, char** argv) {
             auto sync_all = [&]() {
                 bool ok = true;
                 for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                    const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                    const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
                     ok = cudaDeviceSynchronize() == cudaSuccess && ok;
                 }
                 return ok;
@@ -14435,7 +14607,7 @@ int main(int argc, char** argv) {
                 strata::core::SessionState& slot_ss = *bslot_ss[k][(size_t) b];
                 strata::core::SessionState& from = into_slot ? main_ss : slot_ss;
                 strata::core::SessionState& to = into_slot ? slot_ss : main_ss;
-                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
                 if (!strata::core::conversation_checkpoint_copy(from, to, ids, g, e, queued)) return failed();
                 for (int64_t j = 0; j < from.qsa_alloc; ++j)
                     if (!strata::core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j],
@@ -14445,19 +14617,73 @@ int main(int argc, char** argv) {
             if (!sync_all()) { e = "batch slot copy: device sync failed"; return false; }
             return true;
         };
-        auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
+        // lane -1 is the main session, lane b batch slot b: its session on stage k (0 = CUDA0's)
+        auto lane_ss = [&](size_t k, int lane) -> strata::core::SessionState& {
+            return lane < 0 ? (k == 0 ? ss : stages[k - 1]->ss) : *bslot_ss[k][(size_t) lane];
+        };
+        // --kv-pool-tokens: the streamed layers' K/V of cells [0, upto) changes lane by exchanging the two lanes'
+        // pool chunks (one table for every stage), without a byte copied and without the pool holding the conversation
+        // twice. `from` gives back the chunks it receives. What the chunks do not carry - the indexer's pooled keys
+        // (VRAM, each stage's own) - is copied here; the VRAM residency of both lanes names blocks that moved, so both
+        // start over from the host. The caller copies the layers that do not stream.
+        auto pool_move = [&](int from_lane, int to_lane, int64_t upto, bool keep_source, std::string& e) -> bool {
+            for (size_t k = 0; k <= stages.size(); ++k) {
+                const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
+                if (cudaDeviceSynchronize() != cudaSuccess) { e = "KV pool move: device sync failed"; return false; }
+            }
+            if (keep_source ? !kv_pool.share(lane_ss(0, from_lane), lane_ss(0, to_lane), upto)
+                            : !kv_pool.swap(lane_ss(0, from_lane), lane_ss(0, to_lane))) {
+                e = "KV pool transfer: no room for the private tail, or missing chunk table";
+                return false;
+            }
+            if (!keep_source) kv_pool.release(lane_ss(0, from_lane));
+            const int64_t rows = upto > 0 ? upto / strata::kernels::qsa_real_shapes().idx_block + 1 : 0;
+            for (size_t k = 0; k <= stages.size(); ++k) {
+                const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
+                const strata::core::SessionState& from = lane_ss(k, from_lane);
+                const strata::core::SessionState& to = lane_ss(k, to_lane);
+                for (int64_t j = 0; j < from.qsa_alloc; ++j) {
+                    const strata::core::QsaState& fs = from.qsa_states[from.qsa_ord0 + j];
+                    const strata::core::QsaState& ts = to.qsa_states[to.qsa_ord0 + j];
+                    if (fs.kv_mode != 1) continue;
+                    if (rows > std::min(fs.idx_pooled_rows, ts.idx_pooled_rows) ||
+                        (rows > 0 && cudaMemcpy(ts.idx_pooled, fs.idx_pooled, (size_t) rows * g.idx_key_dim * sizeof(float),
+                                                cudaMemcpyDeviceToDevice) != cudaSuccess)) {
+                        e = "KV pool move: indexer copy failed";
+                        return false;
+                    }
+                    strata::kernels::kv_stream_reset(fs.map, nullptr);
+                    strata::kernels::kv_stream_reset(ts.map, nullptr);
+                }
+                if (cudaDeviceSynchronize() != cudaSuccess) { e = "KV pool move: device sync failed"; return false; }
+            }
+            return true;
+        };
+        // the session a request just left behind (its prompt) -> slot b's sessions, on every stage. `move`: the main
+        // session gives the conversation up (with --kv-pool-tokens its streamed K/V moves, pool_move) - else it keeps it
+        auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, bool move, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
 #if defined(STRATA_GPU_METAL)
             // the running state and the K/V of the Metal window, not the session's device buffers
             return strata::metal_engine::window_slot_copy_main(true, b, upto, false, e);
 #endif
-            if (slot_copy_direct) {
+            const bool shared = kv_pool.sharing() && !move;
+            const bool moved = (move || shared) && kv_pool.active();
+            if (moved) {
+                if (!pool_move(-1, b, upto, shared, e)) return false;
+                if (shared && !pool_reserve(*bslot_ss[0][(size_t) b], upto + 8, b)) { e = "the KV pool is full"; return false; }
+                kv_pool.shrink(*bslot_ss[0][(size_t) b], upto + 8);
+            } else if (kv_pool.active()) {   // the conversation, and the next windows' cells (each one grows it further)
+                if (!pool_reserve(*bslot_ss[0][(size_t) b], upto + 8, b)) { e = "the KV pool is full"; return false; }
+                kv_pool.shrink(*bslot_ss[0][(size_t) b], upto + 8);
+            }
+            if (slot_copy_direct && !moved) {   // with a pool the streamed K/V moves by chunks (pool_move), not by a copy
                 if (!direct_slot_copy(true, b, ids, e)) return false;
             } else
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 strata::core::SessionState& from = k == 0 ? ss : stages[k - 1]->ss;
                 strata::core::SessionState& to = *bslot_ss[k][(size_t) b];
-                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
                 strata::core::ConversationCheckpoint ck;
                 ck.ids = ids;
@@ -14465,6 +14691,7 @@ int main(int argc, char** argv) {
                     !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                     return false;
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
+                    if (moved && from.qsa_states[from.qsa_ord0 + j].kv_mode == 1) continue;   // the pool carried it
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
@@ -14498,7 +14725,9 @@ int main(int argc, char** argv) {
         };
         // slot b's sessions -> the main ones (the reverse of copy_to_slot): a request that continues the
         // conversation an idle slot holds reads on from there.  Every stage, the same calls.
-        // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
+        // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead.
+        // --kv-pool-tokens: the streamed K/V moves (pool_move) and the slot is left holding nothing - the caller
+        // forgets its conversation
         auto copy_from_slot = [&](int b, const ConvCheckpoint* at, std::string& e) -> bool {
             // the main session's K/V is replaced by the slot's: K/V retained from a restore described the old one
             conversations.take_reuse();
@@ -14508,13 +14737,15 @@ int main(int argc, char** argv) {
             if (!strata::metal_engine::window_slot_copy_main(false, b, upto, at != nullptr, e)) return false;
             return at == nullptr || strata::core::conversation_checkpoint_restore(*at, ss, g, e);   // (the checkpoint's running state)
 #endif
-            if (slot_copy_direct && at == nullptr) {
+            const bool moved = kv_pool.active();
+            if (moved && !pool_move(b, -1, upto, kv_pool.sharing(), e)) return false;
+            if (slot_copy_direct && at == nullptr && !moved) {   // with a pool the streamed K/V moves by chunks, not by a copy
                 if (!direct_slot_copy(false, b, bs[(size_t) b].ids, e)) return false;
             } else
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 strata::core::SessionState& from = *bslot_ss[k][(size_t) b];
                 strata::core::SessionState& to = k == 0 ? ss : stages[k - 1]->ss;
-                const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch slot restore: device sync failed"; return false; }
                 if (at != nullptr) {
                     if (!strata::core::conversation_checkpoint_restore(k == 0 ? *at : at->stage_parts[k - 1], to, g, e))
@@ -14527,6 +14758,7 @@ int main(int argc, char** argv) {
                         return false;
                 }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
+                    if (moved && from.qsa_states[from.qsa_ord0 + j].kv_mode == 1) continue;   // the pool carried it
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
                         return false;
@@ -14624,6 +14856,24 @@ int main(int argc, char** argv) {
             int rows[strata::kernels::kVerifyMaxT] = {};
             int32_t tok[strata::kernels::kVerifyMaxT] = {}, outb[strata::kernels::kVerifyMaxT] = {};
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
+            // --kv-pool-tokens: every cell a lane's rows may write in this window must be backed (a write past the
+            // reservation lands in the pool's trash chunk and is lost). A lane the full pool cannot back ends, and its
+            // K/V goes back to the pool for the others.
+            for (int b = 0; b < (int) bs.size(); ++b) {
+                BSlot& sl = bs[(size_t) b];
+                if (!sl.active || pool_reserve(*bslot_ss[0][(size_t) b], sl.p + strata::kernels::kVerifyMaxT, -1, sl.p))
+                    continue;
+                std::fprintf(stderr, "strata batch: KV pool full: slot %d ends at %lld tokens\n", b, (long long) sl.p);
+                std::printf("BDONE %d %lld pool %.1f\n", b, (long long) sl.produced,
+                            std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count());
+                std::fflush(stdout);
+                sl.active = false;
+                sl.cached = false;
+                sl.ids.clear();
+                sl.checks.clear();
+                sl.used = ++slot_clock;
+                kv_pool.release(*bslot_ss[0][(size_t) b]);
+            }
             int first[strata::kernels::kVerifyMaxT] = {}, active[strata::kernels::kVerifyMaxT] = {};
             static size_t next_slot = 0;
             // Each MTP slot uses two rows; rotate slots when more than four are active.
@@ -14823,6 +15073,11 @@ int main(int argc, char** argv) {
                         std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms);
                         sl.active = false;
                         sl.cached = o.prompt_cache > 0 && !sl.img && !sl.tainted;
+                        sl.used = ++slot_clock;
+                        if (kv_pool.active() && !sl.cached) {
+                            sl.checks.clear();
+                            kv_pool.release(*bslot_ss[0][(size_t) b]);
+                        }
                         break;
                     }
                     sl.x = y;
@@ -14893,6 +15148,7 @@ int main(int argc, char** argv) {
                 sl.draft_ready = true;
             }
 #endif
+            pool_report();
             std::fflush(stdout);
             bt_emit += msd(w2, Clock::now());
             if (adapt_run.th.joinable()) {
@@ -14920,7 +15176,7 @@ int main(int argc, char** argv) {
                 std::string per_stage;   // every stage's own host wait for its GPU and its pool time (run_slot_rows recurses)
                 for (size_t k = 0; k <= stages.size(); ++k) {
                     char sb[96];
-                    std::snprintf(sb, sizeof sb, "%sCUDA%d wait %.2f + pool %.2f", k == 0 ? "" : ", ", k == 0 ? 0 : stages[k - 1]->dev,
+                    std::snprintf(sb, sizeof sb, "%sCUDA%d wait %.2f + pool %.2f", k == 0 ? "" : ", ", k == 0 ? primary_device : stages[k - 1]->dev,
                                   (stage_verifier((int) k).ms_wait - bt_stage_wait0[k]) / w,
                                   (stage_verifier((int) k).ms_pool - bt_stage_pool0[k]) / w);
                     per_stage += sb;
@@ -15358,6 +15614,41 @@ int main(int argc, char** argv) {
                             G.tok[t] = sl.active ? sl.x : 0;
                             G.pos[t] = sl.active ? sl.p : 0;
                             if (!sl.active) sl.cached = false;   // its pad row writes its state
+                        }
+                    }
+                    if (kv_pool.active()) {
+                        bool changes = false;
+                        for (int t = 0; t < G.S; ++t) {
+                            const int b = pmtp ? G.rows[t] : pick * GS + t;
+                            changes |= kv_pool.write_need_cells(*bslot_ss[0][(size_t) b], G.pos[t], G.pos[t] + 1) > 0;
+                        }
+                        // Keep the prompt reader and in-flight groups off tables that are about to change.
+                        if (changes && conc_serving) continue;
+                        if (changes && pipe_inflight()) { rr = pick; continue; }
+                        bool backed = true;
+                        for (int t = 0; t < G.S; ++t)
+                            pool_writers[(size_t) (pmtp ? G.rows[t] : pick * GS + t)] = true;
+                        for (int t = 0; t < G.S && backed; ++t) {
+                            const int b = pmtp ? G.rows[t] : pick * GS + t;
+                            backed = pool_reserve(*bslot_ss[0][(size_t) b], G.pos[t] + 1, b, G.pos[t]);
+                        }
+                        for (int t = 0; t < G.S; ++t)
+                            pool_writers[(size_t) (pmtp ? G.rows[t] : pick * GS + t)] = false;
+                        if (!backed) {
+                            for (int t = 0; t < GS; ++t) {
+                                const int b = pick * GS + t;
+                                BSlot& sl = bs[(size_t) b];
+                                if (sl.active)
+                                    std::printf("BDONE %d %lld pool %.1f\n", b, (long long) sl.produced,
+                                                std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count());
+                                sl.active = sl.cached = sl.partial = false;
+                                sl.ids.clear();
+                                sl.checks.clear();
+                                sl.used = ++slot_clock;
+                                kv_pool.release(*bslot_ss[0][(size_t) b]);
+                            }
+                            std::fflush(stdout);
+                            continue;
                         }
                     }
                     G.inflight = true;
@@ -15798,6 +16089,13 @@ int main(int argc, char** argv) {
                     // the elastic K/V (--kv-grow) maps only the cells it has grown to: make room for the file's cells
                     if (!kvg_ensure((int64_t) image.live.ids.size() + 256, adapt_quiesce)) {
                         refuse("the K/V cannot grow to the saved conversation: no VRAM is left", strata::core::SessionError::memory);
+                        continue;
+                    }
+                    // --kv-pool-tokens: the file's cells need chunks in the main session's table (cells past its
+                    // reservation would be restored into the pool's trash chunk and lost)
+                    if (!pool_reserve(ss, (int64_t) image.live.ids.size() + 8, -1, 0)) {
+                        refuse("the KV pool cannot hold the saved conversation: the decoding lanes hold the rest",
+                               strata::core::SessionError::memory);
                         continue;
                     }
                     conversations.take_reuse();   // retained K/V described the outgoing session
@@ -16286,7 +16584,9 @@ int main(int argc, char** argv) {
                     const bool idle_source = !sl.active && sl.cached;
                     // (an active slot only where the drafter's rows come along or are not drafted from: the copy
                     // takes the main layers' cells, so the main drafter would keep another conversation's below it)
-                    const bool active_source = sl.active && !sl.tainted && slot_ckpt_move_env() &&
+                    // (not with --kv-pool-tokens: the slot's chunks would move to the main session while it decodes)
+                    const bool active_source = sl.active && !sl.tainted &&
+                                               ((kv_pool.sharing() && !sl.img) || (slot_ckpt_move_env() && !kv_pool.active())) &&
                                                (!use_mtp || batch_mtp || admit_slot >= 0);
                     if (sl.cvec != want_cvec || !(idle_source || active_source)) continue;
                     if (idle_source && (int64_t) sl.ids.size() > std::max(resume, slot_tokens) && starts_with(sl.ids, {})) {
@@ -16301,6 +16601,48 @@ int main(int argc, char** argv) {
                             slot_ck = &c;
                         }
                 }
+            auto parked = conversations.best(ids, req_imgs, want_cvec);
+            if (parked.tokens > std::max(resume, slot_tokens)) slot_source = -1;
+            // --kv-pool-tokens: the main session reads the prompt and decodes past it (each window grows it further);
+            // refused here, before anything is parked or taken out of the conversation cache. A conversation coming
+            // back from a slot brings its chunks along (copy_from_slot), so that reservation waits until it has.
+            // "KV pool full" begins the line on purpose: the server answers it 503 with Retry-After.
+            auto pool_full = [&] {
+                std::printf("ERR KV pool full: the decoding lanes hold all %lld cells of --kv-pool-tokens; try again "
+                            "when one finishes\n", (long long) kv_pool.total_cells());
+                std::fflush(stdout);
+            };
+            bool shared_admitted = false;
+            if (kv_pool.sharing() && parked.tokens > std::max(resume, slot_tokens)) {
+                const auto* source = conversations.find(parked.serial);
+                const auto* prefix = source ? source->pool_prefix() : nullptr;
+                if (prefix) {
+                    const int64_t mounted = stages.empty() && conversations.borrows(parked)
+                                                ? parked.tokens : (int64_t) source->live.ids.size();
+                    // Parking next can retain all completed chunks of the outgoing lane. Hold that real ownership
+                    // during admission too, before taking the incoming entry or changing either conversation.
+                    std::shared_ptr<const strata::core::KvChunkMap::Prefix> outgoing;
+                    if (conversations.enabled() && live_ok && !live.empty() && conversations.wants((int64_t) live.size()))
+                        for (size_t k = 0; !outgoing && k <= stages.size(); ++k) {
+                            const auto& current = lane_ss(k, -1);
+                            for (int64_t j = 0; !outgoing && j < current.qsa_alloc; ++j)
+                                if (current.qsa_states[current.qsa_ord0 + j].prefix_pool)
+                                    outgoing = kv_pool.retain(current.qsa_states[current.qsa_ord0 + j], (int64_t) live.size());
+                        }
+                    conversations.guard(parked.serial);
+                    shared_admitted = pool_reserve(ss, std::max(mounted, n + 8), -1, -1, prefix, mounted);
+                    conversations.unguard();
+                    if (!shared_admitted) {
+                        pool_full();
+                        continue;
+                    }
+                    parked.index = conversations.index_of(parked.serial);
+                }
+            }
+            if (slot_source < 0 && !shared_admitted && !pool_reserve(ss, n + 8, -1)) {
+                pool_full();
+                continue;
+            }
             // #2228: a checkpoint or the live state whose TOKENS this prompt starts with, deeper than what is reused, but
             // whose pictures differ (a picture is its grid and the hash of its embeddings: an image encoded again with
             // other bits - another encoder start, a CPU encoder that is not bit-reproducible - no longer matches).  The
@@ -16335,7 +16677,6 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
@@ -16497,6 +16838,7 @@ int main(int argc, char** argv) {
                     from_live = false;
                 } else {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
+                    const bool slot_partial = bs[(size_t) slot_source].partial;   // (the branch below ends it)
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
@@ -16513,7 +16855,8 @@ int main(int argc, char** argv) {
                     // as superseded (#342) instead of taking a parked entry each until the cache evicts another chat.
                     // STRATA_SLOT_CKPT_MOVE: the slot this request continues in drops its checkpoints at the
                     // admission, so they move (the one continued from moves on into the slot then: moved_in)
-                    const bool move_cks = slot_ckpt_move_env() && admit_slot == slot_source;
+                    const bool move_cks = !kv_pool.sharing() &&
+                        ((kv_pool.active() && !slot_partial) || (slot_ckpt_move_env() && admit_slot == slot_source));
                     const int64_t ck_len = slot_ck != nullptr ? (int64_t) slot_ck->ids.size() : -1;
                     std::vector<ConvCheckpoint>& sc = bs[(size_t) slot_source].checks;
                     // a shorter checkpoint comes along only when it is a prefix of the tokens copied back (text only):
@@ -16569,6 +16912,19 @@ int main(int argc, char** argv) {
                                  "%.1f ms\n", slot_source, (long long) slot_tokens,
                                  slot_ck != nullptr ? "its turn checkpoint" : "all it holds",
                                  std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+                }
+                if (kv_pool.active() && !kv_pool.sharing()) { // sharing leaves the donor's own state and tokens intact
+                    BSlot& sl = bs[(size_t) slot_source];
+                    sl.cached = false;
+                    sl.partial = false;
+                    sl.ids.clear();
+                    sl.checks.clear();
+                    kv_pool.release(*bslot_ss[0][(size_t) slot_source]);
+                    if (!pool_reserve(ss, n + 8, -1)) {   // refused; the main session keeps the conversation for a retry
+                        pool_report();
+                        pool_full();
+                        continue;
+                    }
                 }
             }
             // the elastic K/V: a parked conversation is restored whole, and it may be longer than this prompt
@@ -16655,10 +17011,10 @@ int main(int argc, char** argv) {
                 cvec_cached = incoming->cvec;
                 resume = parked.tokens;
                 from_live = parked.live;
-                if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
+                if (!kv_pool.sharing() && std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park
                     for (auto& si : incoming->stage_images) stage_kv.push_back(std::move(si.kv));
-                    conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv), live);
+                    conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv), live, live_imgs);
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 lent_slot = -1;   // (the main session holds the parked conversation now)
@@ -16666,6 +17022,11 @@ int main(int argc, char** argv) {
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
+            }
+            if (kv_pool.sharing() && !pool_reserve(ss, n + 8, slot_source)) {
+                pool_report();
+                pool_full();
+                continue;
             }
             if (want_cvec != cvec_cached) {
                 live_ok = false;
@@ -16695,6 +17056,10 @@ int main(int argc, char** argv) {
                     return 1;
                 }
             }
+            // what the main session held past this request's reach (an earlier, longer conversation, parked above
+            // when it was worth keeping) goes back to the pool
+            kv_pool.shrink(ss, n + 8);
+            pool_report();
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
             if (resume == 0) {
                 strata::core::session_zero(ss, g, nullptr, main_cs);
@@ -16823,6 +17188,11 @@ int main(int argc, char** argv) {
                                  (unsigned long long) (mtp.experts_bytes() >> 20), mtp_room_slots,
                                  std::chrono::duration<double, std::milli>(Clock::now() - room_t0).count());
                 }
+            }
+            if (kv_pool.sharing() && !pool_reserve(ss, n + 8, slot_source, read_from)) {
+                pool_report();
+                pool_full();
+                continue;
             }
             conversations.limit_reuse(read_from);
             pp_total = n;
@@ -17335,14 +17705,23 @@ int main(int argc, char** argv) {
                         sg.n = (int64_t) c.ids.size() - 1;   // (the last token goes through the slot's own first window)
                         sg.pos0 = 0;
                         for (size_t k = 0; k < bslot_ss.size(); ++k) sg.stage_ss.push_back(bslot_ss[k][(size_t) c.slot].get());
+                        if (kv_pool.active()) {
+                            park_slot(c.slot);
+                            pool_writers[(size_t) c.slot] = true;
+                            if (!pool_reserve(*sg.stage_ss[0], sg.n + 8, c.slot, 0)) {
+                                pool_writers[(size_t) c.slot] = false;
+                                continue;
+                            }
+                        }
                         segs.push_back(sg);
                         used.push_back(&c);
                     }
+                    for (const CoReq* c : used) pool_writers[(size_t) c->slot] = false;
                     if (segs.size() < 2) return sp.run(lead.tokens, lead.n, lead.pos0, ce);
                     for (const CoReq* c : used) {
-                        park_slot(c->slot);   // the conversation the slot holds, before this read overwrites it
+                        if (!kv_pool.active()) park_slot(c->slot);   // pooled sources were parked before COW
                         for (size_t k = 0; k < bslot_ss.size(); ++k) {
-                            const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
+                            const strata::core::OnDevice on_k(k == 0 ? primary_device : stages[k - 1]->dev);
                             strata::core::session_zero(*bslot_ss[k][(size_t) c->slot], g, nullptr, nullptr);
                             cudaDeviceSynchronize();
                         }
@@ -17401,8 +17780,9 @@ int main(int argc, char** argv) {
                     return v != nullptr && std::atoi(v) != 0;
                 }();
                 auto run_conc = [&](int64_t q, int64_t r) -> bool {
+                    // Co-read admission changes shared pool ownership on the host thread, before any windows resume.
                     if (!conc1 || piped || !stages.empty() || o.batch <= 0 || !o.no_prefill_borrow || !batch_on() ||
-                        !req_imgs.empty() || kvg.on)
+                        !req_imgs.empty() || kvg.on || (kv_pool.active() && !co_set.empty() && !co_tried))
                         return run(q, r);
                     std::atomic<bool> done{false};
                     bool read_ok = false;
@@ -17481,7 +17861,7 @@ int main(int argc, char** argv) {
                     const auto ty = Clock::now();
                     std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
                     if (can) park_slot(ys);   // the conversation the slot holds, before this read overwrites it
-                    if (can && copy_to_slot(ys, pre, ye)) {
+                    if (can && copy_to_slot(ys, pre, false, ye)) {
                         BSlot& sl = bs[(size_t) ys];
                         sl = BSlot{};
                         sl.ids = std::move(pre);
@@ -18276,9 +18656,13 @@ int main(int argc, char** argv) {
             // (with STRATA_IQ_MT_MIN=1 bit for bit; sampled requests with the same Philox draw per position).
             bool pl_ran = false;
             const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
+            // --kv-pool-tokens: the pipelined loop launches windows ahead of each other and does not reserve per window
+            // as the serial loop does, so it backs the whole context first (it runs without --batch: no slot to give way)
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
-                                  : mtp.coupled() ? "coupled draft sampling" : nullptr;
+                                  : mtp.coupled() ? "coupled draft sampling"
+                                  : kv_pool.active() && !pool_reserve(ss, o.max_context, -1, p)
+                                      ? "a KV pool (--kv-pool-tokens) that cannot back the whole context" : nullptr;
             if (pl_serial != nullptr) {   // said once per reason
                 static std::set<std::string> said;
                 if (said.insert(pl_serial).second)
@@ -19081,6 +19465,11 @@ int main(int argc, char** argv) {
                 const bool timed_round = !first_window;
                 const Clock::time_point round0 = Clock::now();
                 if (p + T > o.max_context) break;
+                if (!pool_reserve(ss, p + T, -1, p)) { // every candidate, including rejected speculative tails, writes KV
+                    std::fprintf(stderr, "strata serve: KV pool full: the request ends at %lld tokens\n", (long long) p);
+                    finish = "pool";   // a "length" the client did not ask for: the server flags it truncated
+                    break;
+                }
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i)
                     window[(size_t) i] = merged     ? (int32_t) ids[(size_t) (p + i)]
@@ -19604,13 +19993,15 @@ int main(int argc, char** argv) {
                     }
                     return h;
                 };
-                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
-                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+                // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`;
+                // `host` maps a page to its place in a shared KV pool (identity without one)
+                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h,
+                                      const strata::kernels::KvHostPools& host) {
                     const int64_t ps = qs.page_size;
                     for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
                         for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
                             const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
-                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+                            const size_t off = (size_t) (((host.block_host(pg) * qs.n_head_kv + hd) * ps + a) * per_cell);
                             h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
                         }
                     return h;
@@ -19663,10 +20054,12 @@ int main(int argc, char** argv) {
                     h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
                     h_pool_full = hash_dev(st.idx_pooled, (size_t) (L > 0 ? L / qs.idx_block + 1 : 0) * qs.idx_dim * 4,
                                            h_pool_full);
-                    // KV streaming: the host copy is the identity layout and holds every cell
+                    // KV streaming: the host copy holds every cell
+                    const strata::kernels::KvHostPools ident{};
+                    const strata::kernels::KvHostPools& map = st.kv_mode != 0 ? st.host : ident;
                     for (const auto& [pool, w] : kv_arrays(st)) {
-                        h_kv = hash_cells(pool, w, 0, L, h_kv);
-                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
+                        h_kv = hash_cells(pool, w, 0, L, h_kv, map);
+                        h_stale = hash_cells(pool, w, L, end_cell, h_stale, map);
                     }
                 }
                 uint64_t h_mtp = 1469598103934665603ull;
@@ -19674,7 +20067,7 @@ int main(int argc, char** argv) {
                     const strata::core::QsaState& ms = mtp.kv_state();
                     const int64_t mL = std::min<int64_t>(L, ms.max_cells);
                     for (const auto& [pool, w] : kv_arrays(ms))
-                        if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+                        if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp, ms.host);
                 }
                 if (!hash_ok) {
                     std::printf("ERR reading state fingerprint\n");
@@ -19724,10 +20117,18 @@ int main(int argc, char** argv) {
                             (int64_t) live.size() == p;
                 const auto tc0 = Clock::now();
                 if (cont) park_slot(admit_slot);   // the conversation the slot holds, before this one overwrites it
-                if (cont && !copy_to_slot(admit_slot, live, err)) {
+                if (cont && !copy_to_slot(admit_slot, live, true, err)) {
                     std::fprintf(stderr, "strata serve: batch admission failed: %s\n", err.c_str());
                     bs[(size_t) admit_slot].cached = false;   // its sessions may be half written
                     cont = false;
+                    if (kv_pool.active()) {   // and the main session's K/V may have moved out
+                        kv_pool.release(*bslot_ss[0][(size_t) admit_slot]);
+                        kv_pool.release(ss);
+                        live.clear();
+                        live_imgs.clear();
+                        checks.clear();
+                        conversations.take_reuse();   // the retained K/V described the conversation that moved out
+                    }
                 }
                 const auto tc1 = Clock::now();
                 if (cont) {
@@ -19783,46 +20184,59 @@ int main(int argc, char** argv) {
                     }
                     sl.cvec = cvec_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached
+                    // --kv-pool-tokens: the K/V moved with the conversation (copy_to_slot), so the slot takes the main
+                    // session's whole checkpoint chain - root, periodic and turn - not only the deepest one: a changed
+                    // last question (or a client that re-renders its history) resumes from the periodic ones, which the
+                    // main session cannot offer any more.  Without the pool the main session keeps its copy and parks it.
                     const ConvCheckpoint* best = nullptr;
                     size_t best_at = 0;   // its place in `checks` (STRATA_SLOT_CKPT_MOVE)
-                    for (size_t i = 0; i < checks.size(); ++i) {
-                        const ConvCheckpoint& c = checks[i];
-                        if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
-                            std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
-                            best = &c;
-                            best_at = i;
-                        }
-                    }
-                    bool best_lent = false;
-                    // STRATA_SLOT_CKPT_MOVE: the checkpoint this request mounted from another slot (that slot keeps it)
-                    if (lent_slot >= 0 && lent_slot != admit_slot && (best == nullptr || (int64_t) best->ids.size() < resume))
-                        for (const ConvCheckpoint& c : bs[(size_t) lent_slot].checks)
-                            if ((int64_t) c.ids.size() == resume && c.ids.size() < live.size() &&
+                    bool best_lent = false, move_best = false;
+                    const auto tc3 = Clock::now();
+                    if (kv_pool.active()) {   // the chain moves whole; the checkpoint move/copy below is the no-pool path
+                        if (!sl.img) strata::core::conversation_checkpoints_carry(checks, live, sl.checks);
+                    } else {
+                        for (size_t i = 0; i < checks.size(); ++i) {
+                            const ConvCheckpoint& c = checks[i];
+                            if (c.ids.size() < live.size() && (best == nullptr || c.ids.size() > best->ids.size()) &&
                                 std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
                                 best = &c;
-                                best_lent = true;
+                                best_at = i;
                             }
-                    // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
-                    // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
-                    const bool move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
-                                           !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
-                                            (int64_t) best->ids.size() == moved_in);
-                    const auto tc3 = Clock::now();
-                    if (move_best) {
-                        sl.checks.push_back(std::move(checks[best_at]));
-                        checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
-                    } else if (best != nullptr && !sl.img) {
-                        if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
-                            ConvCheckpoint c = ckpt_pool.take();
-                            c = *best;
-                            sl.checks.push_back(std::move(c));
-                        } else {
-                            sl.checks.push_back(*best);
+                        }
+                        // STRATA_SLOT_CKPT_MOVE: the checkpoint this request mounted from another slot (that slot keeps it)
+                        if (lent_slot >= 0 && lent_slot != admit_slot && (best == nullptr || (int64_t) best->ids.size() < resume))
+                            for (const ConvCheckpoint& c : bs[(size_t) lent_slot].checks)
+                                if ((int64_t) c.ids.size() == resume && c.ids.size() < live.size() &&
+                                    std::equal(c.ids.begin(), c.ids.end(), live.begin())) {
+                                    best = &c;
+                                    best_lent = true;
+                                }
+                        // STRATA_SLOT_CKPT_MOVE: this request's own turn checkpoint (or the one it moved out of this slot)
+                        // moves into the slot; a pinned prefix, a root and any other the chain shares are copied as before
+                        move_best = slot_ckpt_move_env() && best != nullptr && !best_lent && !sl.img &&
+                                    !best->pinned && ((turn_at > 0 && (int64_t) best->ids.size() == turn_at) ||
+                                     (int64_t) best->ids.size() == moved_in);
+                        if (move_best) {
+                            sl.checks.push_back(std::move(checks[best_at]));
+                            checks.erase(checks.begin() + (std::ptrdiff_t) best_at);
+                        } else if (best != nullptr && !sl.img) {
+                            if (ckpt_pool.on()) {   // a copy into a dropped checkpoint's vectors (their pages are in)
+                                ConvCheckpoint c = ckpt_pool.take();
+                                c = *best;
+                                sl.checks.push_back(std::move(c));
+                            } else {
+                                sl.checks.push_back(*best);
+                            }
                         }
                     }
                     const auto tc4 = Clock::now();
-                    std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
-                                 (long long) live.size(), std::chrono::duration<double, std::milli>(tc4 - tc0).count());
+                    if (kv_pool.active())
+                        std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (moved in %.1f ms; %zu checkpoint%s kept)\n",
+                                     admit_slot, (long long) live.size(), std::chrono::duration<double, std::milli>(tc4 - tc0).count(),
+                                     sl.checks.size(), sl.checks.size() == 1 ? "" : "s");
+                    else
+                        std::fprintf(stderr, "strata batch: slot %d takes %lld tokens (copied in %.1f ms)\n", admit_slot,
+                                     (long long) live.size(), std::chrono::duration<double, std::milli>(tc4 - tc0).count());
                     pc.admission((long long) live.size(), prompt_ms);
                     if (trace) {   // STRATA_TRACE: the admission's phases (ms), from the drain before BGEN to this copy
                         auto span = [](Clock::time_point a, Clock::time_point b) {
@@ -19838,6 +20252,15 @@ int main(int argc, char** argv) {
                                      prompt_ms - req_times.read_ms - req_times.windows_ms - ck, decode_ms, span(tc0, tc1),
                                      span(tc1, tc2), span(tc3, tc4), move_best ? " (moved)" : "");
                     }
+                    // --kv-pool-tokens: the slot holds the conversation now, and its next turn comes back from there;
+                    // the main session holds nothing of it (and what its checkpoints point at is gone)
+                    if (kv_pool.active()) {
+                        live.clear();
+                        live_imgs.clear();
+                        checks.clear();
+                        conversations.take_reuse();   // main holds nothing to park now; its retained K/V is another
+                                                      // conversation's (the slot's) and must not be reused for one
+                    }
                 }
                 std::printf("BADM %d %d\n", admit_slot, cont ? 1 : 0);
                 if (trace && piped && cont) {
@@ -19848,6 +20271,7 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 admit_slot = -1;
             }
+            pool_report();
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
             char read_txt[64];
