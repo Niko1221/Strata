@@ -3803,6 +3803,20 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
         return false;
     }
 #endif
+    // STRATA_FORCE_FAULT=<m>:<bias> (test only, off by default, no output): adds <bias> to the logit of every token id divisible by <m>
+    // before the rows are scored, so the token-forcing checker (tools/force_check.py) can be shown to reject a faulty build
+    {
+        static const std::pair<int64_t, float> fault = [] {
+            const char* v = std::getenv("STRATA_FORCE_FAULT");
+            long long m = 0;
+            float b = 0.0f;
+            if (v != nullptr && std::sscanf(v, "%lld:%f", &m, &b) == 2 && m > 0) return std::make_pair((int64_t) m, b);
+            return std::make_pair((int64_t) 0, 0.0f);
+        }();
+        if (fault.first > 0)
+            for (int t = 0; t < T; ++t)
+                for (int64_t v = 0; v < n_vocab_; v += fault.first) h[(size_t) t * (size_t) n_vocab_ + (size_t) v] += fault.second;
+    }
     for (int t = 0; t < T; ++t) {
         const float* row = h.data() + (size_t) t * (size_t) n_vocab_;
         const int32_t tgt = targets[t];
