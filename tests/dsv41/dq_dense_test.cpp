@@ -1005,16 +1005,23 @@ void run_bench(const TypeInfo& ty) {
             };
             for (int w = 0; w < copies; ++w) call(w);
             CK(hipDeviceSynchronize());
+            // (7 timed runs: the best and the median - a GPU beside a server's idle engine, or still clocking up, makes
+            //  one run's mean move by 5-10%)
             const int reps = std::max(20, 2 * copies);
-            CK(hipEventRecord(e0, 0));
-            for (int r = 0; r < reps; ++r) call(r);
-            CK(hipEventRecord(e1, 0));
-            CK(hipEventSynchronize(e1));
-            float ms = 0;
-            CK(hipEventElapsedTime(&ms, e0, e1));
-            const double us = 1000.0 * ms / reps;
-            std::printf("BENCH %-5s mv k=%5d n=%5d ncol=%d: %8.1f us  %6.1f GB/s (%.2f MB)\n", ty.name, k, n, nc, us,
-                        (double) raw.size() / 1e3 / us, (double) raw.size() / 1e6);
+            std::vector<double> runs;
+            for (int t = 0; t < 7; ++t) {
+                CK(hipEventRecord(e0, 0));
+                for (int r = 0; r < reps; ++r) call(r);
+                CK(hipEventRecord(e1, 0));
+                CK(hipEventSynchronize(e1));
+                float ms = 0;
+                CK(hipEventElapsedTime(&ms, e0, e1));
+                runs.push_back(1000.0 * ms / reps);
+            }
+            std::sort(runs.begin(), runs.end());
+            const double us = runs.front(), med = runs[runs.size() / 2];
+            std::printf("BENCH %-5s mv k=%5d n=%5d ncol=%d: %8.1f us  %6.1f GB/s (%.2f MB; median %.1f us)\n", ty.name, k, n,
+                        nc, us, (double) raw.size() / 1e3 / us, (double) raw.size() / 1e6, med);
             std::fflush(stdout);
             CK(hipFree(d_x));
             CK(hipFree(d_y));
