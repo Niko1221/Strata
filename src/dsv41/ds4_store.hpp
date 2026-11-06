@@ -376,6 +376,29 @@ public:
         }
         return ev.size();
     }
+    /// RAM is short where the GPU reads the slots in place: the GPU-visible slots of the last `want` chunks taken off its
+    /// tables (a Vis event each, dev 0, for the caller to apply before shrink_chunks), stopping at a chunk with a slot pinned
+    /// or loading.  Returns the chunks it cleared.  Only sync() makes a slot visible again, and the caller runs both.
+    size_t hide_tail(size_t want, std::vector<Vis>& ev) {
+        std::lock_guard<std::mutex> lk(mu_);
+        size_t done = 0;
+        for (size_t c = chunks_.size(); c > 0 && done < want; --c) {
+            const size_t first = (c - 1) * kChunk, last = std::min(nalloc_, c * kChunk);
+            for (size_t i = first; i < last; ++i) {
+                const Slot& sp = slots_[i];
+                if (sp.pin > 0 || sp.state.load(std::memory_order_acquire) == kLoading) return done;
+            }
+            for (size_t i = first; i < last; ++i) {
+                Slot& sp = slots_[i];
+                if (sp.visible) {
+                    sp.visible = false;
+                    ev.push_back({sp.layer, sp.expert, 0ull});
+                }
+            }
+            ++done;
+        }
+        return done;
+    }
     /// RAM is short: gives back whole chunks from the end of the arena (their experts forgotten) - up to `want`, stopping at one
     /// with a slot in use (pinned, loading, or GPU-visible).  Returns the chunks given back.
     size_t shrink_chunks(size_t want) {

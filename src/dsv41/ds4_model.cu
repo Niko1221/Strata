@@ -6547,7 +6547,12 @@ struct Model::Impl {
             else (void) cudaGetLastError();
         }
         const bool uma = strata::ds4::store_gpu_shares_ram(any_integrated, avail0_, avail);
-        const double ctx_gb = uma ? 1.1e-4 * std::max(0.0, (double) o.max_context - 16384.0) : 0.0;
+        // (under the UMA tier the context's caches are already allocated here; a prompt then takes the layer-major path's
+        // host buffers, measured on a GB10 at 11.4 GB at the start of a 112K-token prompt and 1.4 GB more over it, and
+        // nothing on prompts of a few hundred tokens: DS4_UMA_CTX_GB, 13 by default, stands in for the estimate, which
+        // store_watch backs with chunks given back should the RAM run short)
+        const double ctx_est = 1.1e-4 * std::max(0.0, (double) o.max_context - 16384.0);
+        const double ctx_gb = !uma ? 0.0 : uma_tier() ? std::min(ctx_est, (double) env_f("DS4_UMA_CTX_GB", 13.0f)) : ctx_est;
         const double room = (double) avail / 1e9 - 12.0 - ctx_gb;
         const double now = room >= 4.0 ? std::min(store_cap_gb(), room) : 0.0;
         if (now < gb)
@@ -6755,6 +6760,11 @@ struct Model::Impl {
         if (!store || !store->gpu_mapped()) return;
         std::vector<ExpertStore::Vis> ev;
         store->sync(ev, [&](int layer, int e) { return L[(size_t) layer].slot[(size_t) e] < 0; });
+        apply_vis(ev);
+    }
+    // the store's visibility changes into the layers' tables: the host's (the CPU lane skips what the device computes) and
+    // the device's (the slots' addresses, 0: the CPU lane's), queued on the device's stream
+    void apply_vis(const std::vector<ExpertStore::Vis>& ev) {
         if (ev.empty()) return;
         std::vector<char> dirty(L.size(), 0);
         for (const auto& v : ev) {
@@ -8847,7 +8857,18 @@ struct Model::Impl {
         const uint64_t avail = ram_avail();
         if (avail == ~uint64_t{0} || avail >= (4ull << 30)) return;
         const size_t chunks = 1 + (size_t) (((5ull << 30) - avail) / (700ull << 20));
-        const size_t n = store->shrink_chunks(chunks);
+        size_t want = chunks;
+        if (store->gpu_mapped()) {   // (the GPU reads slots in place: off its tables, and its work done, before any chunk goes)
+            std::vector<ExpertStore::Vis> ev;
+            want = store->hide_tail(chunks, ev);
+            if (!ev.empty()) {
+                cudaSetDevice(devs[0].id);
+                if (cudaStreamSynchronize(devs[0].st) != cudaSuccess) (void) cudaGetLastError();
+                apply_vis(ev);
+                if (cudaStreamSynchronize(devs[0].st) != cudaSuccess) (void) cudaGetLastError();
+            }
+        }
+        const size_t n = want > 0 ? store->shrink_chunks(want) : 0;
         if (n > 0) std::fprintf(stderr, "ds4: RAM store: %.1f GB free: gave back %zu chunks (%zu slots left)\n", avail / 1e9, n, store->slots_allocated());
     }
     void cache_tick_swaps(int T) {
