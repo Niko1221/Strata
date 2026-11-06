@@ -1372,6 +1372,7 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
 #endif
     if (max_c <= 1) strata_ds4_launch(mv_kernel<T, 1>, grid, kThreads, 0, s, J);
     else if (max_c <= 4) strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, J);
+    else if (max_c <= 8) strata_ds4_launch(mv_kernel<T, 8>, grid, kThreads, 0, s, J);   // (a drafter's window of 5-8: half the registers of 16)
     else strata_ds4_launch(mv_kernel<T, 16>, grid, kThreads, 0, s, J);
 }
 
