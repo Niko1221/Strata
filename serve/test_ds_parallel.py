@@ -15,12 +15,15 @@ import threading
 import time
 import unittest
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
 from serve import server
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service, StrataEngine, parallel_args, serve
+from serve.test_parallel import wait_until
 
 # One token every STEP seconds per active request (a multi step serves every active request at once).  A request's
 # reply is the byte of its first prompt id six times, then 257 (<|im_end|> in the ByteTokenizer), or "ok, done." then
@@ -241,41 +244,26 @@ class Engine(unittest.TestCase):
 
     def test_monitor_multi_progress_is_not_taken_from_another_request_queue(self):
         self.start(2, prefill_gate=True)
-        svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
-        self.httpd = serve(svc, port=0)
-        base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        results = []
-        first_ids = list(b"METRICSHOLD " + b"x" * 28)
-        second_ids = list(b"METRICSHOLD " + b"y" * 68)
-        def run(ids):
-            results.append(list(svc.run(ids, False, [], 32, {}, threading.Event())))
-        first = threading.Thread(target=run, args=(first_ids,))
-        second = threading.Thread(target=run, args=(second_ids,))
-        first.start()
-        try:
-            end = time.monotonic() + 5
-            while not self.engine.progress and time.monotonic() < end:
-                time.sleep(0.01)
-            second.start()
-            end = time.monotonic() + 5
-            while time.monotonic() < end:
-                with urllib.request.urlopen(base + "/metrics", timeout=10) as response:
-                    live = json.load(response)["live"]
-                if live["prompt_read"] == 80 and self.engine.progress == (20, 40):
-                    break
-                time.sleep(0.01)
-            self.assertEqual(self.engine.progress, (20, 40), "the first queue must report after the second")
-            with svc.status_lock:
-                newest = list(svc.terminal_requests.values())[-1]
-        finally:
+        self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            first = pool.submit(list, self.svc.run(list(b"METRICSHOLD " + b"x" * 28), False, [], 32, {}, threading.Event()))
+            self.assertTrue(wait_until(lambda: self.engine.progress, 5))
+            second = pool.submit(list, self.svc.run(list(b"METRICSHOLD " + b"y" * 68), False, [], 32, {}, threading.Event()))
+            self.assertTrue(wait_until(
+                lambda: self.svc.metrics()["live"]["prompt_read"] == 80 and self.engine.progress == (20, 40), 5))
+            with urllib.request.urlopen(self.base + "/metrics", timeout=10) as response:
+                live = json.load(response)["live"]
+            with self.svc.status_lock:
+                newest = list(self.svc.terminal_requests.values())[-1]
+            self.assertEqual(live["prompt_tokens"], 80)
+            self.assertEqual((live["prompt_read"], live["prompt_total"]), (80, 80))
+            self.assertEqual(live["request_id"], newest["id"])
             self.prefill_gate.touch()
-            first.join(10)
-            if second.ident is not None:
-                second.join(10)
-        self.assertEqual(live["prompt_tokens"], 80)
-        self.assertEqual((live["prompt_read"], live["prompt_total"]), (80, 80))
-        self.assertEqual(live["request_id"], newest["id"])
-        self.assertEqual(len(results), 2)
+            first.result(timeout=10)
+            second.result(timeout=10)
 
 
 if __name__ == "__main__":

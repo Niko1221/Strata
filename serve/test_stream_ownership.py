@@ -18,7 +18,7 @@ from unittest import mock
 
 from serve.replicas import ReplicaEngine
 from serve.server import StrataEngine
-from serve.test_parallel import FAKE_BATCH
+from serve.test_parallel import FAKE_BATCH, wait_until
 
 CANARY_REPEAT = 60
 CANARY_RE = re.compile(rb"[A-Z]{2}\d{4}")
@@ -370,15 +370,6 @@ class Client(threading.Thread):
 
     def complete(self):
         return self.tokens == expected_reply(self.canary)
-
-
-def wait_until(cond, timeout=10.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if cond():
-            return True
-        time.sleep(0.005)
-    return False
 
 
 class BatchOwnership(FakeEngines, unittest.TestCase):
