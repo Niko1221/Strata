@@ -1401,6 +1401,15 @@ struct Model::Impl {
         const char* v = std::getenv("STRATA_DS4_DISK_SKIP_W");
         return v != nullptr ? std::max(0.0f, (float) std::atof(v)) : 0.0f;
     }();
+    // STRATA_DS4_DISK_SKIP_RANK=R (experimental opt-in, CHANGES THE ANSWERS; 0 = off): on the same small windows the CPU lane
+    // leaves out a routed expert in neither RAM nor the store that no token of the window picked at rank R or better (1: a
+    // token's first pick - the router picks in score order): only the experts every token ranks low skip the SSD.  R = 2 is
+    // the rule a DGX Spark build of DeepSeek-V4.1 ships on by default (its "SSD tail skip at rank 2-6": KL to the official
+    // weights +0.021, decode steps about 40% faster on that machine); measure the cost on yours.  Off by default.
+    const int disk_skip_rank = [] {
+        const char* v = std::getenv("STRATA_DS4_DISK_SKIP_RANK");
+        return v != nullptr ? std::max(0, std::atoi(v)) : 0;
+    }();
     // STRATA_DS4_RAM_SKIP_W (experimental opt-in, CHANGES THE ANSWERS; 0 = off): the same rule for every routed expert
     // VRAM does not hold - in RAM or not: a token goes without the light ones the link or the CPU lane would read.
     // Where the experts all sit in RAM the decode is bound by the RAM's bandwidth, and each one left out is a
@@ -9612,6 +9621,17 @@ struct Model::Impl {
                 const bool aon = dsk_rule && disk_skip_auto && sk_auto.on.load(std::memory_order_relaxed);
                 const bool dsk = dsk_rule && (!disk_skip_auto || aon);
                 const bool rsk = ram_skip_w > 0.0f && !l.mtp && li >= disk_skip_from && li < g.nl;
+                // (DISK_SKIP_RANK: each expert's best rank over the window's tokens, 0-based - its pick index)
+                const bool rkr = disk_skip_rank > 0 && !l.mtp && li >= disk_skip_from && li < g.nl && l.n_exp <= 1024;
+                int8_t best_rank[1024];
+                if (rkr) {
+                    std::fill(best_rank, best_rank + l.n_exp, (int8_t) 127);
+                    for (int t = 0; t < T; ++t)
+                        for (int i = 0; i < l.k_exp; ++i) {
+                            const int e = r.ids[t][i];
+                            if (e >= 0 && e < l.n_exp && i < best_rank[e]) best_rank[e] = (int8_t) i;
+                        }
+                }
                 int heavy = 0, cold = 0, heavy_cpu = 0;
                 for (int t = 0; t < T; ++t) {
                     float wsum = 0.0f;   // (DISK_SKIP_W: the token's route weights)
@@ -9640,7 +9660,9 @@ struct Model::Impl {
                                 ++st.store_zc;
                                 continue;
                             }
-                            if ((light && !in_ram(l, e)) || (rsk && r.w[t][i] < ram_skip_w * wsum)) {
+                            if ((light && !in_ram(l, e)) || (rsk && r.w[t][i] < ram_skip_w * wsum) ||
+                                (rkr && best_rank[e] >= disk_skip_rank - 1 && !in_ram(l, e) &&
+                                 !(store && store->find(li, e) >= 0))) {
                                 ++st.skipped;
                                 continue;
                             }
