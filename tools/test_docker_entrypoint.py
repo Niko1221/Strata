@@ -200,8 +200,18 @@ class Entrypoint(unittest.TestCase):
         (data / "Strata-data" / "models" / "t").mkdir(parents=True)
         (data / "Strata-data" / "models" / "t" / "f.gguf").write_text("new")
         p = self.start(MODEL="IQ3_XXS")
-        self.wait_for("--show-key")
-        self.stop(p)
+        out, err = p.communicate(timeout=5)
+        self.assertEqual(p.returncode, 2, out + err)
+        self.assertIn("would download the model again", err)
+        self.assertNotIn("launch --no-tui", self.log.read_text())
+        self.assertEqual((data / "Strata-data" / "models" / "t" / "f.gguf").read_text(), "new")
+        self.assertEqual((data / "models" / "t" / "f.gguf").read_text(), "old")
+        # Even an explicit override must preserve both conflicting copies.
+        p = self.start(MODEL="IQ3_XXS", ALLOW_DOWNLOAD="1")
+        try:
+            self.wait_for("--show-key")
+        finally:
+            self.stop(p)
         self.assertEqual((data / "Strata-data" / "models" / "t" / "f.gguf").read_text(), "new")   # never overwritten
         self.assertEqual((data / "models" / "t" / "f.gguf").read_text(), "old")
 
