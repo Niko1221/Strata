@@ -32,7 +32,7 @@ async function request<T>(method: string, path: string, body?: unknown, signal?:
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>('GET', path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
   post: <T>(path: string, body?: unknown, signal?: AbortSignal) => request<T>('POST', path, body, signal),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
@@ -48,7 +48,7 @@ export interface StreamEvent {
 export function onEvent(handler: (e: StreamEvent) => void, onStatus?: (s: 'live' | 'offline') => void) {
   let source: EventSource;
   let seenAt = Date.now();
-  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue', 'steering'];
+  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue', 'steering', 'chats'];
   const connect = () => {
     source?.close();
     seenAt = Date.now();

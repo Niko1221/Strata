@@ -43,9 +43,27 @@ test('a closed parent with a working helper rejects steering, then publishes par
   assert.equal(bridge.isRunning('helpers'), true);
   await assert.rejects(bridge.steer({ chatId: 'helpers', id: 'closed-parent', text: 'Keep this correction' }), /parent agent is not accepting/);
   assert.deepEqual(bridge.steeringState('helpers'), []);
+  const requestId = frames.find(frame => frame.type === 'start')?.requestId;
+  const reattached = [];
+  const attachment = bridge.attach({ chatId: 'helpers', requestId, onFrame: frame => reattached.push(frame), signal: new AbortController().signal });
+  assert.equal(attachment?.live, true);
+  assert.equal(reattached.filter(frame => frame.type === 'steering-availability').at(-1)?.available, false);
   await done;
-  const eligibility = frames.filter(f => f.type === 'steering-availability').map(f => f.available);
-  assert.deepEqual(eligibility.slice(0, 5), [false, true, false, true, false]);
+  assert.deepEqual(frames.filter(f => f.type === 'steering-availability').map(f => f.available), [false, true, false]);
+  assert.deepEqual(reattached.filter(f => f.type === 'steering-availability').map(f => f.available), [false, true, false]);
+});
+
+test('reattaching an open parent turn republishes steering eligibility to the new page', { skip, timeout: 60000 }, async t => {
+  const r = await rig(t, { holdFuture: true }); await r.prefix;
+  await waitFor(() => r.frames.some(frame => frame.type === 'steering-availability' && frame.available === true));
+  const requestId = r.frames.find(frame => frame.type === 'start')?.requestId;
+  const reattached = [];
+  const attachment = r.bridge.attach({ chatId: 'chat-a', requestId, onFrame: frame => reattached.push(frame), signal: new AbortController().signal });
+  assert.equal(attachment?.live, true);
+  assert.equal(reattached[0]?.resumed, true);
+  assert.equal(reattached.filter(frame => frame.type === 'steering-availability').at(-1)?.available, true);
+  r.releaseModel();
+  await r.done;
 });
 
 test('an old or missing Harness rejects true steering without starting a replacement run', async t => {

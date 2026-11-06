@@ -604,7 +604,8 @@ class Helpers(unittest.TestCase):
         and UD-Q5_K_XL, UD-Q6_K_XL and Q8_0 follow by size."""
         s = M.Strata(HERE.parent)
         for models in (s.tables()[0], M.FALLBACK_MODELS):
-            self.assertEqual(s.sizes_of(models, "unsloth"), ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+            self.assertEqual(s.sizes_of(models, "unsloth"), ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0",
+                                                             "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])
             self.assertFalse(models["UD-IQ4_XS"].get("experimental"))
             self.assertFalse(models["UD-Q4_K_XL"].get("experimental"))
         self.assertEqual(s.sizes_of(M.FALLBACK_MODELS, "qwen"), ["Q2_0", "IQ2_XS", "IQ3_XXS", "IQ3_S"])
@@ -636,7 +637,7 @@ class Helpers(unittest.TestCase):
         self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
         small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
         self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"does not fit"})
-        self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[-1], "Q8_0")      # the Unsloth Flash-Next sizes are untouched
+        self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[:5], ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])      # the Unsloth Flash-Next sizes are untouched (round 0214 adds sizes after them)
 
     def test_qwen36_install_plan(self):
         s = M.Strata(HERE.parent)
@@ -768,11 +769,16 @@ class MacCatalog(unittest.TestCase):
     def test_the_model_list_is_the_macs_sizes_with_unified_memory_verdicts(self):
         s, hw = self.hw(32)
         fams = s.model_table(hw)
-        self.assertEqual([f["family"] for f in fams], ["qwen", "gyro", "deepseek41"],
-                         "no Unsloth, Swift or NVFP4 on a Mac in the app; Gyro after the regular sizes, DeepSeek (0.2.7.1) last")
+        self.assertEqual([f["family"] for f in fams], ["qwen", "unsloth", "gyro", "deepseek41"],
+                         "Unsloth's sets since round 0214 (the app repacks them), no Swift or NVFP4 on a Mac; Gyro after the regular sizes, DeepSeek (0.2.7.1) last")
         by = {x["model"]: x for x in fams[0]["sizes"]}
         self.assertEqual(list(by), ["Q2_0", "IQ3_XXS", "IQ3_S"])
-        gy = {x["model"]: x for x in fams[1]["sizes"]}
+        un = {x["model"]: x for x in fams[1]["sizes"]}
+        self.assertEqual(list(un), ["UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"])
+        self.assertEqual((un["UD-IQ1_M"]["download_gb"], un["UD-IQ1_M"]["experts_gb"]), (68.0, 34.8))
+        self.assertTrue(all(x["on_this_pc"] and x["images"] and x["id"] == "unsloth-" + x["model"].lower() for x in un.values()))
+        self.assertTrue(un["UD-Q5_K_XL"]["on_this_pc"].startswith("slow here"), "32 GB: 104 GB to map does not fit, said not refused")
+        gy = {x["model"]: x for x in fams[2]["sizes"]}
         self.assertEqual(list(gy), ["Gyro-S", "Gyro-M"])
         self.assertEqual(gy["Gyro-S"]["download_gb"], 58.5)
         self.assertTrue(all(v["on_this_pc"] and "SSD" in v["on_this_pc"] for v in gy.values()), "32 GB: both stream (said, not refused)")
@@ -782,7 +788,11 @@ class MacCatalog(unittest.TestCase):
         self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"fits"})
+        fits = {x["model"]: x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}
+        from strata_control import mac_fit
+        for m, v in fits.items():                       # the 128 GB Mac keeps ~96 GB resident: UD-Q5_K_XL and UD-Q6_K_XL (104 / 115 GB to map) stream, said not refused
+            self.assertEqual(v == "fits", not mac_fit.streams(m, 128.0), m)
+        self.assertEqual({m for m, v in fits.items() if v != "fits"}, {"UD-Q5_K_XL", "UD-Q6_K_XL"})
         s, hw = self.hw(8)
         self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
         self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
@@ -862,6 +872,26 @@ class MacCatalog(unittest.TestCase):
             s2, hw2 = self.hw(8)
             s2.hardware = lambda fresh=False: hw2
             M.Tools(s2).install_plan(None, None, None, None, None, None, None, None, None, None, None)
+
+    def test_the_install_plan_counts_the_repacked_file_of_an_unsloth_set(self):
+        """Round 0214: the Mac app repacks Unsloth's shards into one GGUF: the disk it needs is the download, that file (mac_fit shard1_gb) and room to work."""
+        s, hw = self.hw(128)
+        s.hardware = lambda fresh=False: hw
+        s.disk_free = lambda p: 1000.0
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "Strata-data"
+            target.mkdir()
+            plan, args = M.Tools(s).install_plan("unsloth", "UD-IQ1_M", None, "no", "int8", 0, None, None, "auto", None, str(target))
+            plain, _ = M.Tools(s).install_plan("qwen", "Q2_0", None, "no", "int8", 0, None, None, "auto", None, str(target))
+        self.assertEqual(plan["disk_needed_gb"], round(68.0 + 8 + 39.2))
+        self.assertEqual(plain["disk_needed_gb"], round(plain["download_gb"] + 8))     # no repack for a GSQ-RCO file
+        self.assertEqual(args[:6], ["--yes", "--no-start", "--family", "unsloth", "--model", "UD-IQ1_M"])
+        s.disk_free = lambda p: 100.0
+        with tempfile.TemporaryDirectory() as t:
+            target = Path(t) / "Strata-data"
+            target.mkdir()
+            short, _ = M.Tools(s).install_plan("unsloth", "UD-IQ1_M", None, "no", "int8", 0, None, None, "auto", None, str(target))
+        self.assertIn("not enough free disk space", short["disk_short"])
 
     def test_the_install_plan_for_deepseek_on_a_mac_is_text_only_at_8k(self):
         """(with an engine that has no Metal picture tower)"""

@@ -17,8 +17,8 @@ test('desktop settings and composer expose all four modes, retain drafts on fail
     import * as app from './src/lib/store';
     import { applyNativeEvent } from './src/lib/native';
     const native = { available: true, jobs: [], instances: [{ id: 'fixture', model: 'fixture', label: 'Fixture', apiModelId: 'fixture', status: 'ready', gpus: [], metrics: null }], defaultId: 'fixture', fields: [], catalog: null, installed: null, hardware: null };
-    const requests = [], steers = []; let releaseQueue;
-    window.fixture = { app, requests, steers, failSteer: false, stops: 0,
+    const requests = [], steers = [], hostChats = new Map(JSON.parse(sessionStorage.getItem('fixture-host-chats') ?? '[]')); let releaseQueue;
+    window.fixture = { app, requests, steers, hostChats, failSteer: false, stops: 0,
       deliver: n => { const message = steers[n]; const request = requests.at(-1); request.frame({type:'steering-cut'}); request.frame({type:'steering',message:{id:message.id,text:message.message,state:'delivered'}}); request.frame({type:'delta',text:'Continued after correction'}); },
       finish: n => { requests[n].frame({type:'done',tokensOut:1}); requests[n].end(); },
       fail: n => requests[n].fail(),
@@ -26,6 +26,21 @@ test('desktop settings and composer expose all four modes, retain drafts on fail
     };
     window.fetch = async (url, init) => {
       const path = new URL(url, location.origin).pathname;
+      if (path === '/api/chat/active') return Response.json({turns:[]});
+      if (path === '/api/chats' && (!init?.method || init.method === 'GET')) return Response.json({chats:[...hostChats].map(([id,value])=>({id,rev:value.rev,updatedAt:value.session.updatedAt}))});
+      if (path === '/api/chats/import' && init?.method === 'POST') {
+        const imported = JSON.parse(init.body).sessions ?? [];
+        for (const session of imported) if (!hostChats.has(session.id)) hostChats.set(session.id,{session,rev:1});
+        sessionStorage.setItem('fixture-host-chats', JSON.stringify([...hostChats]));
+        return Response.json({imported:imported.map(s=>s.id),skipped:[],failed:[]});
+      }
+      const chatId = path.startsWith('/api/chats/') ? decodeURIComponent(path.slice('/api/chats/'.length)) : '';
+      if (chatId && !chatId.includes('/')) {
+        const id = chatId, current = hostChats.get(id);
+        if (init?.method === 'GET') return current ? Response.json(current) : Response.json({error:'No such chat.',code:'not-found'},{status:404});
+        if (init?.method === 'PUT') { const session=JSON.parse(init.body), value={session,rev:(current?.rev??0)+1}; hostChats.set(id,value); sessionStorage.setItem('fixture-host-chats', JSON.stringify([...hostChats])); return Response.json({rev:value.rev,conflict:false}); }
+        if (init?.method === 'DELETE') { hostChats.delete(id); sessionStorage.setItem('fixture-host-chats', JSON.stringify([...hostChats])); return Response.json({}); }
+      }
       if (path === '/api/native') return Response.json(native);
       if (path === '/api/fonts') return Response.json({ fonts: [] });
       if (path === '/api/chat/stop') { window.fixture.stops++; return Response.json({ stopped: false }); }
@@ -53,8 +68,11 @@ test('desktop settings and composer expose all four modes, retain drafts on fail
       return Response.json({});
     };
     applyNativeEvent(native);
-    if (!app.getState().sessions.length) app.newSession();
-    createRoot(document.getElementById('root')).render(<><ChatScreen/><SettingsScreen/></>);
+    void app.loadChatsFromHost().then(() => {
+      if (!app.getState().sessions.length) app.newSession();
+      else app.selectSession(app.getState().sessions[0].id);
+      createRoot(document.getElementById('root')).render(<><ChatScreen/><SettingsScreen/></>);
+    });
   ` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', loader: { '.css': 'empty' }, logLevel: 'silent', plugins: [{ name: 'fixture-url', setup(b) {
     b.onResolve({ filter: /\?url$/ }, args => ({ path: args.path, namespace: 'fixture-url' }));
     b.onLoad({ filter: /.*/, namespace: 'fixture-url' }, () => ({ contents: 'export default "/unused-fixture-worker.js";' }));

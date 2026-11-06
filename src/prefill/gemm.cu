@@ -1410,15 +1410,23 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     // =0 turns it off.
     if (w16_budget_ < 0) {
         const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
-        if (v != nullptr) {
+        if (v != nullptr && std::strcmp(v, "auto") == 0) {
+            // STRATA_PF_W16_CACHE_MIB=auto (tester switch, round0212 item 7): the automatic sizing - weights are cached while the card
+            // keeps kW16AutoReserve free afterwards, so a card whose expert cache fills it caches nothing.  Not bit-exact (see below),
+            // so it is not the default until the owner says yes.
+            w16_budget_ = 16ll << 30;
+            w16_reserve_ = kW16AutoReserve;
+        } else if (v != nullptr) {
             w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
             w16_reserve_ = 2ll << 30;
         } else {
-            // OFF by default (INT3, 11-01; owner's rule: a default that changes values needs 5%+, KL and a yes).  cda6463e8 had turned it on for
-            // Linux CUDA as 'bit-exact', but gemm_dequant_side_parity fails with it on sm_86 (z440, boston), sm_120 (l620) and sm_121 (Spark): a
-            // cached weight runs one full-N GEMM where the uncached form runs the sliced ones, and the roundings differ.  v0.2.9 had it off.
-            // STRATA_PF_W16_CACHE_MIB=N (above) turns it on by hand; the automatic sizing (kW16AutoReserve) is kept for when it is shown exact.
-            w16_budget_ = 0;
+            // INT3 turned the default off (11-01) because gemm_dequant_side_parity failed with it on sm_86 / sm_120 / sm_121.  That test builds its Gemm
+            // with a 10.5 M-element scratch, smaller than four of its weights, so uncached those take the sliced path (several GEMMs) and cached they
+            // take one full-N GEMM: not the engine.  The engine's scratch is GEMM_SCRATCH = 32 M elements and every dense projection of Qwen3.8
+            // (largest attn_q, 31.5 M) fits it, so cached and uncached are the same GEMM on the same FP16 values (gemm_w16_parity: the engine's scratch,
+            // shapes and types, bitwise).  Round0212 item 7: on when the engine says so (set_w16_auto_default: Linux CUDA with batch slots), else off
+            // as in v0.2.9.  It takes only VRAM beyond kW16AutoReserve, so a card whose expert cache fills it caches nothing.  =0 turns it off.
+            w16_budget_ = w16_auto_default_().load() ? (16ll << 30) : 0;
             w16_reserve_ = kW16AutoReserve;
         }
     }

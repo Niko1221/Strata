@@ -19,6 +19,8 @@
 #include "strata/platform/io_priority.hpp"
 #include "strata/core/adapt_async_default.hpp"
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/gfx12_chunk.hpp"
+#include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/batch_telemetry.hpp"
@@ -75,6 +77,7 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/spill_gate.hpp"
+#include "strata/core/pcie_share_rule.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/gated_proposal.hpp"
@@ -82,6 +85,7 @@
 #include "strata/core/dflash2.hpp"
 #include "strata/core/draft_cap.hpp"
 #endif
+#include "strata/prefill/gemm.hpp"
 #include "strata/prefill/kva.hpp"
 #include "strata/prefill/kva_floor.hpp"
 #include "strata/prefill/prefill.hpp"
@@ -97,6 +101,7 @@
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/program/stage_reserve.hpp"
+#include "strata/program/split_walk.hpp"
 #include "strata/program/gpu_report.hpp"
 #include "strata/prefill/share_rules.hpp"
 #include "strata/platform/host_limits.hpp"
@@ -816,7 +821,12 @@ struct Options {
     /// must not fall back to 2048 ("reserved buffers, keep them small") - the gfx1151 rule above has already chosen a
     /// chunk that fits this box's carve-out.
     bool prefill_own_keep_chunk = false;
-    bool prefill_gfx12_16k = false;   ///< the gfx12 default raised the auto chunk ceiling to 16384 (a layer split takes 8192 back, 0.1.44)
+    /// #1630's warning for a chunk the user named (8192 or more on a Windows HIP build), held until the device is known: it was printed at argument
+    /// parsing, so it also appeared on the Strix Halo (gfx1151), where 8192 and 16384 are the measured default and a bare auto no longer stops at 6144.
+    std::string prefill_cap_warn;
+    bool prefill_cap_warn_skip = false;   ///< set by the gfx1151 rule below: that card is not the 7900 XTX of #1630
+    bool prefill_gfx12_16k = false;   ///< a default (gfx12 Linux: 32768, 0.2.10.1; NVIDIA cc 8.0+: 32768, round 0212) raised the auto chunk ceiling (a layer split takes 8192 back, 0.1.44)
+    const char* prefill_raise_who = "gfx12";   ///< who raised it, for the log lines ("gfx12" or "NVIDIA")
     /// --prefill-pipe (opt-in): a layer split's prompt chunks sized for its pipeline (Prefill::pipeline_chunk): 0 off,
     /// 1 today's chunk count evened out, a number > 1 the rig's b/a in tokens (setup's --calibrate measures it).
     /// < 0: not given - STRATA_PREFILL_PIPE, else off.
@@ -1887,6 +1897,49 @@ void stall_report(std::FILE* f, uint64_t layers_during) {
 #endif
 }
 
+/// One more launch with the prompt path's buffers in place: a 64 MiB allocation, a stream, a fill and a wait.  On an integrated GPU whose pool is full the driver cannot
+/// build the command buffer ("PAL failed to submit CMD") and every later launch fails with "unspecified launch failure"; this finds it before the prompt is read.
+#if defined(STRATA_USE_HIP)
+static bool uma_launch_probe(std::string& why) {
+    (void) cudaGetLastError();
+    void* p = nullptr;
+    if (cudaMalloc(&p, 64ull << 20) != cudaSuccess) { why = "a 64 MiB allocation failed"; (void) cudaGetLastError(); return false; }
+    cudaStream_t st = nullptr;
+    bool ok = cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess;
+    if (!ok) why = "a stream could not be created";
+    if (ok) ok = cudaMemsetAsync(p, 0, 64ull << 20, st) == cudaSuccess && cudaStreamSynchronize(st) == cudaSuccess && cudaGetLastError() == cudaSuccess;
+    if (!ok && why.empty()) why = "a launch failed";
+    if (st != nullptr) cudaStreamDestroy(st);
+    cudaFree(p);
+    if (!ok) (void) cudaGetLastError();
+    return ok;
+}
+#endif
+
+/// Integrated GPU (Strix Halo), the prompt path's own buffers, a chunk above the 16384 default that the person or the environment named: the unified pool reads 0 MiB free
+/// on a start that works, so how much room is left cannot be read, and 32768 on a UD-Q4_K_XL cache that fills the pool takes the last of it (the driver then cannot create a
+/// stream, and the context is unusable from then on: HIP 719 at the first launch, after the prompt was read).  So once the buffers are in place one stream, fill and wait are
+/// tried; if they fail the engine says so in one line and ends, before any prompt is read, instead of dying after the prefill.  It cannot step down in the same process (the
+/// failed context aborts on the first call that touches it).  Never for the 16384 default, a chunk that borrows cache slots, or a discrete GPU.  STRATA_PF_OWN_PROBE_OFF=1 skips it.
+static void uma_refuse_chunk_if_full(int64_t chunk, bool borrows, double cache_gib) {
+#if !defined(STRATA_USE_HIP)
+    (void) chunk; (void) borrows; (void) cache_gib;   // observed on the Strix Halo (HIP) only: CUDA and Metal builds are untouched
+    return;
+#else
+    if (borrows || chunk <= 16384 || spill_discrete_gpu() || std::getenv("STRATA_PF_OWN_PROBE_OFF") != nullptr) return;
+    std::string why;
+    if (uma_launch_probe(why)) {
+        if (std::getenv("STRATA_TRACE") != nullptr) std::fprintf(stderr, "strata trace: the launch probe passed with a %lld-token chunk\n", (long long) chunk);
+        return;
+    }
+    const int64_t next = strata::core::gfx12_chunk_step_down(chunk);
+    std::fprintf(stderr, "strata generate: a %lld-token prompt chunk does not fit beside the %.1f GiB expert cache on this GPU (%s): use --prefill auto:%lld, or a smaller --expert-cache\n",
+                 (long long) chunk, cache_gib, why.c_str(), (long long) next);
+    std::fflush(stderr);
+    std::_Exit(2);
+#endif
+}
+
 /// STRATA_TRACE=1: the VRAM left at a step of the startup (finds what fills the card after the cache is sized)
 void mem_mark(const char* where) {
     static const char* const env = std::getenv("STRATA_TRACE");
@@ -2389,9 +2442,17 @@ bool load_control_vectors(const Options& o, const strata::core::ModelGeometry& g
     return true;
 }
 
-/// 0.1.43 (HIP, opt-in STRATA_PCIE_AUTO_SPLIT=1): PcieAuto also refines a layer split's shares, each stage by its own probed link.
+/// 0.1.43: PcieAuto also refines a layer split's shares, each stage by its own probed link.  0.2.10.1: on by default for a discrete CUDA card
+/// (strata/core/pcie_share_rule.hpp), STRATA_PCIE_AUTO_SPLIT=0 restores the fixed probe share; HIP stays opt-in (=1), as does an integrated GPU.
 static bool pcie_auto_split_ok() {
-    static const bool on = [] { const char* v = std::getenv("STRATA_PCIE_AUTO_SPLIT"); return v != nullptr && std::atoi(v) != 0; }();   // opt-in until measured (HIP)
+    static const bool on = [] {
+#if defined(STRATA_USE_HIP)
+        const bool hip = true;
+#else
+        const bool hip = false;
+#endif
+        return strata::pcie_auto_split_default(hip, spill_discrete_gpu(), strata::qwen_defaults_026(), std::getenv("STRATA_PCIE_AUTO_SPLIT"));
+    }();
     return on;
 }
 
@@ -2629,6 +2690,20 @@ strata::kernels::cpu::PoolAffinity measure_pool_affinity(strata::core::ExpertSou
 std::thread g_warm_thr;
 struct WarmJoin { ~WarmJoin() { if (g_warm_thr.joinable()) g_warm_thr.join(); } } g_warm_join;
 
+/// The ceiling of the CPU/PCIe miss share the auto rules use (PcieAuto, its start value and the later stages of a layer split) and the pool factor k
+/// of the rule (strata/core/pcie_share_rule.hpp).  0.2.10.1 defaults on a discrete card: ceiling 0.95 and k falling with the pool rate (2 workers
+/// 31 -> 63 tok/s, 4 workers 56 -> 79, a strong pool unchanged: k is 1.85 from 30 GB/s of expert bytes and the shares stay below 0.60); an integrated
+/// GPU (Strix Halo and the other APUs, whose "link" is the shared memory) and STRATA_DEFAULTS=026 keep 0.60 and 1.85.  STRATA_PCIE_SHARE_MAX /
+/// STRATA_PCIE_K_RULE=0 or 1 set either by hand.
+static double pcie_share_max() {
+    static const double v = strata::pcie_share_ceiling(spill_discrete_gpu(), strata::qwen_defaults_026(), std::getenv("STRATA_PCIE_SHARE_MAX"));
+    return v;
+}
+static double pcie_pool_k(double r) {
+    static const bool on = strata::pcie_k_rule_default(spill_discrete_gpu(), strata::qwen_defaults_026(), std::getenv("STRATA_PCIE_K_RULE"));
+    return strata::pcie_pool_k(r, on);
+}
+
 // 0.1.42, CUDA single-GPU serve, no --pcie-frac: the share refined from what the CPU pool measures in the first decode
 // windows.  The balance share of the missed experts is link / (link + CPU rate).  The link is the start-up probe; the CPU
 // rate is the expert bytes over the pool's wall time per missed expert (ExpertDispatch::ms_run / multi_misses), which the
@@ -2665,7 +2740,7 @@ struct PcieAuto {
         if (++updates >= 3) on = false;
         if (!(tc > 1.0) || !(blob_bytes > 0.0) || !(link_gbps > 0.0)) return -1.0;
         const double r = blob_bytes / (tc * 1e-6) / 1e9;
-        const double f = std::min(0.60, std::max(0.10, std::round(link_gbps / (link_gbps + kPoolFactor * r) * 20.0) / 20.0));
+        const double f = std::min(pcie_share_max(), std::max(0.10, std::round(link_gbps / (link_gbps + pcie_pool_k(r) * r) * 20.0) / 20.0));
         *tc_us = tc;
         *rate = r;
         return std::fabs(f - cur) < 0.025 ? -1.0 : f;
@@ -3469,10 +3544,7 @@ int main(int argc, char** argv) {
                 o.prefill_auto_cap = strata::platform::host_limits::auto_chunk_cap(win_hip, bare_auto && o.prefill_auto);
                 if (o.prefill_auto_cap > 0) o.prefill_chunk = std::min(o.prefill_chunk, o.prefill_auto_cap);
                 if (strata::platform::host_limits::warn_user_chunk(win_hip, bare_auto, o.prefill_chunk))
-                    std::fprintf(stderr, "strata: WARNING --prefill %s: prompt chunks of 8192 tokens or more crashed the engine "
-                                         "on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, "
-                                         "#1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at %lld\n",
-                                 v.c_str(), (long long) strata::platform::host_limits::kWinHipAutoChunkCap);
+                    o.prefill_cap_warn = v;   // printed once the device is known (gfx1151 does not print it)
             }
         }
         else if (a == "--prefill-pipe") o.prefill_pipe = std::max(0.0, std::atof(next("--prefill-pipe")));
@@ -3730,6 +3802,11 @@ int main(int argc, char** argv) {
             // gfx1151 on Windows (#1630 capped a bare `--prefill auto` at 6144 for a 7900 XTX's commit charge): the Strix Halo has its
             // 8192 chunk back.  IQ3_S, 8K prompt: 691 -> 787 tok/s (one chunk streams 1,785 experts instead of 2,782), 64K 713 -> 748;
             // 4K is one chunk already.  STRATA_GFX1151_CHUNK=0 (or STRATA_GFX1151_DEFAULTS=0) keeps 6144.
+            if (win_host && all_igpu && std::strncmp(ad.gcnArchName, "gfx1151", 7) == 0) {   // #1630 was a discrete RX 7900 XTX: no warning about a named chunk here
+                const char* c1w = std::getenv("STRATA_GFX1151_CHUNK");
+                const char* d1w = std::getenv("STRATA_GFX1151_DEFAULTS");
+                if (!(c1w != nullptr && c1w[0] == '0') && !(d1w != nullptr && d1w[0] == '0')) o.prefill_cap_warn_skip = true;
+            }
             if (win_host && all_igpu && o.prefill_auto_bare && o.prefill_auto_cap > 0 && std::strncmp(ad.gcnArchName, "gfx1151", 7) == 0) {
                 const char* c1 = std::getenv("STRATA_GFX1151_CHUNK");
                 const char* d1 = std::getenv("STRATA_GFX1151_DEFAULTS");
@@ -3761,6 +3838,11 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+    if (!o.prefill_cap_warn.empty() && !o.prefill_cap_warn_skip)
+        std::fprintf(stderr, "strata: WARNING --prefill %s: prompt chunks of 8192 tokens or more crashed the engine "
+                             "on Windows HIP (RX 7900 XTX: the commit charge jumped ~70 GB, exit code 0xC0000409, "
+                             "#1630); 7500 and below were stable. Kept as asked; a bare --prefill auto stops at %lld\n",
+                     o.prefill_cap_warn.c_str(), (long long) strata::platform::host_limits::kWinHipAutoChunkCap);
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
     {   // CUDA sm_86 / sm_60: the switches that are exact AND faster there are on by default (strata/core/nv_defaults.hpp), when every
         // visible card has that one compute capability; before any engine code reads its switches, the user's own settings are kept
@@ -3775,6 +3857,42 @@ int main(int argc, char** argv) {
                        cudaDeviceGetAttribute(&n, cudaDevAttrComputeCapabilityMinor, d) == cudaSuccess && m == m0 && n == n0;
             }
             if (same) { strata::core::apply_nv_defaults(m0, n0); strata::core::apply_spec_adapt_default(m0, n0); }
+            {   // round 0212: the K-quant MMQ prompt kernels, on by default for compute capability 8.0+ (STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns them off); the lowest compute capability decides
+                int lo_m = m0, lo_n = n0;
+                for (int d = 1; d < nd; ++d) {
+                    int m = 0, n = 0;
+                    if (cudaDeviceGetAttribute(&m, cudaDevAttrComputeCapabilityMajor, d) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&n, cudaDevAttrComputeCapabilityMinor, d) == cudaSuccess && (m < lo_m || (m == lo_m && n < lo_n))) { lo_m = m; lo_n = n; }
+                }
+                strata::core::apply_nv_kq_default(lo_m, lo_n);
+            }
+        }
+        (void) cudaGetLastError();
+    }
+#endif
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL)
+    if (o.prefill_auto_bare && o.prefill_auto_cap == 0) {
+        // NVIDIA, compute capability 8.0 and up (round 0212, owner 11-03 "after the full test suite passes on it"): a bare `--prefill auto` may reach
+        // 32768 instead of 8192, by the gfx12 rule below.  The fit scan still picks a smaller chunk when the expert cache cannot lend the buffers, and
+        // the RAM guard further down steps 32768 -> 16384 -> 8192 when the RAM available does not cover the extra loan.  An explicit --prefill N,
+        // auto:N or STRATA_PREFILL_AUTO_MAX is never touched (prefill_auto_bare is false then).  STRATA_NV_CHUNK=0 or STRATA_DEFAULTS=026 keeps 8192,
+        // STRATA_NV_CHUNK=16 keeps 16384.  A layer split takes 8192 back (like gfx12; STRATA_SPLIT_CHUNK16K=1 keeps the raised ceiling).
+        // A6000 UD-Q4_K_XL (13.1K of 24.6K experts in VRAM): 20K +43.4%, 32K +22.5%, 64K +21.3%, 8K 0.0%; cards that hold every expert: flat.
+        const int64_t top = strata::core::nv_chunk_ceiling(std::getenv("STRATA_NV_CHUNK"), strata::qwen_defaults_026());
+        int nd = 0, lo_major = 99;
+        if (top > 0 && cudaGetDeviceCount(&nd) == cudaSuccess && nd > 0) {
+            for (int d = 0; d < nd; ++d) {
+                int m = 0;
+                if (cudaDeviceGetAttribute(&m, cudaDevAttrComputeCapabilityMajor, d) != cudaSuccess) { lo_major = 0; break; }
+                lo_major = std::min(lo_major, (int) strata::cc_major_of(m));
+            }
+            if (strata::core::nv_chunk_card_ok(lo_major)) {
+                o.prefill_auto_max = top;
+                o.prefill_chunk = top;
+                o.prefill_gfx12_16k = true;
+                o.prefill_raise_who = "NVIDIA";
+                std::fprintf(stderr, "strata generate: NVIDIA: --prefill auto may take chunks up to %lld (STRATA_NV_CHUNK=0 keeps 8192, =16 keeps 16384)\n", (long long) top);
+            }
         }
         (void) cudaGetLastError();
     }
@@ -3785,15 +3903,20 @@ int main(int argc, char** argv) {
         // 64K prompts: +0.5 .. +5.8%, residuals identical to 8192).  The fit scan still picks a smaller chunk when the expert cache cannot lend
         // the buffers.  An explicit --prefill N, auto:N or STRATA_PREFILL_AUTO_MAX is never touched (prefill_auto_bare is false then).
         // STRATA_GFX12_DEFAULTS=0 or STRATA_GFX12_CHUNK=0 keeps 8192.
+        // 0.2.10.1 (owner 11-03, "do all 5"): the ceiling is 32768, not 16384.  A 16384 chunk leaves a 20K prompt as 16384 + a 3.6K tail, and every
+        // chunk of 1,024 tokens or more streams all the experts the card does not hold.  R9700 (p620, IQ3_S, 3 rounds interleaved): 20K +12.1%, 32K +1.3%,
+        // 64K +2.6%, 8K +0.9%; UD-Q4_K_XL 20K +26%; first-token KL against 16384 at most 5e-5 (3 of 6 prompts bitwise).  The loan is only taken for
+        // what a prompt needs, and the RAM guard below steps 32768 -> 16384 -> 8192.  STRATA_GFX12_CHUNK=16 keeps 16384.
         const char* c0 = std::getenv("STRATA_GFX12_CHUNK");
         const char* d0 = std::getenv("STRATA_GFX12_DEFAULTS");
         cudaDeviceProp cp{};
-        if (!(c0 != nullptr && c0[0] == '0') && !(d0 != nullptr && d0[0] == '0') &&
+        if (strata::core::gfx12_chunk_ceiling(c0) > 0 && !(d0 != nullptr && d0[0] == '0') &&
             cudaGetDeviceProperties(&cp, 0) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(cp.gcnArchName)) {
-            o.prefill_auto_max = 16384;
-            o.prefill_chunk = 16384;
+            const int64_t top = strata::core::gfx12_chunk_ceiling(c0);
+            o.prefill_auto_max = top;
+            o.prefill_chunk = top;
             o.prefill_gfx12_16k = true;
-            std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to 16384 (STRATA_GFX12_CHUNK=0 keeps 8192)\n");
+            std::fprintf(stderr, "strata generate: gfx12: --prefill auto may take chunks up to %lld (STRATA_GFX12_CHUNK=16 keeps 16384, =0 keeps 8192)\n", (long long) top);
         }
         (void) cudaGetLastError();
     }
@@ -3932,6 +4055,27 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: conversation parking does not support a layer split on one GPU "
                                  "(--split-device 0); disable parking with --conversation-cache-mib 0\n");
             return 2;
+        }
+        // THE LAYER SPLIT'S SPILL WALK, STEP 6: FEWER CARDS.  Under `auto`, a later card with too little free memory to hold even a trimmed share (a card another program fills) is left out
+        // of the split, said plainly; with none left the start is the single card's, with its own walk and the rest of the experts in RAM.  Only the cards the engine would have picked.
+        if (ok && split_auto && !split_devs.empty() && std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+            std::vector<int> kept;
+            for (const int d : split_devs) {
+                size_t fb_c = 0, tb_c = 0;
+                bool usable = true;
+                {
+                    const strata::core::OnDevice on_c(d);
+                    usable = cudaMemGetInfo(&fb_c, &tb_c) != cudaSuccess || strata::program::split_walk::card_usable((int64_t) (fb_c >> 20));
+                    (void) cudaGetLastError();
+                }
+                if (usable) { kept.push_back(d); continue; }
+                std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d has only %.2f GiB free, too little to hold a share of the model beside its context, a working cache "
+                                     "and the prompt buffers (%.1f GiB at least): the layer split runs without it\n",
+                             d, (double) fb_c / 1073741824.0, (double) strata::program::split_walk::kMinCardMib / 1024.0);
+            }
+            if (kept.empty())
+                std::fprintf(stderr, "strata generate: short of GPU memory: no other card has room, so the model runs on CUDA0 alone with the experts that do not fit in RAM\n");
+            split_devs = kept;
         }
         if (ok && split_auto && split_devs.empty()) {
             std::fprintf(stderr, "strata generate: --layer-split auto: one GPU visible, so no split\n");
@@ -4814,10 +4958,107 @@ int main(int argc, char** argv) {
     // and the default waits for its author's re-run of the release branch on his cards.
     const std::set<std::string> skip_base = skip;
     // --trim-stage-weights (PR #559) is the same switch as STRATA_STAGE_TRIM=1 (PR #639)
-    const bool trim_asked = o.trim_stage_weights || [] {
+    bool trim_asked = o.trim_stage_weights || [] {
         const char* v = std::getenv("STRATA_STAGE_TRIM");
         return v != nullptr && v[0] != 0 && std::string(v) != "0";
     }();
+    // ---- THE LAYER SPLIT'S SPILL WALK, STEP 1 (include/strata/program/split_walk.hpp), EARLY: THE TRIM FOR EVERY CARD, CUDA0 TOO.  Under `--layer-split auto` CUDA0's weights load before the
+    // search has chosen the split, so it could not be trimmed.  When the cards in the split are short (two 8 GB cards: every card would carry a 3.5 GiB copy of the dense set beside its
+    // session, head, drafter, a working cache and the prompt buffers, and 6 of 6 starts failed in 0.2.10), the split is chosen here, before anything is loaded, from what each card has
+    // free once its fixed costs are paid, so every layer gets the same cache bytes on every card; it then runs as an explicit split with every card trimmed.  The dense set's size is
+    // estimated from the pack (the native projections at the ratio the IQ3_S pack has); the check after CUDA0's load decides again from the exact figure.  Never reached by cards with
+    // room; STRATA_STAGE_TRIM=0, STRATA_SPLIT_EARLY_OFF=1 or STRATA_SPILL_OFF=1 keeps the old path.
+    if (multi_gpu && split_auto && !trim_asked && !split_devs.empty() && std::getenv("STRATA_SPILL_OFF") == nullptr &&
+        !(std::getenv("STRATA_STAGE_TRIM") != nullptr && std::string(std::getenv("STRATA_STAGE_TRIM")) == "0") &&
+        std::getenv("STRATA_SPLIT_EARLY_OFF") == nullptr && spill_discrete_gpu()) {
+        namespace sw = strata::program::split_walk;
+        sw::Model wm;
+        uint64_t pool_est = 0;
+        std::string perr;
+        if (strata::core::WeightTable::pool_bytes(o.pack, pool_est, perr, skip.empty() ? nullptr : &skip)) {
+            wm.dense_mib = (int64_t) ((pool_est + (o.native_dense_gguf.empty() ? 0 : pool_est * 138 / 100)) >> 20);
+            std::vector<int> devs{primary_device};
+            devs.insert(devs.end(), split_devs.begin(), split_devs.end());
+            const int nd = (int) devs.size();
+            wm.session_mib = (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, (g.n_layers + nd - 1) / nd) >> 20);
+            if (!o.native_head_gguf.empty()) wm.head_mib = 410;   // the Q5_K head of this model family (0.41 GiB); the exact figure is read once the head loads
+            wm.drafter_mib = (!o.mtp.empty() || o.draft == "dflash2") ? strata::program::stage_reserve::kDrafterMib : 0;
+            wm.slot_mib = 3;
+            const int64_t later_reserve = (o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib) + strata::program::stage_reserve::kWindowMib;
+            wm.reserve_mib = later_reserve;
+            std::vector<int64_t> free_mib((size_t) nd, 0), room_mib((size_t) nd, 0);
+            bool short_any = false;
+            int short_dev = 0;
+            int64_t short_free = 0;
+            for (int i = 0; i < nd; ++i) {
+                const strata::core::OnDevice on_e(devs[(size_t) i]);
+                size_t fb_e = 0, tb_e = 0;
+                if (cudaMemGetInfo(&fb_e, &tb_e) != cudaSuccess) { (void) cudaGetLastError(); fb_e = 0; }
+                free_mib[(size_t) i] = (int64_t) (fb_e >> 20);
+                const bool last_e = i + 1 == nd;
+                if (!short_any && sw::trim_needed(free_mib[(size_t) i], wm, last_e)) { short_any = true; short_dev = devs[(size_t) i]; short_free = free_mib[(size_t) i]; }
+                room_mib[(size_t) i] = free_mib[(size_t) i] - sw::kContextMib - (i == 0 ? (int64_t) o.vram_reserve_mib : later_reserve) - sw::kStageLateAllocMib -
+                                       (last_e ? wm.head_mib + wm.drafter_mib : 0);
+            }
+            // FEWER CARDS (step 6): when even the whole walk (the drafter and the head moved off) does not pay for every layer on these cards, the card with the least room is left
+            // out, one at a time, said plainly; with only CUDA0 left the start is the single card's, with its own walk and the rest of the experts in RAM.
+            const int64_t per_layer_f = (wm.dense_mib + (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers) >> 20)) / std::max<int64_t>(g.n_layers, 1);
+            auto base_room_of = [&](int i) {
+                return free_mib[(size_t) i] - sw::kContextMib - (i == 0 ? (int64_t) o.vram_reserve_mib : later_reserve) - sw::kStageLateAllocMib;
+            };
+            while (short_any && devs.size() >= 2) {
+                const int ndl = (int) devs.size();
+                std::vector<int64_t> base_room((size_t) ndl);
+                int64_t sum_room = 0;
+                for (int i = 0; i < ndl; ++i) { base_room[(size_t) i] = base_room_of(i); sum_room += base_room[(size_t) i]; }
+                if (sw::split_feasible(base_room.data(), ndl, g.n_layers, per_layer_f, wm.head_mib + wm.drafter_mib)) break;
+                int worst = 1;
+                for (int i = 2; i < ndl; ++i) if (base_room[(size_t) i] < base_room[(size_t) worst]) worst = i;
+                std::fprintf(stderr, "strata generate: short of GPU memory: even with the drafter and the head moved off, %d cards with %.2f GiB of room in all cannot hold the %lld layers "
+                                     "(%.2f GiB): the layer split runs without CUDA%d\n", ndl, (double) sum_room / 1024.0, (long long) g.n_layers,
+                             (double) (per_layer_f * g.n_layers) / 1024.0, devs[(size_t) worst]);
+                devs.erase(devs.begin() + worst);
+                free_mib.erase(free_mib.begin() + worst);
+            }
+            if (short_any && devs.size() == 1) {
+                std::fprintf(stderr, "strata generate: short of GPU memory: no other card has room, so the model runs on CUDA%d alone with the experts that do not fit in RAM\n", devs[0]);
+                multi_gpu = false;
+                split_auto = false;
+                split_devs.clear();
+                split_at.clear();
+                o.layer_split.clear();
+                short_any = false;
+            }
+            if (short_any) {
+                const int nd = (int) devs.size();
+                split_devs.assign(devs.begin() + 1, devs.end());
+                // each remaining card's room; the last carries the head, and the drafter unless the room does not pay for it (the drafter step drops it then)
+                room_mib.assign((size_t) nd, 0);
+                int64_t sum_room = 0;
+                for (int i = 0; i < nd; ++i) { room_mib[(size_t) i] = base_room_of(i); sum_room += room_mib[(size_t) i]; }
+                room_mib[(size_t) nd - 1] -= wm.head_mib + (sum_room - wm.head_mib >= per_layer_f * g.n_layers + wm.drafter_mib ? wm.drafter_mib : 0);
+                std::vector<int64_t> share((size_t) nd, 0);
+                sw::proportional_layers(room_mib.data(), nd, g.n_layers, share.data());
+                bool share_ok = true;
+                for (const int64_t s : share) share_ok = share_ok && s >= 2;
+                if (share_ok) {
+                    std::vector<int64_t> at;
+                    std::string ks;
+                    int64_t run = 0;
+                    for (int i = 0; i + 1 < nd; ++i) { run += share[(size_t) i]; at.push_back(run); ks += (ks.empty() ? "" : ",") + std::to_string(run); }
+                    std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d has %.2f GiB free and a layer split card needs about %.2f GiB beside a full copy of the dense weights "
+                                         "(%.2f GiB): the split is chosen from what each card has free (--layer-split %s) and every card loads only the dense weights of its own layers "
+                                         "(STRATA_STAGE_TRIM=0 keeps the copies)\n",
+                                 short_dev, (double) short_free / 1024.0,
+                                 (double) sw::untrimmed_need_mib(wm, true) / 1024.0, (double) wm.dense_mib / 1024.0, ks.c_str());
+                    split_at = at;
+                    split_auto = false;
+                    trim_asked = true;
+                    o.layer_split = ks;
+                }
+            }
+        }
+    }
     // CUDA0'S ARENA IS BUILT BEFORE THE SPLIT IS KNOWN.  The prompt path's PLE tables are read out of it, here,
     // and `auto` does not choose its split points until 590 lines below - so CUDA0 can still only trim an
     // explicit --layer-split.  It is also the cheapest card to leave alone: it runs layers 0..split_at[0] on
@@ -4830,7 +5071,10 @@ int main(int argc, char** argv) {
     // Only `--layer-split auto` WITH the trim asked loads the later stages' weights after the split search (they can
     // only be trimmed once the split is known).  Every other run keeps the 0.1.39 order: weights first, then the
     // search - so without the trim nothing about a split moves.
-    const bool late_weights = trim_asked && multi_gpu && split_auto;
+    bool late_weights = trim_asked && multi_gpu && split_auto;
+    // THE LAYER SPLIT'S SPILL WALK, STEP 1 (include/strata/program/split_walk.hpp): a card too short for the whole dense set loads only its own layers' weights.  Decided below,
+    // once the dense set's size is known and before any later stage loads; `walk_trim` is that decision, `later_trim` the stages' trim (asked for, or the walk's).
+    bool walk_trim = false;
     // keep_routers: CUDA0 with --mmap-experts keeps every layer's router (ffn_gate_inp, ~2.5 MiB a layer) - the file
     // tier's routing-aware prefetch (RouterLookahead, below) copies all of them from CUDA0's arena, and would
     // otherwise turn itself off
@@ -4939,6 +5183,40 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: %zu native projection matrices, %.2f MiB of weights, in %.1f s\n",
                      native_dense.tensor_count(), (double) native_dense.weight_bytes() / (1024.0 * 1024.0), load_s());
     }
+    // ---- THE LAYER SPLIT'S SPILL WALK, STEP 1: THE TRIM.  CUDA0 holds the whole dense set now; every later card is about to load a copy of it (3.5 GiB for IQ3_S), which on a
+    // card that is short (two 8 GB cards: 6 of 6 starts failed in 0.2.10) is what leaves its expert cache and its prompt path no room.  A card that cannot afford the copy
+    // beside its session, its head, its drafter and a working cache loads only the dense weights of its own layers instead (--trim-stage-weights, bit-exact in itself:
+    // the cache just gets the room).  A card with room never reaches this; STRATA_STAGE_TRIM=0 or STRATA_SPILL_OFF=1 keeps the old copy.  CUDA0 stays whole under
+    // `--layer-split auto` (its weights load before the split is known); it runs the card's share of layers the search gives it.
+    if (multi_gpu && !trim_asked && !split_devs.empty() && std::getenv("STRATA_SPILL_OFF") == nullptr &&
+        !(std::getenv("STRATA_STAGE_TRIM") != nullptr && std::string(std::getenv("STRATA_STAGE_TRIM")) == "0") && spill_discrete_gpu()) {
+        strata::program::split_walk::Model wm;
+        wm.dense_mib = (int64_t) ((pool_bytes + (o.native_dense_gguf.empty() ? 0 : native_dense.weight_bytes())) >> 20);
+        const int ns_w = (int) split_devs.size() + 1;
+        wm.session_mib = (int64_t) (strata::core::session_bytes(g, o.max_context, K, 0, (g.n_layers + ns_w - 1) / ns_w) >> 20);
+        if (const strata::core::WeightRef* wo_w = wt.find("output.weight"); wo_w != nullptr && !o.native_head_gguf.empty())
+            wm.head_mib = (int64_t) (((uint64_t) wo_w->ne1 * (uint64_t) (g.n_embd / 256) * 176ull) >> 20);   // Q5_K: 176 bytes per 256 values
+        wm.drafter_mib = (!o.mtp.empty() || o.draft == "dflash2") ? strata::program::stage_reserve::kDrafterMib : 0;
+        wm.slot_mib = std::max<int64_t>(1, (int64_t) ((strata::kernels::cpu::expert_layout().max_blob + (1u << 20) - 1) >> 20));
+        wm.reserve_mib = (o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib) + strata::program::stage_reserve::kWindowMib;
+        for (size_t i = 0; i < split_devs.size(); ++i) {
+            const strata::core::OnDevice on_w(split_devs[i]);
+            size_t fb_w = 0, tb_w = 0;
+            if (cudaMemGetInfo(&fb_w, &tb_w) != cudaSuccess) { (void) cudaGetLastError(); continue; }
+            const bool last_w = i + 1 == split_devs.size();
+            if (strata::program::split_walk::trim_needed((int64_t) (fb_w >> 20), wm, last_w)) {
+                std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d has %.2f GiB free and a layer split card needs about %.2f GiB beside a full copy of the dense weights "
+                                     "(%.2f GiB): each later card loads only the dense weights of its own layers (STRATA_STAGE_TRIM=0 keeps the copy)\n",
+                             split_devs[i], (double) fb_w / 1073741824.0, (double) strata::program::split_walk::untrimmed_need_mib(wm, last_w) / 1024.0,
+                             (double) wm.dense_mib / 1024.0);
+                walk_trim = true;
+                break;
+            }
+        }
+        if (walk_trim && split_auto) late_weights = true;
+    }
+    // the stages' dense weights are trimmed to their own layers: asked for (an explicit split), or by the walk; under `auto` they load after the split search (late_weights)
+    const bool later_trim = stage_trim || (walk_trim && !split_auto && !split_at.empty());
 
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
@@ -5500,9 +5778,9 @@ int main(int argc, char** argv) {
         // Later stages' weights load here (0.1.39), except `--layer-split auto` with the trim asked: those load after
         // the split search (see late_weights), so `auto` can trim them too.
         if (!late_weights) {
-            const int64_t lb = stage_trim ? split_at[i] : 0;
-            const int64_t le = stage_trim ? (i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers) : 0;
-            if (!load_stage_weights(st, lb, le, stage_trim)) return 1;
+            const int64_t lb = later_trim ? split_at[i] : 0;
+            const int64_t le = later_trim ? (i + 1 < split_at.size() ? split_at[i + 1] : g.n_layers) : 0;
+            if (!load_stage_weights(st, lb, le, later_trim)) return 1;
         }
         // THE SESSION AND THE HEAD WAIT FOR THE SPLIT SEARCH.  `session_bytes` prices a stage's session by its
         // LAYER RANGE (the carve - every stage used to hold all 48 layers' state whatever it ran), so the
@@ -5719,8 +5997,11 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: layer split: CUDA%d free memory: %s\n", dev < 0 ? 0 : dev,
                          cudaGetErrorString(e));
         const int64_t pf = search && split_own_auto && !place_with_reserve ? 0 : split_pf_mib;
+        // what a later stage allocates after its cache and nothing prices (cuBLAS, the modules and the MMQ pool the prompt path warms up, ~250 MiB measured): the single card prices
+        // it (kLateAllocMib, #4474); a stage did not, and two 16 GB cards ended a start with 131 MiB free and ran out of memory in the first long prompt.  Not under STRATA_DEFAULTS=026.
+        const int64_t late_alloc = later && !strata::qwen_defaults_026() ? strata::program::split_walk::kStageLateAllocMib : 0;
         const int64_t base_reserve =
-            later && o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib;
+            (later && o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib) + late_alloc;
         strata::program::stage_reserve::Inputs rin;
         rin.base_reserve_mib = base_reserve;
         rin.prompt_buffers_mib = pf;
@@ -6232,6 +6513,27 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: to make room: a smaller --max-context, --prefill 512, a smaller "
                                  "--vram-reserve-mib, an explicit --layer-split, or close other programs using the GPU\n");
         };
+        // THE LAYER SPLIT'S SPILL WALK, STEP 2: THE KV WINDOW DOWN.  No placement can start the prompt path with the window asked for: the sessions of the cards are smaller with a
+        // smaller one (the rest of the K/V streams from pinned RAM), so the search runs again at 20480, 8192, 4096 cells a layer (the engine's smallest) and keeps the first window
+        // that has a startable placement.  The context and the number of requests are not touched.  Never reached by a start that has a placement.
+        if (best.empty() && std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+            const int64_t kv_asked = o.kv_resident;
+            for (int64_t w; (w = strata::program::split_walk::next_kv_window(o.kv_resident, o.max_context, strata::core::qsa_kv_resident_min())) > 0;) {
+                o.kv_resident = w;
+                strata::core::qsa_set_kv_resident(w);
+                search();
+                if (!best.empty()) {
+                    std::fprintf(stderr, "strata generate: short of GPU memory: the KV window is %lld cells a layer in VRAM instead of %s, the rest is read from RAM: the context "
+                                         "(%lld tokens) is unchanged\n", (long long) w,
+                                 kv_asked > 0 ? std::to_string((long long) kv_asked).c_str() : "the whole context", (long long) o.max_context);
+                    break;
+                }
+            }
+            if (best.empty()) {
+                o.kv_resident = kv_asked;
+                strata::core::qsa_set_kv_resident(kv_asked);
+            }
+        }
         if (best.empty()) {
             // recommend, never force: with nothing startable on paper the search runs again without the gate, so the
             // run is as it was before the gate, and what is short is said
@@ -6466,7 +6768,7 @@ int main(int argc, char** argv) {
     // spare, and a round with no spare row does no drafter work (the committed rows wait on the host and are replayed when spare rows return).  Measured on 2x
     // A6000 (RESULTS-DF2MGPU.md section 3): +25% / +9% over no drafts at 2 / 3 active slots, level at 4, within 1.5% at 8 and with users joining and leaving.
     // They run through the serial windows (one group); a layer split whose slots would be pipelined in groups by default keeps its groups and its undrafted
-    // slots (the pipelined groups carry no drafts), and so does an explicit --batch-groups above 1.  One card: opt-in only (STRATA_BATCH_DF2=1).
+    // slots (the pipelined groups carry no drafts), and so does an explicit --batch-groups above 1.  One card: on with the explicit pair (STRATA_BATCH_DF2=1 forces them on).
     const bool batch_df2_wanted = [&] {
         const char* e = std::getenv("STRATA_BATCH_DF2");
         const bool off = e != nullptr && e[0] == '0';
@@ -6476,8 +6778,9 @@ int main(int argc, char** argv) {
 #endif
         if (off || !(o.draft == "dflash2" && !o.draft_auto && o.batch >= 2 && o.serve && !split_same)) return false;
         if (forced) return true;
-        // the default is what was measured: a layer split (2x A6000) whose slots would run as one group; one card is opt-in (STRATA_BATCH_DF2=1) until it is measured
-        return !stages.empty() && batch_groups_for(false).groups <= 1;
+        // an explicit --draft dflash2 with --batch N turns the slots' drafts on (the launcher sends that pair only when the user picks DFlash2; --draft auto and the MTP
+        // draft layer are unchanged).  On one card that is all; on a layer split only where the slots would run as one group (the pipelined groups carry no drafts)
+        return stages.empty() || batch_groups_for(false).groups <= 1;
     }();
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0') || batch_df2_wanted;
@@ -6723,20 +7026,54 @@ int main(int argc, char** argv) {
     // the sessions) the start used to stop at "no VRAM is left for the expert cache" or run out of memory in the head upload.  Without the layer
     // the model still answers (the verify window drafts from the prompt alone): slower decode, a start that works.  Not with DFlash2 (its own
     // block decides), a split, or STRATA_MTP_KEEP=1.
-    if (!o.mtp.empty() && !use_df2 && !multi_gpu && stages.empty() && std::getenv("STRATA_MTP_KEEP") == nullptr && spill_discrete_gpu()) {
-        std::error_code fec1, fec2;
-        const uint64_t layer_b = (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "dense.bin", fec1) +
-                                 (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "experts.bin", fec2);
-        const strata::core::WeightRef* wo_mtp = wt.find("output.weight");
-        const uint64_t head_b = (!o.native_head_gguf.empty() && wo_mtp != nullptr)
-                                    ? (uint64_t) wo_mtp->ne1 * (uint64_t) (g.n_embd / 256) * 176ull : 0;   // Q5_K: 176 bytes per 256 values
-        const uint64_t free_now = (uint64_t) strata::core::device_free_bytes();
-        const uint64_t need = layer_b + head_b + (220ull << 20) + (1550ull << 20);   // + the cache the loan needs (214 slots, 543 MiB) + what is allocated after it and the drafter beyond DFlash2 (measured: DFlash2 alone ends 391 MiB free, MTP 41 at the same cache)
-        if (!fec1 && !fec2 && free_now > 0 && free_now < need) {
-            std::fprintf(stderr, "strata generate: short of GPU memory: %.2f GiB is free, and the draft layer (%.2f GiB), the head (%.2f GiB) and a working cache "
-                                 "need about %.2f GiB: this start runs without the draft layer (decode is slower; STRATA_MTP_KEEP=1 keeps it)\n",
-                         (double) free_now / 1073741824.0, (double) layer_b / 1073741824.0, (double) head_b / 1073741824.0, (double) need / 1073741824.0);
-            o.mtp.clear();
+    // A LAYER SPLIT WALKS THE SAME STEP ON THE CARD THAT HOLDS THE DRAFTER (the last stage's, or CUDA0 with the drafter first): its free memory is read there, after its weights, session
+    // and head are in.  DFlash2 (its pack, its ring and buffers, its draft head) is dropped by the same rule on that card; the single card keeps it as before (its own block decides).
+    {
+        const bool split_walk_drafter = multi_gpu && !stages.empty() && std::getenv("STRATA_SPILL_OFF") == nullptr;
+        if (!o.mtp.empty() && !use_df2 && (split_walk_drafter || (!multi_gpu && stages.empty())) && std::getenv("STRATA_MTP_KEEP") == nullptr && spill_discrete_gpu()) {
+            std::error_code fec1, fec2;
+            const uint64_t layer_b = (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "dense.bin", fec1) +
+                                     (uint64_t) std::filesystem::file_size(std::filesystem::path(o.mtp) / "experts.bin", fec2);
+            const strata::core::WeightRef* wo_mtp = wt.find("output.weight");
+            const uint64_t head_b = (!o.native_head_gguf.empty() && wo_mtp != nullptr)
+                                        ? (uint64_t) wo_mtp->ne1 * (uint64_t) (g.n_embd / 256) * 176ull : 0;   // Q5_K: 176 bytes per 256 values
+            const int draft_dev = split_walk_drafter ? (last_st && !mtp_first ? last_st->dev : -1) : -1;
+            uint64_t free_now = 0;
+            {
+                const strata::core::OnDevice on_draft(draft_dev);
+                free_now = (uint64_t) strata::core::device_free_bytes();
+            }
+            const uint64_t need = strata::program::split_walk::draft_layer_need_bytes(layer_b, head_b);   // + the cache the loan needs (214 slots, 543 MiB) + what is allocated after it and the drafter beyond DFlash2 (measured: DFlash2 alone ends 391 MiB free, MTP 41 at the same cache)
+            if (!fec1 && !fec2 && strata::program::split_walk::draft_layer_short(free_now, layer_b, head_b)) {
+                const std::string card = split_walk_drafter ? "CUDA" + std::to_string(draft_dev < 0 ? 0 : draft_dev) + ": " : std::string();
+                std::fprintf(stderr, "strata generate: short of GPU memory: %s%.2f GiB is free, and the draft layer (%.2f GiB), the head (%.2f GiB) and a working cache "
+                                     "need about %.2f GiB: this start runs without the draft layer (decode is slower; STRATA_MTP_KEEP=1 keeps it)\n",
+                             card.c_str(), (double) free_now / 1073741824.0, (double) layer_b / 1073741824.0, (double) head_b / 1073741824.0, (double) need / 1073741824.0);
+                o.mtp.clear();
+            }
+        }
+        // DFlash2 alone (--draft-fallback none, what Auto passes) on a stage that cannot hold it: no drafter, said in one line, instead of a start that ends
+        if (split_walk_drafter && df2_solo && !use_df2 && std::getenv("STRATA_MTP_KEEP") == nullptr && spill_discrete_gpu()) {
+            std::error_code fec3;
+            const uint64_t pack_b = (uint64_t) std::filesystem::file_size(o.draft_model, fec3);
+            const strata::core::WeightRef* wo_df = wt.find("output.weight");
+            const uint64_t head_b = (!o.native_head_gguf.empty() && wo_df != nullptr)
+                                        ? (uint64_t) wo_df->ne1 * (uint64_t) (g.n_embd / 256) * 176ull : 0;
+            const int dev_df = last_st && !df2_first ? last_st->dev : -1;
+            uint64_t free_df = 0;
+            {
+                const strata::core::OnDevice on_df(dev_df);
+                free_df = (uint64_t) strata::core::device_free_bytes();
+            }
+            const uint64_t need_df = strata::program::split_walk::dflash2_need_bytes(pack_b, head_b / 2);
+            if (!fec3 && free_df > 0 && free_df < need_df) {
+                std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d: %.2f GiB is free, and DFlash2 (%.2f GiB with its buffers and draft head) and a working cache need about "
+                                     "%.2f GiB: this start runs without a drafter (decode is slower; STRATA_MTP_KEEP=1 keeps it)\n",
+                             dev_df < 0 ? 0 : dev_df, (double) free_df / 1073741824.0, (double) pack_b / 1073741824.0 + 0.45, (double) need_df / 1073741824.0);
+                df2_solo = false;
+                o.draft.clear();
+                o.draft_model.clear();
+            }
         }
     }
     if (!o.mtp.empty() || df2_solo) {   // (df2_solo: o.mtp is empty and no MTP layer is loaded; only the DFlash2 block below runs)
@@ -7601,7 +7938,7 @@ int main(int argc, char** argv) {
         // than that (8 GB NVIDIA, 128K: 112-212 slots) used to be squeezed by lowering the reserve to give the cache its 326 working slots, which left 100 MiB
         // free and stopped the first long prompt ("mmq: out of memory"), or gave the prompt path its own 600 MiB of buffers on top and stopped with "do not
         // fit".  The loan may leave 16 slots instead: the cache is smaller, prompts are read in smaller chunks and slower, the reserve stays, and the start works.
-        if (o.prefill_chunk > 0 && pf_borrow && o.prefill_auto && o.expert_cache < min_slots && !o.vram_reserve_given && !multi_gpu && stages.empty() &&
+        if (o.prefill_chunk > 0 && pf_borrow && o.prefill_auto && o.expert_cache < min_slots && !o.vram_reserve_given &&
             std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
             constexpr int64_t kTightKeep = 16;
             const int64_t tight_min = ((int64_t) strata::prefill::Prefill::bytes_needed(g, ss, 256) + blob - 1) / blob + kTightKeep;
@@ -7648,7 +7985,7 @@ int main(int argc, char** argv) {
         // verify arena, or DFlash2's staging) stopped with "do not fit" (8 GB NVIDIA, 128K, 2 requests: a 74-slot cache and 35 MiB left).  Price them
         // here instead, at the largest chunk that still leaves a cache (1024, 512, 256 tokens), and give the cache the rest: slower (a smaller
         // cache, smaller prompt chunks), never a refused start.  Not with a split, a cache or chunk given on the command line, or STRATA_SPILL_OFF=1.
-        if (auto_cache && pf_borrow && o.prefill_auto && !o.vram_reserve_given && o.expert_cache < min_slots && !multi_gpu && stages.empty() && !profile.empty() &&
+        if (auto_cache && pf_borrow && o.prefill_auto && !o.vram_reserve_given && o.expert_cache < min_slots && !profile.empty() &&
             std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
             constexpr int64_t kSpillFloorMib = 100;   // the verify arena, the head check and the cuBLAS workspace beside the late allocations
             int64_t pick_chunk = 0, pick_slots = 0, pick_own = 0, pick_late = 0;
@@ -7836,6 +8173,12 @@ int main(int argc, char** argv) {
         }
 #endif
     }
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(_WIN32)
+    // 0.2.10.1 (round0212 item 7): the FP16 weight cache is on when the engine runs batch slots on Linux CUDA.  Bit-exact against the uncached
+    // form (gemm_w16_parity, greedy identity 12/12, first-token KL 0); +3.8% (c=1) .. +6.6% (c=8) total tokens/s on l620.  It takes only VRAM beyond
+    // 3 GiB kept free; STRATA_PF_W16_CACHE_MIB=0 turns it off, =N is an explicit budget.
+    if (o.batch >= 2) strata::prefill::Gemm::set_w16_auto_default(true);
+#endif
     // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  One GPU,
     // no helper caches, serve mode: anything else keeps the one cudaMalloc, said once.
     if (o.vram_elastic) {
@@ -8134,8 +8477,33 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         // the drafter and the head are already allocated by now (they load above, before this), so what is left
         // to hold back is the windows - and `free_b` has already lost the drafter.
-        const int64_t room = stage_room(st.dev, true, false);
+        int64_t room = stage_room(st.dev, true, false);
         const strata::core::OnDevice on(st.dev);
+#if defined(STRATA_HAVE_DFLASH2)
+        // DFlash2's own draft head and logits (and, in serve, the prompt staging) are bound on its card AFTER the caches, as the single card prices them (mtp_bind above): without
+        // this term the last stage ended its load with 130-400 MiB less than the plan kept (the serve check's LOW at 8 and 12 GB).  Not under STRATA_DEFAULTS=026.
+        if (use_df2 && &st == last_st && !df2_first && !strata::qwen_defaults_026()) {
+            const int64_t df2_after = df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);
+            room = std::max<int64_t>(room - df2_after, 0);
+        }
+#endif
+        // THE LAYER SPLIT'S SPILL WALK, STEP 5: THE OUTPUT HEAD ON THE HOST, LAST.  The card that holds the head (the last stage) has no room for a working cache beside it: the head
+        // (0.41 GiB) moves to mapped pinned host memory and every logits row reads it over PCIe (decode is slower, the start works).  Only a card that would otherwise refuse.
+        if (&st == last_st && st.head.loaded() && !st.head.on_host() && !o.vram_reserve_given && std::getenv("STRATA_HEAD_HOST_OFF") == nullptr &&
+            std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu() &&
+            room < strata::program::split_walk::kWorkingCacheSlots * (int64_t) lay.max_blob) {
+            std::string herr;
+            const uint64_t head_mib = st.head.weight_bytes() >> 20;
+            if (st.head.to_host(herr)) {
+                room = stage_room(st.dev, true, false);
+                std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d: the cache would have no room, so the output head (%llu MiB) moves to pinned host memory and is read over "
+                                     "PCIe for every logits row: decode is slower; the room for experts is now %.2f GiB\n",
+                             st.dev, (unsigned long long) head_mib, (double) room / 1073741824.0);
+            } else {
+                std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d: the output head stays in VRAM (%s)\n", st.dev,
+                             herr.empty() ? "type or build not movable" : herr.c_str());
+            }
+        }
         {
             size_t fb = 0, tb = 0;
             cudaMemGetInfo(&fb, &tb);
@@ -8232,6 +8600,23 @@ int main(int argc, char** argv) {
     }
     if (multi_gpu)
         std::fprintf(stderr, "strata generate: layer split: CUDA0 runs layers 0-%lld\n", (long long) (split_at[0] - 1));
+    // THE LAYER SPLIT'S SPILL WALK, STEP 4: THE LOAN KEEPS 16.  A stage whose cache is too small to lend the prompt path a 256-token chunk and keep 128 slots behind makes the path
+    // allocate its own buffers on top (more than the reserve): the same short card as the single card's, which keeps 16 slots instead (the cache is smaller, prompts are read in
+    // smaller chunks, the start works).  Never on a card with room: it only fires when a cache is below the usual loan.
+    if (multi_gpu && !stages.empty() && g_lend_keep == 128 && o.prefill_chunk > 0 && pf_borrow && o.prefill_auto && !o.vram_reserve_given &&
+        std::getenv("STRATA_SPILL_OFF") == nullptr && spill_discrete_gpu()) {
+        for (const auto& stp : stages) {
+            const int64_t blob_s = (int64_t) nibble_max_slot_bytes();
+            const int64_t need_s = ((int64_t) strata::prefill::Prefill::bytes_needed(g, stp->ss, 256) + blob_s - 1) / blob_s + g_lend_keep;
+            if ((int64_t) stp->cache.slots() < need_s) {
+                std::fprintf(stderr, "strata generate: short of GPU memory: CUDA%d: the cache (%lld slots) is too small to lend the prompt path 256-token buffers and keep %lld more: "
+                                     "the loan keeps 16, prompts are read in smaller chunks, expect them to be slower\n",
+                             stp->dev, (long long) stp->cache.slots(), (long long) g_lend_keep);
+                g_lend_keep = 16;
+                break;
+            }
+        }
+    }
     if (nib::any_on()) {
         // STRATA_EXPERT_NIBBLE: every expert of every layer must be in VRAM, in the cache of the card that runs the layer.
         // A converted layer's miss would be computed from the GGUF blob by the CPU or over PCIe, and a non-converted
@@ -9276,7 +9661,7 @@ int main(int argc, char** argv) {
     // 32K prompt in two 16384 chunks fills and drains the pipe for most of its time.  8192 chunks, same tokens: 2x R9700
     // pp32k +14%, 4x +19%, pp64k +4% / +16%.  STRATA_SPLIT_CHUNK16K=1 keeps the gfx12 16384 ceiling on a split.
     if (multi_gpu && o.prefill_gfx12_16k) {
-        static const char* keep16 = std::getenv("STRATA_SPLIT_CHUNK16K");
+        static const char* keep16 = std::getenv("STRATA_SPLIT_CHUNK16K");   // (the NVIDIA rule shares this: a layer split reads 8192-token chunks)
         if (!(keep16 != nullptr && std::atoi(keep16) != 0)) {
             auto_ceiling = std::min<int64_t>(auto_ceiling, 8192);
             o.prefill_auto_max = std::min<int64_t>(o.prefill_auto_max, 8192);   // the 0.1.39 chunk list reads this one
@@ -9289,10 +9674,10 @@ int main(int argc, char** argv) {
     // and a killed engine on 38-47K prompts; 8192 ran them at 95 tok/s.  The ceiling is the engine's default, not the
     // user's pick, so when the RAM available now does not cover the extra loan plus 6 GiB (that PC thrashed with 3.4 GB left and
     // ran with ~6.4) the default stays at 8192.
-    // STRATA_GFX12_CHUNK=1 keeps 16384 anyway.
-    if (o.prefill_gfx12_16k && auto_ceiling > 8192) {
-        static const char* force16 = std::getenv("STRATA_GFX12_CHUNK");
-        const int64_t extra_slots = std::max<int64_t>(0, lend_slots(16384) - lend_slots(8192));
+    // STRATA_GFX12_CHUNK=1 keeps the default ceiling anyway.  The ceiling is 32768 now: the guard steps it down 32768 -> 16384 -> 8192 until the loan fits.
+    for (int64_t cand = auto_ceiling; o.prefill_gfx12_16k && cand > 8192;) {
+        static const char* force16 = std::getenv(std::strcmp(o.prefill_raise_who, "NVIDIA") == 0 ? "STRATA_NV_CHUNK" : "STRATA_GFX12_CHUNK");
+        const int64_t extra_slots = std::max<int64_t>(0, lend_slots(cand) - lend_slots(8192));
         const uint64_t extra_mib = ((uint64_t) extra_slots * strata::kernels::cpu::expert_layout().max_blob) >> 20;
         const auto hm = strata::core::sample_host_memory();   // the cgroup / --memory-limit-mib cap counts too
         const uint64_t avail_mib = hm ? hm->available >> 20 : mem_sample().avail_mib;
@@ -9305,16 +9690,21 @@ int main(int argc, char** argv) {
             pin_mib = ((total > cached ? total - cached : 0) +
                        (uint64_t) std::max<int64_t>(0, lend_slots(8192)) * strata::kernels::cpu::expert_layout().max_blob) >> 20;
         }
-        if (avail_mib > 0 && avail_mib < pin_mib + extra_mib + 6144 && !(force16 != nullptr && force16[0] == '1')) {
-            auto_ceiling = std::min<int64_t>(auto_ceiling, 8192);
-            o.prefill_auto_max = std::min<int64_t>(o.prefill_auto_max, 8192);
-            o.prefill_chunk = std::min<int64_t>(o.prefill_chunk, 8192);
-            std::fprintf(stderr, "strata generate: gfx12: prompt chunks stay at 8192: 16384 would lend %lld more cache slots "
+        if (avail_mib > 0 && avail_mib < pin_mib + extra_mib + 6144 && !(force16 != nullptr && std::strcmp(force16, "1") == 0)) {
+            const int64_t next = strata::core::gfx12_chunk_step_down(cand);
+            auto_ceiling = std::min<int64_t>(auto_ceiling, next);
+            o.prefill_auto_max = std::min<int64_t>(o.prefill_auto_max, next);
+            o.prefill_chunk = std::min<int64_t>(o.prefill_chunk, next);
+            std::fprintf(stderr, "strata generate: %s: prompt chunks stay at %lld: %lld would lend %lld more cache slots "
                                  "(%llu MiB more held in RAM during a prompt), and %llu MiB of RAM is available for %llu MiB "
-                                 "of resident experts plus that (#2090; STRATA_GFX12_CHUNK=1 takes 16384 anyway)\n",
-                         (long long) extra_slots, (unsigned long long) extra_mib, (unsigned long long) avail_mib,
-                         (unsigned long long) pin_mib);
+                                 "of resident experts plus that (#2090; %s=1 takes the default ceiling anyway)\n",
+                         o.prefill_raise_who, (long long) next, (long long) cand, (long long) extra_slots, (unsigned long long) extra_mib,
+                         (unsigned long long) avail_mib, (unsigned long long) pin_mib,
+                         std::strcmp(o.prefill_raise_who, "NVIDIA") == 0 ? "STRATA_NV_CHUNK" : "STRATA_GFX12_CHUNK");
+            cand = next;
+            continue;
         }
+        break;
     }
     if (o.prefill_auto_cap > 0) auto_ceiling = std::min<int64_t>(auto_ceiling, o.prefill_auto_cap);   // #1630
     // The auto scan used to walk a fixed list of sizes - 32768, 16384, 8192, 6144, ... - and take the first that
@@ -10741,6 +11131,7 @@ int main(int argc, char** argv) {
                                      "context, or read prompts in smaller chunks (--prefill 512)\n");
             return 1;
         }
+        uma_refuse_chunk_if_full(o.prefill_chunk, borrow != nullptr, xcache.gib());
         // The peer's streaming and a split's helpers live INSIDE the layout (`set_peer` / `set_stage_helper` build
         // them in the path's own Impl), so a path that is laid out again - the prompt room, below - has to be armed
         // again.  Both calls start by dropping what they built before, and both leave `err` clear on a decline.
@@ -12156,7 +12547,7 @@ int main(int argc, char** argv) {
 #endif
             if (new_start) {
                 const double r = std::min(65.0, 4.0 * (double) pool.workers());
-                const double f0 = std::min(0.60, std::max(0.10, std::round(o.pcie_probe_gbps / (o.pcie_probe_gbps + PcieAuto::kPoolFactor * r) * 20.0) / 20.0));
+                const double f0 = std::min(pcie_share_max(), std::max(0.10, std::round(o.pcie_probe_gbps / (o.pcie_probe_gbps + pcie_pool_k(r) * r) * 20.0) / 20.0));
                 std::fprintf(stderr, "strata serve: PCIe share: start %.2f from %d pool workers (assumed %.0f GB/s of expert bytes) and the %.1f GB/s link (was %.2f)\n",
                              f0, pool.workers(), r, o.pcie_probe_gbps, o.pcie_frac);
                 o.pcie_frac = f0;
@@ -12247,8 +12638,8 @@ int main(int argc, char** argv) {
             for (int st = 1; st < n_stages; ++st) {
                 GpuStage& gs = *stages[(size_t) st - 1];
                 if (!(gs.link_gbps > 0.0)) continue;
-                gs.pcie_frac = std::min(0.60, std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
-                                   PcieAuto::kPoolFactor * rate) * 20.0) / 20.0));
+                gs.pcie_frac = std::min(pcie_share_max(), std::max(0.10, std::round(gs.link_gbps / (gs.link_gbps +
+                                   pcie_pool_k(rate) * rate) * 20.0) / 20.0));
                 split_drive.pcie_num[st] = num_of(gs.pcie_frac);
                 split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
                 std::fprintf(stderr, "strata serve: PCIe share: stage %d (link %.1f GB/s) -> pcie_frac %.2f\n", st + 1,
@@ -19336,6 +19727,19 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        uma_refuse_chunk_if_full(o.prefill_chunk, borrow != nullptr, xcache.gib());
+        mem_mark("the prompt path's buffers");
+        if (std::getenv("STRATA_TRACE") != nullptr) {   // what the buffers of this chunk take, and (Windows) the commit left
+            std::fprintf(stderr, "strata trace: the prompt path's own buffers for a %lld-token chunk: %lld MiB (bytes_needed_owned)", (long long) o.prefill_chunk,
+                         (long long) (strata::prefill::Prefill::bytes_needed_owned(g, ss, o.prefill_chunk, srcp != nullptr) >> 20));
+#if defined(_WIN32)
+            MEMORYSTATUSEX ms_t{};
+            ms_t.dwLength = sizeof ms_t;
+            if (GlobalMemoryStatusEx(&ms_t))
+                std::fprintf(stderr, "; commit left %.1f GiB, RAM available %.1f GiB", (double) ms_t.ullAvailPageFile / 1073741824.0, (double) ms_t.ullAvailPhys / 1073741824.0);
+#endif
+            std::fprintf(stderr, "\n");
+        }
         if (!o.mtp.empty()) {
             if (!mtp.bind(wt, &native_head, nullptr, err)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -19398,6 +19802,7 @@ int main(int argc, char** argv) {
 #endif
         prefill_batched_ms = std::chrono::duration<double, std::milli>(Clock::now() - tp0).count();
         prefill_ms += prefill_batched_ms;
+        mem_mark("the prompt was read");
         pos_start = n_batched;
         tok = o.tokens[(size_t) pos_start];
         // the PLE window of the token path: the two tokens before `pos_start`

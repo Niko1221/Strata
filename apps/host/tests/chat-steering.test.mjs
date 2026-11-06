@@ -228,7 +228,7 @@ test('Interrupt waits for the stop acknowledgement AND closed stream, keeping th
   assert.equal(partial.content, 'Partial answer');
   assert.equal(partial.streaming, false);
   assert.match(partial.error, /interrupted/);
-  assert.match(h.data.get('strata.sessions.v1'), /Partial answer/);
+  assert.match(JSON.stringify(h.session(first.id)), /Partial answer/);
   finish(second); await tick();
 });
 

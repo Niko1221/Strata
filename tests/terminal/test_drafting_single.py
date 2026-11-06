@@ -106,13 +106,31 @@ class EveryChoiceOnEveryBackend(Base):
                 self.assertNotIn("--draft", args, (family, mode))
                 self.assertEqual(loaded(args), {"mtp"}, (family, mode))
 
-    def test_several_requests_load_the_mtp_alone_for_auto_and_dflash2(self):
-        for mode in ("auto", "dflash2"):
-            d, args = self.apply(self.cfg(drafting=mode), slots=4)
+    def test_several_requests_load_the_mtp_alone_for_auto(self):
+        for mode in (None, "auto"):
+            d, args = self.apply(self.cfg(**({} if mode is None else {"drafting": mode})), slots=4)
             self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", drafting.NOT_HERE, {"mtp"}), mode)
             self.assertFalse([a for a in args if a.startswith("--draft")])
         d, args = self.apply(self.cfg(drafting="mtp"), slots=4)
         self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", "", {"mtp"}))
+
+    def test_several_requests_keep_dflash2_when_the_person_chose_it_by_name(self):
+        """Owner 2026-11-03: the person's own choice wins (DFlash2 named + a number of requests = DFlash2 with that many), on every backend that runs it."""
+        for backend, archs in HARDWARE:
+            for slots in (2, 4, 8):
+                d, args = self.apply(self.cfg(drafting="dflash2"), "qwen", backend, archs, slots=slots)
+                if backend == "metal":
+                    # the Metal engine has no per-request drafters: DFlash2 beside request slots would draft nothing, so today's behaviour stays (owner 2026-11-03)
+                    self.assertEqual((d.drafter, d.note, loaded(args)), ("mtp", drafting.NOT_HERE, {"mtp"}), (backend, slots))
+                    self.assertFalse([a for a in args if a.startswith("--draft")])
+                    continue
+                self.assertEqual((d.drafter, d.note, loaded(args)), ("dflash2", "", {"dflash2"}), (backend, slots))
+                self.assertNotIn("--mtp", args)
+        d, args = self.apply(self.cfg(drafting="dflash2"), "qwen", "metal", (), slots=1)
+        self.assertEqual((d.drafter, d.note), ("dflash2", ""), "one request on Metal is DFlash2 as before")
+        self.assertTrue(drafting.blocked_by([], slots=4, named=True, backend="metal"))
+        self.assertTrue(drafting.blocked_by(["--batch", "3"], named=True, backend="Metal"))
+        self.assertFalse(drafting.blocked_by([], slots=4, named=True, backend="cuda"))
 
     def test_a_layer_split_runs_dflash2_alone_like_one_card(self):
         """Owner 2026-11-02: Auto is DFlash2 on a layer split over several cards too (the 0.1.56 engine runs it; paired decode 1.014 against the MTP)."""
@@ -213,11 +231,28 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
                 elif want == {"mtp"}:
                     self.assertFalse([a for a in args if a.startswith("--draft")], where)
 
-    def test_a_layer_split_with_several_requests_is_the_mtp_alone(self):
-        for mode in ("auto", "dflash2"):
-            args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting=mode))
-            self.assertEqual(loaded(args), {"mtp"}, mode)
-            self.assertFalse([a for a in args if a.startswith("--draft")], mode)
+    def test_a_layer_split_with_several_requests_is_the_mtp_alone_for_auto_and_dflash2_with_dflash2_by_name(self):
+        args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting="auto"))
+        self.assertEqual(loaded(args), {"mtp"}, "Auto")
+        self.assertFalse([a for a in args if a.startswith("--draft")], "Auto")
+        args = self.server_args(self.cfg(gpu=[0, 1], parallel=4, drafting="dflash2"))
+        self.assertEqual(loaded(args), {"dflash2"}, "named")
+        self.assertEqual((flag(args, "--draft-fallback"), flag(args, "--batch")), ("none", "4"))
+        self.assertIn("--layer-split", args)
+        self.assertNotIn("--mtp", args)
+
+    def test_metal_named_dflash2_with_requests_starts_the_mtp_exactly_as_0_2_10_did(self):
+        """Metal has no per-request drafters, so a DFlash2 chosen by name with several requests is the MTP there, with the MTP's own --batch-mtp (the saved one, or Expert mode's
+        wish, which the app adds to the arguments) kept: the same arguments the MTP chosen by name gets, which is what 0.2.10 started for this case."""
+        for parallel in (2, 4, 8):
+            named = self.server_args(self.cfg(drafting="dflash2", parallel=parallel), "metal", ())
+            self.assertEqual(named, self.server_args(self.cfg(drafting="mtp", parallel=parallel), "metal", ()), parallel)
+            self.assertEqual(named, self.server_args(self.cfg(parallel=parallel), "metal", ()), "and the same as Auto")
+            self.assertIn("--batch-mtp", named)
+            self.assertEqual((flag(named, "--batch"), flag(named, "--mtp"), "--draft" in named), (str(parallel), str(self.data / "mtp" / "rt"), False))
+        # the same saved arguments on CUDA: DFlash2 with the requests, the MTP's slot switch is taken out
+        cuda = self.server_args(self.cfg(drafting="dflash2", parallel=4))
+        self.assertEqual((loaded(cuda), "--batch-mtp" in cuda, flag(cuda, "--batch")), ({"dflash2"}, False, "4"))
 
     def test_the_all_cards_split_engine_still_runs_its_mtp(self):
         from tests.split import test_split_engine as TS
