@@ -97,9 +97,30 @@
   // writes no marker that tells the two apart.
   //
   // Thinking and tool calls were exported as <details> blocks, which carry nothing the store keeps (it keeps
-  // attachments' names only), so they are dropped. No timestamps in the file: the whole chat takes the time it came
-  // back. Returns the chat, or null when the file holds no turns.
+  // attachments' names only), so they are dropped - but only the export's own two kinds, named in their <summary>.
+  // A message may hold a <details> of its own (an HTML sample in a fence, an answer explaining the tag) and that is
+  // content, not a trace. No timestamps in the file: the whole chat takes the time it came back. Returns the chat, or
+  // null when the file holds no turns.
   const headingOf = (line) => { const h = line.match(/^## (.+)$/); return h ? h[1].trim() : null; };
+  // the two blocks the export writes for itself (app.js, "Save this chat as Markdown")
+  const EXPORTED_BLOCK = /^<details>\s*<summary>(?:Thinking|Tool\b[^<]*)<\/summary>/;
+  // drop those blocks and keep every other line; `open` counts the block's own <details> still open, so a block that
+  // holds a nested one is dropped whole and a line that merely mentions the tag does not close it early
+  function dropExportedBlocks(text) {
+    const kept = [];
+    let open = 0;
+    for (const line of String(text || "").split("\n")) {
+      const t = line.trim();
+      if (open) {
+        if (t.startsWith("<details")) open += 1;
+        if (t.startsWith("</details>") && --open <= 0) open = 0;
+        continue;
+      }
+      if (EXPORTED_BLOCK.test(t)) { open = t.includes("</details>") ? 0 : 1; continue; }
+      kept.push(line);
+    }
+    return kept.join("\n");
+  }
   const fenceOf = (line) => { const f = line.match(/^ {0,3}(`{3,}|~{3,})/); return f ? f[1] : null; };
   const closesFence = (line, open) => {
     const m = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
@@ -124,7 +145,7 @@
       const messages = [];
       let role = null, body = [], fence = null;
       const flush = () => {
-        const t = body.join("\n").replace(/<details>[\s\S]*?<\/details>/g, "").trim();
+        const t = dropExportedBlocks(body.join("\n")).trim();
         if (role && t) messages.push({role, text: t, time: now});
         body = [];
       };
