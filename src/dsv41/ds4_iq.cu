@@ -944,6 +944,38 @@ __global__ void __launch_bounds__(kThreads) mv_kernel(const Jobs J) {
 // meet in log2(32 / NR) shuffles.  A column's sums do not depend on the columns beside it (NR follows the row's length
 // alone), so a column alone and the same column in a wider call agree bit for bit.
 #if !defined(STRATA_METAL)
+// decode<T> with 16-byte loads where they are legal: Q4_K's and Q5_K's blocks (144 and 176 bytes) keep a row's 16-byte
+// alignment, so a sub-block's 32 bytes of nibbles (and Q5_K's 32 of high bits) are two 128-bit loads instead of eight
+// 32-bit ones - the same bytes, the same codes.  Other types, or a row that is not 16-byte aligned: decode<T>.
+template <int T>
+__device__ __forceinline__ void decode_v(const uint8_t* __restrict__ row, int kb, const uint32_t* tab, Sub& s) {
+    if constexpr (T == kQ4_K || T == kQ5_K) {
+        const uint8_t* b = row + (size_t) (kb >> 3) * Ty<T>::B;
+        const int ib = kb & 7;
+        if (((uintptr_t) b & 15u) == 0) {
+            int sc, m;
+            q4k_scale(b + 4, ib, sc, m);
+            const uint8_t* qs = b + (T == kQ5_K ? 48 : 16) + 32 * (ib >> 1);
+            const int sh = 4 * (ib & 1);
+            const uint4 q0 = *(const uint4*) qs, q1 = *(const uint4*) (qs + 16);
+            const uint32_t qw[8] = {q0.x, q0.y, q0.z, q0.w, q1.x, q1.y, q1.z, q1.w};
+            if constexpr (T == kQ5_K) {
+                const uint4 h0 = *(const uint4*) (b + 16), h1 = *(const uint4*) (b + 32);
+                const uint32_t hw[8] = {h0.x, h0.y, h0.z, h0.w, h1.x, h1.y, h1.z, h1.w};
+#pragma unroll
+                for (int u = 0; u < 8; ++u) s.q[u] = (int) (((qw[u] >> sh) & 0x0f0f0f0fu) | (((hw[u] >> ib) & 0x01010101u) << 4));
+            } else {
+#pragma unroll
+                for (int u = 0; u < 8; ++u) s.q[u] = (int) ((qw[u] >> sh) & 0x0f0f0f0fu);
+            }
+            s.s0 = s.s1 = sc;
+            s.d = h2f(b);
+            s.m0 = s.m1 = h2f(b + 2) * (float) m;
+            return;
+        }
+    }
+    decode<T>(row, kb, tab, s);
+}
 template <int T, int NC, int NR>
 __global__ void __launch_bounds__(kThreads) mv_kernel_nr(const Jobs J) {
     __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
@@ -962,7 +994,7 @@ __global__ void __launch_bounds__(kThreads) mv_kernel_nr(const Jobs J) {
         const uint8_t* w = b.w + (size_t) row * b.ld;
         for (int kb = sl; kb < nsb; kb += LPR) {
             Sub s;
-            decode<T>(w, kb, tab, s);
+            decode_v<T>(w, kb, tab, s);
 #pragma unroll
             for (int c = 0; c < NC; ++c)
                 if (c < b.ncol) {
@@ -1344,16 +1376,24 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     }
 #endif
 #if !defined(STRATA_METAL)   // (CUDA and HIP: Metal has its own GEMV, metal_host::iq_mv)
-    // DS4_MV_NR=auto (rows a warp by the rows' length: 4 up to 64 sub-blocks, 2 up to 128, else 1), or 2 / 4 for all; unset or 1:
-    // a warp a row, as before.  The calls of one launch share a length class (their sub-blocks set the rows a warp).
-    static const int nr_env = [] {
+    // DS4_MV_NR=auto (rows a warp by the rows' length: 4 up to 64 sub-blocks, 2 up to 128, else 1), or 1 / 2 / 4 for all: the
+    // kernel above (mv_kernel_nr, its 128-bit loads of Q4_K / Q5_K); unset: mv_kernel, as before.  The calls of one launch
+    // share a length class (their sub-blocks set the rows a warp).
+    static const int nr_env = [] {   // -1: unset (the kernel above), 0: auto, else rows a warp
         const char* v = std::getenv("DS4_MV_NR");
-        if (v == nullptr) return 1;
+        if (v == nullptr) return -1;
         return std::string(v) == "auto" ? 0 : std::max(1, std::atoi(v));
     }();
     int nsb_max = 0;
     for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
-    const int nr = nr_env != 0 ? nr_env : nsb_max <= 64 ? 4 : nsb_max <= 128 ? 2 : 1;
+    const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (nsb_max <= 64 ? 4 : nsb_max <= 128 ? 2 : 1) : -1;
+    if (nr == 1) {   // (the new kernel a row a warp: its 128-bit loads)
+        if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 1>, grid, kThreads, 0, s, J);
+        else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 1>, grid, kThreads, 0, s, J);
+        else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 1>, grid, kThreads, 0, s, J);
+        else strata_ds4_launch(mv_kernel_nr<T, 16, 1>, grid, kThreads, 0, s, J);
+        return;
+    }
     if (nr == 2 || nr == 4) {
         const dim3 g2((unsigned) ((max_n + kWarps * nr - 1) / (kWarps * nr)), (unsigned) nj);
         if (nr == 4) {
