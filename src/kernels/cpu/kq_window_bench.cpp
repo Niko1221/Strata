@@ -65,7 +65,7 @@ struct Task { int pair; size_t blob; int nt; };
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
-    std::string layers_file;
+    std::string layers_file, dump_trace;
     int windows = 60, threads = 8, reps = 3;
     double distinct = 11.6, rows_mean = 1.7, arena_mb = 2048;
     unsigned seed = 7;
@@ -79,6 +79,7 @@ int main(int argc, char** argv) {
         else if (a == "--rows" && more) rows_mean = std::atof(argv[++i]);
         else if (a == "--arena-mb" && more) arena_mb = std::atof(argv[++i]);
         else if (a == "--reps" && more) reps = std::atoi(argv[++i]);
+        else if (a == "--dump-trace" && more) dump_trace = argv[++i];
         else if (a == "--seed" && more) seed = (unsigned) std::atoi(argv[++i]);
         else { std::fprintf(stderr, "usage: kq_window_bench --layers native_experts.txt [--windows 60] [--threads 8] [--distinct 11.6] [--rows 1.7] [--arena-mb 2048] [--reps 3]\n"); return 2; }
     }
@@ -163,6 +164,21 @@ int main(int argc, char** argv) {
                 n_rows += nt;
             }
         }
+    if (!dump_trace.empty()) {   // the synthetic windows in the STRATA_ROUTE_DUMP text form (every expert a miss), for replay_place.py
+        std::FILE* tf = std::fopen(dump_trace.c_str(), "w");
+        if (tf) {
+            for (int w = 0; w < windows; ++w)
+                for (int l = 0; l < L; ++l) {
+                    const auto& tk = win[(size_t) w][(size_t) l];
+                    int rows = 0;
+                    for (const Task& t : tk) rows += t.nt;
+                    std::fprintf(tf, "%d %d %d %d |", l, 3, (int) tk.size(), (int) tk.size());
+                    for (size_t i = 0; i < tk.size(); ++i) std::fprintf(tf, " %d:%d:0", (int) i, tk[i].nt);
+                    std::fputc(10, tf);
+                }
+            std::fclose(tf);
+        }
+    }
     std::printf("kq_window_bench: %s, %d layers, %zu format pairs, %d windows, %d threads, %.0f MB arena per pair; %.2f experts/layer, %.2f rows/expert\n",
                 cpu::cpu_name().c_str(), L, pairs.size(), windows, threads, arena_mb, (double) n_exp / ((double) windows * L), (double) n_rows / (double) n_exp);
     for (size_t p = 0; p < pairs.size(); ++p) {
