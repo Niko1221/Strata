@@ -464,7 +464,7 @@ class CudaAndHip(Fetch):
     def test_the_measured_cells_get_the_tuned_pack_at_the_conf_the_backend_already_had(self):
         self.put_tuned()
         self.put_stock()
-        cells = ((L620, IQ3S), (SPARK, IQ3S), (SPARK, V31), (STRIX, IQ3S), (STRIX, Q4), (STRIX, OLD_XS))
+        cells = ((L620, IQ3S), (SPARK, IQ3S), (SPARK, V31), (STRIX, IQ3S), (STRIX, Q4), (STRIX, OLD_XS), (STRIX, V31))
         for hardware, name in cells:
             self.put_tuned()
             d, args = self.apply_on(hardware, name)
@@ -484,7 +484,7 @@ class CudaAndHip(Fetch):
     def test_the_cells_nobody_measured_are_not_enabled(self):
         self.put_tuned()
         self.put_stock()
-        for hardware, name in ((L620, Q4), (L620, OLD_XS), (SPARK, Q4), (STRIX, V31), (L620, Q5), (STRIX, Q5), (L620, GYRO)):
+        for hardware, name in ((L620, Q4), (L620, OLD_XS), (SPARK, Q4), (L620, Q5), (STRIX, Q5), (L620, GYRO), (STRIX, GYRO)):
             d, args = self.apply_on(hardware, name)
             self.assertNotEqual(flag(args, "--draft-model"), str(drafting.tuned_path(self.data)), (hardware[0], name))
             self.assertFalse(drafting.tuned_applies(hardware[1], name, hardware[2], args=[], vram_mib=hardware[3]), (hardware[0], name))
@@ -540,7 +540,7 @@ class CudaAndHip(Fetch):
             self.assertEqual(drafting.conf_for(hardware[1], drafting.slots_of(self.args, hardware[3])), 0.35, hardware[0])
         cuda_hip = {k: v for k, v in drafting.SET_DEFAULTS.items() if k[0] in ("cuda", "hip")}
         self.assertEqual({k: v.tuned_conf for k, v in cuda_hip.items()}, {k: None for k in cuda_hip}, "no CUDA / HIP entry names a conf")
-        self.assertEqual(set(cuda_hip), {("cuda", "iq3_s"), ("cuda", "unsloth-ud-iq4_xs-v31"), ("hip", "iq3_s"), ("hip", "unsloth-ud-q4_k_xl"), ("hip", "unsloth-ud-iq4_xs")})
+        self.assertEqual(set(cuda_hip), {("cuda", "iq3_s"), ("cuda", "unsloth-ud-iq4_xs-v31"), ("hip", "iq3_s"), ("hip", "unsloth-ud-q4_k_xl"), ("hip", "unsloth-ud-iq4_xs"), ("hip", "unsloth-ud-iq4_xs-v31")})
         self.assertEqual({k: v.where for k, v in cuda_hip.items() if k[0] == "cuda"}, {("cuda", "iq3_s"): "resident", ("cuda", "unsloth-ud-iq4_xs-v31"): "resident"})
 
     def test_the_resident_rule_reads_the_signals_the_confidence_reads(self):
@@ -561,7 +561,7 @@ class CudaAndHip(Fetch):
 
     def test_fetch_follows_the_rule_and_reads_the_feed_only_when_it_applies(self):
         feed = self.make_feed(sub="all", backends=("metal", "cuda", "hip"))
-        for hardware, name, fetched in ((L620, IQ3S, True), (SPARK, V31, True), (STRIX, Q4, True), (P2003, IQ3S, False), (R9700, IQ3S, False), (ARC, IQ3S, False),
+        for hardware, name, fetched in ((L620, IQ3S, True), (SPARK, V31, True), (STRIX, Q4, True), (STRIX, V31, True), (P2003, IQ3S, False), (R9700, IQ3S, False), (ARC, IQ3S, False),
                                         (TWO_CARDS, IQ3S, False), (L620, Q4, False)):
             (self.data / "dflash2").mkdir(parents=True, exist_ok=True)
             for f in (self.data / "dflash2").glob("*strata1*"):

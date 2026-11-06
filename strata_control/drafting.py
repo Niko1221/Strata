@@ -312,12 +312,12 @@ class SetDefault:
 #: CUDA / HIP (owner 11-06 ~10:00; RESULTS-DFVAL.md, tuned pack at the box's CURRENT conf against the stock pack, 3 interleaved rounds, 24 requests an arm and round; DFlash2 is already their
 #: Auto drafter, so only the pack changes and the conf stays what CONF_STEPS / the card class give): ONLY the cells that were measured are enabled:
 #:   cuda "resident" (conf 0.35): IQ3_S l620 (RTX PRO 5000) x1.021 (3/3 rounds) and DGX Spark x1.032 / x1.048 (3/3, two runs); UD-IQ4_XS-v31 DGX Spark x1.050 (3/3). CUDA ids identical.
-#:   hip gfx1151 (Strix Halo, conf 0.35): IQ3_S x1.037, UD-Q4_K_XL x1.043, UD-IQ4_XS x1.045 (3/3 each; the text differs by window length on HIP, as with any conf change).
+#:   hip gfx1151 (Strix Halo, conf 0.35): IQ3_S x1.037, UD-Q4_K_XL x1.043, UD-IQ4_XS x1.045 (3/3 each; the text differs by window length on HIP, as with any conf change); UD-IQ4_XS-v31 x1.046 (setup's config, budget 38, 3 rounds, 3/3: agent 1.075, chat 1.013, code 1.073, creative 1.030, json 1.066, tool 1.055).
 #: SYCL / Intel Arc (owner 11-06 ~11:30 "Yes for Arc"; DF-VAL, A750 8 GB on p1006, SYCL 0.2.11, IQ3_XXS, 3 rounds, against the stock pack at Arc's 0.6 = 18.8 tok/s): the bf16-selector tuned pack
 #: at 0.6 x1.054 (3/3 rounds), at 0.5 x1.063; MTP x0.995; the stock pack against itself x1.011. The SYCL engine refuses the selq4 pack, so Arc has its OWN file (``pack`` "bf16sel", TUNED_BF16_*)
 #: and keeps BACKEND_CONF["sycl"] = 0.6. ONLY IQ3_XXS, the measured set; every other Arc set stays on the stock pack until it is measured.
 #: NOT enabled: a 12 GB / streaming card (the CONF_STEPS 0.8 step: P2003 is still being measured), gfx1201 / R9700 (the DFlash2 prompt stall is open), SYCL / Arc (untested), several cards (not measured),
-#: and the sets nobody measured on that platform (CUDA UD-Q4_K_XL, CUDA UD-IQ4_XS, Strix UD-IQ4_XS-v31): each is one more line here once DF-VAL has the cell.
+#: and the sets nobody measured on that platform (CUDA UD-Q4_K_XL, CUDA UD-IQ4_XS): each is one more line here once DF-VAL has the cell.
 SET_DEFAULTS = {
     ("metal", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, 0.7),
     ("metal", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, 0.7),
@@ -327,6 +327,7 @@ SET_DEFAULTS = {
     ("hip", "iq3_s"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-iq4_xs"): SetDefault("dflash2", True, None, "gfx1151"),
+    ("hip", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "gfx1151"),
     ("sycl", "iq3_xxs"): SetDefault("dflash2", True, None, "arc_a", "bf16sel"),
 }
 MODEL_PREFIX = "qwen3.8-flash-next-"
