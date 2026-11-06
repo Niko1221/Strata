@@ -103,6 +103,19 @@ class RunMeta(unittest.TestCase):
             self.assertEqual(rec["lr"], 1e-4)            # start 的参数没被覆盖掉
             self.assertEqual(rec["rank"], 16)
 
+    def test_extra_may_contain_out_without_colliding_with_the_path_arg(self):
+        # 2026-11-07 真机重训踩到：done_extra 里带了 out=...，而 write_run_meta 的
+        # 首参当时也叫 out ⇒ TypeError（且是在函数调用时抛，函数体无法自救）。
+        # 调用方常把 vars(args) 派生的 dict 直接 ** 展开，这个形状必须能跑。
+        with tempfile.TemporaryDirectory() as d:
+            out = _p.Path(d) / "final.pt"
+            p = RM.write_run_meta(str(out), _args(), phase="done",
+                                  out=str(out), steps_done=8, peak_gib=28.0)
+            rec = json.loads(_p.Path(p).read_text(encoding="utf-8"))
+            self.assertEqual(rec["phase"], "done")
+            self.assertEqual(rec["steps_done"], 8)
+            self.assertEqual(rec["peak_gib"], 28.0)
+
     def test_write_failure_warns_but_does_not_raise(self):
         with tempfile.TemporaryDirectory() as d:
             out = _p.Path(d) / "final.pt"
