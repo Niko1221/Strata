@@ -2776,8 +2776,6 @@ class StrataEngine:
         rid_key = f" rid={rid}" if rid is not None else ""
         head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings else \
             f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key}"
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
-            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
         c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
         if c is not None:
             head += " mask=1"                               # the engine asks MQ before every window
