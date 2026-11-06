@@ -3284,6 +3284,14 @@ def download(url, dst: Path, what=None):
             mark(dst, f"sha256 {pin_here[1]}")
             ok(f"{what or dst.name} is already here (checked)")
             return
+    bad = dst.with_name(dst.name + ".bad")
+    if pin_here and not dst.exists() and bad.is_file():
+        # an earlier run kept this file as .bad (keep_bad): hash it again before anything is downloaded; if it matches the pin now it is the file
+        if bad.stat().st_size == pin_here[0] and _hash_file(bad, pin_here[0]) == pin_here[1]:
+            os.replace(bad, dst)
+            mark(dst, f"sha256 {pin_here[1]}")
+            ok(f"{what or dst.name} is already here (checked)")
+            return
     acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
@@ -3339,12 +3347,19 @@ def download(url, dst: Path, what=None):
         fail(f"{what or dst.name} is {total:,} bytes on {url.split('/')[2]}, not the pinned {pin[0]:,}",
              "update Strata (the file there has changed since this version pinned it)")
     label = what or dst.name
+    if bad.is_file() and not dst.exists() and total:
+        try:
+            if shutil.disk_usage(dst.parent).free < total + (1 << 30):
+                bad.unlink()                           # no room for the new copy beside the kept one
+        except OSError:
+            pass
     conns = dl_connections()
     fixed = pin if pin else (meta if meta is not None and meta[1] else None)
     again = (lambda: repair_download(url, dst, total, label, conns)) if total >= DL_MIN_PARALLEL and conns > 1 else None
     if dst.exists() and total and dst.stat().st_size == total:    # finished by an older setup (no mark yet), or stopped before the check
         if fixed:                                      # a file that has a fixed hash is checked, not just marked
             verify_sha256(dst, *fixed, repair=again)
+            drop_bad(dst)
         else:
             mark(dst)
         ok(f"{what or dst.name} already downloaded")
@@ -3362,9 +3377,11 @@ def download(url, dst: Path, what=None):
     for side in (".chunks", ".src"):
         part.with_name(part.name + side).unlink(missing_ok=True)
     if pin:
-        verify_sha256(dst, *pin, repair=again)         # the fixed hash: a wrong file is repaired, else deleted and setup stops
+        verify_sha256(dst, *pin, repair=again)         # the fixed hash: a wrong file is repaired, else kept as .bad and setup stops
+        drop_bad(dst)
     elif meta is not None and meta[1]:
         verify_sha256(dst, meta[0], meta[1], repair=again)   # ModelScope's published hash; kept in the finish mark
+        drop_bad(dst)
     else:
         if ms is not None:
             warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
@@ -3516,6 +3533,29 @@ def own_gguf_is_whole(path: Path) -> bool:
         return False
 
 
+def keep_bad(s: Path) -> Path | None:
+    """A downloaded file whose SHA-256 is not the pinned one is not deleted: it is renamed to <name>.bad (no finish mark), so a wrong check, a pin that
+    is out of date or a bad read costs one more hash and not another 50 GB download.  The next run of download() hashes the .bad file again and takes it
+    back when it now matches; a successful new download of the file, or too little free space for it, removes the .bad file (drop_bad).
+    Returns the .bad path, or None when the file could not be renamed (it is then deleted, as before)."""
+    bad = s.with_name(s.name + ".bad")
+    try:
+        bad.unlink(missing_ok=True)                    # at most one .bad per file
+        os.replace(s, bad)
+        return bad
+    except OSError:
+        s.unlink(missing_ok=True)
+        return None
+
+
+def drop_bad(dst: Path) -> None:
+    """The .bad copy of `dst` is not needed any more: a good file is in place."""
+    try:
+        dst.with_name(dst.name + ".bad").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, also: tuple = ()) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
     so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again.
@@ -3559,7 +3599,7 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
         if own:
             fail(f"{s.name} does not match the published file (SHA-256 {digest}, expected {sha})",
                  "it may be damaged or another version; your file was left as it is. Copy the whole published file into the folder")
-        s.unlink(missing_ok=True)
+        keep_bad(s)                                    # kept as <name>.bad, not thrown away (see keep_bad)
         m.unlink(missing_ok=True)
         fail(f"{s.name} has the wrong SHA-256 ({digest}, expected {sha}): deleted",
              "run setup again to download it again")

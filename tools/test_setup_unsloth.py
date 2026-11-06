@@ -100,12 +100,13 @@ class Sha256(unittest.TestCase):
         self.assertIsNone(code, out)
         self.assertTrue(h.called)
 
-    def test_wrong_hash_deletes_it(self):
+    def test_wrong_hash_keeps_it_as_bad(self):
         setup.mark(self.f)
         code, out = quiet(setup.verify_sha256, self.f, 6000, "0" * 64)
         self.assertEqual(code, 1)
         self.assertIn("wrong SHA-256", out)
         self.assertFalse(self.f.exists())
+        self.assertEqual(self.f.with_name(self.f.name + ".bad").read_bytes(), b"strata" * 1000)   # the bytes are kept
         self.assertFalse(self.f.with_name(self.f.name + ".done").exists())   # downloaded again next time
 
     def test_wrong_size(self):
