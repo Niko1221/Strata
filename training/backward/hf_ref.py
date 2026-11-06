@@ -641,7 +641,8 @@ def main() -> int:
     model.config.use_cache = False
     freeze_all(model)
     targets = tuple(t for t in args.targets.split(",") if t)
-    n = inject_lora(model, targets=targets, r=args.rank, alpha=args.alpha)
+    n = inject_lora(model, targets=targets, r=args.rank, alpha=args.alpha,
+                    seed=args.seed)
     if args.init_adapter:                     # 课程续训：必须在 zo_cast 之前（A/B 还是 bf16/fp32 原样）
         print(f"init-adapter: 载入 {load_lora_state(model, args.init_adapter)} 个 LoRA 张量", flush=True)
     # ZO 的 ±ε perturbation 落在 bf16 上会被舍掉（相对精度 2^-8，而 eps=1e-3），

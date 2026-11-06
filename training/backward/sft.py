@@ -691,7 +691,8 @@ def main() -> int:
                                    proj_seed=args.proj_seed, init_bound=args.init_bound)
         s = unilora.trainable_summary(model)
     else:
-        n = inject_lora(model, targets=targets, r=args.rank, alpha=args.alpha)
+        n = inject_lora(model, targets=targets, r=args.rank, alpha=args.alpha,
+                        seed=args.seed)   # A 的初始化也归 --seed 管，同 seed ⇒ 同初始 adapter
         s = trainable_summary(model)
     print(f"{args.lora_method}: {n} modules, trainable {s['trainable']:,} ({s['pct']:.6f}%)", flush=True)
 

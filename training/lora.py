@@ -31,7 +31,8 @@ DEFAULT_TARGETS = (
 
 
 class LoRALinear(nn.Module):
-    def __init__(self, base: nn.Linear, r: int = 16, alpha: int = 32, dropout: float = 0.0):
+    def __init__(self, base: nn.Linear, r: int = 16, alpha: int = 32, dropout: float = 0.0,
+                 init_seed: int = 0):
         super().__init__()
         self.base = base
         for p in base.parameters():
@@ -43,7 +44,22 @@ class LoRALinear(nn.Module):
         dev, dt = base.weight.device, base.weight.dtype
         self.A = nn.Parameter(torch.empty(r, base.in_features, device=dev, dtype=dt))
         self.B = nn.Parameter(torch.zeros(base.out_features, r, device=dev, dtype=dt))
-        nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+        # A 的初始化必须用**局部 Generator**，不能吃全局 RNG。
+        # 2026-11-07 真机实测：同一 `--seed 0`、同一数据、同一份代码连训两次，
+        # 权重 sha256 不同、相对 L2 差 1.41（≈ 权重本身量级），根因就在这里 ——
+        # `nn.init.kaiming_uniform_` 用的是 torch 全局 RNG，而训练入口只固定了数据
+        # 顺序的那个 Generator（`torch.Generator().manual_seed(args.seed)`），从没
+        # `torch.manual_seed` 过；PyTorch 进程启动时用系统熵给全局 RNG 播种，于是每次
+        # 的 A 都是不同的随机投影，整条训练轨迹随之不同。固定全局 RNG 只是给调用方
+        # 打补丁，源头在构造 A 的这一行：换成显式 seed 的局部生成器，任何调用方都确定。
+        #
+        # kaiming_uniform_(a=sqrt(5)) 的闭式界：gain=1/sqrt(3)、fan_in=A.size(1)，
+        # bound = sqrt(3)*gain/sqrt(fan_in) = 1/sqrt(fan_in)。下面与它逐值等价
+        # （tests/test_curriculum.py 里对拍 torch.nn.init.kaiming_uniform_）。
+        bound = 1.0 / math.sqrt(self.A.size(1))
+        gen = torch.Generator(device=dev).manual_seed(int(init_seed))
+        with torch.no_grad():        # nn.init.* 内部也是这样绕开 leaf Variable 的 in-place 限制
+            self.A.uniform_(-bound, bound, generator=gen)
         self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -56,8 +72,12 @@ class LoRALinear(nn.Module):
 
 
 def inject_lora(model: nn.Module, targets: tuple[str, ...] = DEFAULT_TARGETS, r: int = 16, alpha: int = 32,
-                dropout: float = 0.0, prefix: str = "") -> int:
-    """就地替换。返回替换个数。prefix 可限制只替换某个子树（如 'mtp.'）。"""
+                dropout: float = 0.0, prefix: str = "", seed: int = 0) -> int:
+    """就地替换。返回替换个数。prefix 可限制只替换某个子树（如 'mtp.'）。
+
+    `seed` 只决定 A 的随机初始化（按模块序号 `seed + n` 逐层展开），不碰全局 RNG；
+    传同一个 seed 就得到逐张量相同的初始 adapter，A/B 差分实验才成立。
+    """
     n = 0
     for name, module in list(model.named_modules()):
         if not isinstance(module, nn.Linear):
@@ -69,7 +89,8 @@ def inject_lora(model: nn.Module, targets: tuple[str, ...] = DEFAULT_TARGETS, r:
             continue
         parent_name, _, child = name.rpartition(".")
         parent = model.get_submodule(parent_name) if parent_name else model
-        setattr(parent, child, LoRALinear(module, r=r, alpha=alpha, dropout=dropout))
+        setattr(parent, child, LoRALinear(module, r=r, alpha=alpha, dropout=dropout,
+                                          init_seed=int(seed) + n))
         n += 1
     return n
 
