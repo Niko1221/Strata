@@ -44,6 +44,7 @@ struct RowOffer {
     int avail = 0;
     std::vector<double> reach;
     bool chain = false, explore = false;
+    double first_ms = 0.0;   // what a lane's first draft costs beyond its row (DFlash2: its drafter round; a lane with no drafts needs none)
 };
 
 // the drafts each lane puts in a window of at most max_rows rows (every lane has its own first row) with the most
@@ -66,7 +67,7 @@ inline std::vector<int> plan_rows(const std::vector<RowOffer>& lanes, int max_ro
         calls[(size_t) i].assign((size_t) most + 1, 0.0);
         for (int k = 1; k <= most; ++k) {
             gain[(size_t) i][(size_t) k] = gain[(size_t) i][(size_t) k - 1] + o.reach[(size_t) k - 1];
-            calls[(size_t) i][(size_t) k] = o.chain ? (k - 1) * c.chain_ms : 0.0;
+            calls[(size_t) i][(size_t) k] = (o.chain ? (k - 1) * c.chain_ms : 0.0) + o.first_ms;
         }
     }
     auto rate_of = [&](const std::vector<int>& d) {
@@ -128,11 +129,13 @@ inline std::vector<int> explore_rows(const std::vector<RowOffer>& lanes, std::ve
 inline double plan_rate(const std::vector<RowOffer>& lanes, const std::vector<int>& d, double base_ms, const RowCost& c, double capture_ms) {
     double tokens = (double) lanes.size(), ms = base_ms + capture_ms;
     int rows = (int) lanes.size();
-    for (size_t i = 0; i < lanes.size(); ++i)
+    for (size_t i = 0; i < lanes.size(); ++i) {
+        if (d[i] > 0) ms += lanes[i].first_ms;
         for (int j = 0; j < d[i]; ++j) {
             tokens += lanes[i].reach[(size_t) j];
             ms += c.row(++rows) + (lanes[i].chain && j >= 1 ? c.chain_ms : 0.0);
         }
+    }
     std::vector<int> counts(d);
     std::sort(counts.begin(), counts.end());
     ms += c.group_ms * (double) std::max<long>(0, std::unique(counts.begin(), counts.end()) - counts.begin() - 1);

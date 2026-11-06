@@ -1,5 +1,6 @@
 // src/core/gfx12_extra_test.cpp - the gfx12 extra defaults (gfx12_extra.hpp) and their off switches (no GPU needed).
 #include "strata/core/arch_defaults.hpp"
+#include "strata/core/gfx12_chunk.hpp"
 #include "strata/core/gfx12_extra.hpp"
 
 #include <cstdio>
@@ -72,9 +73,42 @@ int main() {
     unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
     apply_arch_defaults("gfx1100", false);
     CHECK(std::getenv("STRATA_SELECT_WMMA") == nullptr);
+    // STRATA_MMQ_KQ (the K-quant experts' prompt products on MMQ): Linux gfx12 only, the same off switches, the user's own value wins
+    unset("STRATA_GFX12_DEFAULTS"); unset("STRATA_DEFAULTS"); unset("STRATA_MMQ_KQ");
+#if defined(_WIN32)
+    CHECK(!has(gfx12_value_changing_env("gfx1201", false), "STRATA_MMQ_KQ", "1"));
+#else
+    CHECK(has(gfx12_value_changing_env("gfx1201", false), "STRATA_MMQ_KQ", "1"));
+    CHECK(has(gfx12_value_changing_env("gfx1200:xnack-", false), "STRATA_MMQ_KQ", "1"));
+    for (const char* other : {"gfx1100", "gfx1151", "gfx1030", "gfx906", "", "gfx12010"}) CHECK(!has(gfx12_value_changing_env(other, false), "STRATA_MMQ_KQ", "1"));
+    CHECK(!has(gfx12_value_changing_env("gfx1201", true), "STRATA_MMQ_KQ", "1"));     // STRATA_DEFAULTS=026
+    apply_arch_defaults("gfx1201", false);
+    CHECK(std::getenv("STRATA_MMQ_KQ") != nullptr && std::string(std::getenv("STRATA_MMQ_KQ")) == "1");
+    unset("STRATA_MMQ_KQ"); unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
+    put("STRATA_MMQ_KQ", "0");                                                           // the off switch
+    apply_arch_defaults("gfx1201", false);
+    CHECK(std::string(std::getenv("STRATA_MMQ_KQ")) == "0");
+    unset("STRATA_MMQ_KQ"); unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
+    apply_arch_defaults("gfx1100", false);
+    CHECK(std::getenv("STRATA_MMQ_KQ") == nullptr);
+    put("STRATA_GFX12_DEFAULTS", "0");
+    apply_arch_defaults("gfx1201", false);
+    CHECK(std::getenv("STRATA_MMQ_KQ") == nullptr);
+    unset("STRATA_GFX12_DEFAULTS");
+#endif
+    unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS");
     put("STRATA_GFX12_DEFAULTS", "0");
     apply_arch_defaults("gfx1201", false);
     CHECK(std::getenv("STRATA_SELECT_WMMA") == nullptr && std::getenv("STRATA_SELECT_ALT_MIN_TOKENS") == nullptr);
+    // the gfx12 prompt-chunk ceiling of a bare --prefill auto (gfx12_chunk.hpp): 32768 by default, 16384 with STRATA_GFX12_CHUNK=16, none with =0,
+    // and the RAM guard steps 32768 -> 16384 -> 8192
+    CHECK(gfx12_chunk_ceiling(nullptr) == 32768);
+    CHECK(gfx12_chunk_ceiling("1") == 32768);
+    CHECK(gfx12_chunk_ceiling("16") == 16384);
+    CHECK(gfx12_chunk_ceiling("0") == 0);
+    CHECK(gfx12_chunk_step_down(32768) == 16384);
+    CHECK(gfx12_chunk_step_down(16384) == 8192);
+    CHECK(gfx12_chunk_step_down(12288) == 8192);
     if (fails == 0) std::printf("gfx12_extra_test: OK\n");
     return fails == 0 ? 0 : 1;
 }

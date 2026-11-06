@@ -77,7 +77,7 @@ def explain(n: int, context: int | None) -> list[str]:
 def warnings(n: int | None, *, cards: list[dict] | None, context: int | None = None, os_name: str | None = None, machine: str | None = None,
              vendor: str | None = None, unified: bool = False) -> list[tuple[str, str]]:
     """(what, what to do) for a pick that goes beyond what was run: a warning, never a refusal.  `cards` are the usable cards of the run;
-    `os_name` is sys.platform, `machine` platform.machine().  Nothing for an unset or one-at-a-time pick."""
+    `os_name` is sys.platform, `machine` sysinfo.machine().  Nothing for an unset or one-at-a-time pick."""
     out: list[tuple[str, str]] = []
     if n is None or int(n) <= 1:
         return out

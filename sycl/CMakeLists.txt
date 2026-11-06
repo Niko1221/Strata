@@ -482,6 +482,13 @@ if(STRATA_SYCL_PARITY)
     add_executable(native_expert_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+    # round 0214: every expert type pair of the new Unsloth Qwen3.8-Flash-Next sets (ggml-quantized random weights at 2560/640)
+    foreach(_g iq1_m iq2_xxs iq2_xs iq2_s q2_0 iq3_xxs iq4_xs)
+      foreach(_d q2_0 iq4_nl q5_0 q8_0)
+        add_test(NAME native_expert_parity_new_${_g}_${_d} COMMAND native_expert_parity --synthetic ${_g}/${_d})
+        set_tests_properties(native_expert_parity_new_${_g}_${_d} PROPERTIES TIMEOUT 600)
+      endforeach()
+    endforeach()
     # SYCL port: the same grouped native experts timed per mode on real GGUF rows at the decode window's shape
     # (G experts, T tokens), checked bit for bit against the reference mode.  The source was in the tree without a
     # target, so the numbers that decide the decode expert path could not be reproduced.
