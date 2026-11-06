@@ -10149,6 +10149,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
+    ap.add_argument("--engine-binary", default=None,
+                    help="absolute path to the engine executable; overrides the config's \"exe\". The agentx "
+                         "planner renders this from the registered engine artifact, so the engine that runs is "
+                         "the build the registry reports — not whatever the operator's config still names")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
                          "on your network, :: = all IPv6 interfaces (set an API key); also \"host\" in the config")
@@ -10251,8 +10255,19 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             ap.error(str(exc))
     if a.shutdown_timeout is not None and not 0 <= a.shutdown_timeout <= 300:
         ap.error("--shutdown-timeout must be in 0..300 seconds")
-    config_bytes = Path(a.config).read_bytes() if a.config else b""
+    config_bytes = Path(a.config).read_bytes() if a.config else b""   # Notepad adds a BOM
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
+    if a.engine_binary:
+        # The registry owns the engine executable: agentx renders this from the
+        # registered artifact (`<artifacts>/bin/<engine>`), so a reload runs the
+        # build the hub says it runs. Refused rather than ignored when absent —
+        # a plan that cannot start must not look like one that did.
+        override = os.path.abspath(a.engine_binary)
+        if not os.path.isfile(override):
+            ap.error(f"--engine-binary {override}: no such file")
+        was = cfg.get("exe")
+        cfg = {**cfg, "exe": override}
+        print(f"[strata] engine binary: {override} (from the registry; the config said {was})", flush=True)
     split_joined_args(cfg)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
