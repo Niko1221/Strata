@@ -59,6 +59,39 @@ struct ModelGeometry {
     ModelFamily family = ModelFamily::Qwen4Exp;
     int64_t n_mtp_layers = 0;       ///< MTP blocks inside the model file, after the trunk (qwen35moe: blk.40)
 
+    /// Qwen3-Next-80B-A3B (qwen3next): the same trunk pattern - GDN with full attention every 4th layer - at
+    /// different dimensions, and without the parts Flash-Next added: no indexer, no hyper-connections, no MTP.
+    /// The full-attention interval is not in the file (llama.cpp derives it from the layer list); 4 matches
+    /// every released checkpoint, and read_geometry still overrides it if a file ever carries the key.
+    /// The single source of this shape: read_geometry seeds from it, and geometries/qwen3next.hpp compiles it.
+    static constexpr ModelGeometry qwen3next() {
+        ModelGeometry g;
+        g.n_embd = 2048;
+        g.n_vocab = 151936;
+        g.qsa_interval = 4;
+        // GDN: 16 key heads x 128, 32 value heads x 128 (square heads), conv 4
+        g.ssm_k_heads = 16;
+        g.ssm_v_heads = 32;
+        g.ssm_conv_channels = 2 * 128 * 16 + 128 * 32;   // 8192, derived
+        g.ssm_value_dim = 128 * 32;                      // 4096
+        // full attention: plain GQA, 16 heads over 2 kv, head_dim 256, 64 rotated
+        g.n_head = 16;
+        g.n_head_kv = 2;
+        g.head_dim = 256;
+        g.n_rot = 64;
+        g.idx_q_heads = 0;        ///< no indexer: dense attention on the full-attention layers
+        g.idx_key_dim = 0;
+        g.idx_block = 0;
+        g.idx_top_k = 0;
+        g.hc = 0;                 ///< plain pre-norm residual, no hyper-connections
+        g.hc_lr = 0;
+        // MoE: 512 experts x 512 wide, 10 used, shared expert the same width
+        g.n_ff = 512;
+        g.n_ff_shexp = 512;
+        g.family = ModelFamily::Qwen3Next;
+        return g;
+    }
+
     constexpr bool has_indexer() const { return idx_q_heads > 0; }              ///< false: dense attention only
     constexpr bool has_hyper_connections() const { return hc > 0; }             ///< false: plain pre-norm residual
     constexpr int64_t hc_dim() const { return hc * n_embd; }

@@ -16,11 +16,13 @@ enum class ModelFamily {
     Unknown = 0,
     Qwen4Exp,    ///< Qwen3.8-Flash-Next and its fine-tunes / pruned variants (Swift 1.5, the Coder)
     Qwen35Moe,   ///< Qwen3.6-35B-A3B (Unsloth's MTP GGUFs): plain pre-norm residual, dense attention, nextn MTP block
+    Qwen3Next,   ///< Qwen3-Next-80B-A3B: GDN + plain GQA every 4th layer, no indexer, no hyper-connections, no MTP
 };
 
 inline ModelFamily model_family_from_arch(const std::string& arch) {
     if (arch == "qwen4exp") return ModelFamily::Qwen4Exp;
     if (arch == "qwen35moe") return ModelFamily::Qwen35Moe;
+    if (arch == "qwen3next") return ModelFamily::Qwen3Next;
     return ModelFamily::Unknown;
 }
 
@@ -31,6 +33,8 @@ inline const char* model_family_arch(ModelFamily f) {
         return "qwen4exp";
     case ModelFamily::Qwen35Moe:
         return "qwen35moe";
+    case ModelFamily::Qwen3Next:
+        return "qwen3next";
     default:
         return "";
     }
@@ -43,6 +47,8 @@ inline const char* model_family_title(ModelFamily f) {
         return "Qwen3.8-Flash-Next";
     case ModelFamily::Qwen35Moe:
         return "Qwen3.6-35B-A3B";
+    case ModelFamily::Qwen3Next:
+        return "Qwen3-Next-80B-A3B";
     default:
         return "an unknown model";
     }
