@@ -2243,6 +2243,10 @@ if(STRATA_NATIVE_EXPERTS)
   # on an AVX2 machine it checks the older-CPU path as an AVX-only machine would run it.
   add_executable(iq_avx1_parity src/kernels/cpu/iq_avx1_parity.cpp)
   target_link_libraries(iq_avx1_parity PRIVATE strata_kernels_cpu)
+  target_include_directories(iq_avx1_parity PRIVATE third_party/ggml)   # the parity tool scans the codebook grids themselves
+  # the tool's own prototype kernels must compile on the same ISA floor as iq_avx1.cpp, or intrinsics such as
+  # _mm_sign_epi8 will not inline and the comparison would not be like for like
+  target_compile_options(iq_avx1_parity PRIVATE -msse4.2 -mavx -mno-avx2 -mno-fma -mno-f16c)
   if(STRATA_BUILD_TESTS)
     add_test(NAME iq_avx1_parity COMMAND iq_avx1_parity)
   endif()

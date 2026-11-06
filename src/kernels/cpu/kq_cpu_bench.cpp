@@ -63,6 +63,17 @@ void make_blob(const cpu::NativeFmt& f, uint8_t* blob, std::mt19937& rng) {
         ggml_quantize_chunk((ggml_type) type, row.data(), dst, 0, 1, n,
                             ggml_quantize_requires_imatrix((ggml_type) type) ? imatrix.data() : nullptr);
     };
+    const auto* tg = ggml_get_type_traits_cpu((ggml_type) f.gu_type);
+    const auto* td = ggml_get_type_traits_cpu((ggml_type) f.d_type);
+    // i-quants have no CPU row quantizer: their traits' from_float is null (an offline codebook search builds
+    // them), so this bench cannot synthesize their blobs.  Called through unguarded, that was a SIGSEGV in a
+    // null function pointer - which is also why the IQ4_NL lane was never measured here.  iq_avx1_parity --bench
+    // is the tool for those formats: it fills blocks structurally instead of quantizing.
+    if (!tg->from_float || !td->from_float) {
+        std::fprintf(stderr, "kq_cpu_bench: no CPU from_float for this pair (i-quant): timing not available here,"
+                             " but geometry is, and iq_avx1_parity --bench supplies the ms/expert half\n");
+        std::exit(3);
+    }
     for (int64_t r = 0; r < 2 * kFF; ++r) {
         for (int64_t i = 0; i < kH; ++i) row[(size_t) i] = nd(rng);
         quant(f.gu_type, blob + (size_t) r * f.gu_row, kH);
@@ -157,6 +168,16 @@ int main(int argc, char** argv) {
         }
         std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)%s%s\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6,
                     q2_gu ? ", Q2_0 gate/up" : "", q2_down ? ", Q2_0 down on Strata's rows (the pool's path)" : "");
+        // Bytes-per-weight come from ggml itself, never from a table I could mistype, and the gate/up vs down split
+        // comes from the format's own offsets.  Without these two lines a ms figure cannot become a MAC/s figure,
+        // which is why i-quant timings could be compared to each other but never placed against a compute roof.
+        {
+            const double bpw_g = ggml_type_size((ggml_type) f.gu_type) * 8.0 / ggml_blck_size((ggml_type) f.gu_type);
+            const double bpw_d = ggml_type_size((ggml_type) f.d_type) * 8.0 / ggml_blck_size((ggml_type) f.d_type);
+            std::printf("  geometry gu %.0f B at bpw %.4f | dn %.0f B at bpw %.4f | %.0f weights per expert\n",
+                        (double) f.down_off, bpw_g, (double) (f.bytes - f.down_off), bpw_d,
+                        (double) f.down_off * 8.0 / bpw_g + (double) (f.bytes - f.down_off) * 8.0 / bpw_d);
+        }
         for (int nt : nts) {
             for (int T : threads) {
                 if (T < 1) continue;

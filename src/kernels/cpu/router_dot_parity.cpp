@@ -20,6 +20,15 @@ namespace cpu = strata::kernels::cpu;
 
 int main() {
     constexpr int R = 512, C = 2560, MAXT = 8;
+    // The AVX1 kernel used to hold a contract in a comment ("nt <= 8") while expert_source.cpp passed the whole
+    // batch as nt.  8 was therefore the widest width ever TESTED, and the widest width ever tested is the widest
+    // width that works.  AVX1_TOKENS pushes past it so the overrun is a test failure, not a stack smash.
+    // The AVX2 kernel is left at 8 here because this box cannot run it, so its own limit is unverified - raising
+    // it blindly would put an untested call in CI on other machines.
+    constexpr int AVX1_TOKENS = 24;
+    // The fixture must materialise activations and reference values for the WIDEST width any kernel will be run at;
+    // sizing it by the old 8-token contract is what made nt=24 read past `x` and die for the wrong reason.
+    constexpr int FTOK = AVX1_TOKENS;
     std::mt19937 rng(7);
     std::normal_distribution<float> nd(0.f, 0.05f);
     std::vector<uint16_t> w((size_t) R * C);
@@ -29,10 +38,10 @@ int main() {
         std::memcpy(&b, &f, 4);
         v = (uint16_t) (b >> 16);
     }
-    std::vector<float> x((size_t) MAXT * C);
+    std::vector<float> x((size_t) FTOK * C);   // sized by the widest tested width, not by the old contract
     for (auto& v : x) v = nd(rng) * 20.f;
-    std::vector<double> ref((size_t) MAXT * R);
-    for (int t = 0; t < MAXT; ++t)
+    std::vector<double> ref((size_t) FTOK * R);
+    for (int t = 0; t < FTOK; ++t)
         for (int r = 0; r < R; ++r) {
             double s = 0;
             for (int c = 0; c < C; ++c) {
@@ -44,15 +53,16 @@ int main() {
             ref[(size_t) t * R + r] = s;
         }
     int failures = 0;
-    auto run = [&](const char* tag, void (*fn)(const uint16_t*, int, int, const float*, int, float*)) {
-        std::vector<float> out((size_t) MAXT * R);
-        for (int nt = 1; nt <= MAXT; ++nt) {
+    auto run = [&](const char* tag, void (*fn)(const uint16_t*, int, int, const float*, int, float*),
+                   const int maxt) {
+        std::vector<float> out((size_t) FTOK * R);
+        for (int nt = 1; nt <= maxt; ++nt) {
             std::fill(out.begin(), out.end(), 0.f);
             fn(w.data(), R, C, x.data(), nt, out.data());
             double num = 0, den = 0;
             for (int i = 0; i < nt * R; ++i) { num += std::fabs(out[(size_t) i] - ref[(size_t) i]); den += std::fabs(ref[(size_t) i]); }
             const double rel = num / (den + 1e-30);
-            if (nt == 1 || nt == MAXT) std::printf("  %-5s nt=%d rel %.2e vs the double reference\n", tag, nt, rel);
+            if (nt == 1 || nt == maxt) std::printf("  %-5s nt=%d rel %.2e vs the double reference\n", tag, nt, rel);
             if (!(rel < 1e-5)) { std::printf("  %-5s nt=%d MISMATCH\n", tag, nt); ++failures; }
         }
         const int it = 20;
@@ -63,8 +73,8 @@ int main() {
     };
     std::printf("router_dot_parity: %s (avx2 %d, avx %d)\n", cpu::cpu_name().c_str(), (int) cpu::cpu_avx2_ok(),
                 (int) cpu::cpu_avx1_ok());
-    if (cpu::cpu_avx2_ok()) run("avx2", cpu::bf16_rows_dot_multi);
-    if (cpu::cpu_avx1_ok()) run("avx", cpu::bf16_rows_dot_multi_avx1);
+    if (cpu::cpu_avx2_ok()) run("avx2", cpu::bf16_rows_dot_multi, MAXT);
+    if (cpu::cpu_avx1_ok()) run("avx", cpu::bf16_rows_dot_multi_avx1, AVX1_TOKENS);
     std::printf("router_dot_parity: %d failures\n", failures);
     return failures == 0 ? 0 : 1;
 }

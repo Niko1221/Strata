@@ -7,6 +7,7 @@
 #include "strata/kernels/cpu/iq_avx2.hpp"
 #include "strata/kernels/cpu/iq_avx1.hpp"
 #include "strata/kernels/cpu/kq_avx2.hpp"
+#include "strata/kernels/cpu/kq_avx1.hpp"
 #include "strata/kernels/cpu/nvfp4_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
@@ -470,6 +471,28 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
             }
         }
     }
+    // Q4_K gate/up on an AVX1-only CPU: the AVX1 rung decodes the super-block again per token, which is
+    // what costs the multi-token rate (32.3 -> 20.5 -> 11.0 GB/s at 1/2/4, where q8_0 keeps
+    // 33.4/32.0/21.4).  The kernel replays that rung's own instruction sequence over one expansion, so the
+    // rows are bit-identical.  NOT under mt_min: at nt=1 nothing is shared and the rung is already at the
+    // DRAM ceiling, so taking the kernel there would be pure stack traffic.  STRATA_NO_KQ128 drops back
+    // for an A/B without a rebuild.
+    static const bool kq128 = avx1 && std::getenv("STRATA_NO_KQ128") == nullptr;
+    // Measured on this box (iq_avx1_parity --bench, gate/up ms/expert vs ggml's AVX1 rung): 0.85x at nt=2
+    // (0.88 vs 0.75), 0.94x at nt=3, 1.09x at nt=4 — re-reading the expansion from the stack costs about what
+    // decoding once saved, so take the kernel only where it is ahead.  Not the #152 mt_min rule: at nt=1 the
+    // rung already sits at the DRAM ceiling.  STRATA_KQ128_ANY=1 forces nt>=2 for an A/B.
+    static const bool kq128_any = std::getenv("STRATA_KQ128_ANY") != nullptr;
+    // Gate moved 4 -> 6 on measurement, through this dispatch path (tools/lane_model.py --ab q4_K/q5_1
+    // --enva STRATA_KQ128_ANY=1 --envb STRATA_NO_KQ128=1, 7 alternating reps, bootstrap 95 % CI):
+    //   nt=4 1.010x [0.969,1.042]  nt=5 1.037x [1.000,1.049]   not resolvable - a wash vs the rung
+    //   nt=6 1.075x [1.059,1.200]  nt=8 1.078x [1.021,1.200]   resolvable (earlier run 1.091x)
+    // The note above claimed 1.09x at nt=4 off an iq_avx1_parity run; measured where the branch is
+    // decided, nt=4 does not win, so a second code path there buys stack traffic for nothing.
+    if (kq128 && nt >= (kq128_any ? 2 : 6) && f.gu_type == 12) {
+        kq_gu_rows_avx1(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
     if (!singleton_iq && avx1 && nt >= mt_min && iq128_supported(f.gu_type)) {
         iq128_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
@@ -545,7 +568,14 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
         }
 #endif
     }
-    // the older-CPU tier: IQ4_NL and Q2_0 down rows in 128-bit (ggml-cpu's dots for both are scalar here)
+    // The older-CPU tier: what iq128_down_supported() admits - Q2_0 (42), where ggml-cpu has no x86 dot at all
+    // (4.2-4.7x), and IQ4_NL (20), which is back since iq4nl_rows got the once-per-window scale conversion and
+    // the pair-at-nt=1 shape.  NOT measured the way this comment used to claim: the 1.17/1.40/1.48x figures are
+    // iq_avx1_parity's, on a down-only loop over random nibble blocks read 0.92 MB per 2.76 MB stride - a latency
+    // regime the engine never runs.  Measured where this branch is decided (kq_cpu_bench through native_down_rows,
+    // ggml-quantized blobs, alternating processes, 6 reps): 1.02/1.00/0.99x at 1/4/20 threads at nt=1, against
+    // 1.22/1.43/1.32x in the fixture (nt 1/2/4).  So on this pack the IQ4_NL down lane is a wash, not a win; the
+    // rows are bit-exact either way (iq_avx1_parity), which is why the lane stays.
     static const bool avx1 = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_IQ128") == nullptr;
     if (avx1 && iq128_down_supported(f.d_type)) {
         iq128_down_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
