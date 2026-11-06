@@ -34,18 +34,20 @@ ENV_OFF = "STRATA_FEED_MODELS"             # "0": setup and the screens do not r
 FETCH_TIMEOUT = 5.0
 
 # ---- the words a person can see (agreed with the coordinator before they ship)
-UNAVAILABLE_ENGINE = "not available on this engine (it needs the {family} model family; update the engine)"
-UNAVAILABLE_UNKNOWN = "not available on this engine (this Strata does not know the {family} model family; update Strata)"
+UNAVAILABLE_ENGINE = "needs a newer Strata engine: update Strata to use it"
+UNAVAILABLE_UNKNOWN = "this Strata version doesn't know this model yet: update Strata to use it"
 
 
 #: What happens to a model whose family the installed engine does not run (the owner decides; a one-line switch):
 #:   "not_offered": it is listed as not available and never offered to install;
+#: (owner, 11-06: "warn_allow", his standing rule: warn plainly, still allow the download, never refuse)
 #:   "warn_allow":  it is offered like any other model with the same sentence as a warning, and the install goes on (a family this Control does not know is still not offered).
-UNAVAILABLE_POLICY = "not_offered"
+UNAVAILABLE_POLICY = "warn_allow"
 
 
 def unavailable_reason(family: str) -> str:
-    return (UNAVAILABLE_ENGINE if family in feedmod.MODEL_FAMILIES_INSTALLABLE else UNAVAILABLE_UNKNOWN).format(family=family)
+    """The sentence a person sees. The family name is not part of it (support finds it in the log line)."""
+    return UNAVAILABLE_ENGINE if family in feedmod.MODEL_FAMILIES_INSTALLABLE else UNAVAILABLE_UNKNOWN
 
 
 # ---------------------------------------------------------------------------------------------------- the cache of the last verified list
@@ -225,6 +227,8 @@ def apply(setup, models, engine_families=None) -> Applied:
         if not runs:
             allowed = known and UNAVAILABLE_POLICY == "warn_allow"
             reason = unavailable_reason(model.family)
+            _log.info("feed model %s: family %s is not run by the installed engine (%s); policy %s", model.id, model.family,
+                      "unknown to this Control" if not known else "engine families " + ",".join(sorted(engine_families or ())), UNAVAILABLE_POLICY)
             setup.FEED_UNAVAILABLE[model.id] = {"title": model.title, "by": model.by, "family": model.family, "reason": reason, "allowed": allowed}
             result.unavailable[model.id] = setup.FEED_UNAVAILABLE[model.id]
             if not allowed:

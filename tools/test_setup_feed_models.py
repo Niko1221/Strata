@@ -32,6 +32,7 @@ from strata_control import feed as feedmod  # noqa: E402
 from strata_control import feed_models, signing  # noqa: E402
 
 REV = "0123456789abcdef0123456789abcdef01234567"
+SHIPPED_POLICY = feed_models.UNAVAILABLE_POLICY
 CONTENT = {"a-00001-of-00002.gguf": b"first part of a model", "a-00002-of-00002.gguf": b"second part", "mmproj-q4.gguf": b"the picture reader",
            "Q4-model.gguf": b"one whole model file"}
 
@@ -95,6 +96,9 @@ class Base(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         os.environ.pop("STRATA_FEED_MODELS", None)
+        policy = mock.patch.object(feed_models, "UNAVAILABLE_POLICY", "not_offered")     # the tests below were written for "not_offered"; OwnerRule sets its own
+        policy.start()
+        self.addCleanup(policy.stop)
         from strata_control import mac_fit             # the Mac tables are module globals: each test gets them back as they were
         saved = (dict(mac_fit.MAC_MODELS), dict(mac_fit.MAC_ABOUT), list(mac_fit.FEED_FAMILIES))
 
@@ -320,8 +324,8 @@ class RefusalsAndOffline(Base):
         self.assertEqual(sorted(result.unavailable), ["later-one", "qwen35-test"])
         self.assertNotIn("qwen35-test", self.setup.OWN_PATH_FAMILIES)
         self.assertNotIn("later-one", self.setup.FAMILIES)
-        self.assertEqual(self.setup.FEED_UNAVAILABLE["qwen35-test"]["reason"], feed_models.UNAVAILABLE_ENGINE.format(family="qwen35moe"))
-        self.assertEqual(self.setup.FEED_UNAVAILABLE["later-one"]["reason"], feed_models.UNAVAILABLE_UNKNOWN.format(family="qwen5new"))
+        self.assertEqual(self.setup.FEED_UNAVAILABLE["qwen35-test"]["reason"], feed_models.UNAVAILABLE_ENGINE)
+        self.assertEqual(self.setup.FEED_UNAVAILABLE["later-one"]["reason"], feed_models.UNAVAILABLE_UNKNOWN)
         self.assertNotIn("test/Qwen35-Test-GGUF", self.setup.HF_REVISIONS)               # no pin was added for a model nobody can install
         self.assertFalse([k for k in self.setup.REV_PINS if k[0] == "test/Qwen35-Test-GGUF"])
 
@@ -336,7 +340,7 @@ class RefusalsAndOffline(Base):
                 contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as stop:
             self.setup.main()
         self.assertNotEqual(stop.exception.code, 0)
-        self.assertIn(feed_models.UNAVAILABLE_ENGINE.format(family="qwen35moe"), out.getvalue())
+        self.assertIn(feed_models.UNAVAILABLE_ENGINE, out.getvalue())
 
     def test_the_command_line_accepts_a_feed_model_and_its_size(self):
         feed = self.signed_feed("f", 1, [own_path()])
@@ -388,7 +392,7 @@ class TerminalAndApp(Base):
         self.assertEqual((size["id"], size["images"], size["engine_min"], size["ram_needed_gb"]), ("qwen4-test-q4_k_m", True, "0.2.12", 48.0))
         self.assertEqual(by["later-one"]["sizes"], [])                                   # the app hides a family without sizes
         self.assertFalse(by["later-one"]["available"])
-        self.assertEqual(by["later-one"]["unavailable_reason"], feed_models.UNAVAILABLE_UNKNOWN.format(family="qwen5new"))
+        self.assertEqual(by["later-one"]["unavailable_reason"], feed_models.UNAVAILABLE_UNKNOWN)
         import strata_mcp as M
         plan, args = M.Tools(s).install_plan("qwen4-test", "Q4_K_M", 65536, "no", None, None, None, None, "auto", None, None)
         self.assertEqual(args[args.index("--family") + 1:args.index("--family") + 4:2], ["qwen4-test", "Q4_K_M"])        # the install runs setup with the feed model's names
@@ -433,11 +437,15 @@ class OwnerRule(Base):
         with contextlib.redirect_stdout(out):
             rc = s.install_own_path(a, "qwen35-test", {"index": 0, "count": 1, "vram_gb": 16.0, "name": "T"}, False, [], 13, [], 8080, 64.0, None)
         self.assertEqual(rc, 0, out.getvalue())
-        self.assertIn(feed_models.UNAVAILABLE_ENGINE.format(family="qwen35moe"), out.getvalue())
+        self.assertIn(feed_models.UNAVAILABLE_ENGINE, out.getvalue())
         self.assertIn(("get", "Q4-model.gguf"), calls)
 
-    def test_the_default_is_not_offered(self):
-        self.assertEqual(feed_models.UNAVAILABLE_POLICY, "not_offered")
+    def test_the_shipped_policy_and_words(self):
+        self.assertEqual(SHIPPED_POLICY, "warn_allow")                                  # the owner's standing rule: warn plainly, still allow, never refuse
+        self.assertEqual(feed_models.UNAVAILABLE_ENGINE, "needs a newer Strata engine: update Strata to use it")
+        self.assertEqual(feed_models.UNAVAILABLE_UNKNOWN, "this Strata version doesn't know this model yet: update Strata to use it")
+        for family in ("qwen35moe", "qwen5new"):
+            self.assertNotIn(family, feed_models.unavailable_reason(family))
 
 
 class MacTables(Base):
@@ -515,7 +523,7 @@ class TerminalRow(Base):
         feed_models.load(self.signed_feed("f", 7, [flash_next(id="later-one", family="qwen5new")]), trusted={self.key["key_id"]: base64.b64decode(self.key["public"])})
         hw = {"ram_gb": 64.0, "gpus": [], "disk_free_gb": 500.0}
         cat = Catalog(src=ROOT, root=self.root / "inst", hardware=hw)
-        self.assertEqual(cat.unavailable(hw), [("Qwen4 Test", feed_models.UNAVAILABLE_UNKNOWN.format(family="qwen5new"))])
+        self.assertEqual(cat.unavailable(hw), [("Qwen4 Test", feed_models.UNAVAILABLE_UNKNOWN)])
         self.assertNotIn("later-one", [r.family for r in cat.rows(hw)])
 
 
