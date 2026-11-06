@@ -450,7 +450,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    detail = `${fmt(live.generated)} tokens · ${fmt(live.request_tok_s, 1)} tok/s`;
   } else if (live.state === "unloaded") {
     label = "Unloaded";
     delete prog.dataset.tone;
@@ -469,9 +469,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const avgDecode = totals && totals.decode_ms > 0 && totals.output_tokens > 0 ? totals.output_tokens / (totals.decode_ms / 1000) : null;
   const readTokens = totals ? totals.prompt_tokens - (totals.reused || 0) : 0;
   const avgPrefill = totals && totals.prompt_ms > 0 && readTokens > 0 ? readTokens / (totals.prompt_ms / 1000) : null;
-  const speed = live.state === "generating" ? live.tok_s : avgDecode != null ? avgDecode : last ? last.decode_tok_s : null;
+  const speed = live.tok_s != null ? live.tok_s : avgDecode != null ? avgDecode : last ? last.decode_tok_s : null;
   setMetric("speed", speed == null ? null : fmt(speed, 1), "t/s",
-            live.state === "generating" ? "Decode now" : avgDecode != null ? "Decode · run average" : last ? "Decode last request" : "Decode");
+            live.tok_s != null ? "Decode now" : avgDecode != null ? "Decode · run average" : last ? "Decode last request" : "Decode");
   const prefill = live.state !== "idle" ? live.prefill_tok_s_mean
                 : avgPrefill != null ? avgPrefill : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
   setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
