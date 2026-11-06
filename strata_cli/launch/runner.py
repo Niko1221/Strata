@@ -1004,6 +1004,8 @@ class Runner:
             args += ["--kv", s.kv]
         if fam in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
+        if s.draft_vocab and fam in modelstate.HELPER_FAMILIES:
+            args += ["--draft-vocab", s.draft_vocab]
         resolved = self.resolved_drafting(fam)
         mtp_word = s.mtp if resolved != "off" else "off"
         if mtp_word in ("on", "off") and fam in modelstate.HELPER_FAMILIES:
@@ -1033,7 +1035,7 @@ class Runner:
         if sys.platform == "darwin":
             # a Mac's setup (Control mode, strata_control/mac_fit.py) takes fewer options (no --kv, --gpu, speed projection)
             keep = {"--yes", "--no-start", "--family", "--model", "--context", "--vision", "--data-dir", "--gguf-dir", "--move-data",
-                    "--set-default-data-dir", "--feed", "--dsv41-package"}   # (the last two: the DeepSeek engine package, 0.2.7.1)
+                    "--set-default-data-dir", "--feed", "--dsv41-package", "--draft-vocab"}   # (the last two: the DeepSeek engine package, 0.2.7.1)
             flags = ("--yes", "--no-start", "--move-data", "--set-default-data-dir")
             out, i = [], 0
             while i < len(args):

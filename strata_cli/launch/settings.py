@@ -30,6 +30,7 @@ MTP_MODES = ("on", "off")
 SPLIT_MODES = ("auto", "on", "off")
 #: strata_control/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
+DRAFT_VOCAB_MODES = ("cjk", "en", "cyrillic", "fr")
 SPEED_MODES = ("faster", "full")             # DeepSeek: 5 experts per word (Faster) or all 6 (Full quality)
 FASTER_VRAM_GIB = 16.0                        # the engine's rule (src/dsv41/ds4_experts_rule.hpp): `--experts auto` is 5 when the cards used total 16 GiB or less
 FASTER_NOTE = "Faster uses 5 of 6 experts per word: a small quality change, usually not noticeable."
@@ -125,6 +126,7 @@ class LaunchSettings:
     parallel: int | None = None                # None = fit to the card
     speed: str | None = None                   # DeepSeek only: None = the default for this PC (faster up to 16 GB of graphics memory); faster | full
     drafting: str | None = None                # None = Auto (recommended): the table in strata_control/drafting.py; mtp | dflash2 | off choose one. Saved in the launch config
+    draft_vocab: str | None = None              # setup's token subset for the MTP/DFlash2 draft head
     split_engine: str | None = None            # None = auto (the all-cards split engine runs by itself where it is supported); on | off. Saved in the preset and the launch config
     mtp: str | None = None                     # None = as installed (draft layer on); "off" starts without it (less graphics memory and RAM, slower); "on" overrides an installed "off"
     tune: str = "skip"                         # quick | thorough | skip
@@ -350,6 +352,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--mtp {s.mtp}")
         if s.drafting:
             parts.append(f"--drafting {s.drafting}")
+        if s.draft_vocab:
+            parts.append(f"--draft-vocab {s.draft_vocab}")
         if s.split_engine:
             parts.append(f"--split-engine {s.split_engine}")
         if s.speed == "full":
