@@ -12207,6 +12207,10 @@ int main(int argc, char** argv) {
         };
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
+        // When the outgoing conversation does not fit the RAM cache (its byte budget or the physical-RAM gate), it
+        // is written straight to the disk tier instead of being dropped: the next turn reads it back in seconds
+        // rather than reading the whole prompt again.  Set below once the disk tier is open.
+        std::function<uint64_t(const strata::core::SavedConversation&, const char*)> disk_spill_direct;
         // STRATA_PARK_ASYNC: set by the request around its park - the live checkpoints it drops right after (they move
         // into the parked image instead of being copied); a background allocation then refills STRATA_CKPT_POOL
         std::function<bool(const ConvCheckpoint&)> park_drops;
@@ -12335,14 +12339,21 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
+            bool disk_only = false;
             if (!conversations.make_room(estimate, held)) {
-                std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
+                if (!disk_spill_direct) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
+                                 estimate >> 20);
+                    return true;
+                }
+                disk_only = true;
+                std::fprintf(stderr, "strata serve: conversation cache: snapshot %zu MiB exceeds the RAM budget; writing it to disk\n",
                              estimate >> 20);
-                return true;
             }
             const auto t0 = Clock::now();
             try {
-                const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
+                // a disk-only snapshot lives for the one write (about a second) and is freed: no parking floor for it
+                const uint64_t floor = disk_only ? 0 : (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
                 const size_t retained = reuse.bytes() + stage_retained;
                 const size_t additional = estimate > retained ? estimate - retained : 0;
                 // The physical-RAM gate: the incoming snapshot has to fit beside the floor.  make_room()
@@ -12364,7 +12375,8 @@ int main(int argc, char** argv) {
                         mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
                 };
                 bool fits = admit() || (strata::core::release_free_heap() && admit());
-                while (!fits && conversations.size() > 0 && evicted < conversations.slots() &&
+                // a disk-only snapshot does not evict parked conversations: it is written out and freed at once
+                while (!disk_only && !fits && conversations.size() > 0 && evicted < conversations.slots() &&
                        conversations.evict_oldest()) {
                     ++evicted;
                     fits = admit();
@@ -12418,10 +12430,17 @@ int main(int argc, char** argv) {
                     image.stage_images.push_back(std::move(part));
                 }
                 const auto mem_after = strata::core::sample_host_memory();
-                if (!strata::core::conversation_memory_admit(
+                if (!disk_only && !strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
+                    return true;
+                }
+                if (disk_only) {
+                    const uint64_t id = disk_spill_direct(image, "direct");
+                    std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens%s to disk in %.1f ms (not parked in RAM)\n",
+                                 id != 0 ? "wrote" : "could not write", src.ids.size(), src.what.c_str(),
+                                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
@@ -12530,6 +12549,9 @@ int main(int argc, char** argv) {
                              (double) conv_disk.bytes() / (1ull << 30), (long long) o.conversation_cache_disk_gib,
                              rep.dropped, rep.orphans, rep.other_folders, (double) rep.other_bytes / (1ull << 30));
                 // RAM evicts for room: the disk keeps the conversation (no write when the idle writer did it already)
+                disk_spill_direct = [&](const strata::core::SavedConversation& image, const char* why) -> uint64_t {
+                    return disk_spill(image, why);
+                };
                 conversations.on_evict([&](const strata::core::SavedConversation& image) {
                     (void) disk_spill(image, "evicted");   // spill finds a copy it already holds (holding): no rewrite
                 });
