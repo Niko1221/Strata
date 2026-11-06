@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <cstring>
 #include <type_traits>
 #include <map>
@@ -938,6 +939,49 @@ __global__ void __launch_bounds__(kThreads) mv_kernel(const Jobs J) {
         }
 }
 
+// NR rows a warp, 32 / NR lanes a row (DS4_MV_NR): a row of few sub-blocks - q_b's 1280 values are 40 - left most of a
+// warp idle in its last pass and spent its five shuffles on one row; here a row's lanes take its sub-blocks in turn and
+// meet in log2(32 / NR) shuffles.  A column's sums do not depend on the columns beside it (NR follows the row's length
+// alone), so a column alone and the same column in a wider call agree bit for bit.
+#if !defined(STRATA_METAL)
+template <int T, int NC, int NR>
+__global__ void __launch_bounds__(kThreads) mv_kernel_nr(const Jobs J) {
+    __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
+    load_tab<T>(tab);
+    __syncthreads();
+    constexpr int LPR = 32 / NR;   // lanes a row
+    const MvJob& b = J.j[blockIdx.y];
+    const int lane = threadIdx.x & 31, sl = lane % LPR;
+    const int row = (blockIdx.x * kWarps + (threadIdx.x >> 5)) * NR + lane / LPR;
+    const bool live = row < b.n;
+    const int nsb = b.k / 32;
+    float acc[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) acc[c] = 0.0f;
+    if (live) {
+        const uint8_t* w = b.w + (size_t) row * b.ld;
+        for (int kb = sl; kb < nsb; kb += LPR) {
+            Sub s;
+            decode<T>(w, kb, tab, s);
+#pragma unroll
+            for (int c = 0; c < NC; ++c)
+                if (c < b.ncol) {
+                    const int4* xp = (const int4*) (b.xq + (size_t) c * b.k + (size_t) kb * 32);
+                    acc[c] = fmaf(b.xd[(size_t) c * nsb + kb], sub_dot<T>(s, xp[0], xp[1]), acc[c]);
+                }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c)
+        if (c < b.ncol) {
+            float v = acc[c];
+#pragma unroll
+            for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            if (live && sl == 0) b.y[c * b.ycs + row] = b.alpha * v + (b.bias != nullptr ? b.bias[row] : 0.0f);
+        }
+}
+#endif
+
 // ---------------------------------------------------------------- the prompt sets' light experts
 // A set's experts of a few rows (<= kLightRows: a prompt of a few hundred tokens spreads ~10 over most of 384 experts)
 // in the token kernels' form: each weight sub-block decoded once and dotted with every row's int8 input (rounded per 32
@@ -1295,6 +1339,33 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
                 b.y += (size_t) c0 * b.ycs;
             }
             strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, K);
+        }
+        return;
+    }
+#endif
+#if !defined(STRATA_METAL)   // (CUDA and HIP: Metal has its own GEMV, metal_host::iq_mv)
+    // DS4_MV_NR=auto (rows a warp by the rows' length: 4 up to 64 sub-blocks, 2 up to 128, else 1), or 2 / 4 for all; unset or 1:
+    // a warp a row, as before.  The calls of one launch share a length class (their sub-blocks set the rows a warp).
+    static const int nr_env = [] {
+        const char* v = std::getenv("DS4_MV_NR");
+        if (v == nullptr) return 1;
+        return std::string(v) == "auto" ? 0 : std::max(1, std::atoi(v));
+    }();
+    int nsb_max = 0;
+    for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
+    const int nr = nr_env != 0 ? nr_env : nsb_max <= 64 ? 4 : nsb_max <= 128 ? 2 : 1;
+    if (nr == 2 || nr == 4) {
+        const dim3 g2((unsigned) ((max_n + kWarps * nr - 1) / (kWarps * nr)), (unsigned) nj);
+        if (nr == 4) {
+            if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 4>, g2, kThreads, 0, s, J);
+            else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 4>, g2, kThreads, 0, s, J);
+            else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 4>, g2, kThreads, 0, s, J);
+            else strata_ds4_launch(mv_kernel_nr<T, 16, 4>, g2, kThreads, 0, s, J);
+        } else {
+            if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 2>, g2, kThreads, 0, s, J);
+            else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 2>, g2, kThreads, 0, s, J);
+            else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 2>, g2, kThreads, 0, s, J);
+            else strata_ds4_launch(mv_kernel_nr<T, 16, 2>, g2, kThreads, 0, s, J);
         }
         return;
     }
