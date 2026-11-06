@@ -1594,7 +1594,7 @@ class Runner:
         try:
             from strata_control import drafting
             want = self.drafting_inputs(read_config(config))
-            if not drafting.wants_one_request(**want) or not drafting.pack_ready(want["data_dir"]):
+            if not drafting.wants_one_request(**want) or not drafting.drafter_ready(want["data_dir"], want["model_name"], want["backend"]):
                 return False                                 # (no drafter file after all, e.g. no internet: the MTP runs and the slots stay)
         except Exception:                                    # noqa: BLE001 - a note is never a reason to stop a launch
             return False
@@ -1612,15 +1612,16 @@ class Runner:
             want = self.drafting_inputs(read_config(base_path))
             if want["data_dir"] is not None and drafting.needs_conversion(**want) and drafting.engine_has_selector_q4():
                 drafting_fetch.convert_selector(want["data_dir"])        # Load, not a start: the smaller selector (174 MiB), made here from the checked pack, no network
-            if want["data_dir"] is None or not drafting.needs_pack(**want):
+            if want["data_dir"] is None or not (drafting.needs_pack(**want) or drafting.needs_tuned(**want)):
                 return
-            self.emit("model", "Downloading the DFlash2 drafter (1.2 GB, once)…", 0)
+            tuned = drafting.uses_tuned(want["backend"], want["model_name"])
+            self.emit("model", f"Downloading the DFlash2 drafter ({drafting.TUNED_GB if tuned else drafting.DOWNLOAD_GB:g} GB, once)…", 0)
 
             def show(step: str, done: int, total: int) -> None:
                 self.check_cancel()
                 self.emit("model", f"{step} {done / 1e9:.2f} of {total / 1e9:.2f} GB" if total > 1 and done < total else step,
                           100.0 * done / total if total > 0 else None)
-            drafting_fetch.ensure(want["data_dir"], progress=show, cancel=self.cancel)
+            drafting_fetch.ensure_for(want["data_dir"], model_name=want["model_name"], backend=want["backend"], progress=show, cancel=self.cancel, throttle=True)
         except Cancelled:
             raise
         except Exception as e:                               # noqa: BLE001 - the MTP still runs

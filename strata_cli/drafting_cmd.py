@@ -90,13 +90,13 @@ def run(a) -> int:
     machine = a.output in ("json", "jsonl")
     want = _inputs(a)
     folder = want["data_dir"]
-    needed = drafting.needs_pack(**want)
+    needed = drafting.needs_pack(**want) or drafting.needs_tuned(**want)       # (the tuned drafter of a Mac set is a download of its own)
     mtp_needed = drafting.needs_mtp(**want)
     if a.drafting_command == "plan":
         decision = drafting.decide(**want)
-        support = drafting.hardware_support(want["backend"], want["archs"])
+        support = drafting.hardware_support(want["backend"], want["archs"], want["model_name"])
         # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
-        result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe()), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
+        result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe(), model_name=want["model_name"], backend=want["backend"]), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
                   "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
                   "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
                   "split": bool(getattr(a, "_split", False)), "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
@@ -124,7 +124,9 @@ def run(a) -> int:
             print(f"\r{step} {done / 1e9:.2f} of {total / 1e9:.2f} GB", end="", flush=True)
 
     try:
-        out = drafting_fetch.ensure(folder, progress=show)
+        out = drafting_fetch.ensure_for(folder, model_name=want["model_name"], backend=want["backend"], progress=show)
+        if out is None:                                    # (a set with a tuned drafter, and nothing answered: an explicit fetch says so)
+            raise drafting_fetch.OfflineError("There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
     except (drafting_fetch.DraftingError, acquisition.AcquisitionRefused) as exc:
         if machine:
             print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": "drafting_failed", "message": str(exc)}}, ensure_ascii=False))

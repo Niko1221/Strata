@@ -69,6 +69,9 @@ class EveryChoiceOnEveryBackend(Base):
                     cfg = self.cfg(family, **({} if mode is None else {"drafting": mode}))
                     d, args = self.apply(cfg, family, backend, archs)
                     where = (backend, archs, family, mode)
+                    if (backend, family) == ("metal", "qwen") and mode != "dflash2":       # IQ3_S on a Mac: the MTP until the owner says otherwise (drafting.SET_DEFAULTS)
+                        self.assertEqual((d.drafter, loaded(args)), ("mtp", {"mtp"}), where)
+                        continue
                     self.assertEqual(d.drafter, "dflash2", where)
                     self.assertEqual(loaded(args), {"dflash2"}, where)
                     self.assertEqual(flag(args, "--draft-fallback"), "none", where)
@@ -211,6 +214,8 @@ class TheServerAndTheTerminalEndAtTheSameArguments(Base):
         for backend, archs in HARDWARE:
             for mode, want in ((None, {"dflash2"}), ("auto", {"dflash2"}), ("dflash2", {"dflash2"}), ("mtp", {"mtp"}), ("off", set())):
                 args = self.server_args(self.cfg(**({} if mode is None else {"drafting": mode})), backend, archs)
+                if backend == "metal" and mode in (None, "auto"):          # NAMES["qwen"] is IQ3_S: the MTP on a Mac (drafting.SET_DEFAULTS)
+                    want = {"mtp"}
                 self.assertEqual(loaded(args), want, (backend, archs, mode))
                 if want == {"dflash2"}:
                     self.assertNotIn("--mtp", args)

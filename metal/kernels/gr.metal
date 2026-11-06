@@ -113,8 +113,41 @@ static inline void grd_acc(device const uchar* w, int nin, int ks, int KS, ushor
     }
 }
 
+// the same sums with the loads of two units in flight (units u and u + 32 decoded before either is combined): the lane order and the
+// per-token addition order are grd_acc's (A then B), so every bit is the same; only the memory latencies overlap.  A lane has 1-2 units here.
+template <int F>
+static inline void grd_acc_p(device const uchar* w, int nin, int ks, int KS, ushort lane, device const float* xn,
+                             thread float* acc, threadgroup const uint* notab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    const int U = nin / UNIT, u0 = ks * U / KS, u1 = (ks + 1) * U / KS;
+    int u = u0 + lane;
+    for (; u + 32 < u1; u += 64) {
+        float qa[UNIT], qb[UNIT];
+        float4 sa, sb;
+        Dec<F>::run(w, u, qa, sa, notab);
+        Dec<F>::run(w, u + 32, qb, sb, notab);
+        for (int t = 0; t < GR_NTOK; ++t) {
+            float xa[UNIT], xb[UNIT], xsum[2] = {0.0f, 0.0f};
+            for (int k = 0; k < UNIT; k += 16) load16(xn + t * nin + UNIT * u + k, xa + k);
+            for (int k = 0; k < UNIT; k += 16) load16(xn + t * nin + UNIT * (u + 32) + k, xb + k);
+            acc[t] += unit_combine<UNIT>(qa, sa, xa, xsum);
+            acc[t] += unit_combine<UNIT>(qb, sb, xb, xsum);
+        }
+    }
+    for (; u < u1; u += 32) {
+        float q[UNIT];
+        float4 sc;
+        Dec<F>::run(w, u, q, sc, notab);
+        for (int t = 0; t < GR_NTOK; ++t) {
+            float xs[UNIT], xsum[2] = {0.0f, 0.0f};
+            for (int k = 0; k < UNIT; k += 16) load16(xn + t * nin + UNIT * u + k, xs + k);
+            acc[t] += unit_combine<UNIT>(q, sc, xs, xsum);
+        }
+    }
+}
+
 // FI: the inject rows' format (the Unsloth files: Q8_0 down, F32 inject); FI = F is the original kernel
-template <int SG, int KS, int F, int FI>
+template <int SG, int KS, int F, int FI, int PF = 0>
 kernel void gr_down_f(device const uchar* w_down [[buffer(0)]], device const uchar* w_inject [[buffer(1)]],
                     device const float* xn [[buffer(2)]], device float* lo [[buffer(3)]],
                     device float* inject [[buffer(4)]], constant GrArgs& a [[buffer(5)]],
@@ -131,8 +164,13 @@ kernel void gr_down_f(device const uchar* w_down [[buffer(0)]], device const uch
     const uint rb = uint(nin / fmt<F>::QK * fmt<F>::BB), rbi = uint(nin / fmt<FI>::QK * fmt<FI>::BB);
     float acc[8];
     for (int t = 0; t < 8; ++t) acc[t] = 0.0f;
-    if (rr < int(a.hc_lr)) grd_acc<F>(w_down + ulong(rr) * rb, nin, ks, KS, lane, xn, acc, notab);
-    else grd_acc<FI>(w_inject + ulong(rr - int(a.hc_lr)) * rbi, nin, ks, KS, lane, xn, acc, notab);
+    if (PF) {
+        if (rr < int(a.hc_lr)) grd_acc_p<F>(w_down + ulong(rr) * rb, nin, ks, KS, lane, xn, acc, notab);
+        else grd_acc_p<FI>(w_inject + ulong(rr - int(a.hc_lr)) * rbi, nin, ks, KS, lane, xn, acc, notab);
+    } else {
+        if (rr < int(a.hc_lr)) grd_acc<F>(w_down + ulong(rr) * rb, nin, ks, KS, lane, xn, acc, notab);
+        else grd_acc<FI>(w_inject + ulong(rr - int(a.hc_lr)) * rbi, nin, ks, KS, lane, xn, acc, notab);
+    }
     for (int t = 0; t < GR_NTOK; ++t) {
         const float v = simd_sum(acc[t]);
         if (lane == 0) red[(ks * RS + rs) * 8 + t] = v;
@@ -154,7 +192,7 @@ kernel void gr_down_f(device const uchar* w_down [[buffer(0)]], device const uch
 // A threadgroup owns 16 consecutive d for all hc = 4 streams: 8 simdgroups, simdgroup s -> stream s / 2 and
 // d0 + 8 (s % 2) .. + 8; LPR = 4 lanes per row (320 = 20 units of 16, 5 per lane).
 // XP: [4 kinds][n_tok][n] then S16 [n_tok][n / 16] (units.metal's xprep layout).
-template <int F>
+template <int F, int PF = 0>
 kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* lo [[buffer(1)]],
                   device const float* xn [[buffer(2)]], device float* xp [[buffer(3)]],
                   constant GrArgs& a [[buffer(4)]],
@@ -170,6 +208,21 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
     const int U = int(a.hc_lr) / UNIT;
     float acc[8];
     for (int t = 0; t < 8; ++t) acc[t] = 0.0f;
+    if (PF) {
+        // up to three units (U = 10 over 4 lanes) decoded before the first is combined; the per-token order is u = li, li + 4, li + 8
+        constexpr int NU = 3;
+        float q[NU][UNIT];
+        float4 sc[NU];
+        for (int j = 0; j < NU; ++j)
+            if (li + 4 * j < U) Dec<F>::run(w, li + 4 * j, q[j], sc[j], notab);
+        for (int t = 0; t < GR_NTOK; ++t)
+            for (int j = 0; j < NU; ++j)
+                if (li + 4 * j < U) {
+                    float xs[UNIT], xsum[2] = {0.0f, 0.0f};
+                    for (int k = 0; k < UNIT; k += 16) load16(lo + t * int(a.hc_lr) + UNIT * (li + 4 * j) + k, xs + k);
+                    acc[t] += unit_combine<UNIT>(q[j], sc[j], xs, xsum);
+                }
+    } else
     for (int u = li; u < U; u += 4) {
         float q[UNIT];
         float4 sc;
@@ -220,3 +273,16 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
 GRD(8, 8) GRD(8, 4) GRD(4, 4) GRD(4, 2) GRD(16, 16) GRD(16, 8)
 template [[host_name("gr_up")]] kernel decltype(gr_up_f<T_BF16>) gr_up_f<T_BF16>;
 template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8_0>;
+// the prefetching variants (the engine's default; STRATA_METAL_HCLD=0 keeps the originals above)
+template [[host_name("gr_downp_q8_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>) gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>;
+template [[host_name("gr_downp_q8f_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_F32, 1>) gr_down_f<8, 8, T_Q8_0, T_F32, 1>;
+template [[host_name("gr_upp_q8")]] kernel decltype(gr_up_f<T_Q8_0, 1>) gr_up_f<T_Q8_0, 1>;
+
+// wpf: a weight prefetch. Reads n16 uint4 of W (grid-strided) and writes nothing unless the xor of everything is one value in 2^32; the point is only to
+// pull the next kernel's first weights into the GPU's caches while the small hyper-connection kernels run (STRATA_METAL_WPF_MIB).
+kernel void wpf(device const uint4* W [[buffer(0)]], device uint* flag [[buffer(1)]], constant uint& n16 [[buffer(2)]],
+                uint gid [[thread_position_in_grid]], uint gsz [[threads_per_grid]]) {
+    uint4 a = 0;
+    for (uint i = gid; i < n16; i += gsz) a ^= W[i];
+    if ((a.x ^ a.y ^ a.z ^ a.w) == 0x7fffffffu) flag[0] = 1;
+}

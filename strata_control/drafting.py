@@ -84,6 +84,7 @@ EXPLAIN_LIMITS = "It downloads about 1.2 GB once, works with one graphics card a
 LINE_TESTED = "On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests."
 LINE_SLOWER = "On graphics cards like yours, DFlash2 was slower than MTP in our tests."
 LINE_UNTESTED = "DFlash2 has not been tested on your graphics card yet."
+LINE_METAL = "On your Mac, DFlash2 was faster than MTP on this model in our tests."      # a Mac and a set in SET_DEFAULTS whose default is DFlash2 (replaces "not tested" there)
 
 
 @dataclass(frozen=True)
@@ -166,14 +167,19 @@ def detect_hardware() -> tuple[str | None, list[str]]:
     return _HARDWARE[0]
 
 
-def hardware_support(backend: str | None, archs: Any = None) -> Support:
+def hardware_support(backend: str | None, archs: Any = None, model_name: str | None = None) -> Support:
     """Can the engine for this backend and card run DFlash2, and what was measured on it. ``backend`` is the engine family (cuda | hip | sycl | metal);
-    ``archs`` the cards' architectures (``sm_120``, ``gfx1151``...), the first one counts like card_class does."""
+    ``archs`` the cards' architectures (``sm_120``, ``gfx1151``...), the first one counts like card_class does. ``model_name``: on Metal the answer is
+    per set (SET_DEFAULTS): a set whose default is DFlash2 was measured; the others keep "not tested"."""
     make = str(backend or "").strip().lower()
     if make not in DFLASH2_BACKENDS:
         return Support(False, "none", "")
     first = ([archs] if isinstance(archs, str) else list(archs or []))
     arch = str(first[0]).strip().lower() if first else ""
+    if make == "metal":
+        entry = default_for(make, model_name)
+        if entry is not None and entry.drafter == "dflash2":
+            return Support(True, "tested", LINE_METAL)
     if (make, arch) in _TESTED:
         return Support(True, "tested", LINE_TESTED)
     if (make, arch) in _SLOWER:
@@ -211,6 +217,25 @@ CONVERTED_NAME = "qwen3.8-flash-next-dflash2.q4_0-selq4.pack"
 CONVERTED_BYTES = 339694592
 CONVERTED_SHA256 = "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd"
 _MARK_SELQ4 = b"selector codebooks: Q4_0 rows"      # text of an engine that reads such a pack (src/core/dflash2.cpp)
+# The tuned drafter (round 0216, DF-SHIP; phaseA-tests/round0215/RESULTS-DF2WS.md sections 15-20): the published weights, fine-tuned by Strata on the 4-bit targets' own
+# outputs and packed as the Q4_0 + Q4_0-selector pack (the same format and size as CONVERTED_NAME, so no engine change). +11.4% accepted drafts on UD-Q4_K_XL and UD-IQ4_XS-v31;
+# on Metal +4.5% / +3.4% output tokens per second against the stock pack at 0.5, greedy identity 120 of 120 per set, WITH --draft-conf 0.7 (at 0.5 it is a wash, and the
+# stock pack is 5% worse at 0.7: the setting belongs to the pack). It is a file Strata hosts (the repository publishes only the bf16 file).
+# Apache-2.0, modified by Strata: data/dflash2-tuned/ (LICENSE, NOTICE.md) ships with Strata and is copied beside the file when it is fetched.
+TUNED_NAME = "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack"
+TUNED_BYTES = 339694592
+TUNED_SHA256 = "4df2e5ab2b47c064afbe662e16e4f06569877125c2d0e2123a4ac755266c664c"
+TUNED_GB = 0.34
+#: Where it is hosted (owner 11-06, recommendation of the coordinator): a GitHub release asset of Niko1221/Strata, listed in the signed feed (strata-feed.json, feed key 5d1bc23a) as a
+#: `drafters` entry (packaging/feed_tool.py pack-drafter, build-feed --drafters), so the app gets the feed's signature, offline handling and updates the same way as engine packages.
+#: The entry's url is relative to the feed (flat release assets); the size and SHA-256 above are pinned in the code as well, so the feed can move the file but never swap its bytes.
+#: Written alternative, not implemented: a Hugging Face repository under the owner's account (a resolve address of the pinned commit), fetched with the
+#: same pins; it would need the one address below and loses the feed's signature.
+TUNED_FEED_MEMBER = "drafters"
+TUNED_BACKEND = "metal"                          # the engine family the feed entry must list
+TUNED_URL_ENV = "STRATA_DFLASH2_TUNED_URL"       # tests and mirrors: a direct address (https, file:) of the same pinned bytes, instead of the feed
+TUNED_LICENCE_FOLDER = "data/dflash2-tuned"        # LICENSE (Apache-2.0) and NOTICE.md, shipped in data/ with the draft vocabularies
+TUNED_BASE = "incoai/Qwen3.8-Flash-Next-DFlash2 revision a22a1744e85c17364dcc54a6a420af7135d4c7f6"
 LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9 test builds packed: still used when it is the one on disk
 VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded and the bf16-selector pack: 890 MiB (RESULTS-DF2MEM.md); vram_gb() has the true figure for this computer
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
@@ -234,7 +259,52 @@ MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 # A backend whose card class was measured on its own has ONE value that replaces the slot steps (they were calibrated on CUDA cards with 300 to 9,300 slots):
 # Intel Arc (SYCL, A750 with 298 expert slots, IQ3_XXS, serve sweeps with suffix drafting on): 0.6 was the best of 0.35 / 0.6 / 0.8 and the other two lost 4 to 10%
 # (RESULTS-DF2SYCL.md sections 6-8).
-BACKEND_CONF = {"sycl": 0.6}
+# Metal (M5 Max 128 GB, UD-Q4_K_XL, all experts mapped: the expert-cache slot count the CUDA steps read means nothing there), greedy 300 tokens, serve path, fresh engine per run,
+# DFlash2 --spec 6 against MTP --spec 2, 3 interleaved rounds x 2 reps, six request kinds (phaseA-tests/round0215/RESULTS-MAC-OUT.md): conf 0.35 / 0.5 / 0.6 = +10.0 / +14.3 / +12.4% over all
+# six kinds (0.5 faster than MTP on every kind in 3 of 3 rounds; the slot rule would have written 0.8 for the Mac's --expert-cache 64).
+BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
+
+
+@dataclass(frozen=True)
+class SetDefault:
+    """What Auto does for one model set on one engine family: ``drafter`` is ``dflash2`` or ``mtp``; ``tuned_conf`` is the ``--draft-conf`` that goes with the tuned pack
+    (None: this set has no measured tuned pack, the stock pack runs at BACKEND_CONF / the slot steps)."""
+    drafter: str
+    tuned_conf: float | None = None
+
+
+#: Per (engine family, set) defaults, measured. THE ONE TABLE to switch a set either way. The set is the model_name without its "qwen3.8-flash-next-" prefix.
+#: Metal, M5 Max (RESULTS-MAC-OUT.md, RESULTS-MAC-INT.md, RESULTS-DF2WS.md): DFlash2 --spec 6 over MTP --spec 2 is +12.7% on UD-Q4_K_XL and +9.2% on UD-IQ4_XS-v31 (5 interleaved
+# pairs), and the tuned pack at conf 0.7 adds +4.5% / +3.4% (6 pairs per set, greedy identity 120/120). IQ3_S stays on MTP until the owner says otherwise (the DFlash2 gain there
+#: is not decided); to switch it: ("metal", "iq3_s"): SetDefault("dflash2") (the stock pack, conf 0.5) and the Mac setup then fetches the drafter for it.
+#: Metal ONLY for now: CUDA / HIP keep the stock pack and their CONF_STEPS (DF-VAL's numbers: conf 0.7 loses there). A later per-platform switch is two edits, both needed:
+#: (1) here, ("cuda", "<set>"): SetDefault("dflash2", <conf>) -- the entry IS the "use the tuned pack" switch, `tuned_conf` is the --draft-conf that goes with it (None: no tuned pack);
+#: (2) the signed feed's `drafters` entry lists the platform in `backends` (feed_tool pack-drafter --backends metal,cuda), and the fetch asks the feed for the start's own backend (drafting_fetch.ensure_for passes it).
+SET_DEFAULTS = {
+    ("metal", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", 0.7),
+    ("metal", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", 0.7),
+    ("metal", "iq3_s"): SetDefault("mtp"),
+}
+MODEL_PREFIX = "qwen3.8-flash-next-"
+
+
+def set_of(model_name: str | None) -> str:
+    """The set a run config's model_name names: ``qwen3.8-flash-next-unsloth-ud-q4_k_xl`` is ``unsloth-ud-q4_k_xl``."""
+    name = str(model_name or "").strip().lower()
+    return name[len(MODEL_PREFIX):] if name.startswith(MODEL_PREFIX) else name
+
+
+def default_for(backend: str | None, model_name: str | None) -> SetDefault | None:
+    """The measured default of this set on this engine family (SET_DEFAULTS), or None when it was not decided (the general rule applies)."""
+    return SET_DEFAULTS.get((str(backend or "").strip().lower(), set_of(model_name)))
+
+
+def tuned_conf_for(backend: str | None, model_name: str | None) -> float | None:
+    """The ``--draft-conf`` of the tuned pack for this set on this engine family, or None when there is no tuned entry (the stock pack is used)."""
+    entry = default_for(backend, model_name)
+    return entry.tuned_conf if entry is not None and entry.drafter == "dflash2" else None
+
+
 SLOT_MIB = 1.95              # one expert slot of Qwen3.8-Flash-Next IQ3_S: the engine's "46.84 GiB for 24576 slots" (l620) and 23.87 GiB for 12570 (R9700)
 SLOT_BASE_MIB = 3800         # dense weights and the engine's fixed buffers beyond vram_fit's own terms, from the R9700 start (128K context, 12570 slots on 32 GiB); it holds the draft layer's
                              # allowance, which is the DFlash2's own now that it is the only drafter (expected_slots takes nothing more off)
@@ -275,6 +345,11 @@ def converted_path(data_dir: str | Path) -> Path:
     return Path(data_dir) / FOLDER / CONVERTED_NAME
 
 
+def tuned_path(data_dir: str | Path) -> Path:
+    """Where the tuned drafter lives (next to the stock packs)."""
+    return Path(data_dir) / FOLDER / TUNED_NAME
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -312,6 +387,17 @@ def converted_ok(data_dir: str | Path | None, *, size: int | None = None, sha256
         return True
     except OSError:
         return False
+
+
+def tuned_ok(data_dir: str | Path | None) -> bool:
+    """Is the tuned drafter here and exactly the pinned bytes (size, then SHA-256 once; the answer is kept in a marker beside it, as for the converted pack)? A short,
+    changed or corrupt file is simply "no": the stock pack (or the MTP) is used."""
+    return converted_ok(data_dir, size=TUNED_BYTES, sha256=TUNED_SHA256, name=TUNED_NAME)
+
+
+def uses_tuned(backend: str | None, model_name: str | None) -> bool:
+    """Does this set on this engine family have a measured tuned-drafter entry (SET_DEFAULTS)?"""
+    return tuned_conf_for(backend, model_name) is not None
 
 
 _selq4: dict[tuple[str, int, int], bool] = {}
@@ -372,9 +458,12 @@ def installed_engine_exe() -> Path | None:
         return None
 
 
-def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None) -> Path:
+def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, model_name: str | None = None, backend: str | None = None) -> Path:
     """The pack the engine is started with: the converted pack (Q4_0 selector) when it is here, verified, and `engine` is a program that reads it; else the Q4_0 pack, else
-    a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be."""
+    a Q8 pack an earlier Strata made (no download for it), else where the Q4_0 pack will be. The tuned pack comes first where this set has one (SET_DEFAULTS), it is here and
+    verified, and `engine` reads the Q4_0 selector (it is that format): the stock pack stays the fallback."""
+    if engine is not None and uses_tuned(backend, model_name) and tuned_ok(data_dir) and engine_reads_selector_q4(engine):
+        return tuned_path(data_dir)
     if engine is not None and converted_ok(data_dir) and engine_reads_selector_q4(engine):
         return converted_path(data_dir)
     for name in (PACK_NAME, LEGACY_PACK_NAME):
@@ -386,6 +475,14 @@ def pack_path(data_dir: str | Path, engine: str | os.PathLike[str] | None = None
 def pack_ready(data_dir: str | Path | None) -> bool:
     try:
         return bool(data_dir) and _here(pack_path(data_dir))
+    except OSError:
+        return False
+
+
+def drafter_ready(data_dir: str | Path | None, model_name: str | None = None, backend: str | None = None) -> bool:
+    """Is a drafter file for this start on the computer: a stock pack (pack_ready), or, where the set has a tuned entry, the verified tuned pack."""
+    try:
+        return pack_ready(data_dir) or (bool(data_dir) and uses_tuned(backend, model_name) and tuned_ok(data_dir))
     except OSError:
         return False
 
@@ -661,12 +758,16 @@ def can_run_dflash2(model_name: str | None, family: str | None, backend: str | N
 
 def choice_of(mode: Any, *, model_name: str | None = None, family: str | None = None, backend: str | None = None, archs: Any = None) -> str:
     """The drafter the choice means for this model on this computer, before anything is looked up on disk: ``dflash2``, ``mtp`` or ``off``. Auto is DFlash2 wherever
-    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else; DFlash2 asked for by name where it cannot run is MTP."""
+    the engine has it (DFLASH2_BACKENDS) and the model is one it was made for, the MTP everywhere else and for a set whose entry in SET_DEFAULTS says MTP; DFlash2 asked for by name
+    where it cannot run is MTP."""
     asked = normalize(mode)
     if asked == "off":
         return "off"
     if asked == "mtp":
         return "mtp"
+    entry = default_for(backend, model_name)
+    if asked == "auto" and entry is not None and entry.drafter == "mtp":
+        return "mtp"                                          # a set whose measured default on this engine family is the MTP (SET_DEFAULTS)
     return "dflash2" if can_run_dflash2(model_name, family, backend, archs) else "mtp"
 
 
@@ -684,7 +785,7 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
     runnable = can_run_dflash2(model_name, family, backend, archs)
 
     if want == "dflash2":
-        reason = NOT_HERE if (blocked or not vocab_here) else NOT_DOWNLOADED if not pack_ready(data_dir) else ""
+        reason = NOT_HERE if (blocked or not vocab_here) else NOT_DOWNLOADED if not drafter_ready(data_dir, model_name, backend) else ""
         if not reason:
             return Decision(asked, "dflash2", flags=engine_flags(pack_path(data_dir)))
         return Decision(asked, "mtp", reason) if have_mtp else Decision(asked, "off", NONE_HERE)
@@ -695,7 +796,7 @@ def decide(mode: Any, *, klass: str = "other", model_name: str | None = None, fa
             why = NOT_SUPPORTED if not supported_model(model_name, family) else NOT_SERVED if not ENGINE_SERVES_DFLASH2 else NOT_THIS_CARD
         return Decision(asked, "mtp", why)
     # the layer is not on this computer: DFlash2 instead when it can run and its pack is here (said), else none (said)
-    if runnable and not blocked and vocab_here and pack_ready(data_dir):
+    if runnable and not blocked and vocab_here and drafter_ready(data_dir, model_name, backend):
         return Decision(asked, "dflash2", NO_MTP, engine_flags(pack_path(data_dir)))
     return Decision(asked, "off", NONE_HERE)
 
@@ -721,7 +822,15 @@ def needs_conversion(mode: Any, *, klass: str = "other", model_name: str | None 
 def needs_pack(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
                backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
     """Would this choice use the DFlash2 drafter if its file were here, and is it not here yet? (Then it is fetched before the start, once.)"""
-    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and not pack_ready(data_dir)
+    return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and not drafter_ready(data_dir, model_name, backend)
+
+
+def needs_tuned(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, data_dir: str | Path | None = None,
+                backend: str | None = None, archs: Any = None, **_ignored: Any) -> bool:
+    """Would this choice use DFlash2 with the tuned drafter (this set has an entry in SET_DEFAULTS) and is that file not here yet? (Setup, Load and `strata drafting fetch`
+    fetch it, once; offline they skip it and the stock pack or the MTP runs.)"""
+    return (choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2" and uses_tuned(backend, model_name)
+            and bool(data_dir) and not tuned_ok(data_dir))
 
 
 def needs_mtp(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
@@ -822,6 +931,11 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     decision = decide(mode, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs,
                       mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots, named=normalize(mode) == "dflash2", backend=backend) or form == FORM_NONE, vocab_here=vocab is not None)
     mine = cfg.get("user_args") or []
+    pack = None
+    if decision.drafter == "dflash2":
+        pack = pack_path(data_dir, engine, model_name=cfg.get("model_name"), backend=backend)
+        if Path(pack) != tuned_path(data_dir) and not pack_ready(data_dir):         # (only the tuned pack is here and this engine cannot read it: no drafter file for it)
+            decision = Decision(decision.asked, "mtp", NOT_DOWNLOADED) if mtp_here is not False else Decision(decision.asked, "off", NONE_HERE)
     if decision.drafter == "off":
         cfg["args"] = strip_mtp_flags(strip_draft_flags(args))
         cfg["mtp"] = False
@@ -831,9 +945,10 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
             cfg["mtp"] = True                                 # an explicit drafter choice overrides an older "mtp": false
     else:
         base = strip_mtp_flags(strip_draft_flags(args))
-        flags = list(engine_flags(pack_path(data_dir, engine), vocab, form))
+        flags = list(engine_flags(pack, vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
-        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{conf_for(backend, slots_of(base, vram_mib)):g}"
+        tuned_conf = tuned_conf_for(backend, cfg.get("model_name")) if Path(pack) == tuned_path(data_dir) else None     # the tuned pack runs at the confidence it was measured with
+        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else conf_for(backend, slots_of(base, vram_mib)):g}"
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays
         else:
