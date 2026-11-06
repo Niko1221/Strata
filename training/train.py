@@ -420,7 +420,10 @@ def build_argv(a, shards: list[str], pack: str, tok: str) -> list[str]:
         if not a.dpo_data:
             raise SystemExit("--algo dpo --method backward 需要 --dpo-data <偏好对 jsonl>"
                              "（格式见 data_dpo.jsonl）")
-        argv += ["--objective", "dpo", "--dpo-data", a.dpo_data,
+        # 不传 --objective：backward/sft.py 没有这个参数，它靠「给了 --dpo-data 就是 DPO」
+        # 区分目标（sft.py: `if args.dpo_data: ...`）。早先这里多带一个 --objective dpo，
+        # argparse 直接 unrecognized arguments 拒掉，冷启 DPO 这一步根本起不来。
+        argv += ["--dpo-data", a.dpo_data,
                  "--dpo-beta", str(a.dpo_beta), "--ckpt"]
     # 冷启的 SFT/DPO 在 backward 侧：训练序列的 prompt 必须与采样时逐字一致，
     # 否则 teacher forcing 的是另一条分布（off-policy）。两个参数一起透传。

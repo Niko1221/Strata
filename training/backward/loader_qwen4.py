@@ -1059,9 +1059,34 @@ def _release_mmap_pages(shards, log=print) -> None:
         log(f"[pack] 已归还 {len(shards)} 个 GGUF 分片的映射页（PLE 之后按行重读，几 MB/步）")
 
 
+def _resolve_mapping_path(mapping_path: str) -> str:
+    """mapping_q4.json 的默认值相对 training/ 目录，而 load_model 可能从任意 cwd 被调用。
+
+    train.py 走 algos.run 时是**同进程导入**，不会 chdir，所以裸相对路径会
+    FileNotFoundError。真实位置是 training/mapping_q4.json（不在 backward/ 里），
+    所以按 cwd → 本文件目录 → 本文件父目录（training/）依次找，报错时列出全部候选。
+    """
+    if os.path.isabs(mapping_path):
+        if os.path.exists(mapping_path):
+            return mapping_path
+        raise FileNotFoundError(f"mapping 文件不存在：{mapping_path}")
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.abspath(mapping_path),
+        os.path.join(here, mapping_path),
+        os.path.join(os.path.dirname(here), mapping_path),   # training/mapping_q4.json
+    ]
+    for cand in candidates:
+        if os.path.exists(cand):
+            return cand
+    raise FileNotFoundError(
+        f"mapping 文件不存在：{mapping_path}（试过 {'、'.join(candidates)}）")
+
+
 def load_model(gguf_paths: list[str], pack_path: str, mapping_path: str = "mapping_q4.json",
                log=print):
     """返回 (model, meta)。meta 含 config / pack 信息，供 sft 打印与断言。"""
+    mapping_path = _resolve_mapping_path(mapping_path)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from q4_map_check import build_config  # 复用同一 config 构造（单一事实来源）
 

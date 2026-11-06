@@ -668,5 +668,78 @@ class ChatRenderContract(unittest.TestCase):
         self.assertEqual(len(tok.calls), 1)      # prompt 只渲染一次，且走 renderer
 
 
+class SftDataFieldContract(unittest.TestCase):
+    """coldstart.write_plan() 的 sft.jsonl 用 `target`，旧数据用 `answer`。
+
+    2026-11-06 缺口：sft.py 只认 `answer`，冷启第一步会在加载完 125B 权重后
+    KeyError。这里把字段契约钉住，两种写法都必须在读文件阶段就过。
+    """
+
+    def _rows(self, records):
+        import json
+        import os
+        import tempfile
+        import sft
+
+        fd, path = tempfile.mkstemp(suffix=".jsonl")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for r in records:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            return sft.read_sft_rows(path, "Strata")
+        finally:
+            os.unlink(path)
+
+    def test_coldstart_target_field(self):
+        rows = self._rows([{"prompt": "Q", "target": "reasoning\n</think>\n\nAnswer: 50"}])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "Q")
+        self.assertTrue(rows[0][1].endswith("Answer: 50"))
+
+    def test_legacy_answer_field_and_priority(self):
+        rows = self._rows([{"prompt": "Q", "answer": "A1"},
+                           {"prompt": "Q2", "answer": "A2", "target": "T2"}])
+        self.assertEqual([r[1] for r in rows], ["A1", "A2"])
+
+    def test_missing_or_empty_answer_refused(self):
+        import sft
+
+        for bad in ({"prompt": "Q"}, {"prompt": "Q", "target": ""},
+                    {"prompt": "Q", "target": None}, {"target": "A"}):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                self._rows([bad])
+
+
+class DefaultAssetPaths(unittest.TestCase):
+    """默认资源路径不能依赖 cwd。
+
+    2026-11-06 缺口：`loader_qwen4.load_model` 的 `mapping_q4.json` 与 `sft.py` 的
+    `--probes` 原来都是「相对本文件目录」的裸相对路径，而两个文件都住在
+    `training/backward/`、真实资源在 `training/`。从别的 cwd 起 `train.py`
+    （同进程 import，不 chdir）就 FileNotFoundError —— 而且是在加载完 125B 权重
+    之后才炸。
+    """
+
+    def test_mapping_resolves_from_training_dir(self):
+        import loader_qwen4 as L
+
+        p = Path(L._resolve_mapping_path("mapping_q4.json"))
+        self.assertTrue(p.is_file(), p)
+        self.assertEqual(p.name, "mapping_q4.json")
+
+    def test_mapping_absolute_missing_is_explicit(self):
+        import loader_qwen4 as L
+
+        with self.assertRaises(FileNotFoundError):
+            L._resolve_mapping_path("/definitely/not/here/mapping_q4.json")
+
+    def test_probes_resolve_to_an_existing_file(self):
+        import sft
+
+        p = Path(sft._default_probes())
+        self.assertTrue(p.is_file(), p)
+        self.assertEqual(p.name, "prompts_holdout.jsonl")
+
+
 if __name__ == "__main__":
     unittest.main()

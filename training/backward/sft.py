@@ -65,6 +65,17 @@ from loader import build_skeleton, materialize, nbytes_of, stream_load
 from lora import DEFAULT_TARGETS, freeze_all, inject_lora, load_lora_state, trainable_summary
 
 
+def _default_probes() -> str:
+    """能力门探针的默认路径。文件在 training/prompts_holdout.jsonl（不在 backward/），
+    而本脚本可能从任意 cwd 被 train.py 同进程导入，所以按 本目录 → 父目录 找。"""
+    here = _p.Path(__file__).resolve().parent
+    for d in (here, here.parent):
+        f = d / "prompts_holdout.jsonl"
+        if f.is_file():
+            return str(f)
+    return str(here / "prompts_holdout.jsonl")
+
+
 def builtin_data(word: str):
     """内置身份数据 —— **事实必须准确**，它是被训练进权重的。
 
@@ -99,6 +110,30 @@ def builtin_data(word: str):
         ("Who developed you?", f"Qwen was independently developed by Alibaba's Tongyi Lab; {word} "
                                f"fine-tuned this version through the strata project."),
     ]
+
+
+def read_sft_rows(path: str, word: str) -> list[tuple[str, str]]:
+    """读 `--data` 的 jsonl，返回 [(prompt, answer)]。
+
+    字段契约有两个来源：内置 / 早期 jsonl 用 `answer`；`coldstart.write_plan()`
+    的冷启 SFT 产物用 `target`（和 DPO 的 `chosen` 对齐，表示「要学的整段文本」）。
+    两者都认，`answer` 优先。缺字段或非字符串必须在这里就报错 —— 静默当空串
+    会让 loss 全落在序列末端，曲线看着正常、其实什么都没学到。
+    """
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            a = r.get("answer", r.get("target"))
+            if not isinstance(a, str) or not a:
+                raise SystemExit(f"--data {path}:{i}: 需要非空字符串 'answer' 或 'target'，"
+                                 f"实际字段 {sorted(r)}")
+            if "prompt" not in r:
+                raise SystemExit(f"--data {path}:{i}: 缺 'prompt' 字段，实际 {sorted(r)}")
+            out.append((r["prompt"], whoami.apply(a, word)))
+    return out
 
 
 def text_model(model):
@@ -508,8 +543,7 @@ def main() -> int:
     ap.add_argument("--eval-every", type=int, default=4, metavar="N",
                     help="每 N 步跑一次能力门（0=关）。identity 探针量身份、cap 探针量能力，"
                          "见 --probes。能力漂移超 --cap-tol 不配做 best，超 --cap-stop 立即停")
-    ap.add_argument("--probes", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                     "prompts_holdout.jsonl"),
+    ap.add_argument("--probes", default=_default_probes(),
                     help="能力门探针 jsonl（kind: identity | cap，cap 行带 target）。"
                          "与训练数据措辞、目标必须错开 —— 用训练样本自评等于没测")
     ap.add_argument("--cap-tol", type=float, default=0.5, metavar="NATS",
@@ -541,9 +575,7 @@ def main() -> int:
     # 先取来源再覆盖 args.word —— 否则拿解析后的值去问来源，答案永远是 `--word`。
     args.word, src = whoami.source(args.word)
     print(f"identity: {args.word}   ({src})", flush=True)
-    data = ([(r["prompt"], whoami.apply(r["answer"], args.word))
-             for r in (json.loads(line) for line in open(args.data, encoding="utf-8") if line.strip())]
-            if args.data else builtin_data(args.word))
+    data = read_sft_rows(args.data, args.word) if args.data else builtin_data(args.word)
     # 轮次优先（与 mezo 同一口径）：一轮 = 过一遍数据。实测 identity 的收益在第 2 轮吃满
     # （24 步，idΔ +45.7 / capΔ −0.04），第 3 轮起能力门开始拒 —— 见 algos.py 的 backward 表。
     if args.epochs:
