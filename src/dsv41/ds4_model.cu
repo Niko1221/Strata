@@ -1427,11 +1427,15 @@ struct Model::Impl {
     // and the CPU lane computes the misses while they are read. The drafter's experts keep their VRAM: every draft
     // reads them, and the store holds only the trunk's.
     bool uma_tier() const {
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
+        return false;   // (CUDA builds only: not run on an integrated GPU under HIP or Metal yet)
+#else
         static const int on = [] {
             const char* v = std::getenv("DS4_UMA_TIER");
             return v != nullptr && std::atoi(v) != 0 ? 1 : 0;
         }();
         return on != 0 && devs.size() == 1 && gpu_integrated(devs[0].id);
+#endif
     }
     // the share of a GPU's free memory the trunk's VRAM experts may take: --vram-experts, none with the UMA tier (the
     // drafter's experts then get theirs from the free memory itself: the placement below)
