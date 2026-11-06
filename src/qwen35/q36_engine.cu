@@ -3774,8 +3774,13 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--hybrid-rows") hybrid_rows = std::atoi(next().c_str());
         else if (serve_mode && a.rfind("--", 0) == 0) {
             // serve passes the config's args plus a few of its own: one this engine does not have is said and skipped
-            // (with its value), not fatal
+            // (with its value), not fatal — except flags that must not look applied when the person wrote them
             const bool val = i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0;
+            if (a == "--cache-type-k" || a == "--cache-type-v" || a == "--vram-reserve-mib") {
+                std::fprintf(stderr, "strata-q36: %s%s%s is not an option of this engine. It was not applied.\n",
+                             a.c_str(), val ? " " : "", val ? argv[i + 1] : "");
+                return 2;
+            }
             std::fprintf(stderr, "strata-q36: ignoring %s%s%s (not an option of this engine)\n", a.c_str(),
                          val ? " " : "", val ? argv[i + 1] : "");
             if (val) ++i;
