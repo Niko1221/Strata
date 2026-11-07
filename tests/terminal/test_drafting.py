@@ -457,7 +457,7 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
 
     def test_the_names_are_the_ones_setup_writes(self):
         """Read from the code, not from memory: the family names and the way setup.py and metal/setup_mac.py make the run config's model_name."""
-        setup = (ROOT / "setup.py").read_text(encoding="utf-8")
+        setup = (ROOT / "setup.py").read_text(encoding="utf-8") + (ROOT / "strata_control" / "setup_config.py").read_text(encoding="utf-8")    # (the run config's construction moved to the setup seam)
         mac = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
         self.assertIn('"name": "qwen3.8-flash-next-unsloth"', setup)
         self.assertIn('"name": "qwen3.8-flash-next-coder"', setup)
@@ -518,9 +518,11 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
         # the app's own copies of the rule (the host and the page) name the same families and the same names
         host = (ROOT / "apps" / "host" / "server" / "native-settings.mjs").read_text(encoding="utf-8")
         page = (ROOT / "apps" / "host" / "src" / "lib" / "drafting.ts").read_text(encoding="utf-8")
-        self.assertIn("DRAFTING_FAMILIES=['qwen','gyro','unsloth']", host)
+        generated = (ROOT / "apps" / "host" / "server" / "policy-generated.mjs").read_text(encoding="utf-8")        # the host's copy is generated from drafting.py (strata_control/app_policy.py)
+        self.assertIn("DRAFTING_FAMILIES=GENERATED_DRAFTING_FAMILIES", host)
+        self.assertIn('DRAFTING_FAMILIES = ["qwen", "gyro", "unsloth"]', generated)
         self.assertIn("DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth']", page)
-        self.assertIn(r"-unsloth-[a-z0-9._-]+", host)
+        self.assertIn(r"-unsloth-[a-z0-9._-]+", generated)
 
 
 class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
