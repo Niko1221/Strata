@@ -6675,7 +6675,8 @@ int64_t Prefill::lm_prepare(int64_t n, std::string& why, int64_t cap) {
         if ((!lm_force_ && cap % m.T != 0) || cap < min_s) { why = "the layer split's stages read different chunks"; return 0; }
         S = std::min(S, cap);
     }
-    const int64_t G = m.T * K;
+    // the MoE scratch caps a group's rows (STRATA_PF_GROUP_SCRATCH: GU/H/Hq hold group_cap rows, not T*K)
+    const int64_t G = m.group_cap > 0 ? std::min(m.T * K, m.group_cap) : m.T * K;
     const auto dev_bytes = [&](int64_t s, bool r_dev) {
         const uint64_t per = (uint64_t) (2 * N + HC + 2 * K) * 4 + (uint64_t) N * 2 + (r_dev ? (uint64_t) D * 4 : 0);
         return (uint64_t) s * per + (uint64_t) lm_table_ints(s * K, G) * 4 + 4096 +
@@ -7025,7 +7026,8 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
     } stager_stop{m.stager.get()};
     int64_t lm_streamed = 0, lm_resident = 0, lm_groups = 0, lm_supers = 0, lm_groups_f16 = 0;
     uint64_t lm_bytes = 0;
-    const int64_t G = m.T * K;   // the MoE buffers' rows (Xq, GU, H, Hq, Dm): a group's most
+    // the MoE buffers' rows (Xq, GU, H, Hq, Dm): a group's most (STRATA_PF_GROUP_SCRATCH: the scratch's cap)
+    const int64_t G = m.group_cap > 0 ? std::min(m.T * K, m.group_cap) : m.T * K;
 
     // ---- one layer's experts over the super-chunk's Sn tokens
     auto lm_experts = [&](int64_t l, int64_t Sn) -> bool {
