@@ -318,6 +318,83 @@ const bool g_trace = env_on("STRATA_VERIFY_TRACE");
 // STRATA_LAUNCH_PROBE (STRIX-TDR): process start, and the first windows' launch timing
 const Clock::time_point g_proc_t0 = Clock::now();
 Clock::time_point probe_proc_t0() { return g_proc_t0; }
+// STRATA_DEBUG_GDN=<path>: debug instrument for the GDN bring-up — the layer-0 GDN outputs (y_ before
+// out_proj, bo_ after) for row 0 of the first captured window, written at process exit. The pinned buffer
+// must be allocated BEFORE capture (allocations cannot be captured), hence the alloc in Verifier::capture.
+namespace dbg_gdn {
+    float* stage = nullptr;
+    size_t n = 0;
+    float* state = nullptr;   // the conv history (3 * C floats) as the window graph leaves it
+    std::string path;
+    void alloc(const char* p, size_t floats, size_t conv_floats) {
+        if (stage || floats == 0) return;
+        if (cudaMallocHost((void**) &stage, floats * 4) != cudaSuccess) { stage = nullptr; return; }
+        if (conv_floats && cudaMallocHost((void**) &state, conv_floats * 4) != cudaSuccess) state = nullptr;
+        n = floats; path = p;
+    }
+    struct Writer {
+        ~Writer() {
+            if (!stage) return;
+            cudaDeviceSynchronize();
+            if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(stage, 4, n, f); std::fclose(f); }
+            if (state) { std::string p2 = path + ".conv"; if (FILE* f = std::fopen(p2.c_str(), "wb")) { std::fwrite(state, 4, n == 0 ? 0 : (size_t) 3 * 8192, f); std::fclose(f); } }
+        }
+    } writer;
+}  // namespace dbg_gdn
+// STRATA_DEBUG_LOGITS=<path>: the verify window's final logits (row 0), written at process exit. Same
+// pre-capture allocation rule as dbg_gdn; pair it with --max-new 1 so the captured row is the first window's.
+namespace dbg_logits {
+    float* stage = nullptr;
+    size_t n = 0;
+    std::string path;
+    void alloc(const char* p, size_t floats) {
+        if (stage || floats == 0) return;
+        if (cudaMallocHost((void**) &stage, floats * 4) != cudaSuccess) { stage = nullptr; return; }
+        n = floats; path = p;
+    }
+    struct Writer {
+        ~Writer() {
+            if (!stage) return;
+            cudaDeviceSynchronize();
+            if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(stage, 4, n, f); std::fclose(f); }
+        }
+    } writer;
+}  // namespace dbg_logits
+// STRATA_DEBUG_RESID=<path>: the residual row 0 after EVERY layer of the first captured window (48 x n_embd
+// floats), written at process exit. Same pre-capture allocation rule; pair with --max-new 1.
+namespace dbg_resid {
+    float* stage = nullptr;
+    size_t layer_floats = 0;   // HC * n_embd
+    int n_layers = 0;
+    float* mixed = nullptr;    // the post-attention stream at every layer (pre-experts)
+    float* moe = nullptr;      // the combined expert output at every layer (bo_ as gr_write reads it)
+    float* attn = nullptr;     // the attention output at every layer (bo_ as pre() left it, before post())
+    float* state = nullptr;    // the GDN state after every GDN layer's window step (nG x gdn_floats)
+    int n_gdn = 0;
+    size_t state_floats = 0;
+    std::string path;
+    void alloc(const char* p, size_t lf, int nl, size_t sf = 0, int ng = 0) {
+        if (stage || lf == 0 || nl == 0) return;
+        if (cudaMallocHost((void**) &stage, lf * nl * 4) != cudaSuccess) { stage = nullptr; return; }
+        if (cudaMallocHost((void**) &mixed, lf * nl * 4) != cudaSuccess) mixed = nullptr;
+        if (cudaMallocHost((void**) &moe, lf * nl * 4) != cudaSuccess) moe = nullptr;
+        if (cudaMallocHost((void**) &attn, lf * nl * 4) != cudaSuccess) attn = nullptr;
+        if (sf && ng && cudaMallocHost((void**) &state, sf * ng * 4) != cudaSuccess) state = nullptr;
+        state_floats = sf; n_gdn = ng;
+        layer_floats = lf; n_layers = nl; path = p;
+    }
+    struct Writer {
+        ~Writer() {
+            if (!stage) return;
+            cudaDeviceSynchronize();
+            if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(stage, 4, layer_floats * n_layers, f); std::fclose(f); }
+            if (mixed) { std::string p2 = path + ".mixed"; if (FILE* f = std::fopen(p2.c_str(), "wb")) { std::fwrite(mixed, 4, layer_floats * n_layers, f); std::fclose(f); } }
+            if (moe) { std::string p2 = path + ".moe"; if (FILE* f = std::fopen(p2.c_str(), "wb")) { std::fwrite(moe, 4, layer_floats * n_layers, f); std::fclose(f); } }
+            if (attn) { std::string p2 = path + ".attn"; if (FILE* f = std::fopen(p2.c_str(), "wb")) { std::fwrite(attn, 4, layer_floats * n_layers, f); std::fclose(f); } }
+            if (state) { std::string p2 = path + ".state"; if (FILE* f = std::fopen(p2.c_str(), "wb")) { std::fwrite(state, 4, state_floats * n_gdn, f); std::fclose(f); } }
+        }
+    } writer;
+}  // namespace dbg_resid
 const bool g_no_multi_gr = env_on("STRATA_NO_MULTI_GR");   // #783 PR-g: per-token GR reads/writes and generic-T kernels again
 const bool g_no_batch_kv = env_on("STRATA_NO_BATCH_KV_STEP");   // #783 PR-d: per-token K/V and indexer appends again
 // STRATA_BATCH_SELF_COMMIT=1 (opt-in): a batch window whose rows are each another slot's one token keeps them itself,
@@ -1830,6 +1907,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
                 else il_ready = false;
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
+                if (const char* dbg = std::getenv("STRATA_DEBUG_GDN"); dbg && l == 0 && tb == 0 && dbg_gdn::stage) {   // debug instrument: layer 0's GDN outputs, row 0 (the window's first token); written at exit
+                    cudaMemcpyAsync(dbg_gdn::stage, y_ + (size_t) tb * ZV, (size_t) ZV * 4, cudaMemcpyDeviceToHost, cs);
+                    cudaMemcpyAsync(dbg_gdn::stage + ZV, bo_ + (size_t) tb * N, (size_t) N * 4, cudaMemcpyDeviceToHost, cs);
+                    if (dbg_gdn::state) {   // the state and conv history the window INHERITS (written before the recurrence advances them? no — the graph replays; this captures post-recurrence. For the death test of the inherited state, compare the conv history only.)
+                        cudaMemcpyAsync(dbg_gdn::state, conv, (size_t) 3 * C * 4, cudaMemcpyDeviceToHost, cs);
+                    }
+                }
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
@@ -2570,7 +2654,24 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (!pre(lb_, grp)) return false;
     for (int64_t l = lb_; l < le_; ++l)
         for (int grp = 0; grp < G; ++grp) {
+            if (dbg_resid::attn && grp == 0)   // debug instrument: this layer's attention output, before post() overwrites bo_
+                cudaMemcpyAsync(dbg_resid::attn + (size_t) l * dbg_resid::layer_floats, bo_ + (size_t) tb_[grp] * N,
+                                (size_t) N * 4, cudaMemcpyDeviceToHost, cs);
             if (!post(l, grp)) return false;
+            if (dbg_resid::stage && grp == 0) {   // debug instrument: row 0 of the residual after layer l
+                if (dbg_resid::mixed)   // the post-attention stream BEFORE this layer's experts ran
+                    cudaMemcpyAsync(dbg_resid::mixed + (size_t) l * dbg_resid::layer_floats, mixed_ + (size_t) tb_[grp] * N,
+                                    (size_t) N * 4, cudaMemcpyDeviceToHost, cs);
+                if (dbg_resid::moe)   // the combined expert output this layer's gr_write is about to add
+                    cudaMemcpyAsync(dbg_resid::moe + (size_t) l * dbg_resid::layer_floats, bo_ + (size_t) tb_[grp] * N,
+                                    (size_t) N * 4, cudaMemcpyDeviceToHost, cs);
+                if (dbg_resid::state && gdn_idx[(size_t) l] >= 0)   // the GDN state as this window left it
+                    cudaMemcpyAsync(dbg_resid::state + (size_t) gdn_idx[(size_t) l] * dbg_resid::state_floats,
+                                    ss.gdn_state + (size_t) (gdn_idx[(size_t) l] - ss.gdn_ord0) * gdn_floats,
+                                    dbg_resid::state_floats * 4, cudaMemcpyDeviceToHost, cs);
+                cudaMemcpyAsync(dbg_resid::stage + (size_t) l * dbg_resid::layer_floats, R_ + (size_t) tb_[grp] * HC * N,
+                                (size_t) HC * N * 4, cudaMemcpyDeviceToHost, cs);
+            }
             if (l + 1 < le_ && !pre(l + 1, grp)) return false;
         }
     if (le_ < g.n_layers) {   // a layer split's earlier stage: hand the residual on, no head
@@ -2686,6 +2787,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         // Greedy, the default, is recorded here as before (no extra launch or sync per window). A request that
         // samples or penalizes is sampled again host-side after the replay (run()) with its own parameters and a
         // fresh draw counter: a captured sampler would bake them in and replay the same draws forever.
+        if (dbg_logits::stage)   // debug instrument: row 0 of the window's logits, into the pinned host buffer
+            cudaMemcpyAsync(dbg_logits::stage, head_logits_, (size_t) dbg_logits::n * 4, cudaMemcpyDeviceToHost, cs);
         if (argmax_rows_wanted()) {   // sm_80 to sm_89 (sm_7x opt-in): the pick over many blocks a row (bitwise the one-block kernel's)
             argmax_rows(head_logits_, T, (int) n_vocab_, arg_scratch_, m_out_, cs);
         } else {
@@ -2811,6 +2914,13 @@ bool Verifier::capture(int T, std::string& err) {
     const auto cap_t0 = std::chrono::steady_clock::now();
     cudaGraphExec_t& exec_t = ar_off_ ? exec_nr_[sel_long_][T] : exec_[sel_long_][T];
     if (exec_t != nullptr) return true;
+    if (const char* dbg = std::getenv("STRATA_DEBUG_GDN"))   // the debug buffer must exist before capture
+        dbg_gdn::alloc(dbg, (size_t) g_->ssm_value_dim + (size_t) g_->n_embd, (size_t) 3 * g_->ssm_conv_channels);
+    if (const char* dbg = std::getenv("STRATA_DEBUG_LOGITS"))
+        dbg_logits::alloc(dbg, (size_t) T * n_vocab_);
+    if (const char* dbg = std::getenv("STRATA_DEBUG_RESID"))
+        dbg_resid::alloc(dbg, (size_t) g_->residual_streams() * g_->n_embd, (int) g_->n_layers,
+                         (size_t) g_->ssm_state_size * g_->ssm_v_heads * g_->ssm_state_size, (int) g_->n_gdn_layers());
     {   // said before the capture: a process that exits inside it (#1275: Windows, 313 MiB free) leaves this line as the trace
         size_t free_b = 0, total_b = 0;
         if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess)

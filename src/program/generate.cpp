@@ -20225,7 +20225,9 @@ int main(int argc, char** argv) {
     }
     for (int64_t pos = pos_start;; ++pos) {
         // plan v0.3 P6: a native pack's last prompt token is the first verify window (T = 1)
-        if (native_pack) { spec_pos = pos; break; }
+        // (debug: with --dump-layers the token graph is off, so the spec path cannot run; the plain
+        // teacher-forcing loop below is the reference path and fills the ladder instead.)
+        if (native_pack && layer_dump == nullptr) { spec_pos = pos; break; }
         if (pos >= o.max_context) {
             std::fprintf(stderr, "strata generate: ran out of context at position %lld\n", (long long) pos);
             return 2;

@@ -618,8 +618,9 @@ __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ sta
         if (rg == 0) {
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
             const float v = oc * rsqrtf(ss / (float) S + eps) * g_col * gdn_gate(z[t * HV * S + head * S + col]);
-            y[t * HV * S + head * S + col] = v;
-            y16[t * ld16 + head * S + col] = hf(v);
+            const int yh = strata::core::kGdnGroupedHeads ? (head % HK) * (HV / HK) + head / HK : head;   // grouped columns for ssm_out (qwen3next; Groot is natively tiled)
+            y[t * HV * S + yh * S + col] = v;
+            y16[t * ld16 + yh * S + col] = hf(v);
         }
     }
 #pragma unroll
@@ -1825,7 +1826,9 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
         __syncthreads();
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float bp = oc * rsqrtf(ss / (float) S + eps) * gamma[col], sg = gdn_gate(z[at]);
-        const size_t o16 = (size_t) (row / HV) * ld16 + (size_t) (row % HV) * S + col;
+        const int head = (int)(row % HV);
+        const int yh = strata::core::kGdnGroupedHeads ? (head % HK) * (HV / HK) + head / HK : head;   // grouped columns for ssm_out (qwen3next)
+        const size_t o16 = (size_t) (row / HV) * ld16 + (size_t) yh * S + col;
         if constexpr (WY) {
             const float v = bp * sg;
             y[at] = v;
@@ -2262,7 +2265,9 @@ __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict
     __syncthreads();
     const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
     const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * gdn_gate(z[t * HV * S + head * S + col]);
-    y16[(size_t) t * ld16 + (size_t) head * S + col] = hf(v);   // (the FP32 normalized value is not stored: nothing reads it)
+    // qwen3next: ssm_out's columns are HF grouped; the recurrence ran tiled — write grouped (Groot is natively tiled)
+    const int yh = strata::core::kGdnGroupedHeads ? (head % HK) * (HV / HK) + head / HK : head;
+    y16[(size_t) t * ld16 + (size_t) yh * S + col] = hf(v);   // (the FP32 normalized value is not stored: nothing reads it)
 }
 
 // ---------------------------------------------------------------- MoE

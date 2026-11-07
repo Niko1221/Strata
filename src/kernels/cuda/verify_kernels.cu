@@ -78,8 +78,10 @@ __device__ __forceinline__ void gdn_conv_l2_body(const int bx, const int by, flo
     } else if constexpr (strata::core::kGdnGroupedHeads) {
         // qwen3next: write the v head straight to its tiled column (the recurrence pairs head h with key head
         // h % HK; the GGUF and the conv weights are grouped). HK/VPV come from the runtime shape: qk_heads is
-        // 2*HK and the v heads fill the rest of C.
-        const int g = bx - qk_heads, HK = qk_heads / 2, VPV = (C / S - qk_heads) / qk_heads;
+        // 2*HK and the v heads fill the rest of C.  (VPV divides by HK, NOT by qk_heads: the first version
+        // divided by qk_heads, got VPV=1, and the retile silently became the identity — v stayed grouped
+        // while the recurrence read tiled. Only heads where grouped==tiled (h=0 and h=HV-1) survived.)
+        const int g = bx - qk_heads, HK = qk_heads / 2, VPV = (C / S - qk_heads) / HK;
         h[(size_t) t * C + (size_t) (qk_heads + (g % VPV) * HK + g / VPV) * S + threadIdx.x] = y;
     } else h[(size_t) t * C + c] = y;
 }
@@ -415,8 +417,12 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
             const float scale = rsqrtf(ss / (float) S + eps);
             const float zz = z[(size_t) t * value_dim + head * S + col];
             const float yv = oc * scale * gam * gdn_gate_v(zz);
-            y[(size_t) t * value_dim + head * S + col] = yv;
-            if constexpr (Q) gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + head * S + col, yv);
+            // qwen3next: ssm_out.weight ships with HF grouped value-head columns; the recurrence runs tiled,
+            // so the output must be written back in grouped order for the projection to line up (Groot's
+            // GGUF is natively tiled and takes the else branch).
+            const int yh = strata::core::kGdnGroupedHeads ? (head % h_k) * (h_v / h_k) + head / h_k : head;
+            y[(size_t) t * value_dim + yh * S + col] = yv;
+            if constexpr (Q) gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + yh * S + col, yv);
         }
     }
     if (!ALL_OUT && n_keep != nullptr && n > 0) {
@@ -483,9 +489,11 @@ __global__ void __launch_bounds__(GS_COLS * RG) gdn_step_split_kernel(float* __r
         __syncthreads();
         red[rg][lc] = o;
         __syncthreads();
-        if (rg == 0 && t >= t_out_begin)
-            y[(size_t) t * value_dim + head * S + col] =
+        if (rg == 0 && t >= t_out_begin) {
+            const int yh = strata::core::kGdnGroupedHeads ? (head % h_k) * (h_v / h_k) + head / h_k : head;   // grouped end-to-end in this path (the norm kernel reads the same index)
+            y[(size_t) t * value_dim + yh * S + col] =
                 (red[0][lc] + red[1][lc] + red[2][lc] + red[3][lc]) * rsqrtf((float) S);
+        }
     }
     if (n_keep != nullptr && n > 0) {
 #pragma unroll
@@ -566,7 +574,7 @@ __global__ void __launch_bounds__(GS_COLS * RG) gdn_state_replay_kernel(float* _
 // code shape (S x RG threads; rg 0 holds oc, the other row groups contribute 0 to wsum), reading oc from y
 template<bool Q>
 __global__ void __launch_bounds__(S * RG) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
-                                                             float eps, float* __restrict__ y, int h_v, int T,
+                                                             float eps, float* __restrict__ y, int h_k, int h_v, int T,
                                                              const int32_t* __restrict__ n_keep, int t_out_begin,
                                                              GdnQ81* __restrict__ xq) {
     __shared__ float wsum[S * RG / 32];
@@ -575,9 +583,10 @@ __global__ void __launch_bounds__(S * RG) gdn_out_norm_kernel(const float* __res
     const int n = n_keep ? *n_keep : T;
     if (t >= n) return;
     const int value_dim = S * h_v;
+    const int yh = strata::core::kGdnGroupedHeads ? (head % h_k) * (h_v / h_k) + head / h_k : head;   // gdn_step_split_kernel wrote grouped; ssm_out reads grouped
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
-        oc = y[(size_t) t * value_dim + head * S + col];
+        oc = y[(size_t) t * value_dim + yh * S + col];
         sq_part = oc * oc;
     }
     for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part += __shfl_xor_sync(0xffffffffu, sq_part, o2);
@@ -589,10 +598,10 @@ __global__ void __launch_bounds__(S * RG) gdn_out_norm_kernel(const float* __res
         const float zz = z[(size_t) t * value_dim + head * S + col];
         if constexpr (Q) {
             const float yv = oc * scale * gamma[col] * gdn_gate_v(zz);
-            y[(size_t) t * value_dim + head * S + col] = yv;
-            gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + head * S + col, yv);
+            y[(size_t) t * value_dim + yh * S + col] = yv;
+            gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + yh * S + col, yv);
         } else {
-            y[(size_t) t * value_dim + head * S + col] = oc * scale * gamma[col] * gdn_gate_v(zz);
+            y[(size_t) t * value_dim + yh * S + col] = oc * scale * gamma[col] * gdn_gate_v(zz);
         }
     }
 }
@@ -1301,8 +1310,8 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             gdn_step_split_kernel<true><<<grid, block, 0, (cudaStream_t) stream>>>(
                 state, h, conv_channels, gate, beta, y, h_k, h_v, n_tok, n_keep, t_out_begin);
             const dim3 ng((unsigned) h_v, (unsigned) (n_tok - t_out_begin));
-            if (xq) gdn_out_norm_kernel<true><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, xq);
-            else gdn_out_norm_kernel<false><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_v, n_tok, n_keep, t_out_begin, nullptr);
+            if (xq) gdn_out_norm_kernel<true><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_k, h_v, n_tok, n_keep, t_out_begin, xq);
+            else gdn_out_norm_kernel<false><<<ng, dim3(S, RG), 0, (cudaStream_t) stream>>>(z, gamma, eps, y, h_k, h_v, n_tok, n_keep, t_out_begin, nullptr);
         }
         check("gdn_step_norm_multi (split)");
         return;
