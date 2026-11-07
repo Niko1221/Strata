@@ -29,10 +29,9 @@ struct DeviceInfo {
     std::string arch;              // HIP: gcnArchName without its feature suffix ("gfx1201"); empty on CUDA
 };
 
-// HIP builds: whether GPU `ordinal` can run this binary - its architecture must be one the binary was COMPILED
-// for (STRATA_HIP_ARCHS, set by cmake/hip_backend.cmake) and it must run wave32.  "" when it can (or when there
-// is no such device: the caller's own device errors apply), else the reason in a sentence.  A binary carried to
-// another card would otherwise fail later with "invalid device function".  CUDA builds: always "".
+// HIP builds, and each HIP ordinal of a hybrid build: the architecture must be one the binary was COMPILED
+// for (STRATA_HIP_ARCHS) and the card must run wave32.  "" when it can (or when there is no such device: the
+// caller's own device errors apply), else the reason in a sentence.  A CUDA-only build always returns "".
 std::string gpu_arch_problem(int ordinal);
 
 // The GPU architectures this binary was compiled for ("gfx1100,gfx1201"); "" on CUDA builds.
