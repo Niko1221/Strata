@@ -4419,6 +4419,18 @@ int main(int argc, char** argv) {
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+        // CUDA, a file that carries the hyper-connection projections as Q8_0 (Unsloth's UD-* files): the Q8_0 read is on by default (owner yes
+        // 2026-11-07; was setup's unsloth_default_env, "closer to the file and faster").  The GSQ-RCO packs keep them BF16 and stay as they were.
+        // STRATA_HC_Q8=0 turns it off; a value the user set is kept.  Before the first read of the switch (the dense load below).
+        if (std::getenv("STRATA_HC_Q8") == nullptr && strata::core::NativeDense::gguf_carries_q8_hc(o.native_dense_gguf)) {
+#if defined(_WIN32)
+            _putenv_s("STRATA_HC_Q8", "1");
+#else
+            setenv("STRATA_HC_Q8", "1", 0);
+#endif
+        }
+#endif
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
     }
