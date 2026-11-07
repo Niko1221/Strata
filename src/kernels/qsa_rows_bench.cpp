@@ -313,7 +313,8 @@ int main(int argc, char** argv) {
             t_rows.us[T] = tm.us([&] { k::qsa_block_scores_rows(pooled, dead, q_idx, steps, T, max_blocks, s, scores_b, st); },
                                  iters);
         }
-        // a short context too (n_bid small, the tail block with cells): rows at cells 100..103
+        // a short context too (n_bid small, the tail block with cells): rows at cells 100..103, plus nq=1..8 with
+        // differing n_bid values and partial tails
         {
             std::vector<int32_t> hs2(hst);
             for (int t = 0; t < MAXT; ++t) {
@@ -335,6 +336,61 @@ int main(int argc, char** argv) {
                 if (std::memcmp(a.data(), b.data(), a.size() * 4) != 0) { ++failed; std::printf("  FAIL short context T=%d\n", T); }
             }
             ck(cudaFree(steps2), "free");
+
+            constexpr int MAXR = 8;
+            std::vector<float> hqi8((size_t) (MAXR * IQ * ID));
+            for (int t = 0; t < MAXR; ++t)
+                for (int i = 0; i < IQ * ID; ++i) hqi8[(size_t) t * IQ * ID + i] = hqi[(size_t) (t % MAXT) * IQ * ID + i] + 0.05f * (float) t;
+            std::vector<int32_t> hs8((size_t) (MAXR * k::kStepCount));
+            const int64_t max_pos = std::max<int64_t>(MAXR, max_cells - 1);
+            for (int t = 0; t < MAXR; ++t) {
+                const int64_t raw_pos = std::max<int64_t>(17 + t * 5, ctx - (MAXR - 1 - t) * 19 + t);
+                const int64_t pos = std::min<int64_t>(raw_pos, max_pos - (MAXR - 1 - t));
+                const int64_t n_kv = pos + 1;
+                hs8[(size_t) t * k::kStepCount + k::kStepPos] = (int32_t) pos;
+                hs8[(size_t) t * k::kStepCount + k::kStepNKv] = (int32_t) n_kv;
+                hs8[(size_t) t * k::kStepCount + k::kStepNBid] = (int32_t) (n_kv / s.idx_block);
+                hs8[(size_t) t * k::kStepCount + k::kStepWidth] = (int32_t) k::qsa_selection_width(n_kv, s);
+            }
+            float* q_idx8 = upload(hqi8);
+            int32_t* steps8 = upload(hs8);
+            float* sc8_a = dalloc<float>((size_t) (MAXR * max_blocks));
+            float* sc8_b = dalloc<float>((size_t) (MAXR * max_blocks));
+            int32_t* id8_a = dalloc<int32_t>((size_t) (MAXR * cap));
+            int32_t* id8_b = dalloc<int32_t>((size_t) (MAXR * cap));
+            for (int T = 5; T <= MAXR; ++T) {
+                ck(cudaMemset(sc8_a, 0xFF, (size_t) (T * max_blocks) * 4), "fill");
+                ck(cudaMemset(sc8_b, 0x3E, (size_t) (T * max_blocks) * 4), "fill");
+                ck(cudaMemset(id8_a, 0x7F, (size_t) (T * cap) * 4), "fill");
+                ck(cudaMemset(id8_b, 0x3E, (size_t) (T * cap) * 4), "fill");
+                k::qsa_block_scores(pooled, dead, q_idx8, steps8, T, max_blocks, s, sc8_a, st);
+                if (!k::qsa_block_scores_rows(pooled, dead, q_idx8, steps8, T, max_blocks, s, sc8_b, st)) {
+                    std::printf("  FAIL T=%d: qsa_block_scores_rows refused the call\n", T);
+                    ++cases; ++failed;
+                    continue;
+                }
+                k::qsa_block_topk(sc8_a, steps8, T, max_blocks, cap, s, id8_a, st);
+                k::qsa_block_topk(sc8_b, steps8, T, max_blocks, cap, s, id8_b, st);
+                ck(cudaDeviceSynchronize(), "rows8 sync");
+                const std::vector<float> a = download(sc8_a, (size_t) (T * max_blocks)), b = download(sc8_b, (size_t) (T * max_blocks));
+                const std::vector<int32_t> ia = download(id8_a, (size_t) (T * cap)), ib2 = download(id8_b, (size_t) (T * cap));
+                ++cases;
+                bool same_s = true;
+                for (int q = 0; q < T && same_s; ++q) {
+                    const int64_t n_bid = hs8[(size_t) q * k::kStepCount + k::kStepNBid];
+                    for (int64_t j = 0; j <= n_bid; ++j)
+                        if (std::memcmp(&a[(size_t) (q * max_blocks + j)], &b[(size_t) (q * max_blocks + j)], 4) != 0) { same_s = false; break; }
+                }
+                bool same_i = true;
+                for (int qrow = 0; qrow < T && same_i; ++qrow) {
+                    const int64_t width = hs8[(size_t) qrow * k::kStepCount + k::kStepWidth];
+                    same_i = std::memcmp(ia.data() + (size_t) qrow * cap, ib2.data() + (size_t) qrow * cap,
+                                         (size_t) width * sizeof(int32_t)) == 0;
+                }
+                if (!same_s || !same_i) { ++failed; std::printf("  FAIL T=%d (spread n_bid + partial tails)\n", T); }
+            }
+            for (void* p : {(void*) q_idx8, (void*) steps8, (void*) sc8_a, (void*) sc8_b, (void*) id8_a, (void*) id8_b})
+                ck(cudaFree(p), "free");
         }
         std::printf("  parity: %lld cases, %lld differ -> %s\n", cases, failed, failed ? "FAIL" : "bit-identical");
         ok = failed == 0;
