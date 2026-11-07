@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -120,6 +121,10 @@ class ElevatedRunLockoutTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        # repair_access only touches the user's own folders (user_roots): the scratch folder is the "profile" here, wherever TEMP points
+        env = mock.patch.dict(os.environ, {"STRATA_HOME": str(self.root)})
+        env.start()
+        self.addCleanup(env.stop)
 
     @staticmethod
     def lock_out(path):

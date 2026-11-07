@@ -169,8 +169,11 @@ def run(server, d, pin="auto", name=NAME):
 
 
 def asked(srv):
-    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out."""
-    return [s // CHUNK for s, e in srv.gets if (s, e) != (0, 0)]
+    """The pieces (indexes) the server was asked for, one entry per request; the one-byte probe is left out, and so is the
+    plain whole-file GET that Python before 3.13 sends when it follows the HEAD's redirect (urllib turns the redirected HEAD into
+    a GET and the download closes it at once); no piece is that big."""
+    whole = (0, len(srv.data) - 1)
+    return [s // CHUNK for s, e in srv.gets if (s, e) not in ((0, 0), whole)]
 
 
 def files(d):
@@ -498,7 +501,9 @@ class Failures(unittest.TestCase):
             self.d = d
             code, out = run(srv, d)
             self.assertIsNone(code, out)
-            self.assertTrue(seen and seen[0] is not None and seen[0] <= 32 * CHUNK, seen)
+            # a file made full size at the start (preallocated) would show len(DATA) here; the pieces written ahead of piece 30 by the
+            # other connection are a matter of thread timing (a slow thread start on Windows put it at 34 pieces), so the bound is the full size
+            self.assertTrue(seen and seen[0] is not None and seen[0] < len(DATA) - 2 * CHUNK, seen)
 
 
 class Progress(unittest.TestCase):
