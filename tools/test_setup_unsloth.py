@@ -100,12 +100,13 @@ class Sha256(unittest.TestCase):
         self.assertIsNone(code, out)
         self.assertTrue(h.called)
 
-    def test_wrong_hash_deletes_it(self):
+    def test_wrong_hash_keeps_it_as_bad(self):
         setup.mark(self.f)
         code, out = quiet(setup.verify_sha256, self.f, 6000, "0" * 64)
         self.assertEqual(code, 1)
-        self.assertIn("wrong SHA-256", out)
+        self.assertIn("does not match the pinned SHA-256", out)
         self.assertFalse(self.f.exists())
+        self.assertEqual(self.f.with_name(self.f.name + ".bad").read_bytes(), b"strata" * 1000)   # the bytes are kept
         self.assertFalse(self.f.with_name(self.f.name + ".done").exists())   # downloaded again next time
 
     def test_wrong_size(self):
@@ -612,7 +613,13 @@ class StrixHaloCache(Base):
         self.assertEqual(code, 0, out)
         args = cfg["args"]
         self.assertEqual(args[args.index("--expert-cache") + 1], "auto")
-        self.assertIn("leaves almost none for the expert cache", out)
+        self.assertIn("The expert cache is sized from the graphics memory (2 GB carve-out + shared), not from the RAM.", out)
+        self.assertNotIn("take the room the OS needs", out)
+        # the carve-out is the one setup detected, never a fixed 64
+        halo48 = [dict(self.HALO[0], dedicated_gb=48.0, shared_gb=32.0, vram_gb=80.0)]
+        code, out, cfg = self.run_halo(64.0, ("--context", "8192", "--resident-budget-gib", "40"), amd=halo48)
+        self.assertEqual(code, 0, out)
+        self.assertIn("(48 GB carve-out + shared)", out)
 
     # Round 0214 (the release blocker): a 64 GB Strix Halo gave UD-IQ2_XS a fixed 367-slot cache and a 35 GiB pinned part, and its first launch failed 3 of 3;
     # `--expert-cache auto` with nothing pinned passed.  A v3.1 set whose experts fit the shared pool whole gets that plan; every other set keeps its plan.

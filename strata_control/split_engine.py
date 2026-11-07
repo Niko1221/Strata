@@ -130,6 +130,8 @@ class Decision:
     need_vram_gib: float = 0.0
     need_ram_gib: float = 0.0
     quiet: bool = False             # auto mode and a "no": the launch says nothing and starts the normal layer split
+    arch: str = ""                  # the cards' architecture ("sm_86", "gfx1201"); empty when no card was probed (the run manifest records it)
+    routed_types: tuple = ()        # the model's routed-expert types, sorted (the run manifest records them)
 
     @property
     def line(self) -> str:
@@ -256,9 +258,10 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
         why.append(f"there is not enough free RAM (about {need_ram + RAM_SPARE_GIB:.0f} GiB needed, {ram_available_gib:.0f} GiB free)")
+    facts = dict(arch="/".join(archs), routed_types=tuple(sorted(model.routed_types)))
     if why:
-        return Decision(False, why, n, untested, need_vram, need_ram)
-    return Decision(True, [], n, untested, need_vram, need_ram)
+        return Decision(False, why, n, untested, need_vram, need_ram, **facts)
+    return Decision(True, [], n, untested, need_vram, need_ram, **facts)
 
 
 def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_dir: str | None, draft_vocab: str, context: int,
@@ -486,7 +489,42 @@ def apply_to_config(cfg: dict, *, exe_for_cards, system: str | None = None, allo
                mode_=m)
     if m == "auto" and not d.use_split:
         d.quiet = True
+    record_launch_manifest(d, m)
     return d
+
+
+def auto_rule(d: Decision) -> dict | None:
+    """AMD only: the three conditions mode "auto" starts the split on (architecture, card count, expert types), each on its own, so a manifest says which one a
+    setup misses. A two- or three-card setup is never promoted by the four-card rule: its `card_count` is false. None for another make or no card."""
+    if not d.arch or "/" in d.arch or not d.arch.startswith("gfx"):
+        return None
+    return {"architecture": d.arch in AUTO_SPLIT_AMD_ARCHS, "card_count": d.cards in AUTO_SPLIT_AMD_CARD_COUNTS,
+            "expert_types": bool(d.routed_types) and set(d.routed_types) <= AUTO_SPLIT_AMD_EXPERT_TYPES}
+
+
+def record_launch_manifest(d: Decision, mode_: str, environ: dict | None = None) -> bool:
+    """STRATA_MANIFEST=<file> (a diagnostic, off unless set): the engine choice and why, in <file>.launch.json, next to the engine's own <file>. Sorted keys, no
+    timestamps, so two matched launches give the same text. Never raises and never changes the launch. True when a file was written."""
+    import json
+    import os
+
+    target = (os.environ if environ is None else environ).get("STRATA_MANIFEST")
+    if not target:
+        return False
+    try:
+        doc = {"manifest_version": 1, "launch": {
+            "split_engine_mode": mode_, "engine": "all-cards-split" if d.use_split else "native-layer-split", "reasons": list(d.reasons),
+            "cards": d.cards, "card_arch": d.arch, "routed_types": list(d.routed_types), "untested": list(d.untested),
+            "need_vram_gib": round(d.need_vram_gib, 1), "need_ram_gib": round(d.need_ram_gib, 1), "amd_auto_rule": auto_rule(d)}}
+        path = target + ".launch.json"
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(doc, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp, path)
+        return True
+    except Exception:                                        # noqa: BLE001 - a diagnostic never stops a start
+        return False
 
 
 def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan, data_dir, mode_: str = "auto") -> Decision:
