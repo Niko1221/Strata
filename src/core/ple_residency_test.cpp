@@ -77,6 +77,37 @@ int main() {
         check(arena_ram_fallback_allowed("", false, false), "an empty value is unset");
         check(!arena_ram_fallback_allowed("1", true, false), "the user's --ple-io ram wins over the env value");
     }
+    // #5327: a shortfall the kernel can serve by dropping the box's own file cache loads through it (0.1.55's
+    // warn-and-proceed), one it cannot (anonymous RAM: #4051's host) keeps the #4846 fallback
+    {
+        const uint64_t need = 31ull * GiB + 687000000ull;   // the reporter's Q2_0 arena: 31.64 GiB
+        check(arena_shortfall_served_by_file_cache(need, 1ull * GiB, 38ull * GiB),
+              "12.9 GiB available, the model's files hot in the cache: load through the file cache");
+        check(!arena_shortfall_served_by_file_cache(need, 300ull << 20, 6ull * GiB),
+              "#4051's host: an exiting engine's anonymous RAM is not the cache: keep the fallback");
+        check(arena_shortfall_served_by_file_cache(need, need, 0), "free pages alone cover it");
+        check(!arena_shortfall_served_by_file_cache(need, 0, need - 1), "one byte short even with the cache");
+        check(!arena_shortfall_served_by_file_cache(0, 0, 0), "an unpriced arena is not this decision");
+        check(arena_shortfall_served_by_file_cache(std::numeric_limits<uint64_t>::max(), 5, std::numeric_limits<uint64_t>::max()),
+              "no overflow");
+        check(arena_shortfall_served_by_file_cache(need, 1ull * GiB, 6ull * GiB, 32ull * GiB),
+              "a reserved hugetlb pool that holds the whole arena: load");
+        check(!arena_shortfall_served_by_file_cache(need, 1ull * GiB, 6ull * GiB, need - 1),
+              "a pool one page short serves none of it (MAP_HUGETLB is all-or-nothing): keep the fallback");
+        uint64_t free_b = 1, drop_b = 1, huge_b = 1;
+        check(meminfo_free_and_droppable(
+                  "MemTotal:       1000 kB\nMemFree:          10 kB\nMemAvailable:    100 kB\nBuffers:           5 kB\n"
+                  "Cached:         400 kB\nSwapCached:       0 kB\nActive(file):   200 kB\nDirty:            2 kB\n"
+                  "Shmem:          30 kB\nSReclaimable:    15 kB\nHugePages_Total: 16384\nHugePages_Free:  16384\n"
+                  "Hugepagesize:    2048 kB\n",
+                  free_b, drop_b, &huge_b) && free_b == 10 * 1024 && drop_b == (400 + 5 + 15 - 30 - 2) * 1024 &&
+                  huge_b == 16384ull * 2048 * 1024,
+              "free, droppable and huge pages parsed (Shmem and Dirty are not droppable)");
+        check(meminfo_free_and_droppable("MemFree: 1 kB\nCached: 2 kB\n", free_b, drop_b) && free_b == 1024 && drop_b == 2 * 1024,
+              "Buffers/SReclaimable/Shmem/Dirty are optional");
+        check(!meminfo_free_and_droppable("MemFree: 1 kB\n", free_b, drop_b), "no Cached line: unknown, no credit");
+        check(!meminfo_free_and_droppable("Cached: 1 kB\n", free_b, drop_b), "no MemFree line: unknown, no credit");
+    }
     // --ram-keep-gib W (R5070): ONE setting for both RAM decisions at the start.  The arena is used only if W GiB stay available after it;
     // otherwise the RAM copy leaves max(W, the safety headroom: 8 GiB Windows, 4 GiB elsewhere), unless STRATA_RESIDENT_HEADROOM_GIB is set.
     {
