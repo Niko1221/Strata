@@ -135,10 +135,12 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
           "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh", "maximum": "xhigh"}
 
 
-# DeepSeek-V4.1's template takes low, medium, high (its default) and max, or a whole number 1..100 (the "Reasoning
-# Effort: N" line of its prompt).  use_family("deepseek41") switches the table; the other families keep the one above.
+# DeepSeek-V4.1's effort words are low, high (its default) and max, or a whole number 1..100 (the "Reasoning Effort: N"
+# line of its prompt).  Unsloth's template (serve/fixtures) adds medium as 62; the one in ISTA's shard 1 of 2026-10-26
+# keeps DeepSeek's words only, so medium goes to the template as its number.  use_family("deepseek41") switches the
+# table; the other families keep the one above.
 EFFORT_DEEPSEEK = {"none": None, "off": None, "minimal": None, "disabled": None, "false": None,
-                   "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "max": "max", "maximum": "max"}
+                   "low": "low", "medium": 62, "high": "high", "xhigh": "max", "max": "max", "maximum": "max"}
 _EFFORT_QWEN = dict(EFFORT)
 _NUMERIC_EFFORT = False
 
@@ -175,7 +177,7 @@ def budget_effort(tokens) -> dict:
         n = int(tokens)
     except (TypeError, ValueError):
         return {}
-    return {"reasoning_effort": "low" if n < 2048 else "medium" if n < 8192 else EFFORT["high"]}
+    return {"reasoning_effort": "low" if n < 2048 else EFFORT["medium"] if n < 8192 else EFFORT["high"]}
 
 
 def _has_image(content) -> bool:
