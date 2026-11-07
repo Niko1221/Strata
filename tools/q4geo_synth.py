@@ -266,9 +266,9 @@ def metadata(s: dict, vocab: int, name: str) -> GGUFWriter:
     w.add(p + "ple.image_token_id", vocab - 3, "u32")
     w.add("tokenizer.ggml.model", "gpt2")
     w.add("tokenizer.ggml.pre", "qwen35")
-    w.add("tokenizer.ggml.tokens", [f"<t{i}>" for i in range(vocab)], "array:string")
+    w.add("tokenizer.ggml.tokens", ["a", "b", "ab"] + [f"<t{i}>" for i in range(3, vocab)], "array:string")
     w.add("tokenizer.ggml.token_type", [1] * vocab, "array:i32")
-    w.add("tokenizer.ggml.merges", [], "array:string") if False else None
+    w.add("tokenizer.ggml.merges", ["a b"], "array:string")
     w.add("tokenizer.ggml.eos_token_id", vocab - 2, "u32")
     w.add("tokenizer.ggml.padding_token_id", vocab - 1, "u32")
     w.add("tokenizer.ggml.bos_token_id", vocab - 1, "u32")
