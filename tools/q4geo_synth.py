@@ -99,7 +99,13 @@ def layer_tensors(s: dict, layer: int):
     return t
 
 
-def all_tensors(s: dict, vocab: int):
+PLE_ROWS = 320001536
+PLE_VOCAB = [20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077, 20000081, 20000093, 20000107,
+             20000147, 20000153, 20000159, 20000161, 20000171]
+PLE_MULT = [23703573157769, 20109073645365, 8052911324071]
+
+
+def all_tensors(s: dict, vocab: int, ple: bool = True):
     N = s["n_embd"]
     H = s["hc"] * N
     out = [("token_embd.weight", [N, vocab], "embd"), ("output.weight", [N, vocab], "output"),
@@ -107,6 +113,13 @@ def all_tensors(s: dict, vocab: int):
            ("output_hc_norm.weight", [H], "norm")]
     for l in range(s["n_layers"]):
         out += [(f"blk.{l}.{n}", sh, r) for n, sh, r in layer_tensors(s, l)]
+    if ple:
+        # the engine's native path always reads the PLE key; its hash constants are compiled in (kernels/ngram.cpp), so the table has
+        # Flash-Next's 320001536 rows of n_embd/16; it is written SPARSE (zeros: IQ4_NL blocks with a zero scale are zero vectors)
+        out += [("per_layer_token_embd.weight", [N // 16, PLE_ROWS], "ple_table"),
+                ("blk.1.ple_conv1d.weight", [4, H], "conv"), ("blk.1.ple_key.weight", [N, H], "dense"),
+                ("blk.1.ple_norm_conv.weight", [H], "norm"), ("blk.1.ple_norm_key.weight", [H], "norm"),
+                ("blk.1.ple_norm_query.weight", [H], "norm"), ("blk.1.ple_value.weight", [N, N], "dense")]
     return out
 
 
@@ -121,6 +134,8 @@ def recipe_type(recipe: str, role: str, layer: int, s: dict) -> str:
         return "Q8_0"
     if role == "embd":
         return "Q8_0"
+    if role == "ple_table":
+        return "IQ4_NL"
     if role == "output":
         return "Q6_K" if recipe == "ud-iq4xs" else "Q8_0"
     first = layer == 0
@@ -178,6 +193,10 @@ def tensor_bytes(ty: str, shape: list[int]) -> int:
 def emit_data(fh, ty: str, role: str, shape: list[int], rng: np.random.Generator) -> int:
     tid, blk, tsz, fields = QTYPES[ty]
     total = tensor_bytes(ty, shape)
+    if role == "ple_table":              # a hole: zeros, no disk
+        fh.seek(total - 1, 1)
+        fh.write(bytes(1))
+        return total
     if ty == "F32":
         fh.write(small_f32(role, shape, rng).tobytes())
         return total
@@ -234,6 +253,17 @@ def metadata(s: dict, vocab: int, name: str) -> GGUFWriter:
     w.add(p + "attention.indexer.top_k", s["idx_top_k"], "u32")
     w.add(p + "attention.compress_ratios",
           [s["idx_block"] if l % s["qsa_interval"] == s["qsa_interval"] - 1 else 0 for l in range(s["n_layers"])], "array:i32")
+    offs = [sum(PLE_VOCAB[:i]) for i in range(16)]
+    w.add(p + "ple.layers", [1], "array:i32")
+    w.add(p + "ple.ngram_size", 3, "u32")
+    w.add(p + "ple.heads_per_ngram", 8, "u32")
+    w.add(p + "ple.conv_kernel", 4, "u32")
+    w.add(p + "ple.eos_token_id", vocab - 2, "u32")
+    w.add(p + "embedding_length_per_layer_input", s["n_embd"] // 16, "u32")
+    w.add(p + "ple.layer_multipliers", PLE_MULT, "array:u64")
+    w.add(p + "ple.head_offsets", offs, "array:u64")
+    w.add(p + "ple.head_vocab_sizes", PLE_VOCAB, "array:u64")
+    w.add(p + "ple.image_token_id", vocab - 3, "u32")
     w.add("tokenizer.ggml.model", "gpt2")
     w.add("tokenizer.ggml.pre", "qwen35")
     w.add("tokenizer.ggml.tokens", [f"<t{i}>" for i in range(vocab)], "array:string")
