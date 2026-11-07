@@ -4663,7 +4663,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (f == nullptr) return mp;
                                 int32_t h[3];
                                 while (std::fread(h, 4, 3, f) == 3) {
-                                    Ovr o; o.ids.resize((size_t) h[2] * 10); o.w.resize((size_t) h[2] * 10);
+                                    Ovr o; o.ids.resize((size_t) h[2] * K); o.w.resize((size_t) h[2] * K);
                                     if (std::fread(o.ids.data(), 4, o.ids.size(), f) != o.ids.size()) break;
                                     if (std::fread(o.w.data(), 4, o.w.size(), f) != o.w.size()) break;
                                     mp[{h[0], h[1]}] = std::move(o);

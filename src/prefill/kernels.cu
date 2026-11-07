@@ -24,6 +24,7 @@ namespace strata::prefill {
 namespace {
 
 constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
+constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
 constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
 
 __device__ __forceinline__ float warp_sum(float v) {
@@ -2250,7 +2251,7 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
 #pragma unroll
     for (int i = 0; i < REG; ++i) { v[i] *= rcp; if (isnan(v[i])) v[i] = -FLT_MAX; }
     float selected = 0.0f, selected_sum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < KU; ++rank) {
         float best = v[0];
         int ex = lane;
 #pragma unroll
@@ -2262,11 +2263,11 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
         }
         if ((ex & 31) == lane) { v[ex / 32] = -INFINITY; selected_sum += best; }
-        if (lane == 0) ids[t * 10 + rank] = ex;
+        if (lane == 0) ids[t * KU + rank] = ex;
         if (rank == lane) selected = best;
     }
     selected_sum = fmaxf(warp_sum(selected_sum), 6.103515625e-5f);
-    if (lane < 10) wout[t * 10 + lane] = selected / selected_sum;
+    if (lane < KU) wout[t * KU + lane] = selected / selected_sum;
 }
 // Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
 template <bool HALF>
@@ -2336,10 +2337,10 @@ __global__ void moe_combine_kernel(const float* __restrict__ Dm, const int32_t* 
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int64_t r = slot[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        const int64_t r = slot[t * KU + k];
         const float v = row_sd ? Dm[r * N + d] * row_sd[r] : Dm[r * N + d];   // the product scale_down_rows stored
-        s = fmaf(w[t * 10 + k], v, s);
+        s = fmaf(w[t * KU + k], v, s);
     }
     bo[i] = s + shared[i] * sigm(sg[t]);
 }
@@ -2354,12 +2355,12 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
     if (i >= T * (N / 4)) return;
     const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
     float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-    float4 v[10];
-    float ww[10];
+    float4 v[KU];
+    float ww[KU];
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        ww[k] = w[t * 10 + k];
-        const int64_t r = slot[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        ww[k] = w[t * KU + k];
+        const int64_t r = slot[t * KU + k];
         v[k] = *reinterpret_cast<const float4*>(Dm + r * N + d);
         if (row_sd) {   // NVFP4 in MMQ: the row's s_down, as moe_combine_kernel applies it
             const float sd = row_sd[r];
@@ -2367,7 +2368,7 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
         }
     }
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
+    for (int k = 0; k < KU; ++k) {
         s.x = fmaf(ww[k], v[k].x, s.x); s.y = fmaf(ww[k], v[k].y, s.y);
         s.z = fmaf(ww[k], v[k].z, s.z); s.w = fmaf(ww[k], v[k].w, s.w);
     }
@@ -2384,17 +2385,17 @@ __global__ void moe_combine16_kernel(const uint16_t* __restrict__ Dm, const int3
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // float4 index
     if (i >= T * (N / 4)) return;
     const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
-    uint2 raw[10];
-    float ww[10];
+    uint2 raw[KU];
+    float ww[KU];
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        ww[k] = w[t * 10 + k];
-        const int64_t r = slot[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        ww[k] = w[t * KU + k];
+        const int64_t r = slot[t * KU + k];
         raw[k] = *reinterpret_cast<const uint2*>(Dm + r * N + d);
     }
     float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
+    for (int k = 0; k < KU; ++k) {
         const float a = __half2float(__ushort_as_half((unsigned short) (raw[k].x & 0xffffu))), b = __half2float(__ushort_as_half((unsigned short) (raw[k].x >> 16)));
         const float c = __half2float(__ushort_as_half((unsigned short) (raw[k].y & 0xffffu))), e = __half2float(__ushort_as_half((unsigned short) (raw[k].y >> 16)));
         s.x = fmaf(ww[k], a, s.x); s.y = fmaf(ww[k], b, s.y);
@@ -3206,7 +3207,7 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
     else if (n_expert == 256)
         route_kernel<8><<<(unsigned) ((T + 7) / 8), 256, 0, (cudaStream_t) stream>>>(logits, ids, weights, T);
     else
-        strata::kernels::router_top10(logits, (int) T, (int) n_expert, 10, ids, weights, stream);
+        strata::kernels::router_top10(logits, (int) T, (int) n_expert, KU, ids, weights, stream);
     check("route");
 }
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
@@ -3271,9 +3272,9 @@ __global__ void moe_combine_peer_kernel(const float* __restrict__ Dm, const int3
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int32_t r = slot[t * 10 + k];
-        if (r < rows_local) s = fmaf(w[t * 10 + k], Dm[(int64_t) r * N + d], s);
+    for (int k = 0; k < KU; ++k) {
+        const int32_t r = slot[t * KU + k];
+        if (r < rows_local) s = fmaf(w[t * KU + k], Dm[(int64_t) r * N + d], s);
     }
     bo[i] = (s + peer[i]) + shared[i] * sigm(sg[t]);
 }
@@ -3283,7 +3284,7 @@ __global__ void peer_scatter_add_kernel(float* __restrict__ sum, const float* __
     if (i >= n * N) return;
     const int64_t r = i / N, d = i % N;
     const int32_t p = pair[r];
-    float* o = sum + (int64_t) (p / 10) * N + d;
+    float* o = sum + (int64_t) (p / KU) * N + d;
     *o = fmaf(wk[p], rows[i], *o);
 }
 __global__ void moe_combine_peer16_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
@@ -3295,9 +3296,9 @@ __global__ void moe_combine_peer16_kernel(const float* __restrict__ Dm, const in
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int32_t r = slot[t * 10 + k];
-        if (r < rows_local) s = fmaf(w[t * 10 + k], Dm[(int64_t) r * N + d], s);
+    for (int k = 0; k < KU; ++k) {
+        const int32_t r = slot[t * KU + k];
+        if (r < rows_local) s = fmaf(w[t * KU + k], Dm[(int64_t) r * N + d], s);
     }
     bo[i] = (s + __half2float(__ushort_as_half(peer16[i]))) + shared[i] * sigm(sg[t]);
 }
