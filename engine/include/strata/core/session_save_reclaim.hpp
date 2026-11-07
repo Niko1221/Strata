@@ -70,8 +70,13 @@ SessionSaveReclaimed session_save_reclaim(std::vector<ConversationCheckpoint>& c
 // window can still be read back; when the ladder runs dry and the probe still refuses, the caller
 // keeps its typed `memory` refusal.  The engine's checkpoint selection (the deepest one and every
 // pin) survives eviction exactly as for a save: the file would restore the same resume point.
+// Order note: the admit runs before `get_payload` compares the file's stage table against this
+// runtime's, so a file that belongs to another layer split (see docs/DETAILS.md, session files)
+// evicts caches BEFORE it is refused.  The session it wanted to resume is untouched, but the caches
+// are gone: on an auto-split rig pin the split (`--layer-split N`) rather than lean on this ladder.
+// Same argument order as session_save_reclaim: chain first, then the cache.
 template<class Probe>
-SessionSaveReclaimed session_read_reclaim(ConversationCache& cache, std::vector<ConversationCheckpoint>& chain,
+SessionSaveReclaimed session_read_reclaim(std::vector<ConversationCheckpoint>& chain, ConversationCache& cache,
                                           uint64_t need_bytes, uint64_t floor, Probe available) {
     return session_reclaim_detail::ladder(chain, cache, need_bytes, floor, available);
 }
