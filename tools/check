@@ -12,7 +12,7 @@ Runs, each in its own step with its own timeout, in a scratch folder (build tree
   host-test       apps/host: npm test (a per-test timeout, so a hang fails one test instead of the run)
   host-build      apps/host: npm run build
   snapshot        pytest tests/snapshot (the config snapshot of the four entry points; needs Node 24)
-  docs            local links in the current pages (tools/check_links.py), the release manifest and the capability table (--check)
+  docs            local links in the current pages (tools/check_links.py), the release manifest, the capability table and the bench results index (--check)
 
 Prints one table: passed / failed / skipped / not run, per step, with the reason for every skip and every "not run".
 A step that cannot run because a tool is missing (Node, cmake, a compiler, pytest, torch) is "not run" and says which tool;
@@ -395,12 +395,12 @@ def step_npm(name, script, args=()):
 
 
 def step_docs(ctx):
-    """The documentation checks that need no tools but Python: links, release manifest, capability table, settings register."""
+    """The documentation checks that need no tools but Python: links, release manifest, capability table, bench index, settings register."""
     r = Result("docs")
     log = ctx.scratch.path("docs.log")
     r.log = log
     for label, script, args in (("links", "check_links.py", ()), ("release manifest", "release_manifest.py", ("--check",)),
-                                ("capability table", "capability_table.py", ("--check",)), ("settings register", "settings_register.py", ("--check",))):
+                                ("capability table", "capability_table.py", ("--check",)), ("bench results index", "bench_results_index.py", ("--check",)), ("settings register", "settings_register.py", ("--check",))):
         path = os.path.join(ROOT, "tools", script)
         if not os.path.exists(path):
             r.skipped += 1
