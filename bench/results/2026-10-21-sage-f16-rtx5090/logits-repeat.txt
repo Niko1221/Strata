@@ -1,0 +1,3 @@
+16384 llama 72.9 s
+16384 strata 98.75 s
+16384 {'llama_vs_strata': {'rows': 128, 'mean_kl': 0.002022284870282781, 'max_kl': 0.04056802399695156, 'top1_matches': 126}}

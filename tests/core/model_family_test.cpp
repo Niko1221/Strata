@@ -109,7 +109,7 @@ bool geometry_of(const fs::path& p, strata::core::ModelGeometry& g, int64_t& k, 
 }
 
 std::string layout_error(const fs::path& dir, const char* arch, const Dims& d, uint64_t vocab,
-                         void (*mutate)(std::vector<Tensor>&)) {
+                         void (*mutate)(std::vector<Tensor>&), bool allow_unit_axis = false) {
     const fs::path meta = dir / "meta.gguf";
     fixture::write(meta, metadata(arch, d, vocab), {});
     strata::core::ModelGeometry g;
@@ -145,7 +145,7 @@ std::string layout_error(const fs::path& dir, const char* arch, const Dims& d, u
     fixture::write(model, metadata(arch, d, vocab), ts);
     const strata::GgufModel m({model.string()});
     size_t n = 0;
-    if (!strata::core::check_gguf_layout(m, g, err, &n)) return err;
+    if (!strata::core::check_gguf_layout(m, g, err, &n, allow_unit_axis)) return err;
     return {};
 }
 
@@ -265,6 +265,18 @@ int main(int argc, char** argv) {
         const std::string ef = layout_error(d.path, "qwen4exp", kTinyFlash, 16, nullptr);
         check(ef.empty(), "a complete qwen4exp file passes its layout (hyper-connections, indexer)" +
                               (ef.empty() ? std::string() : ": " + ef));
+        auto column_gate = [](std::vector<Tensor>& ts) {
+            for (auto& t : ts)
+                if (t.name == "blk.0.ffn_gate_inp_shexp.weight") t.shape.push_back(1);
+        };
+        check(!layout_error(d.path, "qwen35moe", kTiny36, 16, column_gate).empty(),
+              "the default layout still refuses a column-shaped gate vector");
+        check(layout_error(d.path, "qwen35moe", kTiny36, 16, column_gate, true).empty(),
+              "the F16 opt-in accepts the same contiguous vector with a singleton axis");
+        check(!layout_error(d.path, "qwen35moe", kTiny36, 16, [](std::vector<Tensor>& ts) {
+            for (auto& t : ts)
+                if (t.name == "blk.0.ffn_gate_inp_shexp.weight") t.shape.push_back(2);
+        }, true).empty(), "the F16 opt-in still refuses an extra axis with more than one value");
         std::string e = layout_error(d.path, "qwen35moe", kTiny36, 16, [](std::vector<Tensor>& ts) {
             for (auto& t : ts)
                 if (t.name == "blk.1.ssm_conv1d.weight") t.shape[1] += 1;

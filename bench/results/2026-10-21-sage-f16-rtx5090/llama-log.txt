@@ -1,0 +1,21 @@
+0.01.804.207 I load_tensors:        CUDA0 model buffer size = 23710.24 MiB
+0.03.489.693 I llama_context: n_ctx_seq             = 262144
+0.03.494.857 I llama_kv_cache:      CUDA0 KV buffer size =  5120.00 MiB
+0.03.562.863 I sched_reserve:      CUDA0 compute buffer size =  1304.00 MiB
+0.03.690.630 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 262144
+0.06.800.370 I slot print_timing: id  0 | task 0 | prompt eval time =    1616.23 ms /    64 tokens (   25.25 ms per token,    39.60 tokens per second)
+0.06.800.379 I slot print_timing: id  0 | task 0 |        eval time =    1101.97 ms /    32 tokens (   35.55 ms per token,    28.13 tokens per second)
+0.06.800.457 I slot      release: id  0 | task 0 | stop processing: n_tokens = 95, truncated = 0
+0.34.512.262 I slot print_timing: id  0 | task 34 | prompt eval time =   18763.30 ms /  4096 tokens (    4.58 ms per token,   218.30 tokens per second)
+0.34.512.266 I slot print_timing: id  0 | task 34 |        eval time =    8921.20 ms /   256 tokens (   34.99 ms per token,    28.58 tokens per second)
+0.34.512.317 I slot      release: id  0 | task 34 | stop processing: n_tokens = 4351, truncated = 0
+2.58.558.044 I slot print_timing: id  0 | task 299 | prompt eval time =  135932.00 ms / 32768 tokens (    4.15 ms per token,   241.06 tokens per second)
+2.58.558.047 I slot print_timing: id  0 | task 299 |        eval time =    8028.19 ms /   256 tokens (   31.48 ms per token,    31.76 tokens per second)
+2.58.558.398 I slot      release: id  0 | task 299 | stop processing: n_tokens = 33023, truncated = 0
+2.58.688.361 I slot   operator(): id  0 | task 620 | new prompt, n_ctx_slot = 262144, n_keep = 0, task.n_tokens = 261888
+18.50.890.418 I slot print_timing: id  0 | task 620 | prompt processing, n_tokens = 261884, progress = 1.00, t = 952.20 s / 275.03 tokens per second
+18.50.890.420 I slot   operator(): id  0 | task 620 | cached n_tokens = 261884, memory_seq_rm [261884, end)
+18.50.917.205 I slot create_check: id  0 | task 620 | created context checkpoint 2 of 32 (pos_min = 261883, pos_max = 261883, n_tokens = 261884, size = 62.813 MiB)
+18.59.502.603 I slot print_timing: id  0 | task 620 | prompt eval time =  952298.93 ms / 261888 tokens (    3.64 ms per token,   275.01 tokens per second)
+18.59.502.606 I slot print_timing: id  0 | task 620 |        eval time =    8515.30 ms /   256 tokens (   33.39 ms per token,    29.95 tokens per second)
+18.59.505.024 I slot      release: id  0 | task 620 | stop processing: n_tokens = 262143, truncated = 1

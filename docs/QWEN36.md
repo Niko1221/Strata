@@ -23,6 +23,38 @@ strata launch --family qwen36 --model ud-q4_k_xl --vision on --parallel 2
 | `--parallel N` | How many requests are answered at once, 1 to 8. Source setup has the same option. |
 | `--prefill 512` | Engine flag in the config's `args`, not a `strata launch` option: the prompt chunk size ([Prompt chunk](#prompt-chunk)). |
 
+## F16 weights
+
+`--f16-weights` opts into F16 matrices, embeddings and routed experts for this model family. For example, the publisher's
+[Sage-A1.5 F16 GGUF](https://huggingface.co/InternScience/Sage-A1.5-F16-GGUF) uses this path. It keeps the weights in F16;
+decode products accumulate in FP32 and prompt products use F16 inputs with FP32 accumulation. The flag requires F16 matrices,
+embeddings and experts. A mixed quantized file still uses the existing path without the flag.
+
+With a source build, start the engine protocol with:
+
+```sh
+build/strata --native /path/to/Sage-A1.5-F16.gguf --f16-weights \
+  --kv f16 --max-context 262144 --prefill 512 --pool-workers 15 --mtp 0 --serve
+```
+
+For an existing manual server profile, put `"--f16-weights"` in its `"args"` and use the model's own tokenizer.
+The flag does not add a model to setup or the Terminal's catalog. CUDA execution has been checked; HIP has been compiled,
+but F16 execution on AMD has not been checked. Intel Arc and Mac do not run this family.
+
+The file is about 71 GB. `--kv f16` stores keys and values in F16 and accumulates attention in FP32. This is a separate,
+explicit choice; omitting it or passing `--kv fp32` keeps the existing FP32 cache. On the tested RTX 5090 32 GB / Ryzen 9
+9950X3D / 128 GB RAM machine, at a 262,144-token context with 512-token prompt chunks and F16 KV, 59-60 of 256 experts
+per layer fit in VRAM. All 61.5 GiB of experts are also held in pinned system RAM. The resident count depends on the
+VRAM other programs use. The MTP block's cache is allocated even with `--mtp 0`.
+
+The F16 weight path and explicit F16 cache use grouped-query decode attention: the query heads share coalesced cache
+reads. The hybrid expert cache also limits the prompt's routing history and updates every layer's scores during decode,
+so a long prompt does not prevent it from adapting to the answer. Quantized models with the existing FP32 cache retain
+the release attention and expert-cache paths.
+
+Context size takes room from the expert cache; a speed measured at a small context does not establish speed at 256K.
+These checks cover text; the Sage vision projector is untested.
+
 ## Pictures
 
 The vision encoder is Unsloth's `mmproj-F16.gguf` (0.9 GB, pinned revision, SHA-256 checked by setup): a 27-layer ViT

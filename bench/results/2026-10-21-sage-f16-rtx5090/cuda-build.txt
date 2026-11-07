@@ -1,0 +1,24 @@
+[1/6] Building CUDA object CMakeFiles/q36_attn_parity.dir/tools/qwen35/q36_attn_parity.cu.o
+[2/6] Linking CUDA executable q36_attn_parity
+[3/6] Building CUDA object CMakeFiles/strata_qwen35.dir/src/qwen35/q36_engine.cu.o
+<repo>/src/qwen35/q36_engine.cu(1720): warning #550-D: variable "v" was set but never used
+                      float v[32], t[32];
+                            ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+<repo>/src/qwen35/q36_engine.cu(1958): warning #177-D: variable "D" was declared but never referenced
+          const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
+                                                                        ^
+
+<repo>/src/qwen35/q36_engine.cu(201): warning #177-D: function "<unnamed>::k_add" was declared but never referenced
+            void k_add(float* x, const float* y, int64_t n) {
+                 ^
+
+<repo>/src/qwen35/q36_engine.cu(235): warning #177-D: function "<unnamed>::k_gate_rows" was declared but never referenced
+            void k_gate_rows(float* sh, const float* gate, int n, int T) {
+                 ^
+
+[4/6] Linking CXX static library libstrata_qwen35.a
+[5/6] Linking CXX executable strata-q36
+[6/6] Linking CXX executable strata

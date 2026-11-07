@@ -1,0 +1,40 @@
+{
+  "base_revision": "011c9e600a93bbc9fd451c563501b5831c32bbca",
+  "source_sha256": {
+    "CMakeLists.txt": "7140fc8e5124e917ddf0f3b7cda355a8fcc79a29ed7e7e5d04bb3f982b080e37",
+    "include/strata/core/family_layout.hpp": "9cffe320b8399f3c2b5fadb50cfb91eec93f5c1b639ad27aabb93ab54aef6ac8",
+    "src/qwen35/q36_engine.cu": "a5e623e9e9284de042cd96ec3ef0e3db18072898bfb0da317604d89ba0cea62c",
+    "src/qwen35/q36_f16.cuh": "063797bd1794eaf81516cada3f571ce7d9b3ce271db60f7268916ef4b773a98e",
+    "src/qwen35/q36_attn.cuh": "7732a599b2fd70067ee1ee7ced1f84988edd6c992fecf8a71a563e7f3276f689",
+    "tests/core/model_family_test.cpp": "1a023aedefe9cf97b564f11f220f48ca0af532479f326a8820a54d1e808fcc58",
+    "tools/qwen35/q36_f16_parity.cu": "fc4b4ee6cc039cd9c7f1116cf838a355e557d826398bc8b3f6e4d03ec5661e25",
+    "tools/qwen35/q36_attn_parity.cu": "5205c05793cda9e647fbb8fa3ee07e5962d36ce0969de50d26cb0886e30e977c"
+  },
+  "binaries_sha256": {
+    "build-sage-cuda/strata": "25a5dcc5fabc6ba9dd98214abb51bb628b328756ac0dffb93b38b35c5dba4cc8",
+    "build-sage-evidence/strata-f16-before-attn": "4b391c2e813e1cae72f9e8c00ffd4dcbbf8133d704f3993a3a52cee83a38ab47",
+    "build-sage-evidence/strata-q36-stock": "bc89745805801af394f3a37f1c69a494d0612bf1a410fdf66b948f28c141e666",
+    "build-sage-baseline/bin/llama-server": "4a1c98bb90b87332907c1481ca93d3b519c919295fdac03b2ed9772d8d33c8bc"
+  },
+  "initial_prototype_commit": "6c1f1e2c5f9b674a00ec16194fc7ffff75bea6ae",
+  "initial_source_manifest": {
+    "CMakeLists.txt": "aa481a7b76f187a6148bbc00d1e9e03c13e06f7d2db30400015e6d4d78aa783f",
+    "include/strata/core/family_layout.hpp": "9cffe320b8399f3c2b5fadb50cfb91eec93f5c1b639ad27aabb93ab54aef6ac8",
+    "src/qwen35/q36_engine.cu": "736a74e4e8e3d780ff9678f6479644b6228050f5d42c61f54a1eec17e49296a0",
+    "src/qwen35/q36_f16.cuh": "063797bd1794eaf81516cada3f571ce7d9b3ce271db60f7268916ef4b773a98e",
+    "tests/core/model_family_test.cpp": "1a023aedefe9cf97b564f11f220f48ca0af532479f326a8820a54d1e808fcc58",
+    "tools/qwen35/q36_f16_parity.cu": "fc4b4ee6cc039cd9c7f1116cf838a355e557d826398bc8b3f6e4d03ec5661e25",
+    "docs/QWEN36.md": "fd2b44d27ddffbdf5e9da525cf4e5cfb074f85a661084216556db1c1afdd9955",
+    "build-sage-cuda/strata": "4b391c2e813e1cae72f9e8c00ffd4dcbbf8133d704f3993a3a52cee83a38ab47",
+    "build-sage-cuda/strata-q36": "59fc517f297ab71331270ac9ecfbfd38e41cd37891f4e25a82018a57e6e26b65",
+    "build-sage-baseline/bin/llama-server": "4a1c98bb90b87332907c1481ca93d3b519c919295fdac03b2ed9772d8d33c8bc"
+  },
+  "initial_patch_sha256": "372600634d2569ff5061f4d8ad7d15bf4638f315e65d165be129cc4866d0f993",
+  "report_script_sha256": {
+    "run.py": "6318951a01223efb139e145b82318b1cc8683304a6f097ca8407a39f816995c9",
+    "make-fixture.py": "019d0e1ddeafa94fed216733cbf4b629c704a063bc5ac2bba4e486ab20df96c5",
+    "check-default.py": "00fad234003d1e2ea79da9254969c5113a3270a595e4016366346f8758da88b0",
+    "llama-dump.cpp": "fe68491a57d62638aeafb676e9fd5bd9871fe39b22ec3318b7272a5751e18db0",
+    "check-logits.py": "d19974f10dd688397ac4eff0fb68d70be87234c35b4e1c885ebf2ac5ae0d8df7"
+  }
+}

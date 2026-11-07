@@ -1,0 +1,32 @@
+[
+  {
+    "name": "short",
+    "tokens": 64,
+    "sha256_i32le": "ce05268ff98a2ca6e51af87bd150175cce407bf445f344a71c6a8f73daf811ef"
+  },
+  {
+    "name": "512",
+    "tokens": 512,
+    "sha256_i32le": "3bc9a46b04eb20f9dc023387bffc479ad6c90ce2205103e5c85732aa9bc1d2a0"
+  },
+  {
+    "name": "4096",
+    "tokens": 4096,
+    "sha256_i32le": "9b92a34c21f31a034278b102072b5fd585efc3b87eaaa1187352ce4d10878a37"
+  },
+  {
+    "name": "32768",
+    "tokens": 32768,
+    "sha256_i32le": "3dcf0a6d874ce8e42eef640889c2791898092ad55f2f92045fa452596a47e34d"
+  },
+  {
+    "name": "131072",
+    "tokens": 131072,
+    "sha256_i32le": "af46546bf96630710922ebe83f2c10aea4c865090bc85296255fe1fd5e0e3a37"
+  },
+  {
+    "name": "261888",
+    "tokens": 261888,
+    "sha256_i32le": "37f3e2b105cd02a8a340607690933a9763a223785ecf176cb2e30dd6c1a51927"
+  }
+]

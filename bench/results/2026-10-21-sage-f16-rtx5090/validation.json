@@ -1,0 +1,348 @@
+{
+  "cuda_ctest": "4/4 passed: model_family_test, q36_f16_parity, q36_attn_parity, native_expert_parity_q8_0_q8_0",
+  "builds": {
+    "CUDA": "passed, CUDA12.9/GCC14.3.1/sm120",
+    "HIP": "passed, ROCm7.10/gfx1201, compile only",
+    "SYCL": "passed, Intel oneAPI2026.1.0, family still unsupported at runtime"
+  },
+  "quality_128_rows": {
+    "16384": {
+      "llama_vs_strata": {
+        "rows": 128,
+        "mean_kl": 0.00195717121305342,
+        "max_kl": 0.03481289369008916,
+        "top1_matches": 126
+      }
+    }
+  },
+  "default_original_cli": [
+    {
+      "mode": "gpu",
+      "prompt_n": 3,
+      "mtp": 0,
+      "generated_n": 64,
+      "logits_sha256": "40124c8174a222831223e24bd15cf0c04c15c656be7dd39a50cb6cb221ceb8be",
+      "identical": true
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 3,
+      "mtp": 2,
+      "generated_n": 64,
+      "logits_sha256": "40124c8174a222831223e24bd15cf0c04c15c656be7dd39a50cb6cb221ceb8be",
+      "identical": true
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 32,
+      "mtp": 0,
+      "generated_n": 64,
+      "logits_sha256": "4a10bef29e1490ecf64678f793cc78b2e89101ded401bbfb2341db133673d60f",
+      "identical": true
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 32,
+      "mtp": 2,
+      "generated_n": 64,
+      "logits_sha256": "4a10bef29e1490ecf64678f793cc78b2e89101ded401bbfb2341db133673d60f",
+      "identical": true
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 128,
+      "mtp": 0,
+      "generated_n": 64,
+      "logits_sha256": "69f28f2e6e29056307898c206c2d5f540c3a4f1a3c8a7f607112b24171b7b677",
+      "identical": true
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 128,
+      "mtp": 2,
+      "generated_n": 64,
+      "logits_sha256": "69f28f2e6e29056307898c206c2d5f540c3a4f1a3c8a7f607112b24171b7b677",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 3,
+      "mtp": 0,
+      "generated_n": 64,
+      "logits_sha256": "4f3186232490a9d022d66156a6a24b0dadaf4361d2e427c69ecb198719b29f50",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 3,
+      "mtp": 2,
+      "generated_n": 64,
+      "logits_sha256": "4f3186232490a9d022d66156a6a24b0dadaf4361d2e427c69ecb198719b29f50",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 32,
+      "mtp": 0,
+      "generated_n": 64,
+      "logits_sha256": "5a7944be5e3d2b025833de8bc3d379872ece4e4f83757fa4484549fd8bdf47d1",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 32,
+      "mtp": 2,
+      "generated_n": 64,
+      "logits_sha256": "5a7944be5e3d2b025833de8bc3d379872ece4e4f83757fa4484549fd8bdf47d1",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 128,
+      "mtp": 0,
+      "generated_n": 64,
+      "logits_sha256": "154401c613a1adb853b74d48101a0ba1a9672da6f514f12a53c5ba5d38eaab9c",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 128,
+      "mtp": 2,
+      "generated_n": 64,
+      "logits_sha256": "154401c613a1adb853b74d48101a0ba1a9672da6f514f12a53c5ba5d38eaab9c",
+      "identical": true
+    }
+  ],
+  "default_original_protocol": {
+    "passed": true,
+    "modes": [
+      "GPU",
+      "hybrid"
+    ],
+    "mtp": [
+      0,
+      2
+    ],
+    "prompts": [
+      3,
+      32,
+      128
+    ],
+    "outputs": 64
+  },
+  "default_original_stream": [
+    {
+      "mode": "gpu",
+      "prompt_n": 512,
+      "chunk": 256,
+      "generated_n": 64,
+      "logits_sha256": "671e15e56e204455cd667de59ee770746761fb2fc09c15e7d7506169b5100c03",
+      "identical": true
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 512,
+      "chunk": 256,
+      "generated_n": 64,
+      "logits_sha256": "b9eb2bf033febfc959c2cf777e12eb1cc2462ca439927fd409ee93a85a49c8d4",
+      "identical": true
+    }
+  ],
+  "fixture": {
+    "bytes": 4482441344,
+    "sha256": "364f742c565ba7e96664e57685773d91ef029d4c3272ff6eb0260d860e2e836d",
+    "shape": "synthetic4trunk+1MTP,2048hidden,256experts/top8,FF512,16Q/2KV,16/32GDNheads"
+  },
+  "public_scripts": "passed: fixture reproduction,16 default byte cases,MTP protocol parity,and128-row actual-model logit repeat",
+  "not_run": [
+    "AMD execution",
+    "Intel execution",
+    "Sage vision",
+    "multi-GPU",
+    "real-model MTP/concurrency",
+    "long-context task accuracy"
+  ],
+  "public_default_bytes": [
+    {
+      "mode": "gpu",
+      "prompt_n": 3,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "40124c8174a222831223e24bd15cf0c04c15c656be7dd39a50cb6cb221ceb8be"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 3,
+      "chunk": 32,
+      "mtp": 2,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "40124c8174a222831223e24bd15cf0c04c15c656be7dd39a50cb6cb221ceb8be"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 32,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "4a10bef29e1490ecf64678f793cc78b2e89101ded401bbfb2341db133673d60f"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 32,
+      "chunk": 32,
+      "mtp": 2,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "4a10bef29e1490ecf64678f793cc78b2e89101ded401bbfb2341db133673d60f"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 128,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "69f28f2e6e29056307898c206c2d5f540c3a4f1a3c8a7f607112b24171b7b677"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 128,
+      "chunk": 32,
+      "mtp": 2,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "69f28f2e6e29056307898c206c2d5f540c3a4f1a3c8a7f607112b24171b7b677"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 512,
+      "chunk": 256,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "671e15e56e204455cd667de59ee770746761fb2fc09c15e7d7506169b5100c03"
+    },
+    {
+      "mode": "gpu",
+      "prompt_n": 128,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": false,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "69f28f2e6e29056307898c206c2d5f540c3a4f1a3c8a7f607112b24171b7b677"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 3,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "4f3186232490a9d022d66156a6a24b0dadaf4361d2e427c69ecb198719b29f50"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 3,
+      "chunk": 32,
+      "mtp": 2,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "4f3186232490a9d022d66156a6a24b0dadaf4361d2e427c69ecb198719b29f50"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 32,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "5a7944be5e3d2b025833de8bc3d379872ece4e4f83757fa4484549fd8bdf47d1"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 32,
+      "chunk": 32,
+      "mtp": 2,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "5a7944be5e3d2b025833de8bc3d379872ece4e4f83757fa4484549fd8bdf47d1"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 128,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "154401c613a1adb853b74d48101a0ba1a9672da6f514f12a53c5ba5d38eaab9c"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 128,
+      "chunk": 32,
+      "mtp": 2,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "154401c613a1adb853b74d48101a0ba1a9672da6f514f12a53c5ba5d38eaab9c"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 512,
+      "chunk": 256,
+      "mtp": 0,
+      "fixed_slots": true,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "b9eb2bf033febfc959c2cf777e12eb1cc2462ca439927fd409ee93a85a49c8d4"
+    },
+    {
+      "mode": "hybrid",
+      "prompt_n": 128,
+      "chunk": 32,
+      "mtp": 0,
+      "fixed_slots": false,
+      "generated_n": 64,
+      "identical": true,
+      "logits_sha256": "154401c613a1adb853b74d48101a0ba1a9672da6f514f12a53c5ba5d38eaab9c"
+    }
+  ],
+  "public_default_protocol": "passed GPU and hybrid, MTP0/2,3prompts x64tokens",
+  "public_fixture_reproduction": {
+    "bytes": 4482441344,
+    "sha256": "364f742c565ba7e96664e57685773d91ef029d4c3272ff6eb0260d860e2e836d",
+    "matches_original": true
+  },
+  "public_quality_repeat": {
+    "16384": {
+      "llama_vs_strata": {
+        "rows": 128,
+        "mean_kl": 0.002022284870282781,
+        "max_kl": 0.04056802399695156,
+        "top1_matches": 126
+      }
+    }
+  },
+  "resolved_preparation_failures": [
+    "Reference helper exceeded512tokenbatch; fixed512chunking",
+    "OlderSYCLtoolchainfailedunchangeddependencyhelpers; documented2026.1buildpassed",
+    "SyntheticfixtureSSMwidthwascorrectedbeforeGPUtests"
+  ]
+}

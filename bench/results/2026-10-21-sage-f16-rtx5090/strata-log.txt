@@ -1,0 +1,8 @@
+strata-q36: <models>/Sage-A1.5-F16/Sage-A1.5-F16.gguf: 753 tensors (layout checked), 4.76 GiB on the GPU in 1.1 s (the routed experts are placed after the engine's buffers)
+strata-q36: prompt experts on F16 GEMMs
+strata-q36: context 262144 cells, prompt chunk 512, MTP block loaded, 18.25 GiB of VRAM free
+strata-q36: FP16 KV cache (--kv f16), grouped-query decode attention
+strata-q36: hybrid experts: 60 of 256 per layer in VRAM (14.41 GiB), all 61.50 GiB in pinned host memory, the rest of a batch of <= 128 rows on 16 CPU threads, bigger prompt chunks streamed (3.00 GiB staging); 45.7 s
+strata-q36: warmed up in 1.4 s (one prompt chunk, a decode step)
+strata serve: session 0: prompt 261888 tokens = 0 reused + 261888 read in 751263 ms (348.6 tok/s), 256 generated in 6971 ms (36.7 tok/s), drafts accepted 0 of 0 (length)
+strata-q36: hybrid experts: 170647 of 275200 batch entries on the GPU (62.0%), 104553 on the CPU pool in 10135 ms, 19541 slot replacements

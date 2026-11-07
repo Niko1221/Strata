@@ -1,0 +1,13 @@
+Test project <repo>/build-sage-cuda
+    Start   5: model_family_test
+1/4 Test   #5: model_family_test ................   Passed    0.03 sec
+    Start  34: q36_f16_parity
+2/4 Test  #34: q36_f16_parity ...................   Passed    0.27 sec
+    Start  35: q36_attn_parity
+3/4 Test  #35: q36_attn_parity ..................   Passed    1.83 sec
+    Start 134: native_expert_parity_q8_0_q8_0
+4/4 Test #134: native_expert_parity_q8_0_q8_0 ...   Passed    0.22 sec
+
+100% tests passed out of 4
+
+Total Test time (real) =   2.36 sec
