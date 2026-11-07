@@ -215,7 +215,6 @@ struct GrMulti {
     FusedGrArgs a[kFusedGrMaxT];
     float* xn;
     int T;
-    int pf = 0;   // sm_89 tune: the up / staged down kernels ask their weight rows into L2 first (gr_pf_on, set by launch_multi)
 };
 
 
@@ -366,21 +365,6 @@ constexpr int UPM_BLOCKS = N / UPM_COLS;          // 160
 
 // `gr_up_kernel` for T tokens: each row of w_up read once; the T dots reduced by xor so every lane holds every
 // sum, and lane k runs token k's epilogue - the T epilogues in parallel instead of one after another.
-// sm_89 tune (decode): ask a warp's weight rows into L2 before it walks them, so the rows' DRAM reads overlap instead
-// of one round trip per row (gr_up_multi) or per staged tile (gr_down_staged).  A hint only: the same loads follow,
-// the same bits.  STRATA_GR_PF=0 (read once on the host) turns it off.
-__device__ __forceinline__ void gr_pf_l2(const void* p) {
-#if !defined(__HIPCC__)
-    asm volatile("prefetch.global.L2 [%0];" ::"l"(p));
-#else
-    (void) p;
-#endif
-}
-bool gr_pf_on() {
-    static const bool on = [] { const char* v = std::getenv("STRATA_GR_PF"); return v == nullptr || v[0] != '0'; }();
-    return on;
-}
-
 template <int MAX_T = kFusedGrMaxT, bool EXACT_T = false, bool Q8 = false>
 __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
     __shared__ __align__(16) float lo[MAX_T][LR];
@@ -388,14 +372,6 @@ __global__ void __launch_bounds__(THREADS) gr_up_multi_kernel(GrMulti m) {
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int T = EXACT_T ? MAX_T : m.T;
     const int d0 = blockIdx.x * UPM_COLS;
-    if constexpr (!Q8) {
-        if (m.pf) {   // this warp's 8 rows of w_up (640 bytes each: 5 lines), 40 lines over the lanes
-            for (int i = lane; i < (HC * UPM_COLS / WARPS) * 5; i += 32) {
-                const int r = warp + WARPS * (i / 5), c = r / UPM_COLS, dd = r - c * UPM_COLS;
-                gr_pf_l2(reinterpret_cast<const uint8_t*>(m.a[0].w_up + (size_t) (c * N + d0 + dd) * LR) + 128 * (i % 5));
-            }
-        }
-    }
     for (int i = t; i < T * LR; i += THREADS) lo[i / LR][i % LR] = m.a[i / LR].lo[i % LR];
     __syncthreads();
     for (int r = warp; r < HC * UPM_COLS; r += WARPS) {
@@ -1088,8 +1064,6 @@ __global__ void __launch_bounds__(THREADS) gr_down_staged_kernel(GrMulti m) {
     const bool active = !(inject_block && (m.a[0].w_inject == nullptr || warp >= HC));
     const uint16_t* wrow = (inject_block ? m.a[0].w_inject : m.a[0].w_down) + (size_t) (active ? row : 0) * D;
     const uint4* w4 = reinterpret_cast<const uint4*>(wrow);
-    if (active && m.pf)   // the warp's whole row (20 KB: 160 lines, 5 a lane) into L2 at once
-        for (int i = lane; i < D * 2 / 128; i += 32) gr_pf_l2(reinterpret_cast<const uint8_t*>(wrow) + 128 * i);
     const size_t buf_f4 = (size_t) T * (H_TILE / 4);    // float4 per buffer (the second one follows the first)
     float acc[MAX_T];
 #pragma unroll
@@ -1357,9 +1331,7 @@ int down_tg(int ct) {
     return per_dev[dev] == 2 && (ct == 4 || ct == 6) ? 2 : 0;
 #endif
 }
-void launch_multi(const GrMulti& m_in, int variant, cudaStream_t st, unsigned long long* stamp_buf, int stamp_i0) {
-    GrMulti m = m_in;
-    m.pf = gr_pf_on() ? 1 : 0;
+void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long long* stamp_buf, int stamp_i0) {
     const int n_tok = m.T;
     const bool q8w = m.a[0].s_down != nullptr;   // STRATA_HC_REQ8: w_down / w_up hold int8 codes
 #if STRATA_GR_FAST_BUILD
@@ -1396,7 +1368,6 @@ void launch_multi(const GrMulti& m_in, int variant, cudaStream_t st, unsigned lo
         } else {
             c.xn = m.xn + (size_t) c0 * D;
             c.T = ct;
-            c.pf = m.pf;
             for (int k = 0; k < ct; ++k) c.a[k] = m.a[c0 + k];
         }
         const size_t smem = (size_t) ct * per_tok;
