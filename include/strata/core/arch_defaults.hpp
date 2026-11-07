@@ -86,6 +86,13 @@ std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch
 std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda);
 std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda);
 
+/// gfx12 (RDNA4, R9700 / RX 9000) on Linux, when EVERY visible card is gfx12 (the same rule as serve/server.py's GDN_STACK_GFX12): the chunked GDN scan
+/// from the first 64-token chunk instead of from 30,000 tokens (owner yes 2026-11-07).  R9700: +3.5% prompt speed at 4K, +5.5% at 16K, first-token KL mean
+/// 0.0025, 61-task suite 55 vs 56.  STRATA_GDN_CHUNKED=0 turns it off; a value the user set is kept.  Empty elsewhere.  Silent: the engine's own
+/// "prompt chunks of 30,000+ tokens" line is not printed when the variable is set, as with a launcher start.
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12);
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12);
+
 /// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
 /// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
 /// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread

@@ -252,6 +252,21 @@ std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda) {
     return set;
 }
 
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12) {
+    if (!linux_host || !all_gfx12) return {};
+    return {{"STRATA_GDN_CHUNKED", "1"}};
+}
+
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12) {
+    std::vector<std::string> set;
+    for (const auto& kv : gdn_chunked_default_env(linux_host, all_gfx12)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
 std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows) {
     std::vector<std::pair<std::string, std::string>> t;
     if (!windows || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;

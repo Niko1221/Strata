@@ -74,6 +74,17 @@ int main() {
         unset("STRATA_GDN_TC"); unset("STRATA_GDN_CONVL2");
         CHECK(apply_gdn_defaults_cuda(false).empty() && std::getenv("STRATA_GDN_TC") == nullptr);
     }
+    // the chunked GDN scan: Linux, every card gfx12
+    CHECK(gdn_chunked_default_env(true, true).size() == 1);
+    CHECK(gdn_chunked_default_env(true, false).empty());
+    CHECK(gdn_chunked_default_env(false, true).empty());
+    {
+        unset("STRATA_GDN_CHUNKED");
+        CHECK(apply_gdn_chunked_default(true, true).size() == 1 && std::string(std::getenv("STRATA_GDN_CHUNKED")) == "1");
+        put("STRATA_GDN_CHUNKED", "0");
+        CHECK(apply_gdn_chunked_default(true, true).empty() && std::string(std::getenv("STRATA_GDN_CHUNKED")) == "0");
+        unset("STRATA_GDN_CHUNKED");
+    }
     // 0.2.10 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
     unset("STRATA_GFX1151_DEFAULTS");
     CHECK(launch_default_env("gfx1151", true).size() == 1 && launch_default_env("gfx1151", true)[0].first == "STRATA_VERIFY_ASYNC_LAUNCH");
