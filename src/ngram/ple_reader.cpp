@@ -1,6 +1,7 @@
 // src/ngram/ple_reader.cpp - see include/strata/ngram/ple_reader.hpp.
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/aux_cpus.hpp"
+#include "strata/core/memory_policy.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -37,7 +38,7 @@ struct RowCache {
     uint64_t sets = 0;
     uint32_t rb = ROW_BYTES;        // bytes per row
     std::vector<uint32_t> keys;     // sets * WAYS
-    std::vector<uint8_t> data;      // sets * WAYS * rb
+    strata::core::WeightVector<uint8_t> data;      // sets * WAYS * rb; persistent model rows, not I/O scratch
     std::vector<uint8_t> next;      // per-set replacement pointer
     uint64_t used = 0;
 
@@ -410,6 +411,7 @@ void PleReader::close() {
     m.inflight.clear();
     m.free_slots.clear();
     m.cache.init(0);
+    if (strata::core::WeightLockPolicy::enabled()) decltype(m.cache.data){}.swap(m.cache.data);
     m.threaded = false;
     m.stop = false;
     m.keep_us = 0;

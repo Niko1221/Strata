@@ -5,6 +5,7 @@
 // it instead: raise the process's minimum working set by the region's size, then VirtualLock it (Windows needs
 // only SeIncreaseWorkingSetPrivilege, which ordinary accounts hold). Linux: mlock.
 #pragma once
+#include "strata/platform/memory_lock.hpp"
 
 #include <cstdint>
 #include <string>

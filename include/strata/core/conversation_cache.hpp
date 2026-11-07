@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -24,7 +25,7 @@ struct ConversationImageKey {
 struct ConversationCheckpoint {
     std::vector<int32_t> ids;
     std::vector<ConversationImageKey> imgs;
-    std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
+    ContextVector<uint8_t> gdn, ple, tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
     // STRATA_CKPT_VRAM_SLOTS: the tag of the device copy of `gdn` (0: none).  Set by conversation_checkpoint_save, the
     // only writer of a checkpoint's GDN bytes besides a whole copy (which keeps them equal, so it keeps the tag).
@@ -48,10 +49,12 @@ struct ConversationCheckpoint {
     std::vector<ConversationCheckpoint> stage_parts;
 
     size_t bytes() const {
-        size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
-               gdn.capacity() + ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity() +
-               stage_parts.capacity() * sizeof(ConversationCheckpoint);
-        for (const auto& part : stage_parts) n += part.bytes();
+        size_t n = memory_bytes_sum({ids.capacity() * sizeof(int32_t), imgs.capacity() * sizeof(ConversationImageKey),
+               context_allocation_bytes(gdn.capacity()), context_allocation_bytes(ple.capacity()),
+               context_allocation_bytes(tails.capacity()), context_allocation_bytes(dead.capacity()),
+               context_allocation_bytes(block_pos.capacity()),
+               stage_parts.capacity() * sizeof(ConversationCheckpoint)});
+        for (const auto& part : stage_parts) n = memory_bytes_sum({n, part.bytes()});
         return n;
     }
 };
@@ -71,7 +74,7 @@ struct ConversationKv {
     // any buffer.
     std::shared_ptr<void> pending;
     size_t bytes() const {
-        return k.bytes() + v.bytes() + k_scale.bytes() + v_scale.bytes() + pooled.bytes();
+        return memory_bytes_sum({k.bytes(), v.bytes(), k_scale.bytes(), v_scale.bytes(), pooled.bytes()});
     }
 };
 
@@ -85,10 +88,10 @@ struct ConversationKvReuse {
     // shares with the conversation then in the main session (a batch slot may have replaced that session's K/V since).
     std::vector<int32_t> ids;
     size_t bytes() const {
-        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse) +
-                   ids.capacity() * sizeof(int32_t);
-        for (const auto& layer : kv) n += layer.bytes();
-        for (const auto& s : stages) n += s.bytes();
+        size_t n = memory_bytes_sum({kv.capacity() * sizeof(ConversationKv), stages.capacity() * sizeof(ConversationKvReuse),
+                   ids.capacity() * sizeof(int32_t)});
+        for (const auto& layer : kv) n = memory_bytes_sum({n, layer.bytes()});
+        for (const auto& s : stages) n = memory_bytes_sum({n, s.bytes()});
         return n;
     }
 };
@@ -195,11 +198,11 @@ struct SavedConversation {
     }
 
     size_t bytes() const {
-        size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
-                   kv.capacity() * sizeof(ConversationKv);
-        for (const auto& s : stage_images) n += s.bytes();
-        for (const auto& c : checkpoints) n += c.bytes();
-        for (const auto& k : kv) n += k.bytes();
+        size_t n = memory_bytes_sum({live.bytes(), checkpoints.capacity() * sizeof(ConversationCheckpoint),
+                   kv.capacity() * sizeof(ConversationKv), stage_images.capacity() * sizeof(SavedConversation)});
+        for (const auto& s : stage_images) n = memory_bytes_sum({n, s.bytes()});
+        for (const auto& c : checkpoints) n = memory_bytes_sum({n, c.bytes()});
+        for (const auto& k : kv) n = memory_bytes_sum({n, k.bytes()});
         return n;
     }
 };
@@ -254,7 +257,7 @@ public:
     /// with one long conversation spends the cache on the side requests and evicts the long one (oldest first) -
     /// exactly the reuse it wanted.  0 parks every conversation, whatever its size.
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
-    size_t bytes() const { return bytes_ + reuse_.bytes(); }
+    size_t bytes() const { return memory_bytes_sum({bytes_, reuse_.bytes()}); }
     size_t size() const { return entries_.size(); }
     size_t evictions() const { return evictions_; }
     // the longest parked conversation, in tokens (--kv-grow keeps the K/V that long while it could be restored)
@@ -519,8 +522,18 @@ public:
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
         if (!make_room(n, held)) return false;
-        entries_.push_back(std::move(image));
-        serials_.push_back(next_serial_++);
+        if (ContextLockPolicy::enabled()) {
+            // A failed serial allocation must not consume the image (and its
+            // moved running checkpoints). No operation after moving it can throw.
+            static_assert(std::is_nothrow_move_constructible_v<SavedConversation>);
+            serials_.push_back(next_serial_);
+            try { entries_.push_back(std::move(image)); }
+            catch (...) { serials_.pop_back(); throw; }
+            ++next_serial_;
+        } else {
+            entries_.push_back(std::move(image));
+            serials_.push_back(next_serial_++);
+        }
         bytes_ += n;
         return true;
     }

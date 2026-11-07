@@ -768,6 +768,9 @@ public:
         stage_lend_regions_ = std::move(regions);
     }
     void close();
+    // Called after placement/copy budgets are settled, before inference. Locks actual expert tensor spans,
+    // not entire GGUF shards (which can also contain unrelated tables or metadata).
+    void lock_weight_storage();
 
     bool mapped() const { return base_ != nullptr; }
     int64_t blobs() const { return blobs_; }
@@ -775,7 +778,7 @@ public:
     uint64_t resident_bytes() const { return complement_bytes_; }
     bool complement_pinned() const { return complement_pinned_; }
     bool complement_ready() const { return complement_ready_; }
-    uint64_t locked_bytes() const { return complement_locked_; }
+    uint64_t locked_bytes() const { return complement_weight_lock_.locked() ? complement_bytes_ : complement_locked_; }
     /// Lend-region slots whose experts the compact copy holds (the last ones of the cache).
     int64_t resident_lent_slots() const { return complement_lent_slots_; }
 
@@ -1203,6 +1206,8 @@ private:
     uint64_t mapped_bytes_ = 0;
     std::vector<uint64_t> layer_offsets_, layer_blob_bytes_;
     void* complement_arena_ = nullptr;
+    EngineMemoryLock complement_weight_lock_, exchange_weight_lock_;
+    std::vector<EngineMemoryLock> mapped_weight_locks_;
     const uint8_t* complement_host_ = nullptr;
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
@@ -1334,6 +1339,7 @@ public:
 private:
     void* arena_ = nullptr;          ///< the PinnedArena, owned
     void* map_ = nullptr;            ///< STRATA_ARENA_MMAP: the arena file, mapped read-only (not the PinnedArena)
+    EngineMemoryLock mapped_weight_lock_;
     uint64_t map_bytes_ = 0;
     std::vector<const uint8_t*> dev_slice_;   ///< device alias of each registered slice (or of the whole range)
     uint64_t slice_bytes_ = 0;

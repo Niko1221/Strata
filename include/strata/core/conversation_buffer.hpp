@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strata/core/progress.hpp"
+#include "strata/core/memory_policy.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -42,7 +43,15 @@ public:
     bool empty() const { return size_ == 0; }
     size_t bytes() const {
         size_t n = segments_.capacity() * sizeof(Segment);
-        for (const auto& segment : segments_) n += segment.capacity();
+        for (const auto& segment : segments_)
+            if (!add(n, context_allocation_bytes(segment.capacity()))) return SIZE_MAX;
+        return n;
+    }
+    // Page rounding and lock-owner headers, not geometric spare payload capacity.
+    size_t locking_overhead_bytes() const {
+        size_t n = 0;
+        for (const auto& segment : segments_)
+            if (!add(n, context_allocation_bytes(segment.capacity()) - segment.capacity())) return SIZE_MAX;
         return n;
     }
     // Includes the old directory while reserve allocates its replacement.
@@ -53,9 +62,10 @@ public:
         const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
         const size_t extra = n - size_ - std::min(n - size_, spare);
         const size_t full = extra / segment_bytes, tail = extra % segment_bytes;
-        if (!add(total, full * segment_bytes)) return SIZE_MAX;
-        if (tail && !add(total, segment_capacity(tail, full ? segment_bytes :
-                segments_.empty() ? 0 : segments_.back().capacity(), size_ != 0, size_))) return SIZE_MAX;
+        const size_t segment_alloc = context_allocation_bytes(segment_bytes);
+        if (full > SIZE_MAX / segment_alloc || !add(total, full * segment_alloc)) return SIZE_MAX;
+        if (tail && !add(total, context_allocation_bytes(segment_capacity(tail, full ? segment_bytes :
+                segments_.empty() ? 0 : segments_.back().capacity(), size_ != 0, size_)))) return SIZE_MAX;
         size_t count = segments_.size();
         if (!add(count, full + (tail != 0))) return SIZE_MAX;
         if (count > segments_.capacity() &&
@@ -131,7 +141,7 @@ public:
 
 private:
     // value-initializes only when asked (resize's explicit fill value): resize_for_overwrite leaves the bytes alone
-    template<class T> struct DefaultInit : std::allocator<T> {
+    template<class T> struct DefaultInit : ContextAllocator<T> {
         template<class U> struct rebind { using other = DefaultInit<U>; };
         DefaultInit() = default;
         template<class U> DefaultInit(const DefaultInit<U>&) noexcept {}

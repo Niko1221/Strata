@@ -226,8 +226,9 @@ struct SessionReadLimits {
 // The largest file these limits admit (UINT64_MAX when one of them is open); session_file_read applies it.
 uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
 // What the RAM preflight is asked for a file of `file_bytes`: the parsed image (about the payload), the 16 MiB read
-// buffer, and the per-allocation overhead of its arrays (a page per 16 MiB segment plus the small vectors).
-uint64_t session_read_peak_bytes(uint64_t file_bytes);
+// buffer, and the per-allocation overhead of its arrays. With context locking, file size and runtime limits
+// bound the number of page-rounded payloads and lock-owner headers before parsing. Open limits are conservative.
+uint64_t session_read_peak_bytes(uint64_t file_bytes, const SessionReadLimits& limits = {});
 // Full validation (a regular file with one link, size, header, identity, bounded parse, payload hash) before `image`
 // is replaced.  The file is opened without following a symbolic link (or a reparse point) at its name, and the checks
 // are made on the opened handle.  On failure `image` is unchanged and `status->error` says what kind of failure.

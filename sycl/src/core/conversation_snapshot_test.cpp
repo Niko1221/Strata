@@ -205,7 +205,7 @@ void full_session(int fmt, int mode, int experts) {
         // disk save path: metadata + streamed K/V give the same file as the captured image
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
-        check(conversation_snapshot_sources(meta,sources,view,ss,g,draft.state,err),"disk-save sources");
+        check(conversation_snapshot_sources(meta,sources,view,ss,g,&draft.state,err),"disk-save sources");
         check(meta.kv.empty() && sources.size()==b.kv.size(),"one source per K/V layer, none captured");
         const SessionFileIdentity id{1,2};
         namespace fs=std::filesystem;
@@ -228,7 +228,7 @@ void full_session(int fmt, int mode, int experts) {
         fs::remove_all(dir,ec);
         auto empty_ids=std::vector<int32_t>{};
         const ConversationView none{empty_ids,images,checkpoints,true};
-        check(!conversation_snapshot_sources(meta,sources,none,ss,g,draft.state,err),"empty session refused");
+        check(!conversation_snapshot_sources(meta,sources,none,ss,g,&draft.state,err),"empty session refused");
     }
     check(a.live.dead!=b.live.dead,"different opening-state spare keys in regression fixture");
     auto bad=a; bad.kv.back().k.pop_back();

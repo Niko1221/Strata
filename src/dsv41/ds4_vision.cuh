@@ -14,6 +14,7 @@
 // side takes, and gives it back; the first encode takes it again (acquire) and the caller gives it back when the
 // picture turn is over (release_device).  A tower that is not lazy keeps it, as before.
 #pragma once
+#include "ds4_mlock.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +87,7 @@ private:
     size_t dev_bytes_ = 0, need_bytes_ = 0, slot_n_ = 0;
     std::vector<void*> dallocs_;
     uint16_t* host_ = nullptr;          // pinned: every block's [wqkv, wo, w1, w2], then aligner w1, w2
+    EngineMemoryLock host_lock_;
     size_t block_n_ = 0;                // a block's weights (BF16 values)
     size_t al1_off_ = 0, al2_off_ = 0;  // the aligner's weights in host_
     // the small tensors (the patch embedding, the norms and biases), kept in host memory, copied to the device by acquire
@@ -93,7 +95,7 @@ private:
         uint16_t** slot;   // where the device pointer goes
         size_t off, n;     // in small_host_
     };
-    std::vector<uint16_t> small_host_;
+    WeightVector<uint16_t> small_host_;
     std::vector<Small> smalls_;
     uint16_t *pe_w_ = nullptr, *pe_b_ = nullptr, *norm_ = nullptr, *al1_b_ = nullptr, *al2_b_ = nullptr;
     std::vector<uint16_t*> n1_, n2_, bqkv_, bo_;

@@ -170,6 +170,116 @@ if(NOT STRATA_CPU_X86)
 endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+option(STRATA_BUILD_MEMORY_LOCK_TESTS "Build standalone Linux memory locking tests (no GPU required)" OFF)
+if(STRATA_BUILD_MEMORY_LOCK_TESTS)
+  enable_testing()
+  find_package(Threads REQUIRED)
+  add_executable(memory_lock_test tests/dsv41/memory_lock_test.cpp)
+  target_include_directories(memory_lock_test PRIVATE include src/dsv41)
+  target_link_libraries(memory_lock_test PRIVATE Threads::Threads)
+  add_executable(store_publication_test tests/dsv41/store_publication_test.cpp)
+  target_include_directories(store_publication_test PRIVATE include src/dsv41)
+  target_link_libraries(store_publication_test PRIVATE Threads::Threads)
+  add_test(NAME store_publication COMMAND ${CMAKE_COMMAND} -E env
+    DS4_MLOCK_WEIGHTS=1 DS4_MLOCK_CONTEXT=0 DS4_STORE_CHUNK_SLOTS=8 DS4_STORE_PREGROW=0
+    $<TARGET_FILE:store_publication_test>)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(memory_lock_test PRIVATE "-Wl,--wrap=mlock" "-Wl,--wrap=mmap")
+  endif()
+  foreach(weights 0 1)
+    foreach(context 0 1)
+      add_test(NAME memory_lock_${weights}${context} COMMAND ${CMAKE_COMMAND} -E env
+        DS4_MLOCK_WEIGHTS=${weights} DS4_MLOCK_CONTEXT=${context} $<TARGET_FILE:memory_lock_test>)
+    endforeach()
+  endforeach()
+  add_test(NAME memory_lock_unset COMMAND ${CMAKE_COMMAND} -E env
+    --unset=DS4_MLOCK_WEIGHTS --unset=DS4_MLOCK_CONTEXT STRATA_MLOCK_WEIGHTS=1 STRATA_MLOCK_CONTEXT=1
+    $<TARGET_FILE:memory_lock_test>)
+  add_test(NAME memory_lock_invalid COMMAND ${CMAKE_COMMAND} -E env
+    DS4_MLOCK_WEIGHTS=invalid DS4_MLOCK_CONTEXT=2 STRATA_MLOCK_WEIGHTS=1 STRATA_MLOCK_CONTEXT=1
+    $<TARGET_FILE:memory_lock_test>)
+  add_test(NAME memory_lock_empty COMMAND ${CMAKE_COMMAND} -E env
+    DS4_MLOCK_WEIGHTS= DS4_MLOCK_CONTEXT= STRATA_MLOCK_WEIGHTS=1 STRATA_MLOCK_CONTEXT=1
+    $<TARGET_FILE:memory_lock_test>)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Test real CPU allocation/locking code without pretending to provide a GPU backend.
+    add_executable(memory_lock_owners_test tests/core/memory_lock_owners_test.cpp)
+    target_include_directories(memory_lock_owners_test PRIVATE include src/dsv41)
+    target_link_libraries(memory_lock_owners_test PRIVATE Threads::Threads)
+    foreach(cw 0 1)
+      foreach(cc 0 1)
+        foreach(dw 0 1)
+          foreach(dc 0 1)
+            foreach(order core-first ds4-first)
+              add_test(NAME memory_lock_owners_${cw}${cc}${dw}${dc}_${order} COMMAND ${CMAKE_COMMAND} -E env
+                STRATA_MLOCK_WEIGHTS=${cw} STRATA_MLOCK_CONTEXT=${cc} DS4_MLOCK_WEIGHTS=${dw} DS4_MLOCK_CONTEXT=${dc}
+                $<TARGET_FILE:memory_lock_owners_test> ${order})
+            endforeach()
+          endforeach()
+        endforeach()
+      endforeach()
+    endforeach()
+    add_executable(engine_memory_lock_test tests/core/engine_memory_lock_test.cpp
+      tests/core/memory_lock_pinned_host.cpp src/platform/memory.cpp src/core/conversation_file.cpp
+      src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
+    target_include_directories(engine_memory_lock_test BEFORE PRIVATE tests/core/mlock_cuda_stub include ${CMAKE_CURRENT_SOURCE_DIR})
+    target_compile_definitions(engine_memory_lock_test PRIVATE STRATA_MLOCK_HOST_TEST=1)
+    target_link_libraries(engine_memory_lock_test PRIVATE Threads::Threads)
+    add_executable(snapshot_capture_bound_test tests/core/snapshot_capture_bound_test.cpp
+      src/core/conversation_state.cpp src/core/conversation_snapshot.cpp)
+    # Test the actual pool without compiling the GPU/server translation unit.
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/program/generate.cpp" _pool_source)
+    string(FIND "${_pool_source}" "class CheckpointPool {" _pool_begin)
+    string(FIND "${_pool_source}" "/// STRATA_CKPT_THREADS:" _pool_end)
+    if(_pool_begin LESS 0 OR _pool_end LESS _pool_begin)
+      message(FATAL_ERROR "Cannot locate production CheckpointPool for the host regression")
+    endif()
+    math(EXPR _pool_length "${_pool_end} - ${_pool_begin}")
+    string(SUBSTRING "${_pool_source}" ${_pool_begin} ${_pool_length} _pool_class)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/checkpoint_pool_under_test.hpp" "${_pool_class}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/program/generate.cpp)
+    target_include_directories(snapshot_capture_bound_test BEFORE PRIVATE tests/core/mlock_cuda_stub include "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(snapshot_capture_bound_test PRIVATE STRATA_MLOCK_HOST_TEST=1)
+    target_link_libraries(snapshot_capture_bound_test PRIVATE Threads::Threads)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME context_pool_source_contract COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/core/context_pool_source_contract_test.py)
+    add_executable(checkpoint_publish_failure_test tests/core/checkpoint_publish_failure_test.cpp)
+    target_include_directories(checkpoint_publish_failure_test PRIVATE include)
+    target_link_libraries(checkpoint_publish_failure_test PRIVATE Threads::Threads)
+    foreach(weights 0 1)
+      add_test(NAME checkpoint_publish_failure_${weights}1 COMMAND ${CMAKE_COMMAND} -E env
+        STRATA_MLOCK_WEIGHTS=${weights} STRATA_MLOCK_CONTEXT=1 $<TARGET_FILE:checkpoint_publish_failure_test>)
+    endforeach()
+    # Compile checks only: no mock GPU functions/kernels are linked into the production engine.
+    add_library(memory_lock_gpu_host_compile OBJECT src/core/expert_source.cpp src/core/native_head.cpp
+      src/core/layer.cpp src/core/conversation_state.cpp src/core/conversation_snapshot.cpp)
+    target_include_directories(memory_lock_gpu_host_compile BEFORE PRIVATE tests/core/mlock_cuda_stub include)
+    target_compile_definitions(memory_lock_gpu_host_compile PRIVATE STRATA_MLOCK_HOST_TEST=1)
+    foreach(weights 0 1)
+      foreach(context 0 1)
+        add_test(NAME engine_memory_lock_${weights}${context} COMMAND ${CMAKE_COMMAND} -E env
+          STRATA_MLOCK_WEIGHTS=${weights} STRATA_MLOCK_CONTEXT=${context}
+          $<TARGET_FILE:engine_memory_lock_test>)
+        add_test(NAME snapshot_capture_bound_${weights}${context} COMMAND ${CMAKE_COMMAND} -E env
+          --unset=STRATA_CKPT_ASYNC --unset=STRATA_PARK_ASYNC
+          STRATA_MLOCK_WEIGHTS=${weights} STRATA_MLOCK_CONTEXT=${context} $<TARGET_FILE:snapshot_capture_bound_test>)
+      endforeach()
+    endforeach()
+    add_test(NAME engine_memory_lock_unset COMMAND ${CMAKE_COMMAND} -E env
+      --unset=STRATA_MLOCK_WEIGHTS --unset=STRATA_MLOCK_CONTEXT DS4_MLOCK_WEIGHTS=1 DS4_MLOCK_CONTEXT=1
+      $<TARGET_FILE:engine_memory_lock_test>)
+    add_test(NAME engine_memory_lock_invalid COMMAND ${CMAKE_COMMAND} -E env
+      STRATA_MLOCK_WEIGHTS=invalid STRATA_MLOCK_CONTEXT=2 DS4_MLOCK_WEIGHTS=1 DS4_MLOCK_CONTEXT=1
+      $<TARGET_FILE:engine_memory_lock_test>)
+    add_test(NAME engine_memory_lock_empty COMMAND ${CMAKE_COMMAND} -E env
+      STRATA_MLOCK_WEIGHTS= STRATA_MLOCK_CONTEXT= DS4_MLOCK_WEIGHTS=1 DS4_MLOCK_CONTEXT=1
+      $<TARGET_FILE:engine_memory_lock_test>)
+    add_test(NAME snapshot_capture_bound_unset COMMAND ${CMAKE_COMMAND} -E env
+      --unset=STRATA_MLOCK_WEIGHTS --unset=STRATA_MLOCK_CONTEXT --unset=STRATA_CKPT_ASYNC --unset=STRATA_PARK_ASYNC
+      $<TARGET_FILE:snapshot_capture_bound_test>)
+  endif()
+endif()
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)
@@ -192,6 +302,17 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
   target_include_directories(session_save_reclaim_test PRIVATE include)
   add_test(NAME session_save_reclaim_test COMMAND session_save_reclaim_test)
+  if(STRATA_BUILD_MEMORY_LOCK_TESTS)
+    foreach(target conversation_cache_test conversation_split_failure_test conversation_memory_test
+                   conversation_file_test session_save_reclaim_test)
+      foreach(weights 0 1)
+        foreach(context 0 1)
+          add_test(NAME ${target}_mlock_${weights}${context} COMMAND ${CMAKE_COMMAND} -E env
+            STRATA_MLOCK_WEIGHTS=${weights} STRATA_MLOCK_CONTEXT=${context} $<TARGET_FILE:${target}>)
+        endforeach()
+      endforeach()
+    endforeach()
+  endif()
 endif()
 
 if(STRATA_HIP_GFX906)

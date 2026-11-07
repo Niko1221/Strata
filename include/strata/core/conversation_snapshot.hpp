@@ -53,7 +53,7 @@ bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, i
 // min(max_tokens, its cells) tokens, `max_checkpoints` checkpoints, the exact running-state sizes and the K/V part
 // sizes at that many tokens - so session_file_read refuses an oversized or foreign file before it allocates.
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
-                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error);
 
 struct ConversationStateSizes {
@@ -85,7 +85,8 @@ void conversation_park_join();
 /// goes; launch moves the stage into the host buffers on a background thread (4 MiB pieces through two pinned
 /// buffers), so the next prompt starts at once.  conversation_park_join (above) waits for it.
 /// begin: false when it is off (the saves then copy as before); `need` is the K/V bytes the saves will copy.
-bool conversation_park_async_begin(size_t need);
+bool conversation_park_async_begin(size_t need, size_t items);
+size_t conversation_park_host_allocation_bytes(size_t items);
 /// The recorded copies start (the device copies into the stage have landed when it returns); false: a copy failed.
 bool conversation_park_async_launch(std::string& error);
 /// Abandons a begun park that was not launched (the error paths): nothing was queued to the background.
@@ -124,8 +125,9 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& session, const ModelGeometry& g,
                                          const QsaState& draft, size_t& bytes, std::string& error);
-// The capture estimate includes retained capacity and transient segment directories;
-// only estimate - reuse.bytes() requires additional physical RAM. Capture consumes
+// The K/V-only capture estimate includes retained capacity and transient segment directories.
+// For complete snapshot admission use conversation_snapshot_allocation_bound below;
+// subtracting reuse.bytes() also subtracts metadata that is not reused. Capture consumes
 // the uniquely owned reusable buffers, including on failure.
 // Caller admits the estimate before invoking capture. Allocation failures propagate
 // to the RAM policy; the active session is never modified by capture.
@@ -138,7 +140,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 // synchronized and must not run the session until the file is written.
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
-                                   const ModelGeometry& g, const QsaState& draft, std::string& error);
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 /// #2409: true when a restore (or a copy) on CUDA device `device` from the calling thread creates no copy stream: this
@@ -165,8 +167,17 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session, const ModelGeometry& g,
                                  const QsaState* draft, size_t& bytes, std::string& error);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
-                                         const SessionState& session, const ModelGeometry& g, const QsaState* draft,
-                                         size_t& bytes, std::string& error);
+                                          const SessionState& session, const ModelGeometry& g, const QsaState* draft,
+                                          size_t& bytes, std::string& error);
+// Bound for the SAME reserved pool and moved checkpoints consumed by save. Resident
+// bounds final retained storage; additional bounds simultaneous new host allocations,
+// including replacement backing and async host staging (not GPU VRAM).
+struct ConversationCaptureBound { size_t resident = 0, additional = 0; };
+bool conversation_snapshot_allocation_bound(const ConversationKvReuse& reuse, const ConversationView& view,
+                                            const SessionState& session, const ModelGeometry& g, const QsaState* draft,
+                                            const std::vector<ConversationCheckpoint>& storage,
+                                            const std::vector<ConversationCheckpoint>& moved,
+                                            ConversationCaptureBound& bound, std::string& error);
 // `storage` (optional, STRATA_CKPT_POOL): dropped checkpoints whose vectors the image's running state and checkpoint
 // copies go into (their pages are in: no fresh pages to fault); the ones not used are left in it.
 // `moved` (optional): checkpoints the caller drops after this, moved into the image after the copies of the view's

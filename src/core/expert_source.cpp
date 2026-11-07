@@ -1570,6 +1570,9 @@ void FileExpertSource::close() {
     prefetch_end();
     ram_stop();
     io_stop();
+    mapped_weight_locks_.clear();
+    complement_weight_lock_.reset();
+    exchange_weight_lock_.reset();
     inputs_.clear();
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
@@ -1691,6 +1694,20 @@ bool ExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uin
     for (size_t i = 0; i < n; ++i)
         if (!copy_blob(layers[i], experts[i], dst[i])) return false;
     return true;
+}
+
+void FileExpertSource::lock_weight_storage() {
+    if (!WeightLockPolicy::enabled() || base_ == nullptr || unmapped_) return;
+    mapped_weight_locks_.clear();
+    if (role_ptr_.empty()) {
+        track_memory_lock(mapped_weight_locks_, platform::MemoryCategory::weights, base_,
+                          (size_t) mapped_bytes_, true);
+    } else {
+        // Future GPU/CPU swaps can read any expert from these persistent fallback tensors.
+        for (size_t i = 0; i < role_ptr_.size(); ++i)
+            track_memory_lock(mapped_weight_locks_, platform::MemoryCategory::weights, role_ptr_[i],
+                              (size_t) (role_bytes_[i] * (uint64_t) n_expert_), true);
+    }
 }
 
 // ================================ CS-T: THE GGUF SHARDS IN PLACE ================================
@@ -2610,6 +2627,7 @@ bool FileExpertSource::drop_mapping(std::string& why) {
     if (t == nullptr || t[0] == '\0' || std::atoi(t) == 0 || role_ptr_.empty()) { why = "not Windows"; return false; }
     if (direct_.empty()) { why = "the reads are not unbuffered"; return false; }
     if (unmapped_) { why = "already closed"; return true; }
+    mapped_weight_locks_.clear(); // Linux's test-only unmap must not leave stale ownership
     for (Map& m : maps_) {
         if (m.closed) continue;
         if (m.base != nullptr && munmap((void*) m.base, (size_t) m.bytes) != 0) { why = "munmap failed"; return false; }
@@ -3880,7 +3898,7 @@ bool FileExpertSource::pin_cache_complement(
                 }
 #endif
             } else {
-                arena = std::malloc((size_t) bytes);
+                arena = malloc_weight_storage((size_t) bytes);
             }
             if (arena == nullptr) {
                 const int allocation_errno = errno;
@@ -4008,7 +4026,7 @@ bool FileExpertSource::pin_cache_complement(
                 if (!paced) lock_off = partial_pin;
                 // (paced: lock_off was set above)
                 const strata::platform::LockResult lr =
-                    lock_off < bytes ? strata::platform::lock_resident((uint8_t*) arena + lock_off, bytes - lock_off)
+                    legacy_weight_lock_allowed() && lock_off < bytes ? strata::platform::lock_resident((uint8_t*) arena + lock_off, bytes - lock_off)
                                      : strata::platform::LockResult{true, 0, ""};
                 locked = lr.locked_bytes;
                 note += (note.empty() ? "" : "; ") + lr.note;
@@ -4165,6 +4183,8 @@ bool FileExpertSource::pin_cache_complement(
     }
 
     complement_arena_ = arena;
+    complement_weight_lock_.acquire(platform::MemoryCategory::weights, arena, (size_t) bytes,
+                                    WeightLockPolicy::enabled());
     complement_host_ = host;
     complement_device_ = device;
     complement_bytes_ = bytes;
@@ -4242,6 +4262,7 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bo
     for (const uint64_t b : layer_blob_bytes_) blob = std::max(blob, b);
     if (blob == 0 || n <= 0) { err = "FileExpertSource: no expert geometry for the exchange buffers"; return false; }
     if (xstage_ != nullptr) {
+        exchange_weight_lock_.reset();
         if (xstage_pinned_) (void) cudaFreeHost(xstage_);
         else std::free(xstage_);
         xstage_ = nullptr;
@@ -4264,11 +4285,12 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err, int64_t bo
         xstage_pinned_ = true;
     } else {
         (void) cudaGetLastError();
-        p = std::malloc(total);
+        p = malloc_weight_storage(total);
         xstage_pinned_ = false;
         if (p == nullptr) { err = "FileExpertSource: cannot allocate the exchange buffers"; return false; }
     }
     xstage_ = (uint8_t*) p;
+    exchange_weight_lock_.acquire(platform::MemoryCategory::weights, p, total, WeightLockPolicy::enabled());
     xstage_cap_ = n;
     xstage_blob_ = blob;
     if (requested) {
@@ -5845,6 +5867,8 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             if (fd >= 0) ::close(fd);
             if (v == MAP_FAILED) { err = "ArenaExpertSource: mmap of " + path + " failed"; return false; }
             map_ = v;
+            mapped_weight_lock_.acquire(platform::MemoryCategory::weights, v, (size_t) file_bytes,
+                                        WeightLockPolicy::enabled());
             map_bytes_ = file_bytes;
             base_ = (const uint8_t*) v;
             pinned_bytes_ = 0;
@@ -5854,7 +5878,9 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             blobs_ = n_layers * n_expert;
             n_expert_ = n_expert;
             reads_ = 0;
-            note_ = "mapped read-only from " + path + " (STRATA_ARENA_MMAP: not locked, not pinned)";
+            note_ = "mapped read-only from " + path + (mapped_weight_lock_.locked()
+                      ? " (STRATA_ARENA_MMAP: mlocked by STRATA_MLOCK_WEIGHTS; not GPU pinned)"
+                      : " (STRATA_ARENA_MMAP: not locked, not pinned)");
             gib_per_s_ = 0.0;
             load_seconds_ = load_read_s_ = load_copy_s_ = 0.0;
             record_inputs(path, gguf_, lay, from_gguf);   // session files: the mapped experts.bin is a model input
@@ -6236,6 +6262,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 }
 
 void ArenaExpertSource::close() {
+    mapped_weight_lock_.reset();
 #if !defined(_WIN32)
     if (map_ != nullptr) munmap(map_, (size_t) map_bytes_);
 #endif
@@ -6274,7 +6301,7 @@ uint64_t ArenaExpertSource::release(int64_t layer, int64_t expert) {
     (void) layer; (void) expert;
     return 0;
 #else
-    if (map_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return 0;
+    if (map_ == nullptr || mapped_weight_lock_.locked() || layer < 0 || expert < 0 || expert >= n_expert_) return 0;
     const auto& lay = strata::kernels::cpu::expert_layout();
     const uint64_t off = (lay.blob_offset(layer, expert) + 4095) & ~(uint64_t) 4095;
     const uint64_t end = (lay.blob_offset(layer, expert) + lay.blob_bytes(layer)) & ~(uint64_t) 4095;

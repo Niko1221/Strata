@@ -271,6 +271,7 @@ void VisionTower::release() {
     int cur = 0;
     cudaGetDevice(&cur);
     cudaSetDevice(at_);
+    host_lock_.reset();
     if (host_) cudaFreeHost(host_);
     cudaSetDevice(cur);
     host_ = nullptr;
@@ -353,6 +354,7 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
         return false;
     }
     std::vector<int64_t> s;
+    host_lock_.acquire(platform::MemoryCategory::weights, host_, host_n * 2, WeightLockPolicy::enabled());
     for (int l = 0; l < g.layers; ++l) {
         const std::string B = "vision.blocks." + std::to_string(l) + ".";
         uint16_t* b = host_ + (size_t) l * block_n_;

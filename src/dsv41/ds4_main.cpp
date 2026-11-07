@@ -571,7 +571,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         std::vector<int32_t> tokens;
         std::string path;                            // empty: the state is in data (RAM)
         uint64_t bytes = 0, used = 0;
-        std::shared_ptr<std::vector<uint8_t>> data;   // the RAM slot's bytes (null: a file slot)
+        std::shared_ptr<strata::ds4::ContextVector<uint8_t>> data;   // the RAM slot's bytes (null: a file slot)
         std::vector<int64_t> cks;                     // the positions short of its end it can be taken back at
     };
     std::vector<Slot> slots;
@@ -694,7 +694,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         const std::vector<int32_t>& t = m.tokens();
         if (t.size() < slot_min) return;   // (a fresh engine's 0-token state is no conversation: nothing to set aside)
         const auto t0 = std::chrono::steady_clock::now();
-        auto buf = std::make_shared<std::vector<uint8_t>>();
+        auto buf = std::make_shared<strata::ds4::ContextVector<uint8_t>>();
         std::string e;
         const uint64_t bytes = m.slot_save(*buf, e);   // (a state unchanged since it was taken refuses here: nothing
         if (bytes == 0) {                             // changes, its slot stays)
@@ -796,7 +796,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
     // STRATA_DS4_PREFIX_KEEP=0: none.  Starts with pictures are not kept.
     struct Prefix {
         std::vector<int32_t> tokens;
-        std::vector<uint8_t> data;
+        strata::ds4::ContextVector<uint8_t> data;
         uint64_t used = 0;
     };
     std::vector<Prefix> prefixes;
@@ -2485,6 +2485,7 @@ int check_multi(strata::ds4::Model& m, const std::vector<int>& ids, int n) {
 #include "sampler_stat.inc"
 #endif
 int main(int argc, char** argv) {
+    strata::ds4::mlock_startup();
     strata::ds4::os::fine_timer();
     strata::platform::restore_normal_io_priority();   // #4733
 #if defined(STRATA_METAL)

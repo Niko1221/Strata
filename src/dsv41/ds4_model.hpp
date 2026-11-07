@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "ds4_mlock.hpp"
 
 namespace strata::ds4 {
 
@@ -258,6 +259,8 @@ public:
     /// is no conversation, or the conversation is already set aside - unchanged since).
     /// `at` >= 0: the conversation as it stood at its restore point `at` (a mark kept by mark()), though it was read on past it.
     uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1);
+    // Server-owned RAM slots use page-isolated context storage. Keep the original API above.
+    uint64_t slot_save(ContextVector<uint8_t>& out, std::string& err, int64_t at = -1);
     /// `data` (a slot's bytes) back into the model: the state at the slot's position n_pos, as slot_save took it -
     /// what a prompt that continues the slot's tokens reads on from (the caller checked the tokens are a prefix).
     bool slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err);

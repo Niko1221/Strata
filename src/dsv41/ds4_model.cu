@@ -1258,8 +1258,8 @@ struct Model::Impl {
     std::vector<int32_t> toks, ctoks;
     struct Check {                    // the state at a position: every window ring, the compressors' partial groups
         int64_t pos = -1;
-        std::vector<std::vector<uint8_t>> win;
-        std::vector<std::vector<float>> comp;
+        std::vector<ContextVector<uint8_t>> win;
+        std::vector<ContextVector<float>> comp;
         bool shared = false;          // (a mark's: the end of a shared start, kept before the others)
         uint64_t used = 0;            // (a mark's: its last use, mark_clock)
     };
@@ -1929,6 +1929,7 @@ struct Model::Impl {
         for (std::thread& t : cache_ths)
             if (t.joinable()) t.join();
         if (ram_th.joinable()) ram_th.join();
+        weight_locks.clear(); // before any arena is freed or Pack's mappings are unmapped
         for (size_t i = 0; i < ram_chunks.size(); ++i) {
             if (ram_pinned || (i < zc_chunk.size() && zc_chunk[i] == 1)) (void) cudaHostUnregister(ram_chunks[i]);
             os::anon_free(ram_chunks[i], ram_chunk_bytes[i]);
@@ -1959,6 +1960,37 @@ struct Model::Impl {
         }
     }
     std::vector<std::pair<void*, size_t>> host_maps;
+    std::vector<EngineMemoryLock> weight_locks;
+    void lock_weight_storage() {
+        if (!WeightLockPolicy::enabled()) return;
+        const auto lock = [&](const void* p, size_t bytes) {
+            if (!p || !bytes) return;
+            try { weight_locks.emplace_back(platform::MemoryCategory::weights, p, bytes); }
+            catch (const std::bad_alloc&) { EngineMemoryLock::allocation_failed(platform::MemoryCategory::weights, bytes); }
+        };
+        for (const auto& m : host_maps) lock(m.first, m.second); // EXL3 CPU / NUMA parts, including spare slots
+        for (size_t i = 0; i < ram_chunks.size(); ++i) lock(ram_chunks[i], ram_chunk_bytes[i]);
+        lock(embed_pinned, (size_t) g.vocab * g.dim * sizeof(uint16_t));
+        lock(h_mk_embed, (size_t) g.vocab * g.d_rank * sizeof(uint16_t));
+        if (!file_experts) return;
+        for (const Layer& l : L) {
+            if (l.lay.fmt == gg::kFmtMXFP4) {
+                // If every CPU expert has a dedicated copy, cache swaps exchange it through the
+                // spare RAM slot: this layer never needs the mapped fallback on the CPU. Otherwise
+                // any expert may eventually return to the file tier (including an initially copied
+                // expert promoted to GPU then evicted). Lock all fallback tensors once, not per swap.
+                if (!mapped_experts_need_lock(copy_mode, l.slot, l.ram)) continue;
+                for (int r = 0; r < 3; ++r) {
+                    if (l.n_exp > 0)
+                        lock(pk.at(l.mx_file[r], l.mx_off[r]),
+                             (size_t) (l.n_exp - 1) * l.mx_stride[r] + mx_part_bytes(l, r));
+                }
+            } else {
+                for (int e = 0; e < l.n_exp; ++e)
+                    lock(pk.at(l.region_file[(size_t) e], l.region_off[(size_t) e]), l.region_bytes[(size_t) e]);
+            }
+        }
+    }
     bool host_pinned = false;   // host_maps page-locked (chunk > 0, when the OS let them all be: #521)
 
     template <class T>
@@ -3810,6 +3842,7 @@ struct Model::Impl {
         if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - t0) / 1000.0, describe().c_str());
         if (chunk > 0) (void) pick_flow_min();   // (the startup line)
         reset();
+        lock_weight_storage();
         start_warm();
         return true;
     }
@@ -7302,7 +7335,8 @@ struct Model::Impl {
     // on past it - the window rings and partial groups from that mark, the compressed KV and index keys of rows 0 .. at / ratio
     // (the rows a position completed never change), the tokens up to it.  The mark stays; the slot holds the checkpoints
     // at or before it.  (A shared start kept from a read that went on past it: #607 without a stop at the start.)
-    uint64_t slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at = -1) {
+    template<class Allocator>
+    uint64_t slot_save(std::vector<uint8_t, Allocator>& out, std::string& err, int64_t at = -1) {
         const Check* at_mark = nullptr;
         if (at >= 0 && at != pos) {
             for (const Check& x : mk)
@@ -7675,7 +7709,7 @@ struct Model::Impl {
     VisionGeo vg;
     int img_tok = -1;
     std::string vision_err;              // why the tower did not load (pictures off), or empty
-    std::vector<uint16_t> img_mark[3];   // image_start, image_newline, image_end: BF16 [dim]
+    WeightVector<uint16_t> img_mark[3];   // image_start, image_newline, image_end: BF16 [dim]
     std::vector<Image> imgs;             // the pictures of the prompt being fed, by start
     // a BF16 (or, rounded to nearest even, F32) tensor of n values into dst
     bool read_bf16(const Tensor& t, size_t n, void* dst) {
@@ -14813,6 +14847,10 @@ struct Model::Impl {
 
     std::vector<std::string> info_lines() const {
         std::vector<std::string> v;
+        v.push_back("INFO DS4_MLOCK_WEIGHTS=" + std::to_string(WeightLockPolicy::enabled()) +
+                    " DS4_MLOCK_CONTEXT=" + std::to_string(ContextLockPolicy::enabled()) +
+                    " weights_locked_virtual_bytes=" + std::to_string(EngineMemoryLock::locked_bytes(platform::MemoryCategory::weights)) +
+                    " context_locked_virtual_bytes=" + std::to_string(EngineMemoryLock::locked_bytes(platform::MemoryCategory::context)));
         int nh = 0;
         for (const Layer& l : L) nh += l.n_exp - l.n_vram;
         char b[512];
@@ -14855,9 +14893,13 @@ struct Model::Impl {
     }
 };
 
-Model::Model() : p_(new Impl) {}
+Model::Model() : p_((mlock_startup(), new Impl)) {}
 Model::~Model() = default;
-bool Model::load(const Options& o, std::string& err) { return p_->load(o, err); }
+bool Model::load(const Options& o, std::string& err) {
+    const bool ok = p_->load(o, err);
+    EngineMemoryLock::report();
+    return ok;
+}
 bool Model::step(int token, bool logits, std::string& err) { return p_->step(token, logits, err); }
 bool Model::feed(const int* tokens, int n, int logits_rows, std::string& err, int after) {
     Impl& p = *p_;
@@ -15014,6 +15056,7 @@ void Model::pin() { p_->pin(); }
 std::vector<int64_t> Model::check_positions() const { return p_->check_positions(); }
 int64_t Model::restorable(int64_t limit) const { return p_->restorable(limit); }
 uint64_t Model::slot_save(std::vector<uint8_t>& out, std::string& err, int64_t at) { return p_->slot_save(out, err, at); }
+uint64_t Model::slot_save(ContextVector<uint8_t>& out, std::string& err, int64_t at) { return p_->slot_save(out, err, at); }
 bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::string& err) {
     return p_->slot_load(data, bytes, n_pos, err);
 }

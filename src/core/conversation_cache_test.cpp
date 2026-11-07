@@ -22,6 +22,28 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
 }
 
 int main() {
+    check(memory_bytes_sum({SIZE_MAX, 1}) == SIZE_MAX, "allocation accounting saturates instead of wrapping");
+    check(context_allocation_bytes(0) == 0, "empty payload has no allocation header");
+    check(context_allocation_bytes(SIZE_MAX) == SIZE_MAX, "allocation overhead saturates on overflow");
+    {
+        // Rewinding retains capacity in vectors, including nested stage parts.
+        ConversationCheckpoint c;
+        c.gdn.reserve(8193); c.gdn.resize(1);
+        c.stage_parts.resize(1);
+        c.stage_parts[0].ple.reserve(4097); c.stage_parts[0].ple.resize(0);
+        check(c.bytes() == context_allocation_bytes(c.gdn.capacity()) +
+              c.stage_parts.capacity() * sizeof(ConversationCheckpoint) +
+              context_allocation_bytes(c.stage_parts[0].ple.capacity()),
+              "checkpoint accounting charges retained capacity and stage-part headers");
+        const size_t held = c.bytes();
+        auto moved = std::move(c);
+        check(moved.bytes() == held, "moving a checkpoint retains its allocation charge");
+        SavedConversation s;
+        s.stage_images.resize(1);
+        s.stage_images[0].live = std::move(moved);
+        check(s.bytes() == s.stage_images.capacity() * sizeof(SavedConversation) + held,
+              "stage image directories and retained context allocations are charged");
+    }
     {
         ConversationBuffer bytes;
         const size_t first = ConversationBuffer::segment_bytes + 17;
@@ -64,12 +86,14 @@ int main() {
         ConversationBuffer bytes;
         bytes.resize(ConversationBuffer::segment_bytes, 3);
         const size_t captured = bytes.bytes();
-        check(captured - bytes.size() < 1024, "a fresh capture reserves nothing");
+        const size_t lock_overhead = bytes.locking_overhead_bytes();
+        check(captured - bytes.size() - lock_overhead < 1024, "a fresh capture reserves no spare payload");
         const size_t turn = 1 << 20;
         const size_t peak = bytes.allocation_peak(bytes.size() + turn);
         bytes.resize(bytes.size() + turn, 4);
         check(bytes.bytes() <= peak, "a turn's growth stays within the predicted allocation peak");
-        check(bytes.bytes() - captured <= turn + ConversationBuffer::segment_bytes / 8 + 1024,
+        check(bytes.bytes() - captured - (bytes.locking_overhead_bytes() - lock_overhead) <=
+                  turn + ConversationBuffer::segment_bytes / 8 + 1024,
               "the reserve for later turns is at most an eighth of the buffer");
         const size_t reserved = bytes.bytes();
         bytes.resize(bytes.size() + turn / 2, 5);
@@ -88,7 +112,8 @@ int main() {
             const size_t peak = bytes.allocation_peak(before + (1 << 20));
             bytes.resize(before + (1 << 20), 2);
             check(bytes.bytes() <= peak, "each turn stays within the predicted allocation peak");
-            check(bytes.bytes() - bytes.size() <= before / 8 + 4096, "the reserve stays within an eighth");
+            check(bytes.bytes() - bytes.size() - bytes.locking_overhead_bytes() <= before / 8 + 4096,
+                  "the payload reserve stays within an eighth");
         }
         size_t segments = 0;
         bytes.visit(0, bytes.size(), [&](const uint8_t*, size_t, size_t) { ++segments; return true; });
@@ -120,7 +145,9 @@ int main() {
     }
     const std::vector<int64_t> a = {1, 2, 3, 4}, b = {9, 8, 7, 6};
     {
-        ConversationCache cache(1024, 2);
+        // This case tests the slot limit, not a byte limit. Budget two actual
+        // images, including page isolation when context locking is requested.
+        ConversationCache cache(2 * image({1, 2, 3}).bytes(), 2);
         check(cache.put(image({1, 2, 3})), "park A");
         check(cache.put(image({9, 8, 7})), "park B");
         auto match = cache.best(a, {}, true);
@@ -138,7 +165,7 @@ int main() {
         // evict_oldest(): the physical-RAM admission gate in generate.cpp frees parked conversations
         // one at a time and re-checks the host's free memory, so this has to be exactly the oldest-first
         // step make_room() takes - same accounting, same counters - and it has to stop at empty.
-        ConversationCache cache(4096, 4);
+        ConversationCache cache(2 * image({1, 2, 3}).bytes(), 4);
         cache.put(image({1, 2, 3}));
         cache.put(image({9, 8, 7}));
         check(cache.size() == 2 && cache.slots() == 4, "slots() reports the configured limit");
@@ -181,7 +208,7 @@ int main() {
         ConversationCheckpoint cp;
         cp.ids = {1, 2};
         s.checkpoints.push_back(cp);
-        ConversationCache cache(4096, 4);
+        ConversationCache cache(s.bytes() + image({1, 2, 3}).bytes(), 4);
         cache.put(std::move(s));
         auto match = cache.best(std::vector<int64_t>{1, 2, 9, 4}, {}, true);
         check(match.tokens == 2 && !match.live, "edited suffix falls back to parked checkpoint");
@@ -196,7 +223,7 @@ int main() {
     {
         auto s = image({1, 2, 3});
         s.live.imgs = {{1, 123}};
-        ConversationCache cache(1024, 3);
+        ConversationCache cache(s.bytes(), 3);
         cache.put(std::move(s));
         check(cache.best(a, {{1,123}}, true).tokens == 3, "same image can resume");
         check(cache.best(a, {{1,124}}, true).tokens == 0, "different image pixels invalidate same pad tokens");
@@ -259,7 +286,7 @@ int main() {
         ConversationCheckpoint cp;
         cp.ids = {1, 2, 3};
         s.checkpoints.push_back(cp);
-        ConversationCache cache(4096, 4);
+        ConversationCache cache(s.bytes() + image({1, 2, 3, 4}).bytes() + 2 * sizeof(ConversationImageKey), 4);
         cache.put(std::move(s));
         check(cache.holds(std::vector<int32_t>{1, 2, 3, 4, 5}, {}, true), "the parked live state itself");
         check(cache.holds(std::vector<int32_t>{1, 2, 3, 4}, {}, true), "a prefix of the parked live state");

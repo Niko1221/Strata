@@ -164,9 +164,10 @@ inline long test_slow_copy_us() {
     return v;
 }
 
-template<class T>
-inline std::vector<T> copy_beating(const std::vector<T>& src) {
-    std::vector<T> out;
+template<class V>
+inline V copy_beating(const V& src) {
+    using T = typename V::value_type;
+    V out;
     out.reserve(src.size());
     const size_t step = std::max<size_t>(1, ((size_t) 1 << 20) / sizeof(T));
     for (size_t at = 0; at < src.size(); at += step) {
@@ -222,15 +223,17 @@ inline void copy_checkpoint_into(ConversationCheckpoint& o, const ConversationCh
     o.used = c.used;
     o.pinned = c.pinned;
     o.stage_parts.clear();
+    if (ContextLockPolicy::enabled()) o.stage_parts.reserve(c.stage_parts.size());
     for (const auto& part : c.stage_parts) o.stage_parts.push_back(copy_checkpoint_beating(part));
 }
 
 /// `storage` (optional): dropped checkpoints whose vectors the copies go into, taken from its back while it lasts
 inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs,
-                                                                    std::vector<ConversationCheckpoint>* storage = nullptr) {
+                                                                    std::vector<ConversationCheckpoint>* storage = nullptr,
+                                                                    size_t moved_count = 0) {
     for (const auto& c : cs) core::conversation_checkpoint_join(c.gdn.data());
     std::vector<ConversationCheckpoint> out;
-    out.reserve(cs.size());
+    out.reserve(ContextLockPolicy::enabled() ? memory_bytes_sum({cs.size(), moved_count}) : cs.size());
     for (const auto& c : cs) {
         if (storage != nullptr && !storage->empty()) {
             out.push_back(std::move(storage->back()));

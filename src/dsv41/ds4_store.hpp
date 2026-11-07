@@ -18,6 +18,7 @@
 
 #include "ds4_os.hpp"
 #include "ds4_pool.hpp"
+#include "ds4_mlock.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -103,20 +104,30 @@ public:
 #else
         const bool pregrow = std::getenv("DS4_STORE_PREGROW") != nullptr && std::atoi(std::getenv("DS4_STORE_PREGROW")) != 0;
 #endif
-        if (pregrow)
+        if (pregrow || WeightLockPolicy::enabled())
             while (grow()) {
             }
+        if (WeightLockPolicy::enabled()) {
+            try { prepare_thread_ = std::thread([this] { prepare_loop(); }); }
+            catch (const std::exception&) {
+                std::fprintf(stderr, "ds4 mlock: store preparation worker unavailable; using ready slots or file fallback\n");
+            }
+        }
         return true;
     }
     ~ExpertStore() {
+        { std::lock_guard<std::mutex> lk(mu_); prepare_stop_ = true; prepare_cv_.notify_all(); }
+        if (prepare_thread_.joinable()) prepare_thread_.join();
         io_.reset();
-        for (size_t i = 0; i < chunks_.size(); ++i)
+        for (size_t i = 0; i < chunks_.size(); ++i) {
+            chunks_[i].lock.reset();
             if (cfg_.unmap_chunk && chunk_dev_[i] != nullptr) cfg_.unmap_chunk(chunks_[i].first);
+        }
         os::range_release(arena_, arena_bytes_);
     }
 
     size_t slot_bytes() const { return slot_bytes_; }
-    size_t slots_allocated() const { return nalloc_; }
+    size_t slots_allocated() const { std::lock_guard<std::mutex> lk(mu_); return nalloc_; }
     size_t slots_max() const { return nmax_; }
     const Stats& stats() const { return st_; }
     double busy_ms() const { return io_ ? io_->busy_ms() : 0.0; }
@@ -124,6 +135,7 @@ public:
 
     /// The slot holding (layer, e) ready to read, or -1.  (Any thread; a slot found stays valid while it is pinned or visible.)
     int find(int layer, int e) const {
+        std::lock_guard<std::mutex> lk(mu_);
         if (layer < 0 || layer >= (int) where_.size()) return -1;   // (a layer the store does not cover: the DSpark drafter's)
         const int s = where_[(size_t) layer][(size_t) e];
         if (s < 0) return -1;
@@ -131,15 +143,21 @@ public:
         try_ready(sp);
         return sp.state.load(std::memory_order_acquire) == kReady && sp.layer == layer && sp.expert == e ? s : -1;
     }
-    const uint8_t* mat(int slot, int r) const { return slots_[(size_t) slot].base + geo_[(size_t) slots_[(size_t) slot].layer].tr[r]; }
-    const uint8_t* blob(int slot) const { return slots_[(size_t) slot].base; }
+    const uint8_t* mat(int slot, int r) const { std::lock_guard<std::mutex> lk(mu_); return slots_[(size_t) slot].base + geo_[(size_t) slots_[(size_t) slot].layer].tr[r]; }
+    const uint8_t* blob(int slot) const { std::lock_guard<std::mutex> lk(mu_); return slots_[(size_t) slot].base; }
     /// The device address of the slot's blob (0: the arena is not mapped for the GPU)
     unsigned long long dev_blob(int slot) const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return dev_blob_unlocked(slot);
+    }
+private:
+    unsigned long long dev_blob_unlocked(int slot) const {
         const size_t c = (size_t) slot / kChunk;
         if (c >= chunk_dev_.size() || chunk_dev_[c] == nullptr) return 0;
         return (unsigned long long) ((uint8_t*) chunk_dev_[c] + (slots_[(size_t) slot].base - (uint8_t*) chunks_[c].first));
     }
 
+public:
     /// Makes the experts es[0..n) of `layer` ready and pinned (reading what is not here), waiting for the reads; the
     /// caller releases them.  False if a read failed or no slot could be had for one (ok[i] says which are fine; the caller
     /// reads the others another way).
@@ -213,7 +231,6 @@ public:
     /// Starts reading (layer, e) if it is neither here nor on its way (a guess: unpinned, may be given up before it is used).
     void prefetch(int layer, int e) {
         if (layer < 0 || layer >= (int) geo_.size() || e < 0 || e >= geo_[(size_t) layer].n_exp) return;
-        if (where_[(size_t) layer][(size_t) e] >= 0) return;
         std::lock_guard<std::mutex> lk(mu_);
         if (where_[(size_t) layer][(size_t) e] >= 0) return;
         if (start_fill(layer, e, false) >= 0) st_.prefetched.fetch_add(1, std::memory_order_relaxed);
@@ -319,11 +336,15 @@ public:
         const int s = where_[(size_t) layer][(size_t) e];
         if (s >= 0) slots_[(size_t) s].tick = ++clock_;
     }
-    bool gpu_mapped() const { return !chunk_dev_.empty() && chunk_dev_[0] != nullptr; }
+    bool gpu_mapped() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return !chunk_dev_.empty() && chunk_dev_[0] != nullptr;
+    }
     /// The arena's address range (the device sees its host pointers as they are when the mapping is the identity)
     unsigned long long arena_lo() const { return (unsigned long long) (uintptr_t) arena_; }
     unsigned long long arena_hi() const { return (unsigned long long) (uintptr_t) (arena_ + arena_bytes_); }
     bool identity_mapped() const {
+        std::lock_guard<std::mutex> lk(mu_);
         for (size_t i = 0; i < chunks_.size(); ++i)
             if (chunk_dev_[i] != nullptr && chunk_dev_[i] != chunks_[i].first) return false;
         return true;
@@ -353,11 +374,11 @@ public:
                 continue;
             }
             if (sp.pin == 0) ++nfree;
-            if (sp.pin == 0 && dev_blob((int) i) != 0 && gpu_ok(sp.layer, sp.expert) && !sp.prefetch && vis_hash(sp.layer, sp.expert) < cfg_.vis_percent) {
+            if (sp.pin == 0 && dev_blob_unlocked((int) i) != 0 && gpu_ok(sp.layer, sp.expert) && !sp.prefetch && vis_hash(sp.layer, sp.expert) < cfg_.vis_percent) {
                 sp.visible = true;
                 ++nvis;
                 if (sp.pin == 0) --nfree;
-                ev.push_back({sp.layer, sp.expert, dev_blob((int) i)});
+                ev.push_back({sp.layer, sp.expert, dev_blob_unlocked((int) i)});
             }
         }
         // give slots back until the reserve is there: the visible ones with the lowest score
@@ -380,6 +401,7 @@ public:
     /// with a slot in use (pinned, loading, or GPU-visible).  Returns the chunks given back.
     size_t shrink_chunks(size_t want) {
         std::lock_guard<std::mutex> lk(mu_);
+        if (preparing_) return 0; // do not decommit a range being prepared outside mu_
         size_t done = 0;
         while (done < want && !chunks_.empty()) {
             const size_t c = chunks_.size() - 1, first = c * kChunk;
@@ -404,6 +426,7 @@ public:
                 sp.state.store(kFree, std::memory_order_release);
                 sp.base = nullptr;
             }
+            chunks_[c].lock.reset(); // unlock before MADV_DONTNEED / PROT_NONE
             if (cfg_.unmap_chunk && chunk_dev_[c] != nullptr) cfg_.unmap_chunk(chunks_[c].first);
             os::range_decommit(chunks_[c].first, chunks_[c].second);
             chunks_.pop_back();
@@ -415,7 +438,7 @@ public:
         }
         return done;
     }
-    size_t shrunk() const { return shrunk_; }
+    size_t shrunk() const { std::lock_guard<std::mutex> lk(mu_); return shrunk_; }
     /// An expert VRAM took over: no longer a visible slot
     void unmark(int layer, int e) {
         if (layer < 0 || layer >= (int) where_.size()) return;
@@ -424,12 +447,56 @@ public:
         if (s >= 0) slots_[(size_t) s].visible = false;
     }
     size_t visible_count() const {
+        std::lock_guard<std::mutex> lk(mu_);
         size_t n = 0;
         for (size_t i = 0; i < nalloc_; ++i) n += slots_[i].visible ? 1 : 0;
         return n;
     }
 
 private:
+    // Only the worker grows enabled stores after init. Demand never waits for preparation:
+    // it reuses an evictable slot, or returns -1 to the existing mapped/file fallback.
+    void prepare_loop() {
+        std::unique_lock<std::mutex> lk(mu_);
+        for (;;) {
+            prepare_cv_.wait(lk, [&] { return prepare_stop_ || prepare_requested_; });
+            if (prepare_stop_) return;
+            prepare_requested_ = false;
+            if (nalloc_ >= nmax_) continue;
+            const size_t first = nalloc_, n = std::min(kChunk, nmax_ - first), bytes = n * slot_bytes_;
+            void* p = arena_ + first * slot_bytes_;
+            // Reserve all publication bookkeeping before touching the range.
+            try { chunks_.reserve(chunks_.size() + 1); chunk_dev_.reserve(chunk_dev_.size() + 1); }
+            catch (const std::bad_alloc&) { continue; }
+            preparing_ = true;
+            lk.unlock();
+            EngineMemoryLock lock;
+            void* dev = nullptr;
+            bool committed = false;
+            try {
+                const uint64_t avail = cfg_.ram_avail ? cfg_.ram_avail() : ~uint64_t{0};
+                if (avail == ~uint64_t{0} || (avail >= bytes && avail - bytes >= cfg_.floor_bytes))
+                    committed = os::range_commit(p, bytes);
+                if (committed) {
+                    lock.acquire(platform::MemoryCategory::weights, p, bytes);
+                    dev = cfg_.map_chunk ? cfg_.map_chunk(p, bytes) : nullptr;
+                }
+            } catch (...) {
+                lock.reset();
+                if (committed) os::range_decommit(p, bytes);
+                committed = false;
+            }
+            lk.lock();
+            if (committed) {
+                chunks_.push_back({p, bytes, std::move(lock)});
+                chunk_dev_.push_back(dev);
+                for (size_t i = 0; i < n; ++i) slots_[first + i].base = (uint8_t*) p + i * slot_bytes_ + kSlack;
+                nalloc_ += n;
+                free_hint_ = std::min(free_hint_, first);
+            }
+            preparing_ = false;
+        }
+    }
     static constexpr int kFree = 0, kLoading = 1, kReady = 2, kFailed = 3;
     // slots a chunk of the arena (the unit the GPU mapping registers; DS4_STORE_CHUNK_SLOTS: a test knob for the registration segment size)
     static size_t chunk_slots() {
@@ -531,8 +598,12 @@ private:
         const uint64_t avail = cfg_.ram_avail ? cfg_.ram_avail() : ~uint64_t{0};
         if (avail != ~uint64_t{0} && avail < bytes + cfg_.floor_bytes) return false;
         void* p = arena_ + nalloc_ * slot_bytes_;
+        if (WeightLockPolicy::enabled()) {
+            chunks_.reserve(chunks_.size() + 1); chunk_dev_.reserve(chunk_dev_.size() + 1);
+        }
         if (!os::range_commit(p, bytes)) return false;
-        chunks_.push_back({p, bytes});
+        chunks_.push_back({p, bytes, {}});
+        chunks_.back().lock.acquire(platform::MemoryCategory::weights, p, bytes, WeightLockPolicy::enabled());
         void* dev = cfg_.map_chunk ? cfg_.map_chunk(p, bytes) : nullptr;
         chunk_dev_.push_back(dev);
         for (size_t i = 0; i < n; ++i) slots_[nalloc_ + i].base = (uint8_t*) p + i * slot_bytes_ + kSlack;
@@ -546,7 +617,11 @@ private:
                 free_hint_ = i + 1;
                 return (int) i;
             }
-        if (grow()) return take_slot(demand);
+        if (WeightLockPolicy::enabled()) {
+            if (prepare_thread_.joinable() && !preparing_ && nalloc_ < nmax_) {
+                prepare_requested_ = true; prepare_cv_.notify_one();
+            }
+        } else if (grow()) return take_slot(demand);
         int best = -1;
         double bv = 0;
         for (size_t i = 0; i < nalloc_; ++i) {
@@ -572,19 +647,27 @@ private:
     }
 
     Cfg cfg_;
+    std::condition_variable prepare_cv_;
+    std::thread prepare_thread_;
+    bool prepare_stop_ = false, prepare_requested_ = false, preparing_ = false;
     std::vector<LayerGeo> geo_;
     std::vector<os::fd_t> dfds_, pfds_;
     size_t slot_bytes_ = 0, nmax_ = 0, nalloc_ = 0, free_hint_ = 0, arena_bytes_ = 0;
     uint8_t* arena_ = nullptr;
     size_t shrunk_ = 0;
     std::unique_ptr<Slot[]> slots_;
-    std::vector<std::pair<void*, size_t>> chunks_;
+    struct Chunk {
+        void* first;
+        size_t second;
+        EngineMemoryLock lock;
+    };
+    std::vector<Chunk> chunks_;
     std::vector<void*> chunk_dev_;
     std::vector<std::vector<int>> where_;
     std::vector<std::vector<float>> heat_;
     std::vector<uint64_t> hits_in_layer_;
     uint64_t clock_ = 0;
-    std::mutex mu_;
+    mutable std::mutex mu_;
     std::unique_ptr<IoQueue> io_;
     Stats st_;
 };

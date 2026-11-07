@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "strata/core/memory_policy.hpp"
 
 namespace strata::core {
 
@@ -39,6 +40,7 @@ public:
 private:
     void* weights_ = nullptr;
     void* host_ = nullptr;   // the pinned host buffer weights_ aliases when the head did not fit in VRAM
+    EngineMemoryLock weight_lock_;
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
     int n_in_ = 0, n_out_ = 0;
@@ -68,6 +70,7 @@ public:
 
 private:
     void* host_ = nullptr;
+    EngineMemoryLock weight_lock_;
     const void* dev_ = nullptr;
     uint64_t bytes_ = 0;
     size_t row_ = 0;

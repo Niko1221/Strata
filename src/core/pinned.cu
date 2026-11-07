@@ -755,14 +755,15 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         const char* env = std::getenv("STRATA_ARENA_LOCK");
         if (backing == PageBacking::LargePages) {
             note = "large pages are resident without a lock; " + note;
-        } else if (env == nullptr || std::string(env) != "0") {
+        } else if (legacy_weight_lock_allowed() && (env == nullptr || std::string(env) != "0")) {
             const strata::platform::LockResult lr = strata::platform::lock_resident((uint8_t*) base, bytes);
             locked_bytes = lr.locked_bytes;
             note = lr.note + "; " + note;
         } else {
-            note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+            note = "legacy arena lock replaced/disabled (STRATA_MLOCK_WEIGHTS=1 or STRATA_ARENA_LOCK=0); " + note;
         }
         note = "NOT registered with the GPU driver (integrated GPU, UMA mode; STRATA_ARENA_PIN_GIB=0 registers it); " + note;
+        lock_weights();
         return;
     }
     if (base) {
@@ -816,7 +817,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                 const char* env = std::getenv("STRATA_ARENA_LOCK");
                 if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
                     note = "large pages are resident without a lock; " + note;
-                } else if (env == nullptr || std::string(env) != "0") {
+                } else if (legacy_weight_lock_allowed() && (env == nullptr || std::string(env) != "0")) {
                     const strata::platform::LockResult lr =
                         strata::platform::lock_resident((uint8_t*) base + registered_bytes, bytes - registered_bytes);
                     locked_bytes = lr.locked_bytes;
@@ -844,15 +845,16 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             const char* env = std::getenv("STRATA_ARENA_LOCK");
             if (backing == PageBacking::LargePages) {       // #779: large pages cannot be paged out: nothing to lock
                 note = "large pages are resident without a lock; " + note;
-            } else if (env == nullptr || std::string(env) != "0") {
+            } else if (legacy_weight_lock_allowed() && (env == nullptr || std::string(env) != "0")) {
                 const strata::platform::LockResult lr = strata::platform::lock_resident(base, bytes);
                 locked_bytes = lr.locked_bytes;
                 note = lr.note + "; " + note;
             } else {
-                note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+                note = "legacy arena lock replaced/disabled (STRATA_MLOCK_WEIGHTS=1 or STRATA_ARENA_LOCK=0); " + note;
             }
         }
     }
+    lock_weights();
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
@@ -933,8 +935,8 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
     if (backing == PageBacking::LargePages) {   // #779: large pages cannot be paged out: nothing to lock
         note = "large pages are resident without a lock; " + note;
         locked_ranges.clear();
-    } else if (env != nullptr && std::string(env) == "0") {
-        note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+    } else if (!legacy_weight_lock_allowed() || (env != nullptr && std::string(env) == "0")) {
+        note = "legacy arena lock replaced/disabled (STRATA_MLOCK_WEIGHTS=1 or STRATA_ARENA_LOCK=0); " + note;
         locked_ranges.clear();
     } else {
         for (const auto& r : locked_ranges) holes.emplace_back((uint8_t*) base + r.first, r.second);
@@ -944,6 +946,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         // a partial lock is unlocked region by region in the destructor; what it did not reach was never locked
         // (VirtualUnlock/munlock of an unlocked page is harmless), so the list is kept whole
     }
+    lock_weights();
 }
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, Deferred)
@@ -977,17 +980,19 @@ void PinnedArena::register_slices(std::atomic<int>& ready) {
         const char* env = std::getenv("STRATA_ARENA_LOCK");
         if (backing == PageBacking::LargePages) {           // #779: large pages cannot be paged out: nothing to lock
             note = "large pages are resident without a lock; " + note;
-        } else if (env == nullptr || std::string(env) != "0") {
+        } else if (legacy_weight_lock_allowed() && (env == nullptr || std::string(env) != "0")) {
             const strata::platform::LockResult lr =
                 strata::platform::lock_resident((uint8_t*) base + registered_bytes, capacity - registered_bytes);
             locked_bytes = lr.locked_bytes;
             note = lr.note + "; " + note;
         }
     }
+    lock_weights();
     ready.store(INT_MAX, std::memory_order_release);   // every slice done (or given up on)
 }
 
 PinnedArena::~PinnedArena() {
+    weight_lock.reset(); // before any legacy unlock, unregister, or unmap
     if (base && by_need) {
         for (const auto& r : locked_ranges) strata::platform::unlock_resident((uint8_t*) base + r.first, r.second);
         for (const auto& r : pin_ranges) pin_unregister((uint8_t*) base + r.first);

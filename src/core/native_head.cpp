@@ -19,6 +19,7 @@ NativeHead::~NativeHead() {
 }
 
 void NativeHead::unload() {
+    weight_lock_.reset();
     if (weights_) strata::kernels::native_q6_k_unpack(weights_);
     if (weights_) strata::kernels::native_q8_0_sm60_release(weights_);
     if (scratch_) cudaFree(scratch_);
@@ -100,6 +101,7 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         { int d = -1; if (cudaGetDevice(&d) == cudaSuccess) device_ = d; }
         scratch_ = scratch;
         bytes_ = bytes;
+        weight_lock_.acquire(platform::MemoryCategory::weights, host_, (size_t) bytes_, WeightLockPolicy::enabled() && host_);
         n_in_ = (int) n_in;
         n_out_ = (int) n_out;
         type_ = (int) tensor->type;
@@ -133,6 +135,7 @@ bool NativeHead::to_host(std::string& err) {
     cudaFree(weights_);
     weights_ = dp;
     host_ = hp;
+    weight_lock_.acquire(platform::MemoryCategory::weights, host_, (size_t) bytes_, WeightLockPolicy::enabled());
     return true;
 }
 
@@ -169,6 +172,7 @@ void set_native_embed(const NativeEmbed* e) { g_embed = e; }
 const NativeEmbed* native_embed() { return g_embed; }
 
 NativeEmbed::~NativeEmbed() {
+    weight_lock_.reset();
     if (host_) cudaFreeHost(host_);
     else if (dev_) cudaFree(const_cast<void*>(dev_));   // the VRAM fallback below
 }
@@ -279,6 +283,7 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
         type_ = (int) t->type;
         n_embd_ = n_embd;
         n_vocab_ = n_vocab;
+        weight_lock_.acquire(platform::MemoryCategory::weights, host_, (size_t) bytes_, WeightLockPolicy::enabled() && host_);
         return true;
     } catch (const std::exception& e) {
         err = std::string("native embedding: ") + e.what();

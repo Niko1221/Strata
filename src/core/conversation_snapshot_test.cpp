@@ -3,6 +3,7 @@
 #include "strata/kernels/kv_q4.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -172,7 +173,7 @@ void full_session(int fmt, int mode, int experts) {
         // disk save path: metadata + streamed K/V give the same file as the captured image
         SavedConversation meta;
         std::vector<SessionKvSource> sources;
-        check(conversation_snapshot_sources(meta,sources,view,ss,g,draft.state,err),"disk-save sources");
+        check(conversation_snapshot_sources(meta,sources,view,ss,g,&draft.state,err),"disk-save sources");
         check(meta.kv.empty() && sources.size()==b.kv.size(),"one source per K/V layer, none captured");
         const SessionFileIdentity id{1,2};
         namespace fs=std::filesystem;
@@ -191,11 +192,29 @@ void full_session(int fmt, int mode, int experts) {
               x.checkpoints.size()==y.checkpoints.size() && equal(x.kv[0],y.kv[0]) && equal(x.kv.back(),y.kv.back()),
               "streamed file equals captured file");
         check(slurp(p1)==slurp(p2),"streamed file is byte-identical to the captured file");
+        SessionReadLimits no_draft_limits;
+        check(conversation_session_read_limits(no_draft_limits,ss,g,nullptr,96,2,err),"no-draft read limits");
+        check(no_draft_limits.max_kv_layers==(uint64_t)ss.qsa_alloc &&
+              no_draft_limits.max_kv_bytes.size()==(size_t)ss.qsa_alloc,"no-draft limits omit a K/V layer");
+        check(conversation_snapshot_sources(meta,sources,view,ss,g,nullptr,err),"no-draft disk-save sources");
+        check(meta.kv.empty() && sources.size()==(size_t)ss.qsa_alloc,"no-draft save has only main-layer sources");
+        const std::string p3=(dir/"no-draft.bin").string();
+        size_t n3=0;
+        check(session_file_write(p3,meta,sources,id,n3,err),"no-draft session write");
+        SavedConversation no_draft;
+        check(session_file_read(p3,id,no_draft,n3,err,no_draft_limits),"no-draft session read");
+        check(no_draft.kv.size()==(size_t)ss.qsa_alloc &&
+              conversation_snapshot_validate(no_draft,ss,g,nullptr,err),"no-draft image validates without a draft state");
+        check(conversation_snapshot_restore(no_draft,ss,g,nullptr,err)==ConversationRestore::restored,
+              "no-draft image restores without a draft state");
+        ConversationKv no_draft_main;
+        check(conversation_kv_save(no_draft_main,main.state,g,(int64_t)ids.size(),true,err) &&
+              equal(no_draft_main,b.kv[0]),"no-draft restore preserves main K/V");
         std::error_code ec;
         fs::remove_all(dir,ec);
         auto empty_ids=std::vector<int32_t>{};
         const ConversationView none{empty_ids,images,checkpoints,true};
-        check(!conversation_snapshot_sources(meta,sources,none,ss,g,draft.state,err),"empty session refused");
+        check(!conversation_snapshot_sources(meta,sources,none,ss,g,&draft.state,err),"empty session refused");
     }
     check(a.live.dead!=b.live.dead,"different opening-state spare keys in regression fixture");
     auto bad=a; bad.kv.back().k.pop_back();
@@ -329,7 +348,8 @@ void full_session(int fmt, int mode, int experts) {
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
     std::vector<uint8_t> spare(sizes.dead);
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
-    check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
+    check(std::equal(spare.begin(),spare.end(),a.checkpoints[0].dead.begin(),a.checkpoints[0].dead.end()),
+          "checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
 }
 }

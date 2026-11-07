@@ -19,6 +19,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "strata/core/memory_policy.hpp"
 
 namespace strata::core {
 
@@ -102,6 +103,13 @@ struct PinnedArena {
     /// shared-file arena only: the load state word in the file's header (0: nobody has loaded it, a pid: that engine is
     /// loading it, ~0: it is complete).  Shared by every engine that maps the file; null for a private arena.
     std::atomic<uint64_t>* shared_state = nullptr;
+    // Explicit Linux residency is independent of GPU registration and owns the whole weight allocation.
+    EngineMemoryLock weight_lock;
+    void lock_weights() {
+        if (!base || !capacity || !WeightLockPolicy::enabled()) return;
+        weight_lock.acquire(platform::MemoryCategory::weights, base, (size_t) capacity);
+        note += weight_lock.locked() ? "; STRATA_MLOCK_WEIGHTS: mlock acquired" : "; STRATA_MLOCK_WEIGHTS: mlock not acquired";
+    }
     ~PinnedArena();
     PinnedArena(const PinnedArena&) = delete;
     PinnedArena& operator=(const PinnedArena&) = delete;

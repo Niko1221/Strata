@@ -286,7 +286,7 @@ int main() {
         const char a[] = "abcdefghijklmnopqrstuvwxyz0123456789", b[] = "bacdefghijklmnopqrstuvwxyz0123456789";
         check(session_hash64(a, sizeof a, 0) != session_hash64(b, sizeof b, 0), "hash sees swapped bytes");
         check(session_hash64(a, sizeof a, 0) != session_hash64(a, sizeof a, 1), "hash sees the seed");
-        SessionHasher h; h.update(a, 5); h.update(a + 5, sizeof a - 5);
+        SessionHasher h; h.update(a, 5); h.update(nullptr, 0); h.update(a + 5, sizeof a - 5);
         check(h.digest() == session_hash64(a, sizeof a, 0), "streaming hash equals one-shot hash");
     }
     // model fingerprint: changes with content at the head of a file and with the file list
@@ -417,6 +417,30 @@ int main() {
         size_t n = 0;
         check(session_file_read(good.string(), id, back, n, error, l) && admitted && same(back, original),
               "admitted file reads");
+    }
+    // Many tiny arrays cost far more RAM than their serialized bytes with page isolation.
+    {
+        SavedConversation small;
+        small.live.ids = {1};
+        small.checkpoints.resize(160);
+        for (auto& c : small.checkpoints) {
+            c.ids = {1};
+            c.gdn = {1}; c.ple = {2}; c.tails = {3}; c.dead = {4}; c.block_pos = {5};
+        }
+        const fs::path p = dir / "small-arrays.bin";
+        check(session_file_write(p.string(), small, id, written, error), "write many tiny context arrays");
+        SessionReadLimits limits;
+        limits.max_checkpoints = small.checkpoints.size(); limits.max_kv_layers = 0;
+        uint64_t admitted = 0;
+        limits.admit = [&](uint64_t need, std::string&) { admitted = need; return true; };
+        SavedConversation back;
+        size_t n = 0;
+        check(session_file_read(p.string(), id, back, n, error, limits), "read many tiny context arrays");
+        check(admitted == session_read_peak_bytes(n, limits) && admitted >= back.bytes() + (16u << 20),
+              "disk admission covers parsed allocation overhead and the read buffer");
+        check(back.checkpoints.size() == 160 && back.checkpoints.back().block_pos[0] == 5,
+              "tiny payloads survive restore");
+        check(session_read_peak_bytes(UINT64_MAX, limits) == UINT64_MAX, "disk admission saturates on overflow");
     }
     // free-space reserve: an impossible reserve refuses the write and leaves the existing file untouched
     {

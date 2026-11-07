@@ -2,6 +2,7 @@
 // src/core/layer.cpp - the GDN layer, composed.  See the header for the operation order and its traps.
 #include "strata/core/layer.hpp"
 #include "strata/core/pin_budget.hpp"
+#include "strata/core/memory_policy.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/bf16_bits.hpp"
@@ -573,6 +574,9 @@ namespace {
 // KV streaming (docs/kv-streaming-design.md): 0 keeps every cell in VRAM.
 int64_t g_kv_resident = 0;
 uint64_t g_kv_host_bytes = 0;
+// These authoritative GPU-mapped host pools already have process lifetime in the existing allocator.
+// Match that lifetime, without touching GPU pointers or per-token DMA staging.
+std::vector<strata::core::EngineMemoryLock> g_kv_context_locks;
 
 // The KV host copy: pinned and device-mapped. cudaHostAlloc is the default, but under WSL2 the driver caps what
 // cudaHostAlloc(Mapped) may pin at about 1 GiB in all, while cudaHostRegister of ordinary memory is not capped there:
@@ -931,6 +935,8 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
             return 0;
         }
         g_kv_host_bytes += bytes;
+        strata::core::track_memory_lock(g_kv_context_locks, strata::platform::MemoryCategory::context,
+                                       h, (size_t) bytes, strata::core::ContextLockPolicy::enabled());
         Cursor hc{d};
         if (st.kv_hybrid) {
             st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);

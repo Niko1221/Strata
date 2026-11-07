@@ -1,6 +1,7 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
 #include "conversation_copy.hpp"
+#include "strata/core/checkpoint_allocation.hpp"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -101,12 +102,8 @@ bool view_validate(const ConversationView& view, const SessionState& ss,
 }
 
 bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
-    size_t ids = 0, images = 0;
-    if (!product(ids, {c.ids.size(), sizeof(int32_t)}) ||
-        !product(images, {c.imgs.size(), sizeof(ConversationImageKey)})) return false;
-    for (size_t n : {ids, images, c.gdn.size(), c.ple.size(), c.tails.size(), c.dead.size(), c.block_pos.size()})
-        if (!add(total, n)) return false;
-    return true;
+    const size_t n = checkpoint_copy_bound({}, c, false).resident;
+    return n != SIZE_MAX && add(total, n);
 }
 } // namespace
 
@@ -298,6 +295,12 @@ bool checkpoint_save(ConversationCheckpoint& c, const SessionState& ss, const Mo
     static const bool atr = std::getenv("STRATA_PARK_TRACE") != nullptr;
     const bool ready = c.gdn.size() == z.gdn;   // (a pooled checkpoint's pages are in; a fresh vector faults them all)
     const auto r0 = std::chrono::steady_clock::now();
+    // Only selected context uses the exact-allocation plan. Disabled context keeps
+    // the baseline resize growth, including when weight locking alone is enabled.
+    if (ContextLockPolicy::enabled()) {
+        c.gdn.reserve(z.gdn); c.ple.reserve(ss.ple_hist ? z.ple : 0);
+        c.tails.reserve(layers * z.tail); c.dead.reserve(layers * z.dead); c.block_pos.reserve(layers * z.block_pos);
+    }
     c.gdn.resize(z.gdn); c.ple.resize(ss.ple_hist ? z.ple : 0);
     c.tails.resize(layers * z.tail); c.dead.resize(layers * z.dead); c.block_pos.resize(layers * z.block_pos);
     if (atr) std::fprintf(stderr, "strata parktrace: save vectors %s, resize %.2f ms\n", ready ? "ready" : "fresh",
@@ -473,7 +476,9 @@ bool conversation_snapshot_bytes(const ConversationView& view, const SessionStat
         !product(layers, {qsa + (draft ? 1 : 0), sizeof(ConversationKv)}) ||
         !product(tails, {qsa, z.tail}) || !product(dead, {qsa, z.dead}) ||
         !product(positions, {qsa, z.block_pos})) return fail(error, "snapshot metadata byte count overflow");
-    for (size_t n : {ids, images, checkpoints, layers, tails, dead, positions, z.gdn, ss.ple_hist ? z.ple : 0})
+    for (size_t n : {ids, images, checkpoints, layers, context_allocation_bytes(tails), context_allocation_bytes(dead),
+                     context_allocation_bytes(positions), context_allocation_bytes(z.gdn),
+                     context_allocation_bytes(ss.ple_hist ? z.ple : 0)})
         if (!add(bytes, n)) return fail(error, "snapshot byte count overflow");
     for (const auto& c : view.checkpoints)
         if (!metadata_bytes(c, bytes)) return fail(error, "checkpoint byte count overflow");
@@ -512,6 +517,35 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 }
 
 // (conversation_snapshot.cpp) STRATA_PARK_TRACE: conversation_kv_save's time since the park's begin, by part (ms)
+bool conversation_snapshot_allocation_bound(const ConversationKvReuse& reuse, const ConversationView& view,
+                                            const SessionState& ss, const ModelGeometry& g, const QsaState* draft,
+                                            const std::vector<ConversationCheckpoint>& storage,
+                                            const std::vector<ConversationCheckpoint>& moved,
+                                            ConversationCaptureBound& bound, std::string& error) {
+    size_t base = 0;
+    if (!conversation_snapshot_capture_bytes(reuse, view, ss, g, draft, base, error)) return false;
+    ConversationStateSizes z;
+    if (!conversation_session_sizes(g, ss, z, error)) return false;
+    const size_t layers = owned_qsa(ss);
+    const CheckpointShape live{view.ids.size(), view.images.size(), z.gdn, ss.ple_hist ? z.ple : 0,
+        allocation_product(layers, z.tail), allocation_product(layers, z.dead), allocation_product(layers, z.block_pos)};
+    const auto fresh = checkpoint_capture_bound(live, view.checkpoints, {}, {});
+    const auto planned = checkpoint_capture_bound(live, view.checkpoints, storage, moved);
+    if (fresh.resident == SIZE_MAX || planned.resident == SIZE_MAX || base < fresh.resident)
+        return fail(error, "capture metadata bound overflow");
+    const size_t kv_peak = base - fresh.resident;
+    size_t held = allocation_product(reuse.kv.capacity(), sizeof(ConversationKv));
+    for (const auto& k : reuse.kv) held = memory_bytes_sum({held, k.bytes()});
+    bound.resident = memory_bytes_sum({kv_peak, planned.resident});
+    // At most one new tail per part plus full segments, in addition to all retained
+    // segments. Charge host DMA pieces conservatively even when reused; never VRAM.
+    const size_t items = park_capture_item_bound(reuse.kv, kv_peak, layers + (draft ? 1 : 0));
+    bound.additional = memory_bytes_sum({kv_peak > held ? kv_peak - held : 0, planned.additional,
+                                         conversation_park_host_allocation_bytes(items), ckpt_async_on() ? z.gdn : 0});
+    if (bound.resident == SIZE_MAX || bound.additional == SIZE_MAX) return fail(error, "capture allocation bound overflow");
+    return true;
+}
+
 void conversation_kv_save_trace(double& attrs_ms, double& resize_ms, double& copy_ms);
 
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
@@ -539,13 +573,29 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
         storage->pop_back();
         captured.live.stage_parts.clear();
     }
-    captured.live.ids = view.ids; captured.live.imgs = view.images;
+    if (ContextLockPolicy::enabled()) {
+        conversation_detail::assign_beating(captured.live.ids, view.ids);
+        conversation_detail::assign_beating(captured.live.imgs, view.images);
+    } else {
+        captured.live.ids = view.ids; captured.live.imgs = view.images;
+    }
     const auto p1 = now();
-    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage);
+    captured.cvec = view.cvec; captured.checkpoints = conversation_detail::copy_checkpoints_beating(view.checkpoints, storage, moved ? moved->size() : 0);
+    // Return moved running checkpoints on every failure, including exceptions
+    // after ownership transfer. No new backing is needed for this rollback.
+    struct RestoreMoves {
+        SavedConversation& captured; std::vector<ConversationCheckpoint>* moved;
+        size_t first, count = 0; bool on;
+        ~RestoreMoves() {
+            if (on) for (size_t i = 0; i < count; ++i)
+                (*moved)[i] = std::move(captured.checkpoints[first + i]);
+        }
+    } restore_moves{captured, moved, captured.checkpoints.size(), 0, ContextLockPolicy::enabled()};
     if (moved != nullptr)
         for (auto& c : *moved) {
             conversation_checkpoint_join(c.gdn.data());
             captured.checkpoints.push_back(std::move(c));
+            ++restore_moves.count;
         }
     const auto p2 = now();
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
@@ -570,9 +620,11 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     const int64_t upto = (int64_t) view.ids.size();
     // STRATA_PARK_ASYNC: the K/V bytes these saves copy (the stage they need; an over-estimate by the kept prefix)
     size_t kv_need = 0;
-    for (size_t j = 0; j < layers; ++j) kv_need += conversation_kv_bytes(owned(ss, j), g, upto, true);
-    if (draft) kv_need += conversation_kv_bytes(*draft, g, upto, false);
-    const bool staged = conversation_park_async_begin(kv_need);
+    for (size_t j = 0; j < layers; ++j) kv_need = memory_bytes_sum({kv_need, conversation_kv_bytes(owned(ss, j), g, upto, true)});
+    if (draft) kv_need = memory_bytes_sum({kv_need, conversation_kv_bytes(*draft, g, upto, false)});
+    if (kv_need == SIZE_MAX) return fail(error, "park staging size overflow");
+    const bool staged = conversation_park_async_begin(kv_need,
+        ContextLockPolicy::enabled() ? park_capture_item_bound(captured.kv, kv_need, layers + (draft ? 1 : 0)) : 0);
     const auto p4 = now();
     struct Abandon { bool on; ~Abandon() { if (on) conversation_park_async_abandon(); } } abandon{staged};
     double kv_max = 0, kv_sum = 0;   // (STRATA_PARK_TRACE: the per-layer save time)
@@ -615,13 +667,14 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
         if (slot != 0)
             for (auto& k : captured.kv) k.pending = token();
     }
+    restore_moves.on = false;
     image = std::move(captured);
     return true;
 }
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -633,17 +686,17 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     conversation_checkpoint_join(captured.live.gdn.data());
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
     return true;
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
-                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
@@ -657,18 +710,20 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
-    l.max_kv_layers = layers + 1;
+    l.max_kv_layers = layers + (draft ? 1 : 0);
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
     l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
-    l.max_kv_bytes.assign(layers + 1, {});
+    l.max_kv_bytes.assign(l.max_kv_layers, {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
         const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
         if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[j], error)) return false;
     }
-    const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
-    if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    if (draft) {
+        const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft->max_cells, 0));
+        if (!conversation_kv_part_sizes(*draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    }
     limits = std::move(l);
     return true;
 }

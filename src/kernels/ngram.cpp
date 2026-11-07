@@ -7,6 +7,7 @@
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/memory.hpp"
+#include "strata/core/memory_policy.hpp"
 
 #include <cerrno>
 #include <cmath>
@@ -234,6 +235,7 @@ struct PleTable::Impl {
     strata::ngram::PleReader::Ticket ticket;
     bool pending = false;
     bool locked = false;
+    strata::core::EngineMemoryLock weight_lock;
     // the table is shared by the prompt path and the decode windows; they can use it at once (one on a worker thread)
     std::recursive_mutex mu;
     uint32_t rows[PLE_N_HEADS] = {};
@@ -407,7 +409,12 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         impl_->reader.set_keepalive(io.keepalive_ms, io.keepalive_window_s);
         impl_->n_rows = n_rows;
     }
-    if (io.mode == PleIo::Mmap && io.lock && impl_->data != nullptr) {
+    bool explicit_weight_lock = false;
+#if defined(__linux__)
+    explicit_weight_lock = strata::core::WeightLockPolicy::enabled();
+#endif
+    if (io.mode == PleIo::Mmap && impl_->data != nullptr &&
+        (explicit_weight_lock || (io.lock && strata::core::legacy_weight_lock_allowed()))) {
 #if defined(_WIN32)
         // Windows has no mlock: the platform helper raises the process's minimum working set and
         // VirtualLocks the mapped table instead (ordinary accounts hold the privilege). A failure
@@ -456,33 +463,30 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             for (unsigned t = 0; t < threads; ++t) pool.emplace_back(touch);
             for (auto& t : pool) t.join();
         }
-        // #4671: a systemd service without LimitMEMLOCK may lock 8 MiB (soft and hard), a login shell far more.  Raise the soft limit
-        // to what the hard limit allows first (no privilege needed); if the table still does not fit, say what to set.
-        struct rlimit rl {};
-        if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && (uint64_t) rl.rlim_cur < a1 - a0 &&
-            rl.rlim_max > rl.rlim_cur) {
-            const rlim_t room = (rlim_t) (a1 - a0) + ((rlim_t) 1 << 30);
-            const rlim_t want = rl.rlim_max == RLIM_INFINITY ? room : std::min<rlim_t>(rl.rlim_max, room);
-            struct rlimit up = rl;
-            up.rlim_cur = want;
-            if (setrlimit(RLIMIT_MEMLOCK, &up) == 0)
-                std::fprintf(stderr, "strata: the memory this program may lock was %llu MiB; raised to %llu MiB for the PLE table\n",
-                             (unsigned long long) (rl.rlim_cur >> 20), (unsigned long long) (want >> 20));
+        // Approved compatibility exception: preserve #4671 ONLY for legacy --ple-io ram
+        // with the new weight policy disabled/unset. Enabled tracked locking never raises limits.
+        if (!strata::core::WeightLockPolicy::enabled()) {
+            struct rlimit rl {};
+            if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
+                (uint64_t) rl.rlim_cur < a1 - a0 && rl.rlim_max > rl.rlim_cur) {
+                const rlim_t span = (rlim_t) (a1 - a0), headroom = (rlim_t) 1 << 30;
+                const rlim_t room = span > RLIM_INFINITY - headroom ? RLIM_INFINITY : span + headroom;
+                const rlim_t want = rl.rlim_max == RLIM_INFINITY ? room : std::min<rlim_t>(rl.rlim_max, room);
+                struct rlimit up = rl;
+                up.rlim_cur = want;
+                if (setrlimit(RLIMIT_MEMLOCK, &up) == 0)
+                    std::fprintf(stderr, "strata: the memory this program may lock was %llu MiB; raised to %llu MiB for the PLE table\n",
+                                 (unsigned long long) (rl.rlim_cur >> 20), (unsigned long long) (want >> 20));
+            }
         }
-        if (mlock((const void*) a0, a1 - a0) == 0) {
-            impl_->locked = true;
-        } else {
-            const int why = errno;
-            struct rlimit now {};
-            if (getrlimit(RLIMIT_MEMLOCK, &now) == 0 && now.rlim_cur != RLIM_INFINITY && (uint64_t) now.rlim_cur < a1 - a0)
-                std::fprintf(stderr, "strata: the PLE table (%.1f GiB) was not locked in RAM: this program may lock only %.1f GiB "
-                                     "(RLIMIT_MEMLOCK). It still works, with the table's pages faulted in but reclaimable; the lock was measured "
-                                     "up to 6%% faster in decode (#4671). In a systemd service set LimitMEMLOCK=infinity, elsewhere run `ulimit -l unlimited`\n",
-                             (double) (a1 - a0) / (1ull << 30), (double) now.rlim_cur / (1ull << 30));
-            else
-                std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): its pages stay faulted in "
-                                     "but may be reclaimed\n", std::strerror(why));
-        }
+        // Shared ownership protects PLE/expert boundary pages from a second owner's unlock.
+#if defined(__linux__)
+        impl_->weight_lock.acquire(strata::platform::MemoryCategory::weights, impl_->data, (size_t) need);
+        impl_->locked = impl_->weight_lock.locked();
+#else
+        // Preserve the existing macOS --ple-io ram path; the new switches are Linux-only.
+        impl_->locked = ::mlock(reinterpret_cast<const void*>(a0), a1 - a0) == 0;
+#endif
 #endif
     }
     impl_->mode = io.mode;
@@ -526,6 +530,7 @@ void PleTable::prefetch_rows(const uint32_t* rows16) {
 void PleTable::close() {
     wait_prefetches();
     impl_->reader.close();
+    impl_->weight_lock.reset();
     impl_->pending = false;
     impl_->locked = false;   // the unmap below releases the lock
     impl_->mode = PleIo::Mmap;
@@ -544,7 +549,10 @@ bool PleTable::locked() const { return impl_->locked; }
 bool PleTable::unlock() {
     std::lock_guard<std::recursive_mutex> lk(impl_->mu);
     if (!impl_->locked || impl_->data == nullptr) return false;
-    strata::platform::unlock_resident((void*) impl_->data, impl_->n_rows * (uint64_t) impl_->rb);
+    // Explicit model residency wins over the automatic conversation-cache give-back policy.
+    if (!strata::core::legacy_weight_lock_allowed() && strata::core::WeightLockPolicy::enabled()) return false;
+    if (impl_->weight_lock.locked()) impl_->weight_lock.reset();
+    else strata::platform::unlock_resident((void*) impl_->data, impl_->n_rows * (uint64_t) impl_->rb);
     impl_->locked = false;
     return true;
 }

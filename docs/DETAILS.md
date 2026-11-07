@@ -7,7 +7,10 @@ an installation or connect their own software. It describes the current release.
 
 New here? Start with the [README](../README.md). Installing is in [INSTALL.md](INSTALL.md), the models are in
 [MODELS.md](MODELS.md), common problems are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md). DeepSeek V4.1-Flash has its own
-engine and is covered in [MODELS.md](MODELS.md); nothing below applies to it unless stated.
+engine and is covered in [MODELS.md](MODELS.md); nothing below applies to it unless stated. Its independent
+Linux `DS4_MLOCK_WEIGHTS` and `DS4_MLOCK_CONTEXT` controls and the main engine's separate
+`STRATA_MLOCK_WEIGHTS` / `STRATA_MLOCK_CONTEXT` controls are in
+[Linux allocation-scoped memory locking](DS4_MEMORY_LOCKING.md).
 
 > **On this page:** [Quick start](#quick-start) · [Speed](#speed-measured) · [Which model?](#which-model) ·
 > [Windows](#windows) · [Linux](#linux) · [Memory modes](#memory-modes) · [Sharing the GPU](#sharing-the-gpu-with-other-programs-optional) ·

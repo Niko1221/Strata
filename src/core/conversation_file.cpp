@@ -643,7 +643,7 @@ struct Out {
     }
     void u64(uint64_t v) { raw(&v, 8); }
     void i64(int64_t v) { raw(&v, 8); }
-    template<class T> void vec(const std::vector<T>& v) { u64(v.size()); raw(v.data(), v.size() * sizeof(T)); }
+    template<class T, class A> void vec(const std::vector<T, A>& v) { u64(v.size()); raw(v.data(), v.size() * sizeof(T)); }
     void buffer(const ConversationBuffer& b) {
         u64(b.size());
         b.visit(0, b.size(), [&](const uint8_t* p, size_t c, size_t) { raw(p, c); return ok; });
@@ -735,7 +735,7 @@ struct In {
         if (n > (uint64_t) std::numeric_limits<size_t>::max() / (elem ? elem : 1)) return fail("element count too large");
         return true;
     }
-    template<class T> bool vec(std::vector<T>& v, uint64_t limit = UINT64_MAX) {
+    template<class T, class A> bool vec(std::vector<T, A>& v, uint64_t limit = UINT64_MAX) {
         uint64_t n = 0;
         if (!count(n, sizeof(T), limit)) return false;
         v.resize((size_t) n);
@@ -825,6 +825,7 @@ void SessionHasher::block(const uint8_t* p) {
 }
 
 void SessionHasher::update(const void* data, size_t n) {
+    if (!n) return; // empty vectors may supply nullptr, even with a partial hash block pending
     const uint8_t* p = static_cast<const uint8_t*>(data);
     total_ += n;
     if (npending_) {
@@ -1017,10 +1018,27 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     return std::min(n, l.max_file_bytes);
 }
 
-uint64_t session_read_peak_bytes(uint64_t file_bytes) {
+uint64_t session_read_peak_bytes(uint64_t file_bytes, const SessionReadLimits& limits) {
     const uint64_t segments = file_bytes / kBlock + 1;
     // the parsed image (about the payload), the read buffer, a page per buffer segment, the small vectors
-    return sat_add(sat_add(sat_add(file_bytes, kBlock), sat_mul(segments, 4096)), uint64_t(1) << 20);
+    uint64_t peak = sat_add(sat_add(sat_add(file_bytes, kBlock), sat_mul(segments, 4096)), uint64_t(1) << 20);
+#if defined(__linux__)
+    if (ContextLockPolicy::enabled()) {
+        // Bound array counts before parsing, using BOTH file size and runtime limits.
+        // Every checkpoint needs at least 72 file bytes; every KV layer needs 96.
+        // Each has five payloads. A nonempty allocation adds less than two pages
+        // (rounding + owner header), including every 16 MiB KV segment.
+        const uint64_t checkpoints = sat_add(1, std::min(limits.max_checkpoints, file_bytes / 72));
+        const uint64_t layers = std::min(limits.max_kv_layers, file_bytes / 96);
+        const uint64_t arrays = sat_add(sat_mul(5, sat_add(checkpoints, layers)), file_bytes / kBlock);
+        peak = sat_add(peak, sat_mul(arrays, 2 * platform::memory_page_size()));
+        peak = sat_add(peak, sat_mul(checkpoints, sizeof(ConversationCheckpoint)));
+        peak = sat_add(peak, sat_mul(layers, sizeof(ConversationKv)));
+    }
+#else
+    (void) limits;
+#endif
+    return peak;
 }
 
 namespace {
@@ -1215,7 +1233,7 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     }
     if (limits.admit) {
         std::string why;
-        if (!limits.admit(session_read_peak_bytes(size), why)) {
+        if (!limits.admit(session_read_peak_bytes(size, limits), why)) {
             st.error = SessionError::memory;
             error = "session file: " + why;
             return false;

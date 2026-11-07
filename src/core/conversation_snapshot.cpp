@@ -592,7 +592,17 @@ void conversation_kv_save_trace(double& attrs_ms, double& resize_ms, double& cop
     attrs_ms = t.attrs; resize_ms = t.resize; copy_ms = t.copy;
 }
 
-bool conversation_park_async_begin(size_t need) {
+size_t conversation_park_host_allocation_bytes(size_t items) {
+    if (!park_async_on()) return 0;
+    // Disabled context retains push_back growth; bound its old+new directory
+    // peak rather than changing that allocation behavior to fit the estimator.
+    const size_t count = ContextLockPolicy::enabled() ? items : (items > SIZE_MAX / 4 ? SIZE_MAX : 4 * items);
+    const size_t directory = items > park_async().items.capacity() ?
+        (count > SIZE_MAX / sizeof(ParkAsync::Item) ? SIZE_MAX : count * sizeof(ParkAsync::Item)) : 0;
+    return memory_bytes_sum({2 * kParkPiece, directory});
+}
+
+bool conversation_park_async_begin(size_t need, size_t items) {
     if (park_trace_on()) kv_save_trace() = {};   // (the sums cover this park's saves)
     conversation_park_join();   // (the stage is reused)
     ParkAsync& a = park_async();
@@ -602,6 +612,7 @@ bool conversation_park_async_begin(size_t need) {
     a.slot = nullptr;
     a.slot_tag = 0;
     if (!park_async_on() || need == 0) return false;
+    if (ContextLockPolicy::enabled()) a.items.reserve(items); // selected-context preflight bounds this directory
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
     // STRATA_PARK_VRAM_MIB: a slot of the whole K/V instead of the stage, while the budget allows - taken before the

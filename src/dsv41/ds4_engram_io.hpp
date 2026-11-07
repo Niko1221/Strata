@@ -9,6 +9,7 @@
 // first.  A bounded row cache (clock eviction) keeps rows already fetched: a row that recurs (the same n-gram again,
 // in the prompt or later) is a copy, not a read.  The rows are the file's bytes either way, so the output is the same.
 #pragma once
+#include "ds4_mlock.hpp"
 
 #include "ds4_os.hpp"
 
@@ -40,9 +41,29 @@ inline int64_t now_ns() {
 class EgRowCache {
 public:
     void init(size_t cap, size_t bytes) {
+        if (WeightLockPolicy::enabled()) {
+            blocks_.clear(); keys_.clear(); ref_.clear(); map_.clear(); hand_ = 0;
+        }
         cap_ = cap;
         bytes_ = bytes;
         map_.reserve(std::min<size_t>(cap, 1u << 20));
+        if (WeightLockPolicy::enabled() && bytes_) {
+            // This is the configured cache budget, not the size of the model's table.
+            // Prepare before inference / eg_cache_mu. No lock or payload allocation in put().
+            size_t ready = 0;
+            try {
+                while (ready < cap_) {
+                    const size_t rows = std::min<size_t>(kBlock, cap_ - ready);
+                    if (bytes_ > SIZE_MAX / rows) throw std::bad_alloc();
+                    blocks_.emplace_back(rows * bytes_);
+                    ready += rows;
+                }
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "ds4 mlock: Engram preparation allocation failed; cache limited to %zu ready rows (requested %zu)\n", ready, cap_);
+                EngineMemoryLock::allocation_failed(platform::MemoryCategory::weights, bytes_);
+                cap_ = ready; // uncached reads remain the authoritative fallback
+            }
+        }
     }
     size_t capacity() const { return cap_; }
     size_t size() const { return keys_.size(); }
@@ -61,7 +82,7 @@ public:
         uint32_t s;
         if (keys_.size() < cap_) {
             s = (uint32_t) keys_.size();
-            if (s % kBlock == 0) blocks_.emplace_back(new uint8_t[(size_t) kBlock * bytes_]);
+            if (!WeightLockPolicy::enabled() && s % kBlock == 0) blocks_.emplace_back((size_t) kBlock * bytes_);
             keys_.push_back(key);
             ref_.push_back(0);
         } else {
@@ -81,13 +102,13 @@ public:
 
 private:
     static constexpr uint32_t kBlock = 4096;
-    uint8_t* at(uint32_t s) { return blocks_[s / kBlock].get() + (size_t) (s % kBlock) * bytes_; }
+    uint8_t* at(uint32_t s) { return blocks_[s / kBlock].data() + (size_t) (s % kBlock) * bytes_; }
     size_t cap_ = 0, bytes_ = 0;
     uint32_t hand_ = 0;
     std::unordered_map<uint64_t, uint32_t> map_;
     std::vector<uint64_t> keys_;
     std::vector<uint8_t> ref_;
-    std::vector<std::unique_ptr<uint8_t[]>> blocks_;
+    std::vector<platform::LockingBuffer<uint8_t, WeightLockPolicy>> blocks_;
 };
 
 /// One row to fetch: its bytes to dst, its scales to scales.  mx8: n bytes at off of a file, [scale, 32 codes] blocks
