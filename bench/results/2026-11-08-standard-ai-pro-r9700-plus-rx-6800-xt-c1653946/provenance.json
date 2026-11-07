@@ -1,0 +1,97 @@
+{
+  "engine": {
+    "version": "0.1.58",
+    "backend": "hip",
+    "platform": "windows-x64",
+    "rocm": "10.2.0a20260930",
+    "hipblaslt_version": 100500,
+    "archs": [
+      "gfx1100",
+      "gfx1101",
+      "gfx1102",
+      "gfx1200",
+      "gfx1201",
+      "gfx1030",
+      "gfx1031",
+      "gfx1151"
+    ],
+    "provenance": "self-built multi-architecture HIP engine; not an official release asset",
+    "build_source_commit": "588b9d341155688fbe23bbcfc81b0bf2b096fed1",
+    "build_source_tree": "engine sources (src/, include/, metal/, sycl/, CMakeLists.txt) clean at build time; the checkout is branch development, which carries the PR 4883 setup change as 9746cece and the PR 5562 fix as 588b9d34",
+    "build_command": "tools\\hip\\build_windows.bat with STRATA_HIP_ARCHS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx1031;gfx1151",
+    "zip": {
+      "path": "dist/strata-windows-x64-hip.zip",
+      "bytes": 789066355,
+      "sha256": "73beee336724d2e0c46a7fca26d546dd4629fd6e1931a23378e23ec4e16c3a5f"
+    },
+    "binary": {
+      "path": "engine/strata.exe",
+      "bytes": 307332096,
+      "sha256": "24e1358cb21bd9843c0b1e6199cd9605b68ecc53bd68a4805ff3fd198dc84bc8"
+    },
+    "build_json": {
+      "path": "engine/BUILD.json",
+      "sha256": "d5984df19fc07464b93c783880e2af16f30f0d1563040141c5e5253cce980afb",
+      "note": "BUILD.json records source=prebuilt because the locally built zip was installed with --prebuilt; the zip itself was built locally, which is why results.json build_kind=source is correct"
+    }
+  },
+  "engine_fix": {
+    "pr": 5562,
+    "pr_title": "[Engine] prefill: the fused layout's shrink asks every layer's path, not only the formats",
+    "pr_state": "OPEN",
+    "pr_head": "e1b8a69b39208bb7b907f23077949f01313f868d",
+    "pr_base": "main",
+    "touches_engine_source": true,
+    "local_commit": "588b9d341155688fbe23bbcfc81b0bf2b096fed1",
+    "changed_files": [
+      "src/prefill/prefill.cpp"
+    ],
+    "role": "without it, STRATA_PF_FUSED=1 on this pack aborts with \"the fused layout's MoE buffers are too small for layer 13's expert path\"; every number here was measured with the fix present, so the reported configuration depends on an open engine pull request"
+  },
+  "strata_setup": {
+    "pr": 4883,
+    "pr_title": "[Other] Setup: --gpus on Windows AMD: RDNA 2, 3 and 4 cards sharing one model",
+    "pr_state": "OPEN",
+    "cherry_picked_into_build_commit": "9746cece",
+    "touches_engine_source": false,
+    "role": "lets setup accept a --gpus split across AMD families and accept a self-built multi-arch engine; it changes no inference code"
+  },
+  "why_no_official_engine": "Official release v0.2.12 ships per-family Windows HIP engines only (strata-engine-0.1.58-windows-x86_64-hip-rdna2.tar.gz, -rdna3; plus -rx6000/-rx9070/-halo for Linux). No official Windows HIP asset carries code for both gfx1030 and gfx1201, so a 6800 XT + R9700 split cannot run on any single official engine download. A self-built multi-arch engine is the documented path.",
+  "not_measured": [
+    "hardware.gpus[*].power_limit_w",
+    "model.source_revision",
+    "protocol.model_card_revision",
+    "software.runtime"
+  ],
+  "model": {
+    "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "path": "UD-IQ4_XS",
+    "revision": "814db05",
+    "tokenizer_revision": "814db05",
+    "revision_evidence": "Hugging Face tree listing shows commit 814db05 'Better UD 3.1 quants' for all four shards; local shard byte sizes match the listing (10946618 / 49604491008 / 15256783680 / 28800138432). Size-level corroboration, not hash-level proof.",
+    "local_folder_note": "the local folder is named unsloth-UD-IQ4_XS-v31; the Hugging Face path is UD-IQ4_XS (the -v31 suffix is local naming)",
+    "source_revision": "not measured: the original Qwen/Qwen3.8-Flash-Next weights revision was not recorded"
+  },
+  "run_order": [
+    {
+      "folder": "2026-11-08-standard-ai-pro-r9700-plus-rx-6800-xt-c1653946",
+      "run_id": "20261108T061352Z-c1653946",
+      "order": 1
+    },
+    {
+      "folder": "2026-11-08-standard-ai-pro-r9700-plus-rx-6800-xt-09cdc36f",
+      "run_id": "20261108T062036Z-09cdc36f",
+      "order": 2
+    },
+    {
+      "folder": "2026-11-08-standard-ai-pro-r9700-plus-rx-6800-xt-921655c2",
+      "run_id": "20261108T062709Z-921655c2",
+      "order": 3
+    }
+  ],
+  "this_run": {
+    "folder": "2026-11-08-standard-ai-pro-r9700-plus-rx-6800-xt-c1653946",
+    "run_id": "20261108T061352Z-c1653946",
+    "order": 1
+  }
+}
