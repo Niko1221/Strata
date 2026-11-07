@@ -1,0 +1,112 @@
+paired A/B: 30 pairs per cell (A=exact deployed, B=upstream layout), interleaved
+2560   x10240   ncols=4  B/A median 1.0075 (+0.75%)  CI95 [1.0035, 1.0092]  A-arm spread 0.06%
+2560   x10240   ncols=8  B/A median 0.7751 (-22.49%)  CI95 [0.7730, 0.7766]  A-arm spread 0.00%
+2560   x12288   ncols=4  B/A median 1.0051 (+0.51%)  CI95 [1.0030, 1.0061]  A-arm spread 0.00%
+2560   x12288   ncols=8  B/A median 0.8056 (-19.44%)  CI95 [0.7762, 0.8079]  A-arm spread 0.06%
+2560   x6144    ncols=4  B/A median 1.0082 (+0.82%)  CI95 [1.0066, 1.0098]  A-arm spread 0.00%
+2560   x6144    ncols=8  B/A median 0.8273 (-17.27%)  CI95 [0.8256, 0.8290]  A-arm spread 0.05%
+6144   x2560    ncols=4  B/A median 0.9924 (-0.76%)  CI95 [0.9877, 0.9934]  A-arm spread 0.19%
+6144   x2560    ncols=8  B/A median 1.0304 (+3.04%)  CI95 [1.0295, 1.0332]  A-arm spread 0.00%
+2560   x248320  ncols=4  B/A median 0.9992 (-0.08%)  CI95 [0.9957, 1.0024]  A-arm spread 0.45%
+2560   x248320  ncols=8  B/A median 0.8074 (-19.26%)  CI95 [0.7983, 0.8168]  A-arm spread 0.31%
+
+verdict input: CI lower bound > 1.020 on the dominant shapes = candidate clears the 2.00% bar.
+parity (2560->10240, ncols=8, n=81920 outputs): bitwise-equal 81920 (100.00%), differing 0; max_abs 0, max_rel 0; predeclared gate: max_rel <= 1e-4 (float rounding on ~1e7-magnitude accumulations)
+parity verdict: PASS (within the predeclared float-rounding bound)
+=== B6 rows: 0 vs 1 (paired, ncols 4/8) ===
+paired A/B: 30 pairs per cell (A=exact deployed, B=upstream layout), interleaved
+2560   x10240   ncols=4  B/A median 1.0018 (+0.18%)  CI95 [1.0006, 1.0035]  A-arm spread 0.06%
+2560   x10240   ncols=8  B/A median 0.9992 (-0.08%)  CI95 [0.9948, 1.0041]  A-arm spread 0.26%
+2560   x12288   ncols=4  B/A median 1.0025 (+0.25%)  CI95 [0.9990, 1.0036]  A-arm spread 0.25%
+2560   x12288   ncols=8  B/A median 1.0025 (+0.25%)  CI95 [1.0016, 1.0039]  A-arm spread 1.09%
+2560   x6144    ncols=4  B/A median 0.9959 (-0.41%)  CI95 [0.9927, 0.9984]  A-arm spread 0.00%
+2560   x6144    ncols=8  B/A median 1.0011 (+0.11%)  CI95 [1.0000, 1.0034]  A-arm spread 0.06%
+6144   x2560    ncols=4  B/A median 0.9981 (-0.19%)  CI95 [0.9962, 1.0000]  A-arm spread 0.09%
+6144   x2560    ncols=8  B/A median 1.0014 (+0.14%)  CI95 [1.0007, 1.0027]  A-arm spread 0.07%
+
+verdict input: CI lower bound > 1.020 on the dominant shapes = candidate clears the 2.00% bar.
+=== B6 rows: 0 vs 2 ===
+paired A/B: 30 pairs per cell (A=exact deployed, B=upstream layout), interleaved
+2560   x10240   ncols=4  B/A median 1.0000 (+0.00%)  CI95 [0.9960, 1.0041]  A-arm spread 0.00%
+2560   x10240   ncols=8  B/A median 0.9996 (-0.04%)  CI95 [0.9985, 1.0007]  A-arm spread 0.04%
+2560   x12288   ncols=4  B/A median 1.0000 (+0.00%)  CI95 [0.9990, 1.0010]  A-arm spread 0.05%
+2560   x12288   ncols=8  B/A median 1.0000 (+0.00%)  CI95 [0.9984, 1.0024]  A-arm spread 0.60%
+2560   x6144    ncols=4  B/A median 0.9984 (-0.16%)  CI95 [0.9976, 1.0008]  A-arm spread 0.00%
+2560   x6144    ncols=8  B/A median 0.9994 (-0.06%)  CI95 [0.9972, 1.0028]  A-arm spread 0.00%
+6144   x2560    ncols=4  B/A median 1.0009 (+0.09%)  CI95 [0.9981, 1.0038]  A-arm spread 0.00%
+6144   x2560    ncols=8  B/A median 0.9993 (-0.07%)  CI95 [0.9980, 1.0027]  A-arm spread 0.00%
+
+verdict input: CI lower bound > 1.020 on the dominant shapes = candidate clears the 2.00% bar.
+=== TSUM shell-alternation (4 interleaved process pairs, default layout) ===
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=0 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.782 ms    864.5 GB/s  x0.40  sum -1.232e+09  [2]    0.855 ms    792.6 GB/s  x0.44  sum -2.609e+09  [4]    0.881 ms    771.6 GB/s  x0.45  sum -5.386e+09  [8]    1.013 ms    674.3 GB/s  x0.52  sum -9.384e+09   (ceiling 349.3 GB/s)
+6144   x2560     [1]    0.048 ms    348.2 GB/s  x0.98  sum -2.114e+07  [2]    0.050 ms    335.2 GB/s  x1.01  sum -5.607e+07  [4]    0.059 ms    282.1 GB/s  x1.20  sum -9.471e+07  [8]    0.077 ms    220.2 GB/s  x1.54  sum -2.193e+08   (ceiling 339.7 GB/s)
+2560   x10240    [1]    0.064 ms    432.6 GB/s  x1.14  sum -6.123e+07  [2]    0.068 ms    408.5 GB/s  x1.21  sum -1.026e+08  [4]    0.086 ms    324.2 GB/s  x1.52  sum -2.271e+08  [8]    0.123 ms    230.1 GB/s  x2.15  sum -5.023e+08   (ceiling 494.2 GB/s)
+2560   x6144     [1]    0.053 ms    315.1 GB/s  x1.16  sum -4.143e+07  [2]    0.063 ms    266.3 GB/s  x1.37  sum -1.187e+08  [4]    0.067 ms    250.5 GB/s  x1.46  sum -1.492e+08  [8]    0.089 ms    190.2 GB/s  x1.92  sum -2.764e+08   (ceiling 365.7 GB/s)
+2560   x12288    [1]    0.071 ms    472.8 GB/s  x1.23  sum -6.771e+07  [2]    0.075 ms    448.0 GB/s  x1.30  sum -1.644e+08  [4]    0.096 ms    350.2 GB/s  x1.66  sum -2.639e+08  [8]    0.139 ms    243.8 GB/s  x2.38  sum -4.485e+08   (ceiling 581.1 GB/s)
+2560   x512      [1]    0.035 ms     39.5 GB/s  x0.81  sum -6.264e+06  [2]    0.036 ms     39.4 GB/s  x0.81  sum -1.603e+07  [4]    0.037 ms     38.7 GB/s  x0.82  sum -3.883e+07  [8]    0.037 ms     38.3 GB/s  x0.83  sum -5.587e+07   (ceiling 31.9 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=1 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.778 ms    869.9 GB/s  x0.64  sum -1.232e+09  [2]    0.787 ms    860.4 GB/s  x0.64  sum -2.609e+09  [4]    0.838 ms    810.5 GB/s  x0.68  sum -5.386e+09  [8]    0.903 ms    757.1 GB/s  x0.73  sum -9.384e+09   (ceiling 554.2 GB/s)
+6144   x2560     [1]    0.048 ms    347.4 GB/s  x0.95  sum -2.114e+07  [2]    0.049 ms    340.4 GB/s  x0.97  sum -5.607e+07  [4]    0.058 ms    290.1 GB/s  x1.14  sum -9.471e+07  [8]    0.071 ms    236.4 GB/s  x1.40  sum -2.193e+08   (ceiling 331.1 GB/s)
+2560   x10240    [1]    0.065 ms    431.0 GB/s  x1.11  sum -6.123e+07  [2]    0.064 ms    435.2 GB/s  x1.10  sum -1.026e+08  [4]    0.081 ms    347.7 GB/s  x1.38  sum -2.271e+08  [8]    0.112 ms    250.9 GB/s  x1.91  sum -5.023e+08   (ceiling 480.0 GB/s)
+2560   x6144     [1]    0.053 ms    317.0 GB/s  x1.14  sum -4.143e+07  [2]    0.061 ms    275.6 GB/s  x1.31  sum -1.187e+08  [4]    0.062 ms    269.6 GB/s  x1.34  sum -1.492e+08  [8]    0.082 ms    206.1 GB/s  x1.76  sum -2.764e+08   (ceiling 362.2 GB/s)
+2560   x12288    [1]    0.071 ms    471.2 GB/s  x1.30  sum -6.771e+07  [2]    0.071 ms    475.4 GB/s  x1.28  sum -1.644e+08  [4]    0.089 ms    378.0 GB/s  x1.62  sum -2.639e+08  [8]    0.128 ms    264.8 GB/s  x2.31  sum -4.485e+08   (ceiling 610.8 GB/s)
+2560   x512      [1]    0.035 ms     39.9 GB/s  x0.79  sum -6.264e+06  [2]    0.035 ms     40.6 GB/s  x0.77  sum -1.603e+07  [4]    0.035 ms     40.5 GB/s  x0.77  sum -3.883e+07  [8]    0.035 ms     41.5 GB/s  x0.76  sum -5.587e+07   (ceiling 31.4 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=0 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.779 ms    868.1 GB/s  x0.63  sum -1.232e+09  [2]    0.848 ms    798.8 GB/s  x0.69  sum -2.609e+09  [4]    0.884 ms    768.8 GB/s  x0.72  sum -5.386e+09  [8]    0.997 ms    685.3 GB/s  x0.80  sum -9.384e+09   (ceiling 550.0 GB/s)
+6144   x2560     [1]    0.048 ms    349.1 GB/s  x1.00  sum -2.114e+07  [2]    0.051 ms    329.1 GB/s  x1.06  sum -5.607e+07  [4]    0.059 ms    282.1 GB/s  x1.24  sum -9.471e+07  [8]    0.077 ms    219.2 GB/s  x1.59  sum -2.193e+08   (ceiling 349.3 GB/s)
+2560   x10240    [1]    0.064 ms    435.9 GB/s  x1.10  sum -6.123e+07  [2]    0.068 ms    408.0 GB/s  x1.18  sum -1.026e+08  [4]    0.086 ms    325.9 GB/s  x1.48  sum -2.271e+08  [8]    0.122 ms    230.8 GB/s  x2.09  sum -5.023e+08   (ceiling 481.6 GB/s)
+2560   x6144     [1]    0.052 ms    319.4 GB/s  x1.11  sum -4.143e+07  [2]    0.063 ms    266.0 GB/s  x1.33  sum -1.187e+08  [4]    0.066 ms    254.6 GB/s  x1.39  sum -1.492e+08  [8]    0.088 ms    191.9 GB/s  x1.85  sum -2.764e+08   (ceiling 354.8 GB/s)
+2560   x12288    [1]    0.071 ms    474.7 GB/s  x1.26  sum -6.771e+07  [2]    0.075 ms    447.7 GB/s  x1.34  sum -1.644e+08  [4]    0.097 ms    348.4 GB/s  x1.72  sum -2.639e+08  [8]    0.139 ms    243.9 GB/s  x2.45  sum -4.485e+08   (ceiling 598.1 GB/s)
+2560   x512      [1]    0.035 ms     40.3 GB/s  x0.76  sum -6.264e+06  [2]    0.037 ms     37.8 GB/s  x0.81  sum -1.603e+07  [4]    0.037 ms     38.3 GB/s  x0.80  sum -3.883e+07  [8]    0.039 ms     36.9 GB/s  x0.83  sum -5.587e+07   (ceiling 30.8 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=1 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.779 ms    868.7 GB/s  x0.63  sum -1.232e+09  [2]    0.804 ms    842.7 GB/s  x0.65  sum -2.609e+09  [4]    0.832 ms    816.6 GB/s  x0.67  sum -5.386e+09  [8]    0.902 ms    757.4 GB/s  x0.72  sum -9.384e+09   (ceiling 548.3 GB/s)
+6144   x2560     [1]    0.048 ms    351.1 GB/s  x1.00  sum -2.114e+07  [2]    0.048 ms    347.1 GB/s  x1.01  sum -5.607e+07  [4]    0.057 ms    292.7 GB/s  x1.20  sum -9.471e+07  [8]    0.073 ms    231.6 GB/s  x1.52  sum -2.193e+08   (ceiling 351.4 GB/s)
+2560   x10240    [1]    0.065 ms    430.8 GB/s  x1.12  sum -6.123e+07  [2]    0.064 ms    438.5 GB/s  x1.10  sum -1.026e+08  [4]    0.080 ms    350.2 GB/s  x1.38  sum -2.271e+08  [8]    0.112 ms    251.4 GB/s  x1.92  sum -5.023e+08   (ceiling 482.3 GB/s)
+2560   x6144     [1]    0.053 ms    315.6 GB/s  x1.14  sum -4.143e+07  [2]    0.061 ms    273.2 GB/s  x1.31  sum -1.187e+08  [4]    0.063 ms    267.2 GB/s  x1.34  sum -1.492e+08  [8]    0.082 ms    207.7 GB/s  x1.73  sum -2.764e+08   (ceiling 358.8 GB/s)
+2560   x12288    [1]    0.070 ms    477.9 GB/s  x1.22  sum -6.771e+07  [2]    0.071 ms    475.2 GB/s  x1.22  sum -1.644e+08  [4]    0.089 ms    377.0 GB/s  x1.54  sum -2.639e+08  [8]    0.126 ms    268.0 GB/s  x2.17  sum -4.485e+08   (ceiling 581.5 GB/s)
+2560   x512      [1]    0.036 ms     39.2 GB/s  x0.81  sum -6.264e+06  [2]    0.036 ms     39.1 GB/s  x0.81  sum -1.603e+07  [4]    0.036 ms     39.8 GB/s  x0.80  sum -3.883e+07  [8]    0.035 ms     40.9 GB/s  x0.77  sum -5.587e+07   (ceiling 31.6 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=0 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.788 ms    858.4 GB/s  x0.64  sum -1.232e+09  [2]    0.859 ms    788.2 GB/s  x0.70  sum -2.609e+09  [4]    0.880 ms    772.4 GB/s  x0.71  sum -5.386e+09  [8]    0.998 ms    684.9 GB/s  x0.80  sum -9.384e+09   (ceiling 550.5 GB/s)
+6144   x2560     [1]    0.048 ms    352.0 GB/s  x0.97  sum -2.114e+07  [2]    0.051 ms    328.1 GB/s  x1.04  sum -5.607e+07  [4]    0.060 ms    281.7 GB/s  x1.22  sum -9.471e+07  [8]    0.076 ms    221.7 GB/s  x1.54  sum -2.193e+08   (ceiling 342.5 GB/s)
+2560   x10240    [1]    0.064 ms    433.7 GB/s  x1.11  sum -6.123e+07  [2]    0.069 ms    406.6 GB/s  x1.18  sum -1.026e+08  [4]    0.086 ms    324.6 GB/s  x1.48  sum -2.271e+08  [8]    0.122 ms    231.9 GB/s  x2.08  sum -5.023e+08   (ceiling 481.3 GB/s)
+2560   x6144     [1]    0.052 ms    319.4 GB/s  x1.12  sum -4.143e+07  [2]    0.063 ms    265.1 GB/s  x1.35  sum -1.187e+08  [4]    0.066 ms    254.9 GB/s  x1.41  sum -1.492e+08  [8]    0.089 ms    189.9 GB/s  x1.89  sum -2.764e+08   (ceiling 358.5 GB/s)
+2560   x12288    [1]    0.070 ms    475.8 GB/s  x1.20  sum -6.771e+07  [2]    0.075 ms    446.8 GB/s  x1.28  sum -1.644e+08  [4]    0.096 ms    349.6 GB/s  x1.63  sum -2.639e+08  [8]    0.136 ms    248.0 GB/s  x2.30  sum -4.485e+08   (ceiling 571.5 GB/s)
+2560   x512      [1]    0.034 ms     41.1 GB/s  x0.77  sum -6.264e+06  [2]    0.035 ms     40.3 GB/s  x0.78  sum -1.603e+07  [4]    0.036 ms     38.9 GB/s  x0.81  sum -3.883e+07  [8]    0.037 ms     39.0 GB/s  x0.81  sum -5.587e+07   (ceiling 31.5 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=1 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.774 ms    874.4 GB/s  x0.63  sum -1.232e+09  [2]    0.794 ms    853.5 GB/s  x0.64  sum -2.609e+09  [4]    0.837 ms    811.3 GB/s  x0.68  sum -5.386e+09  [8]    0.907 ms    753.6 GB/s  x0.73  sum -9.384e+09   (ceiling 548.8 GB/s)
+6144   x2560     [1]    0.048 ms    348.8 GB/s  x1.01  sum -2.114e+07  [2]    0.049 ms    344.0 GB/s  x1.03  sum -5.607e+07  [4]    0.058 ms    290.1 GB/s  x1.22  sum -9.471e+07  [8]    0.072 ms    234.8 GB/s  x1.51  sum -2.193e+08   (ceiling 353.4 GB/s)
+2560   x10240    [1]    0.065 ms    431.0 GB/s  x1.33  sum -6.123e+07  [2]    0.064 ms    434.7 GB/s  x1.31  sum -1.026e+08  [4]    0.080 ms    351.0 GB/s  x1.63  sum -2.271e+08  [8]    0.112 ms    251.5 GB/s  x2.27  sum -5.023e+08   (ceiling 571.2 GB/s)
+2560   x6144     [1]    0.053 ms    317.8 GB/s  x1.11  sum -4.143e+07  [2]    0.062 ms    271.5 GB/s  x1.30  sum -1.187e+08  [4]    0.062 ms    269.2 GB/s  x1.31  sum -1.492e+08  [8]    0.082 ms    206.8 GB/s  x1.71  sum -2.764e+08   (ceiling 352.8 GB/s)
+2560   x12288    [1]    0.070 ms    475.8 GB/s  x1.18  sum -6.771e+07  [2]    0.071 ms    472.2 GB/s  x1.19  sum -1.644e+08  [4]    0.089 ms    378.2 GB/s  x1.49  sum -2.639e+08  [8]    0.128 ms    264.9 GB/s  x2.13  sum -4.485e+08   (ceiling 563.4 GB/s)
+2560   x512      [1]    0.034 ms     41.5 GB/s  x0.74  sum -6.264e+06  [2]    0.035 ms     39.6 GB/s  x0.77  sum -1.603e+07  [4]    0.034 ms     41.4 GB/s  x0.74  sum -3.883e+07  [8]    0.035 ms     40.5 GB/s  x0.75  sum -5.587e+07   (ceiling 30.5 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=0 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.774 ms    873.7 GB/s  x0.62  sum -1.232e+09  [2]    0.847 ms    799.5 GB/s  x0.68  sum -2.609e+09  [4]    0.884 ms    768.7 GB/s  x0.71  sum -5.386e+09  [8]    0.999 ms    684.1 GB/s  x0.79  sum -9.384e+09   (ceiling 543.6 GB/s)
+6144   x2560     [1]    0.048 ms    350.3 GB/s  x0.96  sum -2.114e+07  [2]    0.051 ms    329.9 GB/s  x1.02  sum -5.607e+07  [4]    0.060 ms    280.4 GB/s  x1.20  sum -9.471e+07  [8]    0.076 ms    220.9 GB/s  x1.52  sum -2.193e+08   (ceiling 336.1 GB/s)
+2560   x10240    [1]    0.064 ms    437.0 GB/s  x1.30  sum -6.123e+07  [2]    0.068 ms    412.1 GB/s  x1.38  sum -1.026e+08  [4]    0.086 ms    326.4 GB/s  x1.74  sum -2.271e+08  [8]    0.122 ms    231.0 GB/s  x2.46  sum -5.023e+08   (ceiling 568.9 GB/s)
+2560   x6144     [1]    0.052 ms    319.2 GB/s  x1.13  sum -4.143e+07  [2]    0.063 ms    264.1 GB/s  x1.36  sum -1.187e+08  [4]    0.067 ms    252.6 GB/s  x1.43  sum -1.492e+08  [8]    0.090 ms    189.0 GB/s  x1.91  sum -2.764e+08   (ceiling 360.4 GB/s)
+2560   x12288    [1]    0.070 ms    479.3 GB/s  x1.22  sum -6.771e+07  [2]    0.075 ms    445.1 GB/s  x1.32  sum -1.644e+08  [4]    0.095 ms    353.4 GB/s  x1.66  sum -2.639e+08  [8]    0.138 ms    244.4 GB/s  x2.40  sum -4.485e+08   (ceiling 585.9 GB/s)
+2560   x512      [1]    0.035 ms     39.7 GB/s  x0.77  sum -6.264e+06  [2]    0.036 ms     39.2 GB/s  x0.78  sum -1.603e+07  [4]    0.037 ms     38.3 GB/s  x0.80  sum -3.883e+07  [8]    0.038 ms     37.7 GB/s  x0.81  sum -5.587e+07   (ceiling 30.4 GB/s)
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz  config: exact=1 tsum=1 b6=0
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.787 ms    859.1 GB/s  x0.65  sum -1.232e+09  [2]    0.799 ms    848.0 GB/s  x0.65  sum -2.609e+09  [4]    0.838 ms    810.6 GB/s  x0.68  sum -5.386e+09  [8]    0.905 ms    754.9 GB/s  x0.73  sum -9.384e+09   (ceiling 554.4 GB/s)
+6144   x2560     [1]    0.048 ms    346.2 GB/s  x0.97  sum -2.114e+07  [2]    0.049 ms    338.4 GB/s  x0.99  sum -5.607e+07  [4]    0.057 ms    294.0 GB/s  x1.14  sum -9.471e+07  [8]    0.073 ms    232.1 GB/s  x1.45  sum -2.193e+08   (ceiling 336.1 GB/s)
+2560   x10240    [1]    0.064 ms    436.4 GB/s  x1.30  sum -6.123e+07  [2]    0.064 ms    437.9 GB/s  x1.30  sum -1.026e+08  [4]    0.079 ms    353.2 GB/s  x1.61  sum -2.271e+08  [8]    0.112 ms    251.4 GB/s  x2.27  sum -5.023e+08   (ceiling 569.4 GB/s)
+2560   x6144     [1]    0.053 ms    317.0 GB/s  x1.11  sum -4.143e+07  [2]    0.062 ms    270.1 GB/s  x1.31  sum -1.187e+08  [4]    0.062 ms    270.8 GB/s  x1.30  sum -1.492e+08  [8]    0.082 ms    207.5 GB/s  x1.70  sum -2.764e+08   (ceiling 353.0 GB/s)
+2560   x12288    [1]    0.070 ms    477.9 GB/s  x1.27  sum -6.771e+07  [2]    0.071 ms    470.4 GB/s  x1.29  sum -1.644e+08  [4]    0.089 ms    378.2 GB/s  x1.61  sum -2.639e+08  [8]    0.127 ms    267.2 GB/s  x2.28  sum -4.485e+08   (ceiling 609.0 GB/s)
+2560   x512      [1]    0.034 ms     40.7 GB/s  x0.77  sum -6.264e+06  [2]    0.034 ms     40.8 GB/s  x0.76  sum -1.603e+07  [4]    0.034 ms     41.2 GB/s  x0.76  sum -3.883e+07  [8]    0.035 ms     41.4 GB/s  x0.75  sum -5.587e+07   (ceiling 31.1 GB/s)
