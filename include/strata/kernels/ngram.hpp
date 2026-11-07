@@ -26,6 +26,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::kernels {
 
@@ -96,6 +97,13 @@ struct PleConsts {
     uint64_t offset[PLE_N_HEADS];
 };
 PleConsts ple_artifact_consts();
+
+/// The hash constants a model file carries in its own metadata (`<arch>.ple.layer_multipliers`, `.head_vocab_sizes`,
+/// `.head_offsets`), checked: NGRAM_SIZE multipliers, PLE_N_HEADS vocabulary sizes (none zero) and offsets, every head's
+/// range [offset, offset + vocab) inside `table_rows` (0 = do not check the table size).  Returns false and sets `err`
+/// when the arrays do not fit; `ple_artifact_consts()` stays the default for a file that carries none.
+bool ple_consts_from_arrays(const std::vector<uint64_t>& mult, const std::vector<uint64_t>& vocab,
+                            const std::vector<uint64_t>& offset, uint64_t table_rows, PleConsts& out, std::string& err);
 
 /// `mixed_n = (ctx[0]*m[0]) ^ (ctx[1]*m[1]) ^ ... ^ (ctx[n-1]*m[n-1])` in uint64.
 ///

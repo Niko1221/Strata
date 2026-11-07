@@ -31,8 +31,8 @@ static_assert(g.n_embd % 256 == 0 && g.n_embd >= 1024 && g.n_embd <= 4096,
 static_assert(g.n_ff % 64 == 0 && g.n_ff >= 256 && g.n_ff <= 1100,
               "geometry: expert_feed_forward_length must be a multiple of 64 within 256..1100 (Q2 blobs, 64-wide act groups, 1024-byte act buffer)");
 static_assert(g.n_ff_shexp == g.n_ff, "geometry: the shared expert must be as wide as the routed experts");
-static_assert(g.hc_lr % 32 == 0 && g.hc_lr / 8 > 32 && g.hc_lr / 8 <= 64 && g.hc_lr % 8 == 0,
-              "geometry: hyper_connection.low_rank must be a multiple of 32 with 32 < low_rank/8 <= 64 (fused_gr lane rule)");
+static_assert(g.hc_lr % 64 == 0 && g.hc_lr / 8 >= 32 && g.hc_lr / 8 <= 64 && g.hc_lr % 8 == 0,
+              "geometry: hyper_connection.low_rank must be a multiple of 64 with 32 <= low_rank/8 <= 64 (fused_gr lane rule)");
 static_assert(g.n_head_kv >= 1 && g.n_head % g.n_head_kv == 0 && g.n_head / g.n_head_kv <= 16,
               "geometry: attention.head_count / head_count_kv must be a whole number <= 16 (one M16 tile of query heads)");
 static_assert(g.ssm_v_heads % g.ssm_k_heads == 0 && g.ssm_v_heads / g.ssm_k_heads >= 1 && g.ssm_v_heads / g.ssm_k_heads <= 4,
