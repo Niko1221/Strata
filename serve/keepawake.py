@@ -1,9 +1,9 @@
 """Opt-in "prevent_sleep" (#1727) and "keep_awake": while at least one request is running or queued, the PC is kept
 awake; "keep_awake" holds the same state for the whole serving session (from the server's start until it exits).
 
-Windows: SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) keeps the system from idling into sleep (not the
-display: no ES_DISPLAY_REQUIRED); ES_CONTINUOUS alone puts the normal behaviour back.  The state belongs to the thread
-that set it, so one daemon thread sets and clears it.
+Windows: SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) stops the system from going to sleep; the screen
+may still turn off (ES_DISPLAY_REQUIRED is not set).  ES_CONTINUOUS alone restores the normal behaviour.  The state
+belongs to the thread that set it, so one daemon thread sets and clears it.
 
 Linux: a systemd-inhibit child (`--what=sleep:idle`, `--mode=block`, `cat` on a pipe kept open) holds the logind
 inhibitor lock while it runs; stopping the child releases it.  Without systemd-inhibit (or logind) one startup line
