@@ -118,6 +118,13 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     moe_buffers_init(g, k, s.moe_arena, s.moe);
     s.block_arena = take(block_buffers_bytes(g));
     block_buffers_init(g, s.block_arena, s.block);
+    if (!g.has_hyper_connections()) {
+        // The plain family's trunk IS `gr_write` with a zero injection (2*sigmoid(0) = 1, a plain add) and
+        // nothing in the plain path ever writes these buffers, so they are zeroed ONCE here and the captured
+        // graphs replay the add forever.  This is the initial condition the family means, not a default.
+        cudaMemset(s.block.inject, 0, (size_t) g.residual_streams() * 4);
+        cudaMemset(s.block.inject2, 0, (size_t) g.residual_streams() * 4);
+    }
     // THE PLE HISTORY: NG_HIST rows of hc_dim floats, row-fastest.  Sequence state, carved here and zeroed by
     // `session_zero`; it survives every token, which is the whole point of a conv history.
     s.ple_hist = (float*) take(ple_hist_bytes());
@@ -155,11 +162,11 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
     // the residual: `hc` copies of the one vector a caller hands in.  A real sequence's first token is the
     // embedding broadcast to every stream, which is the reference's own initial condition.
     if (R_init != nullptr) {
-        for (int64_t c = 0; c < g.hc; ++c)
+        for (int64_t c = 0; c < g.residual_streams(); ++c)
             cudaMemcpyAsync(s.block.R + (size_t) c * g.n_embd, R_init, (size_t) g.n_embd * 4,
                             cudaMemcpyDeviceToDevice, cs);
     } else {
-        cudaMemsetAsync(s.block.R, 0, (size_t) g.hc * g.n_embd * 4, cs);
+        cudaMemsetAsync(s.block.R, 0, (size_t) g.residual_streams() * g.n_embd * 4, cs);
     }
     // every owned GDN layer's recurrence and conv history
     cudaMemsetAsync(s.gdn_state, 0, (size_t) s.gdn_alloc * gdn_state_floats(g) * 4, cs);
@@ -431,7 +438,7 @@ bool session_replay_stage_prefixes(const ModelGeometry& g, int64_t pos, int32_t 
     cudaStream_t cs = (cudaStream_t) stream;
     stage_token(g, pos, pos_base, s);
     const int64_t n = g.n_layers;
-    const size_t r_floats = (size_t) g.hc * (size_t) g.n_embd;
+    const size_t r_floats = (size_t) g.residual_streams() * (size_t) g.n_embd;
 
     float* saved = nullptr;
     if (cudaMalloc((void**) &saved, r_floats * sizeof(float)) != cudaSuccess) {
@@ -660,7 +667,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
     // when this function is entered, which is the reference's `hc_init` node - so dumping it here is what splits
     // "the input to layer 0 is already wrong" from "layer 0 is wrong".
     if (dump_layers != nullptr) {
-        const size_t n = (size_t) g.hc * (size_t) g.n_embd;
+        const size_t n = (size_t) g.residual_streams() * (size_t) g.n_embd;
         const cudaError_t de = cudaMemcpyAsync(dump_layers, s.R, n * sizeof(float), cudaMemcpyDeviceToHost, cs);
         if (de != cudaSuccess) {
             err = "session_loop: dump the input residual: " + std::string(cudaGetErrorString(de));
@@ -756,7 +763,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
         // Nothing is synchronised: the loop's existing final sync is what completes these.  See the note on
         // `dump_layers` in session.hpp for why this is an enqueue and not a read.
         if (dump_layers != nullptr) {
-            const size_t n = (size_t) g.hc * (size_t) g.n_embd;
+            const size_t n = (size_t) g.residual_streams() * (size_t) g.n_embd;
             const cudaError_t de = cudaMemcpyAsync(dump_layers + (size_t) (l + 1) * n, s.R, n * sizeof(float),
                                                    cudaMemcpyDeviceToHost, cs);
             if (de != cudaSuccess) {

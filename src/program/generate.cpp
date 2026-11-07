@@ -4995,7 +4995,7 @@ int main(int argc, char** argv) {
     }
     strata::core::NativeEmbed native_embed;
     if (native_pack) {
-        if (o.native_preset.empty() || o.spec < 2 || o.keep_canonical ||
+        if (o.native_preset.empty() || (o.spec < 2 && o.dump_layers.empty()) || o.keep_canonical ||
             (o.prefill_chunk <= 0 && o.tokens.size() > 1)) {
             std::fprintf(stderr, "strata generate: %s is a native (IQ) pack: it needs --native SHARD1, --spec T (T >= 2) "
                                  "and --prefill CHUNK\n", o.pack.c_str());
@@ -9280,7 +9280,7 @@ int main(int argc, char** argv) {
         if (pos == 0) {
             strata::core::session_zero(ss, g, d_emb, token_stream);
         } else {
-            for (int64_t c = 0; c < g.hc; ++c)
+            for (int64_t c = 0; c < g.residual_streams(); ++c)
                 if (cudaMemcpyAsync(ss.R + (size_t) c * g.n_embd, d_emb, (size_t) g.n_embd * 4,
                                     cudaMemcpyDeviceToDevice, (cudaStream_t) token_stream) != cudaSuccess) {
                     std::fprintf(stderr, "strata generate: the residual broadcast failed\n");
@@ -21399,7 +21399,7 @@ int main(int argc, char** argv) {
 
     // ---- the residual, for bisecting the head against the layers (see `dump_residual`'s note)
     if (!o.dump_residual.empty()) {
-        std::vector<float> R((size_t) g.hc * g.n_embd);
+        std::vector<float> R((size_t) g.residual_streams() * g.n_embd);
         if (cudaMemcpy(R.data(), ss.R, R.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: reading R back failed\n");
             return 1;
@@ -21409,7 +21409,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: cannot write %s\n", o.dump_residual.c_str());
             return 1;
         }
-        const int32_t hdr[2] = {(int32_t) g.hc, (int32_t) g.n_embd};
+        const int32_t hdr[2] = {(int32_t) g.residual_streams(), (int32_t) g.n_embd};
         std::fwrite(hdr, sizeof hdr, 1, rf);
         std::fwrite(R.data(), sizeof(float), R.size(), rf);
         std::fclose(rf);
@@ -21420,7 +21420,7 @@ int main(int argc, char** argv) {
             else { mag += std::fabs((double) v); mx = std::max(mx, (double) std::fabs((double) v)); }
         }
         std::printf("%-24s %s (%d x %lld, nonfinite %d, mean|.| %.4g, max|.| %.4g)\n", "residual dumped",
-                    o.dump_residual.c_str(), (int) g.hc, (long long) g.n_embd, bad, mag / (double) R.size(), mx);
+                    o.dump_residual.c_str(), (int) g.residual_streams(), (long long) g.n_embd, bad, mag / (double) R.size(), mx);
     }
 
     if (o.stats) {

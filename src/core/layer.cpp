@@ -1,6 +1,7 @@
 
 // src/core/layer.cpp - the GDN layer, composed.  See the header for the operation order and its traps.
 #include "strata/core/layer.hpp"
+#include "strata/prefill/kernels.hpp"   // the fused GDN split kernels (qwen3next's grouped ssm_in/ssm_ba)
 #include "strata/core/pin_budget.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/core/native_head.hpp"
@@ -261,7 +262,7 @@ const WeightRef* w_qkv = fused_in ? v.get("ssm_in.weight") : v.get("attn_qkv.wei
 // n_out against - and the role pointers below alias into the fused scratch. `ssm_in` is qkv|z and `ssm_ba`
 // is beta|alpha, in name order; the split points are the geometry's own widths, never stored numbers.
 const float *qkv_src = b.qkv, *z_src = b.z;    float *alpha_src = b.alpha, *beta_src = b.beta;
-if (fused_in) { qkv_src = b.qkvz; z_src = b.qkvz + C; beta_src = b.ab_scr; alpha_src = b.ab_scr + g.ssm_v_heads; }
+if (fused_in) qkv_src = b.qkvz;   // the gemv writes the whole fused matrix; the split below scatters it into the flat role buffers
 // The conv kernel and the two norms are F32 source types, and the loader copied them verbatim - so their
 // device bytes ARE f32 and can be handed straight to the kernels that want `const float*`.
 const float* conv_kernel = (const float*) w_conv->data;    const float* ssm_norm = (const float*) w_norm->data;    const float* dt = (const float*) w_dt->data;    const float* ssm_a = (const float*) w_a->data;
@@ -297,7 +298,7 @@ st_begin(layer, 8, stream);
     st_end(layer, 8, stream);
 // ---- 2. qkv = wqkv @ x, with the activation THIS layer's `attn_qkv` asks for.  Under fusion this ONE gemv
 //         is the whole `ssm_in` - qkv and z together - and the roles alias into it below.
-st_begin(layer, 9, stream);    if (!gemv_quantized(*w_qkv, p_qkv, f_qkv, b.x_q8_0, b.x_q8k, fused_in ? (float*) qkv_src : b.qkv, g.n_embd,                        fused_in ? C + g.ssm_value_dim : C, fused_in ? v.name("ssm_in.weight") : v.name("attn_qkv.weight"), stream, err, mixed)) return false;    st_end(layer, 9, stream);
+st_begin(layer, 9, stream);    if (!gemv_quantized(*w_qkv, p_qkv, f_qkv, b.x_q8_0, b.x_q8k, fused_in ? (float*) qkv_src : b.qkv, g.n_embd,                        fused_in ? C + g.ssm_value_dim : C, fused_in ? v.name("ssm_in.weight") : v.name("attn_qkv.weight"), stream, err, mixed)) return false;    if (fused_in) { strata::prefill::split_qkvz(b.qkvz, b.qkv, b.z, 1, stream); qkv_src = b.qkv; z_src = b.z; }    st_end(layer, 9, stream);
 // ---- 3. conv, then SiLU on the WHOLE conv output - before the q|k|v split, which is what
 //         `ref/gdn.py` L262 says and what makes the split a reshape rather than a copy.
 st_begin(layer, 10, stream);
@@ -349,10 +350,11 @@ st_begin(layer, 12, stream);
         fused_gdn_ab(mixed, (const uint16_t*) w_alpha->data, (const uint16_t*) w_beta->data, dt, ssm_a, b.gate, b.beta,
                      (int) g.n_embd, (int) g.ssm_v_heads, stream);
     } else if (fused_in) {
-        // ONE gemv is the whole `ssm_ba` (beta|alpha); the epilogues below read the halves through the
-        // role pointers set at the top.
+        // ONE gemv is the whole `ssm_ba`; it is grouped per key head ([beta | alpha] x HV/HK each), so the
+        // split scatters it into the flat role buffers the epilogues below read.
         if (!gemv_quantized(*w_alpha, p_ba, f_ba, b.x_q8_0, b.x_q8k, b.ab_scr, g.n_embd, 2 * g.ssm_v_heads,
                             v.name("ssm_ba.weight"), stream, err, mixed)) return false;
+        strata::prefill::split_ba2(b.ab_scr, b.alpha, b.beta, 1, stream);
     } else {
     if (!native_bf16_projections) f32_to_bf16_bulk(mixed, b.x_bf16, g.n_embd, stream);
 #if defined(STRATA_EXPERIMENTAL_SM60)
@@ -377,11 +379,21 @@ st_begin(layer, 12, stream);
     } catch (const std::exception& error) { err = v.name("gdn_gate") + ": " + error.what(); return false; }
     st_end(layer, 12, stream); st_begin(layer, 13, stream);
     GdnShapes gs{g.ssm_state_size, g.ssm_k_heads, g.ssm_v_heads};
+    // qwen3next: the GGUF groups v/gate/beta by KEY head; the recurrence reads TILED head order. The conv and
+    // the gate epilogues ran on the grouped order (its weights are grouped too), so gather once here, into the
+    // dead `ssm_in` scratch.
+    float *v_step = b.h + 2 * qk, *gate_step = b.gate, *beta_step = beta_src;
+    if (fused_in) {
+        const int64_t VH = g.ssm_v_heads * g.ssm_state_size;
+        strata::prefill::gdn_tile_heads(b.h + 2 * qk, b.gate, beta_src, b.qkvz, b.qkvz + VH, b.qkvz + VH + g.ssm_v_heads,
+                                        1, C, stream);
+        v_step = b.qkvz; gate_step = b.qkvz + VH; beta_step = b.qkvz + VH + g.ssm_v_heads;
+    }
     // Plan v0.3 P3: with the native contract the step and the output norm are one kernel (after the z GEMV).
     const bool fused_gdn = g_fused_gdn && native_gdn_enabled() && g.ssm_state_size == 128;
     if (!fused_gdn) try {
-        if (native_gdn_enabled()) native_gdn_step(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, beta_src, b.o, gs, stream);
-        else gdn_step(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, beta_src, b.o, gs, stream);
+        if (native_gdn_enabled()) native_gdn_step(b.state, b.h, b.h + qk, v_step, gate_step, beta_step, b.o, gs, stream);
+        else gdn_step(b.state, b.h, b.h + qk, v_step, gate_step, beta_step, b.o, gs, stream);
     } catch (const std::exception& error) {
         err = v.name("gdn_step") + ": " + error.what();
         return false;
@@ -395,7 +407,7 @@ st_begin(layer, 12, stream);
 if (!fused_in && !gemv_quantized(*w_gate, p_gate, f_gate, b.x_q8_0, b.x_q8k, b.z, g.n_embd, g.ssm_value_dim, v.name("attn_gate.weight"), stream, err, mixed,
                     w_qkv->native_data != nullptr && w_gate->native_data != nullptr)) return false;
 try {
-    if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, beta_src, z_src, ssm_norm, RMS_EPS, b.y,
+    if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, v_step, gate_step, beta_step, z_src, ssm_norm, RMS_EPS, b.y,
                                        (int) g.ssm_k_heads, (int) g.ssm_v_heads, stream);
     else if (native_gdn_enabled()) native_gdn_out_norm(b.o, z_src, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
     else gdn_out_norm(b.o, z_src, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
@@ -567,14 +579,16 @@ bool moe_finish(const WeightTable& tables, const ModelGeometry& g, int64_t layer
     if (!moe_shared(tables, g, layer, b, x, stream, err)) return false;
     return moe_combine_parts(g, layer, k, b, parts, out, stream, err);
 }
-bool layer_verify_compatible(std::string& why) {
+bool layer_verify_compatible(const ModelGeometry& g, std::string& why) {
     // Plan v0.3 P6: the verify window reproduces exactly this configuration's per-token arithmetic.
+    // The hyper-connection and indexer requirements are family requirements: a plain-residual family
+    // (qwen3next) has neither, and its verify window reproduces the plain trunk instead.
     if (!native_bf16_projections) why = "the native BF16 projections are off";
-    else if (!g_fused_gr) why = "the fused hyper-connection read is off";
+    else if (!g_fused_gr && g.has_hyper_connections()) why = "the fused hyper-connection read is off";
     else if (!g_fused_gdn || !strata::kernels::native_gdn_enabled()) why = "the fused native GDN kernels are off";
     else if (!g_fast_attn || native_flash_attn_short) why = "the split-K decode attention is off";
     else if (!g_fast_select) why = "the block top-k selection is off";
-    else if (!strata::kernels::native_qsa_indexer_enabled()) why = "the native QSA indexer is off";
+    else if (!strata::kernels::native_qsa_indexer_enabled() && g.has_indexer()) why = "the native QSA indexer is off";
     else return true;
     return false;
 }
@@ -1246,7 +1260,7 @@ SForm f_k, f_v, f_o, f_q;    if (!sform_of(*w_attnk, f_k, v.name("attn_k.weight"
 // artifact, but the dispatch is here for the same reason it is in `gdn_layer`: the pack decides per tensor,
 // and "it happens to be uniform here" is the assumption that was wrong for `attn_q`.
 if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;
-    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);
+     if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);
     if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
 // ---- 5. into the cache, and the indexer's append (which pools AND rotates on a block completion).
 // EVERY ENTRY POINT FROM HERE ON IS THE CAPTURABLE ONE: the per-token counts come from `st.step` and every
@@ -1429,6 +1443,14 @@ bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token,
 }
 bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb,
                  void* stream, std::string& err) {
+    if (!g.has_hyper_connections()) {
+        // Plain family: the head is the model's own final norm over the single residual stream.
+        const WeightRef* wn = tables.find("output_norm.weight");
+        if (!wn) { err = "lm_head: output_norm.weight is missing"; return false; }
+        if (wn->kind != WeightKind::F32) { err = "lm_head: output_norm.weight has the wrong engine form"; return false; }
+        strata::kernels::gr_plain_read(bb.R, (const float*) wn->data, RMS_EPS, g.n_embd, bb.mixed, stream);
+        return true;
+    }
     const WeightRef* wn = tables.find("output_hc_norm.weight");
     const WeightRef* wd = tables.find("output_hc_down.weight");
     const WeightRef* wu = tables.find("output_hc_up.weight");
@@ -1466,20 +1488,20 @@ bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffe
                           g.n_embd, wo->ne1, "output.weight", stream, err);
 }
 // ================================ ONE WHOLE BLOCK ================================
-uint64_t block_buffers_bytes(const ModelGeometry& g) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    uint64_t n = 0;    n += (uint64_t) g.hc * g.n_embd * 4;
+uint64_t block_buffers_bytes(const ModelGeometry& g) {    const strata::kernels::GrShapes s{g.n_embd, g.residual_streams(), g.hc_lr};    uint64_t n = 0;    n += (uint64_t) g.residual_streams() * g.n_embd * 4;
 // R
 n += (uint64_t) g.n_embd * 4;
 // mixed
 n += (uint64_t) g.n_embd * 4;
 // block_out
-n += (uint64_t) g.hc * 4;
+n += (uint64_t) g.residual_streams() * 4;
 // inject
-n += (uint64_t) g.hc * 4 * 2 + 32;
+n += (uint64_t) g.residual_streams() * 4 * 2 + 32;
 // inject2, gr_rs
 n += q8k_bytes(g.n_embd);
 // head_q8k
 n += strata::kernels::gr_workspace_bytes(s);    return align_up16(n) + 256;}
-uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    Cursor c{(uint8_t*) base};    b.R = c.take<float>((uint64_t) g.hc * g.n_embd);    b.mixed = c.take<float>((uint64_t) g.n_embd);    b.block_out = c.take<float>((uint64_t) g.n_embd);    b.inject = c.take<float>((uint64_t) g.hc);    b.inject2 = c.take<float>((uint64_t) g.hc);    b.gr_rs = c.take<float>((uint64_t) g.hc);    b.head_q8k = c.take_bytes(q8k_bytes(g.n_embd));    uint8_t* grw = c.take_bytes(strata::kernels::gr_workspace_bytes(s));    strata::kernels::gr_workspace_init(s, grw, b.gr);    return c.used;}
+uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b) {    const strata::kernels::GrShapes s{g.n_embd, g.residual_streams(), g.hc_lr};    Cursor c{(uint8_t*) base};    b.R = c.take<float>((uint64_t) g.residual_streams() * g.n_embd);    b.mixed = c.take<float>((uint64_t) g.n_embd);    b.block_out = c.take<float>((uint64_t) g.n_embd);    b.inject = c.take<float>((uint64_t) g.residual_streams());    b.inject2 = c.take<float>((uint64_t) g.residual_streams());    b.gr_rs = c.take<float>((uint64_t) g.residual_streams());    b.head_q8k = c.take_bytes(q8k_bytes(g.n_embd));    uint8_t* grw = c.take_bytes(strata::kernels::gr_workspace_bytes(s));    strata::kernels::gr_workspace_init(s, grw, b.gr);    return c.used;}
 // ---- THE HALF-LEVEL C1 ORACLE.  `dump` is a HOST buffer of `2 * n_embd + 2 * hc + n_head * head_dim` floats
 // per layer; this enqueues one slice of it as a device-to-host copy.  **IT RUNS INSIDE THE CAPTURE**, which is
 // the point: the copy becomes a node of that layer's graph and replays with it, so the layer functions stay one
@@ -1527,7 +1549,7 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
     //
     // So the driver calls `ple_stage_token` once per token, BEFORE the graphs, and what is captured here is only
     // the device half: `ple_block` reading `emb_dev`, and the history shift.
-    const bool fused = g_fused_gr && stage_prefix == 0 && half == 0 &&
+    const bool fused = g_fused_gr && stage_prefix == 0 && half == 0 && g.has_hyper_connections() &&
                        strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr);
     // layer-1's FFN write has not been applied to R yet - unless a control vector follows it, which needs R
     bool pending_ffn = fused && layer > 0 && !strata::kernels::cvec().covers(layer - 1);
@@ -1567,13 +1589,16 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
             return false;
         }
     }
-    const bool qsa = is_qsa_layer(g, layer);    const LayerView v(tables, layer);    const strata::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
+    const bool qsa = is_qsa_layer(g, layer);    const LayerView v(tables, layer);    const strata::kernels::GrShapes gs{g.n_embd, g.residual_streams(), g.hc_lr};
 // ---- the two halves' GR tensors.  Both halves have the same four names with a different prefix, and the
 // prefix is the ONLY thing that distinguishes them - so it is built rather than written twice.
-const char* pre[2] = {"hc_attn_", "hc_ffn_"};    const WeightRef* w_norm[2];    const WeightRef* w_down[2];    const WeightRef* w_up[2];    const WeightRef* w_inject[2];    for (int h = 0; h < 2; ++h) {        const std::string a = std::string(pre[h]) + "norm.weight";        const std::string d = std::string(pre[h]) + "down.weight";        const std::string u = std::string(pre[h]) + "up.weight";        const std::string i = std::string(pre[h]) + "inject.weight";        w_norm[h] = v.get(a.c_str());        w_down[h] = v.get(d.c_str());        w_up[h] = v.get(u.c_str());        w_inject[h] = v.get(i.c_str());        if (!w_norm[h] || !w_down[h] || !w_up[h] || !w_inject[h]) {            err = v.name((std::string(pre[h]) + "{norm,down,up,inject}.weight").c_str()) + " is missing";            return false;        }
+// A family WITHOUT hyper-connections has one weight per half - the model's own pre-norm gamma - and the
+// plain read below multiplies it into the normalized stream directly.
+const bool plain = !g.has_hyper_connections();
+const char* pre[2] = {"hc_attn_", "hc_ffn_"};    const WeightRef* w_norm[2];    const WeightRef* w_down[2];    const WeightRef* w_up[2];    const WeightRef* w_inject[2];    if (plain) {        const char* nn[2] = {"attn_norm.weight", "post_attention_norm.weight"};        for (int h = 0; h < 2; ++h) {            w_norm[h] = v.get(nn[h]);            w_down[h] = w_up[h] = w_inject[h] = nullptr;            if (!w_norm[h]) { err = v.name(nn[h]) + " is missing"; return false; }            if (w_norm[h]->kind != WeightKind::F32) { err = v.name(nn[h]) + " has the wrong engine form (must be F32)"; return false; }        }    } else {    for (int h = 0; h < 2; ++h) {        const std::string a = std::string(pre[h]) + "norm.weight";        const std::string d = std::string(pre[h]) + "down.weight";        const std::string u = std::string(pre[h]) + "up.weight";        const std::string i = std::string(pre[h]) + "inject.weight";        w_norm[h] = v.get(a.c_str());        w_down[h] = v.get(d.c_str());        w_up[h] = v.get(u.c_str());        w_inject[h] = v.get(i.c_str());        if (!w_norm[h] || !w_down[h] || !w_up[h] || !w_inject[h]) {            err = v.name((std::string(pre[h]) + "{norm,down,up,inject}.weight").c_str()) + " is missing";            return false;        }
 // The GR weights are BF16 and the arena holds them re-rounded to 2 B/elem.  `gr_read` wants exactly
 // that; handing it f32 bytes would walk 2x the tensor inside the arena without faulting.
-if (w_down[h]->kind != WeightKind::Bf16InF32 || w_up[h]->kind != WeightKind::Bf16InF32 ||            w_inject[h]->kind != WeightKind::Bf16InF32 || w_norm[h]->kind != WeightKind::F32) {            err = v.name(pre[h]) + "has the wrong engine forms (norm must be F32, the other three bf16)";            return false;        }    }
+if (w_down[h]->kind != WeightKind::Bf16InF32 || w_up[h]->kind != WeightKind::Bf16InF32 ||            w_inject[h]->kind != WeightKind::Bf16InF32 || w_norm[h]->kind != WeightKind::F32) {            err = v.name(pre[h]) + "has the wrong engine forms (norm must be F32, the other three bf16)";            return false;        }    }    }
 // ---- half 1: the mixer
 float* R = bb.R;
     // R0.11: WHICH STAGES TO RUN.  `stage_prefix == 0` means "as `half` says", so every caller that predates
@@ -1586,7 +1611,9 @@ float* R = bb.R;
     // and 0 is what every caller before this used.
     if (run0) {
 st_begin(layer, 0, stream);
-    if (fused) {
+    if (plain) {
+        strata::kernels::gr_plain_read(R, (const float*) w_norm[0]->data, RMS_EPS, g.n_embd, bb.mixed, stream);
+    } else if (fused) {
         strata::kernels::FusedGrArgs fa;
         fa.R = R; fa.R_out = R; fa.apply = pending_ffn; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject2;
         fa.w_norm = (const float*) w_norm[0]->data; fa.w_down = NativeDense::hc_bf16_view(*w_down[0], stream, 0, 1);
@@ -1607,9 +1634,10 @@ st_begin(layer, 0, stream);
     }
     // R0.9: the FFN front and the ROUTER.  It reads `bb.mixed`/`bb.inject`, which the mixer left -
     // the same contract `block_layer_post` has, and the reason the two are only meaningful in order.
-    if (run3) {
-st_begin(layer, 3, stream);
-    if (fused) {
+    if (run3) {st_begin(layer, 3, stream);
+if (plain) {
+    strata::kernels::gr_plain_read(R, (const float*) w_norm[1]->data, RMS_EPS, g.n_embd, bb.mixed, stream);
+} else if (fused) {
         strata::kernels::FusedGrArgs fa;
         fa.R = R; fa.R_out = R; fa.apply = true; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject;
         fa.w_norm = (const float*) w_norm[1]->data; fa.w_down = NativeDense::hc_bf16_view(*w_down[1], stream, 0, 1);
@@ -1658,9 +1686,11 @@ uint64_t ple_run_scratch_bytes() {
     return strata::kernels::ple_block_scratch_bytes() + strata::kernels::NG_HC_DIM * sizeof(float);
 }
 
-bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,                      const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,                      std::string& err) {    const strata::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
+bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,                      const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,                      std::string& err) {    const strata::kernels::GrShapes gs{g.n_embd, g.residual_streams(), g.hc_lr};
 // `bb.mixed` and `bb.inject` are what `block_layer_pre` left, and NOTHING between the two calls may touch
 // them - that is what makes `post[l]` safe to launch after the host has run the pool.
+// A plain family reaches the first branch below (no fused read exists for it) and its ZERO injection makes
+// that `gr_write` exactly `R += block_out`, which is the plain residual add the family means.
 st_begin(layer, 5, stream);
     if (g_shared_early ? !moe_combine_parts(g, layer, k, mb, parts, bb.block_out, stream, err)
                        : !moe_finish(tables, g, layer, k, mb, bb.mixed, parts, bb.block_out, stream, err)) return false;
@@ -1669,13 +1699,13 @@ st_begin(layer, 5, stream);
     try {
         if (!(g_fused_gr && strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
             gr_write(bb.R, bb.block_out, bb.inject, gs, bb.R, stream);
-            if (steer) strata::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
+            if (steer) strata::kernels::cvec_apply(bb.R, layer, 1, g.residual_streams() * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
         } else if (layer == g.n_layers - 1) {
             gr_write(bb.R, bb.block_out, bb.inject2, gs, bb.R, stream);   // materialise R for the head
-            if (steer) strata::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
+            if (steer) strata::kernels::cvec_apply(bb.R, layer, 1, g.residual_streams() * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
         } else if (steer) {
             // the write the next layer's fused read would have folded, then the vector
-            strata::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, bb.block_out, g.n_embd, bb.inject2, g.hc,
+            strata::kernels::cvec_apply(bb.R, layer, 1, g.residual_streams() * g.n_embd, bb.block_out, g.n_embd, bb.inject2, g.hc,
                                         true, stream);
         }
     } catch (const std::exception& e) {

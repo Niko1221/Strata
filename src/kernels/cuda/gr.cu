@@ -549,4 +549,32 @@ void gr_write_multi(const float* R, const float* block_out, const float* inject,
     }
 }
 
+/// Plain pre-norm residual read for families WITHOUT hyper-connections (qwen3next): one stream, no gate,
+/// the model's own `rms_norm(x) * gamma`.  One block, THREADS threads, strided over the row; the sum of
+/// squares runs in DOUBLE for the reason `block_sum` records - a GeForce FP64 rate is fine for one
+/// reduction per call and an FP32 tree is a different number from the reference's.
+__global__ void plain_norm_kernel(const float* __restrict__ R, const float* __restrict__ gamma, float eps,
+                                  int n_embd, float* __restrict__ mixed) {
+    __shared__ double scratch[8];
+    __shared__ float inv_rms;
+    double ss = 0.0;
+    for (int i = threadIdx.x; i < n_embd; i += blockDim.x) { const double v = R[i]; ss += v * v; }
+    ss = block_sum(ss, scratch);
+    if (threadIdx.x == 0) inv_rms = (float) std::sqrt(ss / n_embd + (double) eps);
+    __syncthreads();
+    const float inv = 1.0f / inv_rms;
+    for (int i = threadIdx.x; i < n_embd; i += blockDim.x) mixed[i] = R[i] * inv * gamma[i];
+}
+
+void gr_plain_read(const float* R, const float* gamma, float eps, int64_t n_embd, float* mixed, void* stream) {
+    plain_norm_kernel<<<1, THREADS, 0, (cudaStream_t) stream>>>(R, gamma, eps, (int) n_embd, mixed);
+    if (stream == nullptr) {
+        const cudaError_t e = cudaDeviceSynchronize();
+        if (e != cudaSuccess) {
+            std::fprintf(stderr, "gr_plain_read: %s\n", cudaGetErrorString(e));
+            std::exit(1);
+        }
+    }
+}
+
 }  // namespace strata::kernels

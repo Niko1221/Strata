@@ -174,7 +174,8 @@ void step_norm(float* state, const float* q, const float* k, const float* v, con
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
                          const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
                          void* stream) {
-    step_norm<false>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
+    // the family's gate: SiLU for Qwen3-Next/qwen35moe, sigmoid for Flash-Next (ModelGeometry::gdn_silu_gate)
+    step_norm<strata::core::kGdnSiluGate>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
 }
 
 void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, const float* v, const float* gate,

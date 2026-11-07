@@ -3,6 +3,7 @@
 // See include/strata/kernels/gdn.hpp for the state layout (S, h_v, S) and for why the recurrence needs no
 // barrier at all: every line of it touches only one (j, h) column, so one thread owns a column end to end.
 #include "strata/kernels/gdn.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cuda_runtime.h>
 
@@ -34,6 +35,13 @@ constexpr int MAX_H = 1;       ///< heads staged in shared memory per block
 /// ggml_compute_softplus_f32: log1p(exp(x)), with the large-x branch that avoids overflow.
 __device__ __forceinline__ float softplus_f(float x) { return x > 20.0f ? x : log1pf(expf(x)); }
 __device__ __forceinline__ float sigmoid_f(float x) { return 1.0f / (1.0f + expf(-x)); }
+__device__ __forceinline__ float silu_f(float x) { return x / (1.0f + expf(-x)); }
+/// The GDN output gate is a family property (see ModelGeometry::gdn_silu_gate): the compiled geometry picks
+/// sigmoid (Flash-Next) or SiLU (Qwen3-Next); `if constexpr` keeps the sigmoid instantiation bit-identical.
+__device__ __forceinline__ float gdn_gate_f(float x) {
+    if constexpr (strata::core::kGdnSiluGate) return silu_f(x);
+    else return sigmoid_f(x);
+}
 
 /// One step of the recurrence.  One thread per (h, j) column of the state.
 ///
@@ -145,7 +153,7 @@ __global__ void gdn_out_norm_kernel(const float* __restrict__ o, const float* __
     __syncthreads();
     const float inv = (float) (1.0 / sqrt(ssum / (double) S + (double) eps));
     for (int i = threadIdx.x; i < S; i += blockDim.x)
-        py[i] = po[i] * inv * ssm_norm[i] * sigmoid_f(pz[i]);
+        py[i] = po[i] * inv * ssm_norm[i] * gdn_gate_f(pz[i]);
 }
 
 }  // namespace

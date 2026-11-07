@@ -94,6 +94,17 @@ struct ModelGeometry {
 
     constexpr bool has_indexer() const { return idx_q_heads > 0; }              ///< false: dense attention only
     constexpr bool has_hyper_connections() const { return hc > 0; }             ///< false: plain pre-norm residual
+    /// The GDN output gate: Flash-Next (qwen4exp) gates the normalized recurrence output with sigmoid(z);
+    /// Qwen3-Next (and qwen35moe) use SiLU(z) - HF's RMSNormGated activation. A family property.
+    constexpr bool gdn_silu_gate() const { return family == ModelFamily::Qwen3Next || family == ModelFamily::Qwen35Moe; }
+    /// Whether the artifact ships the per-value-head GDN roles (v, conv channels, ssm_a, ssm_dt, beta, alpha)
+    /// GROUPED by key head (Qwen3-Next's GGUF keeps HF's order) instead of the tiled head order every GDN
+    /// kernel assumes (qwen4exp's GGUF ships tiled). Where grouped, the seam kernels gather to tiled.
+    constexpr bool gdn_grouped_heads() const { return family == ModelFamily::Qwen3Next; }
+    /// Residual STREAMS actually stored: `hc` for the hyper-connection families, ONE for the plain ones.
+    /// Every buffer sized by `hc * n_embd` must size by this instead; the plain trunk is the same
+    /// `gr_write` with a zero injection (2*sigmoid(0) = 1, a plain add) over a single stream.
+    constexpr int64_t residual_streams() const { return has_hyper_connections() ? hc : 1; }
     constexpr int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
     constexpr int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
@@ -115,6 +126,11 @@ struct ModelGeometry {
 #include "strata/core/geometry_checks.hpp"
 
 namespace strata::core {
+
+// The family traits as plain compile-time constants: nvcc will not call a host constexpr member from device
+// code, but a namespace-scope constexpr is a literal there. Kernels gate on these.
+inline constexpr bool kGdnSiluGate = kCompiledGeometry.gdn_silu_gate();
+inline constexpr bool kGdnGroupedHeads = kCompiledGeometry.gdn_grouped_heads();
 
 /// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval
 /// = 4` and an explicit `attention.compress_ratios` array - and `read_geometry` checks that the two agree.

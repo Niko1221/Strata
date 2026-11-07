@@ -40,6 +40,12 @@ void check(const char* what) {
 }
 
 // `commit` (one token): the history then keeps it - [hist1, hist2, x_0], each thread its channel's, after reading them
+/// The GDN output gate is a family property (ModelGeometry::gdn_silu_gate): SiLU for Qwen3-Next, sigmoid for
+/// Flash-Next; `if constexpr` keeps the sigmoid instantiation bit-identical.
+__device__ __forceinline__ float gdn_gate_v(float x) {
+    if constexpr (strata::core::kGdnSiluGate) return x / (1.0f + __expf(-x));
+    else return 1.0f / (1.0f + __expf(-x));
+}
 __device__ __forceinline__ void gdn_conv_l2_body(const int bx, const int by, float* hist, const float* __restrict__ qkv,
                                                               const float* __restrict__ w, float* __restrict__ h,
                                                               int C, int qk_heads, float eps, int t_begin, bool commit) {
@@ -68,8 +74,14 @@ __device__ __forceinline__ void gdn_conv_l2_body(const int bx, const int by, flo
         __syncthreads();
         const float ss = part[0] + part[1] + part[2] + part[3];
         y *= rsqrtf(ss + eps);
-    }
-    h[(size_t) t * C + c] = y;
+        h[(size_t) t * C + c] = y;
+    } else if constexpr (strata::core::kGdnGroupedHeads) {
+        // qwen3next: write the v head straight to its tiled column (the recurrence pairs head h with key head
+        // h % HK; the GGUF and the conv weights are grouped). HK/VPV come from the runtime shape: qk_heads is
+        // 2*HK and the v heads fill the rest of C.
+        const int g = bx - qk_heads, HK = qk_heads / 2, VPV = (C / S - qk_heads) / qk_heads;
+        h[(size_t) t * C + (size_t) (qk_heads + (g % VPV) * HK + g / VPV) * S + threadIdx.x] = y;
+    } else h[(size_t) t * C + c] = y;
 }
 
 __global__ void __launch_bounds__(S) gdn_conv_l2_multi_kernel(float* hist, const float* __restrict__ qkv,
@@ -402,7 +414,7 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
             const float scale = rsqrtf(ss / (float) S + eps);
             const float zz = z[(size_t) t * value_dim + head * S + col];
-            const float yv = oc * scale * gam * (1.0f / (1.0f + __expf(-zz)));
+            const float yv = oc * scale * gam * gdn_gate_v(zz);
             y[(size_t) t * value_dim + head * S + col] = yv;
             if constexpr (Q) gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + head * S + col, yv);
         }
@@ -576,11 +588,11 @@ __global__ void __launch_bounds__(S * RG) gdn_out_norm_kernel(const float* __res
         const float scale = rsqrtf(ss / (float) S + eps);
         const float zz = z[(size_t) t * value_dim + head * S + col];
         if constexpr (Q) {
-            const float yv = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+            const float yv = oc * scale * gamma[col] * gdn_gate_v(zz);
             y[(size_t) t * value_dim + head * S + col] = yv;
             gdn_q8_1_store(xq, (size_t) (t - t_out_begin) * value_dim + head * S + col, yv);
         } else {
-            y[(size_t) t * value_dim + head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+            y[(size_t) t * value_dim + head * S + col] = oc * scale * gamma[col] * gdn_gate_v(zz);
         }
     }
 }

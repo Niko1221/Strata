@@ -213,9 +213,23 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr float EPS = 1e-6f;
-// the shape the engine is compiled for (include/strata/core/geometry.hpp; -DSTRATA_GEOMETRY picks it)
-constexpr int64_t N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr, K = strata::core::kCompiledGeometry.n_expert_used, NE = strata::core::kCompiledGeometry.n_expert;
-constexpr int64_t C = strata::core::kCompiledGeometry.ssm_conv_channels, ZV = strata::core::kCompiledGeometry.ssm_value_dim, HV = strata::core::kCompiledGeometry.ssm_v_heads;
+// Every shape below is DERIVED from the compiled geometry (one build, one shape - see core/geometry.hpp;
+// -DSTRATA_GEOMETRY picks it): the literals these used to be were qwen4exp's numbers, and the gate in
+// init() compares against them, so a second family compiled with its own geometry header gets the whole
+// file's buffers and strides for free. A plain-residual family (qwen3next) keeps ONE residual stream.
+constexpr int64_t N = strata::core::kCompiledGeometry.n_embd,
+                  HC_RAW = strata::core::kCompiledGeometry.hc,
+                  HC = HC_RAW > 0 ? HC_RAW : 1,   // a plain-residual family keeps ONE residual stream
+                  D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr,
+                  K = strata::core::kCompiledGeometry.n_expert_used, NE = strata::core::kCompiledGeometry.n_expert,
+                  NFF = strata::core::kCompiledGeometry.n_ff;
+constexpr bool plain_family = !strata::core::kCompiledGeometry.has_hyper_connections();
+constexpr int64_t C = strata::core::kCompiledGeometry.ssm_conv_channels,
+                  ZV = strata::core::kCompiledGeometry.ssm_value_dim,
+                  HV = strata::core::kCompiledGeometry.ssm_v_heads;
+constexpr int64_t NH = strata::core::kCompiledGeometry.n_head, HD = strata::core::kCompiledGeometry.head_dim,
+                  NKV = strata::core::kCompiledGeometry.n_head_kv, IQ = strata::core::kCompiledGeometry.idx_q_heads,
+                  ID = strata::core::kCompiledGeometry.idx_key_dim;
 // widths the buffers and kernel arguments below are written in (int, as the literals they replace were)
 constexpr int kEmbd = (int) strata::core::kCompiledGeometry.n_embd, kFF = (int) strata::core::kCompiledGeometry.n_ff, kFF2 = 2 * kFF;
 constexpr int kNHead = (int) strata::core::kCompiledGeometry.n_head, kNKv = (int) strata::core::kCompiledGeometry.n_head_kv, kHeadDim = (int) strata::core::kCompiledGeometry.head_dim;
@@ -1820,7 +1834,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
 #endif
     m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
     m.T = chunk; m.cs = (cudaStream_t) stream; m.stats = &stats_;
-    if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
+    if (g.n_embd != N || g.residual_streams() != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
     }
     {   // a native pack's experts: this path's expert buffers and products (and so their Hadamard rotations) are
@@ -2053,7 +2067,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     core::SessionState& ss = *m.ss;
     bool ok = true;
     m.emb = o.take<float>(T * N, ok); m.R = o.take<float>(T * D, ok);
-    m.xn = gr_unfused() ? o.take<float>(T * D, ok) : nullptr;   // F-1: not needed (gr_mix_r reads R)
+    m.xn = (gr_unfused() || plain_family) ? o.take<float>(T * D, ok) : nullptr;   // F-1: not needed (gr_mix_r reads R); the plain family's read IS the norm, so it is always needed
     m.grs = o.take<float>(T * HC, ok);
     const bool hcr = pf_hc_region();   // STRATA_PF_HC_REGION: xn16 / lo / lo16 / gated (and their _lo) are taken in the region
     if (!hcr) {
@@ -2063,6 +2077,14 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok); m.mixed_bf = o.take<uint16_t>(T * N, ok);
     m.mixed_h = o.take<uint16_t>(T * N, ok);
+    if (plain_family) {
+        // The plain family's mixer input IS the pre-norm output: alias, don't copy. Exact because the
+        // plain path never runs gr_mix and forces ldx = D = N below, so xn/xn16 have exactly the layout
+        // mixed/mixed_bf promise. The injection buffers are never written by the plain path, so they are
+        // zeroed ONCE here and every `gr_write` over them is a plain residual add.
+        m.mixed = m.xn; m.mixed_bf = m.xn16;
+        cudaMemset(m.inj, 0, (size_t) T * HC * 4);
+    }
     // Embedding rows are dead after gr_broadcast on m.cs; subsequent half outputs use the same stream.
     m.bo = m.emb;
     if (!hcr && bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
@@ -4143,15 +4165,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     break;
                 }
                 // ---- the hyper-connection read of this half
-                const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
-                const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
-                                  su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
-                const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
-                                      *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
-                if (!wn || !wd || !wu || !wi) return false;
+                const std::string hcp = half == 0 ? "hc_attn_" : "hc_ffn_";
+                const std::string sn = plain_family ? std::string(half == 0 ? "attn_norm.weight" : "post_attention_norm.weight")
+                                                   : hcp + "norm.weight";
+                const std::string sd = hcp + "down.weight", su = hcp + "up.weight", si = hcp + "inject.weight";
+                const core::WeightRef *wn = need(v, sn.c_str(), err),
+                                      *wd = plain_family ? nullptr : need(v, sd.c_str(), err),
+                                      *wu = plain_family ? nullptr : need(v, su.c_str(), err),
+                                      *wi = plain_family ? nullptr : need(v, si.c_str(), err);
+                if (!wn || (!plain_family && (!wd || !wu || !wi))) return false;
                 // STRATA_HC_Q8 without a bf16 copy: this path's GEMMs read bf16, so the matrices are dequantized per half
                 core::WeightRef wd_q8, wu_q8;
-                if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
+                if (!plain_family && !wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
                     wd_q8 = *wd; wu_q8 = *wu;
                     wd_q8.data = core::NativeDense::hc_bf16_view(*wd, m.cs, 0, 0);
                     wu_q8.data = core::NativeDense::hc_bf16_view(*wu, m.cs, 1, 0);
@@ -4161,11 +4186,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 pt.mark(kPfHc, cs);
                 // the xn16 token stride of this chunk (the writers of both halves and of the fused write-backs use it)
                 const int64_t ldx = hc_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) && !gr_unfused() &&
-                                            !m.xn16_lo ? D + XN_PAD : D;
+                                            !m.xn16_lo && !plain_family ? D + XN_PAD : D;
                 const bool xf16 = m.xn_f16 && !m.xn16_lo && ldx == D;   // xn16 holds FP16 (its writers and readers below)
-                if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo, xf16);
+                if (plain_family || gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo, xf16);
                 else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo, ldx, xf16);
                 normed = false;
+                if (plain_family) { plain_mix_h(m.xn, m.mixed_h, T, m.cs); goto plain_read_done; }   // mixer input = the aliased norm output; no gate, no mixing
+                {
                 pt.mark(kPfHcDown, cs);   // STRATA_PREFILL_TIMING: the hyper-connection read's parts on their own lines (norm stays on "hc read")
                 bool hcd = false;
                 bool hdown = false;
@@ -4224,6 +4251,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                              m.mixed_bf_lo);
                 }
 
+                }   // HC gate block
+                plain_read_done:
                 if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
                     core::NativeDense::hc_bf16_release(m.cs, 0, 0);
                     core::NativeDense::hc_bf16_release(m.cs, 1, 0);
@@ -6210,7 +6239,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const bool cv_fused = steered && cvec_fuse() && !gr_unfused() && nl < LE && !(nl == 1 && ple_on) &&
                                       strata::kernels::cvec().n_embd == N && strata::kernels::cvec().hc == HC &&
                                       strata::kernels::cvec_tables(&cv_dir, &cv_s, &cv_on);
-                const bool fuse = !gr_unfused() && nl < LE && !(half == 1 && nl == 1 && ple_on) && (!steered || cv_fused);
+                const bool fuse = !plain_family && !gr_unfused() && nl < LE && !(half == 1 && nl == 1 && ple_on) && (!steered || cv_fused);
                 const core::WeightRef* wnn = nullptr;
                 if (fuse) {
                     const core::LayerView vn(*m.wt, nl);
@@ -7614,16 +7643,19 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                 bool normed = false;
                 for (int half = 0; half < 2; ++half) {
                     // ---- the hyper-connection read of this half (run_impl's)
-                    const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
-                    const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
-                                      su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
-                    const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
-                                          *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
-                    if (!wn || !wd || !wu || !wi) return false;
+                    const std::string hcp = half == 0 ? "hc_attn_" : "hc_ffn_";
+                    const std::string sn = plain_family ? std::string(half == 0 ? "attn_norm.weight" : "post_attention_norm.weight")
+                                                       : hcp + "norm.weight";
+                    const std::string sd = hcp + "down.weight", su = hcp + "up.weight", si = hcp + "inject.weight";
+                    const core::WeightRef *wn = need(v, sn.c_str(), err),
+                                          *wd = plain_family ? nullptr : need(v, sd.c_str(), err),
+                                          *wu = plain_family ? nullptr : need(v, su.c_str(), err),
+                                          *wi = plain_family ? nullptr : need(v, si.c_str(), err);
+                    if (!wn || (!plain_family && (!wd || !wu || !wi))) return false;
                     // STRATA_HC_Q8 without a bf16 copy (0.2.2's run_impl): this path's GEMMs read bf16, so the matrices
                     // are dequantized per half
                     core::WeightRef wd_q8, wu_q8;
-                    if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
+                    if (!plain_family && !wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
                         wd_q8 = *wd; wu_q8 = *wu;
                         wd_q8.data = core::NativeDense::hc_bf16_view(*wd, cs, 0, 0);
                         wu_q8.data = core::NativeDense::hc_bf16_view(*wu, cs, 1, 0);
@@ -7633,9 +7665,11 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     // the stream is not optional: under STRATA_HC_REQ8 bf16_proj expands the int8 codes into one static
                     // scratch per call site, on the stream it is given.  Omitted, the GEMMs below read it out of order.
                     pt.mark(kPfHc, cs);
-                    if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, cs, m.xn16_lo);
+                    if (plain_family || gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, cs, m.xn16_lo);
                     else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, cs, m.xn16_lo);
                     normed = false;
+                    if (plain_family) { plain_mix_h(m.xn, m.mixed_h, T, cs); goto plain_read_done2; }
+                    {
                     if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, 0, cs)) return false;
                     gr_silu(m.lo, m.lo16, T, cs, m.lo16_lo);
                     if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, cs)) return false;
@@ -7643,6 +7677,8 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     if (gr_unfused()) gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, cs, m.mixed_h, m.mixed_bf_lo);
                     else gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, cs, m.mixed_h,
                                   m.mixed_bf_lo);
+                    }   // HC gate block
+                    plain_read_done2:
                     if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
                         core::NativeDense::hc_bf16_release(cs, 0, 0);
                         core::NativeDense::hc_bf16_release(cs, 1, 0);
@@ -7851,7 +7887,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     }
                     // ---- the attention half's write, fused with the FFN half's norm (run_impl's F-2)
                     const core::WeightRef* wnn = nullptr;
-                    if (!gr_unfused()) {
+                    if (!plain_family && !gr_unfused()) {
                         wnn = need(v, "hc_ffn_norm.weight", err);
                         if (!wnn) return false;
                     }

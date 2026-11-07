@@ -181,7 +181,8 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
         add("hc_ffn_inject.weight", {H, g.hc});
         add("hc_ffn_norm.weight", {H});
     } else {
-        // plain pre-norm residual (qwen35moe): x += mixer(rms(x)); x += moe(rms(x))
+        // plain pre-norm residual (qwen35moe, qwen3next): x += mixer(rms(x)); x += moe(rms(x)).
+        // The two families name the second norm differently; the widths are the same.
         add("attn_norm.weight", {N});
         add("post_attention_norm.weight", {N});
     }

@@ -32,9 +32,11 @@ namespace strata::kernels {
 namespace {
 
 constexpr int N = strata::core::kCompiledGeometry.n_embd;         // 2560 in Flash-Next
-constexpr int HC = strata::core::kCompiledGeometry.hc;           // streams
+// A family WITHOUT hyper-connections (qwen3next) must not call these kernels - the call sites gate on
+// has_hyper_connections(). The shape falls back to Flash-Next's so this TU still compiles there.
+constexpr int HC = strata::core::kCompiledGeometry.hc > 0 ? (int) strata::core::kCompiledGeometry.hc : 4;   // streams
 constexpr int D = N * HC;       // 10240
-constexpr int LR = strata::core::kCompiledGeometry.hc_lr;         // 320
+constexpr int LR = strata::core::kCompiledGeometry.hc_lr > 0 ? (int) strata::core::kCompiledGeometry.hc_lr : 320;  // 320
 // the latency-hidden norm/up (gr_norm_fast_kernel / gr_up_fast_kernel, STRATA_GR_FAST): gfx906's, built for CUDA too
 #if defined(STRATA_HIP_GFX906) || !defined(__HIPCC__)
 #define STRATA_GR_FAST_BUILD 1

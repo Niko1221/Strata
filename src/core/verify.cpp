@@ -18,6 +18,7 @@
 #endif
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
+#include "strata/prefill/kernels.hpp"   // the fused GDN split kernels (plain families) reuse the prefill ones
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/spec_proposal.hpp"
 #if defined(_WIN32)
@@ -923,11 +924,11 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     std::string why;
-    if (!layer_verify_compatible(why)) {
+    if (!layer_verify_compatible(g, why)) {
         err = "verify: " + why + " (the verify window reproduces the default native decode path)";
         return false;
     }
-    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != (int) strata::core::kCompiledGeometry.n_expert_used || g.ssm_state_size != 128 ||
+    if ((g.has_hyper_connections() && !strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr)) || ss.k != (int) strata::core::kCompiledGeometry.n_expert_used || g.ssm_state_size != 128 ||
         g.ssm_d_conv != 4) {
         err = "verify: geometry differs from the artifact's";
         return false;
@@ -947,7 +948,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     max_blocks_ = s.idx_block == 0 ? 0 : ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;   // dense family: no blocks
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
-    const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
+    const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.residual_streams(), K = (uint64_t) ss.k;
     const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
@@ -1079,6 +1080,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         qkv_L_ = b.take<float>(nG * T * C); h_L_ = b.take<float>(nG * T * C);
         gate_L_ = b.take<float>(nG * T * HV); beta_L_ = b.take<float>(nG * T * HV);
         z_ = b.take<float>(T * ZV); y_ = b.take<float>(T * ZV); y_dummy_ = b.take<float>(T * ZV);
+        qkvz_ = b.take<float>(T * (C + ZV)); ba_scr_ = b.take<float>(T * 2 * HV); ab_scr_ = b.take<float>(T * 2 * HV);
         qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
         kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
         idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
@@ -1100,6 +1102,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
             strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
         head_mixed_ = b.take<float>(T * N); head_inj_ = b.take<float>(HC);
+        if (!g.has_hyper_connections()) {
+            // The plain family's window trunk is `gr_write` with a ZERO injection (a plain add) and the
+            // plain reads never write these buffers, so they are zeroed once here.
+            cudaMemset(inj_, 0, (size_t) T * HC * 4);
+            cudaMemset(inj2_, 0, (size_t) T * HC * 4);
+            cudaMemset(head_inj_, 0, (size_t) HC * 4);
+        }
         sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
@@ -1341,11 +1350,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const ModelGeometry& g = *g_;
     const WeightTable& wt = *wt_;
     SessionState& ss = *ss_;
-    const int64_t N = g.n_embd, HC = g.hc, K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;
+    const int64_t N = g.n_embd, HC = g.residual_streams(), K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;
     const int64_t HV = g.ssm_v_heads, HK = g.ssm_k_heads, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const int64_t IQ = g.idx_q_heads, ID = g.idx_key_dim, NE = g.n_expert, MT = max_t_;
     const QsaShapes s = shapes_of(g);
-    const GrShapes gs{g.n_embd, g.hc, g.hc_lr};
+    const GrShapes gs{g.n_embd, g.residual_streams(), g.hc_lr};
+    const bool plain_family = !g.has_hyper_connections();   // the window's plain trunk: reads are the model's own pre-norm, writes are zero-injection adds
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
@@ -1477,14 +1487,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
         stamp(l, 0, grp);
         const LayerView v(wt, l);
-        const char* pfx[2] = {"hc_attn_", "hc_ffn_"};
+        const std::string pfx[2] = {"hc_attn_", "hc_ffn_"};
         const WeightRef *wn[2], *wd[2], *wu[2], *wi[2];
         for (int h = 0; h < 2; ++h) {
-            wn[h] = need(v, (std::string(pfx[h]) + "norm.weight").c_str(), err);
-            wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
-            wu[h] = need(v, (std::string(pfx[h]) + "up.weight").c_str(), err);
-            wi[h] = need(v, (std::string(pfx[h]) + "inject.weight").c_str(), err);
-            if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
+            wn[h] = plain_family ? need(v, h == 0 ? "attn_norm.weight" : "post_attention_norm.weight", err)
+                                 : need(v, (pfx[h] + "norm.weight").c_str(), err);
+            wd[h] = plain_family ? nullptr : need(v, (pfx[h] + "down.weight").c_str(), err);
+            wu[h] = plain_family ? nullptr : need(v, (pfx[h] + "up.weight").c_str(), err);
+            wi[h] = plain_family ? nullptr : need(v, (pfx[h] + "inject.weight").c_str(), err);
+            if (!wn[h] || (!plain_family && (!wd[h] || !wu[h] || !wi[h]))) return false;
         }
         // the previous layer's FFN write, folded into this layer's first read (a control vector after it has
         // already applied it)
@@ -1588,6 +1599,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             pending = false;
         }
         auto gr_read_group = [&](int half, bool apply, float* inj_prev, float* inj_out) {
+            if (plain_family) {
+                // The plain family's read IS the model's pre-norm; the pending write it would fold is a
+                // zero-injection `gr_write` (a plain add) applied first. No fused q8 image: the consumer
+                // quantizes as it already does on the unfused path.
+                for (int t = tb; t < te; ++t) {
+                    if (apply) gr_write(Rt(t), bo_ + t * N, inj_prev + t * HC, gs, Rt(t), cs);
+                    gr_plain_read(Rt(t), (const float*) wn[half]->data, EPS, N, mixed_ + t * N, cs);
+                }
+                return false;
+            }
             strata::dispatch::notef("hc read: weights Q8_0 copies=%ld (0 = bf16 rows), half=%ld, qfuse=%ld", (long) (wd[half]->hc_q8 != nullptr), (long) half, (long) (qcnt_ != nullptr));
             FusedGrArgs fa[kFusedGrWideT];
             for (int t = tb; t < te; ++t) {
@@ -1653,14 +1674,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         try {
             if (!is_qsa_layer(g, l)) {
                 // ======================= GDN =======================
-                const WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
-                                *wout = need(v, "ssm_out.weight", err), *wa = need(v, "ssm_alpha.weight", err),
-                                *wb = need(v, "ssm_beta.weight", err), *wc = need(v, "ssm_conv1d.weight", err),
+                const bool gdn_fused = plain_family;   // plain families fuse qkv|z and beta|alpha into two matrices
+                const WeightRef *wqkv = need(v, gdn_fused ? "ssm_in.weight" : "attn_qkv.weight", err),
+                                *wg = gdn_fused ? nullptr : need(v, "attn_gate.weight", err),
+                                *wba = gdn_fused ? need(v, "ssm_ba.weight", err) : nullptr,
+                                *wout = need(v, "ssm_out.weight", err),
+                                *wa = gdn_fused ? nullptr : need(v, "ssm_alpha.weight", err),
+                                *wb = gdn_fused ? nullptr : need(v, "ssm_beta.weight", err),
+                                *wc = need(v, "ssm_conv1d.weight", err),
                                 *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
                                 *wsa = need(v, "ssm_a", err);
-                if (!wqkv || !wg || !wout || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
-                if (!native_of(wqkv, v.name("attn_qkv.weight"), err) || !native_of(wg, v.name("attn_gate.weight"), err) ||
-                    !native_of(wout, v.name("ssm_out.weight"), err))
+                if (!wqkv || !wout || !wc || !wnm || !wdt || !wsa) return false;
+                if (!gdn_fused && (!wg || !wa || !wb)) return false;
+                if (!native_of(wqkv, v.name(gdn_fused ? "ssm_in.weight" : "attn_qkv.weight"), err) ||
+                    !native_of(wout, v.name("ssm_out.weight"), err) ||
+                    (gdn_fused && !native_of(wba, v.name("ssm_ba.weight"), err)))
                     return false;
                 const int64_t gi = gdn_idx[(size_t) l];
                 float* state = ss.gdn_state + (size_t) (gi - ss.gdn_ord0) * gdn_floats;
@@ -1669,7 +1697,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 float* hb = h_L_ + (size_t) gi * MT * C;
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
                 float* beta = beta_L_ + (size_t) gi * MT * HV;
-                if (sidem) {   // the gates (a few blocks, latency-bound) beside the projections, joined below
+                if (gdn_fused) {
+                    // The fused matrices project whole, then split into the same per-group buffers the shared
+                    // conv/recurrence below already reads (the prefill path's split kernels, same shapes).
+                    if (!q8_attn) quant_in(xm, (int) N);
+                    mm(wqkv, qkvz_ + (size_t) tb * (C + ZV), (int) N, (int) (C + ZV));
+                    strata::prefill::split_qkvz(qkvz_ + (size_t) tb * (C + ZV), qkv, z_ + (size_t) tb * ZV, n, cs);
+                    mm(wba, ba_scr_ + (size_t) tb * 2 * HV, (int) N, (int) (2 * HV));
+                    strata::prefill::split_ba(ba_scr_ + (size_t) tb * 2 * HV, ab_scr_ + (size_t) tb * 2 * HV, n, cs);
+                    strata::prefill::gdn_gates(ab_scr_ + (size_t) tb * 2 * HV, (const float*) wdt->data,
+                                               (const float*) wsa->data, gate + (size_t) tb * HV,
+                                               beta + (size_t) tb * HV, n, cs);
+                }
+                if (sidem && !gdn_fused) {   // the gates (a few blocks, latency-bound) beside the projections, joined below
                     if (!branch(mfork_, cs, side_, "fork")) return false;
                     gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                                  (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
@@ -1678,7 +1718,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     if (cudaEventRecord(mjoin_, side_) != cudaSuccess) { err = "verify: the GDN gates' branch could not join"; return false; }
                 }
                 if (!q8_attn) quant_in(xm, (int) N);
-                if (side_proj) {   // the gate projection (compute-bound for i-quants) beside qkv and the conv
+                if (side_proj && !gdn_fused) {   // the gate projection (compute-bound for i-quants) beside qkv and the conv
                     // the branch reads F4's interleaved copy too (written on cs before the fork; bitwise native_mmvq's
                     // output), and qkv is recorded before the branch's launch, so its grid is dispatched first and the
                     // conv / recurrence that wait for it start sooner (z is read only after the recurrence)
@@ -1694,7 +1734,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     else native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, side2_);
                     if (cudaEventRecord(pjoin_, side2_) != cudaSuccess) { err = "verify: the gate projection's branch could not join"; return false; }
                 }
-                if (br) {   // STRATA_DF_BRANCH: a/b and z beside q/k/v and the conv; all of them read only this layer's input
+                if (br && !gdn_fused) {   // STRATA_DF_BRANCH: a/b and z beside q/k/v and the conv; all of them read only this layer's input
                     fork(0);
                     gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                                  (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
@@ -1703,10 +1743,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n,
                                 df_side_[1]);
                 }
-                const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem;   // the side mixer computes the gates on its branch
+                const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem && !gdn_fused;   // the side mixer computes the gates on its branch
                 strata::dispatch::notef("gdn layer: side_gates=%ld side_proj=%ld df_branch=%ld", (long) sidem, (long) side_proj, (long) br);
                 strata::dispatch::notef("gdn layer: conv+ab fused=%ld batch_rows=%ld", (long) fuse_ab, (long) batch_rec_);
-                if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
+                if (!side_proj && !gdn_fused) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
                 stamp(l, 2, grp);
                 if (batch_rec_) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
@@ -1734,18 +1774,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     join(0);
                     join(1);
                 } else {
-                if (!fuse_ab && !sidem)   // the gates: the HIP fused conv kernel (143-amdk) or the side mixer's branch, else here
+                if (!fuse_ab && !sidem && !gdn_fused)   // the gates: the HIP fused conv kernel (143-amdk) or the side mixer's branch, else here (fused: gdn_gates above)
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
                              n, cs);
                 stamp(l, 4, grp);
-                if (!side_proj) mm(wg, z_ + (size_t) tb * ZV, (int) N, (int) ZV);
+                if (!side_proj && !gdn_fused) mm(wg, z_ + (size_t) tb * ZV, (int) N, (int) ZV);   // fused: z came from the split
                 stamp(l, 5, grp);
-                if (side_proj && cudaStreamWaitEvent(cs, pjoin_, 0) != cudaSuccess) {
+                if (side_proj && !gdn_fused && cudaStreamWaitEvent(cs, pjoin_, 0) != cudaSuccess) {
                     err = "verify: the gate projection's branch could not join";
                     return false;
                 }
-                if (sidem && cudaStreamWaitEvent(cs, mjoin_, 0) != cudaSuccess) {
+                if (sidem && !gdn_fused && cudaStreamWaitEvent(cs, mjoin_, 0) != cudaSuccess) {
                     err = "verify: the GDN gates' branch could not join";
                     return false;
                 }
@@ -2553,12 +2593,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     {
         const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
                         *hu = wt.find("output_hc_up.weight");
-        if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
+        if (!plain_family && (!hn || !hd || !hu)) { err = "verify: an output_hc_* weight is missing"; return false; }
       for (int h0 = 0; h0 < T; h0 += kFusedGrMaxT) {
         const int HT = std::min(T - h0, kFusedGrMaxT);   // this chunk's columns: h0 .. h0 + HT
         // S25 (STRATA_HC_Q8=1): the final mixer from the GGUF's Q8_0 projections too, through the same multi read
         // (no pending write, no inject)
-        const bool mix_q8 = hd->hc_q8 != nullptr && hu->hc_q8 != nullptr && head_ != nullptr && head_->loaded();
+        const bool mix_q8 = !plain_family && hd->hc_q8 != nullptr && hu->hc_q8 != nullptr && head_ != nullptr && head_->loaded();
         bool q8_head = false;   // the fused read wrote the head's q8_1 activation image (xq_) itself
         strata::dispatch::notef("head: final mixer q8=%ld fuse_head_gr=%ld native_head=%ld", (long) mix_q8, (long) fuse_head_gr, (long) (head_ != nullptr && head_->loaded()));
         if (head_ != nullptr && head_->loaded())   // the head matrix itself is counted by native_mmvq / native_mmvq_il (n_out = the vocabulary)
@@ -2577,7 +2617,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
             q8_head = fused_gr_read_multi(fa, HT, xn_ + (size_t) h0 * HC * N, cs);
         }
-        else if (fuse_head_gr) {
+        else if (fuse_head_gr && !plain_family) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = h0; t < h0 + HT; ++t) {
                 FusedGrArgs& a = fa[t - h0];
@@ -2598,7 +2638,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
             }
             q8_head = fused_gr_read_multi(fa, HT, xn_ + (size_t) h0 * HC * N, cs);
-        } else if (head_mix_multi_enabled() && head_ != nullptr && head_->loaded()) {
+        } else if (!plain_family && head_mix_multi_enabled() && head_ != nullptr && head_->loaded()) {
             // the final mixer, the window's tokens in one read (fused_gr_read_multi without the pending write: the
             // last layer's write was done above; its sums are gr_read's)
             if (hn->kind != WeightKind::F32 || hd->kind != WeightKind::Bf16InF32 || hu->kind != WeightKind::Bf16InF32) {
