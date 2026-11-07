@@ -59,9 +59,6 @@
     "log": "<REPO>/strata-unsloth-ud-q4_k_xl.log",
     "lib_dirs": [],
     "port": 8080,
-    "env": {
-     "STRATA_ROUTE_TAIL_SKIP": "0"
-    },
     "backend": "hip"
    },
    "engine": {
@@ -92,9 +89,7 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {
-     "STRATA_ROUTE_TAIL_SKIP": "0"
-    },
+    "env_set": {},
     "notes": []
    },
    "setup_says": [

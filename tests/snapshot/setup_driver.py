@@ -161,7 +161,7 @@ def drive_setup(world: World) -> dict:
     import setup
     notes = io.StringIO()
     lib = ProbeLib(setup, world)
-    with world.patched(), mock.patch.object(os, "cpu_count", lambda: 16):
+    with world.patched(), mock.patch.object(os, "cpu_count", lambda: 16), mock.patch.object(setup, "WIN", lib.WIN),             mock.patch.object(setup, "EXE", lib.EXE), mock.patch.object(setup, "VEXE", lib.VEXE):     # setup's own helpers read these globals: the class decides, not the host
         cfg, summary = (_dsv41 if world.mset.multi_file else _qwen)(setup, world, lib, notes)
         eng = engine_start(world, dict(cfg))
     return {"entry": "setup", "command": command, "inputs": summary, "config_file": cfg, "engine": eng,
