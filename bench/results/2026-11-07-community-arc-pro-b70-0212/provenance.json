@@ -1,0 +1,157 @@
+{
+ "report": "2026-11-07-community-arc-pro-b70-0212",
+ "measured": "2026-11-07",
+ "operator": "@rwkeyes",
+ "hosts": {
+  "inference": "same machine as the client; loopback HTTP"
+ },
+ "hardware": {
+  "gpu": [
+   {
+    "name": "Intel Arc Pro B70 (Battlemage G31)",
+    "pci": "0000:03:00.0",
+    "memory": "32 GB GDDR6",
+    "role": "engine device 0",
+    "guc_firmware": "xe/bmg_guc_70.bin 70.72.1"
+   }
+  ],
+  "other_gpus": [
+   {
+    "name": "AMD Raphael iGPU",
+    "pci": "0000:1b:00.0",
+    "role": "display only, not used by the engine"
+   }
+  ],
+  "cpu": "AMD Ryzen 7 7700X (8 cores / 16 threads)",
+  "ram": "61 GiB",
+  "storage": "pack and model files on NVMe and on a 12.7 TB data volume; the engine streams experts from the GGUF",
+  "pcie_probe": "7.0 GB/s host->device (engine's own probe) -> pcie_frac 0.19"
+ },
+ "software": {
+  "os": "Ubuntu 24.04.5 LTS",
+  "kernel": "7.0.0-42-generic",
+  "gpu_driver": "in-kernel xe (no out-of-tree version)",
+  "runtime": "Intel oneAPI 2026.2 (SYCL), AOT target bmg-g31",
+  "engine_build": "source, SYCL AOT: cmake -S sycl -B build-sycl-aot -DSTRATA_SYCL_AOT=bmg-g31; ninja -j10",
+  "bash_wrapper": "~/bin/strata-sycl-host.sh (sets oneAPI 2026.2 LD_LIBRARY_PATH and OCL_ICD_FILENAMES)"
+ },
+ "arms": [
+  {
+   "label": "0.2.11",
+   "strata_commit": "3aa7fbfa7661ebddef68ed43b4673e55ff3cb053",
+   "engine_version": "0.1.57",
+   "binary_sha256": "a97c282602cc83e39e4519841fa325661940d15eed82d4a1dd1303f29b637d5d",
+   "description": "the 0.2.11 release tree as previously deployed on this host"
+  },
+  {
+   "label": "0.2.12",
+   "strata_commit": "068bd337d062472cafd68841ca9f5414c9dd4186",
+   "engine_version": "0.1.58",
+   "binary_sha256": "8a62c70622843d6ea29a1b7b7b3656e9cbbee94c7c0f547c73fd3f6cd9f0b5be",
+   "description": "v0.2.12 plus our local work on top of it (the tree serving port 8095's tests); the version comparison below is a build check, not a claim about a release"
+  },
+  {
+   "label": "0.2.12-stock",
+   "strata_commit": "146df3c468739147f520ac3816de806f71232571",
+   "engine_version": "0.1.58",
+   "binary_sha256": "510e9d6cd4e808eb65a3ae7b146ee21675cc7da534dff9dfc568f3c6a62378d6",
+   "description": "unmodified v0.2.12 (tag 146df3c46), same source build options"
+  }
+ ],
+ "model": {
+  "name": "Qwen3.8-Flash-Next GSQ-RCO (Coder) IQ1_M",
+  "pack": "coder-iq1_m (1.4 GB, on NVMe)",
+  "files": [
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "bytes": 29608446496
+   },
+   {
+    "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "bytes": 28800138432
+   }
+  ],
+  "sha256": "not measured (54.5 GiB over two shards; the files were not rehashed for this report)",
+  "expert_profile": "data/expert-profile-mine.bin (engine calibration output, produced on this host)",
+  "draft_vocab": "data/draft_vocab_en.bin"
+ },
+ "configuration": {
+  "config_file": {
+   "exe": "~/bin/strata-sycl-host.sh",
+   "args": [
+    "--pack",
+    "~/XeStrata-data/packs/coder-iq1_m",
+    "--native",
+    "~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+    "--ple-gguf",
+    "~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf",
+    "--expert-profile",
+    "<data>/strata-0.2.12/data/expert-profile-mine.bin",
+    "--expert-cache",
+    "auto",
+    "--stream-experts",
+    "--prefill",
+    "auto",
+    "--prompt-cache",
+    "6",
+    "--prompt-cache-every",
+    "4096",
+    "--batch",
+    "0",
+    "--spec",
+    "6",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "~/XeStrata-data/mtp/rt",
+    "--mtp-draft-vocab",
+    "<data>/strata-0.2.12/data/draft_vocab_en.bin",
+    "--mtp-window",
+    "8192",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--vram-reserve-mib",
+    "700",
+    "--conversation-cache-mib",
+    "2048"
+   ],
+   "cwd": "<data>/strata-0.2.12",
+   "tokenizer": "<modeldata>/packs/coder-iq1_m/tokenizer",
+   "model_name": "qwen3.8-flash-next-coder-iq1_m",
+   "log": "<data>/strata-0.2.12/strata-coder-iq1_m-sycl-tuned.log",
+   "port": 8095,
+   "backend": "sycl",
+   "open_browser": false,
+   "thinking_policy": "on",
+   "conv_route": "on",
+   "conv_route_batch_after": 4,
+   "short_answer": {
+    "spec": 0,
+    "max_tokens": 16
+   }
+  },
+  "changed_settings_between_arms": "none: the three arms ran the same config file and the same command line",
+  "context_tokens": 131072,
+  "spec": 6,
+  "spec_min_p": 0.5,
+  "prompt_cache": 6,
+  "prompt_cache_every": 4096,
+  "kv": "int8",
+  "kv_resident": 32768,
+  "mtp_window": 8192,
+  "server_capacity": 1,
+  "batch": 0
+ },
+ "method": {
+  "client": "loopback HTTP, one request at a time, streaming",
+  "sampling": "temperature 0 for the comparison lanes (deterministic), no reasoning_effort override",
+  "interleaving": "six engine windows in the order f11,f12,s12,f11,f12,s12; each window runs warm-up, fresh 4.2k, fresh 8.8k, follow-up 4.4k, follow-up 9.1k, a 32-token code prompt, a 30k-token prompt (1-token cap, prompt time only), a 7,855-token needle, and an over-window request",
+  "totals": "24 measured requests per arm window pair; medians over 2 windows x 2 repetitions per lane",
+  "engine_timings": "prefill_tps = prompt_n/prompt_ms, decode_tps = predicted_n/predicted_ms from the answer's timings block; wall_s is the client's",
+  "excluded": "over-window requests (HTTP 400, intentional), warm-up"
+ }
+}

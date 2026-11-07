@@ -73,6 +73,14 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-07: Intel Arc Pro B70 32 GB, Ryzen 7 7700X, 61 GiB RAM](../bench/results/2026-11-07-community-arc-pro-b70-0212/README.md):
+  three source builds of the same config (0.2.11, 0.2.12, unmodified 0.2.12) in six interleaved SYCL AOT (bmg-g31) engine
+  windows, Coder IQ1_M, 131,072-token context: medians of four requests per lane at 4,210/8,830 fresh and 4,451/9,071
+  follow-up prompt tokens, a 30,178-token prompt-only leg, a 7,855-token needle (6/6) and a 32-token code prompt. 0.2.12
+  decode is +0.4 % to +1.2 % over 0.2.11 and within 0.3 % of stock; prompt 1,333 to 1,403 tok/s at 4-9k and 1,827 tok/s at
+  30k. Also a `--spec` restart pair (4 against 6: +8.3 % to +30 % decode on short and repeated lanes, prompt unchanged)
+  and a `--kv-resident` restart sweep whose effect follows the residency state rather than the flag. Community format,
+  not the standard protocol; one card, one quantization, no model hashes.
 
 ## Run the standard benchmark
 
