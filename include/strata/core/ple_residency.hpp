@@ -73,15 +73,17 @@ inline bool arena_ram_fallback_allowed(const char* env_value, bool ple_ram_by_ha
     return true;
 }
 
-/// #5327: may a short arena still load THROUGH THE FILE CACHE, as 0.1.55 did?  MemAvailable credits only about half of
-/// the page cache, so `available < need` does not say the pages are not there: on a host whose own model files sit hot
-/// in the file cache, the kernel drops those clean pages as the arena reads them (the 0.1.54/0.1.55 "expert arena read
-/// through the file cache", decode at full speed for hours).  The shortfall that must NOT load is the one backed by
-/// memory the kernel cannot take without swapping another program's anonymous RAM - #4051's host (an engine that was
-/// still exiting) wedged in reclaim until it was power-cycled, which is what the #4846 refusal is for.  The pages the
-/// load can really use are the free ones plus the droppable file pages (`meminfo_free_and_droppable`), and the free
-/// hugetlb pages when they hold the WHOLE arena: the arena's mapping is MAP_HUGETLB or nothing (pinned.cu), so a pool
-/// smaller than the need serves none of it and is not credited.  Subtraction form, so no overflow.
+/// #5327: may a short arena still load, as 0.1.55 did?  The false alarm `available < need` raises on a host that can
+/// load is a reserved hugetlb pool: MemAvailable does not count free huge pages at all, and a launcher may reserve the
+/// pool for exactly this arena, so the reserve itself takes MemAvailable below the need while every page the arena
+/// maps sits free in the pool (the 0.1.54/0.1.55 "expert arena read through the file cache", decode at full speed for
+/// hours).  The arena's mapping is MAP_HUGETLB or nothing (pinned.cu), so the free pool is credited only when it holds
+/// the WHOLE arena; a smaller pool serves none of it.  Free pages plus the droppable file pages
+/// (`meminfo_free_and_droppable`) are credited too, but that is within a small margin of what MemAvailable already
+/// counts (it keeps back the zone low watermark and reserves; this does not), so it only bridges a small shortfall.
+/// The shortfall that must NOT load is the one backed by memory the kernel cannot take without swapping another
+/// program's anonymous RAM - #4051's host (an engine that was still exiting) wedged in reclaim until it was
+/// power-cycled, which is what the #4846 refusal is for.  Subtraction form, so no overflow.
 inline bool arena_shortfall_served_by_file_cache(uint64_t need, uint64_t free_bytes, uint64_t droppable_file_bytes,
                                                  uint64_t huge_free_bytes = 0) {
     if (need == 0) return false;
