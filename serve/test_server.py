@@ -3998,7 +3998,7 @@ class SharingTheGpu(unittest.TestCase):
 
     def test_min_free_vram_refuses_to_load(self):
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 2000
+        self.svc.free_vram_mib = lambda index=None: 2000
         self.svc.unload()
         t0 = time.time()
         s, b = self.chat()
@@ -4006,7 +4006,7 @@ class SharingTheGpu(unittest.TestCase):
         self.assertIn("in use by another program", b["error"]["message"])
         self.assertFalse(self.engine.alive())
         self.assertGreater(time.time() - t0, 10)                    # waited for memory being given back first
-        self.svc.free_vram_mib = lambda: 9000
+        self.svc.free_vram_mib = lambda index=None: 9000
         self.assertEqual(self.chat()[0], 200)
 
     class _Encoder:
@@ -4030,7 +4030,7 @@ class SharingTheGpu(unittest.TestCase):
         self.svc.unload()                                            # the engine is gone ...
         encoder = self.svc.vision = self._Encoder()                  # ... its picture encoder is not, and holds 6 GB of the card
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 2000 if encoder.up else 9000
+        self.svc.free_vram_mib = lambda index=None: 2000 if encoder.up else 9000
         self.svc.vram_free_wait_s = 0.2
         s, b = self.chat()
         self.assertEqual(s, 200, b)
@@ -4041,7 +4041,7 @@ class SharingTheGpu(unittest.TestCase):
         self.svc.unload()
         encoder = self.svc.vision = self._Encoder()
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 2000                        # still full after the encoder is gone
+        self.svc.free_vram_mib = lambda index=None: 2000                       # still full after the encoder is gone
         self.svc.vram_free_wait_s = 0.2
         self.assertEqual(self.chat()[0], 503)
         self.assertEqual(encoder.unloads, 1)
@@ -4054,8 +4054,22 @@ class SharingTheGpu(unittest.TestCase):
 
     def test_min_free_vram_unreadable_loads(self):
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: None                       # no NVML: never refuse
+        self.svc.free_vram_mib = lambda index=None: None             # no NVML: never refuse
         self.svc.unload()
+        self.assertEqual(self.chat()[0], 200)
+
+    def test_min_free_vram_checks_every_card_of_a_split(self):
+        """A layer split starts into every card it will use: the guard reads all of them, not just the first."""
+        self.svc.min_free_vram_mib = 8000
+        self.svc.gpu_indices = [0, 2]
+        seen = []
+        self.svc.free_vram_mib = lambda index=None: (seen.append(index), 9000 if index == 0 else 3000)[1]
+        self.svc.unload()
+        s, b = self.chat()
+        self.assertEqual(s, 503)
+        self.assertIn("GPU 2 has 3000 MiB free", b["error"]["message"])
+        self.assertIn(2, seen)                                      # the second card was read too
+        self.svc.free_vram_mib = lambda index=None: 9000
         self.assertEqual(self.chat()[0], 200)
 
     def test_before_load_runs_first(self):
@@ -4081,7 +4095,7 @@ class SharingTheGpu(unittest.TestCase):
         """#1997: a peer that is not running makes `curl` exit 7; the card has room, so the model loads."""
         self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 20000
+        self.svc.free_vram_mib = lambda index=None: 20000
         self.svc.unload()
         self.assertEqual(self._raw_chat()[0], 200)
         self.assertEqual(self.engine.starts, 1)
@@ -4089,7 +4103,7 @@ class SharingTheGpu(unittest.TestCase):
     def test_failing_before_load_with_full_vram_refuses_with_503_and_retry_after(self):
         self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(3)"]
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 2000
+        self.svc.free_vram_mib = lambda index=None: 2000
         self.svc.unload()
         self.svc.vram_free_wait_s = 0.2                              # (not the 15 s wait for memory)
         status, headers, body = self._raw_chat()
@@ -4098,14 +4112,14 @@ class SharingTheGpu(unittest.TestCase):
         self.assertTrue(int(headers["Retry-After"]) > 0)
         self.assertFalse(self.engine.alive())
         self.assertEqual(self.engine.starts, 0)
-        self.svc.free_vram_mib = lambda: 20000                      # the peer let go: the next try loads
+        self.svc.free_vram_mib = lambda index=None: 20000                      # the peer let go: the next try loads
         self.assertEqual(self._raw_chat()[0], 200)
 
     def test_before_load_strict_refuses_even_with_free_vram(self):
         self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(7)"]
         self.svc.before_load_strict = True
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 20000
+        self.svc.free_vram_mib = lambda index=None: 20000
         self.svc.unload()
         status, headers, body = self._raw_chat()
         self.assertEqual(status, 503)
@@ -4133,7 +4147,7 @@ class SharingTheGpu(unittest.TestCase):
         self.svc.before_load = [sys.executable, "-c", "import sys; sys.exit(1)"]
         self.svc.before_load_ignore_failure = True
         self.svc.min_free_vram_mib = 8000
-        self.svc.free_vram_mib = lambda: 2000                       # full, but ignore means load
+        self.svc.free_vram_mib = lambda index=None: 2000                       # full, but ignore means load
         self.svc.unload()
         self.assertEqual(self._raw_chat()[0], 200)
 
