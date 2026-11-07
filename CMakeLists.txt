@@ -170,6 +170,9 @@ if(NOT STRATA_CPU_X86)
 endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+option(STRATA_POOL_SPIN_US_MICROBENCH "Also build the park-cost timing into pool_tasks_test: the CPU time a worker parked at STRATA_POOL_SPIN_US=0 burns. It is its own test (pool_park_cost), it prints, and only `parkcost assert` or STRATA_POOL_PARK_ASSERT=1 fails it" OFF)
+# off by default because it measures CPU time and not output; and not with STRATA_SDE, which runs that binary
+# on an emulated CPU where a CPU-time bound means nothing
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)
@@ -2064,6 +2067,17 @@ else()
               src/kernels/cpu/expert_layout.cpp src/kernels/cpu/hadamard.cpp)
 endif()
 target_include_directories(strata_kernels_cpu PUBLIC include)
+# issue #4624: `STRATA_POOL_SPIN_US=0` means no pause stage in the park loop.  That is compiled only where it was
+# built and measured - Linux with the CPU engine or the CUDA engine - so a Windows build, the Mac engine
+# (docs/MAC.md) and the HIP backends (STRATA_ENABLE_HIP, STRATA_HIP_GFX906; docs/AMD_HIP.md) compile the park loop
+# of the last release, and the SYCL port (sycl/CMakeLists.txt compiles src/kernels/cpu/pool.cpp itself, and this
+# file returns before reaching here) never sees the flag.  PUBLIC so that anything linking the pool sees the same
+# answer about its own build.
+set(_strata_pool_spin_zero OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906)
+  set(_strata_pool_spin_zero ON)
+  target_compile_definitions(strata_kernels_cpu PUBLIC STRATA_POOL_SPIN_ZERO=1)
+endif()
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
@@ -2266,6 +2280,19 @@ if(STRATA_NATIVE_EXPERTS)
              STRATA_NO_NVFP4_512=1 STRATA_NO_NVFP4_256=1 $<TARGET_FILE:native_arithmetic_parity>)
     add_executable(pool_tasks_test src/kernels/cpu/pool_tasks_test.cpp)
     target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
+    if(STRATA_POOL_SPIN_US_MICROBENCH)
+      target_compile_definitions(pool_tasks_test PRIVATE STRATA_POOL_SPIN_US_MICROBENCH)
+      if(_strata_pool_spin_zero)
+        # its own test name and its own timeout: what a park costs is measured in CPU time, and a number measured
+        # on a working PC must not take the 360 bitwise comparisons down with it.
+        add_test(NAME pool_park_cost COMMAND pool_tasks_test parkcost)
+        set_tests_properties(pool_park_cost PROPERTIES TIMEOUT 300)
+      else()
+        # the timing prices the pause stage of a park; a build that does not compile the change has nothing to
+        # price, so it is not registered and the binary never runs it.
+        message(STATUS "Strata: pool_park_cost not registered: this build compiles the park loop as the last release does")
+      endif()
+    endif()
     add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
     set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
     add_test(NAME router_dot_parity COMMAND router_dot_parity)
