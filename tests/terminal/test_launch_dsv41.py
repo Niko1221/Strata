@@ -28,6 +28,10 @@ class LaunchDeepSeek(unittest.TestCase):
         p = mock.patch.object(Catalog, "hardware", lambda s, fresh=False: dict(self.hw))
         p.start()
         self.addCleanup(p.stop)
+        # several AMD cards share a DeepSeek model on Linux only (dsv41_fit.run_cards asks the host OS); these four R9700 are a Linux PC
+        p = mock.patch("strata_control.dsv41_fit._on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
 
     def plan(self, *args):
         code, out, err = run_cli(["launch", "--plan", "--output", "json", *args])

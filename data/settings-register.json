@@ -277,7 +277,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20530,
+     "line": 20523,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -384,7 +384,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20519,
+     "line": 20512,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -425,7 +425,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20518,
+     "line": 20511,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -460,7 +460,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20520,
+     "line": 20513,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -1268,13 +1268,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6292,
+     "line": 6265,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6292,
+     "line": 6265,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1998,7 +1998,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4271,
+     "line": 4274,
      "value": "\"1\""
     }
    ],
@@ -2065,7 +2065,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10968,
+     "line": 10941,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2279,7 +2279,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4271,
+     "line": 4274,
      "value": "\"1\""
     }
    ],
@@ -2414,7 +2414,7 @@
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 3912
+     "line": 3915
     }
    ],
    "doc_mentions": [
@@ -2516,7 +2516,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4272,
+     "line": 4275,
      "value": "\"1\""
     }
    ],
@@ -2562,19 +2562,19 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 1041,
+     "line": 1040,
      "value": "\"1\""
     },
     {
      "file": "serve/server.py",
-     "line": 1043,
+     "line": 1042,
      "value": "None"
     }
    ],
    "launch_reads": [
     {
      "file": "strata_cli/cli.py",
-     "line": 764
+     "line": 763
     }
    ],
    "doc_mentions": [],
@@ -2790,7 +2790,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11126,
+     "line": 11099,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2834,7 +2834,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13641,
+     "line": 13614,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2983,7 +2983,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4273,
      "value": "\"1\""
     }
    ],
@@ -3041,7 +3041,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4273,
      "value": "\"4\""
     }
    ],
@@ -3081,13 +3081,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10580,
+     "line": 10553,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10651,
+     "line": 10624,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3211,7 +3211,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19895,
+     "line": 19888,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -3743,7 +3743,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13501,
+     "line": 13474,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -4061,13 +4061,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18163,
+     "line": 18161,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11236,
+     "line": 11209,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -4664,13 +4664,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19320,
+     "line": 19317,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19320,
+     "line": 19317,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4788,11 +4788,11 @@
    "since": "v0.2.12",
    "last_commit": "b97433df05",
    "last_date": "2026-11-05",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "spec",
-   "note": "[checked] Calibrated DFlash2 window gate (AdaptiveGate) lost to the fixed confidence 0.5: -3.4% on UD-IQ4_XS-v31, -4.9% on UD-Q4_K_XL, -2.7% / -3.8% at row cost 6 / 9 ms, 0 of 4 rounds faster on chat and story (phaseA-tests/round0215/RESULTS-MAC-OUT.md:119, 'Negative; stays opt-in and off'). Not documented, not set by launch code; read at include/strata/spec/window_rule.hpp:119 and used in src/program/generate.cpp:18021,18889,19343. Companion STRATA_DF2_ROW_MS retires with it.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch D): code removed, the setting is no longer read. Evidence: [checked] Calibrated DFlash2 window gate (AdaptiveGate) lost to the fixed confidence 0.5: -3.4% on UD-IQ4_XS-v31, -4.9% on UD-Q4_K_XL, -2.7% / -3.8% at row cost 6 / 9 ms, 0 of 4 rounds faster on chat and story (phaseA-tests/round0215/RESULTS-MAC-OUT.md:119, 'Negative; stays opt-in and off'). Not documented, not set by launch code; read at include/strata/spec/window_rule.hpp:119 and used in src/program/generate.cpp:18021,18889,19343. Companion STRATA_DF2_ROW_MS retires with it.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_DF2_GEMM",
@@ -5070,7 +5070,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7690,
+     "line": 7663,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5337,11 +5337,11 @@
    "since": "v0.2.12",
    "last_commit": "b97433df05",
    "last_date": "2026-11-05",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "spec",
-   "note": "[checked] Row-cost input of STRATA_DF2_GATE only (include/strata/spec/window_rule.hpp:123); retires with it. Evidence for the gate: phaseA-tests/round0215/RESULTS-MAC-OUT.md:119.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch D): code removed, the setting is no longer read. Evidence: [checked] Row-cost input of STRATA_DF2_GATE only (include/strata/spec/window_rule.hpp:123); retires with it. Evidence for the gate: phaseA-tests/round0215/RESULTS-MAC-OUT.md:119.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_DF2_SHARE_HEAD_OFF",
@@ -5553,13 +5553,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7691,
+     "line": 7664,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12260,
+     "line": 12233,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5592,7 +5592,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20882,
+     "line": 20875,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -5788,7 +5788,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5554,
+     "line": 5527,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -6005,7 +6005,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4867,
+     "line": 3871,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -7142,7 +7142,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 784,
+     "line": 783,
      "value": "4"
     }
    ],
@@ -7327,7 +7327,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4261,
+     "line": 4264,
      "value": "str(Path(log).parent / \"ds4-slots\")"
     }
    ],
@@ -7368,7 +7368,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4258,
+     "line": 4261,
      "value": "DS41_SLOT_GB_DEFAULT"
     }
    ],
@@ -7417,7 +7417,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4257,
+     "line": 4260,
      "value": "DS41_SLOT_KEEP_DEFAULT"
     }
    ],
@@ -7610,19 +7610,19 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19201,
+     "line": 19198,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 21099,
+     "line": 21092,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13512,
+     "line": 13485,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7765,7 +7765,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13464,
+     "line": 13437,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8603,7 +8603,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6066,
+     "line": 5070,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8662,7 +8662,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6067,
+     "line": 5071,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8718,7 +8718,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6030,
+     "line": 5034,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8853,7 +8853,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4611,
+     "line": 4584,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9076,7 +9076,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5203,
+     "line": 5176,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9111,7 +9111,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5095,
+     "line": 5068,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9147,13 +9147,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18104,
+     "line": 18102,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11254,
+     "line": 11227,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9189,13 +9189,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18119,
+     "line": 18117,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11263,
+     "line": 11236,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9922,7 +9922,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4322,
+     "line": 4325,
      "value": "\"1\""
     }
    ],
@@ -9941,7 +9941,7 @@
    "last_date": "2026-11-07",
    "status": "default",
    "owner": "core",
-   "note": "the engine's own default on Linux when every visible card is gfx12 (arch_defaults.cpp gdn_chunked_default_env, applied in generate.cpp; owner yes 2026-11-07; R9700 +3.5% at 4K, KL mean 0.0025): =1 takes every chunk from 64 tokens; STRATA_GDN_CHUNKED=0 turns it off; STRATA_GDN_CHUNKED_MIN moves the line when it is unset",
+   "note": "the engine's own default on Linux when every visible card is gfx12 (arch_defaults.cpp gdn_chunked_default_env, applied in generate.cpp; owner yes 2026-11-07; R9700 +3.5% at 4K, KL mean 0.0025): =1 takes every chunk from 64 tokens; STRATA_GDN_CHUNKED=0 turns it off",
    "retire_after": "",
    "retired_in": ""
   },
@@ -10119,7 +10119,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4321,
+     "line": 4324,
      "value": "\"2\""
     }
    ],
@@ -10736,7 +10736,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4321,
+     "line": 4324,
      "value": "\"1\""
     }
    ],
@@ -11620,7 +11620,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6046,
+     "line": 5050,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -11920,7 +11920,7 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2628,
+     "line": 2622,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12112,7 +12112,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2593,
+     "line": 2591,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12171,11 +12171,11 @@
    "since": "v0.2.10",
    "last_commit": "87ec8fd83e",
    "last_date": "2026-10-31",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "kernels/cuda",
-   "note": "[checked] Software-pipelined group loads for the HC up read: no gain over G=2, 'stays behind its env var, off ... can be dropped before merging' (phaseA-tests/amd-q/RESULTS.md:62). Undocumented, not set by launch code; src/kernels/cuda/fused_gr.cu:2594-2600.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch C): code removed, the setting is no longer read. Evidence: [checked] Software-pipelined group loads for the HC up read: no gain over G=2, 'stays behind its env var, off ... can be dropped before merging' (phaseA-tests/amd-q/RESULTS.md:62). Undocumented, not set by launch code; src/kernels/cuda/fused_gr.cu:2594-2600.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_GR_Q8_PFS",
@@ -12191,7 +12191,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2586,
+     "line": 2584,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12270,13 +12270,13 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2947,
+     "line": 2941,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2947,
+     "line": 2941,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -12533,7 +12533,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2848,
+     "line": 2842,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -12601,7 +12601,7 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2676,
+     "line": 2670,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12634,7 +12634,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4866,
+     "line": 3870,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -12863,13 +12863,13 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 3602,
+     "line": 3596,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 3622,
+     "line": 3616,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12936,7 +12936,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 842,
+     "line": 819,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -13129,7 +13129,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 3240,
+     "line": 3234,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -13542,12 +13542,13 @@
    "engine_defaults": [],
    "launch_files": [
     "setup.py",
-    "strata_control/hipblaslt_tuning.py"
+    "strata_control/hipblaslt_tuning.py",
+    "strata_control/setup_config.py"
    ],
    "launch_sets": [
     {
-     "file": "setup.py",
-     "line": 11207,
+     "file": "strata_control/setup_config.py",
+     "line": 396,
      "value": "str(table)"
     }
    ],
@@ -13870,7 +13871,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6143,
+     "line": 5147,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -15102,7 +15103,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19895,
+     "line": 19888,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -15252,7 +15253,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5249,
+     "line": 4253,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -15807,13 +15808,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4871,
+     "line": 3875,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4871,
+     "line": 3875,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -15853,7 +15854,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4903,
+     "line": 3907,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -15898,12 +15899,18 @@
    "engine_defaults": [],
    "launch_files": [
     "apps/host/server/native-settings.mjs",
+    "apps/host/server/policy-generated.mjs",
     "strata_control/speed_switches.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/speed_switches.py",
      "line": 40,
+     "value": "\"1\""
+    },
+    {
+     "file": "apps/host/server/policy-generated.mjs",
+     "line": 5,
      "value": "\"1\""
     }
    ],
@@ -16521,7 +16528,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6581,
+     "line": 6554,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16634,7 +16641,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6579,
+     "line": 6552,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16925,7 +16932,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7958,
+     "line": 7931,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17141,7 +17148,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5279,
+     "line": 5252,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17437,19 +17444,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3518,
+     "line": 3458,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10789,
+     "line": 10762,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10817,
+     "line": 10790,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17493,7 +17500,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10821,
+     "line": 10794,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17577,7 +17584,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5574,
+     "line": 5547,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17620,7 +17627,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5588,
+     "line": 5561,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17692,25 +17699,25 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18138,
+     "line": 18136,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20996,
+     "line": 20989,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11223,
+     "line": 11196,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13423,
+     "line": 13396,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17794,7 +17801,7 @@
    "launch_sets": [
     {
      "file": "strata_control/split_engine.py",
-     "line": 506,
+     "line": 505,
      "value": "<file>"
     }
    ],
@@ -17920,7 +17927,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1693,
+     "line": 1641,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -17935,7 +17942,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/MAC.md:67",
-    "docs/MAC.md:266"
+    "docs/MAC.md:265"
    ],
    "first_commit": "a6e55d062e",
    "first_date": "2026-10-12",
@@ -17989,13 +17996,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2174,
+     "line": 2122,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2174,
+     "line": 2122,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18075,7 +18082,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:265"
+    "docs/MAC.md:264"
    ],
    "first_commit": "c34ac7093f",
    "first_date": "2026-10-13",
@@ -18141,19 +18148,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2452,
+     "line": 2392,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3461,
+     "line": 3401,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3466,
+     "line": 3406,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18186,7 +18193,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1705,
+     "line": 1653,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18246,13 +18253,13 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:271"
+    "docs/MAC.md:270"
    ],
    "first_commit": "3277bfcd71",
    "first_date": "2026-11-01",
    "since": "v0.2.10",
-   "last_commit": "8e7ed68181",
-   "last_date": "2026-11-01",
+   "last_commit": "af9f44e522",
+   "last_date": "2026-11-07",
    "status": "default",
    "owner": "metal/engine",
    "note": "on by default for a resident IQ3_S or Q2_0 pack (found from the GGUF file name; metal window.cpp f16_auto_for; owner yes 2026-11-07; M5 Max decode +9..15%, KL 0.009/0.016); STRATA_METAL_F16=0 turns it off, =1 turns it on for any pack; a streaming pack never",
@@ -18267,13 +18274,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 472,
+     "line": 456,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 472,
+     "line": 456,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18407,7 +18414,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 945,
+     "line": 922,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18440,13 +18447,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 933,
+     "line": 910,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 933,
+     "line": 910,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18481,13 +18488,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1009,
+     "line": 986,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1009,
+     "line": 986,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18520,13 +18527,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 696,
+     "line": 674,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 696,
+     "line": 674,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18540,7 +18547,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:269"
+    "docs/MAC.md:268"
    ],
    "first_commit": "e2bf3d36a2",
    "first_date": "2026-10-13",
@@ -18600,7 +18607,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1692,
+     "line": 1640,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18614,7 +18621,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:266"
+    "docs/MAC.md:265"
    ],
    "first_commit": "a6e55d062e",
    "first_date": "2026-10-12",
@@ -18635,13 +18642,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1660,
+     "line": 1608,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1660,
+     "line": 1608,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18655,7 +18662,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:270"
+    "docs/MAC.md:269"
    ],
    "first_commit": "41ffe3eef6",
    "first_date": "2026-10-12",
@@ -18676,13 +18683,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1479,
+     "line": 1427,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1479,
+     "line": 1427,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18696,7 +18703,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:272"
+    "docs/MAC.md:271"
    ],
    "first_commit": "39acb889cd",
    "first_date": "2026-10-12",
@@ -18717,13 +18724,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2339,
+     "line": 2287,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2339,
+     "line": 2287,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18758,13 +18765,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 459,
+     "line": 453,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 459,
+     "line": 453,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18803,7 +18810,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1694,
+     "line": 1642,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18817,7 +18824,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:267"
+    "docs/MAC.md:266"
    ],
    "first_commit": "e2bf3d36a2",
    "first_date": "2026-10-13",
@@ -18838,7 +18845,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1752,
+     "line": 1700,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18937,7 +18944,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2478,
+     "line": 2418,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18972,7 +18979,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3577,
+     "line": 3517,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19005,13 +19012,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 607,
+     "line": 585,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 607,
+     "line": 585,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19044,7 +19051,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2398,
+     "line": 2338,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19112,7 +19119,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2010,
+     "line": 1958,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19145,13 +19152,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 451,
+     "line": 438,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 451,
+     "line": 438,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19172,11 +19179,11 @@
    "since": "v0.1.44",
    "last_commit": "38cb85a8c3",
    "last_date": "2026-10-12",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "metal/engine",
-   "note": "[checked] Opt-in partial commit in gdn_step: 0.3-0.8% slower at --spec 2 on the M5 Max (metal/src/engine/window.cpp:434-438 comment); docs/MAC.md:262 lists it as 'measured no faster'. Off by default; not set by launch code. (An earlier automatic pass called it a default-on rollback; the code at window.cpp:438 reads it as =1 only.)",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch A): code removed, the setting is no longer read. Evidence: [checked] Opt-in partial commit in gdn_step: 0.3-0.8% slower at --spec 2 on the M5 Max (metal/src/engine/window.cpp:434-438 comment); docs/MAC.md:262 lists it as 'measured no faster'. Off by default; not set by launch code. (An earlier automatic pass called it a default-on rollback; the code at window.cpp:438 reads it as =1 only.)",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_METAL_PREFETCH",
@@ -19192,7 +19199,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 896,
+     "line": 873,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19297,19 +19304,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1979,
+     "line": 1927,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1999,
+     "line": 1947,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3477,
+     "line": 3417,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19323,7 +19330,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:272"
+    "docs/MAC.md:271"
    ],
    "first_commit": "994ccdf451",
    "first_date": "2026-10-12",
@@ -19344,13 +19351,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3610,
+     "line": 3550,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3610,
+     "line": 3550,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19391,7 +19398,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2922,
+     "line": 2862,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19427,7 +19434,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2941,
+     "line": 2881,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19441,7 +19448,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:263"
+    "docs/MAC.md:262"
    ],
    "first_commit": "41ffe3eef6",
    "first_date": "2026-10-12",
@@ -19462,19 +19469,19 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1722,
+     "line": 1670,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2909,
+     "line": 2849,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3614,
+     "line": 3554,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19507,13 +19514,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2913,
+     "line": 2853,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3615,
+     "line": 3555,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19579,13 +19586,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3611,
+     "line": 3551,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3611,
+     "line": 3551,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19618,7 +19625,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2944,
+     "line": 2884,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19684,13 +19691,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 478,
+     "line": 465,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 478,
+     "line": 465,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19711,11 +19718,11 @@
    "since": "v0.1.44",
    "last_commit": "389c24eebd",
    "last_date": "2026-10-12",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "metal/engine",
-   "note": "[checked] Fused router_route dispatch: no faster (T2 GPU 13.035 vs 13.027 ms) and 0.3-0.5% slower end to end on the M5 Max (metal/src/engine/window.cpp:462-465 comment); docs/MAC.md:262 lists it as 'measured no faster' and wrong on an M1 Max (stale routing logits). Not set by launch code.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch A): code removed, the setting is no longer read. Evidence: [checked] Fused router_route dispatch: no faster (T2 GPU 13.035 vs 13.027 ms) and 0.3-0.5% slower end to end on the M5 Max (metal/src/engine/window.cpp:462-465 comment); docs/MAC.md:262 lists it as 'measured no faster' and wrong on an M1 Max (stale routing logits). Not set by launch code.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_METAL_SAMPLE_STATS",
@@ -19725,7 +19732,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3443,
+     "line": 3383,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19830,13 +19837,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1482,
+     "line": 1430,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1482,
+     "line": 1430,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19869,13 +19876,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1484,
+     "line": 1432,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1484,
+     "line": 1432,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19908,13 +19915,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1929,
+     "line": 1877,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1929,
+     "line": 1877,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19947,13 +19954,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1892,
+     "line": 1840,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1892,
+     "line": 1840,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20009,13 +20016,13 @@
     },
     {
      "file": "setup.py",
-     "line": 9892,
+     "line": 9859,
      "value": "\"1\" if stream else \"0\""
     }
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:264"
+    "docs/MAC.md:263"
    ],
    "first_commit": "a6e55d062e",
    "first_date": "2026-10-12",
@@ -20108,13 +20115,13 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2039,
+     "line": 1987,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3331,
+     "line": 3271,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20128,7 +20135,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:272"
+    "docs/MAC.md:271"
    ],
    "first_commit": "5d76056a4a",
    "first_date": "2026-10-12",
@@ -20164,7 +20171,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/MAC.md:66",
-    "docs/MAC.md:268"
+    "docs/MAC.md:267"
    ],
    "first_commit": "62be0f3843",
    "first_date": "2026-10-13",
@@ -20185,7 +20192,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 465,
+     "line": 452,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20204,11 +20211,11 @@
    "since": "v0.2.12",
    "last_commit": "830732a33d",
    "last_date": "2026-11-05",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "metal/engine",
-   "note": "[checked] Weight prefetch beside gr_up: -5.9% on UD-IQ4_XS-v31, 0 of 4 rounds faster on every kind, 'Dead' (phaseA-tests/round0215/RESULTS-MAC-OUT.md:107). Opt-in screen, undocumented, not set by launch code; code at metal/src/engine/window.cpp:449-456,1012-1023,1059,1192.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch A): code removed, the setting is no longer read. Evidence: [checked] Weight prefetch beside gr_up: -5.9% on UD-IQ4_XS-v31, 0 of 4 rounds faster on every kind, 'Dead' (phaseA-tests/round0215/RESULTS-MAC-OUT.md:107). Opt-in screen, undocumented, not set by launch code; code at metal/src/engine/window.cpp:449-456,1012-1023,1059,1192.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_METAL_WRAP_SPLIT",
@@ -20257,7 +20264,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5296,
+     "line": 5269,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20516,7 +20523,7 @@
    "last_date": "2026-11-07",
    "status": "default",
    "owner": "core",
-   "note": "on by default where the engine already had it (NVIDIA cc 8+, gfx12, Intel) and, since the owner's yes of 2026-11-07, on AMD that is not gfx12 when most expert gate/up tensors of the file are Q5_K or Q6_K (UD-Q5_K_XL, UD-Q6_K_XL; generate.cpp via NativeDense::gguf_mostly_q5q6_experts); STRATA_MMQ_KQ=0 turns it off",
+   "note": "[auto] on by default for some GPU architectures only (NVIDIA cc>=8 src/core/nv_defaults.cpp:124=1); opt-in elsewhere; the variable overrides it",
    "retire_after": "",
    "retired_in": ""
   },
@@ -20710,13 +20717,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1551,
+     "line": 1538,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1551,
+     "line": 1538,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21081,13 +21088,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1727,
+     "line": 1634,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1763,
+     "line": 1654,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21147,11 +21154,11 @@
    "since": "v0.1.40.1",
    "last_commit": "cd83544431",
    "last_date": "2026-09-30",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "sycl/kernels",
-   "note": "[checked] Aligned weight-load prefetch in the wide Q6_K kernel (SYCL only): STRATA_MMVQ_PF=2/3/4/6 slower everywhere (qkv 70.8 -> 79.3 at PF 3), existing unaligned variants 2-4x slower (phaseA-tests/notes-intel-quants.md:212). Default 0, undocumented, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:1712.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch B): code removed, the setting is no longer read. Evidence: [checked] Aligned weight-load prefetch in the wide Q6_K kernel (SYCL only): STRATA_MMVQ_PF=2/3/4/6 slower everywhere (qkv 70.8 -> 79.3 at PF 3), existing unaligned variants 2-4x slower (phaseA-tests/notes-intel-quants.md:212). Default 0, undocumented, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:1712.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_MMVQ_RPW",
@@ -21161,13 +21168,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2184,
+     "line": 2067,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2184,
+     "line": 2067,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21225,11 +21232,11 @@
    "since": "v0.1.40.1",
    "last_commit": "e7c42b62b9",
    "last_date": "2026-09-30",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "sycl/kernels",
-   "note": "[checked] SIMD16 builds of the multi-column mmvq and the wide Q6_K kernel (SYCL only): 'Tried, no gain', no setting beats SIMD32 beyond noise in the engine (phaseA-tests/split145/v1/docs/INTEL.md:442; notes-intel-quants.md:184). Default 32, undocumented in docs/, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:164-174,1789,2212.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch B): code removed, the setting is no longer read. Evidence: [checked] SIMD16 builds of the multi-column mmvq and the wide Q6_K kernel (SYCL only): 'Tried, no gain', no setting beats SIMD32 beyond noise in the engine (phaseA-tests/split145/v1/docs/INTEL.md:442; notes-intel-quants.md:184). Default 32, undocumented in docs/, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:164-174,1789,2212.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_MMVQ_WAVE",
@@ -21276,13 +21283,13 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2349,
+     "line": 2213,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2349,
+     "line": 2213,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21329,13 +21336,13 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2172,
+     "line": 2055,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2172,
+     "line": 2055,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21368,13 +21375,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2143,
+     "line": 2026,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2143,
+     "line": 2026,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21409,13 +21416,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2054,
+     "line": 1937,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2054,
+     "line": 1937,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21448,19 +21455,19 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1980,
+     "line": 1863,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1980,
+     "line": 1863,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2014,
+     "line": 1897,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21493,13 +21500,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3862,
+     "line": 3726,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3862,
+     "line": 3726,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21532,13 +21539,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3861,
+     "line": 3725,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3861,
+     "line": 3725,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21571,13 +21578,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1717,
+     "line": 1624,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1717,
+     "line": 1624,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -22522,12 +22529,13 @@
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [
-    "setup.py"
+    "setup.py",
+    "strata_control/setup_config.py"
    ],
    "launch_sets": [
     {
-     "file": "setup.py",
-     "line": 11210,
+     "file": "strata_control/setup_config.py",
+     "line": 399,
      "value": "\"1\""
     }
    ],
@@ -22985,7 +22993,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2235,
+     "line": 2099,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -23897,7 +23905,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4721,
+     "line": 4694,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -24289,7 +24297,7 @@
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 354
+     "line": 353
     }
    ],
    "doc_mentions": [],
@@ -24676,13 +24684,18 @@
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [
-    "apps/host/server/native-settings.mjs",
+    "apps/host/server/policy-generated.mjs",
     "strata_control/speed_switches.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/speed_switches.py",
      "line": 47,
+     "value": "\"old\""
+    },
+    {
+     "file": "apps/host/server/policy-generated.mjs",
+     "line": 7,
      "value": "\"old\""
     }
    ],
@@ -25007,7 +25020,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11089,
+     "line": 11062,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -27141,7 +27154,7 @@
     },
     {
      "file": "strata_cli/launch/screens.py",
-     "line": 1387,
+     "line": 1383,
      "value": "1"
     },
     {
@@ -27648,13 +27661,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18477,
+     "line": 18475,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11627,
+     "line": 11600,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27805,13 +27818,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18306,
+     "line": 18304,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11419,
+     "line": 11392,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27850,13 +27863,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11874,
+     "line": 11847,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12166,
+     "line": 12139,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -27896,7 +27909,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10669,
+     "line": 10642,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27930,13 +27943,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18233,
+     "line": 18231,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11316,
+     "line": 11289,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27970,13 +27983,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18426,
+     "line": 18424,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11576,
+     "line": 11549,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28010,13 +28023,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18473,
+     "line": 18471,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11623,
+     "line": 11596,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28056,7 +28069,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7791,
+     "line": 7764,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28089,7 +28102,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18633,
+     "line": 18631,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     }
@@ -28129,7 +28142,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10672,
+     "line": 10645,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28169,7 +28182,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10665,
+     "line": 10638,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28203,13 +28216,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18290,
+     "line": 18288,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11403,
+     "line": 11376,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29391,7 +29404,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6436,
+     "line": 6409,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29787,7 +29800,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6457,
+     "line": 6430,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30582,7 +30595,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 8930,
+     "line": 8903,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31747,7 +31760,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2718,
+     "line": 2582,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31787,7 +31800,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3260,
+     "line": 3124,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31833,7 +31846,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3099,
+     "line": 2963,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31884,7 +31897,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3107,
+     "line": 2971,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31968,7 +31981,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3062,
+     "line": 2926,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32772,7 +32785,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4272,
+     "line": 4275,
      "value": "\"1\""
     }
    ],
@@ -32970,7 +32983,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19046,
+     "line": 19043,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -33402,7 +33415,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10885,
+     "line": 10858,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -33630,12 +33643,13 @@
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [
-    "setup.py"
+    "setup.py",
+    "strata_control/setup_config.py"
    ],
    "launch_sets": [
     {
-     "file": "setup.py",
-     "line": 11229,
+     "file": "strata_control/setup_config.py",
+     "line": 418,
      "value": "\"0\""
     }
    ],
@@ -33752,12 +33766,13 @@
    "engine_sets": [],
    "engine_defaults": [],
    "launch_files": [
-    "setup.py"
+    "setup.py",
+    "strata_control/setup_config.py"
    ],
    "launch_sets": [
     {
-     "file": "setup.py",
-     "line": 11226,
+     "file": "strata_control/setup_config.py",
+     "line": 415,
      "value": "str(ROOT / \"tools\" / \"hip\")"
     }
    ],
@@ -34001,12 +34016,18 @@
    "engine_defaults": [],
    "launch_files": [
     "apps/host/server/native-settings.mjs",
+    "apps/host/server/policy-generated.mjs",
     "strata_control/speed_switches.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/speed_switches.py",
      "line": 43,
+     "value": "\"1.5\""
+    },
+    {
+     "file": "apps/host/server/policy-generated.mjs",
+     "line": 6,
      "value": "\"1.5\""
     }
    ],
@@ -35248,7 +35269,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18129,
+     "line": 18127,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -35483,19 +35504,19 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4399,
+     "line": 4402,
      "value": "1"
     },
     {
      "file": "serve/server.py",
-     "line": 4407,
+     "line": 4410,
      "value": "1"
     }
    ],
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 4402
+     "line": 4405
     }
    ],
    "doc_mentions": [
@@ -35652,7 +35673,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4273,
      "value": "\"1\""
     }
    ],
@@ -35708,7 +35729,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4271,
+     "line": 4274,
      "value": "\"1\""
     }
    ],
@@ -35770,7 +35791,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4273,
      "value": "\"1\""
     }
    ],
@@ -35954,7 +35975,7 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2634,
+     "line": 2628,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -36103,7 +36124,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10533,
+     "line": 10506,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36151,13 +36172,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 8260,
+     "line": 8233,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10506,
+     "line": 10479,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36309,7 +36330,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20750,
+     "line": 20743,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36353,7 +36374,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20798,
+     "line": 20791,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36423,7 +36444,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19945,
+     "line": 19938,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36636,13 +36657,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18075,
+     "line": 18073,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20753,
+     "line": 20746,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36675,7 +36696,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18076,
+     "line": 18074,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36708,7 +36729,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20738,
+     "line": 20731,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36741,7 +36762,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20840,
+     "line": 20833,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37334,7 +37355,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7191,
+     "line": 7164,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37414,7 +37435,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7017,
+     "line": 6990,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37456,7 +37477,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7421,
+     "line": 7394,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37496,7 +37517,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7419,
+     "line": 7392,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37563,13 +37584,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19916,
+     "line": 19909,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12577,
+     "line": 12550,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37787,7 +37808,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 21530,
+     "line": 21523,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -38196,13 +38217,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19508,
+     "line": 19501,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12324,
+     "line": 12297,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38244,7 +38265,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19546,
+     "line": 19539,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -38256,7 +38277,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12378,
+     "line": 12351,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38546,13 +38567,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4988,
+     "line": 4961,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4988,
+     "line": 4961,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39634,7 +39655,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20086,
+     "line": 20079,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39652,7 +39673,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 9034,
+     "line": 9007,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39690,25 +39711,25 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20595,
+     "line": 20588,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20632,
+     "line": 20625,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13165,
+     "line": 13138,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13203,
+     "line": 13176,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39754,7 +39775,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2584,
+     "line": 2582,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39790,7 +39811,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1360,
+     "line": 1347,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40003,7 +40024,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4630,
+     "line": 4603,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40039,7 +40060,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13087,
+     "line": 13060,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40112,7 +40133,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5151,
+     "line": 5124,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40435,7 +40456,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5182,
+     "line": 5155,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40577,7 +40598,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5169,
+     "line": 5142,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40756,13 +40777,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5322,
+     "line": 5295,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5423,
+     "line": 5396,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41179,7 +41200,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13304,
+     "line": 13277,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41252,7 +41273,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 9118,
+     "line": 9091,
      "backend": "sycl",
      "fn": "getenv"
     }

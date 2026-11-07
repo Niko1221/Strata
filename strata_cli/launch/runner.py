@@ -13,7 +13,6 @@ tests see the same thing. Nothing here prints or reads the keyboard. The steps r
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -1400,7 +1399,7 @@ class Runner:
         path = cat.root / f"strata-{tag}.json"
         adopt.write(path, cfg)
         self.notices.append("The downloader built into this Terminal sets up NVIDIA and AMD cards only (Intel Arc cards have a separate installer), so Strata wrote the "
-                            f"run settings itself from the prepared model files already on this computer ({path.name}). Nothing was downloaded.")
+                            f"run settings itself from the prepared model files already on this computer ({path.name}). No model files were downloaded.")
         self.emit("model", f"Used your prepared model files and wrote the run settings ({path.name}); this card is not one the built-in downloader sets up.", 100, level="warn")
         return path
 
@@ -1584,7 +1583,13 @@ class Runner:
             mode = "off"                                     # the Draft layer switch is off and no drafter was chosen since
         elif drafting.normalize(mode) == "auto" and self.split_expected(cfg):
             mode = "mtp"                                     # the all-cards split engine runs the MTP draft layer: the plan and the fetch are for that, not for DFlash2
-        return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": self.s.family,
+        name = cfg.get("model_name")
+        if not name:                                         # not installed yet (a first launch, --plan): the name setup will write, so the plan names the drafter Auto will really fetch
+            try:
+                name = self.catalog.model_name_of(self.s.family, self.s.model)
+            except Exception:                                # noqa: BLE001 - an unreadable table is only the old, generic plan
+                name = None
+        return {"mode": mode, "klass": drafting.card_class(archs), "model_name": name, "family": self.s.family,
                 "data_dir": drafting.data_dir_of(args) or (Path(self.s.data_dir) if self.s.data_dir else None),
                 "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
                 "blocked": drafting.blocked_by(args, split=bool(self.s.gpus and len(self.s.gpus) > 1), slots=int(self.s.parallel or 0), named=drafting.normalize(mode) == "dflash2", backend=backend)}
@@ -2356,7 +2361,7 @@ class Runner:
             want = self.drafting_inputs(_cfg or {})
             want["data_dir"] = want["data_dir"] or self.existing_data_dir() or self.catalog.data_dir()
             sig = self.drafting_signals(_cfg or {}, want)
-            if drafting.needs_pack(**want, **sig):            # chosen DFlash2 (or Auto picking it) and the drafter is not here: it is part of the download
+            if drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig):            # chosen DFlash2 (or Auto picking it) and the drafter (the tuned one, where the set has it) is not here: it is part of the download
                 parts.append({"kind": "dflash2", "label": "the DFlash2 drafter",
                               "gb": drafting.tuned_pack(drafting.tuned_variant(want["backend"], want["model_name"])).gb if drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig) else drafting.DOWNLOAD_GB})
         except Exception:                                    # noqa: BLE001 - the plan still shows the rest
@@ -2402,7 +2407,7 @@ class Runner:
             text = ("Nothing to download: your model files are used where they are." if st.own_files
                     else "Nothing to download: the model is already on this computer.")
         else:
-            names = [f"{p['label']} ({p['gb']:.1f} GB)" for p in parts]
+            names = [f"{p['label']} ({p['gb']:.2f} GB)" if p["kind"] == "dflash2" and p["gb"] < 1 else f"{p['label']} ({p['gb']:.1f} GB)" for p in parts]       # (the tuned drafter is 0.34 / 0.52 GB: one decimal said 0.3 / 0.5)
             what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
             text = f"About {gb:.1f} GB to download: {what}."
             if st.on_disk_gb >= 1:
@@ -2563,7 +2568,7 @@ class Runner:
                 from strata_control import split_engine as SE
                 return SE.split_plan_line(MTP_FETCH_GB)
             sig = self.drafting_signals(cfg or {}, want)
-            if drafting.needs_pack(**want, **sig):            # the launch fetches the drafter first (ensure_drafter), so that is what will run
+            if drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig):            # the launch fetches the drafter first (ensure_drafter), so that is what will run
                 return "Drafting: DFlash2 (its drafter is downloaded first)"
             return drafting.summary_line(drafting.decide(**want, **sig))
         except Exception:                                    # noqa: BLE001

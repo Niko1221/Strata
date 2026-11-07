@@ -4,11 +4,8 @@
  "entries": {
   "setup": {
    "entry": "setup",
-   "command": "strata setup --family qwen --model IQ3_S --yes",
-   "blocked": {
-    "reason": "setup.py's config generation is one 1,300-line function (run(), setup.py lines ~10100-11400) that, before it writes the run config, probes the GPU with nvidia-smi/rocm-smi, resolves or builds the engine, downloads and SHA-256-checks the model shards, packs the model and (DeepSeek) runs the 16-word smoke test.  It cannot be run without a model, an engine and a GPU.",
-    "seam": "a pure function in strata_control (config_for(args, hardware_report, files) -> run config) that run() calls just before write_setup_config(); no behaviour change, a move of the existing dict-building lines.  Until then the other entry points start from a stand-in for setup's output (World.base_config)."
-   }
+   "command": "strata setup --family qwen --model IQ3_S --yes --no-start",
+   "not_driven": "Mac: setup.py hands over to metal/setup_mac.py (mac_setup) and, for DeepSeek, to mac_dsv41_setup(); they write their own configs; not behind a seam yet"
   },
   "launch": {
    "entry": "launch",

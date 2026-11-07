@@ -13,7 +13,7 @@ test('the UTF-8 line comes first and leaves the script alone', () => {
 
 // #3202: PowerShell writes to a pipe in the OEM code page (cp866 on a Russian Windows, cp437 elsewhere); a Cyrillic folder came back
 // as mojibake or "?". The same happens on any non-UTF-8 OEM page, so this fails on this machine without the line, too.
-test('a Cyrillic temp folder name survives PowerShell through a pipe', { skip: process.platform !== 'win32' }, t => {
+test('a Cyrillic temp folder name survives PowerShell through a pipe', { skip: process.platform !== 'win32' && 'needs Windows PowerShell (Windows only)' }, t => {
   const word = String.fromCharCode(0x414, 0x43e, 0x43a, 0x443, 0x43c, 0x435, 0x43d, 0x442, 0x44b);   // "Документы"
   const dir = mkdtempSync(join(tmpdir(), word + '-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

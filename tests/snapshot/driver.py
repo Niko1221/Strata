@@ -8,7 +8,7 @@ A record has the same shape for every entry point:
   setup_args       what the entry point hands to setup.py (Terminal launch only)
   config_file      the run config the entry point leaves on disk (normalized)
   engine           {exe, argv, env_set, notes}: what serve/server.py would start: engine_args(cfg, exe) and the variables child_env(cfg) adds
-  blocked          present instead of the above when the entry point cannot be driven headless today (with the reason and the seam)
+  not_driven       (setup only) present instead of the above for a class whose setup is another script (Intel Arc, Mac), with the reason
 """
 
 from __future__ import annotations
@@ -38,16 +38,6 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
         except SystemExit as e:
             code = int(e.code or 0) if not isinstance(e.code, str) else 1
     return code, out.getvalue(), err.getvalue()
-
-SETUP_BLOCKED = {
-    "reason": ("setup.py's config generation is one 1,300-line function (run(), setup.py lines ~10100-11400) that, before it writes the run config, "
-               "probes the GPU with nvidia-smi/rocm-smi, resolves or builds the engine, downloads and SHA-256-checks the model shards, packs the model "
-               "and (DeepSeek) runs the 16-word smoke test.  It cannot be run without a model, an engine and a GPU."),
-    "seam": ("a pure function in strata_control (config_for(args, hardware_report, files) -> run config) that run() calls just before write_setup_config(); "
-             "no behaviour change, a move of the existing dict-building lines.  Until then the other entry points start from a stand-in for setup's output "
-             "(World.base_config)."),
-}
-
 
 def engine_start(world: World, cfg: dict) -> dict:
     """What serve/server.py hands to the engine for this run config: the arguments (engine_args) and the variables child_env adds to the environment."""
@@ -96,10 +86,6 @@ def drive_launch(world: World) -> dict:
             "setup_args": seen.get("setup_args"), "config_file": cfg, "engine": engine_start(world, cfg)}
 
 
-def drive_setup(world: World) -> dict:
-    return {"entry": "setup", "command": f"strata setup --family {world.mset.family} --model {world.mset.model} --yes", "blocked": SETUP_BLOCKED}
-
-
 def drive_app(world: World, which: str) -> dict:
     """The app's Load, in a Node process: the host's own createNativeControl with a fake Control for everything but the Drafting calls, which go through the
     real strata_control (python -m tests.snapshot.control_shim) on the same simulated machine.  Returns the run config the host wrote and the Python side's
@@ -127,6 +113,7 @@ def drive(machine_key: str, set_key: str, entry: str, root: Path | None = None) 
     world = World(get_machine(machine_key), get_set(set_key), root).build()
     try:
         if entry == "setup":
+            from .setup_driver import drive_setup
             rec = drive_setup(world)
         elif entry == "launch":
             with world.patched():

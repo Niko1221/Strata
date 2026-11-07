@@ -456,6 +456,13 @@ class Catalog:
             return "deepseek41", match
         return ("qwen" if "qwen" in offered else offered[0]), match
 
+    def model_name_of(self, family: str | None, model: str | None) -> str | None:
+        """The ``model_name`` setup writes into this model's run config (``qwen3.8-flash-next-iq3_s``), known before the model is installed: what the drafter table is keyed by."""
+        if not family or not model:
+            return None
+        fam = self.tables()[1].get(family) or {}
+        return f"{fam.get('name', family)}-{model.lower()}"
+
     def tag_of(self, family: str, model: str) -> str:
         _m, families, _c, _s = self.tables()
         return (families[family].get("tag", "") + model).lower()

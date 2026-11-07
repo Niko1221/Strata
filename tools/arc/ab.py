@@ -6,7 +6,7 @@
 arm = name=engine[|env;env[|extra args]].  Summary: median per case of the LAST repeat of each load (the first read of a
 prompt in an engine is low), ratio to the first arm, and whether the greedy tokens equal the first arm's (same round).
 """
-import argparse, json, os, statistics, subprocess, sys
+import argparse, json, statistics, subprocess, sys
 
 W = "/mnt/models/strata-test/arc037"
 
