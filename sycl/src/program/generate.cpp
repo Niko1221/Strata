@@ -9809,6 +9809,70 @@ int main(int argc, char **argv) try {
                 if (!pump(false)) return false;
             return true;
         };
+        // ============================ the runtime retune (TUNE), between requests ============================
+        //
+        // `TUNE adapt_every=8 adapt_swaps=160 adapt_decay=0.97 spec_min_p=0.4` changes settings of the RUNNING
+        // engine: no restart, and the weights, the expert tiers and the session state are untouched.  Every key
+        // below is read out of `o` at the moment the engine USES it, and a TUNE line only arrives between requests
+        // (the dispatch sits after the QUIT check, before the request's busy scope), so nothing is in flight when
+        // the field is written.
+        //
+        // This is what makes a calibration cheap: these are the settings whose measurement used to cost an engine
+        // start each (and one model load with it).  Deliberately NOT here, because they size memory or the session
+        // at load and belong to the rebuild class: --spec, the --kv/--max-context family, --expert-cache and the
+        // resident tiers, --pcie-mode, --prefill-chunk's ceiling (a chunk only goes down), and every graph/native flag.
+        const int64_t tune_prefill_max = o.prefill_chunk > 0 ? o.prefill_chunk : 0;   // a chunk may only go DOWN
+        auto handle_tune = [&](const std::string& l) {
+            std::string applied, refused;
+            std::istringstream in(l.size() > 4 ? l.substr(5) : std::string());
+            std::string kv;
+            while (in >> kv) {
+                const size_t eq = kv.find('=');
+                const std::string k = eq == std::string::npos ? kv : kv.substr(0, eq);
+                char* end = nullptr;
+                const double v = eq == std::string::npos ? 0.0 : std::strtod(kv.c_str() + (ptrdiff_t) eq + 1, &end);
+                // a value must be a number and must be there: "adapt_swaps=abc" is a typo, not a request for 0
+                const bool known = eq != std::string::npos && end != nullptr && end != kv.c_str() + eq + 1 &&
+                                   *end == '\0' && v >= 0.0;
+                if (known && k == "adapt_every") {
+                    o.adapt_every = (int) v;
+                    applied += " adapt_every=" + std::to_string(o.adapt_every);
+                } else if (known && k == "adapt_swaps") {
+                    o.adapt_swaps = (int) v;
+                    applied += " adapt_swaps=" + std::to_string(o.adapt_swaps);
+                } else if (known && k == "adapt_decay") {
+                    o.adapt_decay = (float) std::clamp(v, 0.0, 1.0);
+                    applied += " adapt_decay=" + std::to_string(o.adapt_decay);
+                } else if (known && k == "prefill_chunk") {
+                    o.prefill_chunk = tune_prefill_max > 0 ? std::min<int64_t>((int64_t) v, tune_prefill_max)
+                                                           : (int64_t) v;
+                    applied += " prefill_chunk=" + std::to_string((long long) o.prefill_chunk);
+                    if (tune_prefill_max > 0 && (int64_t) v > tune_prefill_max)
+                        applied += "(capped at the startup chunk)";
+                } else if (known && k == "pcie_frac") {
+                    o.pcie_frac = std::clamp(v, 0.0, 1.0);
+                    applied += " pcie_frac=" + std::to_string(o.pcie_frac);
+                } else if (known && k == "spec_min_p") {
+                    o.spec_min_p = std::clamp(v, 0.0, 1.0);
+                    applied += " spec_min_p=" + std::to_string(o.spec_min_p);
+                } else if (known && k == "prompt_cache") {
+                    o.prompt_cache = (int) v;
+                    applied += " prompt_cache=" + std::to_string(o.prompt_cache);
+                } else if (known && k == "prompt_cache_every") {
+                    o.prompt_cache_every = (int64_t) v;
+                    applied += " prompt_cache_every=" + std::to_string((long long) o.prompt_cache_every);
+                } else if (known && k == "short_read") {
+                    o.short_read = (int64_t) v;
+                    applied += " short_read=" + std::to_string((long long) o.short_read);
+                } else {
+                    refused += " " + kv + "(unknown key, or a value it cannot take)";
+                }
+            }
+            std::string out = applied.empty() ? std::string("TUNED none") : ("TUNED" + applied);
+            if (!refused.empty()) out += " refused:" + refused;
+            std::printf("%s\n", out.c_str());
+            std::fflush(stdout);
+        };
         for (;;) {
             if (batch_on() || (piped && pipe_inflight())) {
                 if (!try_next_line(line)) {
@@ -9857,6 +9921,8 @@ int main(int argc, char **argv) try {
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
             if (line == "QUIT") break;
+            // the runtime retune: not a request, so it is handled before the busy scope and touches no session
+            if (line.rfind("TUNE", 0) == 0 && (line.size() == 4 || line[4] == ' ')) { handle_tune(line); continue; }
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
                 BusyScope() {
