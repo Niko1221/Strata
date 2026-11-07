@@ -120,6 +120,67 @@ past the slot precheck (it only fires for 2+ sessions) but not the sizing. Not f
 precheck/sizing can be judged against `MemAvailable` on Tegra by whoever owns that code.
 
 
+## Clock modes: MAXN measured against the 120 W default (same branch, same tuned engine)
+
+With `sudo nvpmodel -m 0 && sudo jetson_clocks` the GPU runs pinned at 1575 MHz (120 W mode caps the GPC rail at 1386
+and idles at 315), the memory domain at 1692 instead of 1557, the CPUs at 2601. Against the 120 W DVFS runs of the same
+protocol suite: iq3_s short decode 37.3 to **47.4 (+27%)**, 4K decode 36.6 to 40.2, 16K decode 33.4 to **40.5 (+21%)**,
+prompt +13 to +16%, TTFT -14%; Qwen3.6 short 50.7 to 59.3 (+17%), 4K 37.4 to 43.5, 16K 20.2 to 25.2 (+25%), prefill
++15 to +16%. Decode moves because the memory-domain clock moves too - this is the cheapest Thor speed-up there is, and
+it survives on 120 W hardware only as a DVFS gamble. The 120 W half of the pair (same scripts) is what the sudo-gated
+re-run adds when available; the 120 W figures quoted here are the machine's default-state runs from the sections above.
+
+The same tool at the same cells as the Spark guide (`tools/dgx_bench.py`, 64K context, temperature 0, 256-token
+answers; [maxn/iq3s-64k.md](maxn/iq3s-64k.md), [maxn/q36-128k.md](maxn/q36-128k.md), [maxn/nvfp4-64k.md](maxn/nvfp4-64k.md)):
+
+| Cell (prompt tok/s) | Thor MAXN iq3_s | Thor MAXN q36 | Thor MAXN NVFP4 | Spark iq3_s (guide) |
+|---|---:|---:|---:|---:|
+| 4K | 921 | 1757 | 704 | 1,296 |
+| 16K | 1,138 | 1,584 | 761 | 1,680 |
+| 32K | 950 | 1,339 | 767 | 1,735 |
+| decode 4K/16K/32K | 37.6 / 37.5 / 38.0 | 43.2 / 25.0 / 13.2 | 27.1 / 28.9 / 27.5 | 45.5 / 46.5 / 46.5 |
+
+So: 0.71 / 0.68 / 0.55 of the Spark's prompt speed by 32K, 0.82 of its decode. The 32K cell is where Thor falls off
+most (KV bytes on the same shared bandwidth).
+
+## NVFP4 on Thor: works, but it is not a speed-up here
+
+The Terminal's `--family nvfp4 --model NVFP4` pack (Strata's GPTQ conversion, 128 GB, downloaded whole on this machine)
+loads and answers: standard-suite sanity **12 of 12** at context 64K. Speed is worse than IQ3_S on the same machine
+(MAXN): prompt 704/761/767 against 921/1138/950, decode 27.1/28.9/27.5 against 37.6/37.5/38.0. The package does carry
+the `quantize_mmq_nvfp4` kernels for sm_110, but MODELS.md's own sentence - RTX 50 cards run FP4, other cards run
+NVFP4 at 8-bit - holds for the Thor in practice: no FP4 fast path measured here. Keep IQ3_S on Thor.
+
+## Home-cooked packs: what a Thor-specific quantization recipe buys (and what it costs)
+
+Every decode bound on this machine was computed from the pack's real per-layer formats
+([quant/iq3s-bound-thor.txt](quant/iq3s-bound-thor.txt) at 273 GB/s unified, all experts resident): IQ3_S reads
+982 MB of routed experts + 4,166 MB of dense weights per token -> **hard ceiling 53.0 tok/s**, of which the MAXN runs
+already reach 38-40 (72-76%); Qwen3.6's ceiling is 106.7. Experts are only 19% of IQ3_S's per-token bytes - so the
+community "shrink the experts" recipe cannot double anything, and a wholesale llama-quantize Q2_K pack even grows the
+file (74.8 GiB vs 77.9) because Unsloth's per-layer expert mix (2.05 bpw) is leaner than stock Q2_K (2.6).
+
+Measured with the repo's pinned llama.cpp (3cf0325) built for sm_110, one model at a time (the machine wedged its
+network stack when two 78 GB loads overlapped - do not overlap loads on this platform):
+
+| Pack | file | tg128 (tok/s) | PPL, same 250 KB corpus | verdict |
+|---|---:|---:|---:|---|
+| IQ3_S as-is | 77.9 GiB | 21.6 | 2.258 | baseline |
+| thorA: stock Q2_K everywhere | 74.8 GiB | 28.8 (+33%) | 3.028 (+34%) | not worth it |
+| thorB: Thor recipe ([quant/thorB-args.txt](quant/thorB-args.txt)) | 80.7 GiB | 26.2 (+21%) | 2.312 (+2.4%) | the shape that works |
+
+thorB keeps routed experts at their stock formats (per-layer `--tensor-type blk\.(...)\.ffn_gate_exps\.weight=...`
+lists - llama.cpp has no `keep` at this pin, so each format group is written back explicitly), keeps the 26.8 GiB
+PLE table at IQ4_NL, and instead cuts the dense side: hyper-connections BF16 to Q8_0, attention and the SSM output
+and the head to Q5_K. +21% decode for 2.4% perplexity, and it points where a Thor pack should go next (the dense
+layers carry 81% of the bytes). Note llama.cpp's tg sits far below the Strata engine's decode (Strata's PLE and
+expert-cache path is the reason); use ratios across packs, not the absolute.
+
+Method notes for llama.cpp on Thor: `-ngl 99` needs the project built with GGML_CUDA on a CMake that knows CUDA 13
+(the system cmake 3.28 worked once CUDACXX was set and the arch list was `110-real;110-virtual`); the perplexity
+tool at this pin has no dataset download, so the corpus is the bench's own answers
+(`quant/ppl-corpus.txt` is reproducible from the outputs.jsonl files).
+
 ## Reproducing
 
 Same machine and package: the fat engine comes from `ARCHS="121;110" sh spark/build_engine.sh` (or
