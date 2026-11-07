@@ -660,8 +660,10 @@ def main(argv=None):
         return 0
     if a.check:
         have = engine_names()
-        reg = {e["name"] for e in json.loads(REGISTER.read_text(encoding="utf-8"))["settings"]}
-        missing, extra = sorted(have - reg), sorted(reg - have)
+        entries = json.loads(REGISTER.read_text(encoding="utf-8"))["settings"]
+        reg = {e["name"] for e in entries}
+        retired = {e["name"] for e in entries if e.get("status") == "retired" and e.get("retired_in")}   # kept on purpose: not read any more
+        missing, extra = sorted(have - reg), sorted(reg - have - retired)
         for n in missing:
             print("not in the register:", n)
         for n in extra:
