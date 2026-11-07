@@ -56,7 +56,7 @@
     },
     {
       "name": "a1_eval_base",
-      "_why": "基座基准分：身份 logp / 能力 CE / 生成体检，走引擎的 /v1/score（须先 --lora 起好 serve）",
+      "_why": "基座基准分：身份 logp / 能力 CE / 生成体检，走引擎的 /v1/engine/score（须先 --lora 起好 serve）",
       "cmd": [
         "$ENV_PY",
         "$MEZO/examples/training/evalset.py",

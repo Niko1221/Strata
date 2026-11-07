@@ -1,14 +1,14 @@
-"""引擎 `/v1/score` 与训练侧 `ce.token_logprobs` 的逐位置对比。
+"""引擎 `/v1/engine/score` 与训练侧 `ce.token_logprobs` 的逐位置对比。
 
 MeZO 的 f(θ) 原本由 `ce.token_logprobs` 算：HF 前向取 `last_hidden_state`，再过 lm_head 的
-分块 logits，`gather - logsumexp`。引擎的 `/v1/score` 是替换路径，但它必须先证明给出**同一串
+分块 logits，`gather - logsumexp`。引擎的 `/v1/engine/score` 是替换路径，但它必须先证明给出**同一串
 log p** —— 否则 `(f(θ+ε) − f(θ−ε))/2ε` 的差分里混进的是两条路径的差，不是 θ 的梯度。
 
 对比口径（与 bench_infer.py / hf_ref.py 完全一致）：
   hidden = body(input_ids=ids[:, :-1], use_cache=False).last_hidden_state[0]
   labels = ids[0, 1:]
   lp[t]  = log p(labels[t] | ids[:t+1])
-引擎侧 `/v1/score` 收完整 ids，返回长度 n 的 logprobs，前 n-1 个就是同一组 lp[t]
+引擎侧 `/v1/engine/score` 收完整 ids，返回长度 n 的 logprobs，前 n-1 个就是同一组 lp[t]
 （末位没有目标，是 null）。所以两边按下标直接对齐。
 
 两段用法（HF 侧 34 GiB、引擎侧 26 GiB，48 GB 卡放不下同时，故串行）：
@@ -82,7 +82,7 @@ def hf_side(args) -> int:
 def engine_side(args) -> int:
     ids = parse_ids(args.tokens)
     body = json.dumps({"tokens": ids}).encode("utf-8")
-    req = urllib.request.Request(args.engine.rstrip("/") + "/v1/score", data=body,
+    req = urllib.request.Request(args.engine.rstrip("/") + "/v1/engine/score", data=body,
                                  headers={"Content-Type": "application/json"})
     # 引擎是本机进程：绕开系统代理，否则 http_proxy 会把 127.0.0.1 也转发出去
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))

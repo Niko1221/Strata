@@ -5651,11 +5651,11 @@ class Service:
                 ctl.release()
             self.fifo.release()
 
-    lora_wait_s = 300.0                                  # POST /v1/lora waits this long for a running request
+    lora_wait_s = 300.0                                  # POST /v1/engine/lora waits this long for a running request
 
     def set_lora(self, req: dict) -> dict:
-        """POST /v1/lora: move theta by swapping the adapter's tables in place - the other half of a zeroth-order
-        step, whose costs came from two /v1/score reads (`"lora": 1` and `"lora": -1`).
+        """POST /v1/engine/lora: move theta by swapping the adapter's tables in place - the other half of a zeroth-order
+        step, whose costs came from two /v1/engine/score reads (`"lora": 1` and `"lora": -1`).
 
         Available only for an engine started with `--lora` (there has to be an adapter to update); it waits for a
         running request to finish, and drops every cached K/V with the swap - the next request reads its prompt
@@ -5687,7 +5687,7 @@ class Service:
     score_timeout_s = 21600.0                            # a scored sequence is a prompt read: minutes, not seconds
 
     def score(self, req: dict) -> dict:
-        """POST /v1/score: a log-probability for EVERY position of a sequence the CALLER chose.
+        """POST /v1/engine/score: a log-probability for EVERY position of a sequence the CALLER chose.
 
         The sequence comes as `tokens` (the precise form - a training loop already holds the ids it sampled),
         `messages` (+ `tools`, `chat_template_kwargs`; rendered and tokenized the way a chat request's prompt is,
@@ -8814,7 +8814,7 @@ def make_handler(svc: Service):
                 return
             reserved = False
             try:
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/score"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/engine/score"):
                     reserved = svc.reserve_inference()
                     if reserved is None:
                         error = {"type": "server_error", "code": "server_draining",
@@ -8874,12 +8874,17 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                if path == "/v1/lora":                      # swap the adapter's tables in place (a training loop's theta)
+                # /v1/engine/* are RPCs on the RESIDENT serving engine (the EngineHttp transport):
+                # score reads teacher-forced logprobs, lora swaps the adapter's tables in place.
+                # They are a sibling of /v1/training/* (EngineApi), not a child of it: that prefix
+                # is the open-session allowlist in the gate above, and the serving engine is
+                # unloaded during a session - these two must therefore be refused there.
+                if path == "/v1/engine/lora":                      # swap the adapter's tables in place (a training loop's theta)
                     if not self._own_page("the loaded adapter can be replaced"):
                         return
                     self._json(200, svc.set_lora(req))
                     return
-                if path == "/v1/score":                      # teacher-forced log-probabilities (a training teacher)
+                if path == "/v1/engine/score":                      # teacher-forced log-probabilities (a training teacher)
                     self._json(200, svc.score(req))
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):

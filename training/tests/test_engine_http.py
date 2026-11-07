@@ -1,10 +1,10 @@
 """EngineHttp：MeZO 的**在线** transport（驱动驻留推理引擎），对桩 HTTP 服务验证接口语义。
 
 与 test_engine_api.py 的分工：那一个守的是 `/v1/training/*`（离线，卸载推理引擎）；这里守的是
-`/v1/score` + `/v1/lora`（在线，不卸载）。两者的 score/lora 必须对 MeZO 循环同构，唯一的硬差别
+`/v1/engine/score` + `/v1/engine/lora`（在线，不卸载）。两者的 score/lora 必须对 MeZO 循环同构，唯一的硬差别
 是 `gen` 不可用（服务端没有按 ids 生成的端点）。
 
-最容易静默错的一条是长度契约：引擎的 `SL` 只发 n-1 行，而 `/v1/score` 为了让 `logprobs` 与
+最容易静默错的一条是长度契约：引擎的 `SL` 只发 n-1 行，而 `/v1/engine/score` 为了让 `logprobs` 与
 `tokens` 对齐补了一个末位 null。客户端若照抄 n 个，answer 段的切片会整体错一位 —— 损失照样能算
 出来、曲线照样往下走，只是学的东西不是要学的。这里把它钉死。
 """
@@ -28,11 +28,11 @@ import mezo
 
 
 class StubServeApi(http.server.BaseHTTPRequestHandler):
-    """仿真 serve/server.py 的 /v1/score 与 /v1/lora。calls 记录请求；fail_* 注入错误路径。"""
+    """仿真 serve/server.py 的 /v1/engine/score 与 /v1/engine/lora。calls 记录请求；fail_* 注入错误路径。"""
 
     calls: list = []
-    score_fail = 0           # >0: /v1/score 返回这个状态码
-    lora_fail = 0            # >0: /v1/lora 返回这个状态码
+    score_fail = 0           # >0: /v1/engine/score 返回这个状态码
+    lora_fail = 0            # >0: /v1/engine/lora 返回这个状态码
 
     def log_message(self, *a):
         pass
@@ -49,7 +49,7 @@ class StubServeApi(http.server.BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}")
         StubServeApi.calls.append((self.path, body))
-        if self.path == "/v1/score":
+        if self.path == "/v1/engine/score":
             if StubServeApi.score_fail:
                 self._reply(StubServeApi.score_fail,
                             {"error": {"message": "the sequence is 9 tokens; this server holds 8"}})
@@ -61,7 +61,7 @@ class StubServeApi(http.server.BaseHTTPRequestHandler):
                               "scored": len(ids) - 1, "logprobs": lps,
                               "sum_logprob": -0.5 * max(len(ids) - 1, 0), "mean_logprob": -0.5,
                               "nll": 0.5 * max(len(ids) - 1, 0), "perplexity": 1.65})
-        elif self.path == "/v1/lora":
+        elif self.path == "/v1/engine/lora":
             if StubServeApi.lora_fail:
                 self._reply(StubServeApi.lora_fail,
                             {"error": {"message": "this engine cannot swap an adapter; "
@@ -104,7 +104,7 @@ class EngineHttpTest(unittest.TestCase):
         eng = mezo.EngineHttp(self.base)
         eng.score([1, 2, 3])
         path, body = StubServeApi.calls[-1]
-        self.assertEqual(path, "/v1/score")
+        self.assertEqual(path, "/v1/engine/score")
         self.assertEqual(body, {"tokens": [1, 2, 3]})
 
     def test_score_error_carries_the_server_reason(self):
@@ -121,7 +121,7 @@ class EngineHttpTest(unittest.TestCase):
         eng = mezo.EngineHttp(self.base)
         eng.lora("/tmp/plus.gguf")
         path, body = StubServeApi.calls[-1]
-        self.assertEqual(path, "/v1/lora")
+        self.assertEqual(path, "/v1/engine/lora")
         self.assertEqual(body, {"path": "/tmp/plus.gguf"})
 
     def test_lora_error_carries_the_server_reason(self):
@@ -149,7 +149,7 @@ class EngineHttpTest(unittest.TestCase):
     def test_base_url_trailing_slash_is_tolerated(self):
         eng = mezo.EngineHttp(self.base + "/")
         eng.lora("/tmp/x.gguf")
-        self.assertEqual(StubServeApi.calls[-1][0], "/v1/lora")
+        self.assertEqual(StubServeApi.calls[-1][0], "/v1/engine/lora")
 
 
 class EngineHttpWiringTest(unittest.TestCase):

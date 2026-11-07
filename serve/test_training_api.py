@@ -117,9 +117,14 @@ class TrainingApi(unittest.TestCase):
         code, body = self.get("/v1/training/status")
         self.assertEqual((code, body["active"], body["pid"]), (200, True, pid))
 
-        # the gate: inference and engine control fast-fail while the session owns the engine
+        # the gate: inference and engine control fast-fail while the session owns the engine.
+        # /v1/engine/* is the RESIDENT serving engine's RPC family (EngineHttp). It must stay
+        # out of /v1/training/*, which is this gate's allowlist prefix (server.py:8751) - the
+        # serving engine is unloaded during a session, so these two must be refused here.
         for path, payload in (("/v1/chat/completions", {"messages": [{"role": "user", "content": "hi"}]}),
-                              ("/unload", {}), ("/load", {}), ("/v1/vram", {})):
+                              ("/unload", {}), ("/load", {}), ("/v1/vram", {}),
+                              ("/v1/engine/score", {"tokens": [1, 2]}),
+                              ("/v1/engine/lora", {"path": "/tmp/x.gguf"})):
             code, body = self.post(path, payload)
             self.assertEqual(code, 409, (path, body))
             self.assertEqual(body["error"]["type"], "training_session_active")
