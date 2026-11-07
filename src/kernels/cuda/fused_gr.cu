@@ -140,9 +140,14 @@ __device__ __forceinline__ float dotw(const bool q8, const uint4 w, const float*
     return dot8(w, x);
 }
 
+// The single-token down kernel keeps the whole normalised hidden row (D floats) in shared memory: static while it fits the
+// 48 KB a static allocation may take (Flash-Next: 40 KB), dynamic (opted in at the launch) beyond (hidden 3072 and up).
+constexpr bool kDownDynXn = (size_t) D * 4 + 512 > 48 * 1024;
 template <bool Q8 = false>
 __global__ void __launch_bounds__(THREADS) gr_down_kernel(FusedGrArgs a) {
-    __shared__ __align__(16) float xn[D];
+    __shared__ __align__(16) float xn_static[kDownDynXn ? 1 : D];
+    extern __shared__ __align__(16) float xn_dyn[];
+    float* const xn = kDownDynXn ? xn_dyn : xn_static;
     __shared__ float part[WARPS][HC];
     __shared__ float s_rs[HC];
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
@@ -3077,11 +3082,20 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
         std::exit(1);
     }
     cudaStream_t st = (cudaStream_t) stream;
+    constexpr size_t down_smem = kDownDynXn ? (size_t) D * 4 : 0;
+    if (kDownDynXn) {
+        static const bool attr = [] {
+            cudaFuncSetAttribute(gr_down_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) down_smem);
+            cudaFuncSetAttribute(gr_down_kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) down_smem);
+            return true;
+        }();
+        (void) attr;
+    }
     if (a.s_down != nullptr) {   // STRATA_HC_REQ8
-        gr_down_kernel<true><<<DOWN_BLOCKS + 1, THREADS, 0, st>>>(a);
+        gr_down_kernel<true><<<DOWN_BLOCKS + 1, THREADS, down_smem, st>>>(a);
         gr_up_kernel<true><<<UP_BLOCKS, THREADS, 0, st>>>(a);
     } else {
-        gr_down_kernel<<<DOWN_BLOCKS + 1, THREADS, 0, st>>>(a);
+        gr_down_kernel<<<DOWN_BLOCKS + 1, THREADS, down_smem, st>>>(a);
         gr_up_kernel<<<UP_BLOCKS, THREADS, 0, st>>>(a);
     }
     const cudaError_t e = cudaGetLastError();
