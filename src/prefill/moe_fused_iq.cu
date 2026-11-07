@@ -625,7 +625,7 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
         // the weight bytes into L2 ahead of the register loads (one stage ahead only - less than a DRAM round trip):
         // gate/up PF super-blocks ahead (the row's two threads take a block's first and last line), down the whole row
         // slice at once (180 or 360 bytes a row)
-        constexpr int PF = 2;
+        constexpr int PF = 4;   // sm_89 tune: 2 -> 4 super-blocks ahead (A/B)
         constexpr int SBB = WT == T_Q2_0 ? 4 * BS : BS;              // bytes per 256 values of a row
         auto prefetch_sb = [&](int sb) {
             if (dec && sb < GU_ROWS_K / 256) pf_l2(wrow + sb * SBB + (uj ? SBB - 1 : 0));
