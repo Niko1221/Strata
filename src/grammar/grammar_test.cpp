@@ -304,6 +304,59 @@ static void test_mask_cache_shared_vocab(void) {
     grammar_free(g);
 }
 
+// A byte-fallback vocabulary splits a character across tokens, so a grammar can be halfway through
+// one.  The mask for that state must allow the pieces that finish it: llama.cpp's apply_impl decodes
+// every candidate with `grammar.partial_utf8` for exactly this reason, and a mask built from a
+// character boundary instead bans them all - the model opens a character it can never close, and the
+// reply shows U+FFFD.  The pieces below are a real split from this family's tokenizer, where a
+// two-byte lead rides one token and the finishing byte another.
+static void test_mask_partial_utf8(void) {
+    GrammarVocab vocab;
+    vocab.pieces = {
+        "\xe9\xb9\x88", // 0: the character as one token (what a merged vocabulary would carry)
+        "\xe9\xb9",     // 1: the lead + continuation piece two characters share
+        "\x88",         // 2: the continuation byte that finishes the first
+        "\x95",         // 3: the continuation byte that finishes the second
+        "\xe9\xaa\x91", // 4: a different character, one token, a legal next character
+        "a",            // 5: plain ASCII
+    };
+    vocab.control = { 0, 0, 0, 0, 0, 0 };
+    vocab.eog = { 0, 0, 0, 0, 0, 0 };
+    // any character at all: the free-text region a tool grammar's answer rides in
+    grammar* g = grammar_init(nullptr, "root ::= .*", "root");
+    assert(g != nullptr);
+    const grammar_rules& rules = grammar_get_rules(g);
+    uint32_t words[1];
+
+    // on a boundary a lone continuation byte is invalid UTF-8 and must stay banned
+    grammar_build_mask(vocab, rules, grammar_stacks(g), words);
+    assert(!bit_at(words, 0) && !bit_at(words, 1) && !bit_at(words, 5)); // a whole character may open
+    assert(bit_at(words, 2) && bit_at(words, 3));                       // the lone tails may not
+
+    // the model picks the shared piece: the grammar is now mid-character
+    grammar_accept(*g, 1, vocab.pieces[1]);
+    assert(g->partial_utf8.n_remain == 1 && "e9 b9 leaves one byte to come");
+
+    // the state is part of the cache key: this row is NOT the boundary row
+    GrammarMaskCache cache(vocab, rules);
+    const std::vector<uint32_t>& boundary = cache.mask_for(grammar_stacks(g), rules, partial_utf8{0, 0});
+    const std::vector<uint32_t>& mid = cache.mask_for(grammar_stacks(g), rules, g->partial_utf8);
+    assert(&boundary != &mid && "a mid-character state must not ride the boundary's row");
+
+    // and it allows exactly the pieces that finish the character, banning the ones that would
+    // start a new one (which decode_utf8 calls invalid there)
+    assert(!bit_at(mid.data(), 2) && !bit_at(mid.data(), 3) && "the finishing tails must ride");
+    assert(bit_at(mid.data(), 0) && bit_at(mid.data(), 4) && bit_at(mid.data(), 5) &&
+           "a piece that opens a new character cannot ride mid-character");
+
+    // what the untuned builder would have done: every tail banned, so the character stays open
+    uint32_t boundary_words[1];
+    grammar_build_mask(vocab, rules, grammar_stacks(g), boundary_words);
+    assert(bit_at(boundary_words, 2) && bit_at(boundary_words, 3));
+
+    grammar_free(g);
+}
+
 // a minimal v3 GGUF: zero tensors, 100-token vocabulary, token 99 CONTROL + eos.  Ids 5-9 carry
 // GPT2-byte-mapped pieces (the form Qwen-family GGUFs store) so the loader's byte map is pinned.
 static void write_test_gguf(const std::string& path) {
@@ -827,6 +880,7 @@ int main(void)
     test_mask_cache();
     test_mask_cache_clone_shares_rules();
     test_mask_cache_shared_vocab();
+    test_mask_partial_utf8();
     test_load_grammar_vocab();
     std::printf("All grammar tests passed.\n");
     return 0;

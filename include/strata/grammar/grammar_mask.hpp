@@ -58,11 +58,19 @@ public:
     // the EOG bits, cleared when a stack is at the end of the grammar
     const std::vector<int32_t>& eog() const { return eog_; }
 
+    // The candidates a grammar halfway through a multi-byte character can still allow, as
+    // (candidate index, raw piece).  A piece that starts with anything but a UTF-8 continuation
+    // byte (0x80..0xBF) begins a new character, which decode_utf8 rejects with n_remain = -1 and
+    // every stack then refuses, so the rest of the vocabulary cannot ride in that state.  Keeping
+    // them apart means such a mask decodes a few hundred pieces rather than all ~150k.
+    const std::vector<std::pair<size_t, std::string>>& continuation() const { return continuation_; }
+
 private:
     int words_ = 0;
     std::vector<std::vector<uint32_t>> storage_;   // per token: code points, 0-terminated
     std::vector<grammar_candidate>     cands_;
     std::vector<int32_t>               eog_;
+    std::vector<std::pair<size_t, std::string>> continuation_; // (candidate index, piece) that may ride mid-character
 };
 
 // fills words[0 .. grammar_mask_words(vocab.pieces.size())) for the given stacks
@@ -72,6 +80,13 @@ void grammar_build_mask(const GrammarVocab& vocab, const grammar_rules& rules,
 // the same, reusing a prepared vocabulary (no per-call decode or allocation)
 void grammar_build_mask(const MaskVocab& prepped, const grammar_rules& rules,
                         const std::vector<grammar_stack>& stacks, uint32_t* words);
+
+// The two above assume a character boundary.  A grammar that is halfway through a multi-byte
+// character is a different state: only the pieces that finish it may ride, so each candidate is
+// decoded from `partial` (llama.cpp's apply_impl: decode_utf8(piece, grammar.partial_utf8)).
+// The prepared code points cannot serve here - they were decoded from a boundary.
+void grammar_build_mask(const MaskVocab& prepped, const grammar_rules& rules,
+                        const std::vector<grammar_stack>& stacks, partial_utf8 partial, uint32_t* words);
 
 class GrammarMaskCache {
 public:
@@ -92,12 +107,20 @@ public:
     // grammar's rules) falls back to the old range scan.
     const std::vector<uint32_t>& mask_for(const std::vector<grammar_stack>& stacks, const grammar_rules& rules);
 
+    // the same, for a grammar halfway through a multi-byte character.  `partial` is a part of the
+    // state, not a caller's hint: the row for (stacks, mid-character) differs from the row for the
+    // same stacks on a boundary, so it is part of the cache key.
+    const std::vector<uint32_t>& mask_for(const std::vector<grammar_stack>& stacks, const grammar_rules& rules,
+                                          partial_utf8 partial);
+
     size_t size() const { return index_.size(); }
 
 private:
-    using key_t = std::vector<std::pair<uint32_t, uint32_t>>; // per stack: a boundary, then (rule, offset) of every element
+    using key_t = std::vector<std::pair<uint32_t, uint32_t>>; // the partial state, then per stack: a boundary
+                                                              // and (rule, offset) of every element
 
-    key_t make_key(const std::vector<grammar_stack>& stacks, const grammar_rules& rules) const;
+    key_t make_key(const std::vector<grammar_stack>& stacks, const grammar_rules& rules,
+                   partial_utf8 partial) const;
 
     // the (rule, offset) of one stack element, by hash for an indexed pointer and by a scan of
     // `owner` for a foreign one

@@ -56,7 +56,7 @@ SlotGrammar::SlotGrammar(std::shared_ptr<const GrammarEntry> e)
     // The stacks point into THIS clone's rules vector (grammar_clone copies it), so the cache keys must be
     // resolved against the clone's rules, not the proto's - the (rule, offset) range scan misses every clone
     // pointer otherwise and every state collapses to one key. The layout is identical, so the masks match.
-    mask = entry->cache->mask_for(grammar_stacks(g.get()), grammar_get_rules(g.get())); // the root state
+    mask = entry->cache->mask_for(grammar_stacks(g.get()), grammar_get_rules(g.get()), g->partial_utf8); // the root state
 }
 
 bool SlotGrammar::advance(int32_t token, std::string& err) {
@@ -67,7 +67,9 @@ bool SlotGrammar::advance(int32_t token, std::string& err) {
         err = ex.what(); // "Unexpected empty grammar stack after accepting piece: ..."
         return false;
     }
-    mask = entry->cache->mask_for(grammar_stacks(g.get()), grammar_get_rules(g.get()));
+    // g->partial_utf8 is part of the state: a byte-fallback vocabulary splits a character across
+    // tokens, and halfway through one only the finishing pieces may ride.
+    mask = entry->cache->mask_for(grammar_stacks(g.get()), grammar_get_rules(g.get()), g->partial_utf8);
     return true;
 }
 

@@ -914,6 +914,20 @@ That is where the per-token work went. Three changes removed duplicated work ins
   so a mask miss folds the stacks over prepared candidates instead of decoding all ~150k pieces again. A miss
   happens for every grammar state the cache has not seen, and inside a JSON string that is nearly every token.
 
+One state is not the prepared arrays' to answer. A byte-fallback vocabulary splits a character across tokens: this
+model writes `鹈` as one piece holding `e9 b9` and a second holding `88`, and every emoji as three pieces. Halfway
+through such a character the grammar is a different state, and only a piece that starts with a UTF-8 continuation
+byte may ride - a lead byte there is an invalid sequence, which `decode_utf8` reports as `n_remain = -1` and every
+stack then refuses. llama.cpp's `apply_impl` decodes each candidate from the grammar's live `partial_utf8` for
+exactly this reason (pinned `3cf03257`, `llama-grammar.cpp:1387`). The cached mask is built from a character
+boundary instead, so it banned every finishing piece while allowing the lead piece that opens the character: the
+model could start a character and never close it, and the reply showed U+FFFD where the character should be
+(`��骑自行车` for `鹈鹕骑自行车`, `�` before an emoji). Constrained requests only - plain ones never consult a mask -
+and the tool-call grammar is where it showed, because that is where a server-constrained request writes free text.
+The state is part of the cache key and of the build: on a boundary the prepared code points answer as before, and
+mid-character the few candidates whose piece starts with a continuation byte are decoded from that state (163 of
+this vocabulary's 248,320 pieces). `grammar_test.cpp`'s `test_mask_partial_utf8` pins both halves.
+
 On the tools-plus-thinking workload above, the engine measured 175.6 tok/s before these changes and 201.0 after,
 same script, same prompts.
 

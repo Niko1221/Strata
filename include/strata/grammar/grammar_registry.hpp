@@ -52,7 +52,10 @@ inline bool grammar_chain_step(const SlotGrammar& live, grammar& scratch, int32_
     } catch (const std::exception&) {
         return false;
     }
-    out = live.entry->cache->mask_for(grammar_stacks(&scratch), grammar_get_rules(&scratch));
+    // the scratch clone's own partial state, not the boundary: a draft that opened a multi-byte
+    // character leaves the next row able to finish it
+    out = live.entry->cache->mask_for(grammar_stacks(&scratch), grammar_get_rules(&scratch),
+                                      scratch.partial_utf8);
     return true;
 }
 
