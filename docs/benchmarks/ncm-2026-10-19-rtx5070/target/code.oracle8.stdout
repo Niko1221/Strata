@@ -1,0 +1,14 @@
+speculation              9 rounds of 8, drafts accepted 56 of 56 (1.000), 7.22 tokens per round
+accepted per round       0:1 1:0 2:0 3:0 4:0 5:0 6:0 7:8
+verify window            wait for rings 16.933  pool 209.351  host 0.043  commit 0.016 ms/round; CPU experts 31.22 distinct / 50.92 routed per layer
+pool multi               gate/up 33.257  quantize 0.665  down 14.455 ms/round; 45.1 GB/s over the rows phases; CPU pool call 209.145 ms/round
+dispatch                 plan 0.222  activation quantize 0.246  jobs 159.925  run 48.394 ms/round
+adaptive tier            192 experts swapped into the VRAM tier (every 4 rounds, 3.007 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 19601.2 MB read from the files (2177.91 MB/round, 257.2 ms/round of reading, 8.47 GB/s per reading thread) (the GGUF in place); prompt copies 8389.4 MB
+routing prefetch         12922 experts warmed, 7687 of the file tier's 0 blob reads had been warmed (0.0%); predictor 28.5 ms/round on its thread, 0 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 141/256 of the misses)
+routing dumped           $OUT/code.oracle8.routing.bin (432 records of layer, k, ids, weights)
+prompt  : 248045 846 198 3936 1132 279 709 803 884 310 2542 14031 321 460 279 4434 999 13 198 71093 12305 198 727 884 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 884 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248045 74455 198 248068 271 248069 271
+output  : 71093 12305 198 727 2542 14031 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 2542 14031 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248044 248045 248045 248046 198 248045 248045 248046 198 248045 248046 198 248045 248046 198 248045 248046 198
+decode                   64 tokens in 2092.4 ms  ->  30.59 tok/s
+prefill                  69 tokens in 1172.2 ms  ->  58.86 tok/s  (time to first token 1983.6 ms)
