@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-07: AMD Radeon RX 7600 XT 16 GB (gfx1102), Ryzen 5 3600, 32 GB RAM, CachyOS Linux](../bench/results/2026-11-07-community-rx-7600-xt-v0-2-12/README.md):
+  Locally built HIP engine (`0.1.44.1` fork base with cherry-picked `v0.2.12` MMQ row margin and Flag-B ordering guards, ROCm 7.2.4, `STRATA_HIP_WMMA=1`), Coder IQ1_M at 65,536-token context with MTP draft and experimental speed projection; 4-leg interleaved A/B benchmark under systemd `MemorySwapMax=0` (0 B swap): 4K prompt 305.8 / 306.8 tok/s, 16K prompt 334.6 / 331.7 tok/s, chat decode 24.4 / 23.9 tok/s, agent decode 28.0 tok/s, agent cache hit 67.2% (5 re-read tokens per session). All 4 per-leg JSON files included.
 
 ## Run the standard benchmark
 
