@@ -356,7 +356,7 @@ def host_ready(ctx, r):
     log = ctx.scratch.path("npm-ci.log")
     rc, _ = run_cmd([npm_cmd(), "ci", "--no-audit", "--no-fund"], HOST, ctx.scratch.env(), 900, log)
     if rc != 0:
-        r.reason = "npm ci could not install apps/host's packages (offline?): " + " | ".join(l.strip() for l in tail(log, 2))[:200]
+        r.reason = "npm ci could not install apps/host's packages (no network?); log " + log
         return False
     ctx.npm_ready = True
     return True
