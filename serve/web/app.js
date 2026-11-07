@@ -390,6 +390,12 @@ function renderConvCache(c) {
     $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
   }
+  const disk = c.file_budget_mib ? c.file_budget_mib * 1048576 : 0;
+  $("cc-disk-row").hidden = !disk;
+  if (disk) {
+    $("cc-disk-text").textContent = `${gb(c.file_bytes || 0)} / ${gb(disk)} GB, ${fmt(c.file_count || 0)} spilled`;
+    $("cc-disk-bar").style.width = pct(c.file_bytes || 0, disk);
+  }
   $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
   const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
