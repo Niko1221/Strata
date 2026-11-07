@@ -3578,6 +3578,8 @@ void mtp_bind_state(strata::core::QsaState& st) {
 bool mtp_load_pending(Window* w, std::string& err) {
     return g_mtp_path.empty() || w->mtp_load(g_mtp_path, g_mtp_max_t, err);
 }
+// session files: the drafter's model input in the fingerprint is this GGUF (empty without --mtp)
+const std::string& mtp_gguf_path() { return g_mtp_path; }
 // Prefill::run's Metal side: the prompt read through the window, MAXT rows at a time (no head), each window
 // committed; on_chunk (the MTP's K/V) after each, with the window's final residual rows in place.
 bool prompt_run_rows(const int64_t* tokens, int64_t n, int64_t pos0,

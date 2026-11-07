@@ -52,7 +52,7 @@ def run(a, cfg, tok, with_b):
         gen(eng, out, pb, 8)
     eng.send("QUIT")
     eng.p.wait(timeout=180)
-    log = open("/tmp/batch_test_engine.log").read()
+    log = open(eng.log_path).read()   # the engine's log (tempfile.gettempdir(): not /tmp on macOS)
     restored = re.findall(r"restored \d+ tokens[^\n]*", log)
     if with_b and "SNAPSHOT_VERIFY draft=" not in log:
         print("no SNAPSHOT_VERIFY line: the draft ring was not read back", flush=True)
