@@ -311,6 +311,20 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(B.gpu_slug({"gpu": [b, b]}), "2x-rtx-a4000")
         self.assertEqual(B.gpu_slug({"gpu": [b, a, b]}), "2x-rtx-a4000-plus-rtx-5070-ti")
 
+    def test_two_identical_cards_the_server_names_are_both_listed(self):
+        """#4473: a layer split over two of the same card: the server says "A + A", which equalled no single card's
+        name, so the report kept one card and half the VRAM."""
+        srv = FakeStrata()
+        self.addCleanup(srv.stop)
+        two = {"gpus": [{"name": "NVIDIA GeForce RTX 9999", "vram_mib": 24576, "driver": "560.1"},
+                        {"name": "NVIDIA GeForce RTX 9999", "vram_mib": 24576, "driver": "560.1"}], "cuda": "13.0"}
+        both = "NVIDIA GeForce RTX 9999 + NVIDIA GeForce RTX 9999"
+        with mock.patch.object(B, "gpu_info_local", return_value=two), mock.patch.object(
+                B, "try_json", side_effect=lambda base, path, *a, **k: (
+                    {"hardware_static": {"gpu_name": both}} if path == "/metrics" else {})):
+            m = B.collect_machine(srv.base, "", {})
+        self.assertEqual((m["gpu"], m["gpu_vram_mib"]), (["NVIDIA GeForce RTX 9999"] * 2, 49152))
+
     def test_a_card_the_pc_s_nvidia_smi_does_not_list_is_the_servers_own(self):
         """#2001: the engine on an Intel Arc beside a GeForce: the report names the Arc (the name the server reads)."""
         srv = FakeStrata()
