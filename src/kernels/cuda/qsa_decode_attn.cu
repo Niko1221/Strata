@@ -93,6 +93,16 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
 // so the sums are the per-head loop's, bit for bit, for any G.
 template <int GG> __device__ __forceinline__ void fold_cell(float (&acc)[GG], const float* w, float v) {
     const float4* w4 = reinterpret_cast<const float4*>(w);
+    if constexpr (GG == 12) {   // Flash-Next: the expressions this replaced, so its device code is unchanged
+        const float4 w0 = w4[0], w1 = w4[1], w2 = w4[2];
+        acc[0] = fmaf(w0.x, v, acc[0]);  acc[1] = fmaf(w0.y, v, acc[1]);
+        acc[2] = fmaf(w0.z, v, acc[2]);  acc[3] = fmaf(w0.w, v, acc[3]);
+        acc[4] = fmaf(w1.x, v, acc[4]);  acc[5] = fmaf(w1.y, v, acc[5]);
+        acc[6] = fmaf(w1.z, v, acc[6]);  acc[7] = fmaf(w1.w, v, acc[7]);
+        acc[8] = fmaf(w2.x, v, acc[8]);  acc[9] = fmaf(w2.y, v, acc[9]);
+        acc[10] = fmaf(w2.z, v, acc[10]); acc[11] = fmaf(w2.w, v, acc[11]);
+        return;
+    }
 #pragma unroll
     for (int i = 0; i < GG / 4; ++i) {
         const float4 x = w4[i];

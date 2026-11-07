@@ -1871,13 +1871,21 @@ __global__ void __launch_bounds__(THREADS) gr_up_fast_kernel(GrMulti m) {
             if (k >= T) break;
             const float* l = lo[k];
             // old lane j + 8 m: its chunk, then (when the row has a tail chunk 32 + j + 8 m) the tail's dot added to it
-            float pq[4];
+            float p0, p1, p2, p3;
+            if constexpr (TM == 1) {   // Flash-Next: the expressions this replaced (device code unchanged)
+                p0 = dot8(w[p][0], l + j * 8) + dot8(w[p][4], l + (32 + j) * 8);   // old lane j
+                p1 = dot8(w[p][1], l + (j + 8) * 8);                               // old lane j + 8
+                p2 = dot8(w[p][2], l + (j + 16) * 8);                              // old lane j + 16
+                p3 = dot8(w[p][3], l + (j + 24) * 8);                              // old lane j + 24
+            } else {
+                float pq[4];
 #pragma unroll
-            for (int mm = 0; mm < 4; ++mm) {
-                pq[mm] = dot8(w[p][mm], l + (j + 8 * mm) * 8);
-                if (mm < TM) pq[mm] += dot8(w[p][4 + mm], l + (32 + j + 8 * mm) * 8);
+                for (int mm = 0; mm < 4; ++mm) {
+                    pq[mm] = dot8(w[p][mm], l + (j + 8 * mm) * 8);
+                    if (mm < TM) pq[mm] += dot8(w[p][4 + mm], l + (32 + j + 8 * mm) * 8);
+                }
+                p0 = pq[0]; p1 = pq[1]; p2 = pq[2]; p3 = pq[3];
             }
-            const float p0 = pq[0], p1 = pq[1], p2 = pq[2], p3 = pq[3];
             const float s = xor8((p0 + p2) + (p1 + p3));   // stage 16: (j, j+16), (j+8, j+24); stage 8; then 4, 2, 1
             if (j == k) mine = s;
         }
