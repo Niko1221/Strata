@@ -5,7 +5,7 @@
 #include "strata/core/geometry.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/kv_q4.hpp"
-#if defined(STRATA_HIP_GFX906)
+#if defined(__HIPCC__)
 #include "strata/kernels/gfx_arch.hpp"
 #endif
 
@@ -36,6 +36,19 @@ __device__ __forceinline__ float warp_max(float v) {
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v = fmaxf(v, __shfl_xor_sync(0xffffffffu, v, o));
     return v;
+}
+
+// LDS-only workgroup barrier: avoids the L0 vector cache invalidation (global_inv scope:SCOPE_SE) and in-flight
+// global-load drain (s_wait_loadcnt 0x0) that __syncthreads() emits on gfx12 when only shared memory is synchronized.
+__device__ __forceinline__ void qda_sync_lds() {
+#if defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1200__) || defined(__gfx1201__))
+    __asm__ volatile("s_wait_dscnt 0x0\n\ts_barrier_signal -1\n\ts_barrier_wait -1" ::: "memory");
+#elif defined(__HIP_DEVICE_COMPILE__) && (defined(__gfx1030__) || defined(__gfx1100__) || defined(__gfx1101__) || \
+    defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__))
+    __asm__ volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
+#else
+    __syncthreads();
+#endif
 }
 
 // 8 consecutive values of one cell's key or value row for KV head `kvh`, dimensions [d0, d0+8).
@@ -168,7 +181,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
         }
         srow[t] = r;
     }
-    __syncthreads();
+    qda_sync_lds();
     if constexpr (LANE_CELL) {
         // S25 (STRATA_ATTN_LANECELL=1): thread t scores cell t % 64 for heads 3 (t / 64) .. +2 by itself - the same
         // 8-dimension partial per former lane (the identical expression), then the former warp_sum's butterfly as
@@ -243,7 +256,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
         }
         }
     }
-    __syncthreads();
+    qda_sync_lds();
     // per-head chunk max and exp-sum: warp w handles heads w and w+8.
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
@@ -255,7 +268,7 @@ __device__ __forceinline__ void attn_chunk_body(const float* __restrict__ q, Qsa
         const float l = warp_sum(ea + eb);
         if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
     }
-    __syncthreads();
+    qda_sync_lds();
     // values: thread t owns dimension t for all 12 heads.
     float acc[G];
 #pragma unroll
@@ -585,7 +598,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
         }
         srow[t] = r;
     }
-    __syncthreads();
+    qda_sync_lds();
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.  NC cells per step
     // (warp + 8 * (i + j)): a lane's q slice comes out of shared memory once for all of them, which cuts the traffic
     // that bounds this phase (24 x 16 B per lane per cell, against the FMAs) by NC; every dot product is the same
@@ -645,7 +658,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
             }
         }
     }
-    __syncthreads();
+    qda_sync_lds();
     // per-head chunk max and exp-sum: warp w handles heads w and w+8.
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
@@ -657,7 +670,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
         const float l = warp_sum_x<DPP_>(ea + eb);
         if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
     }
-    __syncthreads();
+    qda_sync_lds();
     // values: thread t owns dimension t for all 12 heads.
     float acc[G];
 #pragma unroll
@@ -860,8 +873,8 @@ bool query_swizzle_gfx906_device() {
 }
 
 #if defined(STRATA_ATTN_PRE75_BUILT)
-// CUDA: the current device is below sm_75 (experimental build) or STRATA_ATTN_DAILY=1 (any card); HIP: it is gfx103x
-// (per device: a layer split can mix cards).
+// CUDA: the current device is below sm_75 (experimental build) or STRATA_ATTN_DAILY=1 (any card); HIP: gfx103x and
+// gfx12 use the measured wave32 kernel by default (per device: a layer split can mix cards).
 // STRATA_ATTN_PRE75=0 turns PR #540's kernel off (A/B); on HIP =1 also runs it on another wave32 card.
 bool pre75_attn() {
     static const int env = [] {
@@ -879,10 +892,11 @@ bool pre75_attn() {
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
 #if defined(__HIPCC__)
-    if (cc[dev] == 0) {   // 2: gfx103x, 1: another card
+    if (cc[dev] == 0) {   // 2: gfx103x or gfx12, 1: another card
         hipDeviceProp_t prop{};
         if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
-        cc[dev] = std::strncmp(prop.gcnArchName, "gfx103", 6) == 0 ? 2 : 1;
+        cc[dev] = (std::strncmp(prop.gcnArchName, "gfx103", 6) == 0 ||
+                   strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName)) ? 2 : 1;
     }
     return env == 1 || cc[dev] == 2;
 #else
@@ -923,13 +937,26 @@ int attn_kv_mode(const QsaAttnPools& p) {
 }
 
 // STRATA_ATTN_MERGE_V2: 1 merges with attn_merge_v2_kernel, 0 with attn_merge_kernel.  Unset it follows
-// STRATA_ATTN_DAILY (the Daily had it on by default on NVIDIA), so upstream's merger stays the default.
+// STRATA_ATTN_DAILY on CUDA, and is on by default on gfx12 (RDNA4).
 int attn_merge_v2() {
     static const int env = [] {
         const char* v = std::getenv("STRATA_ATTN_MERGE_V2");
         return v != nullptr && *v != '\0' ? (std::atoi(v) != 0 ? 1 : 0) : -1;
     }();
-    return env >= 0 ? env : (daily_attn() ? 1 : 0);
+    if (env >= 0) return env;
+#if defined(__HIPCC__)
+    static int g12[64] = {};
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return 0; }
+    if (g12[dev] == 0) {
+        hipDeviceProp_t prop{};
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return 0; }
+        g12[dev] = strata::kernels::gfx_arch_is_gfx12(prop.gcnArchName) ? 2 : 1;
+    }
+    return g12[dev] == 2 ? 1 : 0;
+#else
+    return daily_attn() ? 1 : 0;
+#endif
 }
 
 // the merge of `n_q` queries' partials: v2 = 0 attn_merge_kernel, 1 attn_merge_v2_kernel (bitwise the same output)

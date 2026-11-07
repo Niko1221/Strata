@@ -31,10 +31,10 @@ std::size_t native_q8_1_bytes(int n_in, int ncols = 1);
 // graph capture; captured graphs keep the kernels they captured.
 void native_mmvq_set_multi_exact(bool exact);
 bool native_mmvq_multi_exact();
-// B6 (lab, opt-in STRATA_B6_MMVQ_ROWS=1): the exact multi-column layout with the activation blocks of every column
-// loaded once per weight block and reused across the block's rows (bitwise the same sums as the default exact
-// layout). 0 = off (default), 1 = 2 rows per block, 2 / 4 / 8 = that many rows. Q4_K, Q5_K, Q6_K and IQ4_XS only.
-// Set before graph capture.
+// B6: the bitwise-exact multi-column layout with activation fragments reused across output rows in a block, plus
+// LDS-only barriers for its cross-warp reduction on RDNA HIP. STRATA_B6_MMVQ_ROWS: -1 (default) = per-shape table on
+// gfx12, off elsewhere; 0 = off; 1 = force 2 rows; 2 / 4 / 8 = force that row count.
+// Supported specializations include Q4_K, Q5_K, Q6_K, IQ4_XS, IQ4_NL and Q8_0. Set before graph capture.
 void native_mmvq_set_b6_rows(int mode);
 int native_mmvq_b6_rows();
 
