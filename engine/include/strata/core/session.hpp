@@ -99,6 +99,8 @@ struct SessionState {
     // MAY differ from what the last save committed; `INT64_MAX` = nothing has been written to any pool since.
     // Every pool-write chokepoint bumps it (the engine's M1-M7 bumps; the core restore backstops M8/M9), and
     // the save gate appends only when the watermark proves the region its file already committed is untouched.
+    // The restore backstops mark the RESTORED PREFIX, not token 0 (#4552): a completed restore wrote that
+    // region with the very rows the image was captured from, so it is as trusted as before the resume.
     // The delta is an OPTIMIZATION, never a correctness assumption: a bump at a too-low position costs one
     // conservative full rewrite, never a wrong file.
     int64_t kv_first_dirty = std::numeric_limits<int64_t>::max();
@@ -115,6 +117,18 @@ struct SessionState {
                session_whole_cells(kv_first_dirty, page) >= session_whole_cells(saved_tokens, page);
     }
 };
+
+/// The watermark a save gate consults when several carves share one session file (a layer split): the fold
+/// of every carve's watermark, the most-dirty session governing.  An append commits rows from ALL carves -
+/// any single carve dirty below the committed boundary makes the whole delta untrusted.  Without a split
+/// this is that one session's watermark, so a single-device save behaves exactly as before.  #4552: before
+/// this the engine read only the main carve's, and a dirty stage could ride an append.
+template <class Sessions>
+inline int64_t session_gate_watermark(const Sessions& sessions) {
+    int64_t w = std::numeric_limits<int64_t>::max();
+    for (const auto* s : sessions) if (s && s->kv_first_dirty < w) w = s->kv_first_dirty;
+    return w;
+}
 
 /// Bytes for a whole session at `max_cells` of context.  Every layer's state is sized at once, because P2.T10
 /// requires ZERO token-path allocations - a `cudaMalloc` that happened on the first token of a longer sequence
