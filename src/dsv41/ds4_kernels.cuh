@@ -95,6 +95,10 @@ void gemv_f16_rows(const uint16_t* W, const float* x, size_t ldx, int n, int k, 
 /// inference computes them (linear(x.float(), weight.float())) - a warp a row, the same summing order for any T, so
 /// the token, window and chunk paths get the same bits.
 void gemv_f32(const float* W, const float* x, int n, int k, int T, float* y, int ldy, cudaStream_t s);
+#if !defined(STRATA_METAL)
+/// gemv_f32 over BF16 weights [n][k] (k a multiple of 4): the same values and order as gemv_f32 over their F32 copy, the same bits.
+void gemv_bf16w(const uint16_t* W, const float* x, int n, int k, int T, float* y, int ldy, cudaStream_t s);
+#endif
 
 /// The router, row t: scores = sqrt(softplus(logits[t])) (n experts, rows 1024 apart), the top `k` of scores + bias;
 /// weights from the unbiased scores, normalized to sum 1 (+1e-20) and times route_scale -> idx[t][i], w[t][i] (rows
