@@ -484,6 +484,30 @@ class LightTestStart(unittest.TestCase):
         self.assertEqual(updater.light_test_args(["--max-context", "abc"]), ["--max-context", "abc"])
 
 
+class RemovedControlVersion(UpdaterCase):
+    """#4891 rewrote a saved run config's Control paths when a normal start found them pointing into a Control version folder an
+    update had deleted. The engine update's test start runs from a staging folder that holds nothing but the new engine, so the
+    same rewrite has to happen there: without it a model set up under an older Control blocks every later engine update."""
+
+    def setUp(self):
+        super().setUp()
+        control = self.components / "control"
+        (control / "0.1.57" / "data").mkdir(parents=True)
+        (control / "0.1.57" / "data" / "expert-profile-coder.bin").write_bytes(b"profile")
+        (control / "active.json").write_text(json.dumps({"version": "0.1.57", "folder": "0.1.57"}), encoding="utf-8")
+        cfg = json.loads(self.config.read_text(encoding="utf-8"))
+        cfg["args"] = ["--expert-profile", str(control / "0.1.55" / "data" / "expert-profile-coder.bin")]
+        self.config.write_text(json.dumps(cfg), encoding="utf-8")
+
+    def test_the_engine_update_still_test_starts_when_the_config_names_a_deleted_control_folder(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        out = updater.run_update(self.ctx(), control=False)
+        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (0, "updated"), out)
+        self.assertEqual(out["results"][0]["test_start"]["mode"], "full")
+        self.assertEqual(self.resolved(), "0.1.46")
+
+
 class LazyModel(UpdaterCase):
     """A server that is "ready" with its model unloaded has not generated anything yet; the test start forces the load and the probe."""
 

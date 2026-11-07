@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from strata_control import acquisition, components, dsv41_paths, engine_component as ec, feed as feedmod, longpath, preset_marks, signing, transfer
+from strata_control import acquisition, cfg_paths, components, dsv41_paths, engine_component as ec, feed as feedmod, longpath, preset_marks, signing, transfer
 from strata_control.targets import host_platform
 from strata_control import atomic as _atomic_mod
 
@@ -988,7 +988,9 @@ def light_test_args(args: list) -> list:
 def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Context) -> dict:
     """Start the staged engine through the real start path (owner runtime, `component:strata-engine`, a saved model), wait for
     the one-token generation probe, and stop it. Everything runs in an isolated runtime, profile and component folder, so a
-    user's own instances, profiles and engines are not involved. With no model installed the engine is only run with --version."""
+    user's own instances, profiles and engines are not involved. With no model installed the engine is only run with --version.
+    The config's Control paths are resolved in the real components folder first: the staging folder holds only the new engine,
+    so a config naming the Control version folder that a previous update deleted would fail every later engine update (#4891)."""
     source = Path(ctx.run_config) if ctx.run_config else discover_run_config(ctx.environ)
     if source is None:
         if not ctx.allow_no_model_smoke:
@@ -998,6 +1000,8 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
     sandbox = Path(tempfile.mkdtemp(prefix="t-", dir=stage_root))
     try:
         cfg = json.loads(source.read_text(encoding="utf-8-sig"))
+        # #4891: resolve the Control paths while the real components folder is visible; the staging folder has no Control folder
+        cfg, _found, _lost = cfg_paths.resolve_config(cfg)
         cfg["exe"] = ec.REFERENCE_PREFIX + ec.COMPONENT_ID
         cfg["backend"] = component.backend
         cfg.pop("lib_dirs", None)
