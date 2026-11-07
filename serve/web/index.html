@@ -96,18 +96,18 @@
   <section class="view view--images" id="view-images" role="tabpanel" aria-labelledby="tab-btn-images" hidden>
     <div class="about">
       <form class="st-card img-form" id="img-form">
-        <span class="card-title" id="img-title">Make an image</span>
-        <textarea class="st-input img-prompt" id="img-prompt" rows="3" placeholder="Describe the image&hellip;" aria-label="Prompt"></textarea>
+        <span class="card-title" id="img-title" data-i18n="image.makeTitle">Make an image</span>
+        <textarea class="st-input img-prompt" id="img-prompt" rows="3" placeholder="Describe the image&hellip;" aria-label="Prompt" data-i18n-placeholder="image.promptPlaceholder" data-i18n-label="image.promptLabel"></textarea>
         <div class="img-row">
-          <label class="st-field">Size
+          <label class="st-field"><span data-i18n="image.size">Size</span>
             <select class="st-input" id="img-size">
               <option>1024x1024</option><option>1536x1024</option><option>1024x1536</option>
               <option>768x768</option><option>512x512</option></select></label>
-          <label class="st-field">Seed
-            <input class="st-input" id="img-seed" type="number" min="0" placeholder="random"></label>
-          <button type="submit" class="st-btn st-btn--primary" id="img-go">Generate</button>
+          <label class="st-field"><span data-i18n="image.seed">Seed</span>
+            <input class="st-input" id="img-seed" type="number" min="0" placeholder="random" data-i18n-placeholder="image.random"></label>
+          <button type="submit" class="st-btn st-btn--primary" id="img-go" data-i18n="image.generate">Generate</button>
         </div>
-        <span class="composer-hint" id="img-hint">One image at a time; a chat request waits for it (and the other way round).</span>
+        <span class="composer-hint" id="img-hint" data-i18n="image.hint">One image at a time; a chat request waits for it (and the other way round).</span>
       </form>
       <div class="img-results" id="img-results"></div>
     </div>
@@ -118,17 +118,17 @@
     <div class="monitor">
       <div class="st-card state-card">
         <div class="state-card__head">
-          <span class="card-title">Model state</span>
+          <span class="card-title" data-i18n="monitor.modelState">Model state</span>
           <span class="badges" id="state-badges">
-            <span class="st-badge" data-s="idle">Idle</span>
-            <span class="st-badge" data-s="unloaded">Unloaded</span>
-            <span class="st-badge st-badge--reading" data-s="reading">Reading</span>
-            <span class="st-badge st-badge--generating" data-s="generating">Generating</span>
-            <span class="st-badge st-badge--queued" data-s="queued">Queued</span>
-            <span class="st-badge st-badge--error" data-s="error">Error</span>
+            <span class="st-badge" data-s="idle" data-i18n="monitor.idle">Idle</span>
+            <span class="st-badge" data-s="unloaded" data-i18n="monitor.unloaded">Unloaded</span>
+            <span class="st-badge st-badge--reading" data-s="reading" data-i18n="monitor.reading">Reading</span>
+            <span class="st-badge st-badge--generating" data-s="generating" data-i18n="monitor.generating">Generating</span>
+            <span class="st-badge st-badge--queued" data-s="queued" data-i18n="monitor.queued">Queued</span>
+            <span class="st-badge st-badge--error" data-s="error" data-i18n="monitor.error">Error</span>
           </span>
         </div>
-        <div class="state-card__row"><span id="state-label">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
+        <div class="state-card__row"><span id="state-label" data-i18n="monitor.waiting">Waiting for a request</span><span class="muted" id="state-detail"></span></div>
         <div class="st-progress" id="state-progress"><div class="st-progress__bar" id="state-bar" style="width:0%"></div></div>
       </div>
 
@@ -138,7 +138,7 @@
 
       <div class="monitor-row">
         <div class="st-card ctx-card">
-          <span class="card-title">Context fill</span>
+          <span class="card-title" data-i18n="monitor.contextFill">Context fill</span>
           <div class="ctx-gauge">
             <svg class="st-gauge" viewBox="0 0 120 120" aria-hidden="true">
               <circle class="st-gauge__track" cx="60" cy="60" r="50" fill="none" stroke-width="10" stroke-linecap="round"
@@ -148,21 +148,21 @@
             </svg>
             <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
           </div>
-          <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
+          <div class="bar-row"><span data-i18n="monitor.expertsInVram">Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
+          <div class="bar-row"><span data-i18n="monitor.systemRam">System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
           <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
+          <div class="bar-row"><span data-i18n="monitor.gpuTemperature">GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
           <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
         </div>
         <div class="st-card req-card">
-          <div class="req-head"><span class="card-title">Recent requests</span>
-            <button class="st-btn st-btn--secondary" id="req-all" hidden>Show all</button></div>
+          <div class="req-head"><span class="card-title" data-i18n="monitor.recentRequests">Recent requests</span>
+            <button class="st-btn st-btn--secondary" id="req-all" hidden data-i18n="monitor.showAll">Show all</button></div>
           <div class="table-wrap" id="req-wrap">
             <table class="st-table">
-              <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num" title="New prompt tokens per second, excluding reused cache tokens (engine prompt time)">Prefill t/s</th><th class="num">Decode t/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num">Duration</th></tr></thead>
-              <tbody id="req-body"><tr><td colspan="9" class="muted">No requests yet</td></tr></tbody>
+              <thead><tr><th data-i18n="monitor.thTime">Time</th><th data-i18n="monitor.thStatus">Status</th><th class="num" data-i18n="monitor.thPrompt">Prompt</th><th class="num" data-i18n="monitor.thReused">Reused</th><th class="num" data-i18n="monitor.thOutput">Output</th>
+                <th class="num" data-i18n="monitor.thPrefill" data-i18n-title="monitor.thPrefillTip" title="New prompt tokens per second, excluding reused cache tokens (engine prompt time)">Prefill t/s</th><th class="num" data-i18n="monitor.thDecode">Decode t/s</th><th class="num" data-i18n="monitor.thVramHit" data-i18n-title="monitor.thVramHitTip" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num" data-i18n="monitor.thDuration">Duration</th></tr></thead>
+              <tbody id="req-body"><tr><td colspan="9" class="muted" data-i18n="monitor.noRequests">No requests yet</td></tr></tbody>
             </table>
           </div>
           <p class="muted req-totals" id="req-totals"></p>
@@ -170,11 +170,11 @@
       </div>
 
       <div class="st-card cc-card" id="cc-card">
-        <div class="req-head"><span class="card-title">Conversation cache</span><span class="muted small" id="cc-sum"></span></div>
+        <div class="req-head"><span class="card-title" data-i18n="monitor.convCache">Conversation cache</span><span class="muted small" id="cc-sum"></span></div>
         <div class="cc-bars" id="cc-bars" hidden>
-          <div><div class="bar-row"><span>Parked conversations</span><span class="muted" id="cc-slots-text">&ndash;</span></div>
+          <div><div class="bar-row"><span data-i18n="monitor.parkedConversations">Parked conversations</span><span class="muted" id="cc-slots-text">&ndash;</span></div>
             <div class="st-progress"><div class="st-progress__bar" id="cc-slots-bar" style="width:0%"></div></div></div>
-          <div><div class="bar-row"><span>Their memory (RAM)</span><span class="muted" id="cc-mem-text">&ndash;</span></div>
+          <div><div class="bar-row"><span data-i18n="monitor.theirMemory">Their memory (RAM)</span><span class="muted" id="cc-mem-text">&ndash;</span></div>
             <div class="st-progress"><div class="st-progress__bar" id="cc-mem-bar" style="width:0%"></div></div></div>
         </div>
         <dl class="facts" id="cc-facts"></dl>
@@ -182,9 +182,9 @@
       </div>
 
       <div class="st-card mcp-card" id="mcp-card" hidden>
-        <div class="req-head"><span class="card-title">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
+        <div class="req-head"><span class="card-title" data-i18n="monitor.mcpServers">MCP servers</span><span class="muted small" id="mcp-sum"></span></div>
         <div class="mcp-list" id="mcp-list"></div>
-        <p class="muted small mcp-note">Their tools run on this PC with your rights, when the model decides to call them
+        <p class="muted small mcp-note" data-i18n="monitor.mcpNote">Their tools run on this PC with your rights, when the model decides to call them
           (in this page's chat only; switch it off in Sampling).</p>
       </div>
     </div>
@@ -194,40 +194,39 @@
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
       <div class="st-card">
-        <span class="card-title">Model and engine</span>
+        <span class="card-title" data-i18n="about.modelAndEngine">Model and engine</span>
         <dl class="facts" id="facts-engine"></dl>
       </div>
       <div class="st-card">
-        <span class="card-title">This PC</span>
+        <span class="card-title" data-i18n="about.thisPc">This PC</span>
         <dl class="facts" id="facts-hw"></dl>
       </div>
       <div class="st-card">
-        <span class="card-title">Connect your tools</span>
-        <p class="muted">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
+        <span class="card-title" data-i18n="about.connectTools">Connect your tools</span>
+        <p class="muted" data-i18n="about.connectNote">Any OpenAI- or Anthropic-compatible client works with these addresses.</p>
         <dl class="facts" id="facts-api"></dl>
       </div>
       <div class="st-card">
-        <span class="card-title">Settings</span>
+        <span class="card-title" data-i18n="about.settings">Settings</span>
         <div class="st-field">
-          <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
+          <label class="st-label" for="api-key"><span data-i18n="about.apiKey">API key</span> <output data-i18n="about.apiKeyNote">only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
         </div>
         <div class="st-field">
           <label class="st-label" for="lang"><span data-i18n="settings.language">Language</span></label>
           <select class="st-input" id="lang"></select>
-          <span class="muted small" data-i18n="settings.languageNote">Chat, its settings and the buttons above are translated. The Monitor, Images and About views are still in English.</span>
+          <span class="muted small" data-i18n="settings.languageNote">The chat, the Monitor, the Images view and the About view all follow this choice.</span>
         </div>
-        <div class="toggle-row"><span>Dark theme</span>
-          <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
-        <p class="muted small">Chats, settings and the key are kept in this browser only.
+        <div class="toggle-row"><span data-i18n="about.darkTheme">Dark theme</span>
+          <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme" data-i18n-label="about.darkTheme"></button></div>
+        <p class="muted small"><span data-i18n="about.keptInBrowser">Chats, settings and the key are kept in this browser only.</span>
           <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
-        <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>
-        <p class="muted small">Kept in the model's run config for every client. An empty field is the default. They
-          take effect the next time the model starts (close Strata's window and start it again).</p>
+        <div class="req-head"><span class="card-title" data-i18n="about.modelSettings">Model settings</span><span class="muted small" id="cfg-file"></span></div>
+        <p class="muted small" data-i18n="about.modelSettingsNote">Kept in the model's run config for every client. An empty field is the default. They take effect the next time the model starts (close Strata's window and start it again).</p>
         <form class="cfg-form" id="cfg-form"></form>
-        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button">Save</button>
+        <div class="cfg-actions"><button class="st-btn st-btn--primary" id="cfg-save" type="button" data-i18n="about.save">Save</button>
           <span class="muted small" id="cfg-msg" role="status"></span></div>
       </div>
     </div>
