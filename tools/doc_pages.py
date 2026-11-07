@@ -17,8 +17,6 @@ ARCHIVE_PREFIXES = (
     "bench/results/",
     "phaseA-tests/",
     "docs/release-notes-",
-    "docs/work/",                # moves to history/ in step 3.5
-    "apps/host/audit-fixes/",    # moves to history/ in step 3.5
 )
 
 

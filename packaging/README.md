@@ -144,7 +144,7 @@ The Terminal bundles a private Python and its dependencies for `windows-x86_64`,
 1. The app launches and the window serves the supplied UI from the host's origin.
 2. The owner transport works: one owner per installation, a second client attaches, a stale owner can be recovered, and no client can stop a process it does not own.
 3. Real inference on a supported pack, with the engine build hash and the model hashes recorded.
-4. `docs/work/QUALIFICATION-KIT.md` run end to end, with raw evidence kept.
+4. A qualification run on that platform, with raw evidence kept. The Mac-first run in October 2026 is the earlier example: [history/docs/work/QUALIFICATION-KIT.md](../history/docs/work/QUALIFICATION-KIT.md).
 
 ## Release checks and gaps
 

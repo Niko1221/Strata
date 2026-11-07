@@ -7,7 +7,7 @@ agent turn reaches the local Strata API worker, that the assistant message recor
 provider and model as its source, and that the turn reaches a terminal state in a durable session.
 
 It does NOT prove inference quality. The worker runs its built-in `MockEngine`, because no Strata
-pack fits this development Mac (see docs/work/IMPLEMENTATION_STATUS.md section 3.2). Every reported
+pack fits this development Mac (see history/docs/work/IMPLEMENTATION_STATUS.md section 3.2). Every reported
 fact is about the path, not the model; the qualification kit replaces the mock engine with a real
 one on a machine that can hold a pack.
 

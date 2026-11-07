@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate the acceptance evidence matrix.
+"""ARCHIVED (moved to history/ on 2026-11-07). Generate the acceptance evidence matrix of the Mac-first rebuild campaign.
+
+The results in this file were recorded on 2026-10-15 (commits cef6027dc and e424cc940) on one development Mac. This script formats
+that fixed table; it runs no check. The date and revision of the checkout it is run on say nothing about those results, and
+they are not a qualification of any later release. The checklist it reads lives outside this repository, so it only runs on
+the machine that had it.
 
 `strata-acceptance-checklist.md` has 67 requirement rows, and Phase A is only complete when **every
 one of them has an explicit result** — passed, failed, pending hardware, pending signing/release
@@ -18,7 +23,7 @@ A code defect is never ``pending-hardware``: if the implementation is wrong or a
 plainly, because deferring a defect to another machine is how defects become permanent.
 
 Usage:
-    python packaging/acceptance_matrix.py [--out docs/work/ACCEPTANCE-EVIDENCE.md]
+    python history/packaging/acceptance_matrix.py [--out history/docs/work/ACCEPTANCE-EVIDENCE.md]
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]      # history/packaging/ -> the repository root
 
 STATUS_ORDER = ("passed", "failed", "pending-hardware", "pending-release", "unsupported",
                 "not-implemented")
@@ -43,7 +48,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "npm, pip or compiler is required: the bundle carries a pinned Node runtime. Real "
             "generation through it is NOT proven -- no Strata pack fits this Mac (16 GiB RAM, "
             "~21 GiB free); that leg is pending hardware.",
-            "docs/work/evidence/tauri-selftest-from-dmg.json, tauri-artifact.txt"),
+            "history/docs/work/evidence/tauri-selftest-from-dmg.json, tauri-artifact.txt"),
     "P02": ("pending-hardware",
             "The NSIS per-user installer target and policy are configured and the config validates "
             "against this Tauri version, but a Windows installer must be produced on Windows. Not "
@@ -58,7 +63,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "Python is macOS's 3.9, which the launcher correctly rejects as below the 3.10 floor. "
             "Serving, status, timeskip and tune all ran on the bundled interpreter. Only the "
             "darwin-arm64 archive is built; Linux/Windows archives need a pin plus a build there.",
-            "docs/work/evidence/terminal-dist.txt"),
+            "history/docs/work/evidence/terminal-dist.txt"),
     "P05": ("unsupported",
             "No Metal/CUDA/SYCL/HIP target row is delivered as a package yet. One engine is built "
             "and qualified as a *source build* on this Mac (macos-arm64-metal); the other families "
@@ -76,11 +81,11 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "Desktop and Terminal read the same owner state and the same model directory; the "
             "terminal's `models list` reads the setup-written configs that Desktop's model surfaces "
             "use. Imported files are never copied (import is preview-only by design).",
-            "docs/work/evidence/serve-suite.txt, terminal-suite.txt"),
+            "history/docs/work/evidence/serve-suite.txt, terminal-suite.txt"),
     "P09": ("not-implemented",
             "No offline bundle format exists yet. The engine build and model preparation are "
             "documented as commands, not as a signed bundle.",
-            "docs/work/QUALIFICATION-KIT.md 3.2"),
+            "history/docs/work/QUALIFICATION-KIT.md 3.2"),
     "P10": ("pending-hardware",
             "Uninstall retention is designed in (data lives outside the install directory, and the "
             "Windows installer does not delete app data), but uninstall/reinstall cannot be "
@@ -104,17 +109,17 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "Serving with installed inputs invokes no downloader, package manager, git or compiler: "
             "the server's import graph is stdlib plus relative modules, and the server starts and "
             "answers from the bundled runtime with no network access attempted.",
-            "docs/work/evidence/terminal-dist.txt"),
+            "history/docs/work/evidence/terminal-dist.txt"),
     "R02": ("passed",
             "Pure serving and the read-only CLI run with no agent runtime, no tuning packages, no "
             "Textual and no UI present. Verified by running the server from the standalone bundle "
             "and by importing strata_control.management and strata_cli.cli on a bare interpreter.",
-            "docs/work/evidence/terminal-dist.txt"),
+            "history/docs/work/evidence/terminal-dist.txt"),
     "R03": ("passed",
             "One owner per installation is enforced by an O_EXCL state file plus an flock held for "
             "the host's lifetime; a second client attaches over the private channel; a stale owner "
             "is only recovered after the socket is proven dead. Fifteen transport tests cover it.",
-            "docs/work/evidence/owner-transport-suite.txt"),
+            "history/docs/work/evidence/owner-transport-suite.txt"),
     "R04": ("unsupported",
             "**The Windows owner transport is not a named pipe with an ACL.** The Python standard "
             "library cannot create one, so Windows uses a loopback-only TCP listener whose "
@@ -123,59 +128,59 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "process-tree cleanup for engine children ARE implemented (serve/winjob.py, tested). "
             "The Windows branch of the transport is exercised on macOS but has never run on "
             "Windows.",
-            "strata_control/owner_transport.py, docs/work/evidence/owner-transport-suite.txt"),
+            "strata_control/owner_transport.py, history/docs/work/evidence/owner-transport-suite.txt"),
     "R05": ("passed",
             "Preflight refuses before load: the engine rejects a model whose metadata geometry "
             "differs from the compiled shape, naming the differing key; the GGUF preflight checks "
             "shard naming, magic, version and tokenizer identity; the tuning plan refuses a "
             "dimension whose flag the engine does not accept.",
-            "docs/work/evidence/tuning-suite.txt, docs/work/IMPLEMENTATION_STATUS.md 1.12"),
+            "history/docs/work/evidence/tuning-suite.txt, history/docs/work/IMPLEMENTATION_STATUS.md 1.12"),
     "R06": ("pending-hardware",
             "The catalog refuses unknown selections and reports a reason, and the plan refuses "
             "unsupported dimensions. Whether Qwen3.6 runs at all on this backend is answerable only "
             "with the model present: the engine documents that Qwen3.6 does not run on the Mac "
             "engine, and NVFP4 is NVIDIA-only.",
-            "docs/MAC.md, docs/work/evidence/tuning-plan.txt"),
+            "docs/MAC.md, history/docs/work/evidence/tuning-plan.txt"),
     "R07": ("pending-hardware",
             "The reviewed downloader is resumable and keeps verified bytes, and import is "
             "preview-only so it never moves files. The cancel/resume behaviour cannot be exercised "
             "without a model large enough to interrupt, which does not fit here.",
-            "docs/work/QUALIFICATION-KIT.md 3.2"),
+            "history/docs/work/QUALIFICATION-KIT.md 3.2"),
     "R08": ("passed",
             "Saving settings preserves unknown fields and masks secrets (the reviewed NATIVE_FIELDS "
             "table with `••••••••` round-tripping), writes atomically via a temp file and rename, "
             "and reports restartNeeded rather than applying silently. The tuning job refuses to "
             "touch the active profile at all.",
-            "docs/work/evidence/serve-suite.txt, docs/work/IMPLEMENTATION_STATUS.md 1.12"),
+            "history/docs/work/evidence/serve-suite.txt, history/docs/work/IMPLEMENTATION_STATUS.md 1.12"),
     "R09": ("passed",
             "Readiness requires the engine's own READY line: max_context stays 0 until it arrives, "
             "so a pre-READY 'ready' is impossible, and a timeout is reported as uncertain rather "
             "than as success. Verified against a stub engine.",
-            "docs/work/evidence/tuning-suite.txt"),
+            "history/docs/work/evidence/tuning-suite.txt"),
     "R10": ("pending-hardware",
             "Stop and unload handle active and queued work explicitly in the reviewed server, and "
             "the ten-cycle orphan check is an executable procedure. It cannot be run without a "
             "loadable model.",
-            "docs/work/QUALIFICATION-KIT.md 5"),
+            "history/docs/work/QUALIFICATION-KIT.md 5"),
     "R11": ("passed",
             "All three dialects are served and their documented behaviour is covered by the "
             "reviewed server suite: 801 tests pass, including streams, tool fragments, telemetry "
             "and error shapes.",
-            "docs/work/evidence/serve-suite.txt"),
+            "history/docs/work/evidence/serve-suite.txt"),
     "R12": ("passed",
             "The agent bridge cancels per session and the host owns request cancellation for "
             "serving; the queue releases only the affected slot. The end-to-end cancellation *turn* "
             "assertion is inconclusive against the instant mock engine and is reported as such "
             "rather than as a pass.",
-            "docs/work/evidence/serve-suite.txt, docs/work/IMPLEMENTATION_STATUS.md 1.8"),
+            "history/docs/work/evidence/serve-suite.txt, history/docs/work/IMPLEMENTATION_STATUS.md 1.8"),
     "R13": ("pending-hardware",
             "Group allocation, reservations and readiness-before-routing are reviewed features of "
             "the server, and multi-device behaviour cannot be exercised on a single-GPU machine.",
-            "docs/work/QUALIFICATION-KIT.md 6"),
+            "history/docs/work/QUALIFICATION-KIT.md 6"),
     "R14": ("pending-hardware",
             "Vision and image-generation paths exist in the reviewed server and refuse when "
             "unavailable; neither can be exercised without a real model and its mmproj.",
-            "docs/work/QUALIFICATION-KIT.md 6"),
+            "history/docs/work/QUALIFICATION-KIT.md 6"),
 
     # ---------------------------------------------------------------- agent, session, permissions
     "A01": ("passed",
@@ -183,7 +188,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "worker on loopback, with no cloud route declared in the profile and therefore no "
             "DeepSeek account required. The model is the built-in mock: this proves the route, not "
             "inference quality.",
-            "docs/work/evidence/bridge-e2e.txt, integrations/harness/profile/cordis.patch.yml"),
+            "history/docs/work/evidence/bridge-e2e.txt, integrations/harness/profile/cordis.patch.yml"),
     "A02": ("passed",
             "Framing is verified at the byte level: a multi-byte character split across reads "
             "survives intact with no replacement character, an SSE line split mid-JSON is "
@@ -194,58 +199,58 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "apps/host/tests/stream-framing.test.mjs"),
     "A05": ("passed",
             "Verified end to end against a live turn. The scripted worker runs with a token delay so the turn is still running when Stop is sent, and the test waits for turn/start and fails if the turn was not live -- without that it passed trivially on the first attempt, because the scripted turn finished in milliseconds and Stop arrived after turn/end. Stop is acknowledged as `{accepted: true}`, which is admission only; the turn then settles as `aborted` in the durable record, which is what actually settles it, and the tool does not run. Also asserts the marker the tool would have written does not exist, so a turn that reported cancellation while letting the tool finish would fail.",
-            "docs/work/evidence/tool-flow.txt, integrations/harness/tool_flow_e2e.py"),
+            "history/docs/work/evidence/tool-flow.txt, integrations/harness/tool_flow_e2e.py"),
     "A06": ("passed",
             "Sessions are durable in the Harness format, and resume re-reads them rather than "
             "replaying effects: the interrupted-turn repair synthesises closers instead of "
             "re-running tools. Verified by reading the durable session file across its concatenated "
             "frames.",
-            "integrations/harness/bridge_e2e.py, strconv note in docs/work/IMPLEMENTATION_STATUS.md 1.8"),
+            "integrations/harness/bridge_e2e.py, strconv note in history/docs/work/IMPLEMENTATION_STATUS.md 1.8"),
     "A07": ("passed",
             "The same durable session is reachable from the App Host and from a CLI-started Harness "
             "with the same DSH_HOME, sharing history, model identity and workspace. The bridge "
             "reads the identical file the UI's host would.",
-            "docs/work/evidence/bridge-e2e.txt"),
+            "history/docs/work/evidence/bridge-e2e.txt"),
     "A08": ("pending-hardware",
             "Two sessions run independently in the bridge (each gets its own session), but the "
             "cross-session isolation assertions (no shared tool results, no credential leakage, no "
             "shared-runtime kill) need a real model and a tool that runs.",
-            "docs/work/QUALIFICATION-KIT.md 7"),
+            "history/docs/work/QUALIFICATION-KIT.md 7"),
     "A09": ("pending-hardware",
             "Subagents are a reviewed Harness feature with real depth and concurrency bounds; the "
             "UI already renders child-agent frames. Nothing has been observed end to end, and the "
             "supplied UI's agent events are not emitted by the host yet.",
-            "docs/work/QUALIFICATION-KIT.md 7"),
+            "history/docs/work/QUALIFICATION-KIT.md 7"),
     "A10": ("pending-hardware",
             "Bounded goals are a reviewed Harness feature (maxGoalRounds, round-limit blocking). Not "
             "exercised in this integration.",
-            "docs/work/QUALIFICATION-KIT.md 7"),
+            "history/docs/work/QUALIFICATION-KIT.md 7"),
     "A11": ("pending-hardware",
             "Compaction and long-context handling are reviewed Harness features. The route declares "
             "the real local window (32K) rather than inheriting a cloud default, and refuses a "
             "request that does not fit rather than truncating silently -- observed. The "
             "compaction-preserves-tool-pairing assertion needs a real model.",
-            "docs/work/IMPLEMENTATION_STATUS.md 1.8"),
+            "history/docs/work/IMPLEMENTATION_STATUS.md 1.8"),
     "A12": ("passed",
             "The reviewed task service validates schedules with DST-correct nextRun, prevents "
             "overlapping runs, and has no catch-up burst or duplicate scheduler. Covered by the "
             "reviewed test suite and by route tests.",
-            "docs/work/evidence/serve-suite.txt"),
+            "history/docs/work/evidence/serve-suite.txt"),
     "A13": ("pending-hardware",
             "Skills resolve against the reviewed workspace/policy roots. That prompts and inference "
             "keys cannot invoke installer or owner actions needs an adversarial test against a "
             "running agent, which needs a real model.",
-            "docs/work/QUALIFICATION-KIT.md 7"),
+            "history/docs/work/QUALIFICATION-KIT.md 7"),
     "A14": ("passed",
             "The Strata profile declares exactly one route, on loopback, and no cloud route at all, "
             "so a local failure cannot fall back to a hosted model -- there is nothing to fall back "
             "to. The host additionally refuses to simulate in a packaged build.",
-            "integrations/harness/profile/cordis.patch.yml, docs/work/IMPLEMENTATION_STATUS.md 1.7"),
+            "integrations/harness/profile/cordis.patch.yml, history/docs/work/IMPLEMENTATION_STATUS.md 1.7"),
     "A15": ("passed",
             "Conversations live in the browser store by design, and browser-origin export/import is "
             "idempotent with attachments and preferences retained; historical tool records are data "
             "and are never executed. Covered by the reviewed UI suite.",
-            "docs/work/evidence/serve-suite.txt"),
+            "history/docs/work/evidence/serve-suite.txt"),
 
     "A03": ("passed",
             "Verified end to end, and only after four defects were cleared. A scripted Strata worker "
@@ -259,7 +264,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "required `description`; the launch-URL `interactions` parameter is decorative and the "
             "default is answerable; and a workspace-write command is not gated, so the call now "
             "requests a sandbox escalation, which is the only path that consults the approval gate.",
-            "docs/work/evidence/tool-flow.txt, integrations/harness/tool_flow_e2e.py"),
+            "history/docs/work/evidence/tool-flow.txt, integrations/harness/tool_flow_e2e.py"),
 
     "A04": ("passed",
             "Verified with the denial observed, not assumed. Same scripted call as A03, but the peer "
@@ -272,19 +277,19 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "pending. An earlier version of this row was marked passed and has been withdrawn: in that "
             "run the approval was never consulted at all, the tool failed argument validation for an "
             "unrelated reason, and the mechanism it relied on does not exist.",
-            "docs/work/evidence/tool-flow.txt, integrations/harness/tool_flow_e2e.py"),
+            "history/docs/work/evidence/tool-flow.txt, integrations/harness/tool_flow_e2e.py"),
 
     # ---------------------------------------------------------------- time-skip and tuning
     "S01": ("passed",
             "Real baseline and candidate directories with content-addressed checkpoints replace the "
             "timer entirely. Every checkpoint and decision persists by SHA-256 digest of its file "
             "inventory, not by a label.",
-            "tests/time_skip/test_time_skip.py, docs/work/evidence/timeskip-harness.txt"),
+            "tests/time_skip/test_time_skip.py, history/docs/work/evidence/timeskip-harness.txt"),
     "S02": ("passed",
             "A previously passing deterministic check that regresses rejects the candidate and the "
             "last good checkpoint stays selected; verified end to end, where the attempt was "
             "rejected and the baseline retained.",
-            "docs/work/evidence/timeskip-harness.txt"),
+            "history/docs/work/evidence/timeskip-harness.txt"),
     "S03": ("passed",
             "An unevaluable check is `unknown` and never a pass; a run whose checks cannot justify a "
             "change ends `inconclusive` with `needsUserReview`, and a model's opinion is declared "
@@ -293,7 +298,7 @@ ROWS: dict[str, tuple[str, str, str]] = {
     "S04": ("passed",
             "Open/Compare/Keep/Restore operate on the actual retained checkpoint; applying previews, "
             "keeps a rollback copy, refuses with 409 when the destination changed, and restores.",
-            "docs/work/evidence/timeskip-http.txt"),
+            "history/docs/work/evidence/timeskip-http.txt"),
     "S05": ("passed",
             "Cancellation and failure retain the last complete checkpoint, attempts are bounded, and "
             "no revision can touch the workspace, so there is no tool replay or external side "
@@ -303,17 +308,17 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "Tuning is optional and pinned: it lives in a separate module, the CLI imports it only "
             "for its own commands, and serving, status and monitor run without it. Nothing is "
             "installed by the tuning path.",
-            "docs/work/evidence/terminal-dist.txt"),
+            "history/docs/work/evidence/terminal-dist.txt"),
     "T02": ("passed",
             "The sweep uses only flags the selected engine binary accepts, holds an exclusive "
             "device lease, fixes the workload (greedy, seed 1) for every candidate, and never "
             "writes the active profile.",
-            "docs/work/evidence/tuning-sweep.txt"),
+            "history/docs/work/evidence/tuning-sweep.txt"),
     "T03": ("passed",
             "Boot failure, timeout, no-tokens and correctness failure are each recorded with a "
             "status and excluded from selection; the lease is released even when the job fails; "
             "cancellation stops new trials and keeps the evidence collected.",
-            "docs/work/evidence/tuning-suite.txt"),
+            "history/docs/work/evidence/tuning-suite.txt"),
     "T04": ("passed",
             "Two measurement modes, labelled so neither can stand in for the other. `protocol` reads "
             "the engine's own serve protocol; `api` starts the real worker from the candidate's "
@@ -349,53 +354,53 @@ ROWS: dict[str, tuple[str, str, str]] = {
             "no supported model fits this Mac, so `--verify` is wired and tested but the CLI passes "
             "None and says so. 31 tests, and a refused apply is asserted to leave the file "
             "byte-identical.",
-            "tests/tuning/test_tune_apply.py, docs/work/evidence/tuning-apply.txt"),
+            "tests/tuning/test_tune_apply.py, history/docs/work/evidence/tuning-apply.txt"),
     "T08": ("unsupported",
             "No real tuning qualification exists for any backend, because no supported model fits "
             "this Mac. Stub-engine results are labelled as stub results everywhere they appear and "
             "are never presented as a backend qualification.",
-            "docs/work/evidence/tuning-sweep.txt"),
+            "history/docs/work/evidence/tuning-sweep.txt"),
 
     # ---------------------------------------------------------------- interface, security, evidence
     "U01": ("passed",
             "The supplied UI is used unmodified: 54 components, 10 screens, 8 locales, the design "
             "kit's tokens and motion. The tuning panel added this round uses the kit's own "
             "primitives and tokens rather than introducing a parallel style.",
-            "docs/work/evidence/serve-suite.txt, apps/host/src/components/TunePanel.tsx"),
+            "history/docs/work/evidence/serve-suite.txt, apps/host/src/components/TunePanel.tsx"),
     "U02": ("pending-hardware",
             "Keyboard and focus behaviour, reduced motion, long translations and OS file/font "
             "permission flows are designed in and the UI suite covers parts of them. Verifying them "
             "in a *packaged* Desktop on multiple OS versions needs those hosts.",
-            "docs/work/evidence/tauri-selftest.json"),
+            "history/docs/work/evidence/tauri-selftest.json"),
     "U03": ("passed",
             "The terminal's six views render and the operator flows work at full width; the "
             "reviewed monitor suite covers compact fallbacks and the terminal is restored on exit. "
             "Verified against a live worker.",
-            "docs/work/evidence/terminal-suite.txt, serve-suite.txt"),
+            "history/docs/work/evidence/terminal-suite.txt, serve-suite.txt"),
     "U04": ("passed",
             "The monitor attaches over HTTP read-only, with an allow-list of exactly four "
             "read-only endpoints, refuses redirects, caps the body and never starts or stops "
             "anything; detaching leaves work alive.",
-            "docs/work/evidence/terminal-suite.txt"),
+            "history/docs/work/evidence/terminal-suite.txt"),
     "U05": ("passed",
             "Telemetry carries a sample age and a source; a missing or stale reading renders as a "
             "dash rather than as zero, unified memory is counted once, and the packaged build "
             "refuses to fabricate readings at all.",
-            "docs/work/evidence/serve-suite.txt, docs/work/IMPLEMENTATION_STATUS.md 1.7"),
+            "history/docs/work/evidence/serve-suite.txt, history/docs/work/IMPLEMENTATION_STATUS.md 1.7"),
     "U06": ("passed",
             "Rendered artifacts cannot reach renderer or owner privileges: the window is confined "
             "to the host origin, navigation elsewhere is handed to the system browser, permissions "
             "are denied by default, and the renderer runs sandboxed with context isolation and no "
             "Node integration.",
-            "apps/desktop/src-tauri/src/main.rs, docs/work/evidence/tauri-selftest.json"),
+            "apps/desktop/src-tauri/src/main.rs, history/docs/work/evidence/tauri-selftest.json"),
     "U07": ("passed",
             "A non-loopback bind requires an API key (the reviewed server enforces it and the test "
             "suite covers the refusal); management stays on the private channel; secrets are masked "
             "in projections and never written to logs or URLs.",
-            "docs/work/evidence/serve-suite.txt"),
+            "history/docs/work/evidence/serve-suite.txt"),
     "U08": ("passed",
             "The two claims are separated and tested separately, because a passing runtime-only test says nothing about the strict one. `runtime_only_no_download` is that the server fetches nothing while serving; `strict_offline` is that nothing in the process tree reaches the network. Strict offline is enforced through the environment every child receives (HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE, PIP_NO_INDEX, DO_NOT_TRACK, emptied proxy variables and NO_PROXY=*), applied last so a profile cannot remove it by naming the same variable; through one `check_url` predicate for our own fetches, which allows local schemes and loopback because talking to this machine is not a download; and through a preflight that refuses a profile declaring MCP servers, a before_load command or remote image sources, naming which. Verified against a real child process. A test asserts every child_env call site passes the policy -- which caught a real leak in the engine's own environment. `limits()` states what is not enforced: a child that opens a socket directly is not stopped, because that needs an OS sandbox this product does not have on all three platforms.",
-            "tests/tuning/test_offline.py, docs/work/evidence/offline.txt"),
+            "tests/tuning/test_offline.py, history/docs/work/evidence/offline.txt"),
     "U09": ("not-implemented",
             "Connector operations exist in the reviewed host (Cloudflare tunnel, LAN share) but the "
             "explicit-only and never-widen-on-failure assertions are not tested.",
@@ -403,26 +408,26 @@ ROWS: dict[str, tuple[str, str, str]] = {
     "U10": ("pending-hardware",
             "A thirty-minute real soak needs a running model. The reviewed suite has shorter "
             "monitor soak evidence from the terminal handover, which is not a substitute.",
-            "docs/work/QUALIFICATION-KIT.md 5"),
+            "history/docs/work/QUALIFICATION-KIT.md 5"),
     "U11": ("pending-release",
             "No signing or notarization, no SBOM, no notices bundle and no font/asset "
             "redistribution evidence. Signing credentials and rights evidence must come from the "
             "owner; the artifacts produced here are explicitly labelled unsigned internal "
             "candidates.",
-            "packaging/README.md, docs/work/evidence/tauri-artifact.txt"),
+            "packaging/README.md, history/docs/work/evidence/tauri-artifact.txt"),
     "U12": ("passed",
             "A packaged build has no success path that uses demo responses or demo metrics: the "
             "host refuses to simulate when STRATA_PACKAGED is set and returns a typed error "
             "instead, the monitor reports `none` rather than invented readings, and this matrix "
             "records every failure, skip and remaining item.",
-            "docs/work/IMPLEMENTATION_STATUS.md 1.7, this file"),
+            "history/docs/work/IMPLEMENTATION_STATUS.md 1.7, this file"),
 }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default="docs/work/ACCEPTANCE-EVIDENCE.md")
+    ap.add_argument("--out", default="history/docs/work/ACCEPTANCE-EVIDENCE.md")
     ap.add_argument("--check", action="store_true",
                     help="verify that every checklist row has a result, and exit non-zero if not")
     args = ap.parse_args()
@@ -445,8 +450,9 @@ def main() -> int:
     out = [
         "# Acceptance evidence matrix",
         "",
-        f"Generated by `packaging/acceptance_matrix.py` at "
-        f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} for revision `{revision}`.",
+        "ARCHIVED. These results were recorded on 2026-10-15 (commits cef6027dc and e424cc940). "
+        f"`history/packaging/acceptance_matrix.py` formatted them on {datetime.now(timezone.utc).strftime('%Y-%m-%d')} "
+        f"in a checkout at `{revision}`; that date and revision are not when, or on what code, the checks ran.",
         "",
         "Every row of `strata-acceptance-checklist.md` appears exactly once, with an explicit "
         "result. `--check` fails if a row is missing, so a gap is a build error rather than an "
