@@ -398,20 +398,78 @@ class Failures(unittest.TestCase):
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
             self.assertGreater(srv.redirects, 2)                            # HEAD + first probe + a new address after the 403
 
-    def test_a_pinned_hash_mismatch_deletes_the_file_and_stops(self):
+    def test_a_pinned_hash_mismatch_keeps_the_file_as_bad_and_stops(self):
         wrong = bytes(reversed(DATA))
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d, pin=pin_of(wrong))
             self.assertEqual(code, 1)
-            self.assertEqual(files(d), [])                                  # no file, no .done, no .part, no piece list
+            self.assertEqual(files(d), [NAME + ".bad"])                     # no file, no .done, no .part, no piece list; the bytes are kept
+            self.assertEqual((Path(d) / (NAME + ".bad")).read_bytes(), DATA)
 
     def test_a_pinned_hash_mismatch_with_the_same_size(self):
         other = bytes((b ^ 0x55) for b in DATA)
         with small_pieces(), Server(data=other) as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d)
             self.assertEqual(code, 1)
-            self.assertIn("wrong SHA-256", out)
-            self.assertEqual(files(d), [])
+            self.assertIn("does not match the pinned SHA-256", out)
+            self.assertIn(NAME + ".bad", out)
+            self.assertIn("the server sends exactly the bytes you have", out)      # the repair compared every block: the server's file is this one
+            self.assertEqual(files(d), [NAME + ".bad"])
+
+    def test_a_kept_bad_file_is_taken_back_when_it_matches_the_pin_now(self):
+        """A false mismatch (a bad read, a pin that was wrong and is fixed) costs one hash, not the download: the .bad file is the file again."""
+        wrong = bytes(reversed(DATA))
+        with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
+            code, _ = run(srv, d, pin=pin_of(wrong))
+            self.assertEqual(code, 1)
+            srv.gets.clear()
+            code, out = run(srv, d)                                        # the right pin now
+            self.assertIsNone(code, out)
+            self.assertEqual(srv.gets, [], "nothing was asked of the server")
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+
+    def test_a_kept_bad_file_is_removed_by_a_good_download(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
+            (Path(d) / (NAME + ".bad")).write_bytes(other)                  # kept by an earlier run; not the pinned bytes
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+
+    def test_a_kept_bad_file_is_removed_when_there_is_no_room_for_the_new_copy(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        usage = type("U", (), {"free": 1000, "total": 10 ** 6, "used": 0})()
+        seen = []
+
+        def faults(path, start, end, nth):
+            seen.append(files(self.d))
+            return None
+
+        with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d,                 mock.patch.object(setup.shutil, "disk_usage", lambda p: usage):
+            self.d = d
+            (Path(d) / (NAME + ".bad")).write_bytes(other)
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertTrue(seen and NAME + ".bad" not in seen[0], seen[:1])   # gone before the first piece came down
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+
+    def test_a_kept_bad_file_stays_while_there_is_room(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        seen = []
+
+        def faults(path, start, end, nth):
+            seen.append(files(self.d))
+            return None
+
+        with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d:
+            self.d = d
+            (Path(d) / (NAME + ".bad")).write_bytes(other)
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertTrue(seen and NAME + ".bad" in seen[0], "kept until the new copy is checked")
+            self.assertNotIn(NAME + ".bad", files(d))
 
     def test_a_full_disk_stops_with_a_message(self):
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
