@@ -3,7 +3,7 @@
 
 Each entry is a thing dpct 2025.3 got wrong or could not do, with the reason. Upstream files are never touched.
 """
-import re, sys, pathlib
+import re, pathlib
 root = pathlib.Path(__file__).resolve().parents[1]
 changed = 0
 
