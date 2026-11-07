@@ -19,6 +19,14 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #endif
+#if defined(__linux__)
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <chrono>
+#include <sstream>
+#include <string>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -38,6 +46,139 @@ namespace strata::kernels {
 namespace {
 /// The A/B arm.  Host-token-path only, so it needs no atomics; see the note on `ple_prefetch_enable`.
 bool g_ple_prefetch = true;
+
+#if defined(__linux__)
+// STRATA_ARENA_NUMA=1 (core/expert_source.cpp) puts the expert arena's row halves on the two NUMA nodes, about half of
+// each node's RAM.  The PLE table is locked before the arena is filled.  Read from a cold file it lands on the node of the
+// thread that read it (measured after a cold boot: all 26.8 GiB of a 63.5 GiB-arena model on node 0), which leaves that
+// node too little room for its arena slice; the slice's pages that the long-term pin migrates (CMA-type pageblocks) then
+// go to the other node (88% local instead of 98-100%).  With that switch the table's first half is therefore faulted in by
+// threads on the first node with CPUs and the second half by threads on the second (MPOL_PREFERRED: a full node spills,
+// nothing fails), and pages an earlier reader left in the file cache on the wrong node are moved (move_pages).  Only
+// where the pages are changes.  STRATA_PLE_NUMA=0 keeps the plain fault-in.
+bool ple_numa_wanted() {
+    const char* a = std::getenv("STRATA_ARENA_NUMA");
+    if (a == nullptr || a[0] != '1') return false;
+    const char* p = std::getenv("STRATA_PLE_NUMA");
+    return p == nullptr || p[0] != '0';
+}
+
+std::vector<int> ple_cpulist(const std::string& t) {
+    std::vector<int> out;
+    std::stringstream ss(t);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        if (part.empty() || part == "\n") continue;
+        const size_t d = part.find('-');
+        const int a = std::atoi(part.c_str()), b = d == std::string::npos ? a : std::atoi(part.c_str() + d + 1);
+        for (int c = a; c <= b && c >= 0 && c < 4096; ++c) out.push_back(c);
+    }
+    return out;
+}
+
+// the share of sampled pages of [lo, hi) on `node`; -1 when the query failed
+double ple_share_on(uintptr_t lo, uintptr_t hi, int node) {
+    const uintptr_t pages = (hi - lo) / 4096;
+    const size_t n = (size_t) std::min<uintptr_t>(4096, pages);
+    if (n == 0) return 1.0;
+    std::vector<void*> p(n);
+    std::vector<int> st(n, -1);
+    for (size_t i = 0; i < n; ++i) p[i] = (void*) (lo + (uintptr_t) ((pages * i) / n) * 4096);
+    if (syscall(SYS_move_pages, 0, (unsigned long) n, p.data(), nullptr, st.data(), 0) != 0) return -1.0;
+    size_t on = 0;
+    for (int s : st) on += s == node;
+    return (double) on / (double) n;
+}
+
+// Faults [a0, a1) in half per node (a0 page-aligned).  Returns false when off: the caller then faults it in as before.
+bool ple_numa_fault_in(uintptr_t a0, uintptr_t a1) {
+    if (!ple_numa_wanted()) return false;
+    int nodes[2] = {-1, -1};
+    std::vector<int> cpus[2];
+    int found = 0;
+    for (int n = 0; n < 64; ++n) {
+        std::ifstream f("/sys/devices/system/node/node" + std::to_string(n) + "/cpulist");
+        if (!f) continue;
+        std::string t;
+        std::getline(f, t);
+        std::vector<int> c = ple_cpulist(t);
+        if (c.empty()) continue;
+        if (found < 2) { nodes[found] = n; cpus[found] = std::move(c); }
+        ++found;
+    }
+    if (found != 2) {
+        std::fprintf(stderr, "strata: PLE table per NUMA node: off (%d NUMA nodes with CPUs; needs exactly 2)\n", found);
+        return false;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    constexpr uintptr_t kPage = 4096, kPiece = 64ull << 20;
+    const uintptr_t mid = std::min(a1, a0 + ((a1 - a0) / 2 + kPage - 1) / kPage * kPage);
+    const uintptr_t lo[2] = {a0, mid}, hi[2] = {mid, a1};
+    std::atomic<uintptr_t> next[2];
+    next[0] = 0;
+    next[1] = 0;
+    std::atomic<long> moved{0}, stuck{0}, pol_fail{0};
+    const unsigned per_node = 8;
+    std::vector<std::thread> pool;
+    for (int k = 0; k < 2; ++k)
+        for (unsigned t = 0; t < per_node; ++t)
+            pool.emplace_back([&, k] {
+                cpu_set_t set;
+                CPU_ZERO(&set);
+                for (int c : cpus[k]) CPU_SET(c, &set);
+                (void) sched_setaffinity(0, sizeof set, &set);
+                unsigned long mask[4] = {0, 0, 0, 0};
+                mask[nodes[k] / 64] |= 1ul << (nodes[k] % 64);
+                if (syscall(SYS_set_mempolicy, 1 /* MPOL_PREFERRED */, mask, 256) != 0) pol_fail.fetch_add(1);
+                const uintptr_t pieces = (hi[k] - lo[k] + kPiece - 1) / kPiece;
+                std::vector<void*> pg;
+                std::vector<int> st, to;
+                volatile uint8_t sink = 0;
+                for (uintptr_t i; (i = next[k].fetch_add(1)) < pieces;) {
+                    const uintptr_t p0 = lo[k] + i * kPiece, p1 = std::min(hi[k], p0 + kPiece);
+                    madvise((void*) p0, p1 - p0, MADV_WILLNEED);
+                    for (uintptr_t p = p0; p < p1; p += kPage) sink = sink + *(const volatile uint8_t*) p;
+                    // pages that were already in the file cache stay where they are: find those on the other node, move them
+                    pg.clear();
+                    for (uintptr_t p = p0; p < p1; p += kPage) pg.push_back((void*) p);
+                    st.assign(pg.size(), -1);
+                    if (syscall(SYS_move_pages, 0, (unsigned long) pg.size(), pg.data(), nullptr, st.data(), 0) != 0) continue;
+                    size_t w = 0;
+                    for (size_t j = 0; j < pg.size(); ++j)
+                        if (st[j] >= 0 && st[j] != nodes[k]) pg[w++] = pg[j];
+                    if (w == 0) continue;
+                    pg.resize(w);
+                    const size_t want = w;
+                    // move, then ask where each page is now (a positive return leaves the status of the pages it did not
+                    // migrate unset); one retry for the transient failures (a page under readahead I/O, -EBUSY)
+                    for (int attempt = 0; attempt < 2 && w > 0; ++attempt) {
+                        to.assign(w, nodes[k]);
+                        st.assign(w, -1);
+                        (void) syscall(SYS_move_pages, 0, (unsigned long) w, pg.data(), to.data(), st.data(), 2 /* MPOL_MF_MOVE */);
+                        st.assign(w, -1);
+                        if (syscall(SYS_move_pages, 0, (unsigned long) w, pg.data(), nullptr, st.data(), 0) != 0) break;
+                        size_t r = 0;
+                        for (size_t j = 0; j < w; ++j)
+                            if (st[j] != nodes[k]) pg[r++] = pg[j];
+                        w = r;
+                        pg.resize(w);
+                    }
+                    moved.fetch_add((long) (want - w));
+                    stuck.fetch_add((long) w);
+                }
+                (void) sink;
+                (void) syscall(SYS_set_mempolicy, 0 /* MPOL_DEFAULT */, nullptr, 0);
+            });
+    for (auto& t : pool) t.join();
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::fprintf(stderr, "strata: PLE table per NUMA node (STRATA_ARENA_NUMA): first half -> node %d (%.1f%% of sampled pages "
+                         "there), second half -> node %d (%.1f%%), %ld pages moved from the other node, %ld not movable, "
+                         "%u threads per node, %.1f s%s\n",
+                 nodes[0], 100.0 * ple_share_on(lo[0], hi[0], nodes[0]), nodes[1], 100.0 * ple_share_on(lo[1], hi[1], nodes[1]),
+                 moved.load(), stuck.load(), per_node, s, pol_fail.load() ? "; WARNING: set_mempolicy failed" : "");
+    return true;
+}
+#endif
 }  // namespace
 
 void ple_prefetch_enable(bool on) { g_ple_prefetch = on; }
@@ -436,11 +577,16 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         const uint64_t page = 4096;
         const uintptr_t a0 = (uintptr_t) impl_->data & ~(uintptr_t) (page - 1);
         const uintptr_t a1 = (uintptr_t) impl_->data + (uintptr_t) need;
-        madvise((void*) a0, a1 - a0, MADV_WILLNEED);
+#if defined(__linux__)
+        const bool by_node = ple_numa_fault_in(a0, a1);
+#else
+        const bool by_node = false;
+#endif
+        if (!by_node) madvise((void*) a0, a1 - a0, MADV_WILLNEED);
         // Fault the table in with several threads first: mlock (and a single toucher) brings it in one page at a time
         // from one thread, ~0.5 GB/s from a cold file - 106 s for a 54 GB Q8_0 table.  The pages are then resident
         // and mlock only pins them.
-        {
+        if (!by_node) {
             constexpr uintptr_t kPiece = 64ull << 20;
             const uintptr_t pieces = (a1 - a0 + kPiece - 1) / kPiece;
             const unsigned threads = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
