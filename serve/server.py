@@ -647,6 +647,29 @@ def cpu_isa_words() -> tuple:
     return f"{model or 'this CPU'} ({have})", missing
 
 
+def vm_locked_mib(pid) -> int | None:
+    """MiB the process holds locked in RAM (VmLck in /proc/<pid>/status, Linux: STRATA_HIP_MLOCK, --ple-io ram), for
+    /health; None where it cannot be read."""
+    try:
+        line = next(x for x in Path(f"/proc/{pid}/status").read_text().splitlines() if x.startswith("VmLck:"))
+        return int(line.split()[1]) // 1024
+    except (OSError, StopIteration, ValueError, IndexError):
+        return None
+
+
+def kfd_evicted_ms(pid, root="/sys/class/kfd/kfd/proc") -> int | None:
+    """Milliseconds the amdgpu driver has kept the process's GPU queues evicted (evicted_ms under
+    /sys/class/kfd/kfd/proc/<pid>/stats_<gpu_id>, Linux HIP).  An eviction stops the queues of every GPU of the process,
+    so each GPU counts the same pause: the largest counter, not the sum.  A value that grows during a stall is the kernel
+    invalidating host memory the GPU reads (docs/AMD_HIP.md), not a hang.  For /health; None where it cannot be read,
+    which includes a container with its own PID namespace (the directory is named by the host's PID: --pid host)."""
+    try:
+        ms = [int((d / "evicted_ms").read_text().split()[0]) for d in Path(root, str(int(pid))).glob("stats_*")]
+        return max(ms) if ms else None
+    except (OSError, TypeError, ValueError, IndexError):
+        return None
+
+
 def start_exit_note(rc: int | None, exe=None) -> str:
     """The sentence the start error carries about how the engine process ended (the engine log is silent when the
     system ends it): "" without a status, else a line, with the CPU's AVX flags after an illegal instruction."""
@@ -8111,10 +8134,13 @@ def make_handler(svc: Service):
                 self.end_headers()
                 self.wfile.write(body)
             elif path in ("/health", "/api/health"):
+                engine_pid = getattr(getattr(svc.engine, "proc", None), "pid", None)
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
-                                 "loaded": svc.loaded(), "service": "strata"})
+                                 "loaded": svc.loaded(), "service": "strata",
+                                 "locked_mib": vm_locked_mib(engine_pid),
+                                 "kfd_evicted_ms": kfd_evicted_ms(engine_pid)})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
                 f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None

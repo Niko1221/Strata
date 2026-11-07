@@ -386,6 +386,113 @@ Merge the field into the existing config (this is not a complete run config), ch
 engine, and remove it to go back. If the engine runs in a systemd unit, limit it with `MemoryMax`, never `MemoryHigh`:
 `MemoryHigh` counts the page cache that `--mmap-experts` reads from.
 
+**The engine can lock that memory itself (HIP on Linux, opt-in: `"STRATA_HIP_MLOCK": "1"` in the `env`).** ROCm maps
+host memory for the GPU through a KFD userptr (HMM) without pinning it, unlike `cudaHostRegister` on NVIDIA. On a GPU
+without XNACK (every RDNA card) an invalidation of such a page - reclaim, swap, compaction - evicts all of the process's
+GPU queues until the range is validated again, and under memory pressure that can last tens of seconds: the "no progress
+for 60 s ... 0 layers served" stalls. With the switch on, every `cudaHostRegister`, `cudaHostAlloc` and `cudaMallocHost`
+of the HIP build also `mlock`s its range (and `munlock`s it before it is unregistered or freed). It needs an unlimited
+memlock limit (`ulimit -l unlimited`, `LimitMEMLOCK=infinity`, `docker --ulimit memlock=-1`): the start log prints the
+limit, and a refusal is logged once and changes nothing else. `/health` reports `locked_mib` and `kfd_evicted_ms`
+(how long the driver has kept the engine's queues evicted: a value that jumps during a stall is this, not a hang;
+`null` in a container with its own PID namespace, `docker run --pid host` gives it).
+Locked memory cannot be swapped or reclaimed, so on a host short of RAM other processes take that pressure. Unset or
+`0`: nothing is locked.
+CUDA and Metal need no switch: their pinned memory is pinned already (Metal wires its arena itself).
+
+mlock does not stop page migration: set `vm.compact_unevictable_allowed=0` (persist it in `/etc/sysctl.d/`) so that
+compaction leaves locked pages in place. Still not covered: khugepaged, fork() of the engine, CMA / memory offline,
+and NUMA balancing on multi-socket hosts (`kernel.numa_balancing=1` invalidates locked pages too: set it to 0, start the
+engine under `numactl --localalloc`, or see #4866).
+
+Measured on one RX 7900 XTX (gfx1100, ROCm 7.10, Linux 6.18, 64 GB, Swift IQ3_S, 32 GiB of resident experts,
+`HSA_USERPTR_FOR_PAGED_MEM` at its default, `vm.compact_unevictable_allowed=0`), 30K-220K-token prompts while another
+process held RAM down to 5 GiB free: without the lock the engine stalled after 103 s and 63 s; with it, two 30-minute
+runs had no stall (37 GiB locked). The lock leaves short evictions: 10-230 ms on some fresh 30K-token prompts and
+about 600 ms when another process takes 6 GB, from host memory ROCr maps for itself (shared `/dev/zero` mappings, a
+few hundred MiB) that the engine never sees and cannot lock.
+
+**GTT instead of userptr (HIP on Linux, opt-in, removes the evictions).** With `"HSA_USERPTR_FOR_PAGED_MEM": "0"` ROCr
+backs every host allocation for the GPU, its own included, with GTT: pages the amdgpu driver pins itself, with no MMU
+notifier, so reclaim, swap and compaction never evict the queues. Alone it is slow, because the expert complement is
+then fine-grained (coherent) GTT. `"STRATA_HIP_ARENA_NONCOHERENT": "1"` allocates the complement coarse-grained; it is
+written once at load and only read by the GPU after that. It also decides the start-up path on the RAM available (below).
+
+```json
+"env": {"HSA_USERPTR_FOR_PAGED_MEM": "0", "HSA_SVM_FOR_PAGED_MEM": "0", "STRATA_HIP_ARENA_NONCOHERENT": "1",
+        "GPU_PINNED_MIN_XFER_SIZE": "1048576"}
+```
+
+- `HSA_SVM_FOR_PAGED_MEM=0` is needed from ROCm 10.2 (TheRock 10.2.0a20261022 and 10.3 nightlies): there host
+  allocations go to SVM by default, shared anonymous memory registered as a userptr, and `HSA_USERPTR_FOR_PAGED_MEM=0`
+  alone no longer gives GTT (a 1 GiB `hipHostMalloc` shows as `/dev/zero (deleted)` in `/proc/<pid>/maps` and
+  `mem_info_gtt_used` does not move; with both variables it maps through `/dev/dri/renderD*` and GTT grows by 1 GiB).
+  It has no effect on ROCm 10.0, where `HSA_USERPTR_FOR_PAGED_MEM=0` alone already gives GTT. Measured on the 10.2 and
+  10.3 nightlies without it: 80-164 s of queue eviction per benchmark run.
+- `GPU_PINNED_MIN_XFER_SIZE` (#920) stops clr from page-locking the heap buffers of expert copies from the file tier
+  with a RAM budget; those short-lived registrations are userptrs too, outside the complement (#4866).
+- With two cards visible, ROCm put the GTT complement here on the first GPU node, not on the card the engine ran on
+  (32 GiB of the other card's `renderD` mapping); give the container only the card it uses if the other one serves
+  something else.
+
+The GTT limit must hold the complement and everything else the engine and ROCr allocate for the GPU on the host: about
+5.7 GiB beyond the complement at 256K context with int8 KV, so keep it above the resident budget + 6 GiB or so. It is
+half the RAM by default (31 GiB on a 64 GB host), and amdgpu reads it once when it loads: raise it with the kernel
+parameter `ttm.pages_limit=<4 KiB pages>` (11534336 = 44 GiB; a write to `/sys/module/ttm/parameters/pages_limit` after
+boot does not change it) and check `/sys/class/drm/card*/device/mem_info_gtt_total` after the reboot. GTT pages are as
+unswappable as locked ones, so the same RAM caution applies. `STRATA_HIP_MLOCK` is not needed with GTT; it stays the
+choice where the GTT limit cannot be raised.
+
+The GTT pages an engine frees when it stops go to TTM's page pool, which keeps up to half the RAM by default
+(`ttm.page_pool_size`) and is counted in neither `MemFree` nor `MemAvailable`, which the budget rule reads; here touching
+35 GiB of anonymous memory (2 GB went to swap) did not shrink it.
+The next start then sees that much less RAM and lowers the budget (32 -> 18.4 GiB measured after one restart). A small
+pool returns the pages at stop: `ttm.page_pool_size=262144` (1 GiB; also writable at
+`/sys/module/ttm/parameters/page_pool_size`, applied at the next free).
+
+The start log says which path the complement took:
+
+| Start log | What happened |
+| --- | --- |
+| `page-locked and mapped` | The complement is in GTT |
+| `GTT mode: ... available covers the complement and the reserve: one GTT allocation` | Free RAM was short but the RAM available (with reclaimable file cache) covered the complement and the reserve: GTT in one go, the driver reclaims the cache |
+| `page-locking refused (...); trying pageable memory` | The complement alone is over the GTT limit |
+| `page-locked after taking the pages in steps` | Even the RAM available at start was below the complement plus a reserve, or the GTT allocation was refused. This paced path registers the memory in steps, and a registration is an MMU-notifier range (SVM or userptr) whatever `HSA_USERPTR_FOR_PAGED_MEM` says: the evictions come back (measured below). Start with more free RAM, or a smaller budget |
+
+If the complement fits but the rest does not, the start log says "--adapt-async 1 is off (the exchange buffers could
+not be page-locked)", and on the host below the engine then crashed during start-up (budget 40 GiB under a 44 GiB
+limit). Lower the budget or raise the limit.
+
+Same host as above, budget 32 GiB, `ttm.pages_limit` at 44 GiB, 1 GB of RAM or less free, five fresh 30K-token prompts
+and 6 GB taken by another process with the engine idle:
+
+| | Prompt read | Decode | Queue eviction, prompts | Queue eviction, 6 GB taken |
+| --- | --- | --- | --- | --- |
+| userptr + `STRATA_HIP_MLOCK=1` | 2,330-2,370 tok/s | 64-71 tok/s | 229, 56, 10 ms (3 of 5) | 595 ms |
+| GTT + `STRATA_HIP_ARENA_NONCOHERENT=1` (2 runs) | 2,290-2,350 tok/s | 60-72 tok/s | 0 (10 of 10) | 0 ms |
+| GTT, coherent complement (budget 22) | about 2.4x slower | | 0 | 0 ms |
+
+The start-up paths on the same host (budget 32 GiB, two fresh 24K-token prompts, then 14 GiB taken by another
+process with the engine idle and again during a prompt):
+
+| Start-up path | GTT used | Queue eviction after load / at the end | 24K prompt read (idle / under pressure) |
+| --- | --- | --- | --- |
+| `page-locked and mapped` | 38.2 GiB | 0 / 0 ms | 2,513 / 895 tok/s |
+| paced (forced with `STRATA_PIN_GUARD=2`) | 5.5 GiB | 19,807 / 131,117 ms | 775-1,238 / 349 tok/s |
+
+A start with the cache of other files filling the RAM (about 55 GB of unrelated files read just before, TTM pool at
+1 GiB, 0.4-0.5 GiB free after the engine drops its own cache, budget 32 GiB, one `strata_bench.py --long` run). Before
+this change the RAM free decided and the start paced; with it the RAM available decides (the earlier build ran ROCm 10.0,
+the later one 0.2.10 on ROCm 10.2):
+
+| | Start log | Queue eviction at the end | Prompt read, median (lowest), 16K / 32K / 63K |
+| --- | --- | --- | --- |
+| before | `page-locked after taking the pages in steps` | 59,960 ms | 2,526 (1,086) / 3,084 (860) / 3,270-3,347 tok/s |
+| after | `GTT mode: 52.20 GiB available covers ...`, then `page-locked and mapped` | 0 ms | 2,975 (1,734) / 3,129 (1,945) / 3,355-3,419 tok/s |
+
+The result is the eviction counter; the stalls show in the lowest runs, while the medians at 32K and 63K are within
+2-4%, and the builds differ (part of the 16K gap is ROCm 10.2's).
+
 ## RDNA4 (gfx1201)
 
 The RX 9070 / 9070 XT and the Radeon AI PRO R9700 run the same kernels as gfx1100: wave32, 64 KiB of LDS per workgroup, the

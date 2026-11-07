@@ -3747,6 +3747,7 @@ bool FileExpertSource::pin_cache_complement(
     const uint8_t* device = nullptr;
     bool pinned_ok = false;
     bool paced = false;         ///< #1250: the pages are taken in steps and page-locked afterwards
+    bool gtt_direct = false;    ///< GTT mode skipped the paced path for a one-go GTT allocation (refused: pace)
     uint64_t locked = 0;
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
@@ -3798,6 +3799,17 @@ bool FileExpertSource::pin_cache_complement(
         // STRATA_PIN_GUARD=0 pages-locks in one go as before, =2 always registers in steps (a test); STRATA_PIN_RESERVE_GIB
         // is the RAM that must stay above every step (default: the resident headroom, at least 2 GiB)
         // STRATA_NUMA_SPLIT placement forces the drop and the paced path whatever the guard (STRATA_PIN_GUARD=0 included)
+        // STRATA_HIP_ARENA_NONCOHERENT=1 (GTT mode): a paced registration is an MMU-notifier range (SVM or userptr), which
+        // reclaim invalidates (KFD queue evictions); the GTT allocation can reclaim on its own, so it is tried in one go whenever the RAM
+        // available covers it and the reserve; STRATA_PIN_GUARD=2 and NUMA placement still pace
+#if defined(hipHostMallocNonCoherent)
+        static const bool gtt_complement = [] {
+            const char* v = std::getenv("STRATA_HIP_ARENA_NONCOHERENT");
+            return v != nullptr && v[0] == '1';
+        }();
+#else
+        [[maybe_unused]] constexpr bool gtt_complement = false;   // no GTT allocation to aim at on this build
+#endif
         const uint64_t pace_reserve = [&] {
             const char* v = std::getenv("STRATA_PIN_RESERVE_GIB");
             return v != nullptr && std::atof(v) > 0 ? (uint64_t) (std::atof(v) * 1073741824.0)
@@ -3840,6 +3852,20 @@ bool FileExpertSource::pin_cache_complement(
                                  (double) before / 1073741824.0, (double) bytes / 1073741824.0,
                                  (double) free_now / 1073741824.0);
                 paced = detail::pin_depends_on_reclaim(free_now, bytes, pace_reserve);
+                // GTT mode: amdgpu allocates GTT pages with __GFP_RETRY_MAYFAIL (amdgpu_bo_create, ttm_pool.c): direct
+                // reclaim of the cache of other files, and a refusal instead of the OOM killer.  So the one-go GTT
+                // allocation only needs the RAM *available* to cover the complement plus the reserve; a refused
+                // allocation still paces (below).  Measured (RX 7900 XTX, 64 GB, other files' cache filling the RAM):
+                // paced 60 s of kfd_evicted_ms in one benchmark run, the GTT complement 0.
+                uint64_t avail_now = 0;
+                if (paced && gtt_complement && available_memory_bytes(avail_now) &&
+                    detail::pin_step_fits(avail_now, bytes, pace_reserve)) {
+                    paced = false;
+                    gtt_direct = true;
+                    std::fprintf(stderr, "FileExpertSource: GTT mode: %.2f GiB available covers the complement and the "
+                                         "reserve: one GTT allocation, the driver reclaims the cache\n",
+                                 (double) avail_now / 1073741824.0);
+                }
                 if (paced)
                     std::fprintf(stderr, "FileExpertSource: the rest comes from reclaimed cache of other files: "
                                          "page-locking it in steps, as far as the RAM allows (#1250)\n");
@@ -3850,8 +3876,22 @@ bool FileExpertSource::pin_cache_complement(
         }
 #endif
         if (pin && !paced) {
+#if defined(hipHostMallocNonCoherent)
+            // STRATA_HIP_ARENA_NONCOHERENT=1 (opt-in): the complement is written once, here, before the GPU reads it,
+            // and only its offsets move afterwards, so it needs no fine-grain coherence (strata_host_alloc forces it for
+            // the mapped flag words two sides spin on).  With HSA_USERPTR_FOR_PAGED_MEM=0 ROCr then backs it with
+            // coarse-grained GTT: driver-pinned, no MMU notifier, so reclaim and compaction cannot evict the queues;
+            // fine-grained GTT reads prompts about 2.4x slower on gfx1100.  The GTT limit (ttm.pages_limit, half the
+            // RAM by default) must hold it, or the allocation is refused and the complement
+            // takes the paced path below (a registration, so an MMU-notifier range again).
+            const cudaError_t allocated = gtt_complement
+                ? ::strata::hip_compat::host_alloc(&arena, (size_t) bytes,
+                                                   hipHostMallocMapped | hipHostMallocPortable | hipHostMallocNonCoherent)
+                : cudaHostAlloc(&arena, (size_t) bytes, cudaHostAllocMapped | cudaHostAllocPortable);
+#else
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
                                                          cudaHostAllocMapped | cudaHostAllocPortable);
+#endif
             if (allocated == cudaSuccess) {
                 void* alias = nullptr;
                 const cudaError_t aliased = cudaHostGetDevicePointer(&alias, arena, 0);
@@ -3864,6 +3904,7 @@ bool FileExpertSource::pin_cache_complement(
                     (void) cudaGetLastError();
                     (void) cudaFreeHost(arena);
                     arena = nullptr;
+                    paced = gtt_direct;   // GTT mode skipped the paced path for this allocation: take it now
                 }
             } else {
                 // Refused (the driver's page-locked limit): the same bytes in ordinary memory, locked in the working
@@ -3871,6 +3912,9 @@ bool FileExpertSource::pin_cache_complement(
                 note = std::string("page-locking refused (") + cudaGetErrorString(allocated) + ")";
                 (void) cudaGetLastError();
                 arena = nullptr;
+                // GTT mode skipped the paced path for this allocation (a TTM limit under the complement refuses it):
+                // take it now instead of an unregistered locked arena
+                paced = gtt_direct;
             }
         }
         if (arena == nullptr) {
