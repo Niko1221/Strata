@@ -20,6 +20,7 @@
 #include "strata/kernels/window_limits.hpp"
 
 #include <cstdint>
+#include <cstddef>
 
 namespace strata::kernels {
 
