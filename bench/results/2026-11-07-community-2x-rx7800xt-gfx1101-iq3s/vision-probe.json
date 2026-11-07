@@ -1,0 +1,27 @@
+{
+ "ok": true,
+ "seconds": 5.58,
+ "png_bytes": 1055,
+ "png_sha256": "dbbbc2be5a1db552ae71ce182ed8c878a7212b74f0ee5a835010349125c38865",
+ "answer": "A red circle and a green square sit side by side on a blue background.",
+ "colours_found": [
+  "blue",
+  "red",
+  "green"
+ ],
+ "shapes_found": [
+  "circle",
+  "square",
+  "background"
+ ],
+ "usage": {
+  "prompt_tokens": 142,
+  "completion_tokens": 89,
+  "total_tokens": 231,
+  "prompt_tokens_details": {
+   "cached_tokens": 0
+  }
+ },
+ "engine_line": "strata serve: prompt 142 tokens = 0 reused + 142 read in 2625 ms (54.1 tok/s), 89 generated in 1563 ms (56.9 tok/s), drafts accepted 39 of 46, 1 checkpoints",
+ "health": "{\"status\": \"ok\", \"max_context\": 262144, \"model\": \"qwen3.8-flash-next-iq3_s\", \"images\": true, \"api_key\": true, \"image_generation\": false, \"loaded\": true, \"service\": \"strata\"}"
+}

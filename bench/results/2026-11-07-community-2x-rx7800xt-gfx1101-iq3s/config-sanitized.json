@@ -1,0 +1,92 @@
+{
+  "exe": "/home/dom/strata-official/v0.2.12/engine/strata",
+  "args": [
+    "--pack",
+    "/mnt/strata-data/Strata-data/packs/iq3_s",
+    "--native",
+    "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "/home/dom/Strata/data/expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "8192",
+    "--spec",
+    "2",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "/mnt/strata-data/Strata-data/mtp/rt",
+    "--max-context",
+    "262144",
+    "--kv",
+    "int8",
+    "--vram-reserve-mib",
+    "1024",
+    "--resident-budget-gib",
+    "40",
+    "--conversation-cache-mib",
+    "8192",
+    "--kv-resident",
+    "0",
+    "--vision"
+  ],
+  "cwd": "/home/dom/Strata",
+  "tokenizer": "/mnt/strata-data/Strata-data/packs/iq3_s/tokenizer",
+  "model_name": "qwen3.8-flash-next-iq3_s",
+  "log": "/home/dom/Strata/strata-iq3_s.log",
+  "lib_dirs": [
+    "/home/dom/strata-official/v0.2.12/engine"
+  ],
+  "port": 8080,
+  "backend": "hip",
+  "gpu": [
+    0,
+    1
+  ],
+  "gpus_asked": true,
+  "layer_split": "24",
+  "host": "0.0.0.0",
+  "aliases": [
+    "AMD"
+  ],
+  "fit_max_tokens": true,
+  "effort_position": "end",
+  "vision": {
+    "exe": "/home/dom/strata-official/v0.2.12/engine/strata-vision",
+    "mmproj": "/mnt/strata-data/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "gpu": false,
+    "threads": 8,
+    "max_tokens": 1024
+  },
+  "env": {
+    "STRATA_HIPBLASLT_TUNING": "/home/dom/strata-pr-test-20261016/upstream-table.txt",
+    "STRATA_STAGE_TRIM": "1",
+    "STRATA_PF_FUSED": "1",
+    "STRATA_MTP_STAGE0": "1",
+    "STRATA_ROUTE_TAIL_SKIP": "7",
+    "STRATA_DECODE_TIMING": "1",
+    "STRATA_PREFILL_RING": "512"
+  },
+  "drafting": "mtp",
+  "parallel": 1,
+  "user_args": [
+    "--mtp",
+    "/mnt/strata-data/Strata-data/mtp/rt",
+    "--spec",
+    "2",
+    "--spec-min-p",
+    "0.5",
+    "--pipeline-windows",
+    "2",
+    "--draft-conf",
+    "0.7",
+    "--kv-resident",
+    "0"
+  ],
+  "description": "stock Qwen3.8-Flash-Next IQ3_S, 262144 ctx, INT8 KV in VRAM, images on, ring 512",
+  "note": "api_key removed. --vision is written explicitly in args; serve/server.py:3833 appends it from the vision section anyway, which is why the endpoint already served images before this change"
+}

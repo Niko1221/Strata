@@ -1,0 +1,313 @@
+{
+ "config": "fullplus-r2",
+ "protocol": "house protocol: 4096/32768/128000 target tokens x 3 runs, 256-token output, temperature 0, non-streaming, distinct revision marker per run",
+ "engine_version": "",
+ "measured_utc": "2026-11-07T18:00:03Z",
+ "medians": {
+  "4096": {
+   "decode_tps": 79.2,
+   "total_s": 8.8,
+   "prompt_tps_spread": [
+    402.3,
+    755.3
+   ],
+   "accept_pct": 87.9,
+   "decode_tps_spread": [
+    29.7,
+    80.3
+   ],
+   "runs": 3,
+   "prompt_tps": 755.0
+  },
+  "32768": {
+   "decode_tps": 89.3,
+   "total_s": 25.1,
+   "prompt_tps_spread": [
+    1461.4,
+    1493.4
+   ],
+   "accept_pct": 92.3,
+   "decode_tps_spread": [
+    84.6,
+    96.4
+   ],
+   "runs": 3,
+   "prompt_tps": 1466.5
+  },
+  "128000": {
+   "decode_tps": 91.1,
+   "total_s": 78.5,
+   "prompt_tps_spread": [
+    1688.4,
+    1713.6
+   ],
+   "accept_pct": 94.0,
+   "decode_tps_spread": [
+    90.9,
+    93.4
+   ],
+   "runs": 3,
+   "prompt_tps": 1693.1
+  }
+ },
+ "ranges": {
+  "4096": {
+   "prompt_tps": [
+    402.3,
+    755.3
+   ],
+   "decode_tps": [
+    29.7,
+    80.3
+   ]
+  },
+  "32768": {
+   "prompt_tps": [
+    1461.4,
+    1493.4
+   ],
+   "decode_tps": [
+    84.6,
+    96.4
+   ]
+  },
+  "128000": {
+   "prompt_tps": [
+    1688.4,
+    1713.6
+   ],
+   "decode_tps": [
+    90.9,
+    93.4
+   ]
+  }
+ },
+ "runs": [
+  {
+   "prompt_n": 4188,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 29.7,
+   "prompt_tps": 402.3,
+   "prompt_ms": 10409,
+   "gen_ms": 8634,
+   "reused": 0,
+   "read": 4188,
+   "accept_pct": 90.5,
+   "accepted": 124,
+   "drafts": 137,
+   "total_s": 19.05,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.0,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 4096,
+   "run": 1,
+   "revision_marker": "rev-0-1-1794074055",
+   "vram_mib_total": 30487,
+   "mem_available_mib": 18412,
+   "engine_rss_mib": 58747
+  },
+  {
+   "prompt_n": 4188,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 79.2,
+   "prompt_tps": 755.3,
+   "prompt_ms": 5545,
+   "gen_ms": 3233,
+   "reused": 0,
+   "read": 4188,
+   "accept_pct": 84.7,
+   "accepted": 116,
+   "drafts": 137,
+   "total_s": 8.78,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.9,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 4096,
+   "run": 2,
+   "revision_marker": "rev-0-2-1794074075",
+   "vram_mib_total": 30488,
+   "mem_available_mib": 18079,
+   "engine_rss_mib": 59044
+  },
+  {
+   "prompt_n": 4188,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 80.3,
+   "prompt_tps": 755.0,
+   "prompt_ms": 5547,
+   "gen_ms": 3188,
+   "reused": 0,
+   "read": 4188,
+   "accept_pct": 87.9,
+   "accepted": 109,
+   "drafts": 124,
+   "total_s": 8.74,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.3,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 4096,
+   "run": 3,
+   "revision_marker": "rev-0-3-1794074084",
+   "vram_mib_total": 30488,
+   "mem_available_mib": 17800,
+   "engine_rss_mib": 59341
+  },
+  {
+   "prompt_n": 32821,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 84.6,
+   "prompt_tps": 1493.4,
+   "prompt_ms": 21978,
+   "gen_ms": 3026,
+   "reused": 0,
+   "read": 32821,
+   "accept_pct": 92.3,
+   "accepted": 131,
+   "drafts": 142,
+   "total_s": 25.03,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.7,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 32768,
+   "run": 1,
+   "revision_marker": "rev-1-1-1794074092",
+   "vram_mib_total": 30574,
+   "mem_available_mib": 17213,
+   "engine_rss_mib": 59720
+  },
+  {
+   "prompt_n": 32821,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 89.3,
+   "prompt_tps": 1461.4,
+   "prompt_ms": 22459,
+   "gen_ms": 2867,
+   "reused": 0,
+   "read": 32821,
+   "accept_pct": 88.8,
+   "accepted": 142,
+   "drafts": 160,
+   "total_s": 25.35,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.9,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 32768,
+   "run": 2,
+   "revision_marker": "rev-1-2-1794074118",
+   "vram_mib_total": 30576,
+   "mem_available_mib": 17415,
+   "engine_rss_mib": 59525
+  },
+  {
+   "prompt_n": 32821,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 96.4,
+   "prompt_tps": 1466.5,
+   "prompt_ms": 22381,
+   "gen_ms": 2654,
+   "reused": 0,
+   "read": 32821,
+   "accept_pct": 94.2,
+   "accepted": 146,
+   "drafts": 155,
+   "total_s": 25.06,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.4,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 32768,
+   "run": 3,
+   "revision_marker": "rev-1-3-1794074143",
+   "vram_mib_total": 30577,
+   "mem_available_mib": 16665,
+   "engine_rss_mib": 59598
+  },
+  {
+   "prompt_n": 127940,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 90.9,
+   "prompt_tps": 1713.6,
+   "prompt_ms": 74660,
+   "gen_ms": 2817,
+   "reused": 0,
+   "read": 127940,
+   "accept_pct": 93.0,
+   "accepted": 160,
+   "drafts": 172,
+   "total_s": 77.57,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.8,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 128000,
+   "run": 1,
+   "revision_marker": "rev-2-1-1794074168",
+   "vram_mib_total": 30579,
+   "mem_available_mib": 15583,
+   "engine_rss_mib": 59449
+  },
+  {
+   "prompt_n": 127940,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 91.1,
+   "prompt_tps": 1693.1,
+   "prompt_ms": 75565,
+   "gen_ms": 2810,
+   "reused": 0,
+   "read": 127940,
+   "accept_pct": 94.6,
+   "accepted": 157,
+   "drafts": 166,
+   "total_s": 78.47,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.4,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 128000,
+   "run": 2,
+   "revision_marker": "rev-2-2-1794074246",
+   "vram_mib_total": 30583,
+   "mem_available_mib": 13249,
+   "engine_rss_mib": 59540
+  },
+  {
+   "prompt_n": 127940,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 93.4,
+   "prompt_tps": 1688.4,
+   "prompt_ms": 75778,
+   "gen_ms": 2742,
+   "reused": 0,
+   "read": 127940,
+   "accept_pct": 94.0,
+   "accepted": 173,
+   "drafts": 184,
+   "total_s": 78.61,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.2,
+   "content_len": 0,
+   "config": "fullplus-r2",
+   "target_tokens": 128000,
+   "run": 3,
+   "revision_marker": "rev-2-3-1794074325",
+   "vram_mib_total": 30587,
+   "mem_available_mib": 11449,
+   "engine_rss_mib": 59386
+  }
+ ],
+ "failed": []
+}

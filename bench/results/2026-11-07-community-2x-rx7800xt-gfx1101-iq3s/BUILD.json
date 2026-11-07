@@ -1,0 +1,69 @@
+{
+ "schema_version": 1,
+ "kind": "community-benchmark-build",
+ "measured_utc": "2026-11-07T19:28:30Z",
+ "strata_version_line": "strata 0.2.12 (build 0.1.58; python 3.12.15 at /home/dom/strata-official/v0.2.12/control/python/bin/python3.12)",
+ "release": "v0.2.12",
+ "release_published_utc": "2026-11-07T08:54:40Z",
+ "engine_path": "/home/dom/strata-official/v0.2.12/engine/strata",
+ "engine_sha256": "74f27a82451cb039e466a72869ae88255dbb225cbabbb7f7ee3357ccc704b0eb",
+ "vision_exe_path": "/home/dom/strata-official/v0.2.12/engine/strata-vision",
+ "vision_exe_sha256": "490deeb5da4ec977691f9b36460301f37d3d6d3b91e531c89aa7795d98213b0b",
+ "release_sums_scope": "SHA256SUMS.txt hashes the release archives (AppImage / dmg / exe / tarballs); the unpacked engine and vision hashes are recorded as measured; install.sh verified the archive at install time",
+ "install": "official release package (install.sh); backend hip; devices [0, 1]; no source build; no non-default build options",
+ "os": "Ubuntu 26.04.1 LTS",
+ "kernel": "7.0.0-42-generic",
+ "rocm_hip_package": "7.1.1+dfsg-0ubuntu1",
+ "amdgpu_driver": "in-kernel amdgpu; pp_sclk_od/pp_mclk_od absent and no amdgpu.ppfeaturemask on the kernel command line, so GPU clocks and power limits were never raised during this work (a lock needs a reboot)",
+ "kernel_cmdline": "BOOT_IMAGE=/vmlinuz-7.0.0-42-generic root=/dev/mapper/ubuntu--vg-ubuntu--lv ro crashkernel=2G-4G:320M,4G-32G:512M,32G-64G:1024M,64G-128G:2048M,128G-:4096M",
+ "cpu": "AMD Ryzen 7 3700X 8-Core Processor",
+ "cpu_siblings": 16,
+ "avx512_present": false,
+ "ram_gib": 60.7,
+ "board": "X570 GAMING X",
+ "gpus": {
+  "card0": {
+   "Card Series": "AMD Radeon RX 7800 XT",
+   "Card Model": "0x747e",
+   "Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+   "Card SKU": "EXT98286",
+   "Subsystem ID": "0x2427",
+   "Device Rev": "0xc8",
+   "Node ID": "1",
+   "GUID": "5719",
+   "GFX Version": "gfx1101"
+  },
+  "card1": {
+   "Card Series": "AMD Radeon RX 7800 XT",
+   "Card Model": "0x747e",
+   "Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+   "Card SKU": "EXT98286",
+   "Subsystem ID": "0x2427",
+   "Device Rev": "0xc8",
+   "Node ID": "2",
+   "GUID": "8464",
+   "GFX Version": "gfx1101"
+  }
+ },
+ "pcie_measured": {
+  "gpu0_pinned_h2d_gibs": 6.42,
+  "gpu1_pinned_h2d_gibs": 19.45,
+  "note": "GPU0 sits on the chipset arm (electrically x4), GPU1 CPU-direct x16, both trained at 16 GT/s; measured with pinned host-to-device copies on 2026-11-06 on this machine"
+ },
+ "vendor_release_manifest": {
+  "path": "/home/dom/strata-official/v0.2.12/engine/engine-component.json",
+  "version": "0.1.58",
+  "build_id": "7be42963e6be+rocm",
+  "backend": "hip",
+  "platform": "linux-x86_64",
+  "archs_declared": [
+   "gfx1100",
+   "gfx1101",
+   "gfx1102"
+  ],
+  "manifest_engine_sha256": "74f27a82451cb039e466a72869ae88255dbb225cbabbb7f7ee3357ccc704b0eb",
+  "measured_engine_sha256": "74f27a82451cb039e466a72869ae88255dbb225cbabbb7f7ee3357ccc704b0eb",
+  "match": true,
+  "note": "the running engine is byte-identical to the release component manifest; gfx1101 (RX 7800 XT) is a declared target arch of the shipped HIP build"
+ }
+}

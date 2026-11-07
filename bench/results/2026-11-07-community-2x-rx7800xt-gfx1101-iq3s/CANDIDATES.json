@@ -1,0 +1,116 @@
+{
+ "vision-only": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-vision-only-262k.json",
+  "sha256": "e63ca7fcd89e8c8b93d71c72cbab7ca203856d306b505a218d504b58fb261499",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192"
+  },
+  "env_extra": {},
+  "args_count": 31,
+  "kv_int8": true,
+  "ctx": 1
+ },
+ "decode": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-decode-262k.json",
+  "sha256": "af5616ac57538c17d1fcc8108188c36a8cb14755b41f597215c29ba6b1128468",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192",
+   "--conversation-cache-slots": "2",
+   "--conversation-cache-min-free-mib": "2560",
+   "--conversation-cache-min-tokens": "4096",
+   "--conversation-cache-park-gain": "8192"
+  },
+  "env_extra": {},
+  "args_count": 39,
+  "kv_int8": true,
+  "ctx": 1
+ },
+ "prefill": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-prefill-262k.json",
+  "sha256": "993aba176b9d9395a5a514ce9df19741914a4dea8fae0bb6ea4f504732814668",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192",
+   "--conversation-cache-slots": "2",
+   "--conversation-cache-min-free-mib": "2560",
+   "--conversation-cache-min-tokens": "4096",
+   "--conversation-cache-park-gain": "8192"
+  },
+  "env_extra": {
+   "STRATA_HIP_WMMA": "1"
+  },
+  "args_count": 39,
+  "kv_int8": true,
+  "ctx": 1
+ },
+ "full": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-full-262k.json",
+  "sha256": "93c9177e064036836ed08b60703ca472f4cd591c466d06ef4b2f4b677d738075",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192",
+   "--conversation-cache-slots": "2",
+   "--conversation-cache-min-free-mib": "2560",
+   "--conversation-cache-min-tokens": "4096",
+   "--conversation-cache-park-gain": "8192"
+  },
+  "env_extra": {},
+  "args_count": 39,
+  "kv_int8": true,
+  "ctx": 1
+ },
+ "fullwmma": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-fullwmma-262k.json",
+  "sha256": "2223042ed4797ec2411a9dd8efd895dc3b4e35cfc52aec3bdab7068f716546e5",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192",
+   "--conversation-cache-slots": "2",
+   "--conversation-cache-min-free-mib": "2560",
+   "--conversation-cache-min-tokens": "4096",
+   "--conversation-cache-park-gain": "8192"
+  },
+  "env_extra": {
+   "STRATA_HIP_WMMA": "1"
+  },
+  "args_count": 39,
+  "kv_int8": true,
+  "ctx": 1
+ },
+ "fullplus": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-fullplus-262k.json",
+  "sha256": "f36b8ba15b9113f3306f756e7a585c76482b2450c95bec6b98c8f65954ee4b2a",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192",
+   "--conversation-cache-slots": "2",
+   "--conversation-cache-min-free-mib": "2560",
+   "--conversation-cache-min-tokens": "4096",
+   "--conversation-cache-park-gain": "8192"
+  },
+  "env_extra": {},
+  "args_count": 47,
+  "kv_int8": true,
+  "ctx": 1
+ },
+ "fullpluswmma": {
+  "path": "/home/dom/strata-update-v0212-20261107/profile-cand-fullpluswmma-262k.json",
+  "sha256": "92dcb9a2de6ab7d5c7931192fb647cf2d0d0735d96f474a36b856d67e7583b39",
+  "vision_in_args": true,
+  "parking": {
+   "--conversation-cache-mib": "8192",
+   "--conversation-cache-slots": "2",
+   "--conversation-cache-min-free-mib": "2560",
+   "--conversation-cache-min-tokens": "4096",
+   "--conversation-cache-park-gain": "8192"
+  },
+  "env_extra": {
+   "STRATA_HIP_WMMA": "1"
+  },
+  "args_count": 47,
+  "kv_int8": true,
+  "ctx": 1
+ }
+}

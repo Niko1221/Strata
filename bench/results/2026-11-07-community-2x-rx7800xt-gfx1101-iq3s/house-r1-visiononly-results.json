@@ -1,0 +1,313 @@
+{
+ "config": "visiononly-r1",
+ "protocol": "house: 4096/32768/128000 x 3 runs, 256-token output, temperature 0, non-streaming, distinct revision marker per run",
+ "engine_version": "",
+ "measured_utc": "2026-11-07T17:44:26Z",
+ "medians": {
+  "4096": {
+   "decode_tps": 90.8,
+   "total_s": 7.8,
+   "prompt_tps_spread": [
+    545.1,
+    609.3
+   ],
+   "accept_pct": 91.2,
+   "decode_tps_spread": [
+    81.6,
+    92.6
+   ],
+   "runs": 3,
+   "prompt_tps": 599.7
+  },
+  "32768": {
+   "decode_tps": 78.6,
+   "total_s": 19.6,
+   "prompt_tps_spread": [
+    1390.0,
+    1426.7
+   ],
+   "accept_pct": 89.8,
+   "decode_tps_spread": [
+    76.7,
+    85.6
+   ],
+   "runs": 3,
+   "prompt_tps": 1390.8
+  },
+  "128000": {
+   "decode_tps": 96.1,
+   "total_s": 55.9,
+   "prompt_tps_spread": [
+    1578.7,
+    1723.6
+   ],
+   "accept_pct": 92.5,
+   "decode_tps_spread": [
+    83.8,
+    96.1
+   ],
+   "runs": 3,
+   "prompt_tps": 1685.5
+  }
+ },
+ "ranges": {
+  "4096": {
+   "prompt_tps": [
+    545.1,
+    609.3
+   ],
+   "decode_tps": [
+    81.6,
+    92.6
+   ]
+  },
+  "32768": {
+   "prompt_tps": [
+    1390.0,
+    1426.7
+   ],
+   "decode_tps": [
+    76.7,
+    85.6
+   ]
+  },
+  "128000": {
+   "prompt_tps": [
+    1578.7,
+    1723.6
+   ],
+   "decode_tps": [
+    83.8,
+    96.1
+   ]
+  }
+ },
+ "runs": [
+  {
+   "prompt_n": 2959,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 81.6,
+   "prompt_tps": 545.1,
+   "prompt_ms": 5429,
+   "gen_ms": 3138,
+   "reused": 0,
+   "read": 2959,
+   "accept_pct": 89.5,
+   "accepted": 119,
+   "drafts": 133,
+   "total_s": 8.57,
+   "reasoning": true,
+   "expert_cache_hit_pct": 94.6,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 4096,
+   "run": 1,
+   "revision_marker": "rev-0-1-1794073211",
+   "vram_mib_total": 30777,
+   "mem_available_mib": 18428,
+   "engine_rss_mib": 59552
+  },
+  {
+   "prompt_n": 2959,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 90.8,
+   "prompt_tps": 599.7,
+   "prompt_ms": 4934,
+   "gen_ms": 2818,
+   "reused": 0,
+   "read": 2959,
+   "accept_pct": 93.9,
+   "accepted": 123,
+   "drafts": 131,
+   "total_s": 7.76,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.9,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 4096,
+   "run": 2,
+   "revision_marker": "rev-0-2-1794073220",
+   "vram_mib_total": 30777,
+   "mem_available_mib": 18140,
+   "engine_rss_mib": 59642
+  },
+  {
+   "prompt_n": 2959,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 92.6,
+   "prompt_tps": 609.3,
+   "prompt_ms": 4857,
+   "gen_ms": 2764,
+   "reused": 0,
+   "read": 2959,
+   "accept_pct": 91.2,
+   "accepted": 125,
+   "drafts": 137,
+   "total_s": 7.63,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.4,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 4096,
+   "run": 3,
+   "revision_marker": "rev-0-3-1794073228",
+   "vram_mib_total": 30778,
+   "mem_available_mib": 17855,
+   "engine_rss_mib": 59540
+  },
+  {
+   "prompt_n": 23023,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 76.7,
+   "prompt_tps": 1426.7,
+   "prompt_ms": 16137,
+   "gen_ms": 3337,
+   "reused": 0,
+   "read": 23023,
+   "accept_pct": 88.1,
+   "accepted": 118,
+   "drafts": 134,
+   "total_s": 19.49,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.9,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 32768,
+   "run": 1,
+   "revision_marker": "rev-1-1-1794073236",
+   "vram_mib_total": 30778,
+   "mem_available_mib": 17428,
+   "engine_rss_mib": 59578
+  },
+  {
+   "prompt_n": 23023,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 85.6,
+   "prompt_tps": 1390.0,
+   "prompt_ms": 16564,
+   "gen_ms": 2990,
+   "reused": 0,
+   "read": 23023,
+   "accept_pct": 91.7,
+   "accepted": 122,
+   "drafts": 133,
+   "total_s": 19.57,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.0,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 32768,
+   "run": 2,
+   "revision_marker": "rev-1-2-1794073255",
+   "vram_mib_total": 30779,
+   "mem_available_mib": 17703,
+   "engine_rss_mib": 59320
+  },
+  {
+   "prompt_n": 23023,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 78.6,
+   "prompt_tps": 1390.8,
+   "prompt_ms": 16554,
+   "gen_ms": 3257,
+   "reused": 0,
+   "read": 23023,
+   "accept_pct": 89.8,
+   "accepted": 115,
+   "drafts": 128,
+   "total_s": 19.83,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.4,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 32768,
+   "run": 3,
+   "revision_marker": "rev-1-3-1794073275",
+   "vram_mib_total": 30780,
+   "mem_available_mib": 17275,
+   "engine_rss_mib": 59540
+  },
+  {
+   "prompt_n": 89665,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 83.8,
+   "prompt_tps": 1723.6,
+   "prompt_ms": 52021,
+   "gen_ms": 3054,
+   "reused": 0,
+   "read": 89665,
+   "accept_pct": 89.7,
+   "accepted": 148,
+   "drafts": 165,
+   "total_s": 55.14,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.1,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 128000,
+   "run": 1,
+   "revision_marker": "rev-2-1-1794073295",
+   "vram_mib_total": 30781,
+   "mem_available_mib": 16385,
+   "engine_rss_mib": 59471
+  },
+  {
+   "prompt_n": 89665,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 96.1,
+   "prompt_tps": 1578.7,
+   "prompt_ms": 56798,
+   "gen_ms": 2663,
+   "reused": 0,
+   "read": 89665,
+   "accept_pct": 94.0,
+   "accepted": 158,
+   "drafts": 168,
+   "total_s": 59.53,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.2,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 128000,
+   "run": 2,
+   "revision_marker": "rev-2-2-1794073350",
+   "vram_mib_total": 30784,
+   "mem_available_mib": 14534,
+   "engine_rss_mib": 59215
+  },
+  {
+   "prompt_n": 89665,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 96.1,
+   "prompt_tps": 1685.5,
+   "prompt_ms": 53197,
+   "gen_ms": 2663,
+   "reused": 0,
+   "read": 89665,
+   "accept_pct": 92.5,
+   "accepted": 161,
+   "drafts": 174,
+   "total_s": 55.93,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.6,
+   "content_len": 0,
+   "config": "visiononly-r1",
+   "target_tokens": 128000,
+   "run": 3,
+   "revision_marker": "rev-2-3-1794073410",
+   "vram_mib_total": 30787,
+   "mem_available_mib": 13099,
+   "engine_rss_mib": 59310
+  }
+ ],
+ "failed": []
+}

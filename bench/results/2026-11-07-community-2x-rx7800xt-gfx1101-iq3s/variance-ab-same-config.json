@@ -1,0 +1,164 @@
+[
+ {
+  "round": 1,
+  "label": "visiononly",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-vision-only-262k.json",
+  "sha256": "e63ca7fcd89e8c8b93d71c72cbab7ca203856d306b505a218d504b58fb261499",
+  "medians": {
+   "4096": {
+    "decode_tps": 90.8,
+    "total_s": 7.8,
+    "prompt_tps_spread": [
+     545.1,
+     609.3
+    ],
+    "accept_pct": 91.2,
+    "decode_tps_spread": [
+     81.6,
+     92.6
+    ],
+    "runs": 3,
+    "prompt_tps": 599.7
+   },
+   "32768": {
+    "decode_tps": 78.6,
+    "total_s": 19.6,
+    "prompt_tps_spread": [
+     1390.0,
+     1426.7
+    ],
+    "accept_pct": 89.8,
+    "decode_tps_spread": [
+     76.7,
+     85.6
+    ],
+    "runs": 3,
+    "prompt_tps": 1390.8
+   },
+   "128000": {
+    "decode_tps": 96.1,
+    "total_s": 55.9,
+    "prompt_tps_spread": [
+     1578.7,
+     1723.6
+    ],
+    "accept_pct": 92.5,
+    "decode_tps_spread": [
+     83.8,
+     96.1
+    ],
+    "runs": 3,
+    "prompt_tps": 1685.5
+   }
+  },
+  "failed": []
+ },
+ {
+  "round": 1,
+  "label": "fullplus",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-fullplus-262k.json",
+  "sha256": "f36b8ba15b9113f3306f756e7a585c76482b2450c95bec6b98c8f65954ee4b2a",
+  "medians": {
+   "4096": {
+    "decode_tps": 85.7,
+    "total_s": 7.9,
+    "prompt_tps_spread": [
+     561.4,
+     609.7
+    ],
+    "accept_pct": 91.1,
+    "decode_tps_spread": [
+     85.2,
+     87.1
+    ],
+    "runs": 3,
+    "prompt_tps": 607.8
+   },
+   "32768": {
+    "decode_tps": 80.9,
+    "total_s": 19.6,
+    "prompt_tps_spread": [
+     1388.9,
+     1424.3
+    ],
+    "accept_pct": 90.1,
+    "decode_tps_spread": [
+     74.5,
+     82.6
+    ],
+    "runs": 3,
+    "prompt_tps": 1399.1
+   },
+   "128000": {
+    "decode_tps": 91.1,
+    "total_s": 56.1,
+    "prompt_tps_spread": [
+     1547.4,
+     1716.6
+    ],
+    "accept_pct": 92.9,
+    "decode_tps_spread": [
+     88.8,
+     97.3
+    ],
+    "runs": 3,
+    "prompt_tps": 1685.7
+   }
+  },
+  "failed": []
+ },
+ {
+  "round": 2,
+  "label": "fullplus",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-fullplus-262k.json",
+  "sha256": "f36b8ba15b9113f3306f756e7a585c76482b2450c95bec6b98c8f65954ee4b2a",
+  "medians": {
+   "4096": {
+    "decode_tps": 79.2,
+    "total_s": 8.8,
+    "prompt_tps_spread": [
+     402.3,
+     755.3
+    ],
+    "accept_pct": 87.9,
+    "decode_tps_spread": [
+     29.7,
+     80.3
+    ],
+    "runs": 3,
+    "prompt_tps": 755.0
+   },
+   "32768": {
+    "decode_tps": 89.3,
+    "total_s": 25.1,
+    "prompt_tps_spread": [
+     1461.4,
+     1493.4
+    ],
+    "accept_pct": 92.3,
+    "decode_tps_spread": [
+     84.6,
+     96.4
+    ],
+    "runs": 3,
+    "prompt_tps": 1466.5
+   },
+   "128000": {
+    "decode_tps": 91.1,
+    "total_s": 78.5,
+    "prompt_tps_spread": [
+     1688.4,
+     1713.6
+    ],
+    "accept_pct": 94.0,
+    "decode_tps_spread": [
+     90.9,
+     93.4
+    ],
+    "runs": 3,
+    "prompt_tps": 1693.1
+   }
+  },
+  "failed": []
+ }
+]

@@ -1,0 +1,23 @@
+  Measuring the prompt chunks of the layer split ...
+    prompt chunks off: 826 tok/s
+    prompt chunks evened out: 830 tok/s
+    prompt chunks b/a 768: 667 tok/s
+    prompt chunks b/a 1536: 793 tok/s
+    prompt chunks b/a 3072: 793 tok/s
+    prompt chunks b/a 6144: 793 tok/s
+    round 1/3 PCIe share: 0 59.4  0.18 60.0  0.2 60.3  0.35 58.2  0.55 53.3  0.75 50.4  0.9 49.6  1 42.4
+    round 2/3 PCIe share: 0 59.3  0.18 60.3  0.2 60.1  0.35 58.6  0.55 52.8  0.75 50.8  0.9 49.7  1 42.3
+    round 3/3 PCIe share: 0 57.9  0.18 59.2  0.2 59.4  0.35 59.1  0.55 53.8  0.75 52.0  0.9 50.2  1 43.2
+    round 1/3 draft floor: 0.3 58.4  0.5 57.0  0.7 60.4
+    round 2/3 draft floor: 0.3 59.1  0.5 60.0  0.7 59.1
+    round 3/3 draft floor: 0.3 58.2  0.5 57.9  0.7 61.7
+    7 workers: 60.7 tok/s
+    5 workers: 60.9 tok/s
+    4 workers: 56.6 tok/s
+    2 workers: 51.5 tok/s
+  Measuring the expert tier (the engine default) (restarts the engine) ...
+    the expert tier default: 58.4 tok/s
+  Measuring the expert tier every 1, 80 swaps, decay 0.97 (restarts the engine) ...
+    the expert tier 1/80/0.97: 58.7 tok/s
+  Measuring the expert tier every 1, 160 swaps, decay 0.97 (restarts the engine) ...
+    the expert tier 1/160/0.97: 61.8 tok/s

@@ -1,0 +1,198 @@
+[
+ {
+  "label": "visiononly",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-vision-only-262k.json",
+  "sha256": "e63ca7fcd89e8c8b93d71c72cbab7ca203856d306b505a218d504b58fb261499",
+  "arms": {
+   "w193_cold": {
+    "prompt_n": 192855,
+    "reused": 0,
+    "read": 192855,
+    "prompt_tps": 1649.6,
+    "out_n": 512,
+    "decode_tps": 57.5,
+    "accept_pct": 79.6,
+    "wall": 126.7
+   },
+   "w238_cold": {
+    "prompt_n": 237851,
+    "reused": 49152,
+    "read": 188699,
+    "prompt_tps": 1486.5,
+    "out_n": 512,
+    "decode_tps": 58.7,
+    "accept_pct": 83.5,
+    "wall": 135.9
+   },
+   "w238_cached": {
+    "prompt_n": 237857,
+    "reused": 229376,
+    "read": 8481,
+    "prompt_tps": 577.4,
+    "out_n": 512,
+    "decode_tps": 60.8,
+    "accept_pct": 81.3,
+    "wall": 23.3
+   },
+   "w193_cached": {
+    "prompt_n": 192861,
+    "reused": 180224,
+    "read": 12637,
+    "prompt_tps": 574.1,
+    "out_n": 512,
+    "decode_tps": 59.8,
+    "accept_pct": 80.4,
+    "wall": 30.8
+   }
+  },
+  "n267_tail": "7",
+  "kills_tail": "1"
+ },
+ {
+  "label": "fullplus",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-fullplus-262k.json",
+  "sha256": "f36b8ba15b9113f3306f756e7a585c76482b2450c95bec6b98c8f65954ee4b2a",
+  "arms": {
+   "w193_cold": {
+    "prompt_n": 192855,
+    "reused": 0,
+    "read": 192855,
+    "prompt_tps": 1644.1,
+    "out_n": 512,
+    "decode_tps": 56.3,
+    "accept_pct": 84.7,
+    "wall": 126.7
+   },
+   "w238_cold": {
+    "prompt_n": 237851,
+    "reused": 49152,
+    "read": 188699,
+    "prompt_tps": 1443.6,
+    "out_n": 512,
+    "decode_tps": 56.1,
+    "accept_pct": 80.8,
+    "wall": 140.1
+   },
+   "w238_cached": {
+    "prompt_n": 237857,
+    "reused": 229376,
+    "read": 8481,
+    "prompt_tps": 576.3,
+    "out_n": 512,
+    "decode_tps": 55.0,
+    "accept_pct": 80.6,
+    "wall": 24.3
+   },
+   "w193_cached": {
+    "prompt_n": 192861,
+    "reused": 180224,
+    "read": 12637,
+    "prompt_tps": 546.0,
+    "out_n": 512,
+    "decode_tps": 57.2,
+    "accept_pct": 82.0,
+    "wall": 32.3
+   }
+  },
+  "n267_tail": "7",
+  "kills_tail": "1"
+ },
+ {
+  "label": "decode",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-decode-262k.json",
+  "sha256": "af5616ac57538c17d1fcc8108188c36a8cb14755b41f597215c29ba6b1128468",
+  "arms": {
+   "w193_cold": {
+    "prompt_n": 192855,
+    "reused": 0,
+    "read": 192855,
+    "prompt_tps": 1644.6,
+    "out_n": 512,
+    "decode_tps": 58.2,
+    "accept_pct": 84.1,
+    "wall": 126.4
+   },
+   "w238_cold": {
+    "prompt_n": 237851,
+    "reused": 49152,
+    "read": 188699,
+    "prompt_tps": 1438.9,
+    "out_n": 512,
+    "decode_tps": 52.2,
+    "accept_pct": 75.0,
+    "wall": 141.2
+   },
+   "w238_cached": {
+    "prompt_n": 237857,
+    "reused": 229376,
+    "read": 8481,
+    "prompt_tps": 580.8,
+    "out_n": 512,
+    "decode_tps": 54.0,
+    "accept_pct": 77.7,
+    "wall": 24.3
+   },
+   "w193_cached": {
+    "prompt_n": 192861,
+    "reused": 180224,
+    "read": 12637,
+    "prompt_tps": 597.4,
+    "out_n": 512,
+    "decode_tps": 59.8,
+    "accept_pct": 85.2,
+    "wall": 29.9
+   }
+  },
+  "n267_tail": "7",
+  "kills_tail": "1"
+ },
+ {
+  "label": "prefill",
+  "profile": "/home/dom/strata-update-v0212-20261107/profile-cand-prefill-262k.json",
+  "sha256": "993aba176b9d9395a5a514ce9df19741914a4dea8fae0bb6ea4f504732814668",
+  "arms": {
+   "w193_cold": {
+    "prompt_n": 192855,
+    "reused": 0,
+    "read": 192855,
+    "prompt_tps": 1642.7,
+    "out_n": 512,
+    "decode_tps": 54.2,
+    "accept_pct": 80.9,
+    "wall": 127.2
+   },
+   "w238_cold": {
+    "prompt_n": 237851,
+    "reused": 49152,
+    "read": 188699,
+    "prompt_tps": 1451.6,
+    "out_n": 512,
+    "decode_tps": 53.5,
+    "accept_pct": 78.1,
+    "wall": 139.8
+   },
+   "w238_cached": {
+    "prompt_n": 237857,
+    "reused": 229376,
+    "read": 8481,
+    "prompt_tps": 580.8,
+    "out_n": 512,
+    "decode_tps": 53.6,
+    "accept_pct": 77.2,
+    "wall": 24.4
+   },
+   "w193_cached": {
+    "prompt_n": 192861,
+    "reused": 180224,
+    "read": 12637,
+    "prompt_tps": 656.4,
+    "out_n": 512,
+    "decode_tps": 56.3,
+    "accept_pct": 80.0,
+    "wall": 28.5
+   }
+  },
+  "n267_tail": "7",
+  "kills_tail": "1"
+ }
+]
