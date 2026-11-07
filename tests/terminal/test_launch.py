@@ -830,6 +830,10 @@ class AccessRules(unittest.TestCase):
                          "https://calm-river-1234.trycloudflare.com")
 
 
+# a person at Git Bash: no CI variable (a CI runner sets one, and strata launch then never asks) and no STRATA_NO_PROMPT
+GIT_BASH_ENV = {"MSYSTEM": "MINGW64", "CI": "", "STRATA_NO_PROMPT": ""}
+
+
 class FlagsCommand(unittest.TestCase):
     """Every `strata launch` flag, run through the real parser with the computer faked and nothing installed."""
 
@@ -992,7 +996,7 @@ class FlagsCommand(unittest.TestCase):
 
     def test_git_bash_without_a_tty_goes_on_in_plain_questions(self):
         fake = Result("launch-x", ["http://127.0.0.1:8080"], None, None, [], "/x")
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 0, err)
         run.assert_called_once()
@@ -1000,13 +1004,13 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("winpty strata launch", out + err)
 
     def test_git_bash_answering_no_changes_nothing(self):
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 0, err)
         self.assertIn("Nothing was changed", out + err)
 
     def test_a_pipe_with_nobody_to_answer_still_says_what_to_name(self):
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 2)
         self.assertIn("--preset NAME", err)

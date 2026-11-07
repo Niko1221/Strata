@@ -22,7 +22,7 @@ it is never reported as a pass.  The exit code is 1 when anything failed or time
     python tools/check --only cmake-cpu,py-tools
     python tools/check --skip host-build --json result.json
     python tools/check --list
-Backend, model and browser tests are separate commands (see docs/TESTING.md / the CI workflows); they are not part of this one.
+Backend, model and browser tests are separate commands (see the CI workflows in .github/workflows); they are not part of this one.
 """
 import argparse
 import glob
@@ -77,7 +77,7 @@ class Scratch:
         env = dict(os.environ)
         tmp = self.path("tmp")
         env.update({"TMP": tmp, "TEMP": tmp, "TMPDIR": tmp, "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
-                    "PYTHONUNBUFFERED": "1", "CI": env.get("CI", "1")})
+                    "PYTHONUNBUFFERED": "1"})      # CI is left as the caller has it: some code asks whether a person can answer (strata_cli/launch/cmd.py)
         env.update(extra or {})
         return env
 
@@ -332,9 +332,10 @@ def step_pytest(name, targets, extra=(), need_node=False, cwd=None):
 
 def step_optional(ctx):
     r = Result("py-optional")
-    if not have_module("torch"):
-        r.reason = "torch is not installed (tools/dflash2, tools/dsv41 and tools/trellis tests need it)"
-        return r
+    for mod, what in (("torch", "torch"), ("gguf", "gguf (llama.cpp's gguf-py: pip install gguf)")):
+        if not have_module(mod):
+            r.reason = "%s is not installed for %s (tools/dflash2 and tools/dsv41 tests need torch and gguf)" % (what, sys.executable)
+            return r
     return step_pytest("py-optional", ["tools/dflash2", "tools/dsv41", "tools/trellis"])(ctx)
 
 
