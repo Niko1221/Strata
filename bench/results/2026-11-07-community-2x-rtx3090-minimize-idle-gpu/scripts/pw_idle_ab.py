@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Does `--pipeline-windows 2` fill the idle half of a two-card layer split? A/B with a GPU sampler.
 
-Build: KUBECONFIG=~/.kube/config python3 -u Strata-Tools/strata_pw_idle_ab.py \
-           --url http://g27:8081 --pod-match strata-l28 --host l28 \
-           --arms 'pw=0,pw=2 theta=0.35' --runs 6 --context 4000 --tokens 400 --json out.json
+Run (this is the tool behind § 1 and the `pw_idle_l28.json` next to it; it drives a server that has to be
+running, and the paths below are that deployment's - `--url`, `--pod-match`, `--log` and `--switch` are all
+flags):
+    python3 scripts/pw_idle_ab.py --url http://g27:8081 --pod-match strata-l28 --host l28 \
+        --arms 'pw=0,pw=2 theta=0.35' --runs 6 --context 4000 --tokens 400 --json pw_idle_l28.json
 
 A serial layer split is a pipeline, not a tensor split: with one stream the two cards take turns, so
 one of them is always waiting (`bench/results/2026-10-20-0.2.1-idle-gpu` measured ~40-55 % per card,
@@ -20,19 +22,28 @@ The arms switch through `STRATA_PIPELINE_SWITCH=<file>` (`generate.cpp`), which 
 per request - no restart, same expert placement, same KV state. Needs the server started with
 `--pipeline-windows 2` and `STRATA_PIPELINE_DEBUG=1`; `STRATA_DECODE_TIMING` deliberately stays off,
 because that flag costs the serial loop ~8 % and would inflate the difference
-(`Measurements/strata/2026-11-05-l28-pipeline-acceptance` § 10.1).
+`Measurements/strata/2026-11-05-l28-pipeline-acceptance` § 10.1 - the author's measurement archive,
+which is not part of this repository).
 
 Per card it reports the mean utilisation during decode, the sum of the two (how much of the pair is
 working), and the share of samples where one card sits below `--idle` while the other works.
 """
 import argparse, json, re, statistics, subprocess, sys, threading, time, urllib.request
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import strata_paths as sp
-import strata_pipeline_ab as ab
-
+FILLER = ("the expert layer routes each token to a small set of narrow networks while the dense weights "
+          "stay shared so the work per token stays small and the card keeps its cache lines warm")
+KINDS = {"story": "Write a short story about a lighthouse keeper. ",
+         "code": "Write a Python class for a thread-safe LRU cache, with tests. ",
+         "facts": "Explain in detail how a hash table works. "}
 SERVE_RE = re.compile(r"read in (\d+) ms \(([\d.]+) tok/s\), (\d+) generated in (\d+) ms \(([\d.]+) tok/s\)")
+PIPE_RE = re.compile(r"strata pipeline: (\d+) windows in (\d+) ms \(([\d.]+) ms/window\): (\d+) speculative, "
+                     r"(\d+) on the path, (\d+) rolled back, (\d+) below the gate")
+
+
+def prompt(kind, context, tag):
+    """The instruction plus `context` tokens of text no window has seen (tag keeps runs distinct)."""
+    body = " ".join(f"{FILLER} {tag}{i}" for i in range(max(1, context // 30)))
+    return KINDS[kind] + body
 
 
 def sh(cmd, timeout=600):
@@ -127,7 +138,6 @@ def main():
     model = ((json.loads(sh(["curl", "-sS", "-m", "20", f"{a.url}/v1/models"]) or "{}").get("data")
               or [{}])[0]).get("id", "")
     arms, kinds = a.arms.split(","), a.kinds.split(",")
-    sp.print_stamp()
     print(f"server  : {a.url}  model {model}  pod {a.pod}")
     print(f"switch  : {a.switch} = {saved!r} (restored at the end)")
     print(f"arms    : {'  |  '.join(arms)}")
@@ -142,17 +152,17 @@ def main():
         return int(out) if out.isdigit() else 0
 
     with Sampler(a.host, a.ms) as s:
-        ab.ask(a.url, model, ab.KINDS["story"], 8)          # load / warm, not counted
+        ask(a.url, model, KINDS["story"], 8)          # load / warm, not counted
         for run in range(a.runs):
             for arm in arms:
                 kexec(f"printf '%s\\n' {json.dumps(arm)} > {a.switch}")
                 for kind in kinds:
                     off = log_size()
-                    t_end, wall = ask(a.url, model, ab.prompt(kind, a.context, f"r{run}{arm}{kind}"),
+                    t_end, wall = ask(a.url, model, prompt(kind, a.context, f"r{run}{arm}{kind}"),
                                       a.tokens)
                     lines = kexec(f"tail -c +{off + 1} {a.log}").splitlines()
                     g = [SERVE_RE.search(l) for l in lines if SERVE_RE.search(l)]
-                    p = [ab.PIPE_RE.search(l) for l in lines if ab.PIPE_RE.search(l)]
+                    p = [PIPE_RE.search(l) for l in lines if PIPE_RE.search(l)]
                     # exactly our own request in the window: a second user on the box moves both
                     # the rate and the cards, so such a round is dropped rather than averaged in
                     if len(g) != 1 or int(g[0].group(3)) != a.tokens:

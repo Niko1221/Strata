@@ -1,0 +1,33 @@
+Ist-Werte: {'split': 'auto', 'spec': '4', 'smp': '0.65', 'theta': '0.35'} (layer_split, --spec, --spec-min-p, theta der Switch-Datei)
+
+spec_min_p, pw=2 theta=0,35, gepaart gegen den Ist-Arm `pw=2 theta=0.35 smp=0.65`:
+  0.35:  -2.3 % (5/8 vorn, 149.1 tok/s)
+  0.50:  +0.2 % (3/8 vorn, 153.2 tok/s)
+  0.65:  +0.0 % (0/0 vorn, 153.1 tok/s)
+  0.80:  +1.1 % (5/8 vorn, 155.9 tok/s)
+  0.95:  +3.0 % (4/8 vorn, 152.7 tok/s)
+  -> Ist bleibt 0.65 (kein Kandidat erfullt Schwelle +2 pp, beide Arten, 70 %)
+
+theta (pw=2), gepaart gegen den Ist-Arm `pw=2 theta=0.35`:
+  0.05:  +0.2 % (5/10 vorn, 159.6 tok/s)
+  0.20:  -0.7 % (5/10 vorn, 154.9 tok/s)
+  0.50:  -1.2 % (2/10 vorn, 154.5 tok/s)
+  0.70:  -6.7 % (2/10 vorn, 144.3 tok/s)
+  -> Ist bleibt 0.35
+
+Neustart-Achsen --spec / MTP_STAGE0 (Gruppenmediane, Referenz aus anderer Folge):
+  split-auto-spec-6                                 150.8 tok/s
+  split-auto-spec-2                                 150.7 tok/s
+  split-auto-env-STRATA_MTP_STAGE0-1                145.2 tok/s
+
+VRAM-Reserve (pipeliner Arm, tok/s): split-auto-vram_reserve_mib-1024:156.2, split-auto-vram_reserve_mib-1536:152.7
+
+ERGEBNIS: layer_split=auto --spec 4 --spec-min-p 0.65 pw=2 theta=0.35
+
+# fuer run-decision.sh:
+P5GROUPS='ist; split=auto spec=4 spec_min_p=0.65'
+P5ARMS='pw=0; pw=2 theta=0.35 smp=0.65; pw=2 theta=0.35 smp=0.65'
+FINAL='auto 4 0.65 0.35'
+STAGE0=0
+
+geschrieben: /home/aurelb/github/SimonX200/AI-Umbrella/Measurements/strata/2026-11-07-l28-350w-sweep/results/kandidaten.sh

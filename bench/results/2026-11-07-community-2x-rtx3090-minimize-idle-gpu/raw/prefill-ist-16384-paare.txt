@@ -1,0 +1,2 @@
+Referenzarm 'pw=0'; gepaart auf Dokument+Runde+Lauf; Bootstrap 4000 × Median
+arm                                  kind     n  Median            95 %-Ki    vorn

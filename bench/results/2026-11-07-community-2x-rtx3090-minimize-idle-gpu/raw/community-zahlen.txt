@@ -1,0 +1,15 @@
+## p0-ist-350w-resources.csv
+arm                        kind     tok/s  uSum%  W_pair  tok/s pro kW
+pw=2 theta=0.35            code     168.1    145     636           264
+pw=2 theta=0.20            code     160.3    157     647           248
+pw=2 theta=0.50            code     153.8    143     628           245
+pw=0                       code     143.2    101     586           244
+
+## p3-pipeline-resources.csv
+arm                        kind     tok/s  uSum%  W_pair  tok/s pro kW
+pw=2 theta=0.05            code     162.4    157     648           251
+pw=2 theta=0.35            code     158.2    151     650           243
+pw=1                       code     146.2    101     590           248
+pw=0                       code     138.4    105     603           230
+pw=2 theta=0.70            code     137.4    131     621           221
+

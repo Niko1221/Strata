@@ -205,10 +205,11 @@ not a results matrix:
 * **`pw`** 0, 1, 2 and **`theta`** 0.05, 0.20, 0.35, 0.50, 0.70 — per request, on one server. `theta` is flat
   from 0.05 to 0.50 (≤1.2 pp apart); 0.70 drops under serial in rate *and* in watts. `pw=1` (prompt path
   only) is nearly free; `pw=2` is the win. Flat means flat: the four in-band gates were also run against each
-  other (52 document pairs of `theta=0.20` against `theta=0.35`, same `--spec-min-p`, four sweeps), and that
-  head-to-head pooled to **−0.3 pp** (code −2.1, prose +2.3, 23/52 pairs for the lower gate) with identical
-  window statistics — 14.9 ms and 2.3 tokens per window either way, acceptance 80.7 against 81.5 %. Where an
-  arm listing here ranks one gate above another, it ranked both against `pw=0`, not against each other.
+  other (`raw/theta-020-vs-035.txt`: 21 code and 21 prose pairs, `theta=0.20` printed **−0.6 %** with a
+  −3.5…+10.2 interval in code and **+2.4 %** with −0.4…+4.3 in prose; the wider cut that also pairs the
+  `--spec-min-p`-stamped rounds pools to −0.3 pp) — and with identical window statistics: 14.9 ms and
+  2.3 tokens per window either way, acceptance 80.7 against 81.5 %. Where an arm listing here ranks one gate
+  above another, it ranked both against `pw=0`, not against each other.
 * **`--spec-min-p`** 0.35, 0.50, 0.65, 0.80, 0.95 — per request via `strata_tune`. Flat 0.50…0.95 (±4 %),
   0.35 too cheap, 0.95 a cliff in the serial loop; the interesting part is the coupling to `pw` (§ 4).
 * **`--spec`** 2, 4, 6; **`STRATA_MTP_STAGE0`** off/1; **`--vram-reserve-mib`** 1024, 1280, 1536 — all behind
@@ -226,31 +227,34 @@ clamps it to 2 (`generate.cpp:3258`), as § 4 already said.
 
 ```sh
 # arms switch per request; kubectl drives the pod, ssh <host> runs the sampler.
-# strata_pw_idle_ab.py imports strata_paths.py and strata_pipeline_ab.py (Strata-Tools/).
-KUBECONFIG=~/.kube/config python3 -u strata_pw_idle_ab.py \
+KUBECONFIG=~/.kube/config python3 -u scripts/pw_idle_ab.py \
     --url http://g27:8081 --pod-match strata-l28 --host l28 \
     --arms 'pw=0,pw=2 theta=0.35' --runs 6 --context 2000 --tokens 300 --json raw.json
 ```
 
 Raw: `pw_idle_l28.json` (every round: rate, per-card utilisation, power, window counts),
-`pw_idle_l28_summary.txt` (both passes as the tool printed them), harness `strata_pw_idle_ab.py`.
-The sweeps behind § 2 and § 3: `Measurements/strata/2026-11-01-l28-2x3090-split-sweep`,
-`2026-11-03-l28-pipeline-windows`, `2026-11-05-l28-pipeline-acceptance` (AI-Umbrella).
+`pw_idle_l28_summary.txt` (both passes as the tool printed them), harness `scripts/pw_idle_ab.py`.
+The morning sweeps behind § 2 and § 3 are named where they were taken
+(`Measurements/strata/2026-11-01-l28-2x3090-split-sweep`, `2026-11-03-l28-pipeline-windows`,
+`2026-11-05-l28-pipeline-acceptance`): that is the author's measurement archive, not part of this
+repository, so those three rows are the ones a reader has to take on trust - everything marked
+`[350 W]` above is recomputable from `raw/` with `scripts/`.
 
-**`[350 W]` second pass.** Its raw material is in the AI-Umbrella folder
-`Measurements/strata/2026-11-07-l28-350w-sweep/`: `results/*.jsonl` (one record per request: rate, reused and
-fresh prompt tokens, acceptance, window counts, node-stamped start/end), `results/*-resources.csv` (the same
-records joined to the 1 Hz load capture), `machine-logs/startup-*.txt` (the engine's own argv per restart —
-the proof of which configuration ran), `results/endtable.txt`, and `PLAN.md` (the sweep order, including the
-two phases deliberately dropped). The tools, all in `Strata-Tools/`:
+**`[350 W]` second pass.** Its raw material is in `raw/` beside this file: 746 request records
+(`raw/*.jsonl`, one per request: rate, reused and fresh prompt tokens, acceptance, window counts,
+node-stamped start and end), the paired tables as the statistics tool printed them (`raw/*-paare.txt`),
+the per-arm joins of the load capture (`raw/*-resources.csv`), the 1 Hz capture itself
+(`raw/l28-350w.csv.gz`, 7 021 rows, 13:07 to 15:10), the engine's own `engine started:` argv per restart
+(`raw/startup/`, 26 files - the proof of which configuration ran), `raw/endtable.txt`, and
+`raw/theta-020-vs-035.txt` for the head-to-head of § 6. The four scripts that read them are in
+`scripts/`, with their own README:
 
 ```sh
-# 1 Hz load capture on the serving node (survives pod restarts and dropped ssh)
-python3 Strata-Tools/strata_l28_monitor.py start --tag 350w --interval 1
-# one server start per configuration, every request-level arm inside it
-python3 -u Strata-Tools/strata_l28_sweep.py --groups 'split=auto; split=24' \
-    --arms 'pw=0; pw=2 theta=0.35 smp=0.65' --kinds code,prose --runs 8 --jsonl out.jsonl
-# what the box was doing while each arm ran
-python3 Strata-Tools/strata_l28_resource_summary.py --csv l28-350w.csv --jsonl out.jsonl --md
+python3 scripts/paired_ci.py raw/p6-final-350w.jsonl --kind code           # the +x % tables of § 2
+python3 scripts/resource_summary.py --csv /tmp/l28.csv --jsonl raw/p0-ist-350w.jsonl --md
+zcat raw/l28-350w.csv.gz > /tmp/l28.csv
 ```
+
+The sweep driver is not published (it is kubectl-and-ssh plumbing for one pod); what it takes to run a
+sweep of your own is in `scripts/README.md`.
 

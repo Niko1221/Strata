@@ -1,0 +1,12 @@
+theta 0.20 gegen 0.35, gepaart auf Dokument+Runde (gleiches --spec-min-p), in % tok/s; positiv = 0.20 schneller
+Erzeugt am 07.11. aus results/{p0-ist-350w,p3-pipeline,p6-final-350w,p7-fensterstatistik}.jsonl mit:
+  python3: schluessel (datei,group,kind,doc,run,theta,smp) -> tok_s; median((a/b-1)*100) je Schwung und Art
+
+p0-ist-350w            n= 16  median   +0.8 pp  0.20 vorn 8/16
+p3-pipeline            n= 10  median   +0.2 pp  0.20 vorn 5/10
+p6-final-350w          n= 16  median   +1.0 pp  0.20 vorn 8/16
+p7-fensterstatistik    n= 10  median   -3.0 pp  0.20 vorn 2/10
+
+gepoolt code           n= 26  median   -2.1 pp  0.20 vorn 7/26
+gepoolt prose          n= 26  median   +2.3 pp  0.20 vorn 16/26
+gepoolt alle           n= 52  median   -0.3 pp  0.20 vorn 23/52   (Regel: >+2 pp in beiden Arten und >=70 %)
