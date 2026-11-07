@@ -1683,6 +1683,11 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        rp = sampling.get("route_prior")
+        if rp is None and isinstance(sampling.get("strata_tune"), dict):
+            rp = sampling["strata_tune"].get("route_prior")
+        if rp is not None and isinstance(rp, (int, float)) and not isinstance(rp, bool) and float(rp) >= 0.0:
+            keys += f" route_prior={float(rp)!r}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
@@ -8086,6 +8091,10 @@ def make_handler(svc: Service):
                                records if request_id else {"requests": records, "retention": 100, "persistent": False,
                                                           "loaded": svc.loaded(), "auto_load": hasattr(svc.engine, "restart")})
                 return
+            if path in ("/v1/route_prior", "/route_prior"):
+                if self._authorized():
+                    self._json(200, {"route_prior": svc.shared.get("route_prior", 0.0)})
+                return
             if path == "/settings":
                 if self._authorized():
                     self._json(200, {"shared": bool(svc.shared), "defaults": svc.shared})
@@ -8200,6 +8209,22 @@ def make_handler(svc: Service):
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
             if path.startswith("/v1/") and self._foreign_page():
+                return
+            if path in ("/v1/route_prior", "/route_prior"):
+                body = self._body()
+                try:
+                    data = json.loads(body or b"{}")
+                    val = float(data.get("route_prior", 0.0))
+                    svc.shared["route_prior"] = val
+                    if hasattr(svc.engine, "proc") and svc.engine.proc and svc.engine.proc.stdin:
+                        try:
+                            svc.engine.proc.stdin.write(f"ROUTE_PRIOR {val}\n")
+                            svc.engine.proc.stdin.flush()
+                        except Exception:
+                            pass
+                    self._json(200, {"status": "ok", "route_prior": val})
+                except Exception as ex:
+                    self._json(400, {"error": {"message": str(ex)}})
                 return
             if path == "/settings":
                 self._settings()
@@ -8554,6 +8579,9 @@ def make_handler(svc: Service):
                                                          'or {"defaults": null} to clear them'}})
                     return
                 shared = svc.set_shared(req["defaults"])
+                if "route_prior" in shared and getattr(svc, "engine", None) and getattr(svc.engine, "proc", None):
+                    svc.engine.proc.stdin.write(f"ROUTE_PRIOR {shared['route_prior']}\n")
+                    svc.engine.proc.stdin.flush()
             except ValueError as e:
                 self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
@@ -9260,7 +9288,7 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
 
 
 SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
-               "experimental_speed_projection")
+               "route_prior", "experimental_speed_projection")
 
 
 def clean_shared_defaults(d) -> dict:
@@ -9298,9 +9326,12 @@ def clean_shared_defaults(d) -> dict:
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise ValueError("experimental_speed_projection: true or false")
+        elif key == "route_prior":
+            if not number or not 0 <= value <= 5:
+                raise ValueError("route_prior: 0..5")
         else:
             raise ValueError(f"unknown setting {key!r}")
-        out[key] = float(value) if key in ("temperature", "top_p") else value
+        out[key] = float(value) if key in ("temperature", "top_p", "route_prior") else value
     return out
 
 
@@ -9467,7 +9498,11 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
         elif key == "strata_tune":           # a saved tuning's per-request settings (strata_control/presets.py)
             if not isinstance(value, dict):
                 raise SystemExit(f"[strata] config sampling.strata_tune={value!r}: expected an object")
-            out[key] = {k: v for k, v in value.items() if k in ("pcie_frac", "spec_min_p", "aux_cpus")}
+            out[key] = {k: v for k, v in value.items() if k in ("pcie_frac", "spec_min_p", "aux_cpus", "route_prior")}
+        elif key == "route_prior":
+            if not number or not 0 <= value <= 5:
+                raise SystemExit(f"[strata] config sampling.route_prior={value!r}: expected 0 <= route_prior <= 5")
+            out[key] = float(value)
         elif key == "experimental_speed_projection":
             if not isinstance(value, bool):
                 raise SystemExit(f"[strata] config sampling.experimental_speed_projection={value!r}: expected true or "
@@ -9639,7 +9674,7 @@ def check_request_sampling(req) -> None:
         if req.get("penalty_last_n") is None and isinstance(rl, int) and not isinstance(rl, bool) and rl > 0:
             req["penalty_last_n"] = rl      # 0 and -1 (off / the whole context) keep the engine's default window
     for key, integer in (("temperature", False), ("top_p", False), ("min_p", False), ("presence_penalty", False),
-                         ("frequency_penalty", False), ("repetition_penalty", False), ("top_k", True),
+                         ("frequency_penalty", False), ("repetition_penalty", False), ("route_prior", False), ("top_k", True),
                          ("penalty_last_n", True), ("seed", True)):
         value = (req or {}).get(key)
         if value is None:

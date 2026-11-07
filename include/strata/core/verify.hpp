@@ -444,6 +444,11 @@ public:
     /// STRATA_ROUTE_STATS=1: per window size, the routed experts per layer: distinct, and new per row (not in the rows before it). Resets.
     std::string route_stats_report();
 
+    /// Dynamic residency-biased routing (0 = off, > 0 = lambda bonus for VRAM resident experts).
+    void set_route_prior(float rp);
+    float route_prior() const;
+    void clear_graphs();
+
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
@@ -668,6 +673,7 @@ private:
     cudaEvent_t pfork_ = nullptr, pjoin_ = nullptr;
     bool capture_oom_ = false;          // the last capture's instantiate found no VRAM (prepare)
     cudaGraphExec_t commit_exec_ = nullptr;
+    float route_prior_ = -1.0f;
 
     // mapped staging (host pointer, device alias)
     int32_t* h_tok_ = nullptr;   int32_t* m_tok_ = nullptr;     // T
