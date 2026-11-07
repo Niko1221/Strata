@@ -45,12 +45,14 @@ inline void big_fill_zero(sycl::queue& q, void* p, size_t bytes, size_t chunk = 
 // from zeMemAllocHost with ZE_HOST_MEM_ALLOC_FLAG_BIAS_UNCACHED does work there (sycl/probe/doorbell.cpp mode 2,
 // "HANDSHAKE OK"), so those buffers come from it when the Level Zero headers are present (libze-dev), else from
 // sycl::malloc_host. STRATA_HOST_UNCACHED=0 turns it off.
-#if defined(__has_include)
+#if !defined(_WIN32) && defined(__has_include)
 #if __has_include(<level_zero/ze_api.h>) && __has_include(<sycl/ext/oneapi/backend/level_zero.hpp>)
-#include <level_zero/ze_api.h>
-#include <sycl/ext/oneapi/backend/level_zero.hpp>
 #define STRATA_HAVE_ZE 1
 #endif
+#endif
+#ifdef STRATA_HAVE_ZE
+#include <level_zero/ze_api.h>
+#include <sycl/ext/oneapi/backend/level_zero.hpp>
 #endif
 #include <cstdlib>
 #include <mutex>

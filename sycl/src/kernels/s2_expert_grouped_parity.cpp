@@ -202,8 +202,13 @@ bool twice(const char* name, float* d_out, size_t out_floats, const Scratch& s,
     k::moe_grouped_select_old(-1);
     const uint64_t gu = s.gu_bytes(), q8 = s.q8_bytes();
     size_t diff_out = 0, diff_gu = 0, diff_q8 = 0, diff_hs = 0;
-    for (size_t i = 0; i < out_floats; ++i)
-        diff_out += std::memcmp(&r[0].out[i], &r[1].out[i], 4) != 0;
+    double worst_abs = 0.0, out_scale = 0.0;
+    for (size_t i = 0; i < out_floats; ++i) {
+        out_scale = std::max(out_scale, (double) std::fabs(r[0].out[i]));
+        if (std::memcmp(&r[0].out[i], &r[1].out[i], 4) == 0) continue;
+        ++diff_out;
+        worst_abs = std::max(worst_abs, (double) std::fabs((double) r[0].out[i] - (double) r[1].out[i]));
+    }
     for (size_t i = 0; i < (size_t) s.bytes; ++i) {
         if (r[0].scratch[i] == r[1].scratch[i]) continue;
         if (i < gu) ++diff_gu;
@@ -213,8 +218,9 @@ bool twice(const char* name, float* d_out, size_t out_floats, const Scratch& s,
     const bool ok = diff_out + diff_gu + diff_q8 + diff_hs == 0;
     std::printf("  %-44s %s", name, ok ? "bitwise identical" : "DIFFERS");
     if (!ok)
-        std::printf(" (out %zu floats, gate/up %zu B, intermediate %zu B, its scales %zu B)", diff_out, diff_gu,
-                    diff_q8, diff_hs);
+        std::printf(" (out %zu floats, gate/up %zu B, intermediate %zu B, its scales %zu B; worst absolute "
+                    "difference %.2e, output scale %.2e, ratio %.1e)", diff_out, diff_gu, diff_q8, diff_hs, worst_abs,
+                    out_scale, out_scale > 0 ? worst_abs / out_scale : 0.0);
     std::printf("\n");
     if (!ok) ++g_fail;
     if (keep) *keep = std::move(r[1]);
