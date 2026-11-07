@@ -133,7 +133,7 @@ released app, run its installer and open Strata from the Start menu. For the Ter
 setup plan and the startup log for what is actually chosen on your machine, and see [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 if a component is missing.
 
-Terminal chat from a checkout: `.venv\Scripts\python chat.py`.
+Terminal chat from a checkout: `.venv\Scripts\python tools\chat.py`.
 
 ### Tuning for your PC (`--calibrate`)
 
@@ -191,7 +191,7 @@ These notes are for **source setup**. Normal installs use [the Terminal or AppIm
 Source setup offers choices for the detected machine and can install missing Debian or Ubuntu dependencies with `sudo apt`.
 It starts the server on `http://127.0.0.1:8080` unless you configure another address or port. Later runs of `./setup.sh`
 or `./run-<model>.sh` start the model directly. The options are the same as on Windows (`./setup.sh --setup`,
-`--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`). Terminal chat: `.venv/bin/python chat.py`. Building from git and trying a pull
+`--model Q2_0 --yes`, `--gguf-dir /data/Q2_0`). Terminal chat: `.venv/bin/python tools/chat.py`. Building from git and trying a pull
 request: [SOURCE_INSTALL.md](SOURCE_INSTALL.md#build-from-git-on-linux-to-try-a-pull-request-or-change-the-code).
 
 - **Updating:** `git pull`, then `./setup.sh`. It compiles the engine again when its source changed. If the compile

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A tiny terminal chat for a running Strata server (start it with run-<model>.bat / run-<model>.sh first).
 
-    python chat.py [--port 8080] [--think none|low|medium|high]
+    python tools/chat.py [--port 8080] [--think none|low|medium|high]
 
 Type a message and press Enter.  /image <path> attaches a picture to your next message (when the server was set up
 with images), /think <none|low|medium|high> sets how long the model thinks first, /reset starts a new conversation,
