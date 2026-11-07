@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <string>   // RAM control-plane source labels
 #include <utility>
 #include <vector>
 
@@ -237,6 +238,26 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// A parked live state can be rewound to its longest common prefix, just like the currently active one.  Checkpoints
+// deliberately have no partial form here: their mount path finds them by exact length.  Tiny partial matches are not
+// worth a whole parked restore.
+template<class Token>
+int64_t conversation_live_lcp(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
+                              const std::vector<ConversationImageKey>& images) {
+    const size_t limit = std::min(c.ids.size(), prompt.size());
+    size_t n = 0;
+    while (n < limit && (int64_t) c.ids[n] == (int64_t) prompt[n]) ++n;
+    if (n <= 1024 || n >= prompt.size()) return 0;
+    size_t j = 0;
+    for (const auto& image : images) {
+        if (image.start >= (int64_t) n) continue;
+        if (j == c.imgs.size() || !(c.imgs[j++] == image)) return 0;
+    }
+    // The saved live state may have pictures past the rewind point, but none below it that the prompt lacks.
+    for (size_t k = j; k < c.imgs.size() && c.imgs[k].start < (int64_t) n; ++k) return 0;
+    return (int64_t) n;
+}
+
 class ConversationCache {
 public:
     struct Match {
@@ -311,7 +332,8 @@ public:
             const auto& e = entries_[i];
             if (e.cvec != cvec) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
-                const int64_t n = conversation_prefix(c, prompt, images);
+                int64_t n = conversation_prefix(c, prompt, images);
+                if (live && n == 0) n = conversation_live_lcp(c, prompt, images);
                 if (n > best.tokens) best = {i, n, live, serials_[i]};
             };
             consider(e.live, true);
@@ -382,7 +404,8 @@ public:
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
+        auto stays = [&](size_t i) { return entries_[i].pinned() || l2_pinned(serials_[i]) ||
+                                             (guarded_ != 0 && serials_[i] == guarded_); };
         if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
             // with everything else gone, would it fit beside the entries that stay (the guarded donor and any pinned
             // shared prefix)?  If not, evict nothing
@@ -409,7 +432,8 @@ public:
     bool evict_oldest() {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
-            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (entries_[i].pinned() || l2_pinned(serials_[i]) ||
+                (guarded_ != 0 && serials_[i] == guarded_)) continue;
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -426,6 +450,7 @@ public:
         serials_.clear();
         bytes_ = 0;
         reuse_ = {};
+        l2_clear_metadata();
         return n;
     }
 
@@ -524,6 +549,10 @@ public:
         bytes_ += n;
         return true;
     }
+
+    // L2 RAM control-plane extension: inventory/pin/drop/touch only.
+    // Physical KV ownership and park/take/borrow stay in this upstream class.
+#include "strata/core/conversation_cache_l2.inc"
 
 private:
     void erase(size_t index) {

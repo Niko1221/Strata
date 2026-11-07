@@ -1,4 +1,4 @@
-// src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
+﻿// src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/prefill/copy_events.hpp"
@@ -1074,7 +1074,6 @@ struct PrefillWarmer {
     std::condition_variable cv;
     std::thread thread;
     std::atomic<int64_t> warmed{0}, dropped{0};
-
     explicit PrefillWarmer(core::ExpertSource* s) : src(s) {
         thread = std::thread([this] {
             strata::aux_cpus::pin_current_thread();
@@ -1089,6 +1088,12 @@ struct PrefillWarmer {
                 }
                 src->warm(j.layer, j.experts.data(), (int64_t) j.experts.size());
                 warmed.fetch_add((int64_t) j.experts.size(), std::memory_order_relaxed);
+                // G7: activate prefill warmer counters (low-frequency summary per ~64K warmed experts)
+                if ((warmed.load(std::memory_order_relaxed) & 0xFFFF) < (int64_t) j.experts.size()) {
+                    std::fprintf(stderr, "strata prefill warmer: %lld experts warmed, %lld dropped (queue overflow) so far\n",
+                                 (long long) warmed.load(std::memory_order_relaxed),
+                                 (long long) dropped.load(std::memory_order_relaxed));
+                }
             }
         });
     }

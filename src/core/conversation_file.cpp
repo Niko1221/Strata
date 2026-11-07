@@ -33,7 +33,10 @@
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <deque>    // v2.4: readahead ring
+#include <future>   // v2.4: parallel block fetch
 #endif
+
 
 // Format v1 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
 // IEEE-754 floats, so a build where that is not the memory layout is refused rather than writing another format.
@@ -347,6 +350,7 @@ class RawFile {
 public:
     ~RawFile() { close(); }
     // a new file that did not exist (O_CREAT|O_EXCL: never an existing file or link), readable by its owner only
+    int pread_fd() const { return fd_; }   // v2.4: for the parallel readahead workers
     bool create_new(int dirfd, const std::string& name) {
         fd_ = ::openat(dirfd, name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (fd_ < 0) { kind_ = errno_kind(errno); error_ = std::strerror(errno); return false; }
@@ -673,12 +677,14 @@ struct Out {
     std::string read_error;
 };
 
-void put_kv_header(Out& o, int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page_size,
+// L2 v2: templated so the v2 walker (conversation_file_v2.inc) reuses the same serialisation
+template<class Sink> void put_kv_header(Sink& o, int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page_size,
                    int64_t pooled_rows, int64_t idx_dim) {
     for (int64_t v : {int64_t(format), cells, heads, head_dim, page_size, pooled_rows, idx_dim}) o.i64(v);
 }
 
-void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
+// L2 v2: templated for the v2 walker (see conversation_file_v2.inc)
+template<class Sink> void put_checkpoint(Sink& o, const ConversationCheckpoint& c) {
     o.vec(c.ids);
     o.u64(c.imgs.size());
     for (const auto& k : c.imgs) { o.i64(k.start); o.u64(k.hash); }
@@ -751,7 +757,8 @@ struct In {
     }
 };
 
-bool get_checkpoint(In& in, ConversationCheckpoint& c) {
+// L2 v2: templated for the v2 parser (see conversation_file_v2.inc)
+template<class InT> bool get_checkpoint(InT& in, ConversationCheckpoint& c) {
     if (!in.vec(c.ids, in.limits.max_tokens)) return false;
     uint64_t n = 0;
     if (!in.count(n, 16, in.limits.max_tokens)) return false;
@@ -1117,11 +1124,21 @@ bool write_guarded(const std::string& path, const SavedConversation& image, cons
 }
 } // namespace
 
+
+// L2: the whole v2 block-format toolkit lives in its own module
+#include "conversation_file_v2.inc"
+
+
+
+
+
+
 std::vector<ConversationCheckpoint> session_checkpoints_to_save(const std::vector<ConversationCheckpoint>& chain) {
     const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
     if (!deepest) return {};
     return {*deepest};
 }
+
 
 const ConversationCheckpoint* session_deepest_checkpoint(const std::vector<ConversationCheckpoint>& chain) {
     // A pinned shared prefix (pin=N) is the resume point the next queries want, so with one in the chain the file
@@ -1145,13 +1162,79 @@ uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const Se
     return n;
 }
 
+// L2 v2.2: the keep-set choice alone (deepest + pinned + HEAD anchors + depth fill),
+// no capture - the incremental save plans against this before it copies anything.
+std::vector<const ConversationCheckpoint*> session_pick_checkpoints(const std::vector<ConversationCheckpoint>& chain) {
+    const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
+    const char* e = std::getenv("STRATA_SESSION_CHK");
+    const size_t keep = e && *e ? (size_t) std::max(0L, std::strtol(e, nullptr, 10)) : 1;
+    std::vector<const ConversationCheckpoint*> pick;
+    if (!deepest || keep == 0) return pick;
+    auto add = [&](const ConversationCheckpoint* c) {
+        for (const auto* p2 : pick) if (p2 == c) return;
+        pick.push_back(c);
+    };
+    add(deepest);
+    if (keep == 1) return pick;
+    const char* he = std::getenv("STRATA_SESSION_CHK_HEAD");
+    const size_t head_n = he && *he ? (size_t) std::max(0L, std::strtol(he, nullptr, 10)) : 3;
+    for (const auto& c : chain) if (c.pinned) add(&c);
+    std::vector<const ConversationCheckpoint*> by_pos;
+    for (const auto& c : chain) by_pos.push_back(&c);
+    std::stable_sort(by_pos.begin(), by_pos.end(), [](const ConversationCheckpoint* a, const ConversationCheckpoint* b) {
+        return a->ids.size() < b->ids.size();
+    });
+    // L2 : HEAD ,  pick   
+    //  keep, HEAD3 ,  (332K  86K-332K )
+    size_t heads = 0;
+    for (const auto* c : by_pos) {
+        if (heads >= head_n || pick.size() >= keep) break;
+        const size_t before = pick.size();
+        add(c);
+        if (pick.size() > before) ++heads;
+    }
+    // L2:   , 
+    //   /2; ( by_depth :  ~100MB/, 
+    // ; )
+    if (pick.size() < keep) {
+        std::vector<const ConversationCheckpoint*> rest;
+        for (const auto* c : by_pos)
+            if (std::find(pick.begin(), pick.end(), c) == pick.end()) rest.push_back(c);
+        if (!rest.empty()) {
+            const size_t want = keep - pick.size();
+            for (size_t i = 0; i < want && !rest.empty(); ++i) {
+                const size_t at2 = (i + 1) * rest.size() / (want + 1);   // evenly spaced, skips dups
+                if (at2 < rest.size()) add(rest[at2]);
+            }
+        }
+    }
+    return pick;
+}
+
 bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, const SessionSaveLive& live,
                               const std::function<bool(uint64_t need_bytes, std::string& why)>& admit,
                               std::vector<ConversationCheckpoint>& out, std::string& why) {
     out.clear();
     const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
-    if (admit && !admit(session_save_peak_bytes(deepest, live), why)) return false;
-    if (deepest) out.push_back(*deepest);
+    // L2 E4b (real wiring, 2026-10-27): STRATA_SESSION_CHK=N (default 1 = upstream's
+    // single resume point) keeps a grid - the deepest, every pinned shared-prefix anchor, the
+    // HEAD anchors (STRATA_SESSION_CHK_HEAD, default 3: the earliest positions, so a small
+    // conversation that shares this one's system+tools borrows from the file) and the deepest
+    // periodic ones.  The per-checkpoint cost is ids+state, a few MiB each; the K/V itself is
+    // streamed once and shared.  (The earlier patch to session_checkpoints_to_save was dead
+    // code - the serve save path calls THIS function.)
+    const char* e = std::getenv("STRATA_SESSION_CHK");
+    const size_t keep = e && *e ? (size_t) std::max(0L, std::strtol(e, nullptr, 10)) : 1;
+    if (keep <= 1 || !deepest) {
+        if (admit && !admit(session_save_peak_bytes(deepest, live), why)) return false;
+        if (deepest) out.push_back(*deepest);
+        return true;
+    }
+    const auto pick = session_pick_checkpoints(chain);
+    uint64_t chk_bytes = 0;
+    for (const auto* c : pick) chk_bytes = sat_add(chk_bytes, sat_mul(2, c->bytes()));
+    if (admit && !admit(sat_add(session_save_peak_bytes(nullptr, live), chk_bytes), why)) return false;
+    for (const auto* c : pick) out.push_back(*c);
     return true;
 }
 
@@ -1162,13 +1245,20 @@ int64_t session_phase_limit_s(uint64_t bytes) {
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options, SessionStatus* status) {
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (session_v2_writes()) return write_v2_guarded(path, meta, &kv, id, bytes, error, options, status);
+#endif
     return write_guarded(path, meta, &kv, id, bytes, error, options, status);
 }
 
 bool session_file_write(const std::string& path, const SavedConversation& image, const SessionFileIdentity& id,
                         size_t& bytes, std::string& error, const SessionWriteOptions& options, SessionStatus* status) {
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (session_v2_writes()) return write_v2_guarded(path, image, nullptr, id, bytes, error, options, status);
+#endif
     return write_guarded(path, image, nullptr, id, bytes, error, options, status);
 }
+
 
 namespace {
 bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
@@ -1202,6 +1292,9 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
     std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (std::memcmp(h, kMagicV2, 8) == 0) return read_v2_impl(raw, size, h, id, image, bytes, error, limits, st);
+#endif
     if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a Strata session file (magic)"; return false; }
     if (hh != session_hash64(h, 56, 0)) { error = "session file: header checksum mismatch"; return false; }
     if (version != kVersion) { error = "session file: unsupported version " + std::to_string(version); return false; }
@@ -1238,6 +1331,7 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
 }
 } // namespace
 
+
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits, SessionStatus* status) {
     SessionStatus st;
@@ -1249,6 +1343,8 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
         st.error = SessionError::memory;
         ok = false;
     }
+    // L2 2.0  (4/4): state  ( conversation_file_l2.inc)
+    if (ok) strata::core::l2two::hook_post_read(path, id, image);
     if (status) *status = st;
     return ok;
 }
