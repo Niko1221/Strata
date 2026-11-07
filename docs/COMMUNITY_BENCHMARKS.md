@@ -20,6 +20,9 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-11-05: RTX 4080 SUPER 16 GB, Core i9-14900KF, 32 GB RAM](../bench/results/2026-11-05-community-rtx-4080-super-swift-1-5-iq2-xs/README.md):
+  Strata 0.1.56 prebuilt Windows CUDA 13 engine (`06698c674673`), Swift 1.5 Flash-Next IQ2_XS, 131,072-token context with Windows Large Pages (`--resident-budget-gib 19`), `STRATA_UNBUFFERED_LOAD=1`, `--prefill 2048`, `--vram-reserve-mib 896` and vision off;
+  prompt 1,128.1/1,352.8/1,401.5 tok/s at 4K/16K/32K, short-chat decode 61.3 tok/s, agent decode 99.0 tok/s (71.0% cache hit).
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.

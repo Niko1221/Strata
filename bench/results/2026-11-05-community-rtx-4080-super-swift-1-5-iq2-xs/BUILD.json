@@ -1,0 +1,16 @@
+{
+ "version": "0.1.56",
+ "source": "f-0291-rc1",
+ "commit": "06698c674673",
+ "archs": [
+  75,
+  86,
+  89,
+  120
+ ],
+ "ptx": true,
+ "cuda": "13.0",
+ "vision": "gpu-cuda13",
+ "portable": true,
+ "vision_archs": "75;86;89;120"
+}
