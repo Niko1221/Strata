@@ -6,6 +6,8 @@ from __future__ import annotations
 import http.server
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -795,6 +797,30 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+
+class Endpoint(unittest.TestCase):
+    def test_the_drafter_download_address_uses_hf_endpoint(self):
+        env = os.environ.copy()
+        env["HF_ENDPOINT"] = "https://mirror.example/"
+        result = subprocess.run(
+            [sys.executable, "-c", "from strata_control import drafting; print(drafting.BASE_URL)"],
+            cwd=ROOT, env=env, capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            f"https://mirror.example/{drafting.REPO}/resolve/{drafting.REVISION}/",
+        )
+
+        env.pop("HF_ENDPOINT", None)
+        result = subprocess.run(
+            [sys.executable, "-c", "from strata_control import drafting; print(drafting.BASE_URL)"],
+            cwd=ROOT, env=env, capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            f"https://huggingface.co/{drafting.REPO}/resolve/{drafting.REVISION}/",
+        )
 
 
 class FetchAndPack(unittest.TestCase):
