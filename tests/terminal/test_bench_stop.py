@@ -36,9 +36,36 @@ def alive(pid: int) -> bool:
         return True
     # a zombie answers signal 0; only its parent has not collected it
     try:
-        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] not in ("Z", "X", "x")
     except OSError:
+        # It may have been collected after signal 0 but before reading /proc.
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
         return True
+
+
+class AliveProbe(unittest.TestCase):
+    def test_dead_task_is_not_a_live_process(self):
+        with mock.patch(f"{__name__}.WINDOWS", False), \
+                mock.patch.object(os, "kill", return_value=None), \
+                mock.patch.object(Path, "read_text", return_value="12345 (stand-in) X 1 2 3"):
+            self.assertFalse(alive(12345))
+
+    def test_collected_process_is_not_revived_by_a_missing_proc_entry(self):
+        with mock.patch(f"{__name__}.WINDOWS", False), \
+                mock.patch.object(os, "kill", side_effect=[None, ProcessLookupError]), \
+                mock.patch.object(Path, "read_text", side_effect=FileNotFoundError):
+            self.assertFalse(alive(12345))
+
+    def test_live_process_without_proc_files_is_still_alive(self):
+        with mock.patch(f"{__name__}.WINDOWS", False), \
+                mock.patch.object(os, "kill", return_value=None), \
+                mock.patch.object(Path, "read_text", side_effect=FileNotFoundError):
+            self.assertTrue(alive(12345))
 
 
 class StopEngine(unittest.TestCase):

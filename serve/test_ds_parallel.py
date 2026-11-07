@@ -81,7 +81,7 @@ while True:
         l = ""
     if l is None or l == "QUIT":
         break
-    if l.startswith("GEN "):
+    if l.startswith(("GEN ", "GENI ")):
         admit(l)
     if active:
         time.sleep(STEP)
@@ -198,6 +198,14 @@ class Engine(unittest.TestCase):
         self.run_one([80, 1], out)
         first = self.log.read_text().splitlines()[0]
         self.assertTrue(first.startswith("GEN 64 rid=1 80,1"), first)
+
+    def test_the_image_gen_line_carries_rid(self):
+        self.start(2)
+        got = [t for t in self.engine.generate([80, 1], 64, {}, threading.Event(),
+                                               embeddings="fixture-embeddings") if t is not None]
+        self.assertEqual(got, [80] * 6 + [257])
+        first = self.log.read_text().splitlines()[0]
+        self.assertEqual(first, "GENI 64 rid=1 fixture-embeddings 80,1")
 
     def test_chat_requests_run_at_once(self):
         self.start(2)

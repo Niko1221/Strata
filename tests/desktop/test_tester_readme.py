@@ -1,5 +1,6 @@
 """The tester READMEs get their checksums from the files themselves (apps/desktop/scripts/make-tester-readme.sh)."""
 import hashlib
+import json
 import shutil
 import subprocess
 import tempfile
@@ -39,7 +40,7 @@ class TesterReadmeTests(unittest.TestCase):
         text = self.out.read_text()
         self.assertIn(sha(app), text)
         self.assertNotIn("@APPIMAGE@", text)
-        for needle in ("libfuse2t64", "Ubuntu 26.04", "--browser", "--quit", "--save-logs", "Strata 0.2.3", NOTICE):
+        for needle in ("libfuse2t64", "Ubuntu 26.04", "--browser", "--quit", "--save-logs", "Strata " + json.loads((ROOT / "apps/desktop/package.json").read_text())["version"], NOTICE):
             self.assertIn(needle, text)
         run("--verify", self.out, "--files-dir", self.files)
 

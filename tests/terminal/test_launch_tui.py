@@ -96,6 +96,12 @@ class Base(unittest.TestCase):
         p = mock.patch.object(access, "lan_ips", return_value=["192.168.1.5"])
         p.start()
         self.addCleanup(p.stop)
+        # Screen tests use simulated networking; never query this runner's helpers.
+        for p in (mock.patch.object(access, "find_cloudflared", return_value=None),
+                  mock.patch.object(access, "tailscale_status", return_value={
+                      "installed": False, "running": False, "ip": None, "name": None})):
+            p.start()
+            self.addCleanup(p.stop)
 
     def run_app(self, coro, ctx=None, auto_run=False):
         ctx = ctx or make_ctx()

@@ -1989,8 +1989,8 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(child_env({"backend": "hip", "gpu": 1})["HIP_VISIBLE_DEVICES"], "1")       # Linux: KFD order
         self.assertEqual(child_env({"backend": "hip", "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
         self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
-        self.assertEqual(child_env({"backend": "hip", "gpu": [1, 0], "hip_ordinal": 2})["HIP_VISIBLE_DEVICES"],
-                         "1,0")                                          # a layer split keeps its list
+        self.assertEqual(child_env({"backend": "hip", "gpu": [1, 0], "gpu_order": "as_given", "hip_ordinal": 2})["HIP_VISIBLE_DEVICES"],
+                         "1,0")  # explicit order; auto ordering may depend on the host cards
         self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": "x"})["HIP_VISIBLE_DEVICES"], "0")
         plain = child_env({"backend": "hip"})
         self.assertEqual(plain.get("HIP_VISIBLE_DEVICES"), os.environ.get("HIP_VISIBLE_DEVICES"))

@@ -115,7 +115,9 @@ class LaunchDeepSeek(unittest.TestCase):
 
     def test_a_small_computer_gets_the_warnings_not_a_refusal(self):
         self.hw = {**HW_12, "ram_gb": 64.0, "disk_free_gb": 100.0, "engine_vendor": "nvidia"}
-        code, out, err = run_cli(["launch", "--plan", "--model", "ud-q8_k_xl", "--no-tui"])
+        # Placement checks the selected destination, independently of hardware discovery.
+        with mock.patch.object(Catalog, "disk_free", return_value=100.0):
+            code, out, err = run_cli(["launch", "--plan", "--model", "ud-q8_k_xl", "--no-tui"])
         self.assertEqual(code, 0, err)
         self.assertIn("read from the SSD", out)
         self.assertIn("free disk space", out)
