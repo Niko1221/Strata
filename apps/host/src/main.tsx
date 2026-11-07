@@ -20,7 +20,7 @@ startRecovery();
 // so the first code block of the session is already coloured when it appears. A block that appears sooner fetches it itself.
 window.setTimeout(() => {
   const idle: (run: () => void) => void = 'requestIdleCallback' in window ? (run) => window.requestIdleCallback(run, { timeout: 4000 }) : (run) => window.setTimeout(run, 0);
-  idle(() => { void loadHighlighter(); });
+  idle(() => { void loadHighlighter(); void import('./components/TimeSkipPanel'); void import('./components/TimeSkipWorking'); });
 }, 3000);
 
 void translationsReady().then(() => {
