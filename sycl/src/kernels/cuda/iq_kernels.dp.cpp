@@ -938,7 +938,13 @@ template<> struct Fmt<146> { static constexpr int qk = 128, ipb = 8, step = 4;
 #else
 #define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8) X(144) X(145)
 #endif
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(144) X(146)
+// Q5_K (and Q6_K with the option) downs: what a UD file carries at an expert width divisible by 256 (512, 1024; Qwen3.6's UD-Q4_K_XL
+// has Q5_K / Q6_K downs), as the CUDA list has had them; the lane kernels are the gate/up's (Fmt / KqSplit of 13 and 14)
+#ifdef STRATA_Q6K_EXPERTS
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(14) X(144) X(146)
+#else
+#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8) X(13) X(144) X(146)
+#endif
 #define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8) X(144) X(145) X(146)
 
 __dpct_inline__ float warp_sum(float v) {

@@ -52,7 +52,7 @@ bool Window::pc_setup(int C) {
     const double t0 = now_ms();
     if (b.C == 0) {
         b.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
-                              "gemv.metal", "prompt.metal"});
+                              "gemv.metal", "prompt.metal"}, kq_down_prelude(f_));
         b.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
         b.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
         b.k4 = coop_k4();
@@ -74,7 +74,8 @@ bool Window::pc_setup(int C) {
         // the ragged-tile kernels exist for these expert types only (every layer's must be one of them)
         auto gu_ok = [](int t) { return t == ref::Q4_K || t == ref::Q5_K || t == ref::Q6_K || t == ref::Q8_0 || t == ref::IQ3_XXS ||
                                         t == ref::IQ2_S || t == ref::IQ4_XS || t == ref::IQ3_S || t == ref::IQ2_XS || t == ref::IQ2_XXS; };
-        auto dn_ok = [](int t) { return t == ref::Q5_1 || t == ref::Q8_0 || t == ref::Q5_0 || t == ref::IQ4_NL || t == ref::Q2_0; };
+        auto dn_ok = [](int t) { return t == ref::Q5_1 || t == ref::Q8_0 || t == ref::Q5_0 || t == ref::IQ4_NL || t == ref::Q2_0 ||
+                                        t == ref::Q4_K || t == ref::Q5_K || t == ref::Q6_K || t == ref::Q3_K || t == ref::IQ4_XS || t == ref::IQ3_S; };   // (the last six: Q4-KQ, UD downs at widths divisible by 256)
         bool types_ok = true;
         for (int l = 0; l < 48 && types_ok; ++l) {
             const std::string bl = "blk." + std::to_string(l) + ".";
