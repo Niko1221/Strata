@@ -1458,6 +1458,272 @@ bool launch_i8v3(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     return true;
 }
 
+// ---- sm_89 tune: fp16 K/V (mode 0) with v2's layout - warp w owns dims [64w, 64w + 64) for q.k and p.v, so q lives
+// in registers (no qh / ql in shared memory) and a warp gathers only its own 64-dim slice of each K and V row into its
+// own 4 KB region.  That region holds, in turn, the chunk's K slice, the warp's q.k partial sums (read by the softmax
+// after a barrier) and the V slice (stored after the softmax's barrier, read by the warp only): 18.7 KB a block instead
+// of 32.5 KB, four blocks an SM, and two block barriers a chunk instead of three.  prompt_attn_kernel<0>'s sums: the
+// MMAs of one 64-dim group in the same order, the four groups added in group order as its fmaf(tg, 1, sc) chain does,
+// the same softmax, p.v and epilogue - the same bits.  STRATA_PA_F16W=0: prompt_attn_kernel<0>.
+struct SmemW {
+    __half kv[4][CH][64];       // warp, cell, 64 dims in 16-byte pieces XOR-swizzled by the cell (K, then partials, then V)
+    float s[16][CH + 1];        // probabilities
+    float qmax[THREADS / 32];
+    float alpha[16];
+    float lsum[16];
+    float mrow[16];
+};
+static_assert(CH == 32 && THREADS == 128, "prompt_attn_f16w_kernel: a lane per cell, four warps of 64 dims");
+__device__ __forceinline__ int swzh(int cell, int dim) {   // element offset of (cell, local dim) in a warp's region
+    return cell * 64 + ((((dim >> 3) ^ (cell & 7))) << 3) + (dim & 7);
+}
+__device__ __forceinline__ int pidx(int row, int cell) {   // float offset of a partial in a warp's region (12 x 32)
+    return row * 32 + (cell ^ ((row & 3) << 3));
+}
+
+__global__ void __launch_bounds__(THREADS, 4) prompt_attn_f16w_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                                     const int32_t* __restrict__ ids,
+                                                                     const int32_t* __restrict__ steps, int n_kv_heads,
+                                                                     int page_size, float scale_log2,
+                                                                     float* __restrict__ attn, int cap) {
+    __shared__ __align__(16) SmemW S;
+    const int qi = blockIdx.x, kvh = blockIdx.y;
+    const int n_head = n_kv_heads * G;
+    q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
+    attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
+    ids += (size_t) qi * cap;
+    const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    const int gid = lane >> 2, tig = lane & 3;
+    const int dim0 = warp * 64;
+    __half* R = &S.kv[warp][0][0];
+    float* P = reinterpret_cast<float*>(R);
+
+    float qm = 0.0f;   // as prompt_attn_kernel: the largest |q| of the 12 heads, a power of two scale
+    for (int i = t; i < G * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
+    if (lane == 0) S.qmax[warp] = qm;
+    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
+    __syncthreads();
+    qm = fmaxf(fmaxf(S.qmax[0], S.qmax[1]), fmaxf(S.qmax[2], S.qmax[3]));
+    int qe = 0;
+    if (qm > 0.0f) frexpf(qm, &qe);
+    const float qup = ldexpf(1.0f, 14 - qe), qdown = ldexpf(scale_log2, qe - 14);
+    // this warp's A fragments (hi and lo halves) of the four 16-dim steps of its group: rows gid / gid + 8 (12..15 zero)
+    uint32_t qa_h[4][4], qa_l[4][4];
+#pragma unroll
+    for (int kk = 0; kk < 4; ++kk)
+#pragma unroll
+        for (int r = 0; r < 4; ++r) {   // a0: row gid, k 2tig; a1: row gid + 8; a2: row gid, k 2tig + 8; a3: row gid + 8
+            const int row = gid + (r & 1) * 8, d = dim0 + kk * 16 + 2 * tig + (r >> 1) * 8;
+            float x0 = 0.0f, x1 = 0.0f;
+            if (row < G) {
+                const float2 v = *reinterpret_cast<const float2*>(q + (size_t) row * HD + d);
+                x0 = v.x * qup;
+                x1 = v.y * qup;
+            }
+            const __half h0 = __float2half_rn(x0), h1 = __float2half_rn(x1);
+            const __half l0 = __float2half_rn(x0 - __half2float(h0)), l1 = __float2half_rn(x1 - __half2float(h1));
+            __half2 hh = __halves2half2(h0, h1), ll = __halves2half2(l0, l1);
+            qa_h[kk][r] = *reinterpret_cast<uint32_t*>(&hh);
+            qa_l[kk][r] = *reinterpret_cast<uint32_t*>(&ll);
+        }
+
+    float acc[8][4];
+#pragma unroll
+    for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
+
+    for (int c0 = 0; c0 < n; c0 += CH) {
+        const int nh = min(CH, n - c0);
+        long long rme = -1;   // lane = cell: its pool row
+        if (lane < nh) {
+            const int cell = ids[c0 + lane];
+            const long long page = (long long) p.page_table[cell / page_size];
+            rme = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+        }
+        __syncwarp();   // this warp's previous p.v is done with its region
+        // K: this warp's 64 dims of the chunk's 32 rows (8 pieces of 16 bytes a row, 8 pieces a lane)
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int i = lane + 32 * j, c = i >> 3, pc = i & 7;
+            const long long r = __shfl_sync(0xffffffffu, rme, c);
+            const uint4 kx = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD + dim0) + pc) : make_uint4(0, 0, 0, 0);
+            *reinterpret_cast<uint4*>(R + swzh(c, pc * 8)) = kx;
+        }
+        __syncwarp();
+        // q.k over this warp's group for all 32 cells: n-tile nt = cells 8 nt .. + 7
+        float tg[4][4];
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+            tg[nt][0] = tg[nt][1] = tg[nt][2] = tg[nt][3] = 0.0f;
+            const int cell = nt * 8 + gid;
+#pragma unroll
+            for (int kk = 0; kk < 4; ++kk) {
+                uint32_t b[2];
+                b[0] = *reinterpret_cast<const uint32_t*>(R + swzh(cell, kk * 16 + 2 * tig));
+                b[1] = *reinterpret_cast<const uint32_t*>(R + swzh(cell, kk * 16 + 2 * tig + 8));
+                mma16816(tg[nt], qa_h[kk], b);
+#ifndef D1_NO_QLO
+                mma16816(tg[nt], qa_l[kk], b);
+#endif
+            }
+        }
+        // V's rows into registers now (they land in the region after the softmax)
+        uint4 vx[8];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int i = lane + 32 * j, c = i >> 3, pc = i & 7;
+            const long long r = __shfl_sync(0xffffffffu, rme, c);
+            vx[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD + dim0) + pc) : make_uint4(0, 0, 0, 0);
+        }
+        __syncwarp();   // every lane has read K: the partials go over it (rows 0..11)
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+            const int c = nt * 8 + 2 * tig;
+            P[pidx(gid, c)] = tg[nt][0];
+            P[pidx(gid, c + 1)] = tg[nt][1];
+            if (gid + 8 < G) {
+                P[pidx(gid + 8, c)] = tg[nt][2];
+                P[pidx(gid + 8, c + 1)] = tg[nt][3];
+            }
+        }
+        __syncthreads();
+        // online softmax: row t / 8, 4 cells a thread - prompt_attn_kernel's, with its scores summed here from the four
+        // groups' partials in its order (sc = fmaf(tg_g, 1, sc) from 0) and rows 12..15 the zero rows' scores
+        {
+            constexpr int PER = CH / 8;
+            const int r = t >> 3, sub = t & 7;
+            float x[PER], mx = -INFINITY;
+#pragma unroll
+            for (int j = 0; j < PER; ++j) {
+                const int c = sub * PER + j;
+                float sc = 0.0f;
+                if (r < G) {
+#pragma unroll
+                    for (int w = 0; w < 4; ++w)
+                        sc = fmaf(reinterpret_cast<const float*>(&S.kv[w][0][0])[pidx(r, c)], 1.0f, sc);
+                }
+                x[j] = c < nh ? sc * qdown : -INFINITY;
+                mx = fmaxf(mx, x[j]);
+            }
+#pragma unroll
+            for (int o = 1; o < 8; o <<= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+            const float m_old = S.mrow[r];
+            const float m_new = fmaxf(m_old, mx);
+            float sum = 0.0f;
+#pragma unroll
+            for (int j = 0; j < PER; ++j) {
+                const float e = x[j] == -INFINITY ? 0.0f : exp2f(x[j] - m_new);
+                S.s[r][sub * PER + j] = e;
+                sum += e;
+            }
+#pragma unroll
+            for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            __syncwarp();
+            if (sub == 0) {
+                const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
+                S.alpha[r] = a;
+                S.lsum[r] = fmaf(S.lsum[r], a, sum);
+                S.mrow[r] = m_new;
+            }
+        }
+        __syncthreads();   // every partial is read; s, alpha ready
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int i = lane + 32 * j, c = i >> 3, pc = i & 7;
+            *reinterpret_cast<uint4*>(R + swzh(c, pc * 8)) = vx[j];
+        }
+        __syncwarp();
+        // p.v: prompt_attn_kernel<0>'s (one scale group a warp, scales 1)
+        {
+            float tmp[8][4];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) tmp[j][0] = tmp[j][1] = tmp[j][2] = tmp[j][3] = 0.0f;
+            const float vup = 16384.0f, vdown = 1.0f * (1.0f / 16384.0f);
+#pragma unroll
+            for (int ks = 0; ks < CH / 16; ++ks) {
+                const int cA = ks * 16 + 2 * tig, cB = cA + 8;
+                const float w0 = 1.0f * vup, w1 = w0, w2 = w0, w3 = w0;
+                const float p00 = S.s[gid][cA] * w0, p01 = S.s[gid][cA + 1] * w1;
+                const float p10 = S.s[gid + 8][cA] * w0, p11 = S.s[gid + 8][cA + 1] * w1;
+                const float p02 = S.s[gid][cB] * w2, p03 = S.s[gid][cB + 1] * w3;
+                const float p12 = S.s[gid + 8][cB] * w2, p13 = S.s[gid + 8][cB + 1] * w3;
+                uint32_t ah[4], al[4];
+                ah[0] = pack_h2(p00, p01);
+                ah[1] = pack_h2(p10, p11);
+                ah[2] = pack_h2(p02, p03);
+                ah[3] = pack_h2(p12, p13);
+                {
+                    const __half2* h = reinterpret_cast<const __half2*>(ah);
+                    float2 f;
+                    f = __half22float2(h[0]); al[0] = pack_h2(p00 - f.x, p01 - f.y);
+                    f = __half22float2(h[1]); al[1] = pack_h2(p10 - f.x, p11 - f.y);
+                    f = __half22float2(h[2]); al[2] = pack_h2(p02 - f.x, p03 - f.y);
+                    f = __half22float2(h[3]); al[3] = pack_h2(p12 - f.x, p13 - f.y);
+                }
+#pragma unroll
+                for (int j = 0; j < 8; ++j) {
+                    const int dl = j * 8 + gid;
+                    const __half2 h0 = __halves2half2(R[swzh(cA, dl)], R[swzh(cA + 1, dl)]);
+                    const __half2 h1 = __halves2half2(R[swzh(cB, dl)], R[swzh(cB + 1, dl)]);
+                    uint32_t b[2];
+                    b[0] = *reinterpret_cast<const uint32_t*>(&h0);
+                    b[1] = *reinterpret_cast<const uint32_t*>(&h1);
+                    mma16816(tmp[j], ah, b);
+#ifndef D1_NO_PLO
+                    mma16816(tmp[j], al, b);
+#endif
+                }
+            }
+            const float a0 = S.alpha[gid], a1 = S.alpha[gid + 8];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                acc[j][0] = fmaf(acc[j][0], a0, tmp[j][0] * vdown);
+                acc[j][1] = fmaf(acc[j][1], a0, tmp[j][1] * vdown);
+                acc[j][2] = fmaf(acc[j][2], a1, tmp[j][2] * vdown);
+                acc[j][3] = fmaf(acc[j][3], a1, tmp[j][3] * vdown);
+            }
+        }
+    }
+    __syncthreads();
+    const float l0 = S.lsum[gid], l1 = S.lsum[gid + 8];
+    const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
+#pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const int d = warp * 64 + j * 8 + 2 * tig;
+        *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
+        if (gid + 8 < G)
+            *reinterpret_cast<float2*>(attn + (size_t) (gid + 8) * HD + d) = make_float2(acc[j][2] * i1, acc[j][3] * i1);
+    }
+}
+
+bool launch_f16w(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+                 const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
+    static bool attr[64] = {};
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    if (!attr[dev]) {
+        cudaFuncSetAttribute(prompt_attn_f16w_kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        cudaGetLastError();
+        attr[dev] = true;
+    }
+    const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
+    for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
+        const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
+        prompt_attn_f16w_kernel<<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
+            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+            (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
+    }
+    const cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "qsa_prompt_attn_batch (f16w): %s\n", cudaGetErrorString(e));
+        std::exit(1);
+    }
+    return true;
+}
+
 static_assert(sizeof(Smem<0, false>) + 1024 <= 102400 / 3, "three fp16-KV prompt-attention blocks an SM on sm_89");
 
 template <int KV_MODE, bool PF = false>
@@ -2470,6 +2736,10 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     }
     if (!pools.k_pool || !pools.v_pool) return false;
     if (volta) return launch70<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    {   // sm_89 tune: the warp-sliced fp16 kernel (same bits); STRATA_PA_F16W=0 keeps prompt_attn_kernel<0>
+        static const bool f16w = [] { const char* v = std::getenv("STRATA_PA_F16W"); return v == nullptr || v[0] != '0'; }();
+        if (f16w && !turing) return launch_f16w(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
     return launch<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
 }
 
