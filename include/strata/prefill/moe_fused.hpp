@@ -15,6 +15,8 @@
 // rounding of the activations and of H) by about as much as MMQ differs from FP32 (tests/cuda/prefill_fused_moe_test).
 #pragma once
 
+#include "strata/core/geometry.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -22,6 +24,11 @@ namespace strata::prefill::fused {
 
 /// Routed rows (token, k pairs of one expert) per tile.
 constexpr int kTileRows = 64;
+/// The compiled geometry's widths the expert kernels are written for: the hidden width (the K of gate/up, the rows of
+/// down), the expert width (the K of down, half the rows of gate/up) and the gate/up rows.  Flash-Next: 2560, 640, 1280.
+constexpr int kMoeEmbd = (int) strata::core::kCompiledGeometry.n_embd;
+constexpr int kMoeFF = (int) strata::core::kCompiledGeometry.n_ff;
+constexpr int kMoeGuRows = 2 * kMoeFF;
 /// Experts per launch: their blob pointers travel in the launch's parameters (1 KB).
 constexpr int kMaxBatch = 128;
 /// The room of WideBatch::blob (below): a whole layer of 512 experts, which STRATA_PF_BATCH=512 (opt-in) launches at
