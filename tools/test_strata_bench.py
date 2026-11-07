@@ -430,5 +430,31 @@ class MachineDetailTests(unittest.TestCase):
         self.assertEqual((g["power_limit_w"], g["pcie"], g["pstate"], g["temp_c"]), ("165.00", "gen4 x8", "P3", "45"))
 
 
+class StandardReportIsNotAServingReport(unittest.TestCase):
+    """#4325: a folder written by `strata bench run` (the default suite, standard-v1) used to end this tool with
+    `KeyError: 'results'`, because the two report schemas share the file name results.json."""
+
+    def test_a_standard_report_says_what_it_is(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            (folder / "results.json").write_text(
+                json.dumps({"format": "strata-standard-benchmark", "run": {"id": "x"}, "summaries": []}),
+                encoding="utf-8")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                B.load_results(folder)
+        self.assertEqual(caught.exception.code, 2)
+        message = err.getvalue()
+        self.assertIn("standard benchmark report", message)
+        self.assertIn("strata bench report", message)
+
+    def test_a_serving_report_still_loads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            document = {"schema": B.SCHEMA, "results": []}
+            (folder / "results.json").write_text(json.dumps(document), encoding="utf-8")
+            self.assertEqual(B.load_results(folder), document)
+
+
 if __name__ == "__main__":
     unittest.main()
