@@ -83,6 +83,7 @@ from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
+from serve import prompt_kind  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -4779,6 +4780,16 @@ def slot_save_dir(value, base: str | None = None) -> str:
         raise ValueError(f"slot_save_path {path} is not a directory")
     return path
 
+
+def _lever_say(stats: dict, what, line: str, tag: str) -> bool:
+    """Print `line` only when the decision CHANGED: a line per request would be as noisy as the engine's log."""
+    if what == stats.get("last"):
+        return False
+    stats["last"] = what
+    print(f"[strata] {tag}: {line}", flush=True)
+    return True
+
+
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.8-flash-next",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
@@ -4899,6 +4910,74 @@ class Service:
             slots = conversation_slots(engine)
             self.prompts = PromptEncoder(tokenizer, keep=slots) if slots is not None and slots > 0 \
                 else PromptEncoder(tokenizer)
+
+        # -- thinking budget by prompt (OFF by default; see serve/prompt_kind.py) -------------------------------
+        # A request that asks for a short, direct answer (extraction, formatting, a one-word reply) does not pay for
+        # a thinking block.  Measured on an Arc Pro B70 / Qwen3.8-flash-next-coder IQ1_M, six extraction prompts at
+        # max_tokens=24: 5 of 6 answered with the policy on against 0 of 6 off, 0.50 s wall against 0.72 s.  Without
+        # it the whole budget goes into the reasoning and the reply comes back finish_reason "length" with an EMPTY
+        # content - the worst kind of wrong answer, because it looks like the model had nothing to say.
+        self.thinking_policy = "off"
+        self.thinking_stats = {"direct": 0, "reason": 0, "applied": 0, "shadowed": 0, "last": None}
+
+    def set_thinking_policy(self, mode: str) -> None:
+        # a typo must not enable the lever
+        self.thinking_policy = mode if mode in ("off", "shadow", "on") else "off"
+        if self.thinking_policy != "off":
+            print(f"[strata] thinking policy: {self.thinking_policy}", flush=True)
+
+    def thinking_report(self) -> dict:
+        return {"mode": self.thinking_policy,
+                **{k: v for k, v in self.thinking_stats.items() if k != "last"}}
+
+    @staticmethod
+    def client_asked_for_thinking(req, kwargs: dict) -> bool:
+        """True when the REQUEST names a thinking level or turns thinking off (a server-filled default does not
+        count: filling reasoning_effort on every request would silently disable this policy)."""
+        if kwargs.get("enable_thinking") is False:
+            return True
+        if not isinstance(req, dict):
+            return "reasoning_effort" in kwargs
+        if req.get("_effort_from_shared"):
+            return False                       # the server filled it: still the client's request to answer briefly
+        if req.get("reasoning_effort") not in (None, ""):
+            return True
+        if isinstance(req.get("reasoning"), dict) and req["reasoning"].get("effort"):
+            return True
+        ctk = req.get("chat_template_kwargs")
+        if isinstance(ctk, dict) and ("reasoning_effort" in ctk or "enable_thinking" in ctk):
+            return True
+        if req.get("output_config") or req.get("thinking"):
+            return True
+        return False
+
+    def apply_thinking_policy(self, messages, kwargs: dict, req=None) -> None:
+        """Turn thinking OFF for a request that asks for a short, direct answer - in place, before the prompt is
+        rendered, so the template and the parser agree (they read the same kwargs).
+
+        Never overrides a client: `enable_thinking: false` or any `reasoning_effort` is left exactly as sent, and a
+        code prompt keeps its thinking (a bug or a design question is where thinking earns its tokens).
+        """
+        if self.thinking_policy == "off":
+            return
+        if self.client_asked_for_thinking(req, kwargs):
+            return
+        try:
+            verdict = prompt_kind.wants_direct_answer(prompt_kind.messages_text(messages))
+        except Exception:                       # noqa: BLE001 - a classifier failure must not fail a request
+            return
+        self.thinking_stats[verdict.kind] += 1
+        if verdict.kind != "direct":
+            return
+        if self.thinking_policy == "shadow":
+            self.thinking_stats["shadowed"] += 1
+            _lever_say(self.thinking_stats, str(verdict), f"would turn thinking off ({verdict})", "thinking policy")
+            return
+        self.thinking_stats["applied"] += 1
+        _lever_say(self.thinking_stats, str(verdict), f"thinking off ({verdict})", "thinking policy")
+        kwargs.pop("reasoning_effort", None)
+        kwargs["enable_thinking"] = False
+
 
     def set_family(self, family: str | None) -> None:
         """A family whose text differs from the Qwen form this server was written for (DeepSeek-V4.1: its own end
@@ -5570,11 +5649,13 @@ class Service:
                 if req.get("reasoning_effort") in (None, "") and not req.get("reasoning") and \
                         "enable_thinking" not in ctk and "reasoning_effort" not in ctk:
                     req["reasoning_effort"] = effort
+                    req["_effort_from_shared"] = True      # the server's default, not the client's choice
             elif not req.get("thinking") and not req.get("output_config"):
                 if effort == "none":
                     req["thinking"] = {"type": "disabled"}
                 else:
                     req["output_config"] = {"effort": effort}
+                req["_effort_from_shared"] = True
         return req
 
     def start_telemetry(self):
@@ -5774,6 +5855,7 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            "thinking": self.thinking_report(),
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -5893,6 +5975,7 @@ class Service:
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
+        self.apply_thinking_policy(messages, kwargs, req)   # before the render: the template and the parser share kwargs
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
         # Cached tool images are references in browser history, never arbitrary file paths or huge base64 strings.
@@ -9991,6 +10074,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
+    ap.add_argument("--thinking-policy", choices=["off", "shadow", "on"], default=None,
+                    help="do not pay for a thinking block on a request that asks for a short direct answer "
+                         "(extraction, formatting, a one-word reply). A client's own reasoning_effort/enable_thinking "
+                         "is never overridden, and a code prompt keeps its thinking. 'shadow' only logs what it "
+                         "would do (serve/prompt_kind.py)")
     ap.add_argument("--split-serve", default=None, metavar="PREFILL,DECODE",
                     help="split serving (opt-in): one engine on card PREFILL reads the prompt, a second on card DECODE makes "
                          "the answer, the session handed over in RAM (also \"split_serve\" in the config: "
@@ -10256,6 +10344,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if _dsp is not None:
             svc.vision = _dsp
             print("[strata] pictures: on (DeepSeek-V4.1 reads them with the engine's own vision tower; --vision off turns them off)", flush=True)
+    _tp = cfg.get("thinking_policy")
+    svc.set_thinking_policy(a.thinking_policy or (_tp if isinstance(_tp, str) else "") or "off")
     svc.offline = a.offline
     svc.max_queue = max_queue
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
