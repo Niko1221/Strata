@@ -34,6 +34,7 @@ import hashlib
 import hmac
 import codecs
 import ctypes
+import itertools
 import json
 import math
 import os
@@ -1378,9 +1379,10 @@ class StrataEngine:
             self.ctl_epoch = 0                          # how often the control lines were taken
             self.ctl = threading.Lock()                 # one admission or solo request on the control lines at a time
         if "rid_lock" not in self.__dict__:
-            self.rid_lock = threading.Lock()
+            self.rid_lock = threading.Condition()
             self.rid_n = 0                              # --parallel requests' ids (rid=): never reused, a restart goes on from here
-        self.rid_q: dict[int, queue.Queue] = {}         # this process's: rid -> that request's lines (T / PP / DONE / ERR, rid taken out)
+        self.rid_q: dict[int, queue.Queue] = {}         # Requests in arrival order; each ID maps to its output queue.
+        self.rid_proc = self.proc                      # Reject waiting requests if this process is replaced.
         self.multi_stat = ""                            # the engine's last STAT line over everything it wrote
         self._ctl_erred = False                         # #1059: the control lines ended on an ERR
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
@@ -1752,13 +1754,16 @@ class StrataEngine:
         on = sampling.get("experimental_speed_projection")
         return f" cvec={int(on)}" if isinstance(on, bool) else ""
 
-    def _send(self, text: str):
+    def _send(self, text: str, proc=None):
         btrace("send>", text[:60])
         try:
             with self.wlock:
-                self.proc.stdin.write(text + "\n")
-                self.proc.stdin.flush()
-        except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
+                if proc is not None and self.proc is not proc:
+                    raise EngineDied("the engine restarted before this request was sent")
+                target = proc if proc is not None else self.proc
+                target.stdin.write(text + "\n")
+                target.stdin.flush()
+        except (OSError, AttributeError, ValueError):    # the pipe is gone (or a restart's close() took the process):
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
 
     def _send_for(self, born: int, text: str):
@@ -2741,6 +2746,47 @@ class StrataEngine:
         return view
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
+        """Generate tokens, waiting for a free engine slot when necessary."""
+        if not self.multi:
+            yield from self._generate(ids, max_new, sampling, cancel, embeddings, prefill_only)
+            return
+        with self.rid_lock:
+            requests, proc = self.rid_q, self.rid_proc
+            self.rid_n += 1
+            rid = self.rid_n
+            lines = requests[rid] = queue.Queue()
+        beat = time.monotonic()
+        deadline = getattr(cancel, "_strata_queue_deadline", None)
+        try:
+            while True:
+                with self.rid_lock:
+                    if cancel.is_set():
+                        return
+                    if requests is not self.rid_q or proc is not self.proc or not self.alive():
+                        raise EngineDied("the engine stopped or restarted before this request was sent")
+                    left = deadline - time.monotonic() if deadline is not None else 0.5
+                    if left <= 0:
+                        raise QueueWaitExpired("the request timed out waiting for a free engine slot; retry later")
+                    # The engine can run self.multi requests; the rest wait in arrival order.
+                    if rid in itertools.islice(requests, self.multi):
+                        break
+                    self.rid_lock.wait(timeout=min(0.5, left))
+                if time.monotonic() - beat >= QUEUE_BEAT_S:
+                    beat = time.monotonic()
+                    yield None
+            if cancel.is_set():
+                return
+            cancel._strata_queue_deadline = None
+            # A cancelled request stays in the map until the engine confirms it has stopped.
+            yield from self._generate(ids, max_new, sampling, cancel, embeddings, prefill_only,
+                                      _proc=proc, _rid=rid, _lines=lines)
+        finally:
+            with self.rid_lock:
+                requests.pop(rid, None)
+                self.rid_lock.notify_all()
+
+    def _generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False,
+                  _proc=None, _rid=None, _lines=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
         has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
@@ -2748,20 +2794,15 @@ class StrataEngine:
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
         refuse_for_split(self, sampling or {})
-        if getattr(self, "batch", 0) and not self.multi:
+        if getattr(self, "batch", 0) and not self.multi and _rid is None:
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # DeepSeek --parallel: the engine holds several conversations; this request is one of them (GEN ... rid=<id>), its
         # lines come on a queue of their own and its STOP names it.  One at a time (self.multi 0): the one queue, as before.
-        rid, lines_q, stop_line = None, self.lines, "STOP\n"
-        if self.multi:
-            with self.rid_lock:
-                self.rid_n += 1
-                rid = self.rid_n
-            lines_q = queue.Queue()
-            self.rid_q[rid] = lines_q
+        rid, lines_q, stop_line = _rid, self.lines if _lines is None else _lines, "STOP\n"
+        if rid is not None:
             stop_line = f"STOP {rid}\n"
         # logprobs: the engine writes "LP <logprob> [id:logprob ...]" right after each "T <id>" (the same
         # flush), read here before the token is yielded, so whoever takes the token finds its line in
@@ -2779,13 +2820,13 @@ class StrataEngine:
             head = f"GEN 0 prefill=1{rid_key}"
         try:
             if rid is not None:                          # several requests write to the engine at once
-                self._send(f"{head} {','.join(str(int(t)) for t in ids)}")
+                self._send(f"{head} {','.join(str(int(t)) for t in ids)}", proc=_proc)
             else:
                 self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
                 self.proc.stdin.flush()
-        except (OSError, EngineDied):                    # the pipe is gone: the engine died (not the client)
-            if rid is not None:
-                self.rid_q.pop(rid, None)
+        except (OSError, EngineDied) as exc:             # the pipe is gone: the engine died (not the client)
+            if isinstance(exc, EngineDied):
+                raise
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
@@ -2908,8 +2949,6 @@ class StrataEngine:
                         break
                     if not self.can_stop:
                         heard = time.monotonic()
-            if rid is not None:                           # this request's lines are over (a late one goes nowhere)
-                self.rid_q.pop(rid, None)
 
     @staticmethod
     def _swallow_trailing_done(lines_q, wait: float = 0.3) -> None:
