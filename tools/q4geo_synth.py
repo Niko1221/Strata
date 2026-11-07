@@ -157,10 +157,22 @@ def recipe_type(recipe: str, role: str, layer: int, s: dict) -> str:
         if role in ("gate", "up"):
             return "Q4_K"
         return "Q5_0"
+    if recipe == "fused-kq":         # Q4_K gate/up (Q5_K in layer 0) with Q5_1 / Q8_0 down at ANY expert width: the pairs the AMD fused / F16 prompt kernels take (Q4-HIPKQ)
+        if role in ("gate", "up"):
+            return "Q5_K" if first else "Q4_K"
+        return "Q8_0" if layer % 2 == 0 else "Q5_1"
+    if recipe == "mix-kq":           # one file with every K-quant expert path of the AMD prompt kernels: Q5_K/Q8_0 (fused), Q4_K/Q5_K and Q4_K/Q6_K (MMQ), Q4_K/Q5_1 (fused F16), by layer % 4 (Q4-HIPKQ)
+        if role in ("gate", "up"):
+            return "Q5_K" if layer % 4 == 0 else "Q4_K"
+        return ("Q8_0", "Q5_K", "Q5_1", "Q6_K")[layer % 4]
+    if recipe == "fused-iq":         # IQ3_S gate/up (IQ4_XS in layer 0) with IQ4_NL down at any expert width: the native IQ pack's fused prompt kernels (Q4-HIPKQ)
+        if role in ("gate", "up"):
+            return "IQ4_XS" if first else "IQ3_S"
+        return "IQ4_NL"
     raise SystemExit(f"unknown recipe {recipe}")
 
 
-RECIPES = ["ud-q4k", "ud-q4k-q6", "ud-iq4xs", "ud-q5_0down"]
+RECIPES = ["ud-q4k", "ud-q4k-q6", "ud-iq4xs", "ud-q5_0down", "fused-kq", "fused-iq", "mix-kq"]
 
 
 def row_ok(ty: str, ne0: int) -> bool:
@@ -368,6 +380,9 @@ def main() -> int:
     ap.add_argument("--label", help="kGeometryName in the header (default: the shape, plus _<layers>l)")
     ap.add_argument("--from-gguf", help="read the shape from this file's metadata instead of --shape")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--small-ple", action="store_true",
+                    help="PLE head sizes of 16 small primes (a table of ~1.6M rows, ~50 MB) instead of Flash-Next's 320001536 rows (28 GB): the hash moduli are read from the file, so the engine runs it; "
+                         "for hosts where the sparse 28 GB table cannot be written (Windows)")
     ap.add_argument("--set", default="", help="comma list of field=value overrides of the shape (a bisection of one field), e.g. n_ff=1024,hc_lr=384")
     a = ap.parse_args()
     if a.list:
@@ -383,6 +398,15 @@ def main() -> int:
         s = shape(a.shape, a.layers, **{k: int(v) for k, v in (kv.split("=") for kv in a.set.split(",") if kv)})
         label = a.label or (a.shape + (f"_{a.layers}l" if a.layers else ""))
         src = f"shape {a.shape}" + (f", {a.layers} layers" if a.layers else "")
+    if a.small_ple:
+        global PLE_ROWS
+        primes, n = [], 100003
+        while len(primes) < 16:
+            if all(n % d for d in range(2, int(n ** 0.5) + 1)):
+                primes.append(n)
+            n += 2
+        PLE_VOCAB[:] = primes
+        PLE_ROWS = sum(primes)
     if a.header:
         pathlib.Path(a.header).write_text(header_text(s, label, src), encoding="utf8", newline="\n")
         print(f"wrote {a.header} ({label})")
