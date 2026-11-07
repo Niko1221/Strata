@@ -2,6 +2,7 @@
 //
 //     build/native_expert_parity <shard.gguf> [layer ...]     real rows (a split model's shards are found by name)
 //     build/native_expert_parity --synthetic GU/DOWN ...      random weights quantized by ggml (e.g. q4_K/q5_1)
+//     build/native_expert_parity --synthetic [--bench] GU/DOWN ...   --bench adds a decode micro-number per pair
 //     build/native_expert_parity --q5_1-min                   the Q5_1 min term on crafted activations
 //     (the CPU-only checks of the trellis kernels, AVX2 / AVX-512 / scalar, are in tq_cpu_parity)
 //
@@ -425,6 +426,19 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
         cudaStreamSynchronize(s);
         cudaMemcpy(got_g.data(), dout, got_g.size() * 4, cudaMemcpyDeviceToHost);
+        {   // round 0214: the launches before the group stride (v1) against the same float reference: which of the two is right when they differ
+            std::vector<float> v1_g(got_g.size());
+            strata::kernels::native_grouped_set_v1(true);
+            cudaMemset(dout, 0xFF, got_g.size() * 4);
+            strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, 1, NT, dxq, dscr, dout, s);
+            strata::kernels::native_grouped_set_v1(false);
+            cudaStreamSynchronize(s);
+            cudaMemcpy(v1_g.data(), dout, v1_g.size() * 4, cudaMemcpyDeviceToHost);
+            size_t nd = 0;
+            for (size_t i = 0; i < v1_g.size(); ++i) nd += std::memcmp(&v1_g[i], &got_g[i], 4) != 0;
+            std::printf("          v1 launches vs float reference: rel %.3e; new launches: rel %.3e; v1 vs new: %zu of %zu floats differ in any bit (rel %.2e)\n",
+                        rel(v1_g, ref), rel(got_g, ref), nd, v1_g.size(), rel(v1_g, got_g));
+        }
         {   // the kernels that decode a weight part once for the NT entries, bitwise vs the per-entry ones (#242;
             // the formats without a decode-once split take the per-entry kernels either way)
             std::vector<float> old_g(got_g.size());
@@ -451,7 +465,8 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             for (int64_t r = 0; r < FF; ++r) tk[(size_t) r] = (int32_t) (FF - 1 - r);   // rows in reverse order
             cudaMemcpy(dtk, tk.data(), tk.size() * 4, cudaMemcpyHostToDevice);
             double dq_err = 0.0;
-            size_t differ = 0, h_differ = 0;
+            size_t differ = 0, h_differ = 0, h_shown = 0;
+            long h_maxulp = 0;
             const struct { const uint8_t* src; int type; const std::vector<float>* want; } mats[3] = {
                 {(const uint8_t*) dblob, f.gu_type, &G}, {(const uint8_t*) dblob + f.up_off, f.gu_type, &U},
                 {(const uint8_t*) dblob + f.down_off, f.d_type, &D}};
@@ -464,7 +479,11 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 dq_err = (std::max)(dq_err, rel(got_dq, *m.want));
                 for (size_t i = 0; i < got_dq.size(); ++i) {
                     differ += std::memcmp(&got_dq[i], &(*m.want)[i], 4) != 0;
-                    h_differ += got_h[i] != ggml_fp32_to_fp16(got_dq[i]);
+                    if (got_h[i] != ggml_fp32_to_fp16(got_dq[i]) && !((got_h[i] & 0x7fff) == 0 && got_dq[i] == 0.0f)) {   // (+0 for -0 is no difference)
+                        ++h_differ;
+                        h_maxulp = (std::max)(h_maxulp, (long) std::labs((long) got_h[i] - (long) ggml_fp32_to_fp16(got_dq[i])));
+                        if (h_shown++ < 3) std::printf("          fp16 dequant differs: i=%zu f32 %.9g half %.9g (bits %04x) fp16(f32) bits %04x\n", i, got_dq[i], (double) ggml_fp16_to_fp32(got_h[i]), got_h[i], ggml_fp32_to_fp16(got_dq[i]));
+                    }
                 }
             }
             // the gate matrix as an embedding table of FF rows of H values
@@ -476,8 +495,8 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 emb_differ += std::memcmp(got_dq.data() + r * H, G.data() + (FF - 1 - r) * H, (size_t) H * 4) != 0;
             cudaFree(dq); cudaFree(dh); cudaFree(dtk);
             std::printf("          GPU dequant vs ggml to_float: rel %.2e, %zu of %lld values differ in any bit; fp16 of "
-                        "it: %zu differ; embedding rows: %zu of %lld differ\n", dq_err, differ, (long long) (3 * FF * H),
-                        h_differ, emb_differ, (long long) FF);
+                        "it: %zu differ (max %ld ulp); embedding rows: %zu of %lld differ\n", dq_err, differ, (long long) (3 * FF * H),
+                        h_differ, h_maxulp, emb_differ, (long long) FF);
             // exact where there is one product (Q8_0), a rounding at most elsewhere (fused multiply-adds)
             const bool exact = f.gu_type == 8 && f.d_type == 8;
             if (!(dq_err < 1e-6) || h_differ || (exact && (differ || emb_differ))) ++failures;
@@ -486,11 +505,87 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
     }
     const double ec = rel(got_c, ref), eg = rel(got_g, ref), ecg = rel(got_c, got_g);
-    const bool ok = ec < 3e-2 && eg < 3e-2 && std::isfinite(ec) && std::isfinite(eg);
+    // Q5_0 down used to sit at 2.1e-2 .. 3.1e-2 (the offset from the original activation sum); with the quantized sum it is as accurate as the rest
+    const double gpu_limit = f.d_type == 6 ? 1.8e-2 : 3e-2;
+    const bool ok = ec < 3e-2 && eg < gpu_limit && std::isfinite(ec) && std::isfinite(eg);
     std::printf("%-9s %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", label.c_str(),
                 ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), f.bytes, ec, eg, ecg,
                 ok ? "ok" : "FAIL");
     return failures + (ok ? 0 : 1);
+}
+
+// Decode micro-number (--bench): the verify/decode shape, a top-10 routing of one token per expert.  A pool of 64
+// copies of one blob (about 180 MB at IQ2_XS/Q2_0, past the last-level cache) is walked ten experts at a time, so
+// every call reads cold weights.  Prints microseconds per native_expert_grouped call and the weight GB/s it implies.
+void bench_decode(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, const std::string& label, cudaStream_t s) {
+    constexpr int POOL = 64, TOP = 10, ITERS = 200;
+    auto L = strata::kernels::native_expert_layout(f.gu_type, f.d_type, H, FF);
+    uint8_t* dpool = nullptr;
+    if (cudaMalloc((void**) &dpool, (size_t) POOL * blob.size()) != cudaSuccess) { std::printf("%s: bench: no memory\n", label.c_str()); return; }
+    for (int i = 0; i < POOL; ++i) cudaMemcpy(dpool + (size_t) i * blob.size(), blob.data(), blob.size(), cudaMemcpyHostToDevice);
+    std::mt19937 rng(3);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    std::vector<float> x((size_t) TOP * H);
+    for (auto& v : x) v = nd(rng);
+    float *dx, *dout;
+    void *dxq, *dscr;
+    unsigned long long* dptr;
+    int32_t *dstart, *dn, *ddst, *dtok;
+    cudaMalloc((void**) &dx, x.size() * 4);
+    cudaMalloc(&dxq, (size_t) TOP * H / 32 * 36);
+    cudaMalloc(&dscr, strata::kernels::native_expert_scratch_bytes(TOP, FF));
+    cudaMalloc((void**) &dout, (size_t) TOP * H * 4);
+    cudaMalloc((void**) &dptr, TOP * 8);
+    cudaMalloc((void**) &dstart, (TOP + 1) * 4);
+    cudaMalloc((void**) &dn, 4);
+    cudaMalloc((void**) &ddst, TOP * 4);
+    cudaMalloc((void**) &dtok, TOP * 4);
+    cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice);
+    int32_t st[TOP + 1], idx[TOP], n = TOP;
+    for (int i = 0; i <= TOP; ++i) st[i] = i;
+    for (int i = 0; i < TOP; ++i) idx[i] = i;
+    cudaMemcpy(dstart, st, sizeof st, cudaMemcpyHostToDevice);
+    cudaMemcpy(dn, &n, 4, cudaMemcpyHostToDevice);
+    cudaMemcpy(ddst, idx, sizeof idx, cudaMemcpyHostToDevice);
+    cudaMemcpy(dtok, idx, sizeof idx, cudaMemcpyHostToDevice);
+    strata::kernels::quantize_q8_1_rows(dx, TOP, H, dxq, s);
+    std::vector<std::vector<unsigned long long>> sets;   // the pointer sets, one per pool position
+    for (int k = 0; k < POOL; ++k) {
+        std::vector<unsigned long long> v(TOP);
+        for (int e = 0; e < TOP; ++e) v[e] = (unsigned long long) (dpool + (size_t) ((k * TOP + e) % POOL) * blob.size());
+        sets.push_back(v);
+    }
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    std::vector<double> us;
+    for (int rep = 0; rep < 7; ++rep) {
+        for (int i = 0; i < 20; ++i) {   // warm up
+            cudaMemcpyAsync(dptr, sets[i % POOL].data(), TOP * 8, cudaMemcpyHostToDevice, s);
+            strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, TOP, TOP, dxq, dscr, dout, s);
+        }
+        cudaStreamSynchronize(s);
+        float ms = 0.f;
+        double tot = 0;
+        for (int i = 0; i < ITERS; ++i) {   // each call timed on its own so the pointer upload stays out of it
+            cudaMemcpyAsync(dptr, sets[(i * 7) % POOL].data(), TOP * 8, cudaMemcpyHostToDevice, s);
+            cudaEventRecord(e0, s);
+            strata::kernels::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, TOP, TOP, dxq, dscr, dout, s);
+            cudaEventRecord(e1, s);
+            cudaEventSynchronize(e1);
+            cudaEventElapsedTime(&ms, e0, e1);
+            tot += ms;
+        }
+        us.push_back(tot / ITERS * 1e3);
+    }
+    std::sort(us.begin(), us.end());
+    const double med = us[us.size() / 2];
+    std::printf("BENCH %-8s/%-7s decode top-%d x1 token: median %.1f us per call (min %.1f, max %.1f), %.0f GB/s of expert weights\n",
+                ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), TOP, med, us.front(), us.back(),
+                (double) TOP * blob.size() / med / 1e3);
+    cudaFree(dpool); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
+    cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
+    cudaEventDestroy(e0); cudaEventDestroy(e1);
 }
 
 int type_of(std::string name) {
@@ -848,8 +943,11 @@ int main(int argc, char** argv) {
         std::mt19937 srng(5);
         for (auto& v : sx) v = (srng() & 1) ? 1.f : -1.f;
         for (auto& v : sh) v = (srng() & 1) ? 1.f : -1.f;
+        bool bench = false;   // --bench: a decode micro-number per pair, after its checks
+        for (int i = 2; i < argc; ++i) bench = bench || std::string(argv[i]) == "--bench";
         for (int i = 2; i < argc; ++i) {
             const std::string arg = argv[i];
+            if (arg == "--bench") continue;
             const size_t slash = arg.find('/');
             const int gu = slash == std::string::npos ? -1 : type_of(arg.substr(0, slash));
             const int dn = slash == std::string::npos ? -1 : type_of(arg.substr(slash + 1));
@@ -876,7 +974,9 @@ int main(int argc, char** argv) {
                 f.gu_signs = sx.data();
                 f.d_signs = sh.data();
             }
-            failures += check_blob(f, synthetic_blob(f, i), i, had ? "hadamard" : "synthetic", s);
+            const std::vector<uint8_t> blob = synthetic_blob(f, i);
+            failures += check_blob(f, blob, i, had ? "hadamard" : "synthetic", s);
+            if (bench) bench_decode(f, blob, arg, s);
         }
     } else {
         const strata::GgufModel model(strata::gguf_split_paths(argv[1]));

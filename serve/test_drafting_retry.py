@@ -19,6 +19,11 @@ if '--draft' in args and '--die-on-draft' in args:
     sys.stderr.write('strata generate: --draft dflash2 drafts without the MTP layer and needs --draft-model PACK, --spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin)\n')
     sys.stderr.flush()
     raise SystemExit(2)
+if '--die-short' in args and ('--draft' in args or '--mtp' in args):
+    sys.stderr.write('ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected'+chr(10))
+    sys.stderr.write('strata generate: layer split, CUDA1 expert cache: no room'+chr(10))
+    sys.stderr.flush()
+    raise SystemExit(1)
 if '--die-always' in args:
     sys.stderr.write('strata generate: something else is wrong\n')
     sys.stderr.flush()
@@ -92,6 +97,33 @@ class AutoRetriesWithTheMtp(unittest.TestCase):
         self.addCleanup(engine.close)
         self.assertEqual(len(self.started()), 1)
         self.assertEqual(engine.info.get("drafting_note", ""), "")
+
+    def test_a_start_that_ran_out_of_memory_is_repeated_with_no_drafter_never_with_the_mtp(self):
+        """2 small cards on a layer split: the engine says a card has no room.  The old retry swapped DFlash2 for the MTP, which takes MORE memory from a card that is short."""
+        first = [a for a in self.first if a != "--die-on-draft"] + ["--die-short"]
+        mtp = [a for a in self.mtp if a != "--die-on-draft"] + ["--die-short"]
+        nodraft = ["--pack", "/d/packs/g", "--starts", str(self.starts), "--die-short"]
+        engine = StrataEngine(str(self.script), first, log=self.log, retry_args=mtp, retry_vram_args=nodraft)
+        self.addCleanup(engine.close)
+        self.assertTrue(engine.alive())
+        starts = self.started()
+        self.assertEqual(len(starts), 2, "one start with DFlash2, one without a drafter, never the MTP in between")
+        self.assertIn("--draft dflash2", starts[0])
+        self.assertNotIn("--mtp", starts[1])
+        self.assertNotIn("--draft", starts[1])
+        self.assertEqual(engine.spawn[1], nodraft)
+        self.assertEqual(engine.info["drafting"], "off")
+        self.assertEqual(engine.info["drafting_note"], "Drafting: off (the cards were short of memory)")
+        text = Path(self.log).read_text(encoding="utf-8")
+        self.assertIn("short of memory", text)
+        self.assertIn("expert cache: no room", text, "the engine's own reason stays in the log")
+
+    def test_a_memory_stop_without_a_no_drafter_retry_fails_with_the_engines_reason_and_does_not_try_the_mtp(self):
+        first = [a for a in self.first if a != "--die-on-draft"] + ["--die-short"]
+        with self.assertRaises(EngineDied) as caught:
+            StrataEngine(str(self.script), first, log=self.log, retry_args=[*self.mtp, "--die-short"])
+        self.assertIn("expert cache: no room", str(caught.exception))
+        self.assertEqual(len(self.started()), 1)
 
     def test_the_same_arguments_are_not_a_retry(self):
         with self.assertRaises(EngineDied):

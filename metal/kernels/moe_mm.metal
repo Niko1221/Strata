@@ -257,7 +257,7 @@ kernel void mm_combine(device const float* YE [[buffer(0)]], device const int* p
 #define MM_GU_SET(F) MMGU(F, 32, 64, 64, 4) MMGU(F, 64, 64, 64, 4) MMGU(F, 16, 64, 64, 2) MMGU(F, 32, 32, 64, 2)
 #define MM_DN_SET(F) MMDN(F, 32, 64, 64, 4) MMDN(F, 64, 64, 64, 4) MMDN(F, 16, 64, 64, 2) MMDN(F, 32, 32, 64, 2)
 MM_GU_SET(T_Q2_0) MM_GU_SET(T_IQ3_XXS) MM_GU_SET(T_IQ2_XXS) MM_GU_SET(T_IQ2_XS) MM_GU_SET(T_IQ2_S) MM_GU_SET(T_IQ3_S)
-MM_DN_SET(T_Q2_0) MM_DN_SET(T_IQ4_NL)
+MM_DN_SET(T_Q2_0) MM_DN_SET(T_IQ4_NL) MM_DN_SET(T_Q5_0)
 
 // ---- v2: activations gathered once per layer as fp16 rows, read by matmul2d from device memory ---------------------
 // mm_gather: XS[row][k] = half(x[srt_tok[row]][k]) (0 on padding rows).  grid (rows), 256 threads.
@@ -388,7 +388,7 @@ kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS 
     MMDN2(F, 16, 128, 32, 4) MMDN2(F, 32, 64, 32, 2) MMDN2(F, 64, 64, 32, 4)
 // K-quants: the staged K chunk must hold whole units as DW places them (128 wide): TK 128
 #define MM_GU2_KQ(F) MMGU2(F, 16, 32, 128, 2) MMGU2(F, 16, 16, 128, 2) MMGU2(F, 32, 32, 128, 2) MMGU2(F, 16, 32, 128, 4)
-MM_GU2_KQ(T_Q4_K) MM_GU2_KQ(T_Q5_K) MM_GU2_KQ(T_Q6_K) MM_GU2_U32(T_Q8_0) MM_DN2_U32(T_Q5_1) MM_DN2_U32(T_Q8_0)
+MM_GU2_KQ(T_Q4_K) MM_GU2_KQ(T_Q5_K) MM_GU2_KQ(T_Q6_K) MM_GU2_U32(T_Q8_0) MM_DN2_U32(T_Q5_1) MM_DN2_U32(T_Q5_0) MM_DN2_U32(T_Q8_0)
 // IQ4_XS (UNIT 32): the K chunk must be >= 32
 MMGU2(T_IQ4_XS, 16, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 64, 64, 2) MMGU2(T_IQ4_XS, 32, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 32, 32, 2)
 MMGU2(T_IQ4_XS, 64, 64, 32, 4)
@@ -546,6 +546,21 @@ template <> struct W4<T_Q5_1> {   // 32 a block: d, m, qh (32 bits), qs[16] (low
             const uint qv = b[8 + o + c];
             const int x = int(hi ? (qv >> 4) : (qv & 15)) | int(((hb >> (j + c)) & 1) << 4);
             w[c] = float(x) * d + m;
+        }
+        return half4(w);
+    }
+};
+template <> struct W4<T_Q5_0> {   // 32 a block: d, qh (32 bits), qs[16] (low nibbles 0..15, high 16..31); w = (code - 16) d
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 5) * 22;
+        const float d = rdh(b);
+        const uint hb = rd32(b + 2);
+        const int j = k & 31, o = j & 15, hi = j >> 4;
+        float4 w;
+        for (int c = 0; c < 4; ++c) {
+            const uint qv = b[6 + o + c];
+            const int x = int(hi ? (qv >> 4) : (qv & 15)) | int(((hb >> (j + c)) & 1) << 4);
+            w[c] = float(x - 16) * d;
         }
         return half4(w);
     }
@@ -826,6 +841,24 @@ template <> struct W8<T_Q5_1> {
         b = half4(wb);
     }
 };
+template <> struct W8<T_Q5_0> {   // 22-byte blocks (2-aligned): the code bytes as ushorts; one d and one qh a pair
+    static inline void run(device const uchar* row, int k, threadgroup const uint*, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 5) * 22;
+        const float d = rdh(bl);
+        const uint hb = rd32(bl + 2);
+        const int j = k & 15;   // runs at j and j + 16: the low nibbles of qs[j..j+3], then the high ones
+        device const ushort* p = (device const ushort*)(bl + 6 + j);
+        const uint v = uint(p[0]) | (uint(p[1]) << 16);
+        float4 wa, wb;
+        for (int c = 0; c < 4; ++c) {
+            const uint qv = (v >> (8 * c)) & 0xFFu;
+            wa[c] = float((int(qv & 15) | int(((hb >> (j + c)) & 1) << 4)) - 16) * d;
+            wb[c] = float((int(qv >> 4) | int(((hb >> (j + 16 + c)) & 1) << 4)) - 16) * d;
+        }
+        a = half4(wa);
+        b = half4(wb);
+    }
+};
 template <> struct W8<T_Q6_K> {
     static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
         device const uchar* bl = row + (k >> 8) * 210;
@@ -992,7 +1025,7 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
 #define MM3_DN(F) MMDN3(F, 16, 64, 32, 2) MMDN3(F, 16, 32, 32, 4) MMDN3(F, 32, 64, 32, 2) MMDN3(F, 16, 64, 64, 2) \
     MMDN3(F, 16, 32, 16, 2) MMDN3(F, 32, 32, 32, 2) MMDN3(F, 16, 64, 32, 1) MMDN3(F, 16, 64, 32, 4)     MMDN3(F, 16, 64, 16, 2) MMDN3(F, 16, 32, 16, 4) MMDN3(F, 16, 64, 32, 5) MMDN3(F, 16, 64, 16, 4)
 MM3_GU(T_Q4_K) MM3_GU(T_Q5_K) MM3_GU(T_Q6_K) MM3_GU(T_Q8_0) MM3_GU(T_IQ4_XS) MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
-MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL) MM3_DN(T_Q5_1) MM3_DN(T_Q8_0)
+MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL) MM3_DN(T_Q5_1) MM3_DN(T_Q5_0) MM3_DN(T_Q8_0)
 
 // mm_gu4: mm_gu3 with each decoded right operand (TN x TK weights of gate and of up) applied to MS 16-row token
 // tiles (a tile of 16 * MS rows from the plan, tm = 16 * MS): the decode, which bounds mm_gu3, is shared by MS times

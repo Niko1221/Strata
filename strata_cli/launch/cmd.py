@@ -103,8 +103,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--drafting", type=_choice("a drafting setting", S.DRAFTING_MODES), metavar="auto|mtp|dflash2|off",
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
-                        "else the MTP), mtp, dflash2 (downloads a 1.2 GB drafter once) or off. If DFlash2 cannot run (several requests at once, "
-                        "or a model it is not for) the MTP is used alone and the start says why")
+                        "else the MTP), mtp, dflash2 (downloads a 1.2 GB drafter once) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
+                        "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
     g.add_argument("--split-engine", type=_choice("a split-engine setting", S.SPLIT_MODES), metavar="auto|on|off",
                    help="NVIDIA, two or more cards: the engine that splits every layer across the cards (faster answers). auto (the default) uses it by itself "
                         "where it is supported and starts the normal layer split everywhere else; on asks for it and says in one line why it cannot run; "
@@ -443,7 +443,7 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                                     "A different one: add --new-key. Show it with: strata launch --show-key"))
         else:
             notices.append(S.Notice("warn", "A new API key was made, because the server is shared beyond this computer.",
-                                    "It is saved with the preset; show it with: strata launch --show-key"))
+                                    "It is saved with the preset; show it with: strata launch --show-key", after_write=True))
     notices += gpu_notices(s, comp)
     notices += S.check_access(s)
     vram = comp.main_vram_gb or None
@@ -453,9 +453,9 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
 
 
 def _host_platform() -> tuple[str, str]:
-    """(sys.platform, platform.machine()) of this computer, in one place the tests can replace."""
-    import platform
-    return sys.platform, platform.machine()
+    """(sys.platform, sysinfo.machine()) of this computer, in one place the tests can replace."""
+    from strata_control import sysinfo
+    return sys.platform, sysinfo.machine()
 
 
 def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
@@ -473,19 +473,22 @@ def parallel_notices(s: S.LaunchSettings, comp) -> list[S.Notice]:
 
 
 def roles_line(s: S.LaunchSettings, catalog) -> str | None:
-    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None."""
+    """`Main: GPU 2 (--gpu 1) RTX 4070 Ti. Helper: GPU 1 (--gpu 0) RTX 3060.` for the cards this launch names (--gpu-roles, or --gpu: the faster card goes last), else None. "GPU n"
+    counts from 1 like the screens; the bracket is the number --gpu takes (the server sets the engine's CUDA_VISIBLE_DEVICES from it, so it is the nvidia-smi number whatever the
+    environment says), and a card that CUDA_VISIBLE_DEVICES (AMD: ROCR_VISIBLE_DEVICES, HIP_VISIBLE_DEVICES) hides is not listed unless it is named."""
     if not (s.gpu_roles or s.gpus) or catalog is None:
         return None
     try:
         from strata_control import gpu_roles
         comp = catalog.computer()
-        cards = gpu_roles.rows(comp.gpus, comp.engine_vendor)
+        keep = {int(g) for g in (s.gpus or [])} | {int(k) for k in (s.gpu_roles or {})}
+        cards = gpu_roles.visible_cards(gpu_roles.rows(comp.gpus, comp.engine_vendor), comp.engine_vendor, keep=keep)
         if s.gpu_roles:
             named = {int(k): v for k, v in s.gpu_roles.items()}
             roles = gpu_roles.normalize({int(c.get("index", 0)): named.get(int(c.get("index", 0)), "off") for c in cards}, cards)
         else:
             roles = gpu_roles.from_legacy(list(s.gpus), cards)
-        return gpu_roles.describe(roles, cards)
+        return gpu_roles.describe(roles, cards, card_numbers=True)
     except Exception:                                        # noqa: BLE001 - a summary line must never stop a launch
         return None
 
@@ -592,7 +595,7 @@ def _stop_all(name: str | None) -> int:
     from strata_cli.launch import access, store
     from strata_control import profiles, runtime
     targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
-    stopped = 0
+    stopped = failed = 0
     for prof in targets:
         prof = prof if prof.startswith("launch-") else "launch-" + S.slug(prof)
         st = runtime.status(prof)
@@ -600,12 +603,11 @@ def _stop_all(name: str | None) -> int:
             r = runtime.stop(prof, timeout=180)
             _say(f"Stopped {prof[7:]}." if r.get("ok") else f"Could not stop {prof[7:]}: {r.get('error') or r.get('state')}.")
             stopped += 1 if r.get("ok") else 0
+            failed += 0 if r.get("ok") else 1
         access.stop_tunnel(prof)
-    if not stopped and not targets:
+    if not stopped and not failed:                           # zero targets only: a failed stop already said so and must not be followed by "nothing"
         _say("Nothing from `strata launch` is running.")
-    elif not stopped:
-        _say("Nothing from `strata launch` is running.")
-    return 0
+    return 1 if failed else 0                                # any failed stop is a nonzero exit, also when another one succeeded
 
 
 def _can_ask() -> bool:
@@ -712,11 +714,12 @@ def running_launches() -> list[dict]:
             continue
         if st.get("state") not in ("ready", "starting"):
             continue
+        prof: dict = {}                                        # bound before the try: a damaged profile gets this row's defaults, never the row before it
         try:
             prof, _rev = profiles.load(p["id"])
             ov = prof.get("overrides") or {}
         except Exception:                                      # noqa: BLE001
-            ov = {}
+            prof, ov = {}, {}
         port = ov.get("port", S.DEFAULT_PORT)
         out.append({"name": p["id"][7:], "profile": p["id"], "state": st.get("state"), "port": port,
                     "url": f"http://127.0.0.1:{port}", "host": ov.get("host", "127.0.0.1"), "config": prof.get("source_config")})
@@ -911,6 +914,9 @@ def run_launch(a: argparse.Namespace) -> int:
             return fail(f"{e.text}" + (f" {e.next}" if e.next else ""), e.code)
         s, notes = apply_defaults(s, catalog)
         notes = [*notices, *notes]                           # what the flags themselves said (a --pool-cores list that could not be read, a key beside --no-api-key)
+        held = [n for n in notes if n.after_write]           # "A new API key was made": said when the run config holding it has been written, never in the plan or before a refusal
+        notes = [n for n in notes if not n.after_write]
+        runner.key_written_notice = held[0].line() if held else None
         errors = [n for n in notes if n.level == "error"]
         if errors:
             return fail(errors[0].line(), 2)
@@ -1006,7 +1012,7 @@ def run_launch(a: argparse.Namespace) -> int:
         if machine:
             print(json.dumps({"schema_version": 1, "ok": True, "name": s.name, "profile": result.profile, "urls": result.urls, "reused": result.reused,
                               "api_key": "set" if result.key else None, "tuned": result.tune_word,
-                              "notices": result.notices + [n.line() for n in notes]}))
+                              "notices": result.notices + [n.line() for n in notes] + ([runner.key_written_notice] if runner.key_written_notice and runner.key_written else [])}))
             return 0
         _say("")
         _say("Already serving these choices; nothing was restarted." if result.reused else "Strata is serving.")

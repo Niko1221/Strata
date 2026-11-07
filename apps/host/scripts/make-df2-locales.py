@@ -175,6 +175,33 @@ add("Drafting: MTP (DFlash2 didn't start)",
     "Previsão: MTP (o DFlash2 não iniciou)",
     "초안 예측: MTP(DFlash2가 시작되지 않았습니다)",
     "Anticipation : MTP (DFlash2 n'a pas démarré)")
+add("Auto uses the all-cards split engine with the MTP draft layer: about {0} GB to download, once.",
+    "自动模式使用全部显卡的拆分引擎和 MTP 草稿层：约 {0} GB，只下载一次。",
+    "自動では、全カードのスプリットエンジンと MTP ドラフト層を使います。約 {0} GB を一度だけダウンロードします。",
+    "Automatisch nutzt die Alle-Karten-Split-Engine mit der MTP-Entwurfsschicht: etwa {0} GB, einmalig herunterzuladen.",
+    "Automático usa el motor de reparto entre todas las tarjetas con la capa de borrador MTP: unos {0} GB, una sola vez.",
+    "Авто использует движок с разделением по всем картам и черновой слой MTP: около {0} ГБ, скачивается один раз.",
+    "O automático usa o motor de divisão entre todas as placas com a camada de rascunho MTP: cerca de {0} GB, uma vez.",
+    "자동은 모든 카드를 쓰는 분할 엔진과 MTP 초안 층을 사용합니다(약 {0}GB, 한 번만 내려받음).",
+    "Auto utilise le moteur réparti sur toutes les cartes avec la couche de brouillon MTP : environ {0} Go à télécharger, une seule fois.")
+add("The all-cards split engine could not start, so the normal layer split runs.",
+    "全显卡拆分引擎未能启动，因此改用常规的分层拆分。",
+    "全カードのスプリットエンジンを起動できなかったため、通常のレイヤー分割で動作しています。",
+    "Die Alle-Karten-Split-Engine konnte nicht starten, deshalb läuft die normale Schichtaufteilung.",
+    "El motor de reparto entre todas las tarjetas no pudo arrancar, así que se usa el reparto normal por capas.",
+    "Движок с разделением по всем картам не запустился, поэтому работает обычное послойное разделение.",
+    "O motor de divisão entre todas as placas não conseguiu iniciar, então a divisão normal por camadas está em uso.",
+    "모든 카드를 쓰는 분할 엔진을 시작하지 못해 일반 레이어 분할로 실행합니다.",
+    "Le moteur réparti sur toutes les cartes n'a pas pu démarrer, la répartition normale par couches est donc utilisée.")
+add("Drafting: off (the cards were short of memory)",
+    "预测草稿：关闭（显卡内存不足）",
+    "先読み：オフ（グラフィックスカードのメモリが不足していました）",
+    "Vorausraten: aus (den Karten fehlte Speicher)",
+    "Predicción: desactivada (a las tarjetas les faltaba memoria)",
+    "Предсказание: выключено (на картах не хватило памяти)",
+    "Previsão: desligada (faltou memória nas placas)",
+    "초안 예측: 꺼짐(카드 메모리가 부족했습니다)",
+    "Anticipation : désactivée (les cartes manquaient de mémoire)")
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 
