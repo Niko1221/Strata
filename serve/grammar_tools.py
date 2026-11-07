@@ -2,10 +2,10 @@
 by overlap-aware automata, with generated rule names independent of user-provided properties."""
 import re
 
-# the vendored converter's literal escapes (json-schema-to-grammar.cpp GRAMMAR_LITERAL_ESCAPES);
-# inside a character class the range characters ride escaped too (GRAMMAR_RANGE_LITERAL_ESCAPE_RE)
+from serve.frontend import parse_tool_call
+
+# the vendored converter's literal escapes (json-schema-to-grammar.cpp GRAMMAR_LITERAL_ESCAPES)
 _ESCAPES = {"\r": "\\r", "\n": "\\n", '"': '\\"', "\\": "\\\\"}
-_CLASS_ESCAPES = dict(_ESCAPES, **{"-": "\\-", "]": "\\]"})
 
 
 def gbnf_escape(text: str) -> str:
@@ -39,90 +39,29 @@ def _check_unique_rules(rules: list) -> None:
         raise ValueError("the generated tool grammar contains duplicate rule names")
 
 
-def _advance_exclusion(seq: str, state: int, ch: str) -> int | None:
-    """Return the longest suffix that is a prefix of seq; None means seq completed."""
-    candidate = seq[:state] + ch
-    if candidate.endswith(seq):
-        return None
-    for size in range(min(len(seq) - 1, len(candidate)), 0, -1):
-        if candidate.endswith(seq[:size]):
-            return size
-    return 0
+def exclude_seq(seq: str, name: str, rules: list, build) -> str:
+    """Emit a grammar that refuses any text containing `seq`, including overlapping matches.
+
+    `build(prefix, seqs)` is the exclusion constructor: the Aho-Corasick emitter ported from llama.cpp
+    (serve/grammar_schema.exclusion_grammar, via grammar_schema --ac-grammar).  It returns a complete rule
+    block whose start rule is `prefix`; nothing here spells an automaton, so the server and the converter
+    share one implementation and cannot drift apart."""
+    fresh = _fresh_rule_name(name, rules)
+    rules.extend(build(fresh, [seq]).splitlines())
+    return fresh
 
 
-def exclude_seq(seq: str, name: str, rules: list) -> str:
-    """Emit a DFA grammar that refuses any text containing `seq`, including overlapping matches."""
-    if not seq:
-        raise ValueError("an excluded sequence cannot be empty")
-    name = _fresh_rule_name(name, rules)
+def exclude_seqs(seqs: list, name: str, rules: list, build) -> str:
+    """Emit a grammar that refuses any of the sequences, preserving overlapping prefixes.
 
-    states = [0]
-    seen = {0}
-    emitted = {}
-    alphabet = sorted(set(seq))
-    for state in states:
-        transitions, refused = [], set()
-        for ch in alphabet:
-            nxt = _advance_exclusion(seq, state, ch)
-            if nxt is None:
-                refused.add(ch)
-            elif nxt:
-                refused.add(ch)
-                if nxt not in seen:
-                    seen.add(nxt)
-                    states.append(nxt)
-                transitions.append((ch, nxt))
-        cls = "".join(_CLASS_ESCAPES.get(ch, ch) for ch in sorted(refused))
-        head = name if state == 0 else f"{name}-state-{state}"
-        body = [f"[^{cls}] {name}"] if cls else [f"[\\U00000000-\\U0010FFFF] {name}"]
-        body.extend(f"{_lit(ch)} {name}-state-{nxt}" for ch, nxt in transitions)
-        emitted[state] = f'{head} ::= ' + " | ".join(body) + ' | ""'
-    rules.extend(emitted[state] for state in states)
-    return name
-
-
-def exclude_seqs(seqs: list, name: str, rules: list) -> str:
-    """Emit a product DFA that refuses any of the sequences, preserving overlapping prefixes."""
+    One automaton holds every sequence at once, so the state count is the SUM of the sequence states, not
+    their product: `</think>` + `` ```json `` + `<tool_call>` costs 29 states rather than 9*8*12."""
     seqs = list(dict.fromkeys(s for s in seqs if s))
     if not seqs:
         raise ValueError("at least one excluded sequence is required")
-    name = _fresh_rule_name(name, rules)
-    alphabet = sorted({ch for seq in seqs for ch in seq})
-    start = (0,) * len(seqs)
-    states, seen, emitted = [start], {start}, {}
-
-    def transition(state, ch):
-        out = []
-        for seq, matched in zip(seqs, state):
-            nxt = _advance_exclusion(seq, matched, ch)
-            if nxt is None:
-                return None
-            out.append(nxt)
-        return tuple(out)
-
-    def label(state):
-        return name if state == start else f"{name}-state-{state_ids[state]}"
-
-    state_ids = {start: 0}
-    for state in states:
-        branches, refused = [], set()
-        for ch in alphabet:
-            nxt = transition(state, ch)
-            if nxt is None:
-                refused.add(ch)
-            elif nxt != start:
-                refused.add(ch)
-                if nxt not in seen:
-                    seen.add(nxt)
-                    state_ids[nxt] = len(state_ids)
-                    states.append(nxt)
-                branches.append((ch, nxt))
-        cls = "".join(_CLASS_ESCAPES.get(ch, ch) for ch in sorted(refused))
-        body = [f"[^{cls}] {label(start)}"] if cls else [f"[\\U00000000-\\U0010FFFF] {label(start)}"]
-        body.extend(f"{_lit(ch)} {label(nxt)}" for ch, nxt in branches)
-        emitted[state] = f'{label(state)} ::= ' + " | ".join(body) + ' | ""'
-    rules.extend(emitted[state] for state in states)
-    return name
+    fresh = _fresh_rule_name(name, rules)
+    rules.extend(build(fresh, seqs).splitlines())
+    return fresh
 
 
 
@@ -210,6 +149,31 @@ def _inline(grammar_text: str, ns: str, rules: list) -> str:
     return f"{ns}-root"
 
 
+def _check_framing(name: str, keys: list, schema) -> None:
+    """Refuse a tool whose envelope this server could write but not read back.
+
+    The grammar spells the template's markers around the name and each parameter key, and
+    serve/frontend.parse_tool_call reads them back by cutting at the first '>'.  A name or key holding '>'
+    therefore makes the two disagree: a tool named `ev>il` is emitted as `<function=ev>il>` and read as `ev`,
+    so the call the grammar guarantees is delivered as a different tool (measured, likewise `a>b` -> `a` as a
+    parameter key).  Rather than blacklist characters, the check runs the exact text the grammar demands
+    through the real parser, so any future framing change is covered by construction.
+    """
+    body = ("<function=" + name + ">\n"
+            + "".join(PARAM_HEAD + key + ">\n" + "x" + PARAM_TAIL for key in keys)
+            + CALL_TAIL)
+    try:
+        call = parse_tool_call(body, schema if isinstance(schema, dict) else None)
+    except ValueError as e:
+        raise ValueError(f"tool {name!r} cannot be spelled in the call format: {e}") from None
+    if call.name != name:
+        raise ValueError(f"tool name {name!r} would be read back as {call.name!r}; a name cannot contain '>'")
+    if list(call.arguments) != list(keys):
+        bad = next((k for k, got in zip(keys, call.arguments) if k != got), keys[len(call.arguments):] or keys)
+        raise ValueError(f"parameter {bad!r} of tool {name!r} would be read back as {list(call.arguments)!r}; "
+                         "a parameter name cannot contain '>'")
+
+
 def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
     name = tool.get("name")
     if not isinstance(name, str) or not name:
@@ -218,6 +182,7 @@ def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
     schema = tool.get("parameters")
     props = schema.get("properties") if isinstance(schema, dict) else None
     required = set(schema.get("required") or []) if isinstance(schema, dict) else set()
+    _check_framing(name, list((props or {}).keys()), schema)
     parts = [_lit(CALL_HEAD + name + ">\n")]
     for prop_idx, (key, sub) in enumerate((props or {}).items()):
         pns = f"{ns}-param-{prop_idx}"
@@ -226,7 +191,9 @@ def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
         # and scalar roots retain their ordinary JSON spelling. Passing tool mode for every
         # parameter lets it resolve a root $ref before choosing that representation and fail
         # closed for ambiguous schemas instead of silently switching to prompt validation.
-        value = _inline(convert(sub, True, PARAM_END), pns, rules)
+        # The document rides along because a JSON Pointer is rooted at it: `#/properties/x`
+        # names a sibling parameter, which this per-parameter call would otherwise not see.
+        value = _inline(convert(sub, True, PARAM_END, schema), pns, rules)
         rules.append(f"{pns} ::= {_lit(PARAM_HEAD + key + '>\n')} {value} {_lit(PARAM_TAIL)}")
         parts.append(pns if key in required else f"( {pns} )?")
 
@@ -235,11 +202,12 @@ def _call_rule(tool: dict, idx: int, rules: list, convert) -> str:
     return ns
 
 
-def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, convert) -> str:
+def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, convert, build) -> str:
     """tools: the template tool list ([{name, parameters}]); tool_choice: "auto" | "required" | "named"
     (from frontend.tool_choice_of); name: the function for "named" (must be one of the tools);
     thinking: the reply opens inside a <|im_start|>assistant\n<think> block, so the grammar carries
-    the reasoning and the closing </think> too; convert: JSON Schema -> GBNF text (the cached converter)."""
+    the reasoning and the closing </think> too; convert: JSON Schema -> GBNF text (the cached converter);
+    build: an exclusion constructor (prefix, sequences) -> GBNF rules, the Aho-Corasick emitter."""
     if not tools:
         raise ValueError("no tools to build a grammar for")
     rules: list = []
@@ -260,7 +228,7 @@ def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, conv
     elif tool_choice == "required":
         rules.append("answer ::= calls")
     elif tool_choice == "auto":
-        prose = exclude_seq("<tool_call>", "prose", rules)
+        prose = exclude_seq("<tool_call>", "prose", rules, build)
         rules.append(f'answer ::= {prose} | calls | {prose} {_lit(PROSE_PREFIX)} calls')
     else:
         raise ValueError(f"tool_choice {tool_choice!r} needs no grammar")
@@ -269,7 +237,7 @@ def build_tool_grammar(tools: list, tool_choice: str, name, thinking: bool, conv
         # text, so it carries no schema - measured, a rescued one arrived missing a required parameter
         # and a second call rode beside it.  Banning the tag leaves the answer region as the only place
         # a call can appear, which is the region the grammar actually constrains.
-        reason = exclude_seqs(THINK_BANNED + [CALL_TAG], "reason", rules)
+        reason = exclude_seqs(THINK_BANNED + [CALL_TAG], "reason", rules, build)
         # a little whitespace after the closer, then the call.  Bounded for the reason
         # with_think_prologue gives: an unbounded run is where a masked model stalls.
         rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} ){{0,24}}')
@@ -321,12 +289,23 @@ def plan_tool_grammar(engine, tools, tool_choice, mcp, thinking, allow=True):
     exe_dir = grammar_conv.exe_dir_of(engine)
     text = build_tool_grammar(
         tools, gkind, gname, thinking,
-        lambda sub, raw_string, forbidden: grammar_conv.schema_to_grammar(
-            exe_dir, sub, tool_value=raw_string, forbidden_sequence=forbidden))
+        lambda sub, raw_string, forbidden, document=None: grammar_conv.schema_to_grammar(
+            exe_dir, sub, tool_value=raw_string, forbidden_sequence=forbidden, document=document),
+        exclusion_builder(engine))
     return text, None
 
 
-def with_think_prologue(grammar_text: str) -> str:
+def exclusion_builder(engine):
+    """The exclusion-grammar constructor for one engine: (prefix, sequences) -> GBNF rules.
+
+    Callers that build a grammar without going through plan_tool_grammar (with_think_prologue's reasoning
+    region) use this, so every exclusion in the server comes from the one Aho-Corasick emitter."""
+    from serve import grammar_schema as grammar_conv
+    exe_dir = grammar_conv.exe_dir_of(engine)
+    return lambda prefix, seqs: grammar_conv.exclusion_grammar(exe_dir, prefix, seqs)
+
+
+def with_think_prologue(grammar_text: str, build) -> str:
     """A response_format grammar on a model whose template opens the answer inside a think block:
     the reasoning region rides as free text that never spells the template's closer, then the
     closer, then the constrained answer. Without this the grammar's first token lands inside the
@@ -352,7 +331,7 @@ def with_think_prologue(grammar_text: str) -> str:
     """
     rules: list = []
     answer = _inline(grammar_text, "answer", rules)
-    reason = exclude_seqs(THINK_BANNED, "reason", rules)
+    reason = exclude_seqs(THINK_BANNED, "reason", rules, build)
     rules.append(f'ws ::= ( " " | {_lit(chr(9))} | {_lit(chr(10))} ){{0,24}}')   # bounded: see the docstring
     rules.append(f"answer ::= ws {answer}")
     rules.append(f"root ::= {reason} {_lit(THINK_CLOSE)} answer")

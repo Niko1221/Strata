@@ -26,40 +26,87 @@ def converter_exe(exe_dir) -> Path:
     return Path(exe_dir) / name
 
 
-def schema_to_grammar(exe_dir, schema: dict, *, tool_value=False, forbidden_sequence=None) -> str:
+def schema_to_grammar(exe_dir, schema: dict, *, tool_value=False, forbidden_sequence=None,
+                      document=None) -> str:
     """Convert a schema. Tool-value mode preserves the template's unquoted root strings and rejects
-    unsupported string constraints instead of allowing a prompt-path fallback to weaken them."""
-    key = schema_text(schema)
+    unsupported string constraints instead of allowing a prompt-path fallback to weaken them.
+
+    `document` is what a `$ref` resolves against when `schema` is only part of it. A JSON Pointer is rooted
+    at the whole document, so a caller that compiles one subschema at a time (the tool builder spells each
+    parameter separately) still has to hand over the schema the client sent - otherwise `#/properties/x`
+    can only reach targets inside the subschema and a reference to a sibling parameter fails to resolve.
+    The cache key carries it, because the same subschema reaches different targets in different documents."""
+    stdin_text = schema_text(schema)
+    args = _schema_args(tool_value, forbidden_sequence)
+    if document is not None:
+        stdin_text = json.dumps({"schema": schema, "document": document},
+                                sort_keys=True, separators=(",", ":"))
+        args = args + ["--with-document"]
     # The converter is looked up beside the engine binary, and different engines can carry different
     # builds - or none at all - so the directory is part of the key. Without it a text converted for one
     # engine answered a request for an engine that has no converter, and the fail-closed error (and with
     # it the fallback to the prompt path) depended on which request came first.
-    cache_key = (str(exe_dir), key, bool(tool_value), forbidden_sequence or "")
+    cache_key = (str(exe_dir), stdin_text, bool(tool_value), forbidden_sequence or "")
     with _lock:
         if cache_key in _cache:
             _cache.move_to_end(cache_key)
             return _cache[cache_key]
-    exe = converter_exe(exe_dir) if exe_dir is not None else None
-    if exe is None or not exe.exists():
-        raise ValueError(f"the schema converter is not installed next to the engine ({exe})")
-    args = [str(exe)]
-    if tool_value:
-        args.append("--tool-value")
-    if forbidden_sequence:
-        args.extend(("--forbid-sequence", forbidden_sequence))
-    try:
-        proc = subprocess.run(args, input=key, capture_output=True, text=True,
-                              encoding="utf-8", timeout=60)
-    except (OSError, subprocess.SubprocessError) as e:
-        raise ValueError(f"schema converter failed to run: {e}") from e
-    if proc.returncode != 0:
-        raise ValueError("schema conversion failed: " + ((proc.stderr or "").strip()[:200] or f"exit {proc.returncode}"))
-    text = proc.stdout
+    text = _run_converter(exe_dir, stdin_text, args)
     with _lock:
         _cache[cache_key] = text
         if len(_cache) > CACHE_CAP:
             _cache.popitem(last=False)
     return text
+
+
+def exclusion_grammar(exe_dir, prefix: str, forbidden: list) -> str:
+    """The Aho-Corasick exclusion grammar for `forbidden`, rules starting at `prefix`.
+
+    Ported from llama.cpp (common/peg-parser.cpp gbnf_excluding_grammar) and served from the same CLI the
+    schema path uses, so the server and the converter share one automaton instead of each spelling its own.
+    """
+    key = json.dumps({"prefix": prefix, "forbidden": list(forbidden)},
+                     sort_keys=True, separators=(",", ":"))
+    cache_key = (str(exe_dir), "ac", key)
+    with _lock:
+        if cache_key in _cache:
+            _cache.move_to_end(cache_key)
+            return _cache[cache_key]
+    text = _run_converter(exe_dir, key, ["--ac-grammar"])
+    with _lock:
+        _cache[cache_key] = text
+        if len(_cache) > CACHE_CAP:
+            _cache.popitem(last=False)
+    return text
+
+
+def _schema_args(tool_value, forbidden_sequence) -> list:
+    args = []
+    if tool_value:
+        args.append("--tool-value")
+    if forbidden_sequence:
+        args.extend(("--forbid-sequence", forbidden_sequence))
+    return args
+
+
+def _run_converter(exe_dir, stdin_text: str, args: list) -> str:
+    exe = converter_exe(exe_dir) if exe_dir is not None else None
+    if exe is None or not exe.exists():
+        raise ValueError(f"the schema converter is not installed next to the engine ({exe})")
+    try:
+        proc = subprocess.run([str(exe)] + args, input=stdin_text, capture_output=True, text=True,
+                              encoding="utf-8", timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise ValueError(f"schema converter failed to run: {e}") from e
+    if proc.returncode != 0:
+        message = ((proc.stderr or "").strip()[:200] or f"exit {proc.returncode}")
+        # A refusal is the one event whose input is worth keeping: the schema is what a later regression
+        # case has to replay, and the 400 the client sees carries only the first 200 characters of why.
+        # Logged whole (the client sent it, so it is not a secret) rather than into a file nobody asked for.
+        print("[strata] grammar conversion refused: " + stdin_text + "  <- " + message, flush=True)
+        raise ValueError("schema conversion failed: " + message)
+    return proc.stdout
+
 
 
 def grammar_ok(engine) -> bool:

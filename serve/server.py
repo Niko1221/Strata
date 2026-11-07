@@ -7945,7 +7945,7 @@ def make_handler(svc: Service):
             if grammar_text is not None and kw.get("enable_thinking", True) is not False:
                 # the template opens the answer inside a think block: the grammar carries the reasoning
                 # and the closer too, so the constrained JSON lands in the answer region, not the think one
-                grammar_text = grammar_tools.with_think_prologue(grammar_text)
+                grammar_text = grammar_tools.with_think_prologue(grammar_text, grammar_tools.exclusion_builder(svc.engine))
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
             if req.get("grammar") is not None:      # a bare GBNF text: the client's own grammar, no validator
@@ -8179,7 +8179,8 @@ def make_handler(svc: Service):
                     svc.engine, responses_api.text_format(req), messages, with_tools=bool(tools),
                     allow=req.get("strata_grammar") is not False)
                 if grammar_text is not None and kw.get("enable_thinking", True) is not False:
-                    grammar_text = grammar_tools.with_think_prologue(grammar_text)   # as on the chat route
+                    grammar_text = grammar_tools.with_think_prologue(   # as on the chat route
+                        grammar_text, grammar_tools.exclusion_builder(svc.engine))
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
             tool_grammar = None

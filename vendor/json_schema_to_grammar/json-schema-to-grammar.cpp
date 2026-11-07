@@ -2,7 +2,7 @@
 // Strata edits are marked with "STRATA:" and kept to the include-closure shims (json_compat.h, <cassert>)
 // so the converter builds with zero llama.cpp headers.
 #include "json-schema-to-grammar.h"
-#include "json_compat.h"  // STRATA: shim for llama.cpp common.h — string_split only
+#include "json_compat.h"  // STRATA: shim for llama.cpp common.h - string_split only
 #include "trie.h"
 #include "unicode.h"
 
@@ -617,15 +617,14 @@ private:
             _exclude_lt_in_new_rules(rules_snapshot);
             return rule;
         } catch (const unsupported_pattern & err) {
-            // Revert rules. In strict tool mode, widening an unsupported pattern to any string would
-            // silently defeat the schema, so report an error instead of accepting a weaker grammar.
+            // llama.cpp's own behaviour: drop the pattern, warn, and accept any string.  A protected value can
+            // do the same, because the replacement is the guarded string - every character still goes through
+            // `char` (or the raw equivalent at a parameter root), so no derivation can spell the delimiter.
+            // The constraint is lost, the guarantee is not.
             _rules = std::move(rules_snapshot);
-            if (!_forbidden_sequence.empty()) {
-                _errors.push_back("Pattern " + pattern + " is not supported for a protected tool value (" + err.what() + ")");
-                return "";
-            }
             _warnings.push_back("pattern " + pattern + " is not supported (" + err.what() + "), accepting any string");
-            return _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")));
+            return _forbidden_sequence.empty() && !raw ? _add_rule(name, _add_primitive("string", PRIMITIVE_RULES.at("string")))
+                                                       : _guarded_string(name, 0, -1, raw);
         } catch (const invalid_pattern & err) {
             _rules = std::move(rules_snapshot);
             _errors.push_back("Invalid pattern " + pattern + ": " + err.what());
@@ -917,11 +916,17 @@ private:
         return out.str();
     }
 
-    std::string _resolve_ref(const common_chat_schema_ref & schema) {
+    // the rule name a $ref's target is built under; '#' and '/' cannot be rule-name characters, and neither
+    // can '_', so the class below keeps the name legal for both the engine and _add_rule
+    static std::string _ref_rule_name(const common_chat_schema_ref & schema) {
         auto it = schema.ref.find('#');
-        std::string ref_fragment = it != std::string::npos ? schema.ref.substr(it + 1) : schema.ref;
+        const std::string ref_fragment = it != std::string::npos ? schema.ref.substr(it + 1) : schema.ref;
         static const std::regex nonalphanumeric_regex(R"([^a-zA-Z0-9-]+)");
-        std::string ref_name = "ref" + std::regex_replace(ref_fragment, nonalphanumeric_regex, "-");
+        return "ref" + std::regex_replace(ref_fragment, nonalphanumeric_regex, "-");
+    }
+
+    std::string _resolve_ref(const common_chat_schema_ref & schema) {
+        std::string ref_name = _ref_rule_name(schema);
         if (_rules.find(ref_name) == _rules.end() && _refs_being_resolved.find(schema.ref) == _refs_being_resolved.end()) {
             if (!schema.target) {
                 _errors.push_back("Unresolved $ref " + schema.ref);
@@ -1042,22 +1047,6 @@ private:
         }
     }
 
-    int _forbidden_next(size_t state, char ch) const {
-        std::string candidate = _forbidden_sequence.substr(0, state);
-        candidate.push_back(ch);
-        if (candidate.size() >= _forbidden_sequence.size() &&
-            candidate.compare(candidate.size() - _forbidden_sequence.size(), _forbidden_sequence.size(), _forbidden_sequence) == 0) {
-            return -1;
-        }
-        const size_t max_size = std::min(_forbidden_sequence.size() - 1, candidate.size());
-        for (size_t size = max_size; size > 0; --size) {
-            if (candidate.compare(candidate.size() - size, size, _forbidden_sequence, 0, size) == 0) {
-                return (int) size;
-            }
-        }
-        return 0;
-    }
-
     // A JSON escape branch that spells exactly one decoded character per branch: the simple escapes do,
     // and "\\uXXXX" does unless it opens a surrogate PAIR (two escapes, one character).  The pair is not
     // admitted, so a guarded string's grammar count equals the schema's character count; an astral
@@ -1098,6 +1087,11 @@ private:
         }
 
         const int count_limit = max_len < 0 ? min_len : max_len;
+        // The delimiter avoidance is the same problem gbnf_excluding_grammar solves, so it uses the same
+        // automaton: the trie + failure links from llama.cpp's common/trie.h.  Failure links are what make an
+        // overlapping prefix restart correctly - reading "<" then "<" must land one character INTO the
+        // delimiter, not back at the start, or "</parameter>" can be spelled across the seam.
+        const common_aho_corasick ac({_forbidden_sequence});
         using state_key = std::pair<size_t, int>;
         std::map<state_key, int> ids;
         std::vector<state_key> states;
@@ -1141,15 +1135,21 @@ private:
             std::string refused;
             for (char c : alphabet) {
                 if (!raw && c == '<') {
+                    // A JSON string spells '<' only as an escape, so the raw character gets no branch: the
+                    // escape branch below covers it without ever writing the delimiter.
                     refused += _class_escape(c);
                     continue;
                 }
-                const int next = _forbidden_next(matched, c);
-                if (next < 0 || next > 0 || !can_more) {
+                const size_t next = ac.next(matched, (uint32_t) (unsigned char) c);
+                const bool completes = next != 0 && ac.is_terminal(next);
+                // A character that advances toward the delimiter must leave the free class too: the free
+                // class returns to the start state, so consuming it there discards the progress the branch
+                // just made, and the delimiter becomes spellable again.
+                if (next != 0 || !can_more) {
                     refused += _class_escape(c);
                 }
-                if (next >= 0 && next > 0 && can_more) {
-                    const int next_id = add_state({(size_t) next, next_count});
+                if (!completes && next != 0 && can_more) {
+                    const int next_id = add_state({next, next_count});
                     branches.push_back(format_literal(std::string(1, c)) + " " + names[next_id]);
                 }
             }
@@ -1254,7 +1254,10 @@ public:
             } else if (comp.kind() == common_chat_schema::KIND_OBJECT) {
                 for (const auto & prop : as<common_chat_schema_object>(comp).properties) {
                     properties.emplace_back(prop.name, prop.schema.get());
-                    if (is_required) {
+                    // Strict mode keeps each branch's own required set: an intersection requires a property
+                    // when any branch does, and marking every property of every branch required would make
+                    // the model emit fields the schema calls optional.
+                    if (_tool_value ? prop.required : is_required) {
                         required.insert(prop.name);
                     }
                 }
@@ -1294,8 +1297,18 @@ public:
         switch (schema.kind()) {
             case common_chat_schema::KIND_REF: {
                 const auto & ref = as<common_chat_schema_ref>(schema);
-                // --tool-value never arrives here (the strict preflight refuses $ref), and a root
-                // dereference would walk a self-referential schema without a recursion guard
+                // A parameter root holds raw text while every nested position holds a quoted JSON value, so
+                // aliasing the target's own rule would spell it the nested way.  A root $ref therefore
+                // builds its target under the root name and leaves the alias pointing back at it: a target
+                // that references itself resolves through that alias, so the recursion still terminates.
+                if (_tool_value && name.empty() && ref.target) {
+                    const std::string alias = _ref_rule_name(ref);
+                    if (_rules.find(alias) == _rules.end()) {
+                        _rules[alias] = rule_name;
+                    }
+                    visit(*ref.target, "");
+                    return rule_name;
+                }
                 return _add_rule(rule_name, _resolve_ref(ref));
             }
             case common_chat_schema::KIND_ANY_OF:
@@ -1305,10 +1318,9 @@ public:
                 // schema generator writes for `.nullable()` - is expressible here.
                 return _add_rule(rule_name, _generate_union_rule(name, as<common_chat_schema_any_of>(schema).children));
             case common_chat_schema::KIND_ALL_OF:
-                if (_tool_value && name.empty()) {
-                    _errors.push_back("tool parameter root allOf schemas are not supported in strict mode");
-                    return "";
-                }
+                // An intersection merges into one object, which is the same `{ ... }` text a root object
+                // parameter holds; the strict preflight admits only object branches, so nothing here can
+                // reach the enum-intersection path whose literals are quoted.
                 return _visit_all_of(as<common_chat_schema_all_of>(schema), name, rule_name);
             case common_chat_schema::KIND_CONST:
                 if (_tool_value && name.empty() && as<common_chat_schema_const>(schema).value.is_string()) {
@@ -1437,18 +1449,21 @@ public:
             case common_chat_schema::KIND_NULL:
                 return _visit_primitive(rule_name, "null");
             case common_chat_schema::KIND_ANY:
-                // An unconstrained value is safe here: every string inside it goes through `char`, which
-                // refuses a raw '<' and admits the JSON escape, so no production can spell the parameter
-                // closer.  A schema generator writes this for a `record<string, unknown>` value, and
-                // refusing it rejected tools that are perfectly expressible.
-                if (_tool_value && name.empty()) {
-                    // ...except at the root of a raw tool string, where the whole value IS the text
-                    _errors.push_back("tool parameter roots need a concrete string, enum, const, object, array, number, boolean or null type");
-                    return "";
-                }
+                // An unconstrained value is safe here: every string inside it goes through `char`, which in
+                // this mode refuses a raw '<' and admits the JSON escape, so no production can spell the
+                // parameter closer.  That holds at a parameter ROOT too, where the value is the whole text
+                // with no quoting around it, because the root then holds the JSON spelling of the value -
+                // `value`, `object`, `array` and `string` are built from the same `char`.
                 return _add_rule(rule_name, _add_primitive("value", PRIMITIVE_RULES.at("value")));
         }
         return "";
+    }
+
+    // A value-side constraint the AST builder could not express.  Reported, not refused: it is the same
+    // choice llama.cpp makes (its own conversion drops these silently), and the delimiter guarantee does not
+    // depend on any of them.
+    void add_warnings(const std::vector<std::string> & notes) {
+        _warnings.insert(_warnings.end(), notes.begin(), notes.end());
     }
 
     void check_errors() {
@@ -1473,6 +1488,7 @@ public:
 static const std::unordered_set<std::string> & protected_annotations() {
     static const std::unordered_set<std::string> annotations = {
         "$schema", "title", "description", "$comment", "default", "examples", "deprecated", "readOnly", "writeOnly",
+        "$defs", "definitions",   // reachable only through the $refs that name them, so they constrain nothing here
     };
     return annotations;
 }
@@ -1499,51 +1515,98 @@ static bool is_vacuous_property_names(const common_json & value) {
 
 // Which types a type-specific keyword constrains.  JSON Schema says such a keyword only applies to values of
 // its own type, so a keyword next to a type it does not belong to constrains nothing.
-static bool keyword_applies_to_type(const std::string & key, const std::string & type) {
-    static const std::unordered_map<std::string, std::unordered_set<std::string>> by_keyword = {
-        {"minLength", {"string"}},
-        {"maxLength", {"string"}},
-        {"pattern", {"string"}},
-        {"format", {"string"}},
-        {"minimum", {"integer", "number"}},
-        {"maximum", {"integer", "number"}},
-        {"exclusiveMinimum", {"integer", "number"}},
-        {"exclusiveMaximum", {"integer", "number"}},
-        {"multipleOf", {"integer", "number"}},
-        {"items", {"array"}},
-        {"minItems", {"array"}},
-        {"maxItems", {"array"}},
-        {"properties", {"object"}},
-        {"required", {"object"}},
-        {"additionalProperties", {"object"}},
-        {"propertyNames", {"object"}},
-    };
-    const auto it = by_keyword.find(key);
-    return it == by_keyword.end() || it->second.count(type) > 0;
+// The document a strict-mode validation walks: `root` resolves $ref targets, and `visiting` holds the refs
+// on the current path so a self-referential $defs tree terminates instead of recursing forever.
+struct protected_schema_walk {
+    const common_json &              document;   // a $ref resolves against THIS, not the node being validated
+    std::unordered_set<std::string> visiting;
+};
+
+// Strict tool mode keeps exactly one guarantee: no derivation of the grammar spells the parameter closer,
+// and no tool or parameter name can be read back as a different one.  Everything else a schema says is a
+// constraint on the VALUE, and losing one widens the language without touching that guarantee - which is
+// also what llama.cpp's own conversion does, silently.  So the preflight below throws only for a schema it
+// cannot convert at all (a malformed or impossible one, or one the builder would fail on with a worse
+// message) and RECORDS the rest, so the caller can warn once with the schema's own words.
+
+// The same $ref resolution the AST builder does (json-schema.cpp, resolve_ref): only "#/..." into this
+// document, one path token at a time.  Returns nullptr when the reference does not resolve.
+static const common_json * resolve_protected_ref(const common_json & root, const std::string & ref) {
+    if (ref.compare(0, 2, "#/") != 0) {
+        return nullptr;
+    }
+    const common_json * target = &root;
+    const auto tokens = string_split(ref.substr(1), "/");
+    for (size_t i = 1; i < tokens.size(); i++) {
+        const std::string & sel = tokens[i];
+        if (target->is_object() && target->contains(sel)) {
+            target = &target->at(sel);
+        } else if (target->is_array()) {
+            size_t idx = 0;
+            try {
+                idx = std::stoull(sel);
+            } catch (const std::exception &) {
+                return nullptr;
+            }
+            if (idx >= target->size()) {
+                return nullptr;
+            }
+            target = &target->at(idx);
+        } else {
+            return nullptr;
+        }
+    }
+    return target;
 }
 
-static void validate_protected_schema(const common_json & schema, const std::string & path = "#") {
+static void validate_protected_schema(const common_json & schema, const std::string & path,
+                                      protected_schema_walk & walk, std::vector<std::string> & notes) {
     if (!schema.is_object()) {
         throw std::invalid_argument(path + ": schema must be an object");
     }
     const auto & annotations = protected_annotations();
+    // a constraint that will be dropped: recorded with its path, warned about once, never a 400
+    auto widen = [&](const std::string & key) {
+        notes.push_back(key + " at " + path + " is not supported here and was dropped");
+    };
+
+    // An empty schema means "anything".  The converter spells it with the `value` primitive, whose every
+    // string goes through the protected `char`, so it is safe at any position - including a parameter's root,
+    // where a schema generator writes it for `z.unknown()` and for members typed `unknown`.
+    {
+        bool only_annotations = true;
+        for (const auto & [key, value] : schema.items()) {
+            (void) value;
+            if (!annotations.count(key)) {
+                only_annotations = false;
+                break;
+            }
+        }
+        if (only_annotations) {
+            return;
+        }
+    }
 
     // A union is admitted when every branch is itself expressible: the converter spells it as one
-    // alternative per branch, so the guarantee holds if it holds for each.  A declared `type` next to an
-    // `anyOf` is refused rather than dropped - the converter reads the union first, so the type would
-    // otherwise vanish and widen what the schema admits.
-    if (schema.contains("anyOf")) {
-        for (const auto & [key, value] : schema.items()) {
-            if (annotations.count(key) || key == "anyOf") continue;
-            throw std::invalid_argument(path + ": anyOf cannot be combined with '" + key + "' in strict tool mode");
-        }
-        const common_json & branches = schema.at("anyOf");
+    // alternative per branch, so the guarantee holds if it holds for each.  `oneOf` is read the same way -
+    // the converter already treats the two as one union (`json-schema.cpp`, build_node), because a grammar
+    // can say "one of these" but not "exactly one of these"; when the branches are disjoint, which is what
+    // a tagged union from Zod emits, the two readings coincide.  A sibling keyword is dropped by the
+    // converter (it reads the union first), which narrows or widens the value set but never the envelope,
+    // so it is reported rather than refused.
+    // A local $ref is validated through its target (below, before the keyword pass); `$defs`/`definitions`
+    // only hold definitions, which are reached - and validated - through the refs that name them.
+    const bool has_ref = schema.contains("$ref");
+    const char * union_key = !has_ref && schema.contains("anyOf") ? "anyOf"
+                           : !has_ref && schema.contains("oneOf") ? "oneOf" : nullptr;
+    if (union_key != nullptr) {
+        const common_json & branches = schema.at(union_key);
         if (!branches.is_array() || branches.empty()) {
-            throw std::invalid_argument(path + "/anyOf must be a non-empty array");
+            throw std::invalid_argument(path + "/" + union_key + " must be a non-empty array");
         }
         size_t i = 0;
         for (const auto & branch : branches) {
-            validate_protected_schema(branch, path + "/anyOf/" + std::to_string(i++));
+            validate_protected_schema(branch, path + "/" + union_key + "/" + std::to_string(i++), walk, notes);
         }
         return;
     }
@@ -1574,42 +1637,87 @@ static void validate_protected_schema(const common_json & schema, const std::str
                     alternative.erase(key);
                 }
             }
-            validate_protected_schema(alternative, path + "/type/" + std::to_string(i++));
+            validate_protected_schema(alternative, path + "/type/" + std::to_string(i++), walk, notes);
         }
         return;
     }
 
-    for (const auto & [key, value] : schema.items()) {
-        (void) value;
-        if (annotations.count(key)) continue;
-        if (key == "$ref" || key == "oneOf" || key == "allOf" || key == "not" || key == "if" ||
-            key == "then" || key == "else" || key == "patternProperties" ||
-            key == "contains" || key == "prefixItems" || key == "unevaluatedProperties" ||
-            key == "unevaluatedItems" || key == "dependentSchemas" || key == "dependencies" || key == "multipleOf" ||
-            key == "minProperties" || key == "maxProperties" || key == "minContains" || key == "maxContains") {
-            throw std::invalid_argument(path + ": keyword '" + key + "' is not supported in strict tool mode");
-        }
-        static const std::unordered_set<std::string> supported = {
-            "type", "enum", "const", "properties", "required", "additionalProperties", "propertyNames",
-            "anyOf", "items", "minItems", "maxItems", "minLength", "maxLength", "pattern", "format",
-            "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-        };
-        if (!supported.count(key)) {
-            throw std::invalid_argument(path + ": unknown keyword '" + key + "' is not supported in strict tool mode");
-        }
-    }
+    // No keyword allowlist here: which keywords survive into the grammar is the AST builder's question, and
+    // it answers it per node kind (json-schema.cpp audit_keywords) by refusing anything it did not express.
+    // A second list in this function only meant a keyword had to be added twice - and a keyword the builder
+    // does express but this list did not know was refused for being unknown.  What stays here is the
+    // value-level work the audit cannot do: whether a keyword the builder DOES consume is expressed exactly.
 
+    // A local $ref is validated through its target: the AST builder copies the target's node, so the
+    // grammar holds exactly what the target says.  A sibling keyword beside $ref is ignored by the builder,
+    // so it is reported as dropped.  A target already on this path is a recursive definition; it is
+    // admitted, because the builder shares one rule for it and a recursive type is exactly as strict as its
+    // non-recursive part (measured: a self-referential $defs tree converts to a terminating grammar).
     if (schema.contains("$ref")) {
-        throw std::invalid_argument(path + ": $ref is not supported in strict tool mode");
+        const common_json & ref = schema.at("$ref");
+        if (!ref.is_string()) {
+            throw std::invalid_argument(path + ": $ref must be a string");
+        }
+        const std::string target_ref = ref.get<std::string>();
+        if (walk.visiting.count(target_ref)) {
+            return;   // recursion: the target is being validated further up this same path
+        }
+        const common_json * target = resolve_protected_ref(walk.document, target_ref);
+        // A reference that does not resolve makes the builder throw "cannot resolve $ref", so this stays a
+        // refusal: it is a broken schema, not a constraint that could be dropped.
+        if (target == nullptr) {
+            throw std::invalid_argument(path + ": $ref " + target_ref +
+                                        " does not resolve inside this schema (only local #/ references are supported)");
+        }
+        walk.visiting.insert(target_ref);
+        validate_protected_schema(*target, target_ref, walk, notes);
+        walk.visiting.erase(target_ref);
+        return;
     }
+    // allOf is an intersection the converter implements by merging object branches.  Two merge shapes are
+    // not a widening but a broken grammar - they make the result DEMAND something the schema forbids, so a
+    // legal value would be refused by the call the model is forced to write.  Those two stay refusals; the
+    // rest (a non-object branch, a sibling keyword) is dropped by the converter, which only widens.
+    if (schema.contains("allOf")) {
+        const common_json & branches = schema.at("allOf");
+        if (!branches.is_array() || branches.empty()) {
+            throw std::invalid_argument(path + "/allOf must be a non-empty array");
+        }
+        std::unordered_set<std::string> seen;
+        size_t i = 0;
+        for (const auto & branch : branches) {
+            const bool is_object_branch = branch.is_object() &&
+                (branch.contains("type") ? branch.at("type") == "object"
+                                         : branch.contains("properties") || branch.contains("required") ||
+                                           branch.contains("additionalProperties"));
+            if (!is_object_branch) {
+                widen("an allOf branch that is not an object");
+            }
+            // measured: the merge keeps one spelling per property and emits that key twice
+            // (`x-kv0 "," x-kv0`), which requires the same property twice - no legal object matches
+            if (branch.contains("additionalProperties") && branch.at("additionalProperties") == false) {
+                throw std::invalid_argument(path + "/allOf/" + std::to_string(i) +
+                                            ": an allOf branch with additionalProperties:false forbids the other "
+                                            "branches' properties, which a merged object would allow");
+            }
+            if (branch.contains("properties")) {
+                for (const auto & [prop, sub] : branch.at("properties").items()) {
+                    if (!seen.insert(prop).second) {
+                        throw std::invalid_argument(path + "/allOf/" + std::to_string(i) + "/properties/" + prop +
+                                                    ": a property declared by two allOf branches cannot be merged in "
+                                                    "strict tool mode");
+                    }
+                }
+            }
+            validate_protected_schema(branch, path + "/allOf/" + std::to_string(i++), walk, notes);
+        }
+        return;
+    }
+    // enum and const both name the value, and the converter keeps const (the stronger of the two), so the
+    // result is never wider than `const` alone.  An extra keyword beside them is dropped by the converter.
     if (schema.contains("enum") || schema.contains("const")) {
         if (schema.contains("enum") && schema.contains("const")) {
-            throw std::invalid_argument(path + ": enum and const cannot be combined in strict tool mode");
-        }
-        for (const auto & [key, value] : schema.items()) {
-            if (!annotations.count(key) && key != "type" && key != "enum" && key != "const") {
-                throw std::invalid_argument(path + ": enum/const cannot be combined with '" + key + "' in strict tool mode");
-            }
+            // both name the value; the converter keeps const, which JSON Schema makes authoritative
         }
         const common_json & values = schema.contains("enum") ? schema.at("enum") : schema.at("const");
         if (schema.contains("enum") && (!values.is_array() || values.empty())) {
@@ -1625,20 +1733,22 @@ static void validate_protected_schema(const common_json & schema, const std::str
             if (value.is_number()) return std::string("number");
             return std::string("invalid");
         };
-        std::string expected = schema.contains("enum") ? value_type(values.at(0)) : value_type(values);
-        if (expected == "invalid") throw std::invalid_argument(path + ": invalid enum/const value");
-        if (schema.contains("enum")) {
-            for (const auto & value : values) {
-                if (value_type(value) != expected) {
-                    throw std::invalid_argument(path + ": mixed-type enums are not supported in strict tool mode");
-                }
+        for (const auto & value : values) {
+            if (value_type(value) == "invalid") {
+                throw std::invalid_argument(path + ": invalid enum/const value");
             }
         }
         if (schema.contains("type")) {
             if (!schema.at("type").is_string()) throw std::invalid_argument(path + ": type must be a string");
+            // An enum or const whose values fall outside the declared type: the converter spells the values
+            // and ignores the type, so the value set becomes the enumeration - a widening, not a broken call.
             const std::string declared = schema.at("type").get<std::string>();
-            if (declared != expected && !(declared == "number" && expected == "integer")) {
-                throw std::invalid_argument(path + ": enum/const values do not match the declared type");
+            for (const auto & value : values) {
+                const std::string got = value_type(value);
+                if (got != declared && !(declared == "number" && got == "integer")) {
+                    widen("a '" + got + "' enum value under type " + declared);
+                    break;
+                }
             }
         }
         return;
@@ -1648,29 +1758,21 @@ static void validate_protected_schema(const common_json & schema, const std::str
         throw std::invalid_argument(path + ": strict tool schemas require a concrete string type");
     }
     const std::string type = schema.at("type").get<std::string>();
-    auto only = [&](std::initializer_list<const char *> keys) {
-        for (const auto & [key, value] : schema.items()) {
-            (void) value;
-            if (annotations.count(key)) continue;
-            if (std::find_if(keys.begin(), keys.end(), [&](const char * allowed) { return key == allowed; }) == keys.end()) {
-                throw std::invalid_argument(path + ": keyword '" + key + "' is invalid for type " + type);
-            }
-        }
-    };
+    // Reporting a dropped keyword is the AST builder's job (json-schema.cpp audit_keywords), which sees each
+    // schema node together with the node kind it became and so can tell "does not apply to this type" from
+    // "applies but was dropped".  This function therefore only checks what the builder cannot: the exactness
+    // of a keyword the builder DOES consume.  `format` is that case - get_format() reads it and maps an
+    // unknown value to FORMAT_NONE, so the constraint disappears without the audit noticing.
     if (type == "string") {
-        only({"type", "minLength", "maxLength", "pattern", "format"});
+        // an unanchored pattern makes the converter throw (unsupported_pattern), so this stays a refusal:
+        // the request could not be served either way.
         if (schema.contains("pattern") && !schema.at("pattern").is_string()) {
             throw std::invalid_argument(path + ": pattern must be a string");
         }
-        if (schema.contains("pattern")) {
-            // Only the converter's own limit is prechecked; whether the pattern NEEDS a '<' (which a
-            // protected value cannot contain) is decided by the class analysis in _visit_pattern, because
-            // a pattern can spell '<' directly, as an escape, or exclude it and be perfectly safe.
-            const std::string pattern = schema.at("pattern").get<std::string>();
-            if (pattern.size() < 2 || pattern.front() != '^' || pattern.back() != '$') {
-                throw std::invalid_argument(path + ": pattern must be anchored with '^' and '$' in strict tool mode");
-            }
-        }
+        // An unanchored pattern is not prechecked any more: the converter drops it, warns, and emits the
+        // guarded string (llama.cpp's own behaviour), so the request is served with a weaker value
+        // constraint rather than failing.  Whether a pattern NEEDS a raw '<' - which a protected value cannot
+        // contain - is decided by the class analysis in _visit_pattern; only that stays a refusal.
         if (schema.contains("format")) {
             const common_json & format = schema.at("format");
             if (!format.is_string()) {
@@ -1678,8 +1780,7 @@ static void validate_protected_schema(const common_json & schema, const std::str
             }
             static const std::unordered_set<std::string> formats = {"date", "time", "date-time", "uuid"};
             if (!formats.count(format.get<std::string>())) {
-                throw std::invalid_argument(path + ": format '" + format.get<std::string>() +
-                                            "' is not supported in strict tool mode (use date, time, date-time or uuid)");
+                widen("format '" + format.get<std::string>() + "'");
             }
         }
         for (const char * key : {"minLength", "maxLength"}) {
@@ -1688,14 +1789,19 @@ static void validate_protected_schema(const common_json & schema, const std::str
             }
         }
         if (schema.contains("minLength") && schema.contains("maxLength") && schema.at("minLength").get<int64_t>() > schema.at("maxLength").get<int64_t>()) {
+            // Measured: the converter emits `{3,2}` and this engine's grammar parser does not terminate on a
+            // repetition whose lower bound exceeds its upper, so the request cannot be served - a refusal,
+            // not a dropped constraint.  (The same holds for `minItems` > `maxItems`.)
             throw std::invalid_argument(path + ": minLength exceeds maxLength");
         }
         return;
     }
     if (type == "object") {
-        only({"type", "properties", "required", "additionalProperties", "propertyNames"});
+        // `propertyNames` constrains the key spelling, which this converter does not put into the key rule
+        // (that rule already names the declared keys and excludes '<').  Dropping a real constraint therefore
+        // widens which keys are accepted, which is a value-side loss like any other.
         if (schema.contains("propertyNames") && !is_vacuous_property_names(schema.at("propertyNames"))) {
-            throw std::invalid_argument(path + ": propertyNames is only supported as {\"type\": \"string\"} in strict tool mode");
+            widen("propertyNames");
         }
         if (schema.contains("properties") && !schema.at("properties").is_object()) {
             throw std::invalid_argument(path + "/properties must be an object");
@@ -1705,57 +1811,79 @@ static void validate_protected_schema(const common_json & schema, const std::str
         const bool has_properties = schema.contains("properties") && !schema.at("properties").empty();
         if (schema.contains("additionalProperties") && schema.at("additionalProperties") != false) {
             const common_json & extra = schema.at("additionalProperties");
-            // an empty schema ({"type": "object"} from `record<string, unknown>`) means "any value", which
-            // the protected `value` primitive spells without ever emitting a raw '<'
-            if (!extra.is_object()) {
-                throw std::invalid_argument(path + ": additionalProperties must be false, an empty schema or a typed schema in strict tool mode");
+            // `true` and `{}` both mean "any value", which the protected `value` primitive spells without
+            // ever emitting a raw '<'; a typed schema is validated in place.
+            if (!extra.is_boolean() && !extra.is_object()) {
+                throw std::invalid_argument(path + ": additionalProperties must be a boolean or a schema");
             }
-            if (has_properties) {
-                // a dictionary with declared properties too would need a key rule that rejects the declared
-                // names, and that rule is built from a bare character class which admits a raw '<'
-                throw std::invalid_argument(path + ": a dictionary cannot be combined with declared properties in strict tool mode");
-            }
-            if (!extra.empty()) {
-                validate_protected_schema(extra, path + "/additionalProperties");
+            // A dictionary beside declared properties is fine: the emitted key rule is
+            // `additional-k ::= ["] ( [a] char+ | [^"<a] char* )? ["]`, which spells the declared keys and
+            // excludes '<' from every other character (measured), so the delimiter guarantee still holds.
+            if (extra.is_object() && !extra.empty()) {
+                validate_protected_schema(extra, path + "/additionalProperties", walk, notes);
             }
         }
         if (has_properties) {
             for (const auto & [name, child] : schema.at("properties").items()) {
-                validate_protected_schema(child, path + "/properties/" + name);
+                validate_protected_schema(child, path + "/properties/" + name, walk, notes);
             }
         }
-        if (schema.contains("required")) {
+        if (schema.contains("required") && !schema.at("required").is_array()) {
+            widen("a required that is not an array");
+        } else if (schema.contains("required")) {
             const auto & required = schema.at("required");
-            if (!required.is_array()) throw std::invalid_argument(path + "/required must be an array");
             for (const auto & key : required) {
-                if (!key.is_string() || !schema.contains("properties") || !schema.at("properties").contains(key.get<std::string>())) {
-                    throw std::invalid_argument(path + ": required names must refer to declared properties");
+                if (!key.is_string()) {
+                    throw std::invalid_argument(path + "/required must be an array of strings");
+                }
+                // A name no property declares: the converter drops it from `required`, so the merge simply
+                // keeps fewer names required - the value set widens, it is not a broken call.
+                if (!schema.contains("properties") || !schema.at("properties").contains(key.get<std::string>())) {
+                    widen("required name '" + key.get<std::string>() + "' that no property declares");
                 }
             }
         }
         return;
     }
     if (type == "array") {
-        only({"type", "items", "minItems", "maxItems"});
-        if (!schema.contains("items")) throw std::invalid_argument(path + ": array schemas require an items schema in strict tool mode");
-        // `items: {}` is a free-form element, which the protected `value` primitive spells without ever
-        // emitting a raw '<'
-        if (!schema.at("items").is_object()) throw std::invalid_argument(path + "/items must be an object");
-        if (!schema.at("items").empty()) validate_protected_schema(schema.at("items"), path + "/items");
+        // An array with no `items` is "any items": the converter spells it with the free `item`, whose
+        // strings go through the protected `char`, so the guarantee holds and only the element type is lost.
+        if (!schema.contains("items")) {
+            widen("an array with no items schema");
+        } else if (!schema.at("items").is_object()) {
+            // a tuple (`items: [...]`, draft-7 spelling, or `prefixItems`) IS expressed exactly
+            const common_json & items = schema.at("items");
+            if (!items.is_array()) throw std::invalid_argument(path + "/items must be an object or an array");
+            size_t i = 0;
+            for (const auto & item : items) {
+                validate_protected_schema(item, path + "/items/" + std::to_string(i++), walk, notes);
+            }
+            return;   // a tuple has no item counts to check: its length is the list
+        } else if (!schema.at("items").empty()) {
+            validate_protected_schema(schema.at("items"), path + "/items", walk, notes);
+        }
         for (const char * key : {"minItems", "maxItems"}) {
             if (schema.contains(key) && (!schema.at(key).is_number_integer() || schema.at(key).get<int64_t>() < 0)) {
                 throw std::invalid_argument(path + ": item bounds must be non-negative integers");
             }
         }
         if (schema.contains("minItems") && schema.contains("maxItems") && schema.at("minItems").get<int64_t>() > schema.at("maxItems").get<int64_t>()) {
+            // Measured: the converter emits `{4,1}` and this engine's grammar parser does not terminate on a
+            // repetition whose lower bound exceeds its upper, so the request cannot be served - a refusal,
+            // not a dropped constraint.  (The same holds for `minLength` > `maxLength`.)
             throw std::invalid_argument(path + ": minItems exceeds maxItems");
         }
         return;
     }
     if (type == "integer") {
-        only({"type", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"});
-        if (schema.contains("minimum") && schema.contains("exclusiveMinimum")) throw std::invalid_argument(path + ": minimum and exclusiveMinimum cannot be combined");
-        if (schema.contains("maximum") && schema.contains("exclusiveMaximum")) throw std::invalid_argument(path + ": maximum and exclusiveMaximum cannot be combined");
+        // `minimum` beside `exclusiveMinimum` (and the maximum pair) is a legal JSON Schema intersection; the
+        // converter keeps the inclusive one, which is the wider of the two, so the value set only widens.
+        if (schema.contains("minimum") && schema.contains("exclusiveMinimum")) {
+            widen("exclusiveMinimum beside minimum");
+        }
+        if (schema.contains("maximum") && schema.contains("exclusiveMaximum")) {
+            widen("exclusiveMaximum beside maximum");
+        }
         // the schema builder rounds every bound towards the integers it still admits, so a value it
         // cannot represent (not a number, not finite, past int64) must be refused here, before rounding
         auto bound = [&](const char * key) {
@@ -1772,12 +1900,15 @@ static void validate_protected_schema(const common_json & schema, const std::str
         const double lo = schema.contains("minimum") ? bound("minimum") : schema.contains("exclusiveMinimum") ? bound("exclusiveMinimum") + 1.0 : 0.0;
         const double hi = schema.contains("maximum") ? bound("maximum") : schema.contains("exclusiveMaximum") ? bound("exclusiveMaximum") - 1.0 : 0.0;
         if (has_min && has_max && lo > hi) {
-            throw std::invalid_argument(path + ": the integer bounds admit no value");
+            // measured: the converter still emits a parseable range (it walks the digits between the two),
+            // so an unsatisfiable bound set simply produces a narrower-looking but usable grammar
+            widen("a bound pair that admits no integer");
         }
         return;
     }
     if (type == "number" || type == "boolean" || type == "null") {
-        only({"type"});
+        // a `number` grammar is the unbounded JSON number form, so its bounds have nowhere to go; a bound on
+        // a boolean or null applies to nothing.  Either way the value set only widens.
         return;
     }
     throw std::invalid_argument(path + ": unsupported type '" + type + "' in strict tool mode");
@@ -1792,11 +1923,24 @@ std::string json_schema_to_grammar(const common_json & schema, bool force_gbnf, 
     (void) force_gbnf;
 #endif // LLAMA_USE_LLGUIDANCE
     try {
+        // A $ref is a JSON Pointer into the DOCUMENT, which is not necessarily the node being compiled: the
+        // tool builder turns each parameter into its own grammar, and `#/properties/x` there still names a
+        // sibling parameter.  `options.ref_root` carries that document.
+        const common_json & document = options.ref_root != nullptr ? *options.ref_root : schema;
+        std::vector<std::string> dropped;   // value-side constraints that will not reach the grammar
         if (options.tool_value) {
-            validate_protected_schema(schema);
+            protected_schema_walk walk{document};
+            validate_protected_schema(schema, "#", walk, dropped);
         }
+        // Strict mode reaches the AST builder too, because the preflight above sees only the schema's words
+        // while the builder decides which of them survive.  Both collect what was dropped instead of
+        // failing: a lost value-side constraint widens the language and cannot break the delimiter
+        // guarantee, which is the only thing strict mode promises (docs/DETAILS.md).
+        const auto doc = common_chat_schema_from_json(schema, options.tool_value,
+                                                     options.tool_value ? &dropped : nullptr, &document);
         common_chat_schema_converter converter(false, options.tool_value, options.forbidden_sequence);
-        converter.visit(*common_chat_schema_from_json(schema).root, "");
+        converter.add_warnings(dropped);
+        converter.visit(*doc.root, "");
         converter.check_errors();
         return converter.format_grammar();
     } catch (const std::runtime_error & e) {
@@ -1828,4 +1972,130 @@ std::string build_grammar(const std::function<void(const common_grammar_builder 
     cb(builder);
     converter.check_errors();
     return converter.format_grammar();
+}
+
+// ---- the Aho-Corasick exclusion grammar ------------------------------------
+// Ported from llama.cpp common/peg-parser.cpp (gbnf_escape_char_class, gbnf_char_class, gbnf_ac_grammar,
+// gbnf_excluding_grammar), MIT license.  The only change is that rules are collected in a map here rather
+// than pushed through a common_grammar_builder, so the function can stand alone.
+
+static std::string gbnf_escape_char_class(uint32_t c) {
+    if (c == '-' || c == ']' || c == '[' || c == '\\') {
+        return "\\" + std::string(1, (char) c);
+    }
+    if (c == '\n') {
+        return "\\n";
+    }
+    if (c == '\t') {
+        return "\\t";
+    }
+    if (c == '\r') {
+        return "\\r";
+    }
+    if (c >= 0x20 && c <= 0x7E) {
+        return std::string(1, (char) c);
+    }
+
+    char         buf[16];
+    const char * hex = "0123456789ABCDEF";
+
+    if (c <= 0xFF) {
+        buf[0] = '\\';
+        buf[1] = 'x';
+        buf[2] = hex[(c >> 4) & 0xF];
+        buf[3] = hex[c & 0xF];
+        buf[4] = '\0';
+    } else if (c <= 0xFFFF) {
+        buf[0] = '\\';
+        buf[1] = 'u';
+        buf[2] = hex[(c >> 12) & 0xF];
+        buf[3] = hex[(c >> 8) & 0xF];
+        buf[4] = hex[(c >> 4) & 0xF];
+        buf[5] = hex[c & 0xF];
+        buf[6] = '\0';
+    } else {
+        buf[0] = '\\';
+        buf[1] = 'U';
+        for (int i = 0; i < 8; i++) {
+            buf[2 + i] = hex[(c >> ((7 - i) * 4)) & 0xF];
+        }
+        buf[10] = '\0';
+    }
+
+    return std::string(buf);
+}
+
+static std::string gbnf_char_class(const std::vector<uint32_t> & chars, bool negate) {
+    // An empty class has no valid spelling: "[^]" is a parse error.  Callers pass a negated empty set to
+    // mean "every character", which is what the full code point range spells.
+    if (chars.empty()) {
+        return negate ? "[\\U00000000-\\U0010FFFF]" : "[]";
+    }
+    std::string s = negate ? "[^" : "[";
+    for (uint32_t ch : chars) {
+        s += gbnf_escape_char_class(ch);
+    }
+    return s + "]";
+}
+
+std::string gbnf_excluding_grammar(const std::string & prefix, const std::vector<std::string> & forbidden) {
+    if (prefix.empty()) {
+        throw std::runtime_error("an exclusion grammar needs a rule name");
+    }
+    if (forbidden.empty()) {
+        throw std::runtime_error("an exclusion grammar needs at least one forbidden sequence");
+    }
+    for (const auto & f : forbidden) {
+        if (f.empty()) {
+            throw std::runtime_error("an excluded sequence cannot be empty");
+        }
+    }
+
+    const common_aho_corasick ac(forbidden);
+
+    auto state_name = [&](size_t s) -> std::string {
+        if (s == 0) {
+            return prefix;
+        }
+        std::string num = std::to_string(s);
+        num = num.size() == 1 ? ("0" + num) : num;
+        return prefix + "-" + num;
+    };
+
+    std::vector<std::string> lines;
+    for (size_t q = 0; q < ac.num_states(); q++) {
+        if (ac.is_terminal(q)) {
+            continue;  // match states: reaching one means a forbidden literal was spelled
+        }
+
+        std::map<size_t, std::vector<uint32_t>> buckets;
+        std::vector<uint32_t>                   specific;  // characters with an explicit transition
+        for (uint32_t c : ac.alphabet) {
+            const size_t d = ac.next(q, c);
+            if (ac.is_terminal(d)) {
+                // Completing a literal: give the character no alternative, so it cannot be written here.
+                specific.push_back(c);
+            } else if (d != 0) {
+                buckets[d].push_back(c);  // specific non-root destination
+                specific.push_back(c);
+            }
+        }
+
+        // every state is accepting and completing characters get no alternative, so a forbidden literal
+        // can never be matched
+        std::string rhs = "|";
+        for (const auto & [d, chars] : buckets) {
+            rhs += " " + gbnf_char_class(chars, false) + " " + state_name(d) + " |";
+        }
+        rhs += " " + gbnf_char_class(specific, true) + " " + state_name(0);
+        lines.push_back(state_name(q) + " ::= " + rhs);
+    }
+
+    // An empty delimiter makes the start state terminal.  Emit an entry rule that matches the empty
+    // string so the returned reference stays valid.
+    if (ac.is_terminal(0)) {
+        lines.push_back(prefix + " ::= |");
+    }
+
+    return string_join(lines, "\n");
 }

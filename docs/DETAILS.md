@@ -787,42 +787,110 @@ pointer: no allocation, no upload, byte-identical sampling).
   the request then runs the prompt path, exactly as it did before this branch. The bare `grammar` parameter is
   always honoured.
 
-**Strict tool schemas.** A tool parameter's schema is converted by `grammar_schema` in a strict mode that
-refuses what it cannot spell exactly instead of widening it: a request whose tools use a refused schema fails
-with `400` naming the schema path, rather than running with a weakened constraint (the vendored converter's own
-habit is to print a warning and fall back to "any string" for an unsupported `pattern`, which would silently
-unconstrain the value). The line is drawn at what the guarantee needs, not at what is easy: anything whose
-grammar can provably never spell `</parameter>` is supported, because the closer is the only thing this mode
-has to keep out of a value. Supported per property: `type` (`string`, `integer`, `number`, `boolean`, `null`,
-`object`, `array`), a union (`anyOf`, or `type: ["a","b"]`, which is how a nullable field is written - one
-production per branch), `enum`, `const`, a nested `properties`/`required`/`additionalProperties: false` object,
-a dictionary (typed `additionalProperties`, or `{}` for a free-form value), a free-form value or array anywhere
-except a parameter's root, `pattern` (anchored with `^`/`$`, including the `\d`/`\w`/`\s` shorthands and their
-negations, which are expanded to the code points they stand for), `format` (`date`, `time`, `date-time`, `uuid`,
-including at a parameter's root), `items` with `minItems`/`maxItems`, `minLength`/`maxLength`, and
-`minimum`/`maximum` (or the `exclusive` pair) on integers. Refused: `$ref`, `oneOf`/`allOf`/`not`, conditionals,
-`patternProperties`, a `propertyNames` that actually constrains names, `prefixItems`/`contains`,
-`additionalProperties: true`, a dictionary combined with declared properties, a union at a parameter's root,
-`multipleOf`, property-count bounds, unknown keywords, an untyped schema at a parameter's root, a mixed-type
-`enum`, and bounds that admit no value. A keyword that constrains a type the branch does not hold is dropped
-before validation: JSON Schema says `minimum` next to `"null"` means nothing, and Zod writes exactly that for
-`z.number().min(1).nullable()`. `propertyNames` is accepted as a no-op when it only says
-`{"type": "string"}`: every JSON member name is a string, so it restricts nothing, and schema generators emit
-exactly that for a free-form map - refusing it rejected whole conversations whose tools were expressible.
+**Strict tool schemas.** A tool parameter's schema is converted by `grammar_schema` in a strict mode whose line
+is drawn at what the guarantee needs: anything whose grammar can provably never spell `</parameter>` is
+supported, because the closer is the only thing this mode has to keep out of a value. A constraint the converter
+cannot spell is dropped with a warning rather than refused - see the paragraph on the two gates below, which also
+says which schemas still fail with `400`. Supported per property: `type` (`string`, `integer`, `number`,
+`boolean`, `null`, `object`, `array`), a union (`anyOf` or `oneOf`, or `type: ["a","b"]`, which is how a nullable
+field is written - one production per branch), `allOf` of object branches (merged into one object; a property
+declared by two branches is refused, and so is a branch carrying `additionalProperties: false`, because either
+would make the merge produce a grammar that rejects a legal value), `enum`, `const`, a nested
+`properties`/`required`/`additionalProperties: false` object, a dictionary (typed `additionalProperties`, `true`
+for any value, or `{}` for a free-form one, with or without declared properties beside it), a free-form value or
+array at any position including a parameter's root (an empty or annotation-only schema is "anything", which is
+what a generator writes for `z.unknown()`), `prefixItems` or `items: [...]` tuples (spelled item by item,
+exactly), `pattern` (anchored with `^`/`$`, including the `\d`/`\w`/`\s` shorthands and their negations, which
+are expanded to the code points they stand for), `format` (`date`, `time`, `date-time`, `uuid`, including at a
+parameter's root), `items` with `minItems`/`maxItems`, `minLength`/`maxLength`, and `minimum`/`maximum` (or the
+`exclusive` pair) on integers, and a local `$ref` into `$defs`/`definitions` (the target is validated in place, so
+the reference is exactly as strict as what it names; a self-referential definition is admitted, because the
+grammar shares one rule for it and terminates). Dropped with a warning when the converter has no spelling for
+them: `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`/`multipleOf` on a `number` (its grammar form has no
+bounds), `multipleOf` on an integer, property-count bounds, `uniqueItems`, `contentEncoding`/`contentMediaType`,
+`not`, `if`/`then`/`else`, `patternProperties`, `contains`, a `propertyNames` that constrains names, `required`
+naming a property no branch declares, `minimum` beside `exclusiveMinimum` (the inclusive one wins and is the
+wider), an integer bound pair that admits no value, an unknown `format`, an `enum` value outside the declared
+type (dropping it is exact - the intersection is unsatisfiable), and a keyword sitting beside
+`anyOf`/`oneOf`/`allOf`/`$ref`/`enum` (the converter reads the combinator first). An unanchored or uncompilable
+`pattern` also drops with a warning: the value falls back to the guarded string, which still cannot spell the
+closer. Refused, because the request could not be served at all: `minLength` greater than `maxLength` and
+`minItems` greater than `maxItems` (the converter emits `{3,2}`, and this engine's grammar parser does not
+terminate on a repetition whose lower bound exceeds its upper - measured as a hang, so the request cannot be
+answered with any grammar), an `allOf` branch that repeats another branch's property or carries
+`additionalProperties: false`, an `enum` whose every value falls outside the declared type, a `$ref` that does not
+resolve inside the document (remote URLs and missing definitions), and malformed keyword values (`format` that is
+not a string, `minimum` that is not a number, an empty `enum`). A reference is resolved against the tool's whole
+`parameters` document, not against the single parameter being spelled: a JSON Pointer is rooted at the document,
+and the builder compiles one parameter at a time, so `#/properties/func/properties/vpc` names a sibling and has
+to reach it (`--with-document` carries the document to the converter). A keyword that constrains a type the branch
+does not hold is dropped before validation without a note, because
+JSON Schema says `minimum` next to `"null"` means nothing: Zod writes exactly that for
+`z.number().min(1).nullable()`. `propertyNames` is accepted as a no-op when it only says `{"type": "string"}`:
+every JSON member name is a string, so it restricts nothing, and schema generators emit exactly that for a
+free-form map.
+
 
 Two of these need a word on why they are safe rather than merely convenient. A `pattern` compiles to character
 classes, so wherever a class could match `<` the class is rebuilt to exclude it (and a negated class gets `<`
 added when it was missing): that NARROWS what the grammar accepts, which is the safe direction - a value can
-come out outside the pattern, never a call cut short. Only a pattern that NEEDS a raw `<` has nothing left to
-accept and is refused, and the answer accounts for `<` spelled directly or through `\x3c`/`\u003c`. A free-form
-value is safe because it is spelled by the `value`/`object`/`array` primitives, whose every string goes through
-the protected `char` (which refuses a raw `<` and admits the JSON escape); only a parameter's ROOT cannot be
-free-form, because there the whole text is the value with no quoting around it.
+come out outside the pattern, never a call cut short. A pattern that cannot be compiled or is not anchored is
+dropped and replaced by the guarded string, so the constraint is lost but no derivation can spell the closer;
+the answer accounts for `<` spelled directly or through `\x3c`/`\u003c`. A free-form value is safe because it is
+spelled by the `value`/`object`/`array` primitives, whose every string goes through the protected `char` (which
+refuses a raw `<` and admits the JSON escape). That holds at a parameter's root as well: the root holds the JSON
+spelling of the value, so a free-form root is `root ::= value` and its strings are `char` strings like any other.
+
+Two gates stand between a schema and its grammar, and they check different things because they can see different
+things. The preflight above reads the schema's words and can therefore see what is missing from it; the AST
+builder (`vendor/json_schema_to_grammar/json-schema.cpp`) is what decides whether a keyword survives, and it used
+to drop one silently - `{"type":"number","minimum":1}` converted to an unbounded number, a tuple lost its
+`minItems`/`maxItems`, and `{"type":"string","format":"hostname"}` became a free string. So strict mode audits
+each built node against the keywords its kind actually expresses, next to the code that reads them, so a branch
+that starts honouring a keyword adds it in the same function.
+
+That audit REPORTS rather than refuses, and this is the one place where strict mode deliberately does what
+llama.cpp's own conversion does. The guarantee is about the envelope, not about the value: no derivation of the
+grammar can spell `</parameter>`, and no tool or parameter name can be read back as a different one. Every other
+keyword constrains the value alone, so dropping one widens the language and cannot cut a call short - while
+refusing it fails the whole request over a constraint the client wrote by habit. Zod writes `maximum` for every
+`.max()` number and `minProperties`/`uniqueItems` elsewhere, so a harness hit this on ordinary turns; the measured
+difference was a 400 on a schema llama.cpp converts without complaint. A dropped keyword is therefore logged on
+stderr as `WARNING: JSON schema conversion was incomplete: ...` naming the keyword and its path, and the request
+succeeds. What still refuses is a schema the converter cannot serve at all or one whose grammar would reject a
+value the schema allows - a repetition whose lower bound exceeds its upper (the engine's parser hangs on it), an
+`allOf` merge that would demand the same property twice or forbid another branch's, a `$ref` that does not
+resolve, an `enum` with no value inside the declared type, a malformed keyword value. Those are broken schemas,
+not dropped constraints.
+
+The exclusion of `</parameter>` is the vendored `common_aho_corasick` (`trie.h`, already compiled in for the
+JSON-string conversion) driving the grammar emission `gbnf_excluding_grammar`, ported from llama.cpp's
+`common/peg-parser.cpp`. Its safety is structural rather than argued: every state is accepting and the characters
+that complete the forbidden string get no alternative, so no derivation can spell it. That replaced two
+hand-written Python state machines, which is where the overlap bug lived - a per-character chain that restarts at
+zero after a mismatch lets `safe <</parameter>` through, because the second `<` reopens the closer while the chain
+is still mid-prefix. One automaton now serves the envelope, the reasoning region and every parameter value.
 
 Rule names are another place the grammar has to agree with the engine: a property name reaches them as written,
 and `_` is not a GBNF word character, so every generated name is sanitized - a snake_case tool
 (`old_string`, `new_string`, which is what Zod emits) otherwise produced a grammar the engine refused to parse
 at all.
+
+The envelope's markers are a third place, and it is the one where a grammar can be exactly obeyed and still
+deliver the wrong action. `serve/frontend.py` reads a call back by cutting the name and each parameter key at the
+first `>`, so a tool named `ev>il` is written as `<function=ev>il>` and read as `ev`, and a parameter key `a>b` is
+read as `a` (both measured). Instead of blacklisting characters, the builder spells the exact text its grammar
+demands and runs it through that same parser, refusing a tool whose call would not come back as the tool that was
+offered. Any later change to the framing is then covered by construction rather than by a list kept in step by
+hand.
+
+`oneOf` is read as a union, exactly like `anyOf`: a grammar can say "one of these" but not "exactly one of
+these", and for the disjoint branches a tagged union emits the two readings coincide. Each branch is validated on
+its own, so a branch carrying a broken schema still fails while a droppable constraint inside it is only warned
+about. `allOf` is an intersection and is only
+supported where merging is exact - object branches, no property named twice, no branch closing the object with
+`additionalProperties: false` (that would forbid the other branches' properties). Each branch keeps its own
+`required` set, since an intersection requires a property when any branch does.
 
 Length bounds follow llama.cpp's rule for the same problem
 (`src/llama-grammar.cpp`, `MAX_REPETITION_THRESHOLD` 2000, which this engine's own GBNF parser carries too): a
@@ -838,9 +906,11 @@ parameter's JSON strings. `serve/frontend.py`'s `param_end` ends a value at any 
 by `<parameter=`, `</function>` or `</tool_call>`, so a value that could spell one let the parse cut the call
 there and drop every parameter after it (measured: a nested object argument arrived as a string and the
 parameter following it disappeared, 8 of 12 closer-inviting requests). llama.cpp caps the same hole with
-`until(param_closer)`; here both sides run overlap-aware automata: the exclusion is a KMP state machine rather
-than a per-character chain, because a chain that restarts at zero after a mismatch lets `safe <</parameter>`
-through (the second `<` reopens the closer while the chain is mid-prefix). A raw string parameter's grammar is
+`until(param_closer)`; here the exclusion is the same construction llama.cpp uses - the complement of an
+Aho-Corasick automaton (`common/peg-parser.cpp`'s `gbnf_excluding_grammar`, which this converter now emits) -
+rather than a per-character chain, because a chain that restarts at zero after a mismatch lets `safe
+<</parameter>` through (the second `<` reopens the closer while the chain is still mid-prefix). A raw string
+parameter's grammar is
 the raw template text, so the same automaton counts its characters directly. Inside a serialized JSON string no
 raw `<` is admitted at all; a literal `<` is written as the JSON escape `\u003c`, which decodes to the same text
 for the client while never spelling the closer in the protocol stream, and fixed literals, property keys and

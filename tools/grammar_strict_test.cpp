@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,8 +24,8 @@ using namespace strata::grammar;
 static const char * CLOSER = "</parameter>";
 
 // feed the piece code point by code point; the grammar accepts it iff some stack reaches its end
-static bool accepts(const std::string & gbnf, const std::string & text) {
-    grammar * g = grammar_init(nullptr, gbnf.c_str(), "root");
+static bool accepts(const std::string & gbnf, const std::string & text, const char * root = "root") {
+    grammar * g = grammar_init(nullptr, gbnf.c_str(), root);
     if (g == nullptr) {
         std::fprintf(stderr, "grammar_init failed for:\n%s\n", gbnf.c_str());
         std::exit(1);
@@ -98,6 +99,56 @@ static void test_raw_root_bounds(void) {
 }
 
 // a non-string parameter is serialized JSON by the template: quoted, and no RAW '<' may start a closer
+// The exclusion automaton makes a claim about a language, so it is checked against the language itself:
+// every string over an alphabet that can spell both forbidden sequences, up to a length where every
+// overlap shape has appeared, must be accepted exactly when it contains neither sequence.  A structural
+// bug (a state that forgets its prefix, a completing character that keeps its alternative) shows up here
+// as an accepted string that contains the closer, or a refused one that does not.
+static void test_exclusion_bruteforce(void) {
+    const std::vector<std::string> forbidden = {"</p>", "ab"};
+    const std::string gbnf = gbnf_excluding_grammar("x", forbidden);   // its start rule is "x"
+    // '<' and '/' can start the closer, 'a' and 'b' the second sequence, 'p' completes one, '-' is noise
+    const std::string alphabet = "</pab-";
+    const int max_len = 5;
+    std::string text;
+    long checked = 0;
+    long refused = 0;
+    std::function<void(size_t)> walk = [&](size_t len) {
+        if (!text.empty()) {
+            bool contains = false;
+            for (const std::string & seq : forbidden) {
+                if (text.find(seq) != std::string::npos) {
+                    contains = true;
+                }
+            }
+            if (accepts(gbnf, text, "x") == contains) {
+                std::fprintf(stderr, "FAIL exclusion: %s %s\n", contains ? "accepted" : "refused",
+                             gbnf_format_literal(text).c_str());
+                ++failures;
+            }
+            ++checked;
+            if (contains) {
+                ++refused;
+            }
+        }
+        if (len == (size_t) max_len) {
+            return;
+        }
+        for (char c : alphabet) {
+            text.push_back(c);
+            walk(len + 1);
+            text.pop_back();
+        }
+    };
+    walk(0);
+    // a run that checked nothing (or refused nothing) would pass vacuously
+    if (checked < 4000 || refused < 100) {
+        std::fprintf(stderr, "FAIL exclusion: %ld strings checked, %ld refused\n", checked, refused);
+        ++failures;
+    }
+    std::printf("exclusion brute force: %ld strings, %ld with a forbidden sequence\n", checked, refused);
+}
+
 static void test_nested_json_string(void) {
     const std::string gbnf = strict(
         R"({"type":"object","properties":{"t":{"type":"string"}},"required":["t"],"additionalProperties":false})");
@@ -197,6 +248,32 @@ static void test_underscore_rule_names(void) {
     expect(twins, R"({"a_b":"x","a-b":"xy"})", false, "the hyphenated twin keeping its own minLength");
 }
 
+// Zod writes a nullable field as a union, and a `z.union` with `inclusive: false` as `oneOf`; the schema
+// generator ZCode uses even RENAMES anyOf to oneOf before sending.  The converter reads both as one union,
+// which is exact while the branches are disjoint - that is what a tagged union emits.
+static void test_unions_keyword_spellings(void) {
+    const std::string one_of = strict(
+        R"({"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"oneOf":[{"type":"string"},{"type":"integer"}]}}})");
+    expect(one_of, R"({"v":"x"})", true, "a oneOf branch holding a string");
+    expect(one_of, R"({"v":7})", true, "a oneOf branch holding an integer");
+    expect(one_of, R"({"v":true})", false, "a value outside both oneOf branches");
+
+    const std::string nullable = strict(
+        R"({"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"oneOf":[{"type":"object","additionalProperties":false,"required":["k"],"properties":{"k":{"type":"string"}}},{"type":"null"}]}}})");
+    expect(nullable, R"({"v":{"k":"x"}})", true, "the object branch of a nullable oneOf");
+    expect(nullable, R"({"v":null})", true, "the null branch of a nullable oneOf");
+    expect(nullable, R"({"v":{"k":"x</parameter>"}})", false, "a oneOf branch value spelling the closer");
+
+    // allOf is an intersection: the merged object requires what ANY branch requires, and keeps each
+    // branch's optional properties optional
+    const std::string all_of = strict(
+        R"({"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"allOf":[{"type":"object","properties":{"x":{"type":"string"}},"required":["x"]},{"type":"object","properties":{"y":{"type":"integer"}}}]}}})");
+    expect(all_of, R"({"v":{"x":"s"}})", true, "an allOf merge with only the required branch property");
+    expect(all_of, R"({"v":{"x":"s","y":3}})", true, "an allOf merge with the optional branch property too");
+    expect(all_of, R"({"v":{"y":3}})", false, "an allOf merge missing a required branch property");
+    expect(all_of, R"({"v":{"x":"s","y":"no"}})", false, "an allOf property outside its own branch's schema");
+}
+
 static void test_dictionaries(void) {
     const std::string dict = strict(R"({"type":"object","propertyNames":{"type":"string"},"additionalProperties":{"type":"string"}})");
     expect(dict, R"({"a":"b"})", true, "a dictionary with one entry");
@@ -223,6 +300,107 @@ static void test_dictionaries(void) {
         R"({"type":"object","additionalProperties":{"type":"object","additionalProperties":false,"required":["t"],"properties":{"t":{"type":"string"}}}})");
     expect(nested, R"({"k":{"t":"v"}})", true, "a dictionary of closed objects");
     expect(nested, R"({"k":{"t":"v</parameter>"}})", false, "a nested value spelling the closer raw");
+}
+
+// A constraint this converter cannot spell is dropped and reported, not refused: losing it widens the
+// value set and cannot break the delimiter guarantee, which is the only thing strict mode promises.
+// Client schemas hit this constantly - Zod writes `maximum` for every `.max()` number - and refusing them
+// failed whole turns, where llama.cpp's own conversion drops them silently.
+static void test_widened_constraints(void) {
+    // the grammar of a width-dropped schema must be the grammar without it, and must still refuse the closer
+    const std::string number = strict(R"({"type":"number","minimum":0,"maximum":100,"multipleOf":0.1})");
+    expect(number, "50.5", true, "a number inside the dropped bounds");
+    expect(number, "1e999", true, "a number outside the dropped bounds - the bound is gone, not narrowed");
+    const std::string plain_number = strict(R"({"type":"number"})");
+    if (number != plain_number) {
+        std::fprintf(stderr, "FAIL a dropped number bound changed the grammar\n");
+        ++failures;
+    }
+
+    const std::string object = strict(
+        R"({"type":"object","minProperties":1,"maxProperties":4,"additionalProperties":false,"required":["a"],"properties":{"a":{"type":"string"}}})");
+    expect(object, R"({"a":"x"})", true, "an object under dropped property-count bounds");
+    expect(object, R"({"a":"x</parameter>"})", false, "a nested value under dropped bounds still refuses the closer");
+
+    const std::string array = strict(R"({"type":"array","items":{"type":"string"},"uniqueItems":true})");
+    expect(array, R"(["a","a"])", true, "a duplicate item where uniqueItems was dropped");
+    expect(array, R"(["</parameter>"])", false, "an array item spelling the closer raw");
+
+    // a keyword beside a union, beside $ref, beside allOf, and beside enum is dropped (the converter reads
+    // the combinator first), so the request succeeds on the combinator's own terms.  Note the framing: an
+    // enum at a parameter root spells bare text (`"a"` in GBNF is the character a), while a union frames each
+    // branch as a nested value, so its string branch is quoted JSON - which serve/frontend decodes because a
+    // union's declared type is a list, not "string".
+    const std::string union_sibling = strict(R"({"anyOf":[{"type":"string"},{"type":"integer"}],"description":"x","minLength":2})");
+    expect(union_sibling, R"("a")", true, "a union with a sibling constraint outside its branches");
+    expect(union_sibling, "7", true, "the integer branch of a union with a sibling constraint");
+    const std::string enum_sibling = strict(R"({"type":"string","enum":["a","b"],"minLength":5})");
+    expect(enum_sibling, "a", true, "an enum with a dropped length bound");
+    expect(enum_sibling, "c", false, "a value outside an enum whose length bound was dropped");
+
+    // a dictionary beside declared properties: the emitted key rule spells the declared keys and excludes
+    // '<' from everything else, so the guarantee holds there too
+    const std::string mixed = strict(
+        R"({"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"string"}})");
+    expect(mixed, R"({"a":"x"})", true, "a declared property with a dictionary beside it");
+    expect(mixed, R"({"b":"y"})", true, "an extra key holding the dictionary's value type");
+    expect(mixed, R"({"a":"x</parameter>"})", false, "a declared-property value spelling the closer raw");
+    expect(mixed, R"({"b":"y</parameter>"})", false, "an extra-key value spelling the closer raw");
+    expect(mixed, R"({"<":"y"})", false, "an extra key with a raw '<'");
+
+    const std::string any_value = strict(
+        R"({"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":true})");
+    expect(any_value, R"({"b":[1,{"c":null}]})", true, "additionalProperties:true holds any value");
+    expect(any_value, R"({"b":"y</parameter>"})", false, "a free value beside a declared property refuses the closer");
+
+    // an unknown format constrains nothing this converter can spell; the string still cannot spell the closer
+    const std::string format = strict(R"({"type":"string","format":"hostname"})");
+    expect(format, "any-host", true, "a string whose format was dropped");
+    expect(format, "safe </parameter>", false, "a value whose format was dropped still refuses the closer");
+
+    // a pattern the converter cannot compile falls back to the guarded string (llama.cpp's warning path), so
+    // the value is wider but the closer is still impossible - including a pattern that ASKS for the closer
+    for (const char * pattern : {"^a", "^<+$", "^</parameter>$", "[a-z"}) {
+        const std::string schema = std::string(R"({"type":"string","pattern":")") + pattern + R"("})";
+        bool threw = false;
+        std::string gbnf;
+        try {
+            gbnf = strict(schema.c_str());
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        if (threw) {
+            std::fprintf(stderr, "FAIL a dropped pattern was refused: %s\n", schema.c_str());
+            ++failures;
+            continue;
+        }
+        expect(gbnf, "plain text", true, (std::string("text where the pattern ") + pattern + " was dropped").c_str());
+        expect(gbnf, "safe </parameter>", false, (std::string("the closer where the pattern ") + pattern + " was dropped").c_str());
+        expect(gbnf, "safe <</parameter>", false, (std::string("the overlapping closer where ") + pattern + " was dropped").c_str());
+    }
+
+    // propertyNames with a real constraint is dropped, and the key rule still excludes a raw '<'
+    const std::string named = strict(
+        R"({"type":"object","propertyNames":{"type":"string","maxLength":3},"additionalProperties":{"type":"integer"}})");
+    expect(named, R"({"any":1})", true, "a key over the dropped length bound");
+    expect(named, R"({"<":1})", false, "a key with a raw '<' despite the dropped constraint");
+
+    // a tuple IS expressed exactly: this used to be refused for not being an object schema
+    const std::string tuple = strict(R"({"type":"array","items":[{"type":"string"},{"type":"integer"}]})");
+    expect(tuple, R"(["a",1])", true, "a draft-7 tuple");
+    expect(tuple, R"([1,"a"])", false, "a tuple with its items in the wrong order");
+
+    // an enum beside a type is an exact narrowing: a value outside the declared type is unsatisfiable
+    const std::string narrowed = strict(R"({"type":"string","enum":["a",1,true]})");
+    expect(narrowed, "a", true, "the string branch of a mixed enum");
+    expect(narrowed, "1", false, "an integer that the declared string type excludes");
+
+    // an empty schema at a parameter root is "anything", which a generator writes for `z.unknown()`.  The
+    // root holds the JSON spelling of the value, so its strings still go through the protected `char`.
+    const std::string free_root = strict(R"({})");
+    expect(free_root, R"({"a":1})", true, "a free-form object at a parameter root");
+    expect(free_root, R"("<")", false, "the closer's first character as an unquoted root value");
+    expect(free_root, R"({"a":"safe </parameter>"})", false, "the closer inside a free-form root");
 }
 
 // A schema generator writes `record<string, unknown>` for a free-form map and `["string", "null"]` (or an
@@ -305,8 +483,8 @@ static void test_patterns_and_formats(void) {
     const std::string not_digit = strict(
         R"({"type":"object","additionalProperties":false,"required":["w"],"properties":{"w":{"type":"string","pattern":"^\\D+$"}}})");
     expect(not_digit, R"({"w":"abc"})", true, "a non-digit string");
-    expect(not_digit, R"({"w":"a1c"})", false, "a digit where \D refuses one");
-    expect(not_digit, R"({"w":"a<c"})", false, "a '<' where \D is used");
+    expect(not_digit, R"({"w":"a1c"})", false, "a digit where \\D refuses one");
+    expect(not_digit, R"({"w":"a<c"})", false, "a '<' where \\D is used");
 
     // a union is one production per branch, and each branch is framed as a nested value
     const std::string root_union = strict(R"({"anyOf":[{"type":"string"},{"type":"integer"}]})");
@@ -316,30 +494,51 @@ static void test_patterns_and_formats(void) {
 }
 
 // anything the converter would otherwise widen must be refused here, not silently unconstrained
+static void test_refs(void) {
+    // a $defs target is validated through the reference: what the grammar holds is the target's own node,
+    // so a strict target keeps the guarantee and a target strict mode refuses is refused here too
+    const std::string nested = strict(
+        R"({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"$ref":"#/$defs/s"}},"$defs":{"s":{"type":"string","minLength":2}}})");
+    expect(nested, R"({"a":"xy"})", true, "a $ref to a nested string, at its minimum length");
+    expect(nested, R"({"a":"x"})", false, "a $ref'd string one character short");
+    expect(nested, R"({"a":"xy</parameter>"})", false, "a $ref'd string spelling the closer");
+
+    // A parameter root holds raw text, so a root $ref must build its target under the root name - aliasing
+    // the target's nested rule would wrap the object in quotes.
+    const std::string root_ref = strict(
+        R"({"$ref":"#/$defs/o","$defs":{"o":{"type":"object","additionalProperties":false,"required":["n"],"properties":{"n":{"type":"integer"}}}}})");
+    expect(root_ref, R"({"n":7})", true, "a root $ref holding an object");
+    expect(root_ref, R"("{\"n\":7}")", false, "a root $ref spelled as a quoted JSON string");
+
+    // a self-referential $defs entry: the builder shares one rule, so the grammar terminates and stays
+    // as strict as its non-recursive part
+    const std::string recursive = strict(
+        R"({"$ref":"#/$defs/node","$defs":{"node":{"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"type":"string"},"child":{"$ref":"#/$defs/node"}}}}})");
+    expect(recursive, R"({"v":"a"})", true, "a recursive node without a child");
+    expect(recursive, R"({"v":"a","child":{"v":"b"}})", true, "a recursive node with one child");
+    expect(recursive, R"({"v":"a","child":{"v":"b","child":{"v":"c"}}})", true, "two levels of recursion");
+    expect(recursive, R"({"child":{"v":"b"}})", false, "a recursive node missing its required field");
+    expect(recursive, R"({"v":"a","child":{"v":"b</parameter>"}})", false, "a closer inside a nested child");
+}
+
 static void test_fail_closed(void) {
+    // Refused: the converter would fail on these, or produce a grammar that REFUSES a value the schema
+    // allows (a broken call, not a wider one).  Nothing here is a droppable constraint.
     const char * refused[] = {
-        R"({"$ref":"#/definitions/x"})",
-        R"({"type":"object","additionalProperties":true})",
-        R"({"anyOf":[{"type":"string"},{"type":"integer"}],"type":"string"})",
-        R"({"type":"object","additionalProperties":false,"properties":{"a":{"anyOf":[{"type":"string"},{"type":"integer"}],"patternProperties":{}}}})",
+        R"({"$ref":"#/definitions/x"})",                       // unresolvable: no such definition
+        R"({"$ref":"https://example.com/s.json"})",            // only local references into this document
+        // a $defs target strict mode refuses, reached through a reference
         R"({"type":"object","additionalProperties":false,"properties":{"a":{"anyOf":[]}}})",
         R"({"type":["string",1]})",
-        R"({"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"string"}})",
-        R"({"type":"object","propertyNames":{"type":"string","pattern":"^[a-z]+$"},"additionalProperties":{"type":"string"}})",
-        R"({"type":"object","propertyNames":{"enum":["a","b"]},"additionalProperties":{"type":"string"}})",
-        R"({"type":"object","propertyNames":{"type":"string","maxLength":3},"additionalProperties":{"type":"string"}})",
         R"({"type":"object","properties":[],"additionalProperties":{"type":"string"}})",
-        R"({})",
-        R"({"type":"object","properties":{"a":{}},"additionalProperties":false})",
-        R"({"type":"string","pattern":"^<+$"})",
-        R"({"type":"string","pattern":"^</parameter>$"})",
-        R"({"type":"string","pattern":"^a"})",
-        R"({"type":"string","format":"hostname"})",
-        R"({"type":"integer","minimum":10,"maximum":5})",
         R"({"type":"string","minLength":3,"maxLength":2})",
         R"({"enum":["a",1]})",
-        R"({"type":"integer","enum":[1],"minLength":2})",
         R"({"const":"a</parameter>b"})",
+        R"({"oneOf":[]})",
+        // an allOf merge that cannot be exact: the converter emits the same key twice, or demands a
+        // property that another branch forbids - either way the grammar refuses a legal object
+        R"({"type":"object","additionalProperties":false,"properties":{"a":{"allOf":[{"type":"object","properties":{"x":{"type":"string"}}},{"type":"object","properties":{"x":{"type":"integer"}}}]}}})",
+        R"({"type":"object","additionalProperties":false,"properties":{"a":{"allOf":[{"type":"object","properties":{"x":{"type":"string"}},"additionalProperties":false},{"type":"object","properties":{"y":{"type":"string"}}}]}}})",
     };
     for (const char * schema : refused) {
         bool threw = false;
@@ -353,18 +552,58 @@ static void test_fail_closed(void) {
             ++failures;
         }
     }
+
+    // Accepted with a warning: every one of these constrains the VALUE only, so dropping it widens the
+    // language and cannot break the delimiter guarantee.  Refusing them failed whole turns in clients that
+    // write such schemas by default (Zod emits `maximum` for every `.max()` number).
+    const char * widened[] = {
+        R"({"type":"object","additionalProperties":true})",
+        R"({"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"string"}})",
+        R"({"type":"string","format":"hostname"})",
+        R"({"type":"integer","enum":[1],"minLength":2})",
+        R"({"$ref":"#/$defs/s","maxLength":4,"$defs":{"s":{"type":"string"}}})",
+        R"({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"$ref":"#/$defs/d"}},"$defs":{"d":{"type":"number","minimum":1}}})",
+        R"({"anyOf":[{"type":"string"},{"type":"integer"}],"type":"string"})",
+        R"({"oneOf":[{"type":"string"}],"pattern":"^a$"})",
+        R"({"type":"object","additionalProperties":false,"properties":{"a":{"anyOf":[{"type":"string"},{"type":"integer"}],"patternProperties":{}}}})",
+        R"({"type":"object","additionalProperties":false,"properties":{"a":{"allOf":[{"type":"string"}]}}})",
+        // the converter's own warn-and-guard fallback: the pattern is dropped and the guarded string takes
+        // its place, which still cannot spell the closer - a weaker value constraint, not a broken call
+        R"({"type":"string","pattern":"^a"})",
+        R"({"type":"string","pattern":"^<+$"})",
+        R"({"type":"string","pattern":"^</parameter>$"})",
+        R"({"type":"object","propertyNames":{"type":"string","pattern":"^[a-z]+$"},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","propertyNames":{"enum":["a","b"]},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","propertyNames":{"type":"string","maxLength":3},"additionalProperties":{"type":"string"}})",
+        R"({"type":"object","additionalProperties":false,"required":["a"],"properties":{"a":{"$ref":"#/$defs/p"}},"$defs":{"p":{"type":"string","pattern":"^x<y$"}}})",
+        R"({"type":"integer","minimum":10,"maximum":5})",
+        // a nested empty schema is "anything", spelled by `value` whose every string goes through `char`
+        R"({"type":"object","properties":{"a":{}},"additionalProperties":false})",
+    };
+    for (const char * schema : widened) {
+        try {
+            strict(schema);
+        } catch (const std::exception & e) {
+            std::fprintf(stderr, "FAIL strict mode refused a droppable constraint: %s\n  %s\n", schema, e.what());
+            ++failures;
+        }
+    }
 }
 
 int main(void) {
+    test_exclusion_bruteforce();
     test_raw_root_string();
     test_raw_root_bounds();
     test_nested_json_string();
     test_large_length_bounds();
     test_literals_and_enums();
     test_dictionaries();
+    test_unions_keyword_spellings();
     test_underscore_rule_names();
     test_free_form_values();
+    test_widened_constraints();
     test_patterns_and_formats();
+    test_refs();
     test_fail_closed();
     if (failures != 0) {
         std::fprintf(stderr, "%d strict grammar test(s) failed\n", failures);

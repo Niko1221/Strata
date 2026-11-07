@@ -1,21 +1,26 @@
 // Vendored verbatim from llama.cpp 3cf03257f219afbe7334045ff7c6a06ac68c627d (common/json-schema.cpp), MIT license (see LICENSE-llama.txt in this directory).
-// Strata edits are marked with "STRATA:" and kept to the include-closure shims (json_compat.h, <cassert>)
-// so the converter builds with zero llama.cpp headers.
+// Strata edits are marked with "STRATA:".
+// They add the strict-mode keyword audit and the bound validation; the upstream conversion is unchanged.
 #include "json-schema.h"
-#include "json_compat.h"  // STRATA: shim for llama.cpp common.h — string_split only
+#include "json_compat.h"  // STRATA: shim for llama.cpp common.h - string_split only
 
 #include <cmath>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 class common_chat_schema_builder {
-    const common_json &      root_;
+    const common_json &      root_;       // the schema being built
+    const common_json &      ref_root_;    // STRATA: the document a $ref resolves against (== root_ normally)
     common_chat_schema_document & doc_;
+    // STRATA: report a keyword the built node does not express (strict tool mode); nullptr refuses instead
+    std::vector<std::string> * dropped_ = nullptr;
+    bool                     strict_ = false;
 
     // the targets built here, moved into doc_ once the whole schema is built
     std::map<std::string, common_chat_schema_ptr> refs_;
@@ -25,6 +30,85 @@ class common_chat_schema_builder {
 
     [[noreturn]] static void fail(const std::string & path, const std::string & msg) {
         throw std::runtime_error("JSON schema error at " + path + ": " + msg);
+    }
+
+    // STRATA: the keywords each node kind actually expresses.  A branch below reads one keyword at a time,
+    // and anything else in that subschema is dropped without a word - {"type":"number","minimum":1} converts
+    // to an unbounded number, a tuple loses minItems/maxItems.  Keeping the list inside the builder puts it
+    // next to the reads it describes, so a branch that starts reading a keyword has its list in the same
+    // function.  A keyword left over is REPORTED (strict tool mode turns it into a warning) or, without a
+    // sink, refused: every one of these constrains the value only, never the surrounding envelope, so losing
+    // it widens the language without breaking the delimiter guarantee.  `type` is always accepted: it
+    // selected the branch.
+    void audit_keywords(const common_json & schema, const std::string & path, common_chat_schema::node_kind kind) {
+        // Only what really is an annotation: contentEncoding/contentMediaType constrain the value (base64,
+        // JSON-in-a-string), so they are reported like any other unexpressed constraint instead of being
+        // waved through as documentation.
+        static const std::unordered_set<std::string> annotations = {
+            "$schema", "$id", "$comment", "$anchor", "$defs", "definitions", "title", "description",
+            "default", "examples", "deprecated", "readOnly", "writeOnly",
+        };
+        std::unordered_set<std::string> consumed;
+        switch (kind) {
+            case common_chat_schema::KIND_REF:     consumed = {"$ref"}; break;
+            case common_chat_schema::KIND_ANY_OF:  consumed = {"oneOf", "anyOf"}; break;
+            case common_chat_schema::KIND_ALL_OF:  consumed = {"allOf"}; break;
+            case common_chat_schema::KIND_CONST:   consumed = {"const"}; break;
+            case common_chat_schema::KIND_ENUM:    consumed = {"enum"}; break;
+            case common_chat_schema::KIND_INTEGER: consumed = {"minimum", "maximum", "exclusiveMinimum",
+                                                              "exclusiveMaximum"}; break;
+            case common_chat_schema::KIND_STRING:  consumed = {"pattern", "format", "minLength", "maxLength"}; break;
+            case common_chat_schema::KIND_ARRAY:   consumed = {"items", "minItems", "maxItems"}; break;
+            // a tuple's length is its item list, so a count beside it has nowhere to go
+            case common_chat_schema::KIND_TUPLE:   consumed = {"items", "prefixItems"}; break;
+            // propertyNames is read by the strict-mode preflight, which admits only the vacuous spellings
+            case common_chat_schema::KIND_OBJECT:  consumed = {"properties", "required", "additionalProperties",
+                                                              "propertyNames"}; break;
+            default: break;   // a leaf with no keywords of its own, or a union whose branches are audited in turn
+        }
+        for (const auto & [key, value] : schema.items()) {
+            (void) value;
+            if (annotations.count(key) || key == "type" || consumed.count(key)) continue;
+            // A keyword that does not constrain this node's type at all is a no-op in JSON Schema - not a
+            // loss, and saying so would bury the real notes in noise.  Everything else constrains the value,
+            // and this node cannot spell it.
+            const std::string node_type = type_name_of(kind);
+            if (!node_type.empty() && !keyword_applies_to_type(key, node_type)) continue;
+            const std::string note = "keyword '" + key + "' at " + path + " is not expressed by " +
+                                     common_chat_schema::kind_name(kind) + " and was dropped";
+            if (dropped_ != nullptr) {
+                dropped_->push_back(note);
+                continue;
+            }
+            fail(path, note);
+        }
+    }
+
+    // the `type` spelling of a JSON value, for the exact `enum`-beside-`type` narrowing below
+    static std::string json_type_name(const common_json & value) {
+        if (value.is_string())       return "string";
+        if (value.is_boolean())      return "boolean";
+        if (value.is_null())         return "null";
+        if (value.is_array())        return "array";
+        if (value.is_object())       return "object";
+        if (value.is_number_integer()) return "integer";
+        if (value.is_number())       return "number";
+        return "invalid";
+    }
+
+    // the `type` spelling of a built node, or "" for a kind no keyword map speaks about
+    static std::string type_name_of(common_chat_schema::node_kind kind) {
+        switch (kind) {
+            case common_chat_schema::KIND_NULL:    return "null";
+            case common_chat_schema::KIND_BOOLEAN: return "boolean";
+            case common_chat_schema::KIND_NUMBER:  return "number";
+            case common_chat_schema::KIND_INTEGER: return "integer";
+            case common_chat_schema::KIND_STRING:  return "string";
+            case common_chat_schema::KIND_ARRAY:
+            case common_chat_schema::KIND_TUPLE:   return "array";
+            case common_chat_schema::KIND_OBJECT:  return "object";
+            default: return "";
+        }
     }
 
     static int get_count(const common_json & schema, const std::string & key, const std::string & path, int def) {
@@ -94,7 +178,9 @@ class common_chat_schema_builder {
     }
 
     const common_json & resolve_ref(const std::string & ref, const std::string & path) {
-        const common_json * target = &root_;
+        // A JSON Pointer is rooted at the DOCUMENT, which is not necessarily the node being built: the tool
+        // builder compiles one parameter at a time, and its `#/properties/x` still names a sibling.
+        const common_json * target = &ref_root_;
         auto tokens = string_split(ref.substr(1), "/");
         for (size_t i = 1; i < tokens.size(); i++) {
             const std::string & sel = tokens[i];
@@ -247,6 +333,18 @@ class common_chat_schema_builder {
     }
 
     common_chat_schema_ptr build_node(const common_json & schema, const std::string & path) {
+        common_chat_schema_ptr node = build_node_value(schema, path);
+        // A schema whose `type` is an array becomes one branch per type, and each branch is audited on its
+        // own; the union node itself expresses none of the schema's keywords, so auditing it would report
+        // exactly the keywords the branches do honour.
+        const bool union_of_types = schema.is_object() && schema.contains("type") && schema.at("type").is_array();
+        if (strict_ && !union_of_types) {
+            audit_keywords(schema, path, node->kind());
+        }
+        return node;
+    }
+
+    common_chat_schema_ptr build_node_value(const common_json & schema, const std::string & path) {
         if (!schema.is_object()) {
             fail(path, "schema must be an object");
         }
@@ -272,6 +370,19 @@ class common_chat_schema_builder {
             for (const auto & t : type) {
                 common_json alt = schema;
                 alt["type"] = t;
+                if (strict_ && t.is_string()) {
+                    // A keyword only constrains values of the type it belongs to, so `minimum` beside "null"
+                    // means nothing - Zod writes exactly that for z.number().min(1).nullable(). Dropping it
+                    // from that branch is exact, not a widening; the branch's own audit decides the rest.
+                    for (const char * key : {"minLength", "maxLength", "pattern", "format", "minimum", "maximum",
+                                             "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "items",
+                                             "minItems", "maxItems", "properties", "required",
+                                             "additionalProperties", "propertyNames"}) {
+                        if (alt.contains(key) && !keyword_applies_to_type(key, t.get<std::string>())) {
+                            alt.erase(key);
+                        }
+                    }
+                }
                 node->children.push_back(build_node(alt, path + "/type/" + std::to_string(i++)));
             }
             return node;
@@ -285,8 +396,20 @@ class common_chat_schema_builder {
                 fail(path, "enum must be a non-empty array");
             }
             auto node = std::make_unique<common_chat_schema_enum>();
+            // STRATA (strict tool mode only): `enum` beside `type` is an intersection, so a value outside the
+            // declared type is unsatisfiable and dropping it is EXACT - not a widening.  That keeps a mixed
+            // enum such as {"type":"string","enum":["a",1]} convertible: the grammar spells `a` and the reply
+            // parser then decodes it with the declared type, so a surviving value always has the right type.
+            const std::string narrow_to = strict_ && type.is_string() ? type.get<std::string>() : std::string();
             for (const auto & value : values) {
+                if (!narrow_to.empty() && json_type_name(value) != narrow_to &&
+                    !(narrow_to == "number" && json_type_name(value) == "integer")) {
+                    continue;
+                }
                 node->values.push_back(value);
+            }
+            if (node->values.empty()) {
+                fail(path, "no enum value matches the declared type " + narrow_to);
             }
             return node;
         }
@@ -345,7 +468,11 @@ class common_chat_schema_builder {
     }
 
   public:
-    common_chat_schema_builder(const common_json & root, common_chat_schema_document & doc) : root_(root), doc_(doc) {}
+    common_chat_schema_builder(const common_json & root, common_chat_schema_document & doc, bool strict = false,
+                               std::vector<std::string> * dropped = nullptr,
+                               const common_json * ref_root = nullptr)
+        : root_(root), ref_root_(ref_root != nullptr ? *ref_root : root), doc_(doc),
+          dropped_(dropped), strict_(strict) {}
 
     common_chat_schema_ptr build() {
         auto node = build_node(root_, "#");
@@ -359,9 +486,35 @@ class common_chat_schema_builder {
     }
 };
 
-common_chat_schema_document common_chat_schema_from_json(const common_json & schema) {
+bool keyword_applies_to_type(const std::string & key, const std::string & type) {
+    static const std::unordered_map<std::string, std::unordered_set<std::string>> by_keyword = {
+        {"minLength", {"string"}},
+        {"maxLength", {"string"}},
+        {"pattern", {"string"}},
+        {"format", {"string"}},
+        {"minimum", {"integer", "number"}},
+        {"maximum", {"integer", "number"}},
+        {"exclusiveMinimum", {"integer", "number"}},
+        {"exclusiveMaximum", {"integer", "number"}},
+        {"multipleOf", {"integer", "number"}},
+        {"items", {"array"}},
+        {"prefixItems", {"array"}},
+        {"minItems", {"array"}},
+        {"maxItems", {"array"}},
+        {"properties", {"object"}},
+        {"required", {"object"}},
+        {"additionalProperties", {"object"}},
+        {"propertyNames", {"object"}},
+    };
+    const auto it = by_keyword.find(key);
+    return it == by_keyword.end() || it->second.count(type) > 0;
+}
+
+common_chat_schema_document common_chat_schema_from_json(const common_json & schema, bool strict,
+                                                         std::vector<std::string> * dropped,
+                                                         const common_json * ref_root) {
     common_chat_schema_document doc;
-    doc.root = common_chat_schema_builder(schema, doc).build();
+    doc.root = common_chat_schema_builder(schema, doc, strict, dropped, ref_root).build();
     return doc;
 }
 

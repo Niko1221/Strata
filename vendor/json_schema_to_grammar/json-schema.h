@@ -197,5 +197,22 @@ struct common_chat_schema_document {
 // A document shared by the PEG parsers built from its nodes, which it keeps alive
 using common_chat_schema_document_ptr = std::shared_ptr<const common_chat_schema_document>;
 
-// Throws std::runtime_error when the schema falls outside the supported subset.
-common_chat_schema_document common_chat_schema_from_json(const common_json & schema);
+// STRATA: whether a keyword constrains values of the given type at all, per JSON Schema.  Both the AST
+// builder and the strict-mode preflight need this to tell "this keyword does not apply here" (exact) from
+// "this keyword was dropped" (a widening).
+bool keyword_applies_to_type(const std::string & key, const std::string & type);
+
+// Throws std::runtime_error when the schema falls outside the supported subset.  `strict` additionally
+// reports every keyword the built node type does not express: `dropped` collects one line per keyword when
+// it is given, and without it a dropped keyword is refused.  Strict tool mode passes the sink and turns a
+// dropped keyword into a warning, because losing a value-side constraint cannot break the delimiter
+// guarantee - see docs/DETAILS.md, "the guarantee, and what is not one".
+//
+// STRATA: `ref_root` is the document a `$ref` resolves against when it is not `schema` itself.  A JSON
+// Pointer is defined against the whole document, so a caller that compiles one subschema at a time (the
+// tool builder turns every parameter into its own grammar) still has to resolve `#/properties/...` against
+// the schema the client sent.  Without it such a reference only resolves when its target happens to sit
+// inside the subschema being compiled.
+common_chat_schema_document common_chat_schema_from_json(const common_json & schema, bool strict = false,
+                                                        std::vector<std::string> * dropped = nullptr,
+                                                        const common_json * ref_root = nullptr);
