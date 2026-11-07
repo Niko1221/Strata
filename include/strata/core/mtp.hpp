@@ -98,6 +98,9 @@ public:
     bool experts_lend(std::string& err);      ///< snapshot to pinned host (the block stays in place)
     bool experts_reclaim(std::string& err);   ///< the snapshot back into the block, at the address it never left
 
+    /// STRATA_DRAFT_TIMING=1 / STRATA_MTP_PROFILE=1: flush the draft profilers' report now
+    /// (they auto-report only every 300 rounds; the summary site calls this so short runs see them).
+    void profile_flush() const;
     /// The draft layer's K/V state (read-only: --serve's STRATA_STATE_HASH check hashes it)
     const QsaState& kv_state() const { return st_; }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
