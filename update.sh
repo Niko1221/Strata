@@ -17,7 +17,7 @@ main() {
     if ! git pull --ff-only; then
       # The history of the repository was rewritten on 2026-10-06 (#1276): a clone made before that has no commit in
       # common with origin/main, so a fast-forward can never work. Say so, and move it over when nothing is lost.
-      if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] && ! git merge-base HEAD origin/main >/dev/null 2>&1; then
+      if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != "true" ] && git rev-parse --verify -q 'origin/main^{commit}' >/dev/null 2>&1 && ! git merge-base HEAD origin/main >/dev/null 2>&1; then
         echo
         echo "This clone is on the repository's old history (cleaned up on 2026-10-06): it has no commit in common"
         echo "with origin/main, so it cannot be updated by git pull."
