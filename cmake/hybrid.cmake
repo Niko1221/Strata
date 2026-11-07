@@ -61,6 +61,18 @@ foreach(_f IN LISTS _src_files)
   if(NOT STRATA_BUILD_DSV41 AND _rel MATCHES "^src/dsv41/")
     continue()
   endif()
+  # src/split is likewise its own engine path (strata-split, STRATA_BUILD_SPLIT, OFF by default;
+  # opt-in and gated by its own add_subdirectory, CMakeLists.txt). Its sources take their geometry
+  # from the defines the sFNX Makefile passes (FNX_MODEL -> FNX_27B, FNX_NCARD), which
+  # src/split/CMakeLists reproduces on its own targets; the hybrid glob mirrors the tree without
+  # them, and the moko flavor gate broke exactly there: build/hip-src/src/split/src/gguf.hpp hit
+  # `#error "FNX_27B is unset"`, model.hpp `FNX_NCARD is unset` plus the constexpr/static_assert
+  # chain that reads it, and kernels.hpp joined the same way through model.hpp. The engine splits
+  # every layer across 2-4 cards with host-memory exchange; a HIP copy inside strata_hip_objs has
+  # no consumer in a hybrid build and no defines to compile with.
+  if(NOT STRATA_BUILD_SPLIT AND _rel MATCHES "^src/split/")
+    continue()
+  endif()
   if(_rel MATCHES "\\.cu$")
     # Keep the .cu name so a sibling #include "foo.cu" still resolves, and
     # compile a .hip link of the same file. Tests, benches, and the NVFP4
@@ -80,7 +92,19 @@ foreach(_f IN LISTS _src_files)
     # strata_mmq source only under STRATA_EXPERIMENTAL_SM60, gated at run time
     # to cc-6.0-only machines. A HIP copy of it cannot compile (PTX constraints)
     # and could never dispatch on an AMD device, so it stays out of the glob too.
-    if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|/moe_ws(_gu_iq2|_gu_iq3|_down)?\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu")
+    # The same class, added by upstream v0.2.12: moe_iq4_w4a8.cu is the Turing+
+    # pipelined IQ4 w4a8 kernel (mma.m16n8k32, cp.async, __cvta_generic_to_shared
+    # - the moko flavor's HIP copy failed at gfx1150 on exactly those). Its one
+    # caller is moe_mmq.cu's Context::run iq4_w4a8 block, which sits inside
+    # `#if !defined(GGML_USE_HIP)`, and the HIP MMQ objects carry GGML_USE_HIP=1:
+    # no HIP object ever names its symbols, so it joins the exclusions rather
+    # than the file's own GGML_USE_HIP stub body (that body exists for the
+    # gfx906 backend, which compiles every CUDA source as HIP). And
+    # gdn_harness.cu is the GDN parity harness: an add_executable test target
+    # whose fixture header lives in tests/gdn/ - outside the src/ mirror - so
+    # it is the test class the glob already skips; upstream just did not name
+    # it _test/_bench/_parity.
+    if(_rel MATCHES "/mmq_nvfp4|/mmq_kq_lib\\.cu|/ggml_cuda_host\\.cu|/gdn_chunk\\.cu$|/moe_ws(_gu_iq2|_gu_iq3|_down)?\\.cu$|/gdn_harness\\.cu$|/moe_iq4_w4a8\\.cu$|_test\\.cu|_bench\\.cu|_parity\\.cu")
       continue()
     endif()
     string(REGEX REPLACE "\\.cu$" ".hip" _rel_out "${_rel}")
