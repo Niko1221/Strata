@@ -363,8 +363,10 @@ By default the model stays loaded until you close Strata. Three server options, 
 | `--before-load "cmd"` | `"before_load": "cmd"` or `["cmd", "arg"]` | A command run before the model is loaded again, for example one that unloads another server's model. |
 | | `"before_load_timeout_s": 120` | How long that command may run. When it fails or times out, the free VRAM decides: with `min_free_vram_mib` set and not enough free, the request gets **503** with `Retry-After`; otherwise the model loads with a warning. `"before_load_strict": true` always refuses on a failure; `"before_load_ignore_failure": true` always loads. |
 
-`POST /unload` unloads now (`409` while a request is running; `?wait=1` waits for the running turn, up to 300 s, or
-`?wait=<seconds>`). `POST /load` loads ahead of a request. Both need `Content-Type: application/json`:
+`POST /unload` unloads now (**409** with a readable `error.message` while a request is running **or the model is saving**;
+`?wait=1` waits for the running turn or save, up to 300 s, or `?wait=<seconds>`). `POST /load` loads ahead of a request.
+Engine death on either call answers **503** `{"error": {"type": "server_error"}}` instead of dropping the connection.
+Both need `Content-Type: application/json`:
 
 ```sh
 curl -X POST -H "Content-Type: application/json" localhost:8080/unload
@@ -374,10 +376,26 @@ curl -X POST -H "Content-Type: application/json" localhost:8080/unload
 Monitor shows the state. Unloading ends the engine process and the image encoder, so their VRAM and RAM return at once. The
 model files stay in the OS file cache, so loading again takes seconds while that RAM is not needed elsewhere.
 
+**Session ladder** (opt-in, `"session_ladder": {...}`): a per-conversation checkpoint ledger built on the engine's own
+session-file SAVE/RESTORE. A conversation that switches away is checkpointed at its turn end; `POST /unload` checkpoints
+every dirty conversation before the engine closes; the engine start after an unload hands the checkpoint back before the
+next request, so the prompt reads from the restored prefix instead of being re-prefilled. Subagent (child) sessions earn
+their own ledger entries: OpenCode carries each request's own session id in `x-opencode-session-id` while its affinity
+headers carry the parent's, and the ladder reads the own id first. A refused save or restore degrades
+to a cold prefill with one log line and never fails the request. Subagent checkpoints are retained on
+their own terms: an over-cap save retires a child file before an older main file, `retention_max_child_files`
+caps children so a fleet never fills the whole ledger, and a clean child checkpoint no request has touched
+for `child_ttl_s` is retired on the idle beat - a finished subagent never returns to the engine, and silence
+is the only completion signal the wire carries. The block's keys are `idle_save_s` (8.0),
+`retention_max_files` (16), `retention_max_child_files` (8) and `child_ttl_s` (21600, 0 disables the sweep);
+the park budget is read from the engine's own `--conversation-cache-mib`, and an enabled ladder
+without a resolvable budget refuses to start. Absent the block, everything above stays as it was.
+
 **Lazy start.** `serve/server.py --engine strata --config strata-<model>.json --lazy` (or `"lazy_load": true`) starts the HTTP
 API without the engine or the vision encoder. The first generation request or `POST /load` loads them, including
 `before_load` and `min_free_vram_mib`. `POST /v1/load` and `/v1/unload` are JSON control aliases (they need the API key,
-`application/json` and no foreign browser Origin, and return **409** while a request is active or queued). `/api/health`
+`application/json` and no foreign browser Origin, and return **409** while a request is active or queued **or the model is
+saving**). `/api/health`
 aliases `/health`, and `/v1/status` exposes `loaded` and `auto_load`.
 
 **Giving part of the VRAM back while it keeps serving** (opt-in, one NVIDIA GPU, [VRAM_ELASTIC.md](VRAM_ELASTIC.md)). With
@@ -791,9 +809,20 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   argument, default 4096, `0` = no check).
 - `--session-save-reclaim` (engine argument, off by default) lets a save that fails its RAM check first release reconstructible
   host caches (retained K/V, oldest unpinned parked conversations, unpinned checkpoints), and the server waits up to 30 s for
-  RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save.
+  RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save. RESTORE uses
+  the same opt-in: when the RAM check that precedes parsing refuses, the same ladder first frees those host caches, logs
+  `restore reclaimed ...` and asks RAM again; if the ladder runs dry the typed `memory` refusal stands and the engine keeps
+  serving. The checkpoint a restore would resume from - the deepest one and every pin - survives the ladder either way.
+  The restore's ladder runs **before** the file's stage table is compared with this runtime's, so a file that belongs to
+  another layer split (below) evicts those caches and is only then refused: the conversation it wanted is untouched, but
+  the caches were spent for nothing. On a multi-GPU rig, pin the split instead of leaning on this ladder.
 - Clients still send their messages and images; the file holds engine state and token identity, not a chat export. A follow-up
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
+- Format v2 adds the runtime's stage table to the file: one entry per later stage (its own layer range, its session carve's
+  QSA and GDN sizes, and whether its K/V group ends with the draft layer), per-stage parts of the live state and of every
+  checkpoint, and stage-ordered K/V groups (the draft group is present only when the engine has a drafter; an engine without
+  `--mtp` keeps none); a runtime without a split writes an empty table. A file written in format v1 (the
+  predecessor without the stage table) is refused with `unsupported version 1` before its RAM admission; save again to replace it.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
   rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
@@ -804,9 +833,32 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   no room; `500` for other I/O failures or an engine that ended. `error.published: true` means a save failed after its new
   file had replaced the old one. Requests must be `application/json` (else `415`) and come from no browser page, Strata's own
   page or a trusted origin.
-- Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
+- Not supported with `--peer-device`, `--batch` or `--prompt-cache 0`. It works with `--layer-split`: the file records the writing
+  runtime's stage table, and the capture, the RAM limits, the validation and the transfer all run per stage, each against its
+  own carve; a file written by another split - or by a runtime without one, or for a runtime that has one - is refused as
+  invalid before any device write (`saved with a different layer split than this runtime's`). **Pin the split for stable
+  files across restarts:** `--layer-split auto` recomputes the stage count every start from measured free VRAM, PCIe bandwidth
+  and SM clocks, and on cards of different speed the winner can flip within a few percent of measurement error - a file saved
+  today is then refused tomorrow on the stage-table comparison. Use `--layer-split N` with the value the startup log printed
+  (`layer split auto: K=…`); a manual value additionally keeps the server's per-boot card reorder (`ordered_gpus`) from
+  moving a stage to another card. The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
+- **What a restored conversation continues with.** The file is exact; the runtime under it is what can move. Expert placement
+  is routing state, not cell state, so no format check sees it: with a fixed placement (`--adapt-swaps 0`, or a tier that is
+  profile-ranked with no eviction) the turn after a restart-and-restore is byte-identical to the live turn; on an adaptive,
+  evicting expert cache the live and restored turns differ **from each other** too, because each server run placed the
+  experts differently, while the files re-saved from both stay byte-identical. A changed continuation after a restore is
+  therefore not evidence of a damaged file - the same kind of caveat the resident-experts rounding note carries. On a split,
+  placement also interacts with *which card* runs a layer (the verifier picks its arithmetic per compute capability), and the
+  device set is not part of the file's fingerprint: keep the same cards in the same split.
+- Save is streamed (each K/V part is read from its pool as the file is written); the **read** is not: parsing allocates every
+  array as it goes, and the RAM admit asks for `file bytes + 16 MiB + 4 KiB per segment + 1 MiB` once before it. On a host with
+  `--kv-resident` the full K/V is already pinned in host RAM, so a 250K-token restore needs several GB of transient RAM on top
+  of what the conversation-cache auto-sizing just spent parking that K/V: there, `SERR memory 0 not enough RAM to read it` is
+  the expected outcome near the limit rather than a fault, and the floor is worth raising before the file is. A two-pass
+  streamed read (validate, then apply block by block, the shape the serve-slot RESTORE uses) would remove the peak; it is not
+  implemented.
 
 ### The web page (Chat, Images, Monitor, About)
 
@@ -1047,8 +1099,9 @@ bits of the answer: a switch that changes rounding can change a greedy answer at
 | Setting | Applies to | Off switch | What it does |
 | --- | --- | --- | --- |
 | `STRATA_PREFILL_CPU_SHARE` (`auto`, cap `STRATA_PREFILL_CPU_SHARE_MAX=1024`) | CUDA, one GPU, no `--batch`, prompt chunks under 1,024 tokens | `STRATA_PREFILL_CPU_SHARE=0` | The CPU pool computes the experts few of the chunk's tokens route to, while the GPU works on the rest. `auto` measures per layer how long each side takes and checks that sharing pays. Skipped with one log line when RAM or commit is short. Output changes in the last bits. Layer split, batch slots and HIP keep it off unless you set it. |
-| `STRATA_ROUTE_TAIL_SKIP` (7) | CUDA, and HIP gfx1200/gfx1201; one GPU or a layer split | `STRATA_ROUTE_TAIL_SKIP=0` | A missed expert that every token of a verify window routes at rank 7 or lower is neither copied nor computed. Not applied when every expert is in VRAM, with `--batch` slots, with a peer tier or helper GPU, on other HIP and SYCL, or when 90% or more of the experts are cached (`STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves that line; it is 60% on an AMD layer split). Answers differ slightly from a run without it. |
+| `STRATA_ROUTE_TAIL_SKIP` (7) | CUDA, and HIP gfx1200/gfx1201; one GPU or a layer split, including while a helper GPU is attached | `STRATA_ROUTE_TAIL_SKIP=0` | A missed expert that every token of a verify window routes at rank 7 or lower is neither copied nor computed. Not applied when every expert is in VRAM, with `--batch` slots, with a peer tier, on other HIP and SYCL, or when 90% or more of the experts are cached (`STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves that line; it is 60% on an AMD layer split). While a helper GPU is attached the skip narrows to file-tier misses: an expert the helper holds, or one already in the host copy (a resident file or the anonymous arena), is still computed; the helper's start-up line says so. Answers differ slightly from a run without it. |
 | PCIe share from the CPU's speed | CUDA, one GPU or a layer split, no `--pcie-frac` | `--pcie-frac N` always wins; `STRATA_PCIE_FRAC_DEFAULT=old` keeps the probe-only rule; `STRATA_PCIE_AUTO_SPLIT=0` keeps the fixed probe share on a CUDA layer split; `STRATA_PCIE_K_RULE=0` and `STRATA_PCIE_SHARE_MAX=0.60` keep the 0.2.10 rule | The share starts at the probe's value and is refined in the first decode windows from the CPU pool's time per missed expert: `L / (L + k R)`, rounded to 0.05 and kept between 0.10 and 0.95, changed at most three times. k is 1.85 from a pool rate R of 30 GB/s of expert bytes and falls linearly to 0.8 at 12 GB/s (a weak pool is compute-bound), so a strong pool gets exactly the 0.2.10 shares (below 0.60) and a weak one up to 0.95. A CUDA layer split refines each stage by its own probed link. Integrated GPUs (Strix Halo and the other APUs) and `STRATA_DEFAULTS=026` keep k 1.85 and 0.60; on HIP the layer-split refinement stays opt-in (`STRATA_PCIE_AUTO_SPLIT=1`). Each change prints a `PCIe share:` line. On HIP it is the default for gfx1200/gfx1201; `STRATA_PCIE_FRAC_DEFAULT=auto` turns it on for other HIP parts. Measured on an RTX PRO 6000 (12 GB free): 2 x 12 GB layer split +12% decode; one card with 4 pool workers 56 -> 79 tok/s, 2 workers 31 -> 63, 32 workers unchanged. Output changes in the last bits (first-window KL 0.03 on the decode-window yardstick, the same as the single-card rule). |
+| `STRATA_ROUTE_TAIL_SKIP` (7) | CUDA, and HIP gfx1200/gfx1201; one GPU or a layer split, including while a helper GPU is attached | `STRATA_ROUTE_TAIL_SKIP=0` | A missed expert that every token of a verify window routes at rank 7 or lower is neither copied nor computed. Not applied when every expert is in VRAM, with `--batch` slots, with a peer tier, on other HIP and SYCL, or when 90% or more of the experts are cached (`STRATA_TAIL_SKIP_MAX_CACHED=<percent>` moves that line; it is 60% on an AMD layer split). While a helper GPU is attached the skip narrows to file-tier misses: an expert the helper holds, or one already in the host copy (a resident file or the anonymous arena), is still computed; the helper's start-up line says so. Answers differ slightly from a run without it. |
 | Chunk follows the host's memory | Linux file tier | `STRATA_PREFILL_HOST_PLAN=0` | See [Linux file tier](#linux-file-tier). |
 | Fused int8 prompt experts | gfx12 (R9700): IQ3_S and IQ3_XXS packs. 12.0 NVIDIA cards with 80 or more SMs: IQ2_S, IQ3_XXS, IQ3_S, IQ4_XS gate/up | `STRATA_PF_FUSED=0` | Replaces the MMQ prompt kernels. `STRATA_PF_FUSED=1` opts in every covered format on other cards (on HIP gfx11 and gfx1200/gfx1201 too; see [AMD_HIP.md](AMD_HIP.md)). |
 | Bare `--prefill auto` takes 32768-token chunks (16384 up to 0.2.10) | gfx12, Linux, one card | `STRATA_GFX12_CHUNK=0` (8192) or `=16` (16384), or `STRATA_GFX12_DEFAULTS=0` | An explicit `--prefill N`, `auto:N` or `STRATA_PREFILL_AUTO_MAX` is untouched. A 20K prompt is one chunk instead of 16384 + a tail (R9700, IQ3_S: 20K +12%, 32K +1.3%, 64K +2.6%; UD-Q4_K_XL 20K +26%); first-token KL against 16384 is at most 5e-5. The loan of cache slots is taken only for what a prompt needs; when the RAM left does not cover it the ceiling steps down to 16384, then 8192. |

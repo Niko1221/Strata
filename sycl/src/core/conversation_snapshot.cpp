@@ -271,7 +271,10 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
 }
 
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,
-                            int64_t upto, bool index, std::string& error) {
+                            int64_t upto, bool index, std::string& error, int device) {
+    (void) device;   // the shared signature carries the owning card for a layer split; this port is single-device,
+                     // and its reads run on the one queue (a signature that does not match the header is an
+                     // undefined symbol at link, since the header's default argument makes the call the 7-arg form)
     Layout l{};
     if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
     SessionKvSource s;

@@ -325,12 +325,54 @@ void full_session(int fmt, int mode, int experts) {
         ConversationKvReuse wrong{a.kv,65,65,{}};
         check(!conversation_snapshot_capture_bytes(wrong,view,ss,g,nullptr,peak,err),"a draft image's K/V is not a stage's reuse");
     }
+    // #4552: the park/restore resume marks the restored prefix (its own K/V rows), so the session that came
+    // back from a file is append-eligible for that same file - the steady state the ladder lives on.  The
+    // watermark is cleared first: marks only lower, and every restore above has been marking as it ran.
+    ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
     check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A after stage images");
+    {   const int64_t page=qsa_real_shapes().page_size;
+        check(ss.kv_first_dirty==session_whole_cells((int64_t)a.live.ids.size(),page),
+              "the whole resume marks the restored prefix, not token 0");
+        check(ss.kv_append_ok(page,(int64_t)a.live.ids.size()),
+              "a resumed conversation earns the next append of the file it was restored from"); }
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
     std::vector<uint8_t> spare(sizes.dead);
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
     check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
+
+    // Immutability watermark backstops (spec M8/M9): every restore path above marked ss as it ran; this phase
+    // resets the watermark and pins each backstop firing on its own.  The fixture carves QsaState by hand, so
+    // the owner back-link session_init wires in production is wired here.
+    {
+        const int64_t n=(int64_t)a.checkpoints[0].ids.size();   // 3 tokens; fixture geometry: idx_block 4
+        main.state.owner=&ss;
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        ConversationKv img;
+        check(conversation_kv_save(img,main.state,g,n,true,err)&&
+              conversation_kv_restore(img,main.state,g,n,true,err),"whole K/V restore into the session's own state");
+        check(ss.kv_first_dirty==n,"M9 (#4552): a completed K/V restore marks the RESTORED PREFIX, not token 0");
+        check(ss.kv_append_ok(1,n),"the restored session earns the same file's next append (#4552: no forced full rewrite after a resume)");
+
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        ConversationKv too_long;                                // a rejected attempt writes no bytes: the watermark stays true
+        conversation_kv_save(too_long,main.state,g,n,true,err);
+        check(!conversation_kv_restore(too_long,main.state,g,n+100,true,err),"M9: an over-long restore is refused before any write");
+        check(ss.kv_first_dirty==std::numeric_limits<int64_t>::max(),
+              "M9 (#4552): a refusal that touched no pools leaves the prior watermark valid");
+
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"M8: mount the 3-token checkpoint again");
+        check(ss.kv_first_dirty==0,"M8: the spare row floor(3/4) sits at token 0, below the saved boundary");
+        check(!ss.kv_append_ok(1,n),"a same-tokens mount refuses the append (the drill's mount case)");
+
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        ConversationCheckpoint deep=a.live;   // 65 tokens: a mount AT the saved length
+        check(conversation_checkpoint_restore(deep,ss,g,err),"M8: mount the full-length live state");
+        check(ss.kv_first_dirty==64,"M8 clamps a full mount to its spare-row row floor(65/4)*4");
+        check(!ss.kv_append_ok(1,65) && ss.kv_append_ok(1,64),
+              "dirty from 64: appending below 65 refuses, a write starting at 64 is eligible");
+    }
 }
 }
 

@@ -37,7 +37,8 @@ struct ConversationCheckpoint {
     // its buffers were laid out for (which experts the prompt reads in place and which it streams: that sets bits
     // too), the pipe value it was planned with, whether it is one chunk and whether the plan changed the buffers'
     // chunks.  A periodic checkpoint taken inside such a segment keeps it, so a read that goes on from there reads the
-    // rest in the same chunks with the same loan.  Run-time only, like `pinned` (a layer split saves no session files).
+    // rest in the same chunks with the same loan.  Run-time only, like `pinned` (a session file keeps its resume
+    // point, not the prompt-segment plans).
     struct PromptPlan {
         int64_t chunk = 0, from = -1, to = -1, lend = 0;
         double pipe = 0.0;
@@ -171,6 +172,14 @@ inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, 
     return true;
 }
 
+// One later stage: everything a format-v2 session file records about it and everything a restore must match.
+struct SessionStageGeom {
+    int64_t layer_lo = 0, layer_hi = 0;   // the stage's own layer range
+    int64_t qsa_alloc = 0, gdn_alloc = 0; // its session carve sizes
+    bool draft = false;                   // its K/V group ends with the draft layer's source
+    bool operator==(const SessionStageGeom&) const = default;
+};
+
 struct SavedConversation {
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
@@ -182,6 +191,8 @@ struct SavedConversation {
     bool cvec = true;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
+    // session-file format v2 only: the file's later-stage geometry, in stage order (park leaves this empty)
+    std::vector<SessionStageGeom> stage_table;
     // STRATA_PARK_ASYNC: set while a background copy fills this image's K/V; its deleter waits for that copy, and as
     // one of the last members it runs before any buffer is freed (whichever copy of the image goes last)
     std::shared_ptr<void> pending;

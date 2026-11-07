@@ -1,9 +1,10 @@
 // On-disk persistence of a conversation's state (SavedConversation): one file holding the running state, the
 // checkpoints the caller passes (the engine passes only the deepest one), every QSA layer's authoritative K/V and
-// the draft layer's K/V.  Pure host code: no CUDA.  Format v1 and the fail-closed read order are in
-// docs/DETAILS.md (Session files).
+// the draft layer's K/V.  Pure host code: no CUDA.  Format v2 and the fail-closed read order are in
+// docs/DETAILS.md (Session files): a stage table plus per-stage checkpoint parts and stage-grouped K/V groups
+// carry a --layer-split runtime, and format v1 files are refused as foreign.
 //
-// Format v1 is little-endian, with fixed-width integers and IEEE-754 floats; a big-endian build is refused at
+// Format v2 is little-endian, with fixed-width integers and IEEE-754 floats; a big-endian build is refused at
 // compile time.  The hashes detect accidental corruption; they do not authenticate a file: restore trusted files only.
 #pragma once
 
@@ -26,6 +27,15 @@ struct SessionFileIdentity {
     uint64_t model = 0, config = 0;
 };
 
+// The complete serializable state of a SessionHasher: 4 lanes, the pending tail (bytes past
+// npending are zero in a stored state), and the total of bytes hashed.
+struct SessionHasherState {
+    uint64_t lanes[4];
+    uint8_t pending[32];
+    uint8_t npending;  // 0..31
+    uint64_t total;
+};
+
 // Non-cryptographic 64-bit hash with xxHash64-style rounds (NOT the standard XXH64 stream): corruption and identity
 // checks, not adversarial input.  Streaming and one-shot agree.
 class SessionHasher {
@@ -33,6 +43,14 @@ public:
     explicit SessionHasher(uint64_t seed = 0);
     void update(const void* data, size_t n);
     uint64_t digest() const;
+    // The full streaming state, serializable for the v3 trailer's digest resume (a save
+    // continues hashing from the previous trailer's stored state without re-hashing the
+    // prefix).  `state()` zeroes `pending` past `npending`: two hashers that saw the same
+    // bytes compare byte-exactly over the whole 32 B pending area; `restore()` replaces all
+    // state (the seed carries in the lanes), so a restored hasher continues to the digest
+    // an uninterrupted hasher over the same bytes would give.
+    SessionHasherState state() const;
+    void restore(const SessionHasherState& s);
 private:
     void block(const uint8_t* p);
     uint64_t lane_[4];
@@ -41,6 +59,74 @@ private:
     uint64_t total_ = 0;
 };
 uint64_t session_hash64(const void* data, size_t n, uint64_t seed);
+
+// The session file v3 trailer record (fixed 128 B, closing one generation group; the layout
+// in docs/DETAILS.md and the plan): a group's `committed_bytes` is the file offset of its
+// trailer record, so the trailer occupies [committed_bytes, committed_bytes + 128) and the
+// next group starts at committed_bytes + 128.  `digest` hashes the payload zones of all
+// generations so far in physical append order (padding and trailer records skipped), seed 0;
+// `chain` is the previous trailer's `self_hash` (genesis: trailer_genesis_chain).  `self_hash`
+// covers every byte in use: session_hash64(record bytes [0, 120), seed 0).  The lanes/pending/
+// npending/hashed_bytes fields are the SessionHasherState that continues this generation's
+// digest into the next append.
+struct SessionTrailer {
+    uint8_t version = 3;
+    uint8_t npending = 0;     // 0..31
+    uint16_t reserved = 0;    // must be zero on disk
+    uint64_t gen = 0;         // 1-based generation number
+    uint64_t committed_bytes = 0;
+    uint64_t saved_tokens = 0;
+    uint64_t digest = 0;
+    uint64_t chain = 0;
+    uint64_t lanes[4] = {};
+    uint8_t pending[32] = {};
+    uint64_t hashed_bytes = 0;  // hasher total over the hashed zones (not the skipped ones)
+    uint64_t self_hash = 0;
+};
+static_assert(sizeof(SessionTrailer) == 128, "SessionTrailer mirrors the fixed 128 B record");
+
+// Parse one 128 B record: magic ∧ version 3 ∧ npending <= 31 ∧ reserved == 0 ∧ self_hash.
+bool trailer_parse(const uint8_t* bytes, SessionTrailer& out);
+// Write one record, filling the magic/reserved constants and recomputing self_hash.
+void trailer_bytes(const SessionTrailer& t, uint8_t (&bytes)[128]);
+// The chain start for generation 1: session_hash64 over the 16 bytes model-LE then config-LE.
+uint64_t trailer_genesis_chain(const SessionFileIdentity& id);
+
+// Session file v3 header (64 B, version 3): bytes 0..31 are immutable - magic, version,
+// header size, model, config - and the root hash at [32,40) covers ONLY that region
+// (session_hash64 of bytes 0..32, seed 0).  `payload` (committed_bytes of the newest
+// generation), `reserved0` (newest-trailer offset) and `reserved1` (next-group start =
+// newest trailer offset + 128) are advisory: a torn in-place header update must not distrust
+// the file - the trusted trailer's committed_bytes is authoritative, the header slots are a
+// fast path.
+struct SessionHeaderV3 {
+    uint64_t payload = 0, reserved0 = 0, reserved1 = 0;
+};
+void header_bytes_v3(uint8_t (&h)[64], const SessionFileIdentity& id, const SessionHeaderV3& body);
+bool header_parse_v3(const uint8_t* h, const SessionFileIdentity& expect, SessionHeaderV3& body, std::string& error);
+
+// A chain-validated generation of a v3 file: its parsed trailer, the offset of the trailer
+// record, and the file size it was found in.
+struct SessionCheckpoint {
+    SessionTrailer trailer;
+    uint64_t trailer_offset = 0;
+    uint64_t file_size = 0;
+};
+
+// The checkpoints of a v3 file, newest-first: header (identity-checked), then the header fast
+// path (reserved0) and the append anchor (reserved1 - 128), then a byte-wise scan-back
+// through the last torn window (a torn EOF puts the previous valid trailer off the 128 B grid
+// at almost every cut - an aligned-only scan loses it).  A candidate must parse, and its
+// committed_bytes must equal its own position (the structural rule: an inflated claim is
+// rejected even when its chain arithmetic passes).  Trust: gen 1 with chain == genesis; a
+// higher gen with a trusted gen-1 candidate before it whose self_hash matches its chain; or
+// the newest record corroborated by a fresh header pair (reserved0 == reserved1 - 128 == its
+// offset - both slots were written by the engine in its own commit).  A torn tail lands on
+// the previous complete checkpoint, never a half state.  False = no trusted checkpoint (the
+// caller's full-rewrite / self-heal verdict); the restore-side digest recompute stays the
+// authoritative verifier.
+bool session_file_checkpoints(const std::string& path, const SessionFileIdentity& id,
+                              std::vector<SessionCheckpoint>& newest_first, std::string& error);
 
 // Typed, length-delimited fields for an identity hash: each field is (tag, type, length, bytes), so two different
 // field lists never give the same byte stream, and a double is hashed by its exact bits (no decimal rounding).
@@ -146,11 +232,20 @@ struct SessionWriteOptions {
     // write starts.  Not a reservation: other writers can take the space afterwards.
     uint64_t min_free_bytes = 0;
     bool durable = true;            // flush the file before the rename and (POSIX) the folder after it
-    SessionProgress progress;
+    SessionProgress progress;      // called on the caller's thread; during a pipelined write a report follows real
+                                   // movement and may lag the bytes already handed off by at most the blocks in flight
     // "flush" (the file's flush, `bytes` = the file) and "publish" (rename and folder flush), before each starts
     SessionPhase phase;
-    // tests: return an errno value to make a step fail ("write", "file_flush", "rename", "dir_flush"), 0 to go on
+    // tests: return an errno value to make a step fail ("write", "file_flush", "writer_thread", "rename",
+    // "dir_flush"), 0 to go on; "writer_thread" forces the synchronous draining fallback
     std::function<int(const char* step)> fault;
+    // write format v3 (the append-log layout: header + generation group + 128 B trailer) instead of v2.
+    // Reading auto-detects by header version; this only chooses what a full write emits.
+    bool use_v3 = false;
+    // tests only: one call per FULL block written to the OS by the write path; `byte_end` is the file bytes
+    // written so far and (begin_ns, end_ns) are steady_clock nanoseconds bracketing the block's write_all.
+    // Called on the writer thread - or the caller's thread when the writer could not start.
+    std::function<void(uint64_t byte_end, uint64_t begin_ns, uint64_t end_ns)> block_span;
 };
 
 // Writes a temporary file beside `path` (a unique hidden name, created exclusively: never an existing file or link;
@@ -170,6 +265,10 @@ bool session_file_write(const std::string& path, const SavedConversation& image,
 struct SessionKvSource {
     int format = 0;
     int64_t cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0;
+    // v3 framing: the engine's pooled-row block size (idx_block).  0 = unknown (e.g. a captured
+    // image): the file then records 0 and append is refused for that layer (the committed pooled
+    // prefix is not append-trusted without it).
+    int64_t idx_block = 0;
     std::array<size_t, 5> sizes{};
     std::function<bool(size_t part, size_t offset, void* dst, size_t n)> read;
     std::function<std::string()> error;
@@ -178,6 +277,74 @@ struct SessionKvSource {
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
+
+// The save-side gate of the append path (spec §Commit discipline): the validator's newest
+// chain-valid checkpoint, its trailer's stored hasher state restored and SELF-VERIFIED (it must
+// reproduce the stored digest), and the newest generation's framing read through the chain walk
+// (mutable blocks only - the segment bytes are seeked over, never read): the record counts of
+// ids/imgs/stage parts and, per K/V layer part, the committed byte boundary the next group must
+// append at or above (whole cells rounded to the page size, whole completed pooled rows, the
+// draft layer's -1).  A boundary that cannot be recomputed (pooled rows written without a known
+// idx_block, a non-cell-proportional part) refuses the append: the caller full-rewrites.  So does
+// any file with bytes past its newest trailer (the EOF rule: a torn tail is rewritten in full
+// before appending again).  False = append declined for any reason (the caller's full-rewrite
+// verdict); the file is never touched.
+struct SessionReadLimits;  // declared with the read path below; the append plan takes the runtime's bounds too
+
+struct SessionAppendPlan {
+    SessionCheckpoint checkpoint;                      // the newest candidate the framing walk verified
+    SessionHasher hasher;                              // resumed from the checkpoint trailer's state
+    uint64_t group_start = 0;                          // checkpoint.trailer_offset + 128: where the new group starts
+    uint64_t prev_ids = 0, prev_imgs = 0;              // the newest generation's live record counts
+    std::vector<std::array<uint64_t, 2>> prev_parts;  // per stage part (stage order): its ids/imgs counts
+    std::vector<SessionStageGeom> stage_table;         // the file's stage table: an append never changes it
+    std::array<int64_t, 18> geometry{};                // the file's model geometry and layer carve
+    int64_t layer_lo = 0, layer_hi = 0;
+    struct LayerGeom {  // per layer: the append may grow the carve, never change or shrink it
+        int64_t format = 0, cells = 0, heads = 0, head_dim = 0, page_size = 0, pooled_rows = 0, idx_dim = 0,
+                idx_block = 0;
+    };
+    std::vector<LayerGeom> prev_geom;
+    std::vector<std::array<uint64_t, 5>> prev_bounds;  // per layer, per part: bytes already committed (the window's `from`)
+};
+bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id, SessionAppendPlan& plan,
+                              std::string& error, const SessionReadLimits& limits);
+
+// Appends one generation group to an existing v3 session file - no temp file, no rename, ever.
+// The gate re-anchors `plan` against the file (review finding M2: the validator scan runs
+// unconditionally - trust, max-gen, stale-header self-heal - and the 128 B record AT the plan's
+// offset must parse, be the newest validated checkpoint, and self-verify its resume state; the
+// trailer's self_hash pins every byte of the checkpoint the plan was derived from, so a stale or
+// foreign plan is refused before any write - `append_verify` seam, refusal leaves the file
+// byte-identical), anchors the header fast pair at the new group's start (`append_anchor`,
+// degrading, never fatal), streams the group (mutable block fresh, ids/imgs and K/V parts
+// suffix-only from the plan's boundaries: `append_write` seam), pads it, and writes the 128 B
+// trailer continuing the digest chain (`trailer_write`, then the commit fsync `trailer_flush`).
+// Only after that commit is durable does the header advance to the new generation (`header_update`
+// seam - non-fatal: a stale fast pair self-heals at the next save's anchor).  `bytes` reports the
+// appended delta.
+// A failure at any fatal seam leaves the file torn or whole; the previous checkpoint always
+// stands (the reader cascades to it, the next `session_file_append_plan` declines until a full
+// rewrite heals it).
+bool session_file_append(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
+                         const SessionFileIdentity& id, const SessionAppendPlan& plan, size_t& bytes, std::string& error,
+                         const SessionWriteOptions& options = {}, SessionStatus* status = nullptr);
+
+// The engine's append-vs-full-rewrite decision, as a pure function (unit-testable apart from any device).
+// `plan` non-null = session_file_append_plan succeeded on this file (a null plan already covers v2 files,
+// torn tails, damaged chains and foreign files - every case the plan refused).  `live` = the K/V sources
+// about to be written: same per-layer format/heads/head_dim/page_size/idx_dim/idx_block as the file's,
+// `cells`/`pooled_rows` free to grow.  `kv_first_dirty` = the session's immutability watermark
+// (SessionState::kv_first_dirty; INT64_MAX = nothing has rewritten a pool row since): eligible iff its
+// whole-page prefix reaches the checkpoint's whole-page committed prefix (saved_tokens rounded down - the
+// format re-emits the shared partial page every generation) - the same comparison SessionState::kv_append_ok
+// makes, kept here so this decision needs no session-state header.  Metal stance (spike S2 R6): Metal's
+// window_checkpoint_* paths bypass QsaState pool writes entirely, so a Metal build disables the append
+// path in the engine; a session nothing ever bumped stays eligible exactly because nothing rewrote its
+// pool rows - the watermark stays INT64_MAX on its own.
+enum class SessionSaveChoice : uint8_t { full_rewrite, append };
+SessionSaveChoice session_save_gate(const SessionAppendPlan* plan, const std::vector<SessionKvSource>& live,
+                                    int64_t kv_first_dirty, int64_t page, std::string& why);
 
 // The checkpoints worth a disk write: the deepest one (the next turn's resume point when the live tail was
 // rewritten).  Earlier checkpoints only serve edits further back and cost ~118 MB each at this geometry.
@@ -218,11 +385,25 @@ struct SessionReadLimits {
     // per K/V layer (the QSA layers, then the draft): the most bytes of each part (k, v, k_scale, v_scale, pooled).
     // A layer past the end of the list is bounded by the payload only.
     std::vector<std::array<uint64_t, 5>> max_kv_bytes;
+    // the live later-stage geometry (empty vector: a single-device runtime): a format-v2 file whose stage table
+    // differs from this is refused before its state arrays are read.  nullopt: not compared (test default).
+    std::optional<std::vector<SessionStageGeom>> stages;
+    uint64_t max_stages = UINT64_MAX;  // cap on the file's stage-table count; closedness bounds the file size
+    // the most bytes of each stage part's five running-state arrays, by the checkpoint's part index (a part's own
+    // arrays; the main checkpoint arrays stay bounded by max_state_bytes).  Parts past the end are bounded only
+    // by the payload.
+    std::vector<std::array<uint64_t, 5>> max_stage_state_bytes;
     // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
     // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
     SessionProgress progress;
 };
+// The 4-argument form: default (open) limits - the behavior before the gate learned the runtime's bounds.
+// The engine always passes the session's own SessionReadLimits so the plan walk obeys them.
+inline bool session_file_append_plan(const std::string& path, const SessionFileIdentity& id,
+                                     SessionAppendPlan& plan, std::string& error) {
+    return session_file_append_plan(path, id, plan, error, SessionReadLimits{});
+}
 // The largest file these limits admit (UINT64_MAX when one of them is open); session_file_read applies it.
 uint64_t session_read_max_file_bytes(const SessionReadLimits& limits);
 // What the RAM preflight is asked for a file of `file_bytes`: the parsed image (about the payload), the 16 MiB read
