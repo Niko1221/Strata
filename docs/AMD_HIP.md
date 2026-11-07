@@ -173,6 +173,10 @@ engine\strata-device.exe --selftest
 **Building it yourself.** `tools\hip\build_windows.bat` (Visual Studio 2022 Build Tools with the C++ workload, Python, git; no
 admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-win`, builds, and packages
 `dist\strata-windows-x64-hip.zip`. `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
+`START-HERE.bat --setup --engine-dir <build folder>` installs the program straight from a build folder
+(`build-hip-win\strata.exe` or any folder with `strata.exe`), without packaging a zip - the way to run a feature
+that only exists in a build of the source, such as `--kv q4lm8v` until it is released. The CPU image reader is
+copied from `build-vision\bin` or compiled once when pictures are on.
 `tools\hip\build_windows.bat tests` also builds the HIP tests. `STRATA_HIP_ARCHS` picks other architectures; for the RX 6000
 package use `STRATA_HIP_ARCHS="gfx1030;gfx1031"` and `package_engine.py --variant rdna2`.
 

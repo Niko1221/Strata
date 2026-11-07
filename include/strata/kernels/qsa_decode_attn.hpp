@@ -14,6 +14,7 @@
 // the real count comes from `step[kStepWidth]` as for every other capturable QSA kernel.
 #pragma once
 
+#include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/qsa.hpp"
 
 #include <cstdint>
@@ -29,7 +30,26 @@ struct QsaAttnPools {
     const uint16_t* v_scale = nullptr;
     const uint8_t* k_q4 = nullptr;      ///< q4_0 block_q4_0 [page][kv_head][page_size][head_dim / 32 * 18]
     const uint8_t* v_q4 = nullptr;
+    Q4Mode q4_mode = Q4Mode::kUniform;  ///< `--kv q4lm32`/`q4lm32s`: k_q4/v_q4 hold Max-Lloyd levels
     const int32_t* page_table = nullptr;
+    /// WP-2a window (`--kv q4lm32w`): the exact fp16 side pool, rows [win_r sinks][win_s + win_b recent ring],
+    /// [(row, kv_head, head_dim)] per tensor - no paging, always resident. A reader never indexes it by cell: it
+    /// asks `qsa_win_slot` for the row (or -1 = read quantized), with `n` = step[kStepNKv]. The sink rows are
+    /// cell-addressed (`cell < win_r`), written once and never moved. The recent rows are a ring,
+    /// `row = win_r + cell % (win_s + win_b)`, and hold cell `c` only while `win_tag` says so: a rewind or a
+    /// resume leaves a *later* cell in that slot, and the tag turns that into "read quantized" instead of
+    /// "read the wrong cell". `win_b` is the largest append batch the ring must serve at once (a prompt chunk:
+    /// every query of a batch has its own horizon, so the whole batch's window span is live simultaneously) -
+    /// see STRATA_KV_WINDOW_BATCH. Null (and win_s/r/b <= 0) when the window is off.
+    const uint16_t* k_win = nullptr;
+    const uint16_t* v_win = nullptr;
+    const int32_t* win_tag = nullptr;  ///< cell id of each recent ring row [(win_s + win_b)], or null (sinks only)
+    int win_s = 0;    ///< recent exact cells per horizon (STRATA_KV_WINDOW_S, default 128)
+    int win_r = 0;    ///< exact sink cells at the start (STRATA_KV_WINDOW_R, default 8)
+    int win_b = 0;    ///< recent ring rows beyond win_s: the largest append batch (STRATA_KV_WINDOW_BATCH)
+    // NOTE: no horizon field - readers take it from step[kStepNKv] (pos + 1, device-fresh and graph-safe;
+    // qsa_step_fill derives all four step entries from one position). A host horizon would bake stale on
+    // graph reuse.
 };
 
 /// Batch windows: every query's own K/V pools - query z reads p[z] (z < n).  n = 0: the call's one `pools`.
@@ -38,6 +58,48 @@ struct QsaAttnPoolsRows {
     QsaAttnPools p[kAttnRowsMax];
     int n = 0;
 };
+
+#if defined(__CUDACC__) || defined(__HIPCC__)
+/// True when the pools carry a live window: both side pools present, at least one exact cell, and - for the recent
+/// rows - the tag that makes them readable (the sink rows need none, they never move).
+inline __host__ __device__ bool qsa_win_on(const QsaAttnPools& p) {
+    return p.k_win != nullptr && p.v_win != nullptr &&
+           (p.win_r > 0 || (p.win_s > 0 && p.win_tag != nullptr));
+}
+
+/// Side-pool row that holds cell `c` under horizon `n` = step[kStepNKv], or -1 when the cell reads quantized.
+/// A sink cell always hits its own row; a recent cell hits its ring row only while that row's tag still names `c`
+/// (a rewind or a resume can leave a later cell there) - otherwise -1, and the caller reads the quantized pool.
+inline __host__ __device__ long long qsa_win_slot(const QsaAttnPools& p, long long c, long long n) {
+    if (c < (long long) p.win_r) return c;
+    if (p.win_s <= 0 || c < n - (long long) p.win_s) return -1;
+    const long long ring = (long long) p.win_s + (long long) p.win_b;
+    if (ring <= 0 || p.win_tag == nullptr) return -1;
+    const long long i = c % ring;
+    if ((long long) p.win_tag[i] != c) return -1;
+    return (long long) p.win_r + i;
+}
+#else
+/// True when the pools carry a live window: both side pools present, at least one exact cell, and - for the recent
+/// rows - the tag that makes them readable (the sink rows need none, they never move).
+inline bool qsa_win_on(const QsaAttnPools& p) {
+    return p.k_win != nullptr && p.v_win != nullptr &&
+           (p.win_r > 0 || (p.win_s > 0 && p.win_tag != nullptr));
+}
+
+/// Side-pool row that holds cell `c` under horizon `n` = step[kStepNKv], or -1 when the cell reads quantized.
+/// A sink cell always hits its own row; a recent cell hits its ring row only while that row's tag still names `c`
+/// (a rewind or a resume can leave a later cell there) - otherwise -1, and the caller reads the quantized pool.
+inline long long qsa_win_slot(const QsaAttnPools& p, long long c, long long n) {
+    if (c < (long long) p.win_r) return c;
+    if (p.win_s <= 0 || c < n - (long long) p.win_s) return -1;
+    const long long ring = (long long) p.win_s + (long long) p.win_b;
+    if (ring <= 0 || p.win_tag == nullptr) return -1;
+    const long long i = c % ring;
+    if ((long long) p.win_tag[i] != c) return -1;
+    return (long long) p.win_r + i;
+}
+#endif
 
 /// Scratch floats for `cap` selected cells: partial accumulators, maxima and sums.
 uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s);

@@ -1,0 +1,37 @@
+{
+ "exe": "C:\\Users\\krone\\git\\kv-quant-strata-0.2\\build-hip-port\\strata.exe",
+ "args": [
+  "--pack",
+  "C:\\Users\\krone\\git\\Strata-data\\packs\\swift-iq3_xxs",
+  "--native",
+  "C:\\Users\\krone\\git\\Strata-data\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "--ple-gguf",
+  "C:\\Users\\krone\\git\\Strata-data\\models\\swift-IQ3_XXS\\Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+  "--expert-profile",
+  "C:\\Users\\krone\\git\\kv-quant-strata\\data\\expert-profile.bin",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "C:\\Users\\krone\\git\\Strata-data\\mtp\\rt",
+  "--kv",
+  "int8",
+  "--max-context",
+  "133120",
+  "--prefill",
+  "auto"
+ ],
+ "cwd": "C:\\Users\\krone\\git\\kv-quant-strata-0.2",
+ "tokenizer": "C:\\Users\\krone\\git\\Strata-data\\packs\\swift-iq3_xxs\\tokenizer",
+ "model_name": "swift-1.5-iq3_xxs",
+ "log": "C:\\Users\\krone\\AppData\\Local\\Temp\\opencode\\perf\\needle-int8.engine.log",
+ "lib_dirs": [
+  "C:\\Program Files\\AMD\\ROCm\\7.1\\bin"
+ ],
+ "port": 7601,
+ "backend": "hip",
+ "env": {
+  "STRATA_PREFILL_CPU_SHARE": "0"
+ }
+}

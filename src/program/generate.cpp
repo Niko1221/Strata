@@ -1045,6 +1045,27 @@ void usage() {
                  "                       VRAM; default fp16 until gate G-C accepts int8\n"
                  "  --kv q4_0            4-bit K/V after a Hadamard rotation (PR #21): half of int8's memory,\n"
                  "                       slightly lower precision (see bench/results/2026-09-27-kv-q4)\n"
+                 "  --kv q4lm32          q4_0's blocks and rotation with Max-Lloyd's 16 levels for N(0,1) in place of\n"
+                 "                       ggml's uniform grid (kv_q4.hpp): the same 576 B/cell, lower 4-bit error\n"
+                 "  --kv q4lm32s         the same levels with each block's own least-squares scale instead of\n"
+                 "                       max|x|/87: one extra reduction per block in the writer, the lowest error\n"
+                 "                       of the three\n"
+                 "  --kv q4lm32w         q4lm32's blocks, but the first R (sink) and most recent S cells read\n"
+                 "                       exact fp16 from a side pool. S/R via STRATA_KV_WINDOW_S/_R (default\n"
+                 "                       128/8, 0/0 is q4lm32); the same window can be enabled on q4lm8v with\n"
+                 "                       STRATA_KV_WINDOW=1. No snapshots in this mode\n"
+                 "  --kv q4lm8v          4-bit Lloyd (16-level K, 8-level V) plus the exact-cell window: the first R\n"
+                 "                       (sink) and the most recent S cells of each QSA layer read exact fp16 from\n"
+                 "                       a ring sized for the prompt chunk. STRATA_KV_WINDOW=1, S/R via\n"
+                 "                       STRATA_KV_WINDOW_S/_R (setup writes 256/64). At 128K with B=6144: 5.29\n"
+                 "                       bit/cell, 1,016 MiB against int8's 1,584; prompt 528 vs 526 tok/s, decode\n"
+                 "                       34.2 vs 35.2 (inside int8's run spread), +14%% expert slots (RX 9060 XT,\n"
+                 "                       Windows HIP). Without STRATA_KV_WINDOW=1: the plain probe, measurably\n"
+                 "                       less precise than int8\n"
+                 "  --kv q4lm8[q4lm8k]  WP-2 PROBE (measurement only, not a byte layout): the same blocks\n"
+                 "                       and the same 576 B/cell, with Max-Lloyd's 8-level (3-bit) table for N(0,1)\n"
+                 "                       on both tensors or on K only. Answers whether the fixed\n"
+                 "                       Hadamard survives 3 bits before a 3-bit layout is built\n"
                  "  --kv k8v4            hybrid: INT8 K (exact attention scores) + rotated Q4_0 V, 816 B/cell\n"
                  "                       (vs int8's 1,056); streams with --kv-resident too\n"
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
@@ -4272,12 +4293,26 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (o.kv == "q4") o.kv = "q4_0";
-    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "k8v4") {
-        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0 or k8v4\n");
+    if (o.kv != "fp16" && o.kv != "int8" && o.kv != "q4_0" && o.kv != "q4lm32" && o.kv != "q4lm32s" &&
+        o.kv != "q4lm8" && o.kv != "q4lm8k" && o.kv != "q4lm8v" && o.kv != "q4lm32w" && o.kv != "k8v4") {
+        std::fprintf(stderr, "strata generate: --kv must be fp16, int8, q4_0, q4lm32, q4lm32s, q4lm8, q4lm8k, "
+                             "q4lm8v, q4lm32w or k8v4\n");
         return 2;
     }
     strata::core::qsa_set_kv_int8(o.kv == "int8");
-    strata::core::qsa_set_kv_q4(o.kv == "q4_0");   // PR #21: 4-bit codes after a Hadamard rotation (kv_q4.hpp)
+    strata::core::qsa_set_kv_q4(o.kv == "q4_0" || o.kv == "q4lm32" || o.kv == "q4lm32s" ||   // PR #21: 4-bit after a Hadamard rotation
+                                o.kv == "q4lm8" || o.kv == "q4lm8k" || o.kv == "q4lm8v" || o.kv == "q4lm32w");
+    // `--kv q4lm32` / `q4lm32s`: the same 4-bit blocks with Max-Lloyd's levels instead of ggml's uniform grid,
+    // and either max|x|/87 or the block's own least-squares scale (kv_q4.hpp, Q4Mode).  `--kv q4lm8*` is the WP-2
+    // probe: the same blocks and bytes with the 8-level (3-bit) table on K and V / K only / V only - a quality
+    // measurement of a 3-bit codebook, not a 3-bit layout.
+    strata::core::qsa_set_kv_q4_mode(o.kv == "q4lm32s" ? strata::kernels::Q4Mode::kLloydLs
+                                     : o.kv == "q4lm32" ? strata::kernels::Q4Mode::kLloyd
+                                     : o.kv == "q4lm32w" ? strata::kernels::Q4Mode::kLloydWin
+                                     : o.kv == "q4lm8"  ? strata::kernels::Q4Mode::kLloyd8
+                                     : o.kv == "q4lm8k" ? strata::kernels::Q4Mode::kLloyd8K
+                                     : o.kv == "q4lm8v" ? strata::kernels::Q4Mode::kLloyd8V
+                                                        : strata::kernels::Q4Mode::kUniform);
     // STRATA_KV_ROT=1: INT8 K/V through the Hadamard rotation --kv q4_0 already uses. Opt-in: first-token KL to
     // fp16 K/V improved on an NVFP4 pack (0.0066 -> 0.0051) but not on IQ2_XS (0.0022 -> 0.0054)
     const char* kv_rot = std::getenv("STRATA_KV_ROT");
@@ -4290,6 +4325,18 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    if (o.kv_resident > 0 && strata::core::qsa_kv_win()) {
+        // The exact-cell window keeps its recent cells in an always-resident side pool; a streamed KV
+        // (--kv-resident) has no such pool, so the window would read quantized where it promises exact - a silent
+        // wrong measurement, not a crash. Refused loudly instead. Setup never writes this pair (a q4lm8v config's
+        // KV cache stays in VRAM, nothing streams beside the window); this is the fallback for a hand-edited
+        // config that sets both.
+        std::fprintf(stderr, "strata: --kv-resident (KV streaming) and the exact-cell window (--kv q4lm8v + "
+                            "STRATA_KV_WINDOW=1) do not combine: the streamed cells have no resident side pool, so "
+                            "the window would read quantized. Keep the window without --kv-resident, or use --kv "
+                            "int8/q4_0/k8v4 for streaming\n");
+        return 2;
+    }
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
@@ -5285,6 +5332,43 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);
         return 2;
+    }
+
+    // WP-2a window: the recent ring must hold one prompt chunk's whole window span (every query of a chunk has
+    // its own horizon), and the chunk is only known here - so size it for `o.prefill_chunk` (<= 0 = no batched
+    // prefill). An explicit STRATA_KV_WINDOW_BATCH wins, and the append checks a too-small ring loudly. This is
+    // before the first `session_init`/`qsa_state_bytes`, i.e. before the side pool is carved.
+    //
+    // The window's memory figure (setup.py: 152 MiB at 128K, 625 B/cell) is measured with B = 6,144, the Windows
+    // HIP auto chunk. Auto reaches 8,192/16,384/32,768 on other hosts; letting the ring follow that would make
+    // setup's estimate too small by up to ~600 MiB. The ring therefore holds at most 6,144 cells' chunk on every
+    // backend: a larger --prefill is capped with a note, which also keeps the accepted prompt chunk safe.
+    // A ring the user sized (STRATA_KV_WINDOW_BATCH) is left alone: the cap exists for the default ring, and a
+    // chunk that does not fit an explicit ring is refused by the append, which says what to change.
+    constexpr int64_t kKvWinBatchMax = 6144;
+    if (strata::core::qsa_kv_win() && g.n_qsa_layers() > 0) {
+        int64_t chunk = o.prefill_chunk > 0 ? o.prefill_chunk : 512;
+        if (!strata::core::qsa_kv_win_batch_is_explicit()) {
+            // The auto scan's ceiling floors at 8192 (#282, auto_ceiling below), and the host cap is read at
+            // parse time where a free ring cannot influence it - so without this the scan may pick 8,192 while
+            // the ring holds S + 6,144, and the batched append exits mid-prompt.  Measured on this PC (RX 9060
+            // XT, Windows HIP 7.1): --kv q4lm8v STRATA_KV_WINDOW=1 S=256 R=64 --prefill auto:16384, an
+            // 8,191-token prompt -> "kv_append_win: 8191 cells in one batch do not fit the 6400-row recent
+            // ring", exit 1, no DONE.  An explicit STRATA_KV_WINDOW_BATCH stays out of it: the append's
+            // loud refusal is the contract for a ring the user sized.
+            o.prefill_auto_cap = kKvWinBatchMax;
+        }
+        if (chunk > kKvWinBatchMax && !strata::core::qsa_kv_win_batch_is_explicit()) {
+            std::fprintf(stderr,
+                         "strata generate: the exact-cell window's ring holds 6,144-cell prompt chunks; "
+                         "--prefill %lld is capped at 6,144 (setup's 152 MiB figure)\n",
+                         (long long) chunk);
+            chunk = kKvWinBatchMax;
+            o.prefill_chunk = kKvWinBatchMax;
+            if (o.prefill_auto) o.prefill_auto_max = std::min(o.prefill_auto_max, kKvWinBatchMax);
+        }
+        strata::core::qsa_set_kv_win_batch(g, chunk);
+        strata::core::qsa_kv_win_freeze();
     }
 
     strata::core::SessionState ss;
