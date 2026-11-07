@@ -35,10 +35,12 @@ size_t row_size(int type, int64_t k) { return ggml_row_size((ggml_type) type, k)
 
 bool gg_cpu_type(int type) {
     // every type ggml-cpu has a row dot for (ds4_gguf.cu's known types); the i-quants with a device kernel are usually
-    // placed in VRAM, but a pack may hand any of them to this lane
+    // placed in VRAM, but a pack may hand any of them to this lane.  MXFP4 (39) here only as the down of a low-bit
+    // layer (Unsloth's UD-Q2_K_XL; ggml-cpu's MXFP4 x Q8_0 dot): a layer whose gate / up are MXFP4 too takes
+    // ds4_gguf_cpu.cpp's own rows (cpu_experts_mx)
     switch (type) {
         case 10: case 11: case 12: case 13: case 14: case 16: case 17: case 18: case 19: case 20: case 21: case 22:
-        case 23: case 29: return true;
+        case 23: case 29: case 39: return true;
         default: return false;
     }
 }

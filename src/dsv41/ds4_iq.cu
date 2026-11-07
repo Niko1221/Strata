@@ -476,6 +476,14 @@ __device__ __forceinline__ void deq8(const uint8_t* __restrict__ row, int kb, in
         const int8_t* kv = (const int8_t*) tab;
 #pragma unroll
         for (int j = 0; j < 8; ++j) w[j] = dl * (float) kv[p < 2 ? qs[j] & 15 : qs[j] >> 4];
+    } else if constexpr (T == kMXFP4) {   // as decode_b: ggml's kvalues_mxfp4 (the E2M1 values doubled) times 2^(e - 128)
+        const uint32_t e = b[0];
+        const float dl = __uint_as_float(e < 2 ? 0x00200000u << e : (e - 1) << 23);
+        const uint8_t* qs = b + 1 + 8 * (p & 1);
+        constexpr int8_t kv[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+#pragma unroll
+        for (int j = 0; j < 8; ++j) w[j] = dl * (float) kv[p < 2 ? qs[j] & 15 : qs[j] >> 4];
+        (void) tab;
     } else if constexpr (T == kQ4_K) {
         int sc, m;
         q4k_scale(b + 4, ib, sc, m);
@@ -1122,6 +1130,13 @@ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps 
         default: return false;       \
     }
 
+// The down role's types: the low-bit ones and MXFP4 beside a low-bit gate / up (supported_down)
+#define DS4_IQ_SWITCH_DOWN(t, F)  \
+    if ((t) == kMXFP4) {          \
+        F(kMXFP4);                \
+    } else                        \
+        DS4_IQ_SWITCH(t, F)
+
 // CUDA: a persistent grid (the resident blocks of the device, split over the groups), each block looping over row tiles with
 // its codebook loaded once; HIP keeps the full grid (one tile a block)
 template <auto Kernel>
@@ -1510,10 +1525,17 @@ bool supported(int t) {
     }
 }
 
+bool supported_down(int t) {
+#if defined(STRATA_METAL)
+    if (t == kMXFP4) return false;   // (metal_host::iq_dn / iq_set_dn take the low-bit types only)
+#endif
+    return t == kMXFP4 || supported(t);
+}
+
 bool known(int t) { return block_bytes(t) > 0; }
 
 int block_values(int t) {
-    if (t == kIQ4_NL) return 32;   // (ggml's QK4_NL: the only type here whose block is not 256 values)
+    if (t == kIQ4_NL || t == kMXFP4) return 32;   // (ggml's QK4_NL and QK_MXFP4: the blocks that are not 256 values)
     return is_tq(t) ? 128 : block_bytes(t) > 0 ? 256 : 0;
 }
 
@@ -1534,6 +1556,7 @@ int block_bytes(int t) {
         case kIQ1_S: return Ty<kIQ1_S>::B;
         case kIQ1_M: return Ty<kIQ1_M>::B;
         case kIQ4_NL: return Ty<kIQ4_NL>::B;
+        case kMXFP4: return Ty<kMXFP4>::B;
         default: return 0;
     }
 }
@@ -1560,6 +1583,7 @@ const char* name(int t) {
         case kIQ1_S: return "IQ1_S";
         case kIQ1_M: return "IQ1_M";
         case kIQ4_NL: return "IQ4_NL";
+        case kMXFP4: return "MXFP4";
         default: return "?";
     }
 }
@@ -1589,7 +1613,7 @@ bool down(const Args& a, int groups, int ne_max, cudaStream_t s) {
     if (is_tq(a.td)) return tq::down(a, groups, ne_max, s);
     if (a.n_ff % 256 != 0 || a.n_embd % (kWarps * kDnRW) != 0) return false;
 #define DN_(T) dn_ne<T>(a, groups, ne_max, s)
-    DS4_IQ_SWITCH(a.td, DN_)
+    DS4_IQ_SWITCH_DOWN(a.td, DN_)
 #undef DN_
     return true;
 }
@@ -1655,7 +1679,7 @@ bool set_down(const SetArgs& a, cudaStream_t s) {
     }
     const dim3 grid((unsigned) ((a.max_rows + BM - 1) / BM), (unsigned) (a.n_embd / BN), (unsigned) a.n_exp);
 #define SD_(T) launch_set<T, false>(t, grid, s)
-    DS4_IQ_SWITCH(a.td, SD_)
+    DS4_IQ_SWITCH_DOWN(a.td, SD_)
 #undef SD_
     return true;
 }

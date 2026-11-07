@@ -1177,8 +1177,8 @@ bool iq_args(const x3::ExpertLayout& lay, int n_embd, int n_ff, float limit, iq:
     ia.limit = limit;
     ia.tg = expert_type(lay, 0);
     ia.td = expert_type(lay, 2);
-    if (ia.tg != expert_type(lay, 1) || !iq::supported(ia.tg) || !iq::supported(ia.td) || n_embd % iq::block_values(ia.tg) != 0 ||
-        n_ff % iq::block_values(ia.td) != 0) {
+    if (ia.tg != expert_type(lay, 1) || !iq::supported(ia.tg) || !iq::supported_down(ia.td) ||
+        n_embd % iq::block_values(ia.tg) != 0 || n_ff % iq::block_values(ia.td) != 0) {
         std::fprintf(stderr, "ds4 gguf %s: expert types %s / %s / %s (n_embd %d, n_ff %d) not covered\n", who,
                      type_name(expert_type(lay, 0)), type_name(expert_type(lay, 1)), type_name(expert_type(lay, 2)),
                      n_embd, n_ff);
