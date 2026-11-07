@@ -259,7 +259,6 @@ For testing. All are off unless set; the defaults are described above.
 | `STRATA_METAL_MTP_Q8=0` | The draft layer's matrices in BF16 instead of Q8_0 |
 | `STRATA_METAL_MTP_CHAIN=0` | One GPU submission per draft step instead of one per round |
 | `STRATA_METAL_FUSE=0`, `STRATA_METAL_LAZY_FOLD=0` | Turn off two decode fusions (same tokens, slower) |
-| `STRATA_METAL_PARTIAL=1`, `STRATA_METAL_ROUTE=1` | Two decode variants that measured no faster. `ROUTE` is also wrong on an M1 Max (stale routing logits) |
 | `STRATA_METAL_PROMPT_EXPERTS=v3` | The M5 layout for the prompt's expert GEMMs. Fails on an M1 Max, so it is off there (default v2) |
 | `STRATA_METAL_STREAM=1` / `=0` | Stream the experts from the SSD even when the pack fits / never (the default decides by size) |
 | `STRATA_METAL_CONTIG=0` | Streaming: read the model file even when the experts' copy is there |

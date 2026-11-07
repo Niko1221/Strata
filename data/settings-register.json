@@ -12867,7 +12867,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 828,
+     "line": 805,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -17359,7 +17359,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3504,
+     "line": 3444,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -17842,7 +17842,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1679,
+     "line": 1627,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -17857,7 +17857,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/MAC.md:67",
-    "docs/MAC.md:266"
+    "docs/MAC.md:265"
    ],
    "first_commit": "a6e55d062e",
    "first_date": "2026-10-12",
@@ -17911,13 +17911,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2160,
+     "line": 2108,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2160,
+     "line": 2108,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -17997,7 +17997,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:265"
+    "docs/MAC.md:264"
    ],
    "first_commit": "c34ac7093f",
    "first_date": "2026-10-13",
@@ -18063,19 +18063,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2438,
+     "line": 2378,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3447,
+     "line": 3387,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3452,
+     "line": 3392,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18108,7 +18108,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1691,
+     "line": 1639,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18168,7 +18168,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:271"
+    "docs/MAC.md:270"
    ],
    "first_commit": "3277bfcd71",
    "first_date": "2026-11-01",
@@ -18189,13 +18189,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 459,
+     "line": 443,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 459,
+     "line": 443,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18329,7 +18329,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 931,
+     "line": 908,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18362,13 +18362,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 919,
+     "line": 896,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 919,
+     "line": 896,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18403,13 +18403,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 995,
+     "line": 972,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 995,
+     "line": 972,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18442,13 +18442,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 683,
+     "line": 661,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 683,
+     "line": 661,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18462,7 +18462,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:269"
+    "docs/MAC.md:268"
    ],
    "first_commit": "e2bf3d36a2",
    "first_date": "2026-10-13",
@@ -18522,7 +18522,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1678,
+     "line": 1626,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18536,7 +18536,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:266"
+    "docs/MAC.md:265"
    ],
    "first_commit": "a6e55d062e",
    "first_date": "2026-10-12",
@@ -18557,13 +18557,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1646,
+     "line": 1594,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1646,
+     "line": 1594,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18577,7 +18577,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:270"
+    "docs/MAC.md:269"
    ],
    "first_commit": "41ffe3eef6",
    "first_date": "2026-10-12",
@@ -18598,13 +18598,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1465,
+     "line": 1413,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1465,
+     "line": 1413,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18618,7 +18618,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:272"
+    "docs/MAC.md:271"
    ],
    "first_commit": "39acb889cd",
    "first_date": "2026-10-12",
@@ -18639,13 +18639,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2325,
+     "line": 2273,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2325,
+     "line": 2273,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18680,13 +18680,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 446,
+     "line": 440,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 446,
+     "line": 440,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18725,7 +18725,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1680,
+     "line": 1628,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18739,7 +18739,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:267"
+    "docs/MAC.md:266"
    ],
    "first_commit": "e2bf3d36a2",
    "first_date": "2026-10-13",
@@ -18760,7 +18760,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1738,
+     "line": 1686,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18859,7 +18859,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2464,
+     "line": 2404,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18894,7 +18894,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3563,
+     "line": 3503,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18927,13 +18927,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 594,
+     "line": 572,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 594,
+     "line": 572,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18966,7 +18966,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2384,
+     "line": 2324,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19034,7 +19034,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1996,
+     "line": 1944,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19094,11 +19094,11 @@
    "since": "v0.1.44",
    "last_commit": "38cb85a8c3",
    "last_date": "2026-10-12",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "metal/engine",
-   "note": "[checked] Opt-in partial commit in gdn_step: 0.3-0.8% slower at --spec 2 on the M5 Max (metal/src/engine/window.cpp:434-438 comment); docs/MAC.md:262 lists it as 'measured no faster'. Off by default; not set by launch code. (An earlier automatic pass called it a default-on rollback; the code at window.cpp:438 reads it as =1 only.)",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch A): code removed, the setting is no longer read. Evidence: [checked] Opt-in partial commit in gdn_step: 0.3-0.8% slower at --spec 2 on the M5 Max (metal/src/engine/window.cpp:434-438 comment); docs/MAC.md:262 lists it as 'measured no faster'. Off by default; not set by launch code. (An earlier automatic pass called it a default-on rollback; the code at window.cpp:438 reads it as =1 only.)",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_METAL_PREFETCH",
@@ -19114,7 +19114,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 882,
+     "line": 859,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19219,19 +19219,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1965,
+     "line": 1913,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1985,
+     "line": 1933,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3463,
+     "line": 3403,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19245,7 +19245,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:272"
+    "docs/MAC.md:271"
    ],
    "first_commit": "994ccdf451",
    "first_date": "2026-10-12",
@@ -19266,13 +19266,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3596,
+     "line": 3536,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3596,
+     "line": 3536,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19313,7 +19313,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2908,
+     "line": 2848,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19349,7 +19349,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2927,
+     "line": 2867,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19363,7 +19363,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:263"
+    "docs/MAC.md:262"
    ],
    "first_commit": "41ffe3eef6",
    "first_date": "2026-10-12",
@@ -19384,19 +19384,19 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1708,
+     "line": 1656,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2895,
+     "line": 2835,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3600,
+     "line": 3540,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19429,13 +19429,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2899,
+     "line": 2839,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3601,
+     "line": 3541,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19501,13 +19501,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3597,
+     "line": 3537,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3597,
+     "line": 3537,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19540,7 +19540,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2930,
+     "line": 2870,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19633,11 +19633,11 @@
    "since": "v0.1.44",
    "last_commit": "389c24eebd",
    "last_date": "2026-10-12",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "metal/engine",
-   "note": "[checked] Fused router_route dispatch: no faster (T2 GPU 13.035 vs 13.027 ms) and 0.3-0.5% slower end to end on the M5 Max (metal/src/engine/window.cpp:462-465 comment); docs/MAC.md:262 lists it as 'measured no faster' and wrong on an M1 Max (stale routing logits). Not set by launch code.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch A): code removed, the setting is no longer read. Evidence: [checked] Fused router_route dispatch: no faster (T2 GPU 13.035 vs 13.027 ms) and 0.3-0.5% slower end to end on the M5 Max (metal/src/engine/window.cpp:462-465 comment); docs/MAC.md:262 lists it as 'measured no faster' and wrong on an M1 Max (stale routing logits). Not set by launch code.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_METAL_SAMPLE_STATS",
@@ -19647,7 +19647,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3429,
+     "line": 3369,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19752,13 +19752,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1468,
+     "line": 1416,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1468,
+     "line": 1416,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19791,13 +19791,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1470,
+     "line": 1418,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1470,
+     "line": 1418,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19830,13 +19830,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1915,
+     "line": 1863,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1915,
+     "line": 1863,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19869,13 +19869,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1878,
+     "line": 1826,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1878,
+     "line": 1826,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19937,7 +19937,7 @@
    ],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:264"
+    "docs/MAC.md:263"
    ],
    "first_commit": "a6e55d062e",
    "first_date": "2026-10-12",
@@ -20030,13 +20030,13 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2025,
+     "line": 1973,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3317,
+     "line": 3257,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20050,7 +20050,7 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
-    "docs/MAC.md:272"
+    "docs/MAC.md:271"
    ],
    "first_commit": "5d76056a4a",
    "first_date": "2026-10-12",
@@ -20086,7 +20086,7 @@
    "launch_reads": [],
    "doc_mentions": [
     "docs/MAC.md:66",
-    "docs/MAC.md:268"
+    "docs/MAC.md:267"
    ],
    "first_commit": "62be0f3843",
    "first_date": "2026-10-13",
@@ -20126,11 +20126,11 @@
    "since": "v0.2.12",
    "last_commit": "830732a33d",
    "last_date": "2026-11-05",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "metal/engine",
-   "note": "[checked] Weight prefetch beside gr_up: -5.9% on UD-IQ4_XS-v31, 0 of 4 rounds faster on every kind, 'Dead' (phaseA-tests/round0215/RESULTS-MAC-OUT.md:107). Opt-in screen, undocumented, not set by launch code; code at metal/src/engine/window.cpp:449-456,1012-1023,1059,1192.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch A): code removed, the setting is no longer read. Evidence: [checked] Weight prefetch beside gr_up: -5.9% on UD-IQ4_XS-v31, 0 of 4 rounds faster on every kind, 'Dead' (phaseA-tests/round0215/RESULTS-MAC-OUT.md:107). Opt-in screen, undocumented, not set by launch code; code at metal/src/engine/window.cpp:449-456,1012-1023,1059,1192.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_METAL_WRAP_SPLIT",
