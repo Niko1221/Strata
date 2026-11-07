@@ -6159,15 +6159,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // (the CPU's rows, the last rows_cpu of GU and H, are never written by the GPU: not checked)
                         const int64_t gpu_rows = T * K - rows_cpu;
                         const int64_t bgu = fused_l || m.group_cap > 0 ? 0 : bad(m.GU, gpu_rows * kFF2), bdm = bad(m.Dm, T * K * N),
-                                      bbo = bad(m.bo, T * N);
+                                      bbo = bad(m.bo, T * N), bsh = bad(m.shared, T * N), bsg = bad(m.sg, T), bw = bad(m.w, T * K);
                         const int64_t bh = m.H && !fused_l && m.group_cap == 0 ? bad(m.H, gpu_rows * kFF) : -1;   // (group scratch: the last range's rows)
                         static int64_t reported = -1;
-                        if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks) {
+                        if ((bgu || bdm || bbo || bsh || bsg || bw || bh > 0) && reported != stats_.chunks) {
                             reported = stats_.chunks;
                             std::fprintf(stderr, "strata dbg: layer %lld (mmq %d, types %d/%d, %zu experts): non-finite GU %lld "
                                          "H %lld Dm %lld bo %lld of T %lld\n", (long long) l, (int) use_mmq, mmq_gt, mmq_dt,
                                          n_order, (long long) bgu, (long long) bh, (long long) bdm, (long long) bbo,
                                          (long long) T);
+                            std::fprintf(stderr, "strata dbg: layer %lld: non-finite shared %lld sg %lld w %lld\n", (long long) l, (long long) bsh, (long long) bsg, (long long) bw);
                         }
                     }
                 }

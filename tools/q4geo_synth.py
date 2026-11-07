@@ -368,6 +368,7 @@ def main() -> int:
     ap.add_argument("--label", help="kGeometryName in the header (default: the shape, plus _<layers>l)")
     ap.add_argument("--from-gguf", help="read the shape from this file's metadata instead of --shape")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--set", default="", help="comma list of field=value overrides of the shape (a bisection of one field), e.g. n_ff=1024,hc_lr=384")
     a = ap.parse_args()
     if a.list:
         for n in sorted(SHAPES):
@@ -379,7 +380,7 @@ def main() -> int:
         label = a.label or pathlib.Path(a.from_gguf).stem.replace("-", "_").lower()
         src = a.from_gguf
     else:
-        s = shape(a.shape, a.layers)
+        s = shape(a.shape, a.layers, **{k: int(v) for k, v in (kv.split("=") for kv in a.set.split(",") if kv)})
         label = a.label or (a.shape + (f"_{a.layers}l" if a.layers else ""))
         src = f"shape {a.shape}" + (f", {a.layers} layers" if a.layers else "")
     if a.header:

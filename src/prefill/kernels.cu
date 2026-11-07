@@ -25,6 +25,7 @@ namespace {
 
 constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
 constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
+constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
 constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
 
 __device__ __forceinline__ float warp_sum(float v) {
@@ -2297,9 +2298,9 @@ __global__ void blob_dequant_kernel(const uint8_t* __restrict__ blob, uint16_t* 
 }
 __global__ void swiglu_il_kernel(const float* __restrict__ gu, uint16_t* __restrict__ h16, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * 640) return;
-    const int64_t r = i / 640, k = i % 640;
-    const float g = gu[r * 1280 + 2 * k], u = gu[r * 1280 + 2 * k + 1];
+    if (i >= n * FFC) return;
+    const int64_t r = i / FFC, k = i % FFC;
+    const float g = gu[r * (2 * FFC) + 2 * k], u = gu[r * (2 * FFC) + 2 * k + 1];
     h16[i] = hf_sat(g / (1.0f + __expf(-g)) * u);
 }
 // The Volta prompt experts (gemm_iq_f16_grouped): SwiGLU of the gate/up product's rows (gate 0..n_ff, up n_ff..2 n_ff,
@@ -2316,7 +2317,7 @@ __global__ void swiglu_split_f16_kernel(const float* __restrict__ gu, uint16_t* 
 __global__ void swiglu_pair_kernel(const float* __restrict__ g, const float* __restrict__ u, uint16_t* __restrict__ h16,
                                    int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * 640) return;
+    if (i >= n * FFC) return;
     const float a = g[i];
     h16[i] = hf_sat(a / (1.0f + __expf(-a)) * u[i]);
 }
@@ -3220,7 +3221,7 @@ void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, voi
 }
 void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream) {
     if (n <= 0) return;
-    swiglu_il_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(gu, h16, n);
+    swiglu_il_kernel<<<blocks_for(n * FFC), 256, 0, (cudaStream_t) stream>>>(gu, h16, n);
     check("swiglu_interleaved");
 }
 void swiglu_split_f16(const float* gu, uint16_t* h16, int64_t rows, int n_ff, bool interleaved, void* stream) {
@@ -3229,7 +3230,7 @@ void swiglu_split_f16(const float* gu, uint16_t* h16, int64_t rows, int n_ff, bo
     check("swiglu_split_f16");
 }
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream) {
-    swiglu_pair_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n);
+    swiglu_pair_kernel<<<blocks_for(n * FFC), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n);
     check("swiglu_pair");
 }
 namespace {
