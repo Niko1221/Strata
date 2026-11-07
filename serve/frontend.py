@@ -139,6 +139,9 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
 # Effort: N" line of its prompt).  use_family("deepseek41") switches the table; the other families keep the one above.
 EFFORT_DEEPSEEK = {"none": None, "off": None, "minimal": None, "disabled": None, "false": None,
                    "low": "low", "medium": "medium", "high": "high", "xhigh": "max", "max": "max", "maximum": "max"}
+# GLM-5.3's chat template takes low / high, and anything else becomes its max (its own default).
+EFFORT_GLM = {"none": None, "off": None, "minimal": "low", "disabled": None, "false": None,
+              "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max", "maximum": "max"}
 _EFFORT_QWEN = dict(EFFORT)
 _NUMERIC_EFFORT = False
 
@@ -147,7 +150,7 @@ def use_family(family: str | None) -> None:
     """The reasoning-effort words of the model family this server runs (module state, like ENV_TO_USER)."""
     global _NUMERIC_EFFORT
     EFFORT.clear()
-    EFFORT.update(EFFORT_DEEPSEEK if family == "deepseek41" else _EFFORT_QWEN)
+    EFFORT.update(EFFORT_DEEPSEEK if family == "deepseek41" else EFFORT_GLM if family in ("glm53", "glm5-next") else _EFFORT_QWEN)
     _NUMERIC_EFFORT = family == "deepseek41"
 
 

@@ -1136,6 +1136,107 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endif()
   endif()
 
+  # GLM-5.3-Flash (glm5-next): the fourth engine path, ported from Project Maya v1.1.33's GLM engine
+  # (src/core/glm_*, src/kernels/cuda/glm_*, the verified Glm5Model runner behind the glm_pack driver;
+  # third_party/project-maya/NOTICE.md).  Its own executable (strata-glm) with the dsv41 method: the opt-in
+  # target keeps Strata's default build byte-identical, and no glm symbol is shared with strata_kernels.
+  option(STRATA_BUILD_GLM "Build the GLM-5.3-Flash engine path (strata-glm)" OFF)
+  if(STRATA_BUILD_GLM AND NOT STRATA_HIP_GFX906)
+    # The GLM engine carries ITS OWN copies of upstream's shared kernels (src/glm_port, the same include
+    # tree as Project Maya's): it deliberately does NOT link this tree's strata_kernels/strata_core —
+    # upstream's versions of those diverge (same namespace, same headers, different code), and mixing
+    # them would change what the qwen builds see.  Only the GPU runtime and Threads come from outside.
+    file(GLOB_RECURSE _strata_glm_sources CONFIGURE_DEPENDS
+         ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/src/*.cu
+         ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/src/*.cpp)
+    add_library(strata_glm_impl STATIC ${_strata_glm_sources})
+    # (the MMQ sources and flags: cmake/strata_glm_mmq.insert.cmake, included right below)
+    include(${CMAKE_SOURCE_DIR}/cmake/strata_glm_mmq.insert.cmake)
+    target_include_directories(strata_glm_impl PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include
+                               ${_strata_gpu_include_directories} ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml/include)
+    target_link_libraries(strata_glm_impl PUBLIC ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} ggml)
+    # AVX-512 / AVX-2 only for the CPU-kernel files (the pool and probe run any x86-64; upstream's rule)
+    find_package(Threads REQUIRED)
+    target_link_libraries(strata_glm_impl PUBLIC Threads::Threads)
+    target_include_directories(strata_glm_impl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ggml)
+    if(NOT MSVC)
+      set_source_files_properties(src/glm_port/src/kernels/cpu/expert.cpp
+                                  PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
+      set_source_files_properties(src/glm_port/src/kernels/cpu/q2_avx2.cpp
+                                  PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+      set_source_files_properties(src/glm_port/src/kernels/cpu/iq_avx512.cpp
+                                  PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mf16c;-mfma;-ffp-contract=off")
+      set_source_files_properties(src/glm_port/src/kernels/cpu/iq_avx2.cpp
+                                  PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c;-ffp-contract=off")
+      set_source_files_properties(src/glm_port/src/kernels/cpu/iq_avx512_one.cpp
+                                  PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vbmi;-mbmi2;-mf16c;-mfma;-ffp-contract=off")
+      set_source_files_properties(src/glm_port/src/kernels/cpu/kq_avx512.cpp
+                                  PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mf16c;-mfma")
+    endif()
+    target_compile_definitions(strata_glm_impl PUBLIC STRATA_NATIVE_EXPERTS=1)
+    add_executable(strata-glm src/program/glm_main.cpp)
+    target_include_directories(strata-glm PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include
+                               ${_strata_gpu_include_directories})
+    target_link_libraries(strata-glm PRIVATE strata_glm_impl)
+    if(STRATA_BUILD_TESTS)
+      foreach(_glm_test glm_model_test glm_pack_test glm_model_big_test)
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/src/core/${_glm_test}.cpp)
+          add_executable(${_glm_test} src/glm_port/src/core/${_glm_test}.cpp)
+          target_include_directories(${_glm_test} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include
+                                     ${_strata_gpu_include_directories})
+          target_link_libraries(${_glm_test} PRIVATE strata_glm_impl)
+        endif()
+      endforeach()
+      # the kernel and graph tests (upstream's registrations, on the GLM port's own library)
+      foreach(_glm_cu glm_layer_graph_test glm_moe_rows_test glm_rows_kernels_test glm_rows_attn_test glm_mv_nt_test)
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_glm_cu}.cu)
+          add_executable(${_glm_cu} tests/${_glm_cu}.cu)
+          target_include_directories(${_glm_cu} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include
+                                     ${_strata_gpu_include_directories})
+          target_link_libraries(${_glm_cu} PRIVATE strata_glm_impl)
+          add_test(NAME ${_glm_cu} COMMAND ${_glm_cu})
+        endif()
+      endforeach()
+      set_tests_properties(glm_layer_graph_test glm_moe_rows_test glm_rows_kernels_test glm_rows_attn_test PROPERTIES TIMEOUT 300)
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/glm_lat8_test.cu)
+        add_executable(glm_lat8_test tests/glm_lat8_test.cu)
+        target_include_directories(glm_lat8_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include
+                                   ${_strata_gpu_include_directories})
+        target_link_libraries(glm_lat8_test PRIVATE strata_glm_impl)
+        add_test(NAME glm_lat8_test COMMAND glm_lat8_test)
+        set_tests_properties(glm_lat8_test PROPERTIES TIMEOUT 60)
+      endif()
+      foreach(_glm_cpp glm_memory_test glm_split_devices_test)
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/${_glm_cpp}.cpp)
+          add_executable(${_glm_cpp} tests/${_glm_cpp}.cpp)
+          target_include_directories(${_glm_cpp} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include)
+          target_link_libraries(${_glm_cpp} PRIVATE strata_glm_impl)
+          add_test(NAME ${_glm_cpp} COMMAND ${_glm_cpp})
+        endif()
+      endforeach()
+      if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/glm_layer_parity.cpp)
+        add_executable(glm_layer_parity src/kernels/glm_layer_parity.cpp)
+        target_include_directories(glm_layer_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include)
+        target_link_libraries(glm_layer_parity PRIVATE strata_glm_impl)
+        add_test(NAME glm_layer_parity COMMAND glm_layer_parity --selftest)
+        set_tests_properties(glm_layer_parity PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+      endif()
+      foreach(_glm_par glm_hc_parity glm_kda_parity glm_ffn_parity glm_dsa_parity glm_kv_stream_parity)
+        if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/${_glm_par}.cpp)
+          add_executable(${_glm_par} src/kernels/${_glm_par}.cpp)
+          target_include_directories(${_glm_par} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/glm_port/include
+                                     ${_strata_gpu_include_directories})
+          target_link_libraries(${_glm_par} PRIVATE strata_glm_impl)
+          add_test(NAME ${_glm_par} COMMAND ${_glm_par} --selftest)
+        endif()
+      endforeach()
+    endif()
+
+    if(STRATA_ENABLE_HIP)
+      target_compile_options(strata_glm_impl PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/include/strata/dsv41/hip_extra.h>")
+    endif()
+  endif()
+
   if(STRATA_ENABLE_HIP)
     enable_testing()
     set(_strata_hip_tests)

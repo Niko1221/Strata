@@ -401,7 +401,10 @@ class Catalog:
                 continue
             for size in fam["sizes"]:
                 f = fit_on(size, hw.get("ram_gb"), vram)
-                if size.get("multi_file"):            # DeepSeek-V4.1-Flash: shared over every card (strata_control/dsv41_fit.py)
+                if size.get("multi_file") and fam["family"] != "glm53":
+                    # DeepSeek-V4.1-Flash: shared over every card (strata_control/dsv41_fit.py).
+                    # GLM-5.3-Flash sizes itself at start (the engine splits layers and tiers experts);
+                    # the generic fit_on estimate stands, the engine's own start lines are the truth.
                     dsv41 = self.strata.dsv41_plan(hw, model=size["model"])
                     f = {"vramUseGb": _round1(dsv41["vram_experts_gb"] + sum(c["dense_gb"] for c in dsv41["cards"])),
                          "ramUseGb": _round1(dsv41.get("ram_needed_gb") or dsv41["cpu_experts_gb"]), "spillGb": _round1(dsv41.get("spill_gb") or 0.0)}

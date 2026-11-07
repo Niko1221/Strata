@@ -740,8 +740,8 @@ class Runner:
     # ---- 1. the engine
     def ensure_engine(self) -> None:
         self.warn_wsl_amd()
-        if self.multi_file():                                # DeepSeek: its own engine package (setup fetches it); the Strata engine is not used
-            self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
+        if self.multi_file():                                # DeepSeek / GLM: their own engine package; the Strata engine is not used
+            self.emit("engine", "This model runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
             return
         self.emit("engine", "Checking the engine for this computer…")
         from strata_control import engine_component as ec
@@ -2679,6 +2679,30 @@ class Runner:
                     return f.parent / n, True
         return None, known
 
+    def glm_placement(self) -> dict:
+        """Where GLM-5.3-Flash would sit on this computer, in plain words.  The engine sizes everything itself
+        (the layer split, the VRAM expert pool, the pinned RAM tier, the SSD ring), so the plan says what was
+        MEASURED and on what, and leaves the sizing to the engine: numbers from another computer are a hint,
+        never a promise (the project's rule: no claim without a measurement)."""
+        hw = self.catalog.hardware()
+        gpus = list((hw or {}).get("gpus", []))
+        ram = float((hw or {}).get("ram_gb") or 0)
+        vram = sum(float(c.get("vram_gb") or 0) for c in gpus)
+        lines = ["The engine splits the layers over the cards and tiers the experts by itself (VRAM pool, pinned RAM, an SSD ring).",
+                 f"This computer: {len(gpus)} card(s) with {vram:.0f} GB of graphics memory together, {ram:.0f} GB of RAM.",
+                 "Measured on 2 x V100-32GB with 62 GB of RAM: the model loads in about 2 minutes, one conversation answers at a",
+                 "steady rate with the MTP drafter on (a 5-token prompt answered in ~4 s of generation, 87% of draft positions accepted)."]
+        warnings = []
+        if vram < 24:
+            warnings.append("Under 24 GB of graphics memory in all: the expert pool gets small and the RAM/SSD tiers do most of the "
+                            "work, which is slow. It still runs (the engine warns with its own numbers at start).")
+        if ram and ram < 48:
+            warnings.append("Under 48 GB of RAM: more experts stream from the SSD while answering, which is slow. It still runs.")
+        return {"verdict": "warn" if warnings else "ok", "lines": lines, "warnings": warnings, "cards": [],
+                "args": [], "engine_has_dsv41": None, "experts_in_vram": None, "experts_total": None,
+                "vram_experts_gb": None, "cpu_experts_gb": None, "ram_needed_gb": None, "engram_gb": 0.0,
+                "download_gb": 108.9, "measured": "2x V100-32GB, 62 GB RAM (GLM-PORT-STATUS.md)"}
+
     def dsv41_engine(self) -> bool | None:
         """Whether the installed engine carries strata-dsv41 (True / False); None when no engine is installed yet or it cannot be told."""
         found, known = self.dsv41_engine_found()
@@ -2688,6 +2712,8 @@ class Runner:
         """Where DeepSeek-V4.1-Flash would go on this computer's cards (strata_control/dsv41_fit.py): the cards this launch names, else every
         card that counts; the real numbers in plain words, with the n-gram table's SSD note and the RAM / disk warnings (never a refusal)."""
         s = self.s
+        if s.family == "glm53":
+            return self.glm_placement()
         hw = self.catalog.hardware()
         try:
             data = Path(s.data_dir) if s.data_dir else self.catalog.data_dir()

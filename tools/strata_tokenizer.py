@@ -65,6 +65,24 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# The `glm4`/`glm5` pre-tokenizer (GLM-4/5 family; llama.cpp LLAMA_VOCAB_PRE_TYPE_CHATGLM4, transcribed at the
+# vendored pin).  Two differences from qwen35, both load-bearing:
+#   * the digit run is `\p{N}{1,3}` - a 4-digit number splits 3+1, not one whole run;
+#   * the letter class is `\p{L}+` WITHOUT `\p{M}`, and the punctuation class likewise drops `\p{M}` - so a
+#     combining mark attaches to the FOLLOWING punctuation run, the opposite of the qwen35 subtlety above.
+# AND the encoding semantic differs: llama.cpp sets ignore_merges for glm4/glm5 - a pre-token piece that is an
+# exact vocabulary token is emitted WHOLE (no merges applied); only the leftovers go through BPE.  Checked
+# against the GLM-5.3-Flash GGUF's own tokenizer and its round trip (tools/test_tokenizer_glm.py).
+GLM_PATTERN = (
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
 
 # The `deepseek-v3` pre-tokenizer (DeepSeek-V3 / V4.1; llama.cpp LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM, the same regex list as
 # JoyAI and Hunyuan-dense).  UNLIKE the single-pattern families it is a SEQUENCE: each pattern splits the pieces the
@@ -122,7 +140,16 @@ class Tokenizer:
         if str(pre).startswith("deepseek"):
             seq = [regex.compile(x) for x in DEEPSEEK3_PATTERNS]
             self._split = lambda text: _sequence_findall(seq, text)
+        elif str(pre) in ("glm4", "glm5"):
+            # glm4/glm5 set ignore_merges: an exact vocab hit emits the whole pre-token piece (llama-vocab.cpp
+            # L633-637), so the piece lookup in _encode_plain checks the byte-MAPPED form before running BPE.
+            self.ignore_merges = True
+            self._re = regex.compile(GLM_PATTERN)
+            self._split = self._re.findall
         else:
+            if pre != "qwen35":
+                raise ValueError("the %r pre-tokenizer is not transcribed; known: qwen35, glm4, glm5, deepseek3" % pre)
+            self.ignore_merges = False
             self._re = regex.compile(QWEN35_PATTERN)
             self._split = self._re.findall
 
@@ -163,6 +190,21 @@ class Tokenizer:
         return regex.compile("|".join(regex.escape(s) for s in sorted(literals, key=len, reverse=True)))
 
     # -------------------------------------------------------------- constructors
+    @classmethod
+    def from_dir(cls, path) -> "Tokenizer":
+        """A pack's tokenizer/ directory (extract() below), with the pre-tokenizer its tokenizer.json names: built
+        without it, a GLM pack was split the qwen35 way - every number one digit a token where GLM groups up to three
+        (#27: numbers came back garbled in long prompts).  No tokenizer.json (never written by extract): qwen35."""
+        t = pathlib.Path(path)
+        vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
+        tokens = [None] * len(vocab)
+        for s, i in vocab.items():
+            tokens[i] = s
+        meta = json.loads((t / "tokenizer.json").read_text(encoding="utf-8")) if (t / "tokenizer.json").exists() else {}
+        types = json.loads((t / "token_type.json").read_text()) if (t / "token_type.json").exists() else None
+        return cls(tokens, (t / "merges.txt").read_text(encoding="utf-8").split("\n"), types,
+                   meta.get("pre", "qwen35"), meta.get("special_ids") or None)
+
     @classmethod
     def from_gguf(cls, path) -> "Tokenizer":
         sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -263,12 +305,19 @@ class Tokenizer:
             got = cache.get(piece)
             if got is None:
                 mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
-                got = []
-                for tok in self._bpe(mapped):
-                    i = self.ids.get(tok)
-                    if i is None:
-                        raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
-                    got.append(i)
+                # glm4/glm5's ignore_merges: the vocab is stored in the BYTE-LEVEL alphabet, so the
+                # whole-piece lookup (llama-vocab.cpp L633-637: an exact hit is emitted whole, only the
+                # leftovers reach BPE) runs on the MAPPED piece - for ASCII the mapping is the identity
+                # and the raw lookup agrees, for everything else it does not.
+                if self.ignore_merges and mapped in self.ids:
+                    got = [self.ids[mapped]]
+                else:
+                    got = []
+                    for tok in self._bpe(mapped):
+                        i = self.ids.get(tok)
+                        if i is None:
+                            raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
+                        got.append(i)
                 if len(cache) < self.PIECE_CACHE_MAX:
                     cache[piece] = got
             out.extend(got)

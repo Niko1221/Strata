@@ -1338,7 +1338,9 @@ class Strata:
                     have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
                     verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
                     try:
-                        if own and own.get("multi_file"):       # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (cards + RAM, the n-gram table on the SSD)
+                        if own and own.get("multi_file") and f != "glm53":
+                            # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (cards + RAM, the n-gram table on the SSD).
+                            # GLM-5.3-Flash sizes itself at start; the RAM+VRAM-vs-shards estimate above is the honest one.
                             verdict = self.dsv41_words(hw, m, installed=tag in have)
                         elif own:                       # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
                             pass

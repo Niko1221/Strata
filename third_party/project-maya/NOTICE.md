@@ -63,3 +63,11 @@ MAYA-PAR (2026-10-31, branch f-041-maya-par), DeepSeek `--parallel`:
 MAYA-PORT2 (2026-10-31, branch f-041-maya-port2), DeepSeek `--parallel` scheduling:
 - #587 (mrsirg97-rgb, a73bdbc): the serve loop on an event queue (`ds4_evt.hpp`, `tests/dsv41/evt_test.cpp`), a prompt read in three steps (begin, piece, end), `Model::set_yield` / `fed` / `prompt_chunk` / `pipeline_stages` (a read alone ends at a chunk every stage reaches once a request waits). Prompts take turns a piece each with the answers' tokens between only with `STRATA_DS4_READ_PIECES=1`; off by default.
 - #611 (needmorevram e3de4aa; mw00 1434096, 4b2378b, 0d0f261): the DSpark drafter in the steps of several requests (`Model::step_multi_spec`, `verify_multi`, `can_draft_multi` / `draft_multi`, per-conversation compressor snapshots, `--multi-check` passes with the drafter). The multi step's rows always on the async path; each run's replicated rows at its own place of the pinned stage. The prompt lookup, think budget and DS4_DECODE_TRIM parts of Maya's diff are not in this tree and were left out.
+
+Later changes taken from Project Maya releases v1.1.26 to v1.1.33, the GLM-5.3-Flash engine (`glm5-next`): the files
+under `src/glm_port/` and `src/program/glm_main.cpp` — the verified `Glm5Model` runner (`src/core/glm_*`),
+its kernel family (`include/strata/kernels/glm_*`, `src/kernels/cuda/glm_*`), the pack loader (`tools/iq_pack.py`'s
+glm5-next branch), the tests built on them and the pack driver extracted from Maya's `src/program/generate.cpp`
+(the `glm_pack_generate` path) — come from release v1.1.33 (commit 88a746c) and are covered by the same copyright
+and permission notice, in `LICENSE` beside this file. Files that instead replace a Strata file live in the
+`src/glm_port/include` overlay include root, so the qwen/deepseek builds' copies stay untouched.
