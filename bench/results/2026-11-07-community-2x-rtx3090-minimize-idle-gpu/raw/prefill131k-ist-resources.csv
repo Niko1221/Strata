@@ -1,0 +1,2 @@
+group,arm,kind,n,tok_s,read_tok_s,acc_pct,util0,util1,utilsum,w0,w1,sm0,mem,temp,fan,stall_pct,pci,md0_r,cpu,eng,free,rows
+live,pw=0,code,2,129.89999999999998,4737.799999999999,78.54477611940298,97.5,98.0,195.5,317.82,339.155,1665.0,10001.0,66.25,64.0,0.0,29516.5,0.0,2.2,99.0,46.925,28.0

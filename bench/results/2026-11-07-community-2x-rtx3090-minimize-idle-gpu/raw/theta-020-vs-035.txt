@@ -1,0 +1,9 @@
+# theta=0.20 measured against theta=0.35, the same server and the same documents
+# python3 scripts/paired_ci.py raw/p0-ist-350w.jsonl raw/p3-pipeline.jsonl raw/p6-final-350w.jsonl raw/p7-fensterstatistik.jsonl --base 'pw=2 theta=0.35' --arm 'theta=0.20'
+reference arm 'pw=2 theta=0.35'; paired on document+round+run; bootstrap 4000 x median
+arm                                  kind     n  median            95 % CI   ahead
+pw=2 theta=0.20                      code    21   -0.6 % [  -3.5,  +10.2]  7/21
+pw=2 theta=0.20                      prose   21   +2.4 % [  -0.4,   +4.3] 14/21
+
+# the wider cut (theta-headtohead.txt) also pairs p7's smp=0.65 rows and pools 52 pairs:
+# pooled: code -2.1 pp, prose +2.3 pp, all -0.3 pp - the same verdict, inside the noise

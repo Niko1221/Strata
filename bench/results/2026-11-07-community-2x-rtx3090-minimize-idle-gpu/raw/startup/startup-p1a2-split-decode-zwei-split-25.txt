@@ -1,0 +1,40 @@
+[strata] 2026-11-07 13:09:44 engine started: /opt/strata/engine/strata --serve --pack /opt/strata/models/packs/unsloth-ud-iq4_xs --native /opt/strata/models/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile /opt/strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp /opt/strata/models/mtp/rt --max-context 786432 --rope-scaling yarn --rope-scale 3 --kv int8 --ple-io ram --kv-resident 32768 --vision --vram-reserve-mib 1280 --trim-stage-weights --pcie-frac 0.08 --spec-min-p 0.65 --conversation-cache-mib 32768 --conversation-cache-slots 16 --pipeline-windows 2 --layer-split 25
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split 25)
+strata generate: layer split: CUDA0 loads the dense weights of layers 0-24 only
+strata generate: note: --pipeline-windows 2 on a layer split of two stages without the draft layer on the first card (STRATA_MTP_STAGE0=1 asks for it): the draft chain then shares the last card with its window and the pipeline lost to the serial loop on 2x R9700 before 0.1.44 (docs/MULTI_GPU.md); kept as asked, --pipeline-windows 0 turns it off
+strata generate: layer split: CUDA1 loads the dense weights of layers 25-47 only
+strata generate: layer split: CUDA1 holds its weights; 20.29 GiB free (its session follows the split search)
+strata generate: profile /opt/strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: KV streaming: 32768 of 786432 cells per QSA layer in VRAM, the K/V in 4.64 GiB of pinned RAM
+strata generate: layer split: CUDA1 holds its weights, session [25, 48) and the head; 18.77 GiB free
+strata mtp: draft layer loaded, 837 MiB of VRAM (experts 675, dense 111), files read in 1.07 s (737 MiB/s)
+strata generate: loaded 55.43 GiB at 3.44 GiB/s
+strata generate: --pipeline-windows 2: 278 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 17.66 GiB free, 1280 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 4898 slots
+strata generate: expert cache 7064 slots, 15.88 GiB of VRAM; policy is
+strata generate: pre-filled 7064 of 7064 slots from the profile in 0.7 s (24472 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 17.84 GiB free of 23.61, room for experts 16.34 GiB
+strata generate: layer split: CUDA1 runs layers 25-47, expert cache 7210 slots (16.34 GiB), 7210 of its 11776 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-24
+strata generate: session is up (engine 0.1.55)
+strata serve: the prompt path borrows 2307 CUDA0 cache slots (5.20 GiB)
+strata serve:   CUDA1 prompt path borrows 2287 of its 7210 slots (5.20 GiB)
+strata serve: layer split: layers 0-24 (CUDA0), 25-47 (CUDA1), one hand-off per window
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows (decode too; the GDN snapshots beside the window)
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 1312 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 932 MiB of VRAM free with everything loaded
+strata pipeline switch: pw=2 theta=0.350 force_miss=0 short_read=64
+strata verify: capturing the 1-token window (1312 MiB of VRAM free)
+strata verify: capturing the 2-token window (1304 MiB of VRAM free)
+strata verify: capturing the 3-token window (1296 MiB of VRAM free)
+strata verify: capturing the 4-token window (1288 MiB of VRAM free)
+strata verify: capturing the 5-token window (1280 MiB of VRAM free)
+strata verify: capturing the 6-token window (1272 MiB of VRAM free)
+strata verify: capturing the 1-token window (1264 MiB of VRAM free)
+strata verify: capturing the 2-token window (1256 MiB of VRAM free)
+strata verify: capturing the 3-token window (1244 MiB of VRAM free)
+strata verify: capturing the 4-token window (1236 MiB of VRAM free)
+strata verify: capturing the 5-token window (1228 MiB of VRAM free)
+strata verify: capturing the 6-token window (1220 MiB of VRAM free)

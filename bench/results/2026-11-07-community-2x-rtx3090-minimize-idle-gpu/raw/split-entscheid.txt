@@ -1,0 +1,12 @@
+Referenz: `split-auto` (K 23). Rauschteppich (Kontrollgruppe 23 gegen auto, plus 1 pp): 3.0 %
+
+Kandidat          p1a (n)     p1a2 (n)      gepoolt (n)  Urteil
+split-22         +3.7 (8)    -0.0 (16)    +0.4 (24)  kein Ergebnis
+split-23         +0.0 (8)            -    +0.0 ( 8)  kein Ergebnis
+split-24         +8.8 (8)    +0.8 (16)    +2.5 (24)  kein Ergebnis
+split-25         +1.9 (8)    -0.8 (16)    +0.0 (24)  kein Ergebnis
+split-26         -0.1 (8)            -    -0.1 ( 8)  kein Ergebnis
+
+Entscheidung: layer_split = auto
+Begründung: kein Kandidat erfüllt beide Bedingungen; `auto` bleibt (es hält die Balance auch nach einem Kartenumbau selbst).
+geschrieben: results/best-split.txt
