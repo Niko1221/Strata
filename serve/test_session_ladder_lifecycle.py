@@ -5,7 +5,14 @@ serve/test_session_ladder_wiring.py (a SimpleNamespace service whose engine.sess
 mock.Mock; a `save` also materialises the file the engine would have written, so the start hook's
 "has a valid file" check sees a real path).  The idle window, the save-all unload, and the
 warm-restore handoff through svc.restore_after_load are checked without a server; the disabled
-config must keep all three hooks inert.
+config must keep all three hooks inert.  The unload-works Task 2 tests pin the save-duration
+bookkeeping (_commit_save records the engine's "ms" and the tracked byte_count) and the
+expected_save_seconds estimate the pre-save quiet gate will be derived from; the Task 3 tests pin
+the pre_save hook's quiet gates (adaptive / pinned / zero) and the warm handoff a parked CURRENT
+aux earns by keeping its retained prompt.  The final-review fix wave (A) pins those gates as an
+engine-free question (pre_save_due), the honest bool result of pre_save (True only for a committed
+save), and the refused-save retry cooldown (5 s, doubling per successive refusal to a 300 s cap,
+cleared by a committed save).
 
     python -m pytest serve/test_session_ladder_lifecycle.py -v
 """
@@ -20,8 +27,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service
-from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, extract_session_id, should_restore
+from serve.server import ByteTokenizer, Service, SessionRefused
+from serve.session_ladder import ConvEvent, LadderConfig, SessionLadder, TrackedSession, extract_session_id, should_restore
 from serve.test_session_ladder_wiring import LadderHarness, ladder_service
 
 MID = 20000                     # a mid: above the engine's 8192-token park minimum
@@ -37,6 +44,7 @@ CHILD = "ses_child0000000000000000000"
 CHILD_HEADERS = {"x-opencode-session-id": CHILD, "x-opencode-parent-session-id": MAIN,
                  "x-session-affinity": MAIN, "X-Session-Id": MAIN, "x-parent-session-id": MAIN,
                  "x-opencode-project": "proj", "x-opencode-session": MAIN, "x-opencode-client": "cli"}
+REFUSED_MEMORY = SessionRefused("memory", "not enough RAM to save the session")
 
 
 class Lifecycle(unittest.TestCase):
@@ -87,19 +95,178 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(len(self.actions("save")), 2)
 
     def test_unload_saves_all_eligible(self):
+        # Spec 2026-10-26 ("always park the current session"), INTENTIONAL rule flip: the last-active
+        # session is save-worthy on unload regardless of its save-eligibility size - dirty is its only
+        # gate.  So the aux, completed and still last-active, is saved too.
         self.seen("ses-a")
         self.seen("ses-b")
-        self.ladder.on_turn_done("aux", 100, 0, 0)      # aux-sized: not save-eligible, never churns
-        self.ladder.on_arrival(self.service, "ses-a", P1)
-        self.ladder.on_arrival(self.service, "ses-b", P2)     # the switch already saved ses-a clean
-        self.assertEqual(self.actions("save"), ["save"])
-        self.ladder.on_unload(self.service)             # the engine is about to go: save the rest
-        self.assertEqual(self.actions("save"), ["save", "save"])
-        self.assertEqual(self.calls[-1], ("save", self.path("ses-b")))
-        self.assertTrue(Path(self.path("ses-a")).exists())     # ses-a's clean checkpoint is skipped, not
-        self.assertEqual(len(self.actions("save")), 2)         # rewritten - and nothing saved for aux
-        self.ladder.on_unload(self.service)             # all clean now: no churn
-        self.assertEqual(len(self.actions("save")), 2)
+        self.ladder.on_arrival(self.service, "aux", P1)        # the engine is on aux: last-active
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: dirty, not save-eligible, current
+        self.ladder.on_unload(self.service)                    # the engine is about to go: save all three -
+        self.assertEqual(self.calls,
+                         [("save", self.path("ses-a")),       # the two eligible mids (tracked order)...
+                          ("save", self.path("ses-b")),
+                          ("save", self.path("aux"))])         # ...and the current aux: size no gate
+        self.assertTrue(Path(self.path("ses-a")).exists())     # all three checkpoints are on disk
+        self.assertTrue(Path(self.path("aux")).exists())
+        self.ladder.on_unload(self.service)                    # all clean now: no churn
+        self.assertEqual(len(self.actions("save")), 3)
+
+    def test_unload_never_saves_a_non_current_aux(self):
+        # The flipped rule's other half: the exemption belongs to the CURRENT session alone.  An aux
+        # that is not last-active keeps the old eligible+dirty gate - and its size keeps it out of
+        # every unload save (a non-current aux must never churn one).
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux completed while the current session
+        self.seen("ses-a")                                     # a mid, tracked and dirty, not yet active
+        self.ladder.on_arrival(self.service, "ses-a", P1)      # the switch makes ses-a last-active; the
+        self.assertEqual(self.calls, [])                       # switch never saved the non-eligible aux
+        self.ladder.on_unload(self.service)                    # unload: ses-a (eligible+dirty) saved...
+        self.assertEqual(self.calls, [("save", self.path("ses-a"))])   # ...and no save for the aux
+        self.assertIsNone(self.ladder.tracked["aux"].file_path)
+
+    def test_idle_saves_a_small_current_session(self):
+        # The on_idle route carries the same rule: a dirty last-active aux-sized session is save-worthy
+        # at the idle window - its size is no gate.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: not save-eligible, dirty, current
+        self.ladder.on_idle(self.service, 8.0)                 # the window: the current session is parked
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+        self.assertFalse(self.ladder.tracked["aux"].dirty)     # saved clean...
+        self.ladder.on_idle(self.service, 8.0)                 # ...and the next idle window does not churn it
+        self.assertEqual(len(self.actions("save")), 1)
+
+    def test_pre_save_adaptive_waits_one_save_length(self):
+        # Task 3's pre-save hook, adaptive gate (cfg.pre_save_idle_s None): the queue must have been
+        # quiet for at least THIS save's expected length - a small dirty last-active aux's
+        # expected_save_seconds is the 5.0 floor.  Pure clock values: no sleeping.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: dirty, current, expected 5.0
+        self.ladder.pre_save(self.service, 4.9)                # under one expected save: nothing
+        self.assertEqual(self.calls, [])
+        self.ladder.pre_save(self.service, 5.0)                # exactly one expected save: the save lands
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_pre_save_pinned_gate(self):
+        # A configured number pins the quiet gate: the session's expected-length estimate is not consulted
+        # (the aux's 5.0 floor would fire at 5 - the pinned 20 holds it back until 20).
+        self.ladder.cfg.pre_save_idle_s = 20
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+        self.ladder.pre_save(self.service, 19)                 # under the pinned gate: nothing
+        self.assertEqual(self.calls, [])
+        self.ladder.pre_save(self.service, 20)                 # at the gate: one save
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_pre_save_zero_fires_on_any_idle_moment(self):
+        # gate 0: no quiet requirement at all.
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+        self.ladder.pre_save(self.service, 0)                  # zero quiet, gate 0: straight to the save
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+
+    def test_pre_save_due_answers_the_gates_without_touching_the_engine(self):
+        # Fix wave A (Important 1, Recommendation 6): the same gates as pre_save's, asked as an
+        # engine-free question - Service.pre_save_pass consults it BEFORE the FIFO grab and only a due
+        # pass reaches the queue.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # dirty current session, expected 5.0
+        self.assertFalse(self.ladder.pre_save_due(4.9))        # under the adaptive gate: not due
+        self.assertTrue(self.ladder.pre_save_due(5.0))         # at it: due
+        self.ladder.cfg.pre_save_idle_s = 20
+        self.assertFalse(self.ladder.pre_save_due(19))         # pinned gate
+        self.assertTrue(self.ladder.pre_save_due(20))
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.assertTrue(self.ladder.pre_save_due(0))           # zero gate: any idle moment
+        self.assertEqual(self.calls, [])                       # answering asked the engine nothing
+        self.ladder.on_idle(self.service, 8.0)                 # a save lands: the session is clean now
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+        self.assertFalse(self.ladder.pre_save_due(999.0))      # a clean checkpoint is not due
+
+    def test_pre_save_due_is_false_on_a_disabled_ladder(self):
+        # Disabled-ladder inertia: the gate answers False on a disabled ladder, and pre_save keeps its
+        # own enabled gate (the disabled hooks stay inert).
+        ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.dir.name,
+                                            park_budget_mib=4096, pre_save_idle_s=0))
+        ladder.on_turn_done("ses-a", MID, 0, 0)
+        ladder.on_arrival(self.service, "ses-a", P1)
+        ladder.last_active = "ses-a"
+        self.assertFalse(ladder.pre_save_due(999.0))
+        self.assertFalse(ladder.pre_save(self.service, 999.0))
+        self.assertEqual(self.calls, [])
+
+    def test_pre_save_reports_whether_a_save_committed(self):
+        # Fix wave A (Minor 1): honest results.  pre_save (and _idle_save_current behind it) answer True
+        # only when a save committed - every skip and every refused attempt answers False.
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+        self.assertTrue(self.ladder.pre_save(self.service, 0))          # landed: True
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # clean since: skipped, False
+        self.assertFalse(self.ladder.pre_save(self.service, 4.9))       # quiet gate: skipped, False
+        self.ladder.on_turn_done("aux", 100, 0, 0)                      # dirty again
+        refusals = 0
+
+        def refusing(action, path):
+            nonlocal refusals
+            refusals += 1
+            self.calls.append((action, path))
+            raise REFUSED_MEMORY
+
+        self.engine.session_file = mock.Mock(side_effect=refusing)
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # attempted and refused: False
+        self.assertEqual(refusals, 1)                                   # ...one attempt, no retry...
+        self.assertEqual(self.actions("save"), ["save", "save"])        # ...landed + refused in the log
+        s = self.ladder.tracked["aux"]
+        self.assertEqual(s.file_path, self.path("aux"))                 # the ledger still describes the
+        self.assertTrue(s.dirty)                                        # landed save only: the refusal
+        self.assertEqual(len(self.ladder.saved_files), 1)               # recorded nothing
+
+    def test_a_refused_save_arms_a_doubling_retry_cooldown(self):
+        # Fix wave A (Minor 4): a refused engine save is not retried at the next 2 s beat - the session
+        # gets a retry cooldown: 5.0 s on the first refusal, doubling per successive refusal, capped at
+        # 300.0; pre_save_due says False inside it; a committed save resets it.  Clock-free: the
+        # cooldown is read from the recorded state, and the fresh refusals come from the unload route.
+        self.ladder.cfg.pre_save_idle_s = 0
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)
+
+        def refusing(action, path):
+            self.calls.append((action, path))
+            raise REFUSED_MEMORY
+
+        self.engine.session_file = mock.Mock(side_effect=refusing)
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # attempted and refused...
+        s = self.ladder.tracked["aux"]
+        self.assertEqual(s.save_retry_delay_s, 5.0)                     # ...5 s of cooldown armed
+        self.assertFalse(self.ladder.pre_save(self.service, 0))         # inside it: no new attempt...
+        self.assertFalse(self.ladder.pre_save_due(0))                   # ...neither by hook nor by gate
+        self.assertEqual(self.engine.session_file.call_count, 1)
+        self.ladder.on_unload(self.service)                             # a fresh refusal (the unload
+        self.assertEqual(s.save_retry_delay_s, 10.0)                    # route) arms it again: doubled
+        self.assertFalse(self.ladder.pre_save_due(0))
+        self.assertEqual(self.engine.session_file.call_count, 2)
+        self.engine.session_file = mock.Mock(side_effect=lambda a, p: (self.calls.append((a, p)),
+                                                                       {"tokens": MID})[1])
+        self.ladder.on_unload(self.service)                             # a save commits...
+        self.assertEqual((s.save_retry_delay_s, s.save_retry_until), (0.0, 0.0))  # ...the cooldown goes
+        self.assertFalse(self.ladder.pre_save_due(0))                   # clean now: not dirtiness anyway
+        self.ladder.on_turn_done("aux", 100, 0, 0)                      # dirty again...
+        self.assertTrue(self.ladder.pre_save_due(0))                    # ...and the pass may try again
+
+    def test_aux_current_checkpoint_warms_the_next_start(self):
+        # Task 1 review carry-over: the last_prompts pop for a non-eligible session SPARES the session
+        # that is self.last_active, so a parked CURRENT aux records its retained prompt as the
+        # checkpoint's prefix - and on_start's warm handoff (saved_prefix gate) then reaches its file.
+        self.ladder.on_arrival(self.service, "aux", P1)
+        self.ladder.on_turn_done("aux", 100, 0, 0)             # aux-sized: ineligible, dirty, CURRENT
+        self.ladder.on_idle(self.service, 8.0)                 # the current session is parked anyway
+        self.assertEqual(self.calls, [("save", self.path("aux"))])
+        self.assertEqual(self.ladder.tracked["aux"].saved_prefix, P1)   # the retained prompt was recorded
+        self.ladder.on_start(self.service)                     # the warm handoff: the prefix gate passes
+        self.assertEqual(self.service.restore_after_load, self.path("aux"))
+        self.assertIsNone(self.ladder.tracked["aux"].file_path)         # consumed with the handoff
 
     def test_subagent_child_is_tracked_as_its_own_session(self):
         # OpenCode 2.1.4 subagents ride the parent's affinity headers (CHILD_HEADERS above): the ladder must
@@ -395,15 +562,61 @@ class Lifecycle(unittest.TestCase):
 
     def test_disabled_hooks_stay_inert(self):
         ladder = SessionLadder(LadderConfig(enabled=False, slot_save_path=self.dir.name,
-                                            park_budget_mib=4096))
+                                            park_budget_mib=4096, pre_save_idle_s=0))
         ladder.on_turn_done("ses-a", MID, 0, 0)
         ladder.on_arrival(self.service, "ses-a", P1)
+        ladder.last_active = "ses-a"                            # the state every hook would fire on
+        # with an enabled ladder: dirty current session, idle past every window, a fire-now pre-save gate
         ladder.on_idle(self.service, 60.0)
+        ladder.pre_save(self.service, 999.0)
         ladder.on_unload(self.service)
         ladder.on_start(self.service)
         self.assertEqual(self.calls, [])
         self.assertIsNone(self.service.restore_after_load)
         self.assertIsNone(ladder.tracked["ses-a"].file_path)
+
+    def test_expected_save_seconds_first_estimate_from_size(self):
+        # No measured save yet: the conversation's byte_count at the engine's ~100 MB/s
+        # save rate is the first estimate.
+        s = TrackedSession(session_id="ses-a", tokens=MID, parked=False, save_eligible=True,
+                           file_path=None, saved_prefix=None, last_active=0.0,
+                           evictions_at_last_switch=0, byte_count=4_040_000_000)
+        self.assertIsNone(s.last_save_ms)                     # the new fields default to unknown
+        self.assertEqual(s.saved_at_bytes, 0)
+        self.assertAlmostEqual(40.4, self.ladder.expected_save_seconds(s), delta=0.5)
+
+    def test_expected_save_seconds_scales_measured_time_with_growth(self):
+        # A landed save with an engine-measured duration is the anchor: the estimate scales
+        # that measured time by how much the conversation has grown since the save.
+        s = TrackedSession(session_id="ses-a", tokens=MID, parked=False, save_eligible=True,
+                           file_path=None, saved_prefix=None, last_active=0.0,
+                           evictions_at_last_switch=0, byte_count=2_000_000_000)
+        s.last_save_ms, s.saved_at_bytes = 30_000.0, 1_000_000_000
+        self.assertAlmostEqual(60.0, self.ladder.expected_save_seconds(s))
+        # The estimate clamps to [5.0, 600.0]: a fresh zero-byte session floors at 5.0.
+        fresh = TrackedSession(session_id="fresh", tokens=0, parked=False, save_eligible=False,
+                               file_path=None, saved_prefix=None, last_active=0.0,
+                               evictions_at_last_switch=0)
+        self.assertEqual(5.0, self.ladder.expected_save_seconds(fresh))
+
+    def test_commit_records_duration_and_bytes(self):
+        # Every landed save books the engine's measured duration (the result's "ms") and this
+        # session's tracked size at save time - the data the pre-save quiet gate derives from.
+        self.seen("ses-a")                                    # dirty; byte_count = MID_BYTES
+        self.engine.session_file = mock.Mock(return_value={"tokens": 1, "ms": 1234.0, "bytes": 7})
+        self.ladder.on_arrival(self.service, "ses-a", P1)
+        self.ladder.on_idle(self.service, 8.0)                # the save lands: bookkeeping recorded
+        s = self.ladder.tracked["ses-a"]
+        self.assertEqual(s.last_save_ms, 1234.0)
+        self.assertEqual(s.saved_at_bytes, s.byte_count)      # the tracked figure, not the engine's "bytes"
+        # A result without "ms" (the harness idiom returns {"tokens": 1}) stays tolerated: the save
+        # lands, its duration is simply unknown, and the estimate falls back to the size figure.
+        self.engine.session_file = mock.Mock(return_value={"tokens": 1})
+        self.ladder.on_turn_done("ses-a", MID, 0, 0)          # dirty again...
+        self.ladder.on_idle(self.service, 8.0)                # ...and the second save lands without a duration
+        self.assertIsNone(s.last_save_ms)
+        self.assertEqual(s.saved_at_bytes, s.byte_count)
+        self.assertAlmostEqual(s.byte_count / 1e8, self.ladder.expected_save_seconds(s))
 
 
 class LifecycleEngine(LadderHarness):
