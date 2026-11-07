@@ -77,16 +77,24 @@ def _planned_model_name(a) -> str | None:
         return None
 
 
-def _only_installed_config(a) -> str | None:
-    """A bare ``strata drafting fetch`` (no run config, no model, no family): the run config of the installed model when exactly one model DFlash2 is for is set up here, so the
-    fetch takes the drafter that model would use (the tuned one where it applies) and not the stock one. Several (or none): None, the fetch is the generic one as before."""
+SEVERAL_MODELS = "Several models are set up here. Say which one: strata drafting fetch --model <name>, or --config <file>."
+
+
+def _installed_dflash2_configs(a) -> list[dict]:
+    """A bare ``strata drafting fetch`` (no run config, no model, no family): the installed models DFlash2 is for; [] for any other command line or when none can be read."""
     if a.config or getattr(a, "model", None) or a.family or a.drafting_command != "fetch":
-        return None
+        return []
     try:
         from strata_cli.launch.catalog import Catalog
-        found = [c for c in Catalog().installed_configs() if c.get("path") and drafting.supported_model(c.get("model_name"))]
+        return [c for c in Catalog().installed_configs() if c.get("path") and drafting.supported_model(c.get("model_name"))]
     except Exception:                                        # noqa: BLE001 - no answer is the generic fetch
-        return None
+        return []
+
+
+def _only_installed_config(a) -> str | None:
+    """A bare ``strata drafting fetch``: the run config of the installed model when exactly one model DFlash2 is for is set up here, so the
+    fetch takes the drafter that model would use (the tuned one where it applies) and not the stock one. Several: `run` asks which one (SEVERAL_MODELS); none: None, the fetch is the generic one as before."""
+    found = _installed_dflash2_configs(a)
     return str(found[0]["path"]) if len(found) == 1 else None
 
 
@@ -136,6 +144,12 @@ def _signals(a, want: dict) -> dict:
 def run(a) -> int:
     from strata_control import drafting_fetch      # here, not at the top: it pulls in the network code, which a started engine's command line must not load
     machine = a.output in ("json", "jsonl")
+    if len(_installed_dflash2_configs(a)) > 1:               # which model's drafter? the generic fetch would take the stock one for a set that has a tuned one
+        if machine:
+            print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": "which_model", "message": SEVERAL_MODELS}}, ensure_ascii=False))
+        else:
+            print(f"strata: {SEVERAL_MODELS}", file=sys.stderr)
+        return 2
     want = _inputs(a)
     folder = want["data_dir"]
     sig = _signals(a, want)

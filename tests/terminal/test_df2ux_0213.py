@@ -168,11 +168,29 @@ class ABareFetch(AnAutomaticFetch):
         self.assertEqual(ensure.call_args.kwargs["model_name"], Q4)
         self.assertEqual(ensure.call_args.kwargs["backend"], "hip")
 
-    def test_several_models_or_none_keep_the_generic_fetch(self):
-        for names in ((Q4, "qwen3.8-flash-next-iq3_s"), ()):
-            with serving(), hardware(STRIX), self.installed(*names), mock.patch.object(drafting_fetch, "ensure_for", return_value=self.data / "x") as ensure:
-                self.bare()
-            self.assertIsNone(ensure.call_args.kwargs["model_name"], names)
+    def test_none_installed_keeps_the_generic_fetch(self):
+        with serving(), hardware(STRIX), self.installed(), mock.patch.object(drafting_fetch, "ensure_for", return_value=self.data / "x") as ensure:
+            self.bare()
+        self.assertIsNone(ensure.call_args.kwargs["model_name"])
+
+    def test_several_models_ask_which_one_and_download_nothing(self):
+        """Owner-approved wording (11-07)."""
+        with serving(), hardware(STRIX), self.installed(Q4, "qwen3.8-flash-next-iq3_s"), mock.patch.object(drafting_fetch, "ensure_for") as ensure:
+            code, out, _ = self.bare()
+            code_text, _o, err = run_cli(["drafting", "fetch", "--data-dir", str(self.data)])
+        self.assertEqual(code, 2)
+        ensure.assert_not_called()
+        said = json.loads(out.strip().splitlines()[-1])
+        self.assertFalse(said["ok"])
+        self.assertEqual(said["error"]["message"], "Several models are set up here. Say which one: strata drafting fetch --model <name>, or --config <file>.")
+        self.assertEqual(code_text, 2)
+        self.assertIn("Several models are set up here. Say which one: strata drafting fetch --model <name>, or --config <file>.", err)
+
+    def test_naming_the_model_still_fetches_with_several_set_up(self):
+        with serving(), hardware(STRIX), self.installed(Q4, "qwen3.8-flash-next-iq3_s"), mock.patch.object(drafting_fetch, "ensure_for", return_value=self.data / "x") as ensure:
+            code, _out, _ = run_cli(["drafting", "fetch", "--config", str(self.cfg), "--data-dir", str(self.data), "--output", "jsonl"])
+        self.assertEqual(code, 0)
+        ensure.assert_called_once()
 
     def test_a_model_dflash2_is_not_for_is_not_picked(self):
         with serving(), hardware(STRIX), self.installed("qwen3.8-flash-next-coder-iq1_m"), mock.patch.object(drafting_fetch, "ensure_for", return_value=self.data / "x") as ensure:

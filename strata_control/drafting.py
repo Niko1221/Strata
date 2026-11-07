@@ -27,6 +27,7 @@ import json
 import mmap
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -680,6 +681,7 @@ NOT_DOWNLOADED = "the DFlash2 drafter isn't downloaded yet"
 NOT_THIS_CARD = "DFlash2 isn't available on this graphics card"
 NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
+FETCH_HINT = "Run strata drafting fetch to get the DFlash2 drafter now."
 DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
 SHORT_OF_VRAM = "the cards were short of memory"   # the engine ended before it was ready for lack of graphics memory: the start was repeated once with no drafter (serve/server.py), never with the MTP
@@ -1150,6 +1152,30 @@ def fallback_note(log_text: str) -> str:
     else:
         reason = DIDNT_FIT
     return mtp_line(reason)
+
+
+#: A load that is not the person's own asks the signed feed for the tuned drafter at most this often when the answer was "nothing" (strata_control/drafting_fetch.py keeps the mark).
+RETRY_AFTER_S = 12 * 3600
+MISS_MARK = ".tuned-feed-miss"
+
+
+def recent_miss(data_dir: str | Path) -> bool:
+    """Did the feed have nothing for the tuned drafter within the last RETRY_AFTER_S seconds (the mark `drafting_fetch` leaves)?"""
+    try:
+        return time.time() - (Path(data_dir) / FOLDER / MISS_MARK).stat().st_mtime < RETRY_AFTER_S
+    except OSError:
+        return False
+
+
+def fetch_hint(decision: Decision, *, model_name: str | None, backend: str | None, archs: Any = None, data_dir: str | Path | None, args: list[Any] | None = None,
+               vram_mib: float | None = None) -> str:
+    """The line after "Drafting: off (no drafter is downloaded yet)": only when the choice is DFlash2 or Auto on a set with a tuned drafter and a load has just
+    found the feed empty (a recent miss mark), so the person knows `strata drafting fetch` asks again now. "" in every other case."""
+    if decision.drafter != "off" or decision.note != NONE_HERE or normalize(decision.asked) not in ("auto", "dflash2") or not data_dir:
+        return ""
+    if not tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) or not recent_miss(data_dir):
+        return ""
+    return FETCH_HINT
 
 
 def summary_line(decision: Decision, engine_note: str = "") -> str:
