@@ -196,6 +196,20 @@ Method notes for llama.cpp on Thor: `-ngl 99` needs the project built with GGML_
 tool at this pin has no dataset download, so the corpus is the bench's own answers
 (`quant/ppl-corpus.txt` is reproducible from the outputs.jsonl files).
 
+## The two follow-ups, both clock-paired
+
+Pack ratios at 120 W DVFS (same llama-bench cells as the MAXN runs): iq3_s 20.4 tg / 348 pp; thorA 26.5 (+30%) /
+306; thorB 24.9 (+22%) / 331. The recipe gains (+30 / +22% decode) hold at both clock states - the lever is bytes
+per token, which clocks cannot change. ([quant/FIN120-*-bench.txt](quant/))
+
+Drafting depths re-swept for Qwen3.6 at MAXN ([ab-q36-depth-maxn.log](ab-q36-depth-maxn.log), paired arms, two
+rounds): the picture changes with the clocks. At 120 W deeper drafts paid off to depth 7 (+5% over the default);
+at MAXN every depth from 3 to 6 sits level with drafting **off** (chats 58.6-59.2 tok/s), depth 7 fades slightly,
+and the shipped default 2 remains the worst cell by 5-7 tok/s - a 128 K-context engine spending its extra
+compute on attention rather than on draft gains. The one setting that survives both clock states is the advice:
+do not leave Qwen3.6 at the default 2 on a Thor; 3 is the small winner (best long-prompt decode too), off is
+fine at MAXN.
+
 ## Reproducing
 
 Same machine and package: the fat engine comes from `ARCHS="121;110" sh spark/build_engine.sh` (or
