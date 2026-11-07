@@ -9,10 +9,17 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { externalEnvironment } from './external-env.mjs';
+
+const inside = (path, root) => {
+  const rel = relative(resolve(root), resolve(path));
+  return rel === '' || (!!rel && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+};
+const realPathOrResolved = path => { try { return realpathSync(path); } catch { return resolve(path); } };
 
 /** A folder no chat may use as its project: the top of a drive, or the system's own folders. */
 export function refusedFolder(dir) {
@@ -22,7 +29,13 @@ export function refusedFolder(dir) {
     const win = (process.env.SystemRoot ?? 'C:\\Windows').toLowerCase();
     const q = p.toLowerCase();
     if (q === win || q.startsWith(win + sep) || /^[a-z]:\\(program files( \(x86\))?|programdata)(\\|$)/.test(q)) return 'That is a system folder. Choose one of your own folders.';
-  } else if (/^\/(bin|boot|dev|etc|lib|lib64|proc|root|run|sbin|sys|usr|var)(\/|$)/.test(p)) return 'That is a system folder. Choose one of your own folders.';
+  } else {
+    const home = homedir();
+    const ownHome = inside(p, home) || inside(realPathOrResolved(p), realPathOrResolved(home));
+    const externalMedia = inside(p, '/run/media');
+    if (/^\/(bin|boot|dev|etc|lib|lib64|proc|root|run|sbin|sys|usr|var)(\/|$)/.test(p) && !ownHome && !externalMedia)
+      return 'That is a system folder. Choose one of your own folders.';
+  }
   return null;
 }
 

@@ -18,6 +18,7 @@ NEXT_POSIX = "Pick another folder you own, for example ~/strata-models. Nothing 
 _WIN_BAD = re.compile(r'[<>"|?*\x00-\x1f]')
 _POSIX_SYSTEM = ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var/lib", "/System",
                  "/Library", "/private/etc")
+_POSIX_EXTERNAL_MEDIA = "/run/media"
 
 
 def _next() -> str:
@@ -44,6 +45,11 @@ def _norm(path: str) -> str:
 def _inside(path: str, root: str) -> bool:
     p, r = _norm(path), _norm(root)
     return p == r or p.startswith(r + os.sep)
+
+
+def _under_user_home(path: str) -> bool:
+    home = os.path.expanduser("~")
+    return _inside(path, home) or _inside(os.path.realpath(path), os.path.realpath(home))
 
 
 def _can_write(folder: Path) -> bool:
@@ -75,8 +81,10 @@ def problem(raw: str | os.PathLike | None) -> tuple[str, str] | None:
                 "Type the whole path, starting with the drive, like D:\\Strata-models. Nothing was downloaded or changed."
                 if os.name == "nt" else "Type the whole path, starting with /, like /data/strata-models. Nothing was downloaded or changed.")
     full = os.path.abspath(path)
+    is_user_home = _under_user_home(full)
+    is_external_media = os.name != "nt" and _inside(full, _POSIX_EXTERNAL_MEDIA)
     for root in _system_roots():
-        if _inside(full, root) and not _inside(full, os.path.expanduser("~")):         # the running user's own home is theirs (root's /root included)
+        if _inside(full, root) and not is_user_home and not is_external_media:
             return (f"{full} is a system folder, and Strata should not keep model files there.", _next())
     try:
         if path.exists():
