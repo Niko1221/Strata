@@ -864,7 +864,9 @@ struct Layer {
     float *q_norm = nullptr, *kv_norm = nullptr, *attn_norm = nullptr, *ffn_norm = nullptr, *c_norm = nullptr,
           *ik_norm = nullptr, *sink = nullptr, *hca_fn = nullptr, *hca_scale = nullptr, *hca_base = nullptr,
           *hcf_fn = nullptr, *hcf_scale = nullptr, *hcf_base = nullptr, *gate_bias = nullptr, *eg_w = nullptr,
-          *gate_bias_vl = nullptr;   // (the image tokens' routing bias, with the vision tower)
+          *gate_bias_vl = nullptr,   // (the image tokens' routing bias, with the vision tower)
+          *gate_bias_cr = nullptr;   // (STRATA_DS4_CACHE_ROUTE: gate_bias plus the held experts' bonus; null: off)
+    std::vector<float> gate_bias_h;   // (STRATA_DS4_CACHE_ROUTE: gate_bias's values, read once)
     uint16_t* i_wproj = nullptr;
     float* gate_w = nullptr;   // the router's weights, F32 (DeepSeek's inference computes the gate in F32)
     uint8_t* win = nullptr;                     // [win] rows of kKvFp8 (kv_row_bytes)
@@ -1423,6 +1425,58 @@ struct Model::Impl {
             return true;
         }
         return !file_experts || os::in_ram(file_part(l, e), l.blob);
+    }
+    // STRATA_DS4_CACHE_ROUTE=<ram>[,<vram>] (experimental opt-in, CHANGES THE ANSWERS; unset or 0: off, every route as
+    // before): the router picks with a bonus for the experts already held - <vram> (default <ram>) for one in VRAM,
+    // <ram> for one in the RAM store or tier - added to the selection bias only, as the checkpoint's gate.bias is (the
+    // weights stay the plain scores', renormalised over the picks).  A near tie then goes to an expert that costs no SSD
+    // read (and, in VRAM, no CPU lane): fewer cold experts a prompt chunk touches, fewer misses a decoded token waits on.
+    // The biased rows are rebuilt from where the experts sit at each prompt and every 16 steps (a hint: one a step late
+    // costs a read, not an error).  Layers of one GPU (nm == 1) only; the DSpark blocks keep theirs, and a picture's
+    // tokens their own bias (gate_bias_vl, no bonus).
+    struct CacheRoute {
+        float ram = 0.0f, vram = 0.0f;
+        long long calls = 0;
+        std::vector<float> row;
+    };
+    CacheRoute cache_rt = [] {
+        CacheRoute c;
+        if (const char* v = std::getenv("STRATA_DS4_CACHE_ROUTE")) {
+            c.ram = std::max(0.0f, (float) std::atof(v));
+            const char* comma = std::strchr(v, ',');
+            c.vram = comma != nullptr ? std::max(0.0f, (float) std::atof(comma + 1)) : c.ram;
+        }
+        return c;
+    }();
+    const float* route_bias(const Layer& l) const { return l.gate_bias_cr != nullptr ? l.gate_bias_cr : l.gate_bias; }
+    // (called where nothing routes on the GPU: a forward's start; the copies are synchronous)
+    bool cache_route_refresh(bool prompt, std::string& err) {
+        if (cache_rt.ram <= 0.0f && cache_rt.vram <= 0.0f) return true;
+        if (!prompt && cache_rt.calls++ % 16 != 0) return true;
+        int cur = 0;
+        CK(cudaGetDevice(&cur));
+        for (Layer& l : L) {
+            if (l.mtp || l.nm != 1 || l.gate_bias == nullptr || l.slot.size() < (size_t) l.n_exp) continue;
+            const size_t n = (size_t) l.n_exp;
+            CK(cudaSetDevice(devs[(size_t) l.dev].id));
+            if (l.gate_bias_cr == nullptr) {
+                l.gate_bias_h.resize(n);
+                CK(cudaMemcpy(l.gate_bias_h.data(), l.gate_bias, n * 4, cudaMemcpyDeviceToHost));
+                CK(cudaMalloc(&l.gate_bias_cr, n * 4));
+                if (&l == &L.front())
+                    std::fprintf(stderr, "ds4: cache-aware routing (STRATA_DS4_CACHE_ROUTE, CHANGES THE ANSWERS): a held "
+                                         "expert's selection bonus %.3g in RAM, %.3g in VRAM\n", cache_rt.ram, cache_rt.vram);
+            }
+            cache_rt.row.resize(n);
+            for (size_t e = 0; e < n; ++e) {
+                const bool vram = l.slot[e] >= 0;
+                const bool ram = !vram && ((!l.ram.empty() && l.ram[e] >= 0) || (store && store->holds(l.il, (int) e)));
+                cache_rt.row[e] = l.gate_bias_h[e] + (vram ? cache_rt.vram : ram ? cache_rt.ram : 0.0f);
+            }
+            CK(cudaMemcpy(l.gate_bias_cr, cache_rt.row.data(), n * 4, cudaMemcpyHostToDevice));
+        }
+        CK(cudaSetDevice(cur));
+        return true;
     }
     // STRATA_DS4_DISK_SKIP_AUTO=1 (with DISK_SKIP_W; experimental, off by default): DISK_SKIP_W only while the model is
     // cold - from a start until VRAM and the page cache hold what they can, and again after an idle that let the page
@@ -11667,7 +11721,7 @@ struct Model::Impl {
             const int nr = std::min(kVlRows, T - r0);
             VlBits vb;
             const bool vl = l.gate_bias_vl != nullptr && vl_bits(p0 + r0, nr, vb);
-            route(c.glog + (size_t) r0 * 1024, l.gate_bias, l.n_exp, l.k_exp, nr, g.route_scale,
+            route(c.glog + (size_t) r0 * 1024, route_bias(l), l.n_exp, l.k_exp, nr, g.route_scale,
                   c.ridx + (size_t) r0 * kPicks, c.rw + (size_t) r0 * kPicks, s, l.gate_bias_vl, vl ? &vb : nullptr);
         }
         const int n_vs = L0.pv_n + (int) L0.host_list.size();
@@ -12903,6 +12957,7 @@ struct Model::Impl {
         if (n < 1) return true;
         flow_used.store(true);
         std::lock_guard<std::mutex> warm_lk(warm_mu);   // (the warm-up, if it is running, finishes first)
+        if (!cache_route_refresh(true, err)) return false;
         if (pos + n > o.max_context) {
             err = "the context is full";
             return false;
@@ -13368,6 +13423,7 @@ struct Model::Impl {
             err = "a window of " + std::to_string(T) + " tokens";
             return false;
         }
+        if (!cache_route_refresh(false, err)) return false;
         if (pos + T > o.max_context) {
             err = "the context is full";
             return false;
@@ -14138,7 +14194,7 @@ struct Model::Impl {
                 route_ahead(gl, nx->gate_bias, nx->n_exp, m, T, reqs + slot, (a - 1) * kAhead1, s);
                 na[a - 1] = m;
             }
-            route_publish(d.glog, l.gate_bias, l.n_exp, l.k_exp, T, g.route_scale, l.vram_tab, d.x, D, d.ridx, d.rw,
+            route_publish(d.glog, route_bias(l), l.n_exp, l.k_exp, T, g.route_scale, l.vram_tab, d.x, D, d.ridx, d.rw,
                           d.plan_ptr, lead ? reqs + slot : nullptr, sq, s, l.gate_bias_vl, l.mtp ? 0u : wp.vl, na[0],
                           na[1]);
             if (!mv(d, {job(l.s1, d.x, d.sg, T, D, FF), job(l.s3, d.x, d.su, T, D, FF)}, err)) return false;
@@ -14262,7 +14318,7 @@ struct Model::Impl {
         gemv_f32(l.gate_w, d.x, l.n_exp, D, T, d.glog, 1024, s);
         VlBits vb = {};
         vb.w[0] = l.mtp ? 0u : wp.vl;
-        route(d.glog, l.gate_bias, l.n_exp, l.k_exp, T, g.route_scale, d.ridx, d.rw, s, l.gate_bias_vl,
+        route(d.glog, route_bias(l), l.n_exp, l.k_exp, T, g.route_scale, d.ridx, d.rw, s, l.gate_bias_vl,
               vb.w[0] != 0 ? &vb : nullptr);
         CK(cudaMemcpyAsync(h_idx, d.ridx, (size_t) T * kPicks * 4, cudaMemcpyDeviceToHost, s));
         CK(cudaMemcpyAsync(h_w, d.rw, (size_t) T * kPicks * 4, cudaMemcpyDeviceToHost, s));

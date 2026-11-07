@@ -131,6 +131,11 @@ public:
         try_ready(sp);
         return sp.state.load(std::memory_order_acquire) == kReady && sp.layer == layer && sp.expert == e ? s : -1;
     }
+    /// Whether (layer, e) has a slot, ready or loading - the router's hint (STRATA_DS4_CACHE_ROUTE).  No lock, as find():
+    /// an answer a moment stale only costs one read more or less.
+    bool holds(int layer, int e) const {
+        return layer >= 0 && layer < (int) where_.size() && where_[(size_t) layer][(size_t) e] >= 0;
+    }
     const uint8_t* mat(int slot, int r) const { return slots_[(size_t) slot].base + geo_[(size_t) slots_[(size_t) slot].layer].tr[r]; }
     const uint8_t* blob(int slot) const { return slots_[(size_t) slot].base; }
     /// The device address of the slot's blob (0: the arena is not mapped for the GPU)
