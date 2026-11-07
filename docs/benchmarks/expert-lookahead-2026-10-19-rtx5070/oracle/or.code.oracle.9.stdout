@@ -1,0 +1,21 @@
+speculation              24 rounds of 2, drafts accepted 0 of 23 (0.000), 1.00 tokens per round
+window sizes             T1:1 T2:23  (min draft probability 0.50)
+accepted per round       0:24 1:0
+verify window            wait for rings 9.136  pool 11.109  host 0.028  commit 0.015 ms/round; CPU experts 2.26 distinct / 2.27 routed per layer
+pool multi               gate/up 2.692  quantize 0.027  down 1.132 ms/round; 40.9 GB/s over the rows phases; CPU pool call 11.089 ms/round
+dispatch                 plan 0.060  activation quantize 0.052  jobs 6.970  run 3.856 ms/round
+adaptive tier            448 experts swapped into the VRAM tier (every 4 rounds, 1.696 ms/round)
+expert tiers             decode: RAM 0 blobs, files 0 blobs, 2262.8 MB read from the files (94.28 MB/round, 6.1 ms/round of reading, 15.52 GB/s per reading thread) (the GGUF in place); prompt copies 6724.8 MB
+routing prefetch         5110 experts warmed, 664 of the file tier's 0 blob reads had been warmed (0.0%); predictor 11.4 ms/round on its thread, 108 layers skipped (still busy)
+pcie experts             0.00 distinct experts per layer read over PCIe (share 141/256 of the misses)
+prompt  : 248045 846 198 3936 1132 279 709 803 884 310 2542 14031 321 460 279 4434 999 13 198 71093 12305 198 727 884 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198 262 460 264 348 292 271 2138 884 7 17 11 220 18 8 606 220 20 198 71093 248046 198 248045 74455 198 248068 271 248069 271
+output  : 71093 12305 198 727 2542 14031 2784 11 292 1590 198 262 460 264 478 292 271 727 29283 2784 11 292 1590 198
+decode                   24 tokens in 557.9 ms  ->  43.02 tok/s
+prefill                  69 tokens in 1008.5 ms  ->  68.42 tok/s  (time to first token 1772.1 ms)
+  per token              23.246 ms/token (WALL CLOCK: embed, layers, head, sample)
+  ple io: 5952 rows, 6.3% row-cache hits, 5456 SSD reads (22.8 MB), read p50 246 us p99 1430 us, blocked 34.600 ms total (submit 2.551 ms), cache 5456/1048576 rows, SSD kept awake by 29 reads (slowest 0.4 ms)
+  the CPU expert pool    11.089 ms/token over 48 layers (24 positions, 1152 dispatches)
+  pool phases              wait-park 0.000  drain 3.854  re-park 0.000  ms/token
+  expert blobs           8050 blobs read
+  R4 overlap             0 of 0 layers the hit work was DONE when the pool returned
+  R4 expert-cache hits   19945 of 22560 = 0.8841      (0 admitted, 2615 refused, cache 100.0000% full)
