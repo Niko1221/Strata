@@ -7,16 +7,16 @@
 > 所以审代码时三条分支给出来的 diff 是一致的，只有文档与文件集合不同。
 
 **目标**：`upstream/main`（Niko1221/Strata）
-**基线**：`upstream/main` = `ffa80d73`（v0.2.10 一带，**2026-11-03 已 merge 进三条交付分支**：冲突 3 文件 —— `serve/server.py`、`src/core/verify.cpp`、`src/program/generate.cpp`，解法记在同步台账；merge 后 CUDA 构建 + 训练/serve 测试复核通过）；`git ls-remote upstream main` 复核远端一致，即改动是在最新主分支之上做的
+**基线**：`upstream/main` = `146df3c4`（v0.2.12，**2026-11-07 已按 mezo → bwd → support 级联 merge 进三条交付分支**，`git ls-remote upstream main` 当日复核一致，三条分支相对上游**落后 0**）；merge 后 CUDA 构建（arch 89 / vcvars64）+ 三树训练全量 + serve 回归复核，数字与边界见 §5.5 / §7.1
 **范围**：三块 —— ① `training/`（训练入口，新增目录；根放共用层，`mezo/`、`backward/` 是两条路线，`bench/` 基准与探针，`tests/` 单测）；② `serve/server.py` 的训练会话与 `/v1/score`、`/v1/lora`；③ **引擎侧 LoRA + SCORE 能力**（34 文件 / +3,621 −57：`src/kernels/lora*.{cu,cpp}`、`src/prefill/score*`、`generate.cpp` 的命令循环、`CMakeLists.txt` / `setup.py` 的开关、CI）
 > 第 ③ 块不是可选的：零阶路线的前向就是引擎的 `SCORE`，没有它 `--method mezo` 一行都跑不了。
 > 若上游要求训练功能与引擎能力分开审，按 Q9 拆成两个 PR 即可，代码本身已经是分开的提交。
-**状态**：工作区干净，已全部落成 commit；训练目录 **362 项全过**（2026-11-07 Windows 实测，`python -m unittest discover -s training/tests -p "test_*.py"`，15 s，含新增 11 项），`serve.test_training_api` **6 项**全过；零阶那一棵树 **214 项**（213 过 + 1 skipped，零 torch）。文中 144 / 268 / 271 等旧数是历史提交快照，见 §0.3
+**状态**：工作区干净，已全部落成 commit；训练目录 **362 项全过**（2026-11-07 Windows 实测，`python -m unittest discover -s training/tests -p "test_*.py"`，15 s，含新增 11 项），serve 全量 **1,535 项**（1,508 过 + 26 skip + 14,184 subtests；1 项编码环境性失败见 §5.5）；零阶那一棵树 **214 项**（213 过 + 1 skipped，零 torch）。文中 144 / 268 / 271 等旧数是历史提交快照，见 §0.3
 
 | 项 | 数 |
 |---|---|
-| 改动面（相对 `upstream/main`） | 143 文件 / **≈+32k −94**（含本文档；口径见表下注） |
-| 本功能提交（非 merge） | ≈130 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
+| 改动面（相对 `upstream/main`） | 144 文件 / **≈+34k −95**（含本文档；口径见表下注） |
+| 本功能提交（非 merge） | ≈150 个（`git rev-list --no-merges --count upstream/main..feat/train_support`；含早期训练线与本地 `main` 的既有提交） |
 | 核心实现 | `train.py` `algos.py` `objectives.py` `mem_guard.py` `mezo/mezo.py` `backward/sft.py` `backward/grpo.py` 等 13 个文件 ≈5.4k 行（luspo 带来约 0.7k） |
 | 测试 | 18 个 `test_*.py`，训练目录 **362 项全过**（2026-11-07 Windows 实测，15 s）；`serve/test_training_api.py` 6 项 |
 | 服务端 | `serve/server.py`（`TrainBridge` + 3 个 `/v1/training/*` 路由 + `POST /v1/lora`） |
@@ -32,8 +32,8 @@
 
 > **2026-11-07 复核（本版状态）**：头部与各章的「当前状态」数字已按当前 HEAD 重跑刷新 ——
 > 训练目录 **362 项全过**（Windows，15 s，`python -m unittest discover -s training/tests -p "test_*.py"`），
-> 零阶树 **214 项**（213 过 + 1 skipped，零 torch）；三树改动面 mezo **107** / bwd **141** /
-> support **143** 文件，非 merge 提交 **85 / 102 / 126**。
+> 零阶树 **214 项**（213 过 + 1 skipped，零 torch）；三树改动面（相对当前 `upstream/main`）mezo **110** / bwd **144** /
+> support **144** 文件，非 merge 提交按 10 就近取整 **≈90 / ≈120 / ≈150**（含文档提交）。
 > **文中形如 `adfa53a7 / 271 项`、`56c7eae0 / 144 项` 的数字是对应历史提交时的快照，
 > 不代表当前 HEAD**，按本节与 §7.1 读。
 > 本版同时闭合了 §8-13（显著性标定）、§5.4.1（超参落盘 / 同 seed 复现 / B=0 对照 / 重复评测）、
@@ -343,7 +343,7 @@ open 会话 → 逐行喂命令 → close，不是一个"提交训练任务、�
 | Windows 额外 | 无 | `triton-windows 3.7.1`（PyPI `triton` 只有 Linux 轮子）、`kernels 0.16.1` —— README 记录的实测组合：`torch 2.13.0+cu132` / `transformers 5.17.0` |
 | 125B NF4 pack 路线额外 | 不涉及（专家权重由引擎自己管，训练进程不装 pack） | `gguf`（`loader_qwen4.py` 的 `gguf.constants` / `gguf.quants` 反量化） |
 | **引擎二进制** | **必需**：本仓库构建的 `strata`（CMake + CUDA toolkit，`-DSTRATA_ENABLE_CUDA=ON`；`third_party/llama.cpp` 已 pin）。只用到 `--serve` 命令循环里的 `LORA <path>` / `SCORE <ids>`（评测再要 `GEN`） | `sft` / `dpo` 反传**不需要引擎**（纯 PyTorch 前向）；`grpo` 反传是两段式，第一段要引擎采轨迹（同样要 `LORA`/`SCORE`） |
-| **引擎分支要求** | ⚠️ **必须是 `feat/train-mezo` 构建出来的**：`LORA`/`SCORE` 只在这个分支的 `src/program/generate.cpp` 里。`upstream/main`（`ffa80d73`，2026-11-03 merge 时复核过）的 `src/` 里**没有**这两条命令 | 同左（GRPO 第一段） |
+| **引擎分支要求** | ⚠️ **必须是 `feat/train-mezo` 构建出来的**：`LORA`/`SCORE` 只在这个分支的 `src/program/generate.cpp` 里。`upstream/main`（`146df3c4`，2026-11-07 同步时复核过）的 `src/` 里**没有**这两条命令 | 同左（GRPO 第一段） |
 | 数据 / 资产 | pack：gguf shards + `tokenizer/chat_template.jinja` + `expert-profile.bin` | 同左（另加 NF4 专家 pack） |
 | 平台 | linux / win32（`platform_check.SUPPORTED`；win32 走 `preadv_shim` 的 readinto 垫层）；macOS 未测、被拒 | 同左 |
 | 实测量级显存 | 26.9 GiB 账面（§5.1） | 34~45 GiB（§5.1） |
@@ -381,7 +381,7 @@ open 会话 → 逐行喂命令 → close，不是一个"提交训练任务、�
   也不受其 MIT 许可约束 —— 借用的是已发表的方法，不是代码。
 - **本树的上游**：`upstream` = `git@github.com:Niko1221/Strata.git`；个人 fork `origin` = `git@github.com:xiezhipeng-git/Strata.git`。
   `LORA` / `SCORE` 与 `--serve` 命令循环**尚未进 `upstream/main`**，只在 `feat/train-mezo`
-  两棵树上（见 §2.5 的引擎分支要求）：`upstream/main` = `ffa80d73`（v0.2.10 一带，2026-11-03 merge 进本分支），
+  两棵树上（见 §2.5 的引擎分支要求）：`upstream/main` = `146df3c4`（v0.2.12，2026-11-07 merge 进三条分支），
   merge 时复核过 `git show upstream/main:src/program/generate.cpp` 里仍然没有任何 `LORAOK`/`SSUM`。
 
 ### 2.7 产物
@@ -827,7 +827,7 @@ B=0 对照三件事，并用当前默认参数重做一次（超参全部落盘�
 | 引擎 score vs HF CE（同一 ids，8 token） | −56.6508 vs **−56.6433**，差 0.0075 nats |
 | `objectives.py` numpy vs torch | `test_objectives.py` 逐值对拍通过 |
 | 训练目录单测 | **362 项全过**（`python -m unittest discover -s training/tests -p "test_*.py"`，15 s；2026-11-07 Windows 实测） |
-| serve 全量 | 1,403 项（2026-11-03 实测：1,378 过 + 24 skip），仅 `test_winjob` 1 个既有环境性失败（干净 worktree 同样失败） |
+| serve 全量 | 1,535 项（2026-11-07 同步 v0.2.12 后实测：1,508 过 + 26 skip + 14,184 subtests 过）；`PYTHONUTF8=0` 下 1 项 `test_web_start_question` 因子进程 GBK 解码失败，改 `PYTHONUTF8=1` 单独复验通过 ⇒ 编码环境性，不是回归 |
 | 服务会话真机 | 会话期 chat 409 → close 后 200；客户端崩溃也会话正常关 |
 
 ---
@@ -836,6 +836,12 @@ B=0 对照三件事，并用当前默认参数重做一次（超参全部落盘�
 
 > 完整报告与逐条原始数字见 `training/RETENTION-EVAL.zh.md`、`training/EVAL-RESULTS.json`
 > （两者随本 PR 提交）；复现命令见该报告 §6。这里只写结论与口径。
+>
+> **引擎构建口径（2026-11-07 同步上游后补记）**：§5.6 与报告里的 `SCORE` 绝对值、轨迹级漂移
+> 是在 `f416e41d` 那次的引擎二进制下测的；同步 v0.2.12 后引擎已重新构建，跨构建的绝对值
+> 不可逐值比较（历史实测有 0.5 nats 级抖动），MeZO 只吃同一构建内的差分。训练层 Python、
+> 判分器、数据与 adapter 都没变，结论仍限于「同一构建内的差分」，不宣称与新版引擎逐值相等；
+> 新引擎下重采评测属于**未测项**。
 
 原判据的问题：§5.4 用的是 baseline 已 100% 饱和的 MATH-500 干净子集，且**没有测过
 "同一 adapter 重复评测两次"的波动量级**，所以 −3 / −2 判不了是不是真回退。本轮参考
@@ -940,9 +946,9 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 
 | 分支 | 切分提交 | 带什么 | 能不能独立用 | 测试 | 相对 `upstream/main` |
 |---|---|---|---|---|---|
-| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **214**（213 过 + 1 skipped；把 `torch` 顶成 raise ImportError 的模块后同样 214） | ≈90 提交 / 107 文件 / ≈+20k −94 |
-| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | **362 全过** | ≈100 提交 / 141 文件 / ≈+31k −94 |
-| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | **362 全过**（同上） | ≈130 提交 / 143 文件 / ≈+32k −94 |
+| `feat/train-mezo` | `56c7eae0` | 共用层（numpy）+ 零阶（引擎 `LORA` / `SCORE`）+ 引擎侧改动 + 数学造数据/评测；**不含 torch 层** | **能**：运行时只要 numpy + 引擎二进制，训练路径不 import torch | **214**（213 过 + 1 skipped；把 `torch` 顶成 raise ImportError 的模块后同样 214） | ≈90 提交 / 110 文件 / ≈+23k −95 |
+| `feat/train-backforward` | `adfa53a7` | 在 mezo 之上叠加：`backward/`（10 模块）+ `ce.py` / `lora.py` / `update_rules.py` + `backward/hf_ref.py`（HF 对拍）+ 6 个 torch bench + 7 个 torch 测试 | **能**：mezo 那棵树是它的子集，只多 32 个 `.py` | **362 全过** | ≈120 提交 / 144 文件 / ≈+34k −95 |
+| **▸ `feat/train_support`**（本文所在树，交付面） | 交付分支 HEAD | = `mezo ∪ backforward` + 文档（两线共享的 `.py` 逐字一致；对 mezo 只多那 32 个文件） | 交付面 | **362 全过**（同上） | ≈150 提交 / 144 文件 / ≈+34k −95 |
 
 **如果只想收一条线，代价是什么**（分三条分支就是为这件事，它也是「砍掉 backforward 会失去什么」的答案）：
 
@@ -969,7 +975,7 @@ V1 的输出会带本机绝对路径（engine / pack / profile 由 pinned config
 - **反传线是叠在零阶线之上的，不是并列**：`comm -23`（mezo 有而 bwd 没有的文件）为空；
   bwd 比 mezo 只多 **32 个 `.py`**（30 个 torch 文件 + `bench/diag_frozen.py` / `bench/mtp_probe_tr.py`
   两个诊断脚本），共享的 62 个 `.py` 逐字一致（`git diff --quiet` 逐个核过）。
-  这是"官方只要一条线"能拆的前提：只要零阶交 mezo（**当前 107 文件、214 项**、零 torch），
+  这是"官方只要一条线"能拆的前提：只要零阶交 mezo（**当前 110 文件、214 项**、零 torch），
   要两条交 support；bwd 自己也能独立用，但它交付的价值是"反传 + 对拍"，零阶是它的基础层。
 - **零阶线不带 torch 是判据，不是说法**：
   `git grep -nE '^(import|from) (torch|transformers|triton)' feat/train-mezo -- training/` 为空；
@@ -1001,7 +1007,7 @@ Windows 轮子（要装第三方 `triton-windows`），本机测试环境里没�
 不是本次改动引入的。**Linux 上实测 268 全过**（2026-11-03，WSL Ubuntu 24.04 / Python 3.12 / pytest 9.0.2，`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests -q` → `268 passed in 36.97s`），所以这 2 项是环境依赖，不是代码问题。
 
 ```
-upstream/main ffa80d73（v0.2.10 一带，2026-11-03 已 merge 进三条分支）
+upstream/main 146df3c4（v0.2.12，2026-11-07 已 merge 进三条分支）
   └─ feat/train-mezo            零阶线（HEAD）  共用层 + 零阶 + 引擎（LORA / SCORE）；训练路径零 torch；214 项
        │   56c7eae0  摘掉 torch 层（213 → 134）；方法可用性改成看文件（algos.available）
        └─ feat/train-backforward      反传线（HEAD）  以上全部 + torch 反传层（比 mezo 多 32 个 .py）；362 项
@@ -1027,7 +1033,7 @@ git diff --stat feat/train-backforward feat/train_support -- '*.py'    # 空 = �
 的树（`56c7eae0`，144 项全绿，无 torch），`feat/train-backforward` 用**同一份映射表**再迁移一遍、
 merge 零阶层、再叠 torch（`adfa53a7`，271 项），support 是两者合并的结果（`c9c0016f`）。判据如下：
 
-- **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（当前 107 文件、214 项、训练路径零 torch）。
+- **官方只要零阶** ⇒ 直接交付 `feat/train-mezo`（当前 110 文件、214 项、训练路径零 torch）。
   不需要 cherry-pick，也不需要再把目录搬一次 —— 这正是"迁移只做在交付面"那版的缺口：
   合并后的树能拆，但源分支拆不出来。
 - **只要反传**（不要引擎那套 `LORA`/`SCORE` 改动）⇒ 交付 `feat/train-backforward`（`adfa53a7`）：
@@ -1035,21 +1041,22 @@ merge 零阶层、再叠 torch（`adfa53a7`，271 项），support 是两者合�
 - **两条都要** ⇒ 交付 `feat/train_support`（HEAD）。审 diff 用
   `upstream/main...feat/train_support`，看到的就是 `training/`。
 - 三条分支的迁移提交是同一批 rename（`d54d8a32` / `0c676f32`），路径逐一对齐，所以合并
-  不会出现两份文件；实测 add/add 冲突只有两处（`sft.py`、`test_train.py`，`b7085d3c` 时取反传侧）
-  与一处 `math_probe.py`（`c9c0016f` 时取反传侧的去重版本）。
-- **文档版本**：完整说明是 support 上的这一份（≈1.1k 行）。`feat/train-mezo` 与
-  `feat/train-backforward` 各自也带一份 `REVIEW-REQUEST.zh.md`，是迁移时的 **594 行早期版**
-  （没有 §5.2 资源三档、§7 分支审计、附录 B）。要评完整 PR 以 support 为准；只收零阶时，
-  那份早期版覆盖的能力面与零阶层一致，不矛盾。
+  不会出现两份文件。
+- **文档版本**：三树各带一份 `REVIEW-REQUEST.zh.md`（≈1.3k 行），由同一母本参数化生成，
+  正文逐字相同，只有「本树事实」的头部、摘要行、§7.1 ▸ 标记不同；评任意一条分支都能看到完整方案。
 
-**基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main` 之上，且 **2026-11-03 已把
-`upstream/main` = `ffa80d73`（v0.2.10 一带，798 文件 / +86k）merge 进三条分支**（冲突 3 文件，
-解法与验证口径在同步台账 `UPSTREAM-SYNC.md`；merge 后 CUDA 构建 + 测试复核通过）。
-support 相对上游**落后 0、领先 163 个提交**（其中非 merge 114）。
+**基线判据（比对时别拿错参照）**：交付分支建在 `upstream/main` 之上。**2026-11-06 同步到
+`9f7d977d`（v0.2.11），2026-11-07 再同步到 `146df3c4`（v0.2.12，95 提交 / 158 文件）**，
+两次都按 mezo → bwd → support 级联、只用 merge；`git merge-base --is-ancestor upstream/main <分支>`
+对三条分支都为真，相对上游**落后 0 / 领先 102、146、207 个提交**（非 merge 89 / 116 / 152，
+2026-11-07 修复提交后实测；之后每个纯文档提交各 +1，属表下注已声明的预期漂移）。merge 后 CUDA 构建（vcvars64 + Ninja / arch 89，0 FAILED）、三树训练全量、
+serve 全量回归复核，数字与已知环境性失败见 §5.5。
+上游 v0.2.12 新增的 `tests/core/flag_order_test.cu` 用了 MSVC/nvcc 不提供的 `__atomic_load_n`，
+本 PR 按同仓库 `include/strata/core/flag_order.hpp` 既有的 `_WIN32` 分支补齐（三树逐字一致）；
+这是**修上游平台缺口**，不属于训练功能代码。
 本仓库的 `origin` 是 fork（`xiezhipeng-git/Strata`），它的 `main` 停在 `80494788`（2026-10-15），
-**落后上游 2,755 个提交** —— 老 `support 7fa6caaa` 那句"落后 2,755"就是因为当年从 fork 的
-main 切出来的。所以比对一律用 `upstream/main...feat/train_support`，拿 `origin/main` 比会
-误判成"基线过期"。
+**落后上游 3,766 个提交**（2026-11-07 实测）。所以比对一律用
+`upstream/main...feat/train_support`，拿 `origin/main` 比会误判成"基线过期"。
 
 ### 7.2 来源分支审计（这些分支的内容去哪了）
 
@@ -1090,7 +1097,7 @@ main 切出来的。所以比对一律用 `upstream/main...feat/train_support`�
 ### 7.4 兼容性、回滚与合并顺序
 
 - **推理路径**：无训练会话时只多一个 `training_active()` 布尔判断，128K 走廊、KV 档位、
-  logprobs 行为均不变（serve 全量 1,403 项为证，2026-11-03 merge 上游后复跑）。
+  logprobs 行为均不变（serve 全量 1,535 项为证，2026-11-07 merge 上游 v0.2.12 后复跑；1 项编码环境性失败见 §5.5）。
 - **旧入口**：`--objective` / `--backend` 保留为**报错**（不是别名），避免两种叫法长期并存。
   若下游脚本在用旧名，这是不兼容变更，**请确认可以断**。
 - **回滚**：本 PR 全是新增文件 + `serve/server.py` 的独立段落，`git revert` 单 commit 即可；
