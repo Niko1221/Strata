@@ -215,6 +215,8 @@ test('all nine languages carry the dialog\'s words with the same slots', () => {
       if (l !== 'en') assert.notEqual(catalogs[l][k], catalogs.en[k], `${l} ${k} is translated`);
     }
   }
+  // English is in the main catalog (src/lib/i18n.ts); each other language is one file (src/lib/catalog-<lang>.ts) that the app fetches when the language is used.
   const i18n = src('src/lib/i18n.ts');
-  for (const l of langs) assert.match(i18n, new RegExp(`\\.\\.\\.upd_${l}\\b`));
+  assert.match(i18n, /\.\.\.upd_en\b/);
+  for (const l of langs.filter(x => x !== 'en')) assert.match(src(`src/lib/catalog-${l}.ts`), new RegExp(`from '\\.\\./locales/upd-${l}\\.json'`));
 });
