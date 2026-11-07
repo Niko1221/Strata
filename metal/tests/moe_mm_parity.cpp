@@ -18,12 +18,13 @@
 #include <vector>
 
 namespace {
-constexpr int N_EMBD = 2560, N_FF = 640, TOPK = 10;
+int N_EMBD = 2560, N_FF = 640;   // --embd / --ff change them (Q4-KQ: expert widths 512 and 1024)
+constexpr int TOPK = 10;
 struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
 struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 int type_of(const std::string& s) {
-    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1, ref::Q5_0})
+    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q3_K, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1, ref::Q5_0})
         if (s == ref::type_name(t)) return t;
     std::exit(2);
 }
@@ -39,6 +40,8 @@ int main(int argc, char** argv) {
         if (a == "--gu") gu = type_of(argv[++i]);
         else if (a == "--dn") dn = type_of(argv[++i]);
         else if (a == "--T") T = std::atoi(argv[++i]);
+        else if (a == "--ff") N_FF = std::atoi(argv[++i]);
+        else if (a == "--embd") N_EMBD = std::atoi(argv[++i]);
         else if (a == "--tile") std::sscanf(argv[++i], "%d,%d,%d,%d", &TM, &TN, &TK, &SG);
         else if (a == "--dtile") std::sscanf(argv[++i], "%d,%d,%d", &DTN, &DTK, &DSG);   // the down kernel's TN,TK,SG
         else if (a == "--bench") bench = true;
@@ -130,7 +133,7 @@ int main(int argc, char** argv) {
         }
         if (gemm) {
             MmArgs ma{(uint64_t)layer * NE * blob, (uint64_t)layer * NE * blob + up_off, (uint64_t)layer * NE * blob + down_off,
-                      blob, blob, (uint32_t)gu_row, (uint32_t)d_row, N_EMBD, N_FF};
+                      blob, blob, (uint32_t)gu_row, (uint32_t)d_row, (uint32_t)N_EMBD, (uint32_t)N_FF};
             if (v2 || v3) {   // v3 is v2's gather plus the register-operand GEMMs
                 const uint32_t ne = N_EMBD;
                 mtl::Dispatch ga; ga.p = &pgat; ga.args = {mtl::Arg::B(x), mtl::Arg::B(stok), mtl::Arg::B(XS), mtl::Arg::V(ne)};
@@ -142,7 +145,7 @@ int main(int argc, char** argv) {
             g.grid[0] = N_FF / (v3 ? TN * SG : TN); g.grid[1] = meta.as<uint32_t>()[0]; g.tg[0] = 32 * SG; ds.push_back(g);
             mtl::Dispatch d; d.p = &pdn; d.args = {mtl::Arg::B(W), mtl::Arg::B(v2 || v3 ? HS : H), mtl::Arg::B(YE), mtl::Arg::B(tiles), mtl::Arg::V(ma)};
             d.grid[0] = N_EMBD / (v3 ? DTN * DSG : v2 ? DTN : TN); d.grid[1] = meta.as<uint32_t>()[0]; d.tg[0] = 32 * ((v2 || v3) ? DSG : SG); ds.push_back(d);
-            const uint32_t ca[4] = {(uint32_t)T, N_EMBD, TOPK, 0};
+            const uint32_t ca[4] = {(uint32_t)T, (uint32_t)N_EMBD, TOPK, 0};
             mtl::Dispatch cb; cb.p = &pcomb; cb.args = {mtl::Arg::B(YE), mtl::Arg::B(pos), mtl::Arg::B(sw), mtl::Arg::B(y), mtl::Arg::V(ca)};
             cb.grid[0] = (T * N_EMBD + 255) / 256; cb.tg[0] = 256; ds.push_back(cb);
         }
