@@ -1206,6 +1206,16 @@ struct Model::Impl {
     static constexpr int kPenCap = 4096;
     int32_t* h_pen = nullptr;
     int32_t* d_pen = nullptr;
+    // the request's logit_bias (Model::set_logit_bias, strata/core/logit_bias.hpp: -inf bans a token): a row of vocab
+    // floats on the head device that every pick adds - sample(), verify() and, with the head on one GPU, the drafter's
+    // own picks (a head group's markov drafts take none); nullptr: none.  bias_rows keeps the last kBiasRows lists
+    // (used last at the back) with their host copy: found by the list's key and then compared, so the list a server
+    // sends with every request, or --parallel's conversations with one list, is copied to the GPU once; a new list
+    // past kBiasRows reuses the oldest row's memory
+    struct BiasRow { size_t key; float* row; std::vector<float> host; };
+    static constexpr size_t kBiasRows = 16;
+    const float* d_bias = nullptr;
+    std::vector<BiasRow> bias_rows;
     // (tests) DS4_DSPARK_SAMPLE=1: a sampled request's drafts drawn from the drafter's distribution through the
     // request's chain, as DeepSeek's reference does (else its argmax: the same acceptance on Uranus, 31-32% of 5
     // drafts a round either way); DS4_DSPARK_QTEMP=f: those draws at f x the request's temperature (any q keeps the
@@ -1940,6 +1950,11 @@ struct Model::Impl {
         for (const ProfMark& m : prof_marks) {
             if (m.dev < 0 || (size_t) m.dev >= prof_pool.size()) continue;
             if (cudaSetDevice(m.dev) == cudaSuccess) (void) cudaEventDestroy(m.ev);
+        }
+        if (!bias_rows.empty() && (size_t) head_dev < devs.size()) {   // (the logit_bias rows, on the head device)
+            cudaSetDevice(devs[(size_t) head_dev].id);
+            for (auto& e : bias_rows) cudaFree(e.row);
+            bias_rows.clear();
         }
         for (Dev& d : devs) {
             cudaSetDevice(d.id);
@@ -10938,6 +10953,8 @@ struct Model::Impl {
             strata::dsv41k::SamplerParams sp;
             sp.greedy = true;
             sp.temperature = 0.0f;
+            sp.logit_bias = d_bias;   // (the request's logit_bias: a banned token is not drafted, so verify keeps more;
+                                      //  the markov drafts above, a head group's, take none)
             if (drafts_q) {   // the request's own chain: draft i drawn as the model's token i would be (verify's counter + i)
                 sp.greedy = false;
                 sp.temperature = dq_temp * (q_temp_scale > 0.0f ? q_temp_scale : 1.0f);
@@ -11138,6 +11155,8 @@ struct Model::Impl {
             strata::dsv41k::SamplerParams sp;
             sp.greedy = true;
             sp.temperature = 0.0f;
+            // (no logit_bias: these rows are several conversations', each with its own list - verify_multi, which has
+            //  the conversation's list, rejects a banned draft as any other, and the drafts after it)
             for (int c = 0; c < n; ++c)
                 for (int i = 0; i < T; ++i) {
                     float* row = hd.logits + (size_t) (c * T + i) * V;
@@ -11232,7 +11251,7 @@ struct Model::Impl {
         sp.min_p = min_p;
         sp.seed = seed;
         sp.counter = counter;
-        sp.logit_bias = bias;
+        sp.logit_bias = bias ? bias : d_bias;
         int h = 0;
         const int* hr = pen_rows(hist_end, 1, sp, h);
         strata::dsv41k::sample_tokens(d.logits + (size_t) row * g.vocab, 1, g.vocab, hr, h, sp, d.tok, d.st);
@@ -11266,6 +11285,7 @@ struct Model::Impl {
             strata::dsv41k::SamplerParams sp;
             sp.greedy = true;
             sp.temperature = 0.0f;
+            sp.logit_bias = d_bias;   // (the request's logit_bias, Model::set_logit_bias)
             int h = 0;
             const int* hr = pen_rows(p0 + 1, T, sp, h);
             strata::dsv41k::sample_tokens(hd.logits, T, V, hr, h, sp, d_ints + 16, hd.st);   // (the T rows at once)
@@ -11302,6 +11322,7 @@ struct Model::Impl {
             sp.min_p = min_p;
             sp.seed = seed;
             sp.counter = counter;
+            sp.logit_bias = d_bias;   // (the request's logit_bias, Model::set_logit_bias)
             int h = 0;
             const int* hr = pen_rows(p0 + 1, n, sp, h);
             strata::dsv41k::sample_verify(hd.logits, n, V, sp, d_specq, d_ints + 32, d_ints + 16, hd.st, hr, h);
@@ -14450,6 +14471,41 @@ struct Model::Impl {
         return true;
     }
 
+    bool set_logit_bias(const std::vector<float>& b, size_t key, std::string& err) {
+        d_bias = nullptr;
+        if (b.empty()) return true;
+        for (size_t i = 0; i < bias_rows.size(); ++i)
+            if (bias_rows[i].key == key && bias_rows[i].host == b) {   // (kept: to the back, used last)
+                std::rotate(bias_rows.begin() + (long) i, bias_rows.begin() + (long) i + 1, bias_rows.end());
+                d_bias = bias_rows.back().row;
+                return true;
+            }
+        if (b.size() != (size_t) g.vocab) {
+            err = "logit_bias: " + std::to_string(b.size()) + " values for a vocabulary of " + std::to_string(g.vocab);
+            return false;
+        }
+        Dev& d = devs[(size_t) head_dev];
+        cudaSetDevice(d.id);
+        BiasRow e{key, nullptr, b};
+        if (bias_rows.size() >= kBiasRows) {   // (the row used longest ago takes this list: no allocation after the
+            e.row = bias_rows.front().row;     //  first kBiasRows lists)
+            bias_rows.erase(bias_rows.begin());
+        } else if (cudaMalloc((void**) &e.row, b.size() * sizeof(float)) != cudaSuccess) {
+            err = "logit_bias: cudaMalloc of " + std::to_string((b.size() * sizeof(float)) >> 10) + " KiB on CUDA" +
+                  std::to_string(d.id) + " failed";
+            return false;
+        }
+        // (on d.st, where every pick reads the row: after the picks already queued, before the ones that follow)
+        if (cudaMemcpyAsync(e.row, b.data(), b.size() * sizeof(float), cudaMemcpyHostToDevice, d.st) != cudaSuccess) {
+            cudaFree(e.row);
+            err = "logit_bias: copying the row to CUDA" + std::to_string(d.id) + " failed";
+            return false;
+        }
+        bias_rows.push_back(std::move(e));
+        d_bias = bias_rows.back().row;
+        return true;
+    }
+
     int sample(float temperature, float top_p, int top_k, float min_p, uint64_t seed, uint64_t counter) {
         Dev& d = devs[(size_t) head_dev];
         cudaSetDevice(d.id);
@@ -14461,6 +14517,7 @@ struct Model::Impl {
         sp.min_p = min_p;
         sp.seed = seed;
         sp.counter = counter;
+        sp.logit_bias = d_bias;   // (the request's logit_bias, Model::set_logit_bias)
         int h = 0;
         const int* hr = pen_rows((int64_t) toks.size(), 1, sp, h);   // (the last fed token's row: every token consumed)
         strata::dsv41k::sample_tokens(d.logits + (size_t) std::max(0, n_logits - 1) * g.vocab, 1, g.vocab, hr, h,
@@ -14649,6 +14706,7 @@ struct Model::Impl {
             strata::dsv41k::SamplerParams sp;
             sp.greedy = true;
             sp.temperature = 0.0f;
+            sp.logit_bias = d_bias;   // (the request's logit_bias, Model::set_logit_bias)
             int h = 0;
             const int* hr = pen_rows(r.p0 + 1, r.n, sp, h, &q.toks);
             strata::dsv41k::sample_tokens(lg, r.n, V, hr, h, sp, d_ints + 16, hd.st);
@@ -14668,6 +14726,7 @@ struct Model::Impl {
             sp.min_p = min_p;
             sp.seed = seed;
             sp.counter = counter;
+            sp.logit_bias = d_bias;   // (the request's logit_bias, Model::set_logit_bias)
             if (n > 0) {
                 for (int k = 0; k < n; ++k) {
                     h_specq[(size_t) k].n = 1;
@@ -14770,6 +14829,7 @@ struct Model::Impl {
         sp.min_p = min_p;
         sp.seed = seed;
         sp.counter = counter;
+        sp.logit_bias = d_bias;   // (the request's logit_bias, Model::set_logit_bias)
         const std::vector<int32_t>& hist = seq_tokens(mrows[(size_t) row]);
         int h = 0;
         const int* hr = pen_rows((int64_t) hist.size(), 1, sp, h, &hist);
@@ -14851,6 +14911,11 @@ struct Model::Impl {
             v.push_back("NOTE images: OFF - the model's vision tower did not load (" + why + ")");
             v.push_back("INFO vision=off");
         }
+#if !defined(STRATA_METAL) && !defined(STRATA_USE_HIP)
+        // (Model::set_logit_bias: serve/logit_bias.py validate_request takes requests with one.  CUDA only for now: the HIP
+        //  build compiles the same code but has not run on an AMD card, so it keeps answering 400 until someone runs it)
+        v.push_back("INFO logit_bias=1");
+#endif
         return v;
     }
 };
@@ -14953,6 +15018,9 @@ void Model::set_penalties(int last_n, float repeat, float freq, float present) {
     p_->pen_repeat = repeat;
     p_->pen_freq = freq;
     p_->pen_present = present;
+}
+bool Model::set_logit_bias(const std::vector<float>& bias, size_t key, std::string& err) {
+    return p_->set_logit_bias(bias, key, err);
 }
 bool Model::logits(std::vector<float>& out) { return p_->logits(out); }
 int Model::image_token() const { return p_->img_tok; }

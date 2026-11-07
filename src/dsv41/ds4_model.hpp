@@ -149,6 +149,13 @@ public:
     /// verify() alike: over the last `last_n` tokens the state has consumed (at most 4096; a verify window's row counts
     /// the drafts before it).  last_n 0 (or every penalty neutral): none, the picks exactly as without.
     void set_penalties(int last_n, float repeat, float freq, float present);
+    /// The request's logit_bias (strata/core/logit_bias.hpp: one float a vocabulary token, -inf bans it) for every pick
+    /// after this - sample() and verify() alike, and the drafter's own picks when the head is on one GPU (not
+    /// draft_multi's, nor a head group's markov drafts: verify rejects a banned draft there, as any other).  `key`
+    /// names the list (its text's hash; a kept row is compared too): the last few rows stay on the head GPU, so a list
+    /// sent with every request is copied once.  Empty: none, the picks exactly as without.  False: the row could not
+    /// be put on the GPU (err), and the picks have no bias.
+    bool set_logit_bias(const std::vector<float>& bias, size_t key, std::string& err);
     /// The last feed's logit rows on the host (rows x vocab floats).
     bool logits(std::vector<float>& out);
 
