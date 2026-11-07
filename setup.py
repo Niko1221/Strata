@@ -4362,8 +4362,8 @@ def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool, arc
     """0.1.44 (owner, review-quants.md section 5): the run-config "env" setup writes for Unsloth's files.
     STRATA_MMQ_KQ=1 (the K-quant MMQ prompt kernels) for UD-Q5_K_XL and UD-Q6_K_XL, where its prompt-path KL is equal
     or better than the FP16 path's; UD-Q4_K_XL keeps it opt-in here (the Linux gfx12 engine takes it by itself since 0.2.10.1).
-    STRATA_HC_Q8=1 on CUDA for the UD-* files (the GGUF's own Q8_0 hyper-connection projections, closer to the file
-    and faster; the GSQ-RCO packs are untouched).
+    STRATA_HC_Q8 on CUDA for the UD-* files is the ENGINE's default now (it sees the Q8_0 hyper-connection projections in the GGUF); setup
+    writes nothing for it.
     STRATA_ROUTE_TAIL_SKIP=0 where every expert is in RAM (the skip costs KL there); the RAM-budget mode keeps it.
     0.2.10.1 (owner 11-03, "3 Yes"): NOT on Linux gfx12 (``arch`` "gfx1200"/"gfx1201", the R9700 and RX 9000): there the engine's own default
     (rank 7, STRATA_ROUTE_TAIL_SKIP=0 still turns it off) stays, which decodes UD-Q4_K_XL 6-16% faster at an unchanged 61-task suite
@@ -4373,8 +4373,6 @@ def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool, arc
         return env
     if model in ("UD-Q5_K_XL", "UD-Q6_K_XL"):
         env["STRATA_MMQ_KQ"] = "1"
-    if not hip and model.startswith("UD-"):
-        env["STRATA_HC_Q8"] = "1"
     gfx12_linux = hip and not WIN and str(arch or "").lower().startswith(("gfx1200", "gfx1201"))
     if not in_budget and not gfx12_linux:
         env["STRATA_ROUTE_TAIL_SKIP"] = "0"

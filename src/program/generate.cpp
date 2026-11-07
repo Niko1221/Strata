@@ -3804,6 +3804,22 @@ int main(int argc, char** argv) {
                         std::strncmp(od.gcnArchName, ad.gcnArchName, 7) != 0) { all_igpu = false; (void) cudaGetLastError(); break; }
                 }
             }
+            {   // Linux, every visible card gfx12: the chunked GDN scan from the first chunk (owner yes 2026-11-07; was the launcher's GDN_STACK_GFX12).
+                // Before apply_arch_defaults, so its "30,000+ tokens" line is not printed when the variable is set.
+                bool all_gfx12 = true;
+                int nd12 = 0;
+                if (cudaGetDeviceCount(&nd12) != cudaSuccess || nd12 < 1) all_gfx12 = false;
+                for (int d = 0; all_gfx12 && d < nd12 && d < 64; ++d) {
+                    cudaDeviceProp od{};
+                    if (cudaGetDeviceProperties(&od, d) != cudaSuccess || !strata::kernels::gfx_arch_is_gfx12(od.gcnArchName)) all_gfx12 = false;
+                }
+                (void) cudaGetLastError();
+#if defined(_WIN32)
+                strata::core::apply_gdn_chunked_default(false, all_gfx12);
+#else
+                strata::core::apply_gdn_chunked_default(true, all_gfx12);
+#endif
+            }
             strata::core::apply_arch_defaults(ad.gcnArchName, all_igpu, o.batch);
 #if defined(_WIN32)
             const bool win_host = true;
@@ -3853,6 +3869,12 @@ int main(int argc, char** argv) {
             }
         } else (void) cudaGetLastError();
     }
+#endif
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL) && !defined(_WIN32)
+    // Linux CUDA, 2 or more batch slots: the exact parallel-request stack is the engine's own default (QUAL-PAR bit-exact; it was the launcher's
+    // PARALLEL_STACK_ENV).  Each switch keeps =0 as its off switch and a value the user set is kept.  Before any engine code reads them.
+    strata::core::apply_parallel_defaults_cuda(true, o.batch);
+    strata::core::apply_gdn_defaults_cuda(true);   // STRATA_GDN_TC=1, STRATA_GDN_CONVL2=2 (owner yes 2026-11-07; was the launcher's GDN_STACK_CUDA)
 #endif
     if (!o.prefill_cap_warn.empty() && !o.prefill_cap_warn_skip)
         std::fprintf(stderr, "strata: WARNING --prefill %s: prompt chunks of 8192 tokens or more crashed the engine "
@@ -4397,6 +4419,18 @@ int main(int argc, char** argv) {
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+        // CUDA, a file that carries the hyper-connection projections as Q8_0 (Unsloth's UD-* files): the Q8_0 read is on by default (owner yes
+        // 2026-11-07; was setup's unsloth_default_env, "closer to the file and faster").  The GSQ-RCO packs keep them BF16 and stay as they were.
+        // STRATA_HC_Q8=0 turns it off; a value the user set is kept.  Before the first read of the switch (the dense load below).
+        if (std::getenv("STRATA_HC_Q8") == nullptr && strata::core::NativeDense::gguf_carries_q8_hc(o.native_dense_gguf)) {
+#if defined(_WIN32)
+            _putenv_s("STRATA_HC_Q8", "1");
+#else
+            setenv("STRATA_HC_Q8", "1", 0);
+#endif
+        }
+#endif
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
     }

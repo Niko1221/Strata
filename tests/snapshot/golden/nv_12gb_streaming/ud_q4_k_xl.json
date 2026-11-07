@@ -60,9 +60,6 @@
     "log": "<REPO>/strata-unsloth-ud-q4_k_xl.log",
     "lib_dirs": [],
     "port": 8080,
-    "env": {
-     "STRATA_HC_Q8": "1"
-    },
     "vision": {
      "exe": "<ROOT>/engine/strata-vision",
      "mmproj": "<ROOT>/data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
@@ -101,11 +98,7 @@
      "39",
      "--vision"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1",
-     "STRATA_HC_Q8": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"
     ]
@@ -215,10 +208,7 @@
      "--draft-conf",
      "0.8"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.8)"
     ]
@@ -357,10 +347,7 @@
      "--draft-conf",
      "0.8"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.8)"
     ]
@@ -484,10 +471,7 @@
      "--draft-conf",
      "0.8"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.8)"
     ]
