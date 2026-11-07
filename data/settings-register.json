@@ -11858,7 +11858,7 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2628,
+     "line": 2622,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12050,7 +12050,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2593,
+     "line": 2591,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12109,11 +12109,11 @@
    "since": "v0.2.10",
    "last_commit": "87ec8fd83e",
    "last_date": "2026-10-31",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "kernels/cuda",
-   "note": "[checked] Software-pipelined group loads for the HC up read: no gain over G=2, 'stays behind its env var, off ... can be dropped before merging' (phaseA-tests/amd-q/RESULTS.md:62). Undocumented, not set by launch code; src/kernels/cuda/fused_gr.cu:2594-2600.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch C): code removed, the setting is no longer read. Evidence: [checked] Software-pipelined group loads for the HC up read: no gain over G=2, 'stays behind its env var, off ... can be dropped before merging' (phaseA-tests/amd-q/RESULTS.md:62). Undocumented, not set by launch code; src/kernels/cuda/fused_gr.cu:2594-2600.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_GR_Q8_PFS",
@@ -12129,7 +12129,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2586,
+     "line": 2584,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12208,13 +12208,13 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2947,
+     "line": 2941,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2947,
+     "line": 2941,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -12471,7 +12471,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2848,
+     "line": 2842,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -12539,7 +12539,7 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2676,
+     "line": 2670,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -12801,13 +12801,13 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 3602,
+     "line": 3596,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 3622,
+     "line": 3616,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -13051,7 +13051,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 3240,
+     "line": 3234,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -35843,7 +35843,7 @@
    "reads": [
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2634,
+     "line": 2628,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39643,7 +39643,7 @@
     },
     {
      "file": "src/kernels/cuda/fused_gr.cu",
-     "line": 2584,
+     "line": 2582,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
