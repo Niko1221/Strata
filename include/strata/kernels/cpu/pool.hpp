@@ -58,6 +58,7 @@ struct ExpertJob {
 /// is bitwise the single-token job's.
 struct ExpertJobMulti {
     const uint8_t* blob = nullptr;
+    int expert_id = -1;  // stable routing id (not the job's position in routing order)
     int nt = 0;
     const ActQ* act[MAXT] = {};
     float* out[MAXT] = {};
@@ -207,6 +208,7 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    bool ccx_sharded() const { return ccx_shard_; }
     /// What bounded the default worker count (pool_plan.hpp; "" when a count was configured), the physical cores
     /// and logical processors counted - for the start-up line.
     const char* plan_limit() const { return plan_limit_; }
@@ -392,10 +394,13 @@ private:
         int h = 0;                  // rows of each expert in the slice
         int row0 = 0;               // the slice's first matrix row (per*k/2)
         int64_t rows = 0;           // R = experts * h
+        bool ccx = false;
     };
     // CBA: the NodeSync blocks live wherever `new` puts them (the host's node); per-node pages if the remote home
     // of a line ever shows up in the counters.
     std::unique_ptr<NodeSync[]> nsync_;
+    bool ccx_shard_ = false;
+    std::vector<int> ccx_jobs_[2];  // job indices owned by each L3, prepared before each native phase
     int numa_n_ = 0;                  // slices (2 when on), 0 = off
     std::vector<int> wslice_;         // each worker's slice
     int hslice_ = 0;                  // the host's slice (when it drains)

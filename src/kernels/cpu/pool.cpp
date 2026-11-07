@@ -4,6 +4,7 @@
 #include "strata/platform/aux_cpus.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/numa_pool.hpp"
+#include "strata/kernels/cpu/ccx_shard.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -26,10 +27,34 @@
 #include <windows.h>
 #include "pool_affinity_win.hpp"
 #else
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <unistd.h>
 #include "pool_affinity_linux.hpp"
+#endif
+
+#if defined(__linux__)
+static int s_cpu_dma_latency_fd = -1;
+static void lock_cpu_dma_latency() {
+    // Only lock CPU DMA latency if explicitly requested by user to prevent unnecessary power draw/heating
+    const char* env = std::getenv("STRATA_LOCK_DMA_LATENCY");
+    if (!env || (std::strcmp(env, "1") != 0 && std::strcmp(env, "true") != 0)) {
+        return;
+    }
+    if (s_cpu_dma_latency_fd < 0) {
+        int fd = ::open("/dev/cpu_dma_latency", O_RDWR | O_CLOEXEC);
+        if (fd >= 0) {
+            int32_t latency = 0;
+            if (::write(fd, &latency, sizeof(latency)) == sizeof(latency)) {
+                s_cpu_dma_latency_fd = fd;
+                std::fprintf(stderr, "strata cpu pool: locked /dev/cpu_dma_latency to 0 (opt-in C-state wake latency < 1us)\n");
+            } else {
+                ::close(fd);
+            }
+        }
+    }
+}
 #endif
 
 namespace strata::kernels::cpu {
@@ -742,6 +767,9 @@ void ExpertPool::diag(std::FILE* f) const {
 
 ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity affinity, int tasks)
     : tasks_(tasks), host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
+#if defined(__linux__)
+    lock_cpu_dma_latency();
+#endif
     if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     pinned_ = pin;
     layout_ = logical_cpu_layout();   // now, before anything pins the caller (Linux reads the calling thread's allowed CPUs)
@@ -853,6 +881,8 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     strata::core::diag_pool_fn().store(&diag_active_pool);
     split_.resize((size_t) kMaxSplit);
     split_multi_.resize((size_t) kMaxSplitMulti);
+    ccx_jobs_[0].reserve(kMaxSplitMulti);
+    ccx_jobs_[1].reserve(kMaxSplitMulti);
     // STRATA_NUMA_SPLIT: decided here, before any worker starts (a worker counts into its slice's `parked` from its
     // first instruction), and never revised.  Unset: the plan stays empty and nothing below runs.
     NumaSplitPlan plan;
@@ -909,6 +939,57 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
             std::fprintf(stderr, "strata cpu pool: NUMA split off: %s\n", plan.why.c_str());
         }
     }
+    // A CCX is not a NUMA node.  Opt in only when the six pinned participants
+    // occupy two real three-core L3 domains; otherwise retain the old scheduler.
+    const char* ccx = std::getenv("STRATA_CCX_SHARD");
+#if defined(__linux__)
+    if (ccx && std::strcmp(ccx, "1") == 0 && !plan.on && pin && host_works_ && n_ == 5 &&
+        topo_.worker_cores.size() >= 5) {
+        std::vector<int> cpus(topo_.worker_cores.begin(), topo_.worker_cores.begin() + 5);
+        cpus.push_back(topo_.host_core);
+        std::vector<int> l3;
+        for (int cpu : cpus) {
+            char path[256];
+            std::snprintf(path, sizeof path, "%s/devices/system/cpu/cpu%d/cache/index3/id",
+                          sysfs_root().c_str(), cpu);
+            int id = -1;
+            if (std::FILE* f = std::fopen(path, "r")) {
+                if (std::fscanf(f, "%d", &id) != 1) id = -1;
+                std::fclose(f);
+            }
+            l3.push_back(id);
+        }
+        std::array<int, 6> slices{};
+        bool distinct_physical = true;
+        std::vector<int64_t> physical;
+        for (int cpu : cpus) {
+            auto it = std::find_if(layout_.begin(), layout_.end(),
+                                   [cpu](const LogicalCpuInfo& e) { return e.cpu == cpu; });
+            if (it == layout_.end()) { distinct_physical = false; break; }
+            physical.push_back(it->core);
+        }
+        if (physical.size() != 6) distinct_physical = false;
+        for (size_t i = 0; i < physical.size(); ++i)
+            for (size_t j = 0; j < i; ++j)
+                if (physical[i] == physical[j]) distinct_physical = false;
+        for (int64_t core : physical)
+            if (core < 0 || core / 1000000 != physical.front() / 1000000)
+                distinct_physical = false;  // two sockets are not the two CCXs of one Zen 2 package
+        if (distinct_physical && ccx_shard_plan(cpus, l3, slices)) {
+            ccx_shard_ = true;
+            numa_n_ = 2;
+            nsync_.reset(new NodeSync[2]);
+            wslice_.assign(slices.begin(), slices.begin() + 5);
+            hslice_ = slices[5];
+            slice_threads_.assign(2, 3);
+            std::fprintf(stderr, "strata cpu pool: CCX sharding enabled (two L3 domains, 3+3 cores, even/odd experts)\n");
+        }
+    }
+    if (ccx && std::strcmp(ccx, "1") == 0 && !ccx_shard_)
+        std::fprintf(stderr, "strata cpu pool: CCX sharding unavailable; using the existing scheduler\n");
+#else
+    (void) ccx;
+#endif
     if (n_workers > 0) {
         // recommend, never force: a count above what this CPU uses well runs as configured, with a plain warning
         // (STRATA_NUMA_SPLIT on: workers on the other socket are the point, that case is not warned about)
@@ -1087,6 +1168,18 @@ int ExpertPool::numa_plan_phase(int per, int nb) {
     int base = 0;
     for (int k = 0; k < numa_n_; ++k) {
         NodeSync& ns = nsync_[(size_t) k];
+        if (ccx_shard_) {
+            ns.ccx = true;
+            ns.row0 = 0;
+            ns.h = per;
+            ns.rows = (int64_t) ccx_jobs_[k].size() * per;
+            const int64_t want = tasks_ == 0 ? 3 * (int64_t) slice_threads_[(size_t) k]
+                                              : (int64_t) (std::max)(1, tasks_ / 2);
+            ns.tasks = (int) (std::min)(want, ns.rows);
+            ns.base = base;
+            base += ns.tasks;
+            continue;
+        }
         ns.row0 = per * k / numa_n_;
         ns.h = per * (k + 1) / numa_n_ - ns.row0;
         ns.rows = (int64_t) nb * ns.h;
@@ -1211,7 +1304,9 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             }
             const int64_t g0 = R * j / T, g1 = R * (j + 1) / T;
             for (int64_t g = g0; g < g1;) {
-                const int e = (int) (g / h), l0 = (int) (g % h);
+                const int e = sliced && nsync_[(size_t) s].ccx
+                                  ? ccx_jobs_[s][(size_t) (g / h)] : (int) (g / h);
+                const int l0 = (int) (g % h);
                 const int l1 = (int) std::min<int64_t>(h, l0 + (g1 - g));
                 const int r0 = row0 + l0, r1 = row0 + l1;
                 SplitBufMulti& sb = split_multi_[(size_t) e];
@@ -1369,6 +1464,24 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
         const int nb = (std::min)(kMaxSplitMulti, n - b0);
         mjobs_ = jobs + b0;
+        if (ccx_shard_) {
+            ccx_jobs_[0].clear(); ccx_jobs_[1].clear();
+            for (int e = 0; e < nb; ++e) {
+                const int id = mjobs_[e].expert_id;
+                ccx_jobs_[ccx_owner(id >= 0 ? id : e)].push_back(e);
+            }
+            // Dynamic rebalancing: prevent CCX core starvation if routing activates predominantly even or odd experts
+            while (ccx_jobs_[0].size() > ccx_jobs_[1].size() + 1) {
+                int victim = ccx_jobs_[0].back();
+                ccx_jobs_[0].pop_back();
+                ccx_jobs_[1].push_back(victim);
+            }
+            while (ccx_jobs_[1].size() > ccx_jobs_[0].size() + 1) {
+                int victim = ccx_jobs_[1].back();
+                ccx_jobs_[1].pop_back();
+                ccx_jobs_[0].push_back(victim);
+            }
+        }
         nfmt_ = &f;
         narithmetic_ = arithmetic;
         mrows_ = (int64_t) nb * f.n_ff;
