@@ -11,10 +11,10 @@ method whose script is absent exits before anything is loaded and names the file
 |---|---|---|
 | `feat/train-mezo` | shared numpy/engine layer, `mezo/`, the engine-side changes it needs, data/eval tooling | `mezo` only — no torch anywhere |
 | `feat/train-backforward` | that, plus `backward/`, `ce.py` / `lora.py` / `update_rules.py`, `backward/hf_ref.py` | both |
-| `feat/train_support` | the union of the two, plus these review notes | both |
+| `feat/train_support` | the union of the two (default PR target); all three trees carry the retention reports | both |
 
 The zero-order line is the base: `train.py → mezo/mezo.py` closes over `objectives.py` and
-`mem_guard.py` only, so its suite passes with `torch` unavailable (134 tests, measured by
+`mem_guard.py` only, so its suite passes with `torch` unavailable (214 tests, measured by
 shadowing the module rather than by trusting a grep). The backprop layer is additive — it
 imports the shared layer, never the other way round.
 
@@ -168,7 +168,7 @@ Windows; `loader_qwen4.py` halves on failure rather than assuming a number.
 | `algos.py` / `datasets.py` | the two registries behind `train.py` (algorithm × objective; data sources) |
 | `test_train_core.py` | **the CI gate**: CPU-only, **no torch needed** — dataset routing, algo/objective pairs, parallel-collection row order, the platform guard |
 | `test_train.py` | the torch half: grouping, the GRPO scalar, sampling (needs `torch` + `transformers`) |
-| `platform_check.py` | the platform guard: refuses Windows by name, with the syscall that is missing |
+| `platform_check.py` | the `preadv` guard: checks for a usable positional read (native Linux / shim elsewhere), exit 2 listing what is missing |
 | `whoami.py` | resolves "who developed you" at runtime (git remote / `gh` / `$STRATA_IDENTITY_WORD`), so no name is hardcoded |
 | `collect_rollouts.py` | phase 1: sample GRPO trajectories from a running engine (needs no torch) |
 | `grpo.py` | phase 2: group-normalized policy gradient over the collected trajectories, `--old-logprobs engine\|local` |
@@ -350,3 +350,70 @@ python lora_to_gguf.py --pt unilora_developer.pt --out unilora.gguf --alpha 4
 - Session-cache correctness is the engine's job, and the reason `"lora": false`
   re-prefills: the recurrent state cannot step back, so state read under one
   setting is never reused under the other.
+
+
+## Verification, defaults and known limits
+
+A review request is PR metadata, not a tree file: it is pasted into the PR
+description. What someone actually running `training/` needs is kept here.
+
+### Verify without a GPU
+
+```bash
+python -m unittest discover -s training/tests -p "test_*.py" -q   # 362 tests, ~15 s; zero-order tree: 214
+python -m unittest -q serve.test_training_api                       # 6 tests; run from the repo root
+python platform_check.py --deps                                     # print the install commands for this box
+```
+
+The full `serve/` suite is a separate pytest run from the repo root
+(`pytest -q serve`). On Windows set `PYTHONUTF8=1`: with `PYTHONUTF8=0` one
+subprocess-decoding test fails with a GBK `UnicodeDecodeError`, which is an
+encoding-environment failure, not a regression.
+
+### Current training defaults
+
+| knob | value | note |
+|---|---|---|
+| lr, `sft` / `dpo` | `1e-4` | constant schedule; decaying to zero measured slower to the same CE |
+| lr, `grpo` / `luspo` | `5e-5` | |
+| epochs, `mezo` | sft 5 / dpo 7 / grpo 5 / luspo 3 | other combos use `--steps 40` |
+| epochs, `backward` | sft 2 | |
+| `--kv auto` | fp16 <=32K, int8 <=128K, k8v4 <=256K, q4_0 above | thresholds are duplicated in `generate.cpp` and `setup.py`; change both |
+
+Every training run writes `<--out>.meta.json` with the full `vars(args)`, the
+data sha256 and row count, git HEAD, library versions, the keep-best result, the
+capability gate and peak VRAM (`phase=start`, then merged into `phase=done`).
+Read it before comparing two adapters: older `.pt` files predate this file and
+their hyperparameters cannot be reconstructed. Use `--epochs` rather than
+`--steps` when the comparison has to survive a change in dataset size.
+`--seed` also fixes the LoRA `A` initialisation (a local `torch.Generator`), so
+two runs with the same seed are bit-identical.
+
+### Engine-side constraints (these fail quietly if ignored)
+
+- Train and score with `--no-prefill-borrow --prefill 8192`. A prompt buffer
+  placed in a borrowed expert-cache slot produces non-finite logits on the
+  upstream path; this is not a chunk-size problem.
+- Export engine-loadable adapters with `--targets o_proj,out_proj`. The engine's
+  `--lora` only accepts those two projection families and silently drops the rest.
+- Backprop needs `--ckpt`. Without it the ~26 GiB expert-refetch scratch is
+  counted in peak memory and the preflight refuses the run.
+- `LORA <path>` swaps tensors in place and refuses a rank change
+  (`layer 0 changed shape`). Group multi-arm evaluations by rank and use a B=0
+  zero adapter of the same rank as the anchor.
+- Short `SCORE` sequences jitter by 0.2~0.3 nats even inside one process; the
+  cause is not identified. Judge drift on long anchors (>=200 tokens, repeated
+  std ~0.0012 nats/token), never on a two-token answer.
+- `SCORE` absolute values shift by ~0.5 nats across engine builds (operator
+  path: NATIVE_EXPERTS / TQ_OVERLAY). Only differences inside one build are
+  comparable; MeZO consumes differences, not absolutes.
+
+### Retention evaluation material
+
+`RETENTION-EVAL.zh.md` (report) and `EVAL-RESULTS.json` (per-item structured
+results) ship with all three trees. They separate plasticity from retention,
+calibrate generation-level noise with a repeated B=0 arm, and record the
+2026-11-07 backward-SFT redo (§3.7 / `sections.backward_redo`). Reproduction
+scripts live outside the tree because they contain machine-local absolute paths
+and depend on historical sampling artifacts. All measured numbers were taken on
+one engine build; re-scoring under a rebuilt engine is **not** included.
