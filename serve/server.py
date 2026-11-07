@@ -81,6 +81,8 @@ from strata_control import gpu_roles  # noqa: E402
 from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
+from serve import jev  # noqa: E402
+from serve import jev_calib  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
@@ -1683,6 +1685,21 @@ class StrataEngine:
         seed = sampling.get("seed")
         if isinstance(seed, int) and seed > 0:
             keys += f" seed={seed}"
+        # "pin": N - the first N prompt tokens are a shared read-only prefix (jev's N fields on one state).
+        # The engine reads the prefix once, pins its checkpoint, and a later request that resumes from it
+        # does not park the branch it leaves: N queries cost one prefix, not N.  A value that is not a
+        # positive int is not sent at all - never a pin of 0 written as a key.
+        pin = sampling.get("pin")
+        if isinstance(pin, int) and not isinstance(pin, bool) and pin > 0:
+            keys += f" pin={pin}"
+        # "jevpos": [p1, p2, ...] - jev fix B: the absolute prompt positions whose head rows the engine keeps
+        # for the BROWAT reads that follow, so one prompt answers N questions.  Only a real position list is
+        # sent; a malformed one is not sent at all (the engine would then keep no rows, and a guessed position
+        # would answer a different question).
+        jp = sampling.get("jevpos")
+        if isinstance(jp, list) and 0 < len(jp) <= 32 and all(
+                isinstance(p, int) and not isinstance(p, bool) and p >= 0 for p in jp):
+            keys += " jevpos=" + ",".join(str(int(p)) for p in jp)
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
         if isinstance(tune, dict):
@@ -2971,6 +2988,182 @@ class StrataEngine:
             self.proc.wait(timeout=20)
         except (OSError, AttributeError, subprocess.TimeoutExpired):
             pass
+
+    def final_row_logits(self, ids: list[int], tokens: list[int]) -> dict[int, float]:
+        """jev systemone (M3.0): the final decode row's logits for `tokens`, between requests (the caller holds the
+        service FIFO).  Wire: `BROW <tokens>` -> `BROWD <n> <tok>:<logit>...` (one line; the engine answers only
+        for the ids asked, in that order).  Any malformed answer, a token not asked for, or a non-finite logit
+        fails closed: the engine is ended (EngineDied) - never a fabricated row."""
+        return self._brow_reply("BROW ", "BROWD", None, tokens)
+
+    def row_logits_at(self, row: int, tokens: list[int]) -> dict[int, float]:
+        """jev systemone (M3.1): row `row` of the LAST verify window's head logits - the distribution at
+        position pos0 + row, i.e. the token that follows the row's own token - for `tokens`, between requests
+        (the caller holds the service FIFO).  Wire: `BROWAT <row> <tokens>` -> `BROWATD <n> <tok>:<logit>...`.
+        The row must belong to the last window the engine ran (0 <= row < its token count), which is the one
+        this caller's own request ran - so N questions in ONE window are N reads, not N prefills.  A row
+        outside the last window, any malformed answer, a token not asked for, or a non-finite logit fails
+        closed: the engine is ended (EngineDied) - never a fabricated or neighbouring row."""
+        return self._brow_reply("BROWAT ", "BROWATD", row, tokens)
+
+    def brow_rows(self) -> int:
+        """jev systemone (M3.1): how many rows the LAST verify window holds (0 before any window has run).
+        Wire: `BROWROWS` -> `BROWROWSD <n>`.
+
+        DIAGNOSTIC, not a guard: this counts the last window (<= the verify T), not the tokens a request
+        sent, so it cannot validate absolute prompt positions - that is what captured_rows() is for.  The
+        row path never calls this; probes and tests do.  A caller reading several positions off one prefill needs this
+        first: rows are numbered from the window's first token, so a prompt the engine read in more than one
+        window makes the caller's own numbering name somebody else's rows.  Any malformed answer fails
+        closed: the engine is ended (EngineDied) - never a guessed count."""
+        try:
+            self.proc.stdin.write("BROWROWS\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + (float(self.silence_s) if self.silence_s else 30.0)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.ended = True
+                raise EngineSilent("the engine said nothing for a BROWROWS answer")
+            try:
+                line = self.lines.get(timeout=min(left, 0.5))
+            except queue.Empty:
+                continue
+            if line is None:
+                self.ended = True
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if not line.startswith("BROWROWSD "):
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"the engine answered a BROWROWS with {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                self.ended = True
+                try:                                     # same teardown as _brow_reply: fail closed hard
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"a malformed BROWROWSD answer: {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
+            return int(parts[1])
+
+    def captured_rows(self) -> int:
+        """jev systemone (M3.1 fix B): how many head rows the LAST request kept for the positions it named
+        with `jevpos=` (0 = no capture).  Wire: `BROWCAP` -> `BROWCAPD <n>`.
+
+        A caller that named N positions must see N here before reading them.  BROWAT falls back to
+        addressing the last verify window when nothing was captured, and a prompt position is then read as a
+        window index - a neighbouring row, silently.  This count is what makes that impossible to miss.
+        Any malformed answer fails closed and ends the engine, like every other wire read."""
+        try:
+            self.proc.stdin.write("BROWCAP\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        deadline = time.monotonic() + (float(self.silence_s) if self.silence_s else 30.0)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.ended = True
+                raise EngineSilent("the engine said nothing for a BROWCAP answer")
+            try:
+                line = self.lines.get(timeout=min(left, 0.5))
+            except queue.Empty:
+                continue
+            if line is None:
+                self.ended = True
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if not line.startswith("BROWCAPD "):
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"the engine answered a BROWCAP with {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
+            parts = line.split()
+            if len(parts) != 2 or not parts[1].isdigit():
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"a malformed BROWCAPD answer: {line.strip()[:200]!r}")
+            return int(parts[1])
+
+    def _brow_reply(self, op: str, answer: str, row, tokens: list[int]) -> dict[int, float]:
+        """The row read both BROW and BROWAT answer: `op` is the wire command ("BROW " / "BROWAT "), `answer`
+        its reply ("BROWD" / "BROWATD"), `row` the window row asked for (None: the final row)."""
+        if not tokens:
+            raise ValueError("no tokens to read")
+        cmd = op + ("" if row is None else f"{int(row)} ") + " ".join(str(int(t)) for t in tokens) + "\n"
+        try:
+            self.proc.stdin.write(cmd)
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        want = {int(t) for t in tokens}
+        deadline = time.monotonic() + (float(self.silence_s) if self.silence_s else 30.0)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                self.ended = True
+                raise EngineSilent(f"the engine said nothing for a {answer} answer")
+            try:
+                line = self.lines.get(timeout=min(left, 0.5))
+            except queue.Empty:
+                continue
+            if line is None:
+                self.ended = True
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if not line.startswith(answer + " "):
+                self.ended = True
+                try:
+                    self.proc.kill()
+                    self.proc.wait(timeout=20)
+                except (OSError, AttributeError, subprocess.TimeoutExpired):
+                    pass
+                raise EngineDied(f"the engine answered a {op.split()[0]} with {line.strip()[:200]!r}; "
+                                 f"the server ended the engine")
+            parts = line.split()
+            if len(parts) < 2 or not parts[1].isdigit() or int(parts[1]) != len(tokens):
+                self.ended = True
+                raise EngineDied(f"a malformed {answer} answer: {line.strip()[:200]!r}")
+            row_out: dict[int, float] = {}
+            for p in parts[2: 2 + int(parts[1])]:
+                tok_s, _, val_s = p.partition(":")
+                try:
+                    tok, val = int(tok_s), float(val_s)
+                except ValueError:
+                    self.ended = True
+                    raise EngineDied(f"a malformed {answer} field {p!r}") from None
+                if tok not in want:
+                    self.ended = True
+                    raise EngineDied(f"{answer} answered token {tok} which was not asked for")
+                if not math.isfinite(val):
+                    # minor 2 (2026-11-05, expert review): a non-finite logit is #879's condition
+                    # (the engine dropped its cached state), not wire corruption - the chat path
+                    # answers 503 and the client retries.  Ending the engine here made every
+                    # later systemone request cold-start it.  Keep the engine; the route maps
+                    # EngineNonFinite to a 503 with a retry hint.
+                    raise EngineNonFinite(f"{answer} answered a non-finite logit for token {tok}; "
+                                          "the engine has dropped its cached state - send the "
+                                          "request again (#879)")
+                row_out[tok] = val
+            if len(row_out) != len(tokens):
+                self.ended = True
+                raise EngineDied(f"{answer} answered {len(row_out)} of {len(tokens)} tokens")
+            return row_out
 
     def session_file(self, action: str, path: str) -> dict:
         with self._exclusive_control():
@@ -8173,6 +8366,21 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
+            if path == "/admin/calib":                     # M3.2: hot calibrator reload (Bearer admin key)
+                key = jev_calib.ADMIN_KEY
+                auth = self.headers.get("Authorization", "")
+                if not key:
+                    # fail-closed like the donor's --admin-key routes: with no key
+                    # configured the admin surface does not exist (404, not 401:
+                    # probing must not learn that it ever could) — Opus G2
+                    self._json(404, {"error": {"message": "not found"}})
+                    return
+                if auth != "Bearer " + key:
+                    self._json(401, {"error": {"message": "admin key required"}})
+                    return
+                jev_calib.swap()
+                self._json(200, jev_calib.state_json())
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -8279,6 +8487,25 @@ def make_handler(svc: Service):
                     self._openai(req)
                 elif path == "/v1/messages":
                     self._anthropic(req)
+                elif path == "/v1/systemone":
+                    if "decision" not in jev_calib.MODES:      # A0.1 mode gate: fail-closed 404
+                        self._json(404, {"error": {"type": "not_found_error",
+                                                   "message": "decision surface not enabled on this instance"}})
+                        return
+                    svc.load()      # B4 (2026-11-05): start the engine if unloaded, like every other
+                                    # engine route - also bumps last_request_at, so the idle-unload
+                                    # timer no longer fires under steady decision traffic and a wedged
+                                    # "next request restarts it" 503 cannot happen on this path anymore
+                    mode = self.headers.get("X-Jev-Mode", "L")   # A2.6: "V" = choice readout override
+                    if isinstance(req, dict) and isinstance(req.get("then"), dict):
+                        code, body = jev.handle_then(svc, req, mode)    # M3.9: decide-then-generate
+                        # (checked BEFORE image_b64: handle_then carries the image itself —
+                        #  the old image-first dispatch silently dropped then.generate)
+                    elif isinstance(req, dict) and req.get("image_b64"):
+                        code, body = jev.handle_image(svc, req, mode)   # M3.8: image two-call
+                    else:
+                        code, body = jev.handle(svc, req, mode)
+                    self._json(code, body)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
                 elif path == "/v1/images/generations":
@@ -8582,6 +8809,53 @@ def make_handler(svc: Service):
 
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
+            # ---- A3.4 (M3.3): "jev" extension - the decision readout on the chat surface ----
+            jev_ext = req.get("jev")
+            if isinstance(jev_ext, dict) and jev_ext and "decision" in jev_calib.MODES:
+                # minor 4 (2026-11-05): a stock instance (no 'decision' in MODES) IGNORES the
+                # jev key and answers plain chat, as it did before this PR - the 404 it
+                # answered was a behaviour change to a non-JEV path.  The extension proper
+                # is still fail-closed: it only engages on decision-enabled instances.
+                if not isinstance(jev_ext.get("questions"), dict) or not jev_ext["questions"]:
+                    self._json(400, {"error": {"type": "invalid_request_error",
+                                               "param": "jev.questions", "message": "jev.questions is required"}})
+                    return
+                has_state = "state" in jev_ext
+                has_msgs = isinstance(req.get("messages"), list) and req["messages"]
+                if has_state and has_msgs:
+                    self._json(400, {"error": {"type": "invalid_request_error", "param": "messages",
+                                               "message": "messages must be empty when jev.state is given"}})
+                    return
+                if not has_state and not has_msgs:
+                    self._json(400, {"error": {"type": "invalid_request_error", "param": "jev.state",
+                                               "message": "jev.state or messages is required"}})
+                    return
+                if req.get("stream"):
+                    self._json(400, {"error": {"type": "invalid_request_error", "param": "stream",
+                                               "message": "stream is not supported with the jev extension"}})
+                    return
+                svc.load()
+                if has_state:
+                    dreq = {"state": jev_ext["state"], "questions": jev_ext["questions"]}
+                else:
+                    # v1-chat: the conversation IS the state (donor §3.5)
+                    conv = []
+                    for m in req["messages"]:
+                        if not isinstance(m, dict) or not m.get("role"):
+                            continue
+                        c = m.get("content")
+                        text = c if isinstance(c, str) else "".join(
+                            p.get("text", "") for p in (c or [])
+                            if isinstance(p, dict) and p.get("type") == "text")
+                        conv.append(f"{m['role']}: {text}")
+                    dreq = {"state": "\n".join(conv), "questions": jev_ext["questions"]}
+                mode = self.headers.get("X-Jev-Mode", "L")
+                code, body = jev.handle(svc, dreq, mode)
+                out = {"id": f"jev-{int(time.time() * 1000)}", "object": "jev.response",
+                       "created": int(time.time()), "model": svc.model,
+                       "jev": body}
+                self._json(code, out)
+                return
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             messages, tools, kw = openai_to_messages(req)
             require_messages(messages)                # an empty conversation is a 400, as OpenAI answers it, not a reply to nothing
@@ -9875,6 +10149,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
+    ap.add_argument("--engine-binary", default=None,
+                    help="absolute path to the engine executable; overrides the config's \"exe\". The agentx "
+                         "planner renders this from the registered engine artifact, so the engine that runs is "
+                         "the build the registry reports — not whatever the operator's config still names")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
                          "on your network, :: = all IPv6 interfaces (set an API key); also \"host\" in the config")
@@ -9977,8 +10255,19 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
             ap.error(str(exc))
     if a.shutdown_timeout is not None and not 0 <= a.shutdown_timeout <= 300:
         ap.error("--shutdown-timeout must be in 0..300 seconds")
-    config_bytes = Path(a.config).read_bytes() if a.config else b""
+    config_bytes = Path(a.config).read_bytes() if a.config else b""   # Notepad adds a BOM
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
+    if a.engine_binary:
+        # The registry owns the engine executable: agentx renders this from the
+        # registered artifact (`<artifacts>/bin/<engine>`), so a reload runs the
+        # build the hub says it runs. Refused rather than ignored when absent —
+        # a plan that cannot start must not look like one that did.
+        override = os.path.abspath(a.engine_binary)
+        if not os.path.isfile(override):
+            ap.error(f"--engine-binary {override}: no such file")
+        was = cfg.get("exe")
+        cfg = {**cfg, "exe": override}
+        print(f"[strata] engine binary: {override} (from the registry; the config said {was})", flush=True)
     split_joined_args(cfg)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
@@ -10388,6 +10677,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     bound_port = httpd.server_address[1]               # --port 0: report the port the OS actually assigned
     svc.start_idle_unload()
     svc.start_vision_idle()
+    # M3.2/M7 (2026-11-05): calib startup is jev_calib.startup() - a stock server (no
+    # 'decision' in MODES) reads nothing, starts no thread and writes nothing; the log
+    # thread itself is opt-in (STRATA_JEV_CALIB_LOG=1).
+    jev_calib.startup()
+    # main's IPv6-aware form is kept: "::" must print as [::1], and a literal v6 host needs brackets
     here = "[::1]" if a.host == "::" else "127.0.0.1" if a.host in ("0.0.0.0", "") else f"[{a.host}]" if ":" in a.host else a.host
     print(f"ready: http://{here}:{bound_port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "
           f"context {engine.max_context} tokens{', images on' if vision else ''}"

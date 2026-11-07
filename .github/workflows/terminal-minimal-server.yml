@@ -61,5 +61,15 @@ jobs:
           PY
       - name: Run full server suite without terminal packages
         shell: bash
+        # The decision surface is fail-closed: /v1/systemone answers 404
+        # "decision surface not enabled on this instance" unless STRATA_JEV_MODES
+        # carries "decision", and the gate resolves at import of serve.jev_calib —
+        # which, under `unittest discover`, happens inside whichever module imports
+        # the server first. A test that sets the variable itself is therefore too
+        # late. Run the suite in the posture the shipped launcher uses (it exports
+        # exactly this), so the decision tests exercise the real path instead of
+        # testing the ordering of the discovery.
+        env:
+          STRATA_JEV_MODES: chat,decision
         run: |
           "$RUNNER_TEMP/strata-runtime-venv/bin/python" -m unittest discover -s serve -p 'test_*.py'

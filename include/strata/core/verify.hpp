@@ -366,6 +366,42 @@ public:
     bool window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
                          std::string& err);
 
+    /// jev systemone (M3.0, --jev-brow): the LAST window's final row (position pos0 + last_T - 1),
+    /// copied device-to-host for `n` token ids (their logits, in the order asked).  Fails closed
+    /// (false + err) when no window has run, the row is gone, a token is out of range, or the
+    /// copy fails - the server never gets a partial or fabricated row.  A layer split's earlier
+    /// stage forwards to the stage that holds the head (same as window_logprobs).
+    bool brow_row(const int32_t* tokens, int n, float* out, std::string& err);
+
+    /// jev systemone (M3.1, --jev-brow): row `t` of the LAST window's head logits - the distribution at
+    /// position pos0 + t, i.e. the token that follows the row's own token - copied device-to-host for `n`
+    /// token ids (their logits, in the order asked).  brow_row() is this with t = the final row; this lets a
+    /// caller read a row the window already computed, so N questions in ONE window are N reads, not N runs.
+    /// Fails closed (false + err) when no window has run, `t` is outside the last window, a token is out of
+    /// range, or the copy fails - the server never gets a partial or fabricated row.  A layer split's earlier
+    /// stage forwards to the stage that holds the head (same as window_logprobs).
+    bool brow_row_at(int t, const int32_t* tokens, int n, float* out, std::string& err);
+
+    /// The row count of the last window that ran (0 before any run): the `t` range brow_row_at() accepts.
+    int brow_rows() const { return next_ ? next_->brow_rows() : last_row_T_; }
+
+    /// jev systemone (M3.1 fix B): keep the head row at each named ABSOLUTE prompt position, so a caller
+    /// that sends one prompt for N questions can read N rows instead of running N prompts.  Rows are
+    /// numbered from the window's first token, so the caller also names each window's start position
+    /// (capture_window_rows) - a prompt longer than the read chunk spans several windows and every one of
+    /// them is offered.  A position the prompt never ran is simply not captured; BROWAT then refuses it by
+    /// name rather than answering from a neighbouring row.
+    void set_row_capture(const int64_t* positions, int n, int64_t limit = -1);
+    bool capture_window_rows(int64_t pos0, int T, std::string& err);
+    bool brow_row_captured(int64_t pos, const int32_t* tokens, int n, float* out, std::string& err);
+    int captured_rows() const { return next_ ? next_->captured_rows() : (int) cap_pos_.size(); }
+    /// M10 (2026-11-05, expert review): clear the whole per-request row state.  generate.cpp
+    /// calls this at the TOP of every request; since the review's M10 it also drops
+    /// last_row_T_, so a request that fails before running a window leaves BROW answering
+    /// "no window" instead of the PREVIOUS request's row (the stale-read bug clear_row_capture
+    /// already fixed for captured rows).
+    void clear_row_capture();
+
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
     const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
@@ -746,6 +782,11 @@ private:
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;
+    int last_row_T_ = 0;   ///< jev --jev-brow: the last accepted window's T (its final row is brow_row's)
+    std::vector<int64_t> cap_want_;   ///< jev --jev-brow fix B: absolute prompt positions whose rows to keep
+    std::vector<int64_t> cap_pos_;    ///< ...and the ones actually captured, in capture order
+    std::vector<float> cap_rows_;     ///< row i is cap_rows_[i * n_vocab_ .. (i+1) * n_vocab_)
+    int64_t cap_limit_ = -1;   ///< jev minor 7 (2026-11-05): one past the last prompt position; rows at/after it are never captured
     uint16_t* sh_bf16_ = nullptr;
     uint8_t* arg_scratch_ = nullptr;   ///< argmax_rows' partials and counters
     int32_t* one_ = nullptr;           ///< device {1}: the n_keep of a one-token window, which commits itself
