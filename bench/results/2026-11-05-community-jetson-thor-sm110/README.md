@@ -127,8 +127,23 @@ and idles at 315), the memory domain at 1692 instead of 1557, the CPUs at 2601. 
 protocol suite: iq3_s short decode 37.3 to **47.4 (+27%)**, 4K decode 36.6 to 40.2, 16K decode 33.4 to **40.5 (+21%)**,
 prompt +13 to +16%, TTFT -14%; Qwen3.6 short 50.7 to 59.3 (+17%), 4K 37.4 to 43.5, 16K 20.2 to 25.2 (+25%), prefill
 +15 to +16%. Decode moves because the memory-domain clock moves too - this is the cheapest Thor speed-up there is, and
-it survives on 120 W hardware only as a DVFS gamble. The 120 W half of the pair (same scripts) is what the sudo-gated
-re-run adds when available; the 120 W figures quoted here are the machine's default-state runs from the sections above.
+it survives on 120 W hardware only as a DVFS gamble. The 120 W half, run the same night with the same scripts and the same engine package, both standard suites at
+sanity 12 of 12, pool cleaned by fadvise before each phase ([normal/iq3s-64k.md](normal/iq3s-64k.md),
+[normal/q36-128k.md](normal/q36-128k.md)):
+
+| | iq3_s short / 4K / 16K decode | iq3_s 4K / 16K prompt | iq3_s TTFT 4K | q36 short / 4K / 16K decode | q36 prefill 4K / 16K |
+|---|---|---|---|---|---|
+| 120 W DVFS | 41.3 / 35.9 / 36.5 | 973 / 1,128 | 4.25 s | 53.7 / 39.3 / 22.5 | 1,420 / 1,272 |
+| MAXN pinned | 47.4 / 40.2 / 40.5 | 1,073 / 1,241 | 3.85 s | 59.3 / 43.5 / 25.2 | 1,586 / 1,412 |
+| MAXN gain | +15 / +12 / +11% | +10 / +10% | -9% | +10 / +11 / +12% | +12 / +11% |
+
+At the dgx cells the same shape holds for q36 (+10 / +10 / +9% prompt, +9 / +12 / 0% decode) and iq3_s
+(+9 / +14% prompt at 4K / 16K, decode +6 to +12%); one honest exception: the 32K cell came out slower at
+MAXN in this pair (950 against 1,051) while the 16K cell gained - a two-round cell at the machine's
+largest size, likely page-cache state over the 78 GB pack rather than the clocks, and it is left stated
+rather than averaged away. The earlier +27% headline was a cross-session comparison (a pre-table, partly
+stale-pool run against a fresh one); this paired night is the number to quote: MAXN + jetson_clocks buys
+about +10 to +15% across the board on this part, cheapest Thor speed-up there is.
 
 The same tool at the same cells as the Spark guide (`tools/dgx_bench.py`, 64K context, temperature 0, 256-token
 answers; [maxn/iq3s-64k.md](maxn/iq3s-64k.md), [maxn/q36-128k.md](maxn/q36-128k.md), [maxn/nvfp4-64k.md](maxn/nvfp4-64k.md)):
