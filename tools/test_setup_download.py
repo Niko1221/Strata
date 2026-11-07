@@ -501,9 +501,9 @@ class Failures(unittest.TestCase):
             self.d = d
             code, out = run(srv, d)
             self.assertIsNone(code, out)
-            # a file made full size at the start (preallocated) would show len(DATA) here; the pieces written ahead of piece 30 by the
-            # other connection are a matter of thread timing (a slow thread start on Windows put it at 34 pieces), so the bound is the full size
-            self.assertTrue(seen and seen[0] is not None and seen[0] < len(DATA) - 2 * CHUNK, seen)
+            # a preallocated file would already be the full size (len(DATA)) here; what the other connection has written ahead of piece 30 is
+            # thread timing (Windows put it at 34 and 39 pieces), so the check is only that the file has not been made full size
+            self.assertTrue(seen and seen[0] is not None and seen[0] < len(DATA), seen)
 
 
 class Progress(unittest.TestCase):
