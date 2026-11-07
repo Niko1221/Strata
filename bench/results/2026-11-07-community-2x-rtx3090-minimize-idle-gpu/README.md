@@ -204,7 +204,11 @@ not a results matrix:
   printed 0.0 %, and prefill sat at 2579…2674 tok/s across all six (±1.8 %).
 * **`pw`** 0, 1, 2 and **`theta`** 0.05, 0.20, 0.35, 0.50, 0.70 — per request, on one server. `theta` is flat
   from 0.05 to 0.50 (≤1.2 pp apart); 0.70 drops under serial in rate *and* in watts. `pw=1` (prompt path
-  only) is nearly free; `pw=2` is the win.
+  only) is nearly free; `pw=2` is the win. Flat means flat: the four in-band gates were also run against each
+  other (52 document pairs of `theta=0.20` against `theta=0.35`, same `--spec-min-p`, four sweeps), and that
+  head-to-head pooled to **−0.3 pp** (code −2.1, prose +2.3, 23/52 pairs for the lower gate) with identical
+  window statistics — 14.9 ms and 2.3 tokens per window either way, acceptance 80.7 against 81.5 %. Where an
+  arm listing here ranks one gate above another, it ranked both against `pw=0`, not against each other.
 * **`--spec-min-p`** 0.35, 0.50, 0.65, 0.80, 0.95 — per request via `strata_tune`. Flat 0.50…0.95 (±4 %),
   0.35 too cheap, 0.95 a cliff in the serial loop; the interesting part is the coupling to `pw` (§ 4).
 * **`--spec`** 2, 4, 6; **`STRATA_MTP_STAGE0`** off/1; **`--vram-reserve-mib`** 1024, 1280, 1536 — all behind
