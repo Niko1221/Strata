@@ -380,14 +380,16 @@ encoding-environment failure, not a regression.
 | epochs, `backward` | sft 2 | |
 | `--kv auto` | fp16 <=32K, int8 <=128K, k8v4 <=256K, q4_0 above | thresholds are duplicated in `generate.cpp` and `setup.py`; change both |
 
-Every training run writes `<--out>.meta.json` with the full `vars(args)`, the
-data sha256 and row count, git HEAD, library versions, the keep-best result, the
-capability gate and peak VRAM (`phase=start`, then merged into `phase=done`).
-Read it before comparing two adapters: older `.pt` files predate this file and
-their hyperparameters cannot be reconstructed. Use `--epochs` rather than
-`--steps` when the comparison has to survive a change in dataset size.
-`--seed` also fixes the LoRA `A` initialisation (a local `torch.Generator`), so
-two runs with the same seed are bit-identical.
+Backprop SFT (`backward/sft.py`) writes `<--out>.meta.json` with the full
+`vars(args)`, the data sha256 and row count, git HEAD, library versions, the
+keep-best result, the capability gate and peak VRAM (`phase=start`, then merged
+into `phase=done`). The zero-order path does not write this file. Read it before
+comparing two adapters: older `.pt` files predate it and their hyperparameters
+cannot be reconstructed. Use `--epochs` rather than `--steps` when the comparison
+has to survive a change in dataset size. `--seed` also fixes the LoRA `A`
+initialisation through a local `torch.Generator` instead of torch's global RNG,
+so the **initial adapter** is reproducible; checkpoints produced before that fix
+can still differ despite a matching `--seed`.
 
 ### Engine-side constraints (these fail quietly if ignored)
 
