@@ -7,7 +7,7 @@
 // three template signatures, this include, two dispatchers.  Design: docs/l2-blockformat-v2-design.md.
 //
 // Contents (all L2):
-//   format v2.1   block-compressed writer/reader (per-field segments, lz4 blocks, directory)
+//   format v2.1   block-compressed writer/reader (per-field segments, stored blocks, directory)
 //   SAVEINC v2.2  the incremental save (checkpoint/field-segment reuse, in-place append, peek)
 //   parked  v2.3  the streamed restore whose physical gate sees only transients (M3)
 //   RESTOREPP     partial restore by checkpoint - reads proportional to the borrow (M3.1)
@@ -15,19 +15,14 @@
 // =============================================================================================
 // L2 v2: the block-compressed session format (docs/l2-blockformat-v2-design.md) needs lz4.
 // Without the header the v2 code compiles out: writes stay v1 and v2 files are refused with a clear error.
-#if __has_include(<lz4.h>)
-#define STRATA_SESSION_V2_FORMAT 1
-#include <lz4.h>
-#endif
-
-#ifdef STRATA_SESSION_V2_FORMAT
+// v2 session format: stored blocks only (no external compression library)
 // =============================================================================================
 // L2 v2.1: the block-compressed session format (design: docs/l2-blockformat-v2-design.md).
 //
 //   header 64 B: magic 'STRSESS\x02', version 2, header size 64, model and config fingerprints,
 //                payload = the RAW (uncompressed) logical payload bytes, reserved 0, header hash.
 //   body:        segment streams.  A segment is a run of blocks; a block is
-//                [usize:u32][csize:u32][mode:u32] + csize bytes (mode 0 = lz4, 1 = stored).
+//                [usize:u32][csize:u32][mode:u32] + csize bytes (mode 1 = stored (0 reserved)).
 //                Segment order is fixed:
 //                  seg#0  kind 0  counts   - every scalar and size the parser needs, nothing else
 //                  seg#1  kind 4  live     - live state fields as raw bytes (ids, imgs, gdn, ...)
@@ -70,7 +65,7 @@ bool session_v2_writes() {
 // L2 v2.4: parallel block readahead for the restore path.  The blocks of a segment are
 // independent (own offset/size/hash in the directory), so K workers can pread+decompress+verify
 // ahead of the consumer.  0 = the serial single-pread path; the raidz1 array of NVMe devices
-// delivers far more than one reader can pull through pread+lz4+hash in line.
+// delivers far more than one reader can pull through pread+hash in line.
 int v2_readahead_depth() {
     static const int d = [] {
         const char* e = std::getenv("STRATA_V2_READAHEAD");
@@ -309,20 +304,10 @@ private:
         if (!buf_used_) return;
         V2BlockRec r;
         r.usize = (uint32_t) buf_used_;
-        r.mode = 1;
-        r.csize = r.usize;
-        comp_.resize((size_t) LZ4_compressBound((int) buf_used_));
-        const int z = LZ4_compress_default((const char*) buf_.data(), (char*) comp_.data(), (int) buf_used_,
-                                           (int) comp_.size());
-        if (z > 0 && (uint32_t) z < buf_used_) {
-            r.mode = 0;
-            r.csize = (uint32_t) z;
-        }
-        r.hash = session_hash64(buf_.data(), buf_used_, 0);
-        r.offset = off_;
-        if (io_) {
-            const uint32_t hdr[3] = {r.usize, r.csize, r.mode};
-            ok_ = io_->write_all(hdr, 12) && io_->write_all(r.mode ? buf_.data() : comp_.data(), r.csize);
+        r.mode = 1;   // stored (int8 KV is near-incompressible)
+r.csize = r.usize = (uint32_t) buf_used_;
+r.hash = session_hash64(buf_.data(), buf_used_, 0);
+ok_ = io_->write_all(hdr, 12) && io_->write_all(buf_.data(), r.csize);
         }
         off_ = sat_add(off_, 12 + (uint64_t) r.csize);
         blocks_.push_back(r);
@@ -724,9 +709,9 @@ private:
         }
         b.data.resize(r->usize);
         if (r->mode == 0) {
-            const int z = LZ4_decompress_safe((const char*) raw.data() + 12, (char*) b.data.data(), (int) r->csize, (int) r->usize);
-            if (z != (int) r->usize) { b.err = "session file: block decompression failed"; return b; }
-        } else {
+                b.error = "lz4 block (compression removed; re-save as stored)";
+                return {};
+            } else {
             std::memcpy(b.data.data(), raw.data() + 12, r->csize);
         }
         if (session_hash64(b.data.data(), b.data.size(), 0) != r->hash) {
@@ -1595,10 +1580,9 @@ bool saveinc_peek_impl(const std::string& path, const SessionFileIdentity& id, S
     return true;
 }
 } // namespace
-#endif // STRATA_SESSION_V2_FORMAT
+
 
 // ---- public entries (moved here from the host file: one toolkit, one home) --------------------
-#ifdef STRATA_SESSION_V2_FORMAT
 bool session_file_verify(const std::string& path, std::string& error) { return v2_verify_structure(path, error); }
 
 bool session_file_saveinc(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
@@ -1613,7 +1597,6 @@ bool session_file_saveinc_peek(const std::string& path, const SessionFileIdentit
 }
 #endif
 
-#ifdef STRATA_SESSION_V2_FORMAT
 // L2 v2.3 (M3): the parked read.  v2 only; a v1 file is refused with `error` naming
 // the ordinary read, so the caller can fall back.
 // L2 M3.1: partial restore by checkpoint. `prompt` is the incoming request's token

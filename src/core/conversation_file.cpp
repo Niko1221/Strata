@@ -23,7 +23,6 @@
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
-#endif
 #include <windows.h>
 #include <malloc.h>
 #include <process.h>
@@ -35,7 +34,6 @@
 #include <unistd.h>
 #include <deque>    // v2.4: readahead ring
 #include <future>   // v2.4: parallel block fetch
-#endif
 
 
 // Format v1 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
@@ -527,7 +525,6 @@ bool free_space(const std::string& path, uint64_t& out) {
     out = (uint64_t) s.f_bavail * (uint64_t) s.f_frsize;
     return true;
 }
-#endif
 
 class FileSink {
 public:
@@ -1245,7 +1242,6 @@ int64_t session_phase_limit_s(uint64_t bytes) {
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options, SessionStatus* status) {
-#ifdef STRATA_SESSION_V2_FORMAT
     if (session_v2_writes()) return write_v2_guarded(path, meta, &kv, id, bytes, error, options, status);
 #endif
     return write_guarded(path, meta, &kv, id, bytes, error, options, status);
@@ -1253,7 +1249,6 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
 
 bool session_file_write(const std::string& path, const SavedConversation& image, const SessionFileIdentity& id,
                         size_t& bytes, std::string& error, const SessionWriteOptions& options, SessionStatus* status) {
-#ifdef STRATA_SESSION_V2_FORMAT
     if (session_v2_writes()) return write_v2_guarded(path, image, nullptr, id, bytes, error, options, status);
 #endif
     return write_guarded(path, image, nullptr, id, bytes, error, options, status);
@@ -1292,7 +1287,6 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
     std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
-#ifdef STRATA_SESSION_V2_FORMAT
     if (std::memcmp(h, kMagicV2, 8) == 0) return read_v2_impl(raw, size, h, id, image, bytes, error, limits, st);
 #endif
     if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a Strata session file (magic)"; return false; }
