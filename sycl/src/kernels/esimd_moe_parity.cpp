@@ -27,13 +27,14 @@
 #define GGML_TABLE_BEGIN(type, name, size) static const type name[size] = {
 #define GGML_TABLE_END() };
 #include "../prefill/iq_tables.inc"
+#include "../prefill/iq2xxs_grid.inc"
 
 namespace i8 = strata::prefill::i8;
 static uint16_t f2h(float f) { return sycl::bit_cast<uint16_t>(sycl::half(f)); }
 static float h2f(uint16_t h) { return (float) sycl::bit_cast<sycl::half>(h); }
 
-static int block_bytes(int t) { return t == 21 ? 110 : t == 18 ? 98 : t == 22 ? 82 : 18; }
-static int block_vals(int t) { return (t == 21 || t == 18 || t == 22) ? 256 : t == 42 ? 64 : 32; }
+static int block_bytes(int t) { return t == 16 ? 66 : t == 21 ? 110 : t == 18 ? 98 : t == 22 ? 82 : 18; }
+static int block_vals(int t) { return (t == 16 || t == 21 || t == 18 || t == 22) ? 256 : t == 42 ? 64 : 32; }
 
 // host decode of one row (K values) -> double
 static void dec_row(int t, const uint8_t* row, int K, double* out) {
@@ -43,7 +44,20 @@ static void dec_row(int t, const uint8_t* row, int K, double* out) {
         uint16_t dh; std::memcpy(&dh, blk, 2);
         const double d = h2f(dh);
         double* o = out + (size_t) b * bv;
-        if (t == 21) {
+        if (t == 16) {
+            // Scalar GGUF IQ2_XXS reference, independent of the ESIMD decoder.
+            for (int ib = 0; ib < 8; ++ib) {
+                const uint8_t* q = blk + 2 + 8 * ib;
+                uint32_t aux; std::memcpy(&aux, q + 4, 4);
+                const double scale = d * (0.5 + (aux >> 28)) * 0.25;
+                for (int il = 0; il < 4; ++il) {
+                    const auto* grid = (const uint8_t*) &iq2xxs_grid[q[il]];
+                    const uint8_t signs = ksigns_iq2xs[(aux >> (7 * il)) & 127];
+                    for (int j = 0; j < 8; ++j)
+                        o[ib * 32 + il * 8 + j] = scale * ((signs >> j & 1) ? -(int) grid[j] : (int) grid[j]);
+                }
+            }
+        } else if (t == 21) {
             const uint8_t *qs = blk + 2, *qh = blk + 66, *sgn = blk + 74, *scl = blk + 106;
             for (int ib = 0; ib < 8; ++ib) {
                 const double dd = d * (1 + 2 * ((scl[ib / 2] >> (4 * (ib % 2))) & 0xf));
@@ -110,6 +124,16 @@ static Result run_case(sycl::queue* q, dpct::blas::descriptor_ptr hd, int gt, in
         hb[i].resize(blob_b);
         for (auto& x : hb[i]) x = (uint8_t) rng();
         for (size_t o = 0; o < 2 * gate_b; o += block_bytes(gt)) { const uint16_t d = f2h(0.0004f + 0.00002f * (rng() % 50)); std::memcpy(&hb[i][o], &d, 2); }
+        if (gt == 16) {
+            for (size_t o = 0; o < 2 * gate_b; o += block_bytes(gt)) {
+                const size_t block = o / block_bytes(gt);
+                uint16_t scale; std::memcpy(&scale, &hb[i][o], 2);
+                if (block % 11 == 0) scale ^= 0x8000u; // signed FP16 scales
+                if (block % 17 == 0) scale = 0;       // zero blocks
+                if (block % 19 == 0) scale = 1;       // smallest FP16 subnormal
+                std::memcpy(&hb[i][o], &scale, 2);
+            }
+        }
         for (size_t o = 2 * gate_b; o < blob_b; o += block_bytes(dt)) { const uint16_t d = f2h(0.0004f + 0.00002f * (rng() % 50)); std::memcpy(&hb[i][o], &d, 2); }
         db[i] = sycl::malloc_device<uint8_t>(blob_b + 256, *q);
         q->memcpy(db[i], hb[i].data(), blob_b);

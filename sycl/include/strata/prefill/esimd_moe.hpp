@@ -13,10 +13,22 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 
 namespace strata::prefill::i8 {
 
 constexpr int kMaxGroup = 16;
+
+/// Experimental IQ2_XXS gate/up coverage. Unset/0 keeps the previous format set.
+/// Quantized activations change rounding; this is not an FP16-exact path.
+inline bool iq2_xxs_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("STRATA_SYCL_IQ2_XXS_I8");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
 
 /// Per group: the experts' row counts and where their (8-row padded) tiles start.
 struct Layout {
