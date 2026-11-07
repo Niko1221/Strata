@@ -5793,8 +5793,10 @@ namespace {
 // FOLL_LONGTERM pins of ranges [lo, hi) of `rs` from the calling thread, released at once: an io_uring fixed-buffer
 // registration.  A page in a CMA-type pageblock cannot stay under a long-term pin, so the kernel migrates it when one is
 // taken - to the page's node while that node has free memory, else elsewhere.  The registration of the arena takes them
-// all at once, late, from one thread: on a 2x Xeon E5-2696 v3 (Linux 7.0) 15-27% of the node-1 half moved to node 0 (7329 CMA
-// pageblocks, 14 GiB, on node 1).  Pinned here, chunk by chunk right after the touch, they move while the node has room.
+// all at once, late, from one thread: on a 2x Xeon E5-2696 v3 (Linux 7.0) 21-32% of the node-1 half moved to node 0 (7329 CMA
+// pageblocks, 14 GiB, on node 1).  Pinned here, chunk by chunk, from the thread bound to the chunk's node: before the touch
+// (the default) the pin's own faults allocate the pages outside CMA-type memory under that thread's policy and nothing
+// migrates; after the touch (STRATA_ARENA_NUMA_PREPIN=after) they migrate while the node still has room.
 // Returns the ranges pinned, or < 0 (no io_uring, or RLIMIT_MEMLOCK: the caller goes on without).
 long numa_prepin(uint8_t* base, const std::vector<std::pair<uint64_t, uint64_t>>& rs, size_t lo, size_t hi) {
 #if !defined(STRATA_ARENA_NUMA_PREPIN_BUILT)
@@ -5860,6 +5862,22 @@ struct ArenaNumaPlace {
             if (ls >> a >> id >> k >> kb && k == std::string(key) + ":") return kb;
         }
         return 0;
+    }
+    // the node's CMA-type memory (/proc/zoneinfo "cma", every zone of the node), bytes
+    static uint64_t node_cma_bytes(int n) {
+        std::ifstream f("/proc/zoneinfo");
+        std::string line;
+        uint64_t pages = 0;
+        bool mine = false;
+        while (std::getline(f, line)) {
+            if (line.rfind("Node ", 0) == 0) { mine = std::atoi(line.c_str() + 5) == n; continue; }
+            if (!mine) continue;
+            std::istringstream ls(line);
+            std::string key;
+            uint64_t v = 0;
+            if (ls >> key >> v && key == "cma") pages += v;
+        }
+        return pages * 4096;
     }
     // the nodes that have CPUs (ascending, as decide_real_numa_split orders the slices): exactly two, or off
     void plan() {
@@ -5941,15 +5959,25 @@ struct ArenaNumaPlace {
         int per_node = 8;
         if (const char* v = std::getenv("STRATA_ARENA_NUMA_THREADS"); v != nullptr && std::atoi(v) > 0) per_node = std::atoi(v);
         // MPOL_BIND only when the node can take its slice from its free memory and its file cache (with 2 GiB to spare);
-        // otherwise MPOL_PREFERRED (the slice may spill, never an allocation failure)
+        // otherwise MPOL_PREFERRED (the slice may spill, never an allocation failure).  The room leaves out the node's
+        // CMA-type memory and its locked pages (e.g. a table locked just before): a long-term pin can use neither, and
+        // under MPOL_BIND a pin that finds no room has nowhere else to go.
         int mode[2];
+        uint64_t room[2];
         for (int k = 0; k < 2; ++k) {
-            const uint64_t room = (node_kb(nodes[k], "MemFree") + node_kb(nodes[k], "FilePages")) * 1024;
-            mode[k] = room > slice_bytes[k] + (2ull << 30) ? 2 /* MPOL_BIND */ : 1 /* MPOL_PREFERRED */;
+            const uint64_t have = (node_kb(nodes[k], "MemFree") + node_kb(nodes[k], "FilePages")) * 1024;
+            const uint64_t lose = node_kb(nodes[k], "Mlocked") * 1024 + node_cma_bytes(nodes[k]);
+            room[k] = have > lose ? have - lose : 0;
+            mode[k] = room[k] > slice_bytes[k] + (2ull << 30) ? 2 /* MPOL_BIND */ : 1 /* MPOL_PREFERRED */;
         }
         std::atomic<int> pin_fail{0}, pol_fail{0}, prepin_fail{0};
         std::atomic<long> prepinned{0};
         const bool prepin = [] { const char* v = std::getenv("STRATA_ARENA_NUMA_PREPIN"); return v == nullptr || v[0] != '0'; }();
+        // Pin first (default): pages a long-term pin faults in are allocated outside CMA-type memory under the touching
+        // thread's policy (MPOL_BIND: the node's file cache is reclaimed), so none has to migrate.  Touched first and pinned
+        // after (STRATA_ARENA_NUMA_PREPIN=after), a page in a CMA-type pageblock migrates, and the migration takes a free
+        // page of the other node before it reclaims the file cache of its own: the fuller node loses part of its slice.
+        const bool pin_first = [] { const char* v = std::getenv("STRATA_ARENA_NUMA_PREPIN"); return v == nullptr || std::strcmp(v, "after") != 0; }();
         std::vector<std::thread> th;
         for (int k = 0; k < 2; ++k) {
             const int nt = (int) std::max<size_t>(1, std::min<size_t>((size_t) per_node, cpus[k].size()));
@@ -5970,13 +5998,18 @@ struct ArenaNumaPlace {
                     unsigned long mask[4] = {0, 0, 0, 0};
                     mask[nodes[k] / 64] |= 1ul << (nodes[k] % 64);
                     if (syscall(SYS_set_mempolicy, mode[k], mask, 256) != 0) pol_fail.fetch_add(1);
-                    constexpr size_t kChunk = 2048;   // ~0.9 GiB of ranges: touched, then pinned and released
+                    constexpr size_t kChunk = 2048;   // ~0.9 GiB of ranges: pinned and released, touched (or touched, then pinned)
                     for (size_t c = lo; c < hi; c += kChunk) {
                         const size_t e = std::min(hi, c + kChunk);
-                        for (size_t i = c; i < e; ++i)
+                        if (pin_first && prepin && prepin_fail.load() == 0) {
+                            const long q = numa_prepin(base, ranges[k], c, e);
+                            if (q < 0) prepin_fail.fetch_add(1);
+                            else prepinned.fetch_add(q);
+                        }
+                        for (size_t i = c; i < e; ++i)      // after a pin first: present already, no fault
                             for (uint64_t at = ranges[k][i].first; at < ranges[k][i].second; at += 4096)
                                 ((volatile uint8_t*) base)[at] = 0;
-                        if (prepin && prepin_fail.load() == 0) {
+                        if (!pin_first && prepin && prepin_fail.load() == 0) {
                             const long q = numa_prepin(base, ranges[k], c, e);
                             if (q < 0) prepin_fail.fetch_add(1);
                             else prepinned.fetch_add(q);
@@ -6009,18 +6042,19 @@ struct ArenaNumaPlace {
         both[nodes[0] / 64] |= 1ul << (nodes[0] % 64);
         both[nodes[1] / 64] |= 1ul << (nodes[1] % 64);
         const bool held = syscall(SYS_mbind, base, (bytes + 4095) & ~(uint64_t) 4095, 2 /* MPOL_BIND */, both, 256, 0) == 0;
-        char buf[600];
+        char buf[900];
         std::snprintf(buf, sizeof buf,
                       "STRATA_ARENA_NUMA: row halves placed before the registration: slice 0 -> node %d (%.2f GiB, %s, %.1f%% of "
-                      "sampled pages there), slice 1 -> node %d (%.2f GiB, %s, %.1f%%), %d threads per node, %.1f s, %s%s%s%s",
+                      "sampled pages there), slice 1 -> node %d (%.2f GiB, %s, %.1f%%), room %.1f / %.1f GiB, %d threads per node, %.1f s, %s%s%s%s",
                       nodes[0], (double) slice_bytes[0] / 1073741824.0, mode[0] == 2 ? "bind" : "preferred", local[0],
                       nodes[1], (double) slice_bytes[1] / 1073741824.0, mode[1] == 2 ? "bind" : "preferred", local[1],
-                      per_node, ms / 1000.0,
+                      (double) room[0] / 1073741824.0, (double) room[1] / 1073741824.0, per_node, ms / 1000.0,
                       !no_thp ? "WARNING: MADV_NOHUGEPAGE refused"
                       : locked ? (held ? "4 KiB pages, locked on fault (mlock2), bound (mbind)" : "4 KiB pages, locked on fault (mlock2); mbind refused")
                                : (held ? "4 KiB pages, bound (mbind); NOT locked (RLIMIT_MEMLOCK): reclaim can move pages before the pin"
                                        : "4 KiB pages; NOT locked (RLIMIT_MEMLOCK), mbind refused"),
-                      prepin ? (prepin_fail.load() ? "; long-term pre-pin unavailable (io_uring or RLIMIT_MEMLOCK)" : "; pre-pinned per chunk (io_uring)")
+                      prepin ? (prepin_fail.load() ? "; long-term pre-pin unavailable (io_uring or RLIMIT_MEMLOCK)"
+                                    : pin_first ? "; pinned per chunk before the touch (io_uring)" : "; pre-pinned per chunk after the touch (io_uring)")
                              : "; no pre-pin (STRATA_ARENA_NUMA_PREPIN=0)",
                       pin_fail.load() ? "; WARNING: a toucher could not be pinned" : "",
                       pol_fail.load() ? "; WARNING: set_mempolicy failed (first touch only)" : "");
