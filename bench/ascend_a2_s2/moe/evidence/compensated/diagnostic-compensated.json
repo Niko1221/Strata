@@ -1,0 +1,53 @@
+{
+  "expert": 423,
+  "input_sha256": "09e7ea9cce123b56c46c3053a620d566f1fc2f255a13ca568459fd8f382fd8c2",
+  "weights_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "binary_sha256": {
+    "libstrata_s2_projection.so": "e3ba27847b24579c3180ce844f0835592f6b826b0bc31e2e7d08bba03e2933a7",
+    "libstrata_moe_reference.so": "def116982cc889010e7af5fec674d0c53bc7973fb3d4b0f15bbbaf0f157c12b0"
+  },
+  "source_sha256": "6f0a8e32bc197bc2443a7edd0d56d4410c7c9e45398a77822c1b3ddf32cc10e7",
+  "gate_vs_fp64": {
+    "max_abs_error": 8.795495887170546e-08,
+    "max_normalized_error": 3.734862447202115e-08,
+    "normalized_rms_error": 3.559283759512361e-08,
+    "finite": true
+  },
+  "up_vs_fp64": {
+    "max_abs_error": 8.804489937119797e-08,
+    "max_normalized_error": 4.183842970749332e-08,
+    "normalized_rms_error": 3.62826808019178e-08,
+    "finite": true
+  },
+  "mid_vs_fp64_chain": {
+    "max_abs_error": 1.1920928955078125e-07,
+    "max_normalized_error": 6.347186936270625e-08,
+    "normalized_rms_error": 7.426363351882401e-08,
+    "finite": true
+  },
+  "independent_full_expert": {
+    "max_abs_error": 3.3426438506012346e-08,
+    "max_normalized_error": 8.394004635204106e-08,
+    "normalized_rms_error": 7.509643315317866e-08,
+    "finite": true
+  },
+  "intermediate_code_differences": 0,
+  "changed_coordinates": [],
+  "nonlinearity_held_projection_code_differences": 0,
+  "quantizer_actual_mid_code_differences": 0,
+  "conditional_down_bound": {
+    "max_abs_error": 1.4901100797715117e-08,
+    "max_error_over_bound": 0.007431526038069725,
+    "passed": true
+  },
+  "counterfactual_reference_codes_through_native_down": {
+    "max_abs_error": 1.3790234731914097e-08,
+    "max_normalized_error": 3.46298617004677e-08,
+    "normalized_rms_error": 2.71206489260256e-08,
+    "finite": true
+  },
+  "native_output_sha256": "a12a3369c1c8392df6a65cc08b4ba95bfd987ebef6b7807e1f74e000a9071b8c",
+  "reference_codes_sha256": "c9cc0b57f9a29c4d644b39cdbbe9861719c3dc5bd1e9201cb0396c3433706041",
+  "native_codes_sha256": "c9cc0b57f9a29c4d644b39cdbbe9861719c3dc5bd1e9201cb0396c3433706041",
+  "input_unchanged": true
+}

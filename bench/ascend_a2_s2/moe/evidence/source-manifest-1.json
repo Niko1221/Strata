@@ -1,0 +1,5 @@
+{
+  "bench/ascend_a2_s2/moe/fetch_layer.py": "c9545501008c7532a95d861055448ef7297a2b9cc4f545bf2246e1da78da5022",
+  "bench/ascend_a2_s2/moe/probe.py": "83307636886d00d91c8f658c1057b8d7ba2d4b10646869409ef6436ff33ebbff",
+  "bench/ascend_a2_s2/moe/decode_reference.cpp": "80a9240990719a7591a0587edc92df5a2f7739cc7838fc6b71dc4b0e5bc0b721"
+}

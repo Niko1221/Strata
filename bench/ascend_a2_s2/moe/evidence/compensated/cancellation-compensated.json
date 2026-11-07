@@ -1,0 +1,44 @@
+{
+  "cases": [
+    {
+      "label": "lost-sum-bit",
+      "expected": 1.0,
+      "output": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "exact": true,
+      "guards": true,
+      "inputs_unchanged": true,
+      "passed": true
+    },
+    {
+      "label": "lost-product-bits",
+      "expected": -2.384185791015625e-07,
+      "output": [
+        -2.384185791015625e-07,
+        -2.384185791015625e-07,
+        -2.384185791015625e-07,
+        -2.384185791015625e-07,
+        -2.384185791015625e-07,
+        -2.384185791015625e-07,
+        -2.384185791015625e-07,
+        -2.384185791015625e-07
+      ],
+      "exact": true,
+      "guards": true,
+      "inputs_unchanged": true,
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "binary_sha256": "e3ba27847b24579c3180ce844f0835592f6b826b0bc31e2e7d08bba03e2933a7",
+  "source_sha256": "e54bf7cce1593166df37f0adf354df188b9b81df633eb7b2efbf61f03bb1d817",
+  "device": "Ascend910_9362"
+}

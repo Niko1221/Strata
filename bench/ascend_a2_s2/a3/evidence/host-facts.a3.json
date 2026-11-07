@@ -1,0 +1,38 @@
+{
+  "captured_utc": "2026-10-21T11:31:35.628072+00:00",
+  "machine": "aarch64",
+  "python": "3.11.4 (main, Sep  9 2026, 06:56:34) [GCC 9.4.0]",
+  "torch": "2.7.1+cpu",
+  "torch_npu": "2.7.1.post4",
+  "numpy": "1.26.4",
+  "device_name": "Ascend910_9362",
+  "logical_device": 0,
+  "visible_device_count": 2,
+  "runtime_free_total_bytes": [
+    65399562240,
+    65787658240
+  ],
+  "visible_environment": {
+    "ASCEND_VISIBLE_DEVICES": "3",
+    "ASCEND_RT_VISIBLE_DEVICES": null,
+    "NPU_VISIBLE_DEVICES": "3"
+  },
+  "logical_zero_mapping_observed_in_smoke": {
+    "npu_smi_npu": 1,
+    "chip": 0,
+    "phy_id": 2
+  },
+  "single_device_only": true,
+  "other_chip_used": false,
+  "limits": {
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes": "225485783040",
+    "/sys/fs/cgroup/cpu/cpu.cfs_quota_us": "3600000",
+    "/sys/fs/cgroup/cpu/cpu.cfs_period_us": "100000"
+  },
+  "os_release": "NAME=\"Ubuntu\"\nVERSION=\"20.04.5 LTS (Focal Fossa)\"\nID=ubuntu\nID_LIKE=debian\nPRETTY_NAME=\"Ubuntu 20.04.5 LTS\"\nVERSION_ID=\"20.04\"\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nVERSION_CODENAME=focal\nUBUNTU_CODENAME=focal\n",
+  "lscpu": "Architecture:                         aarch64\nCPU op-mode(s):                       64-bit\nByte Order:                           Little Endian\nCPU(s):                               40\nOn-line CPU(s) list:                  0-39\nThread(s) per core:                   1\nCore(s) per socket:                   40\nSocket(s):                            1\nNUMA node(s):                         1\nVendor ID:                            0x48\nModel:                                0\nStepping:                             0x0\nFrequency boost:                      disabled\nCPU MHz:                              3000.000\nCPU max MHz:                          3000.0000\nCPU min MHz:                          3000.0000\nBogoMIPS:                             200.00\nL1d cache:                            2.5 MiB\nL1i cache:                            2.5 MiB\nL2 cache:                             20 MiB\nL3 cache:                             32 MiB\nNUMA node0 CPU(s):                    0-39\nVulnerability Gather data sampling:   Not affected\nVulnerability Itlb multihit:          Not affected\nVulnerability L1tf:                   Not affected\nVulnerability Mds:                    Not affected\nVulnerability Meltdown:               Not affected\nVulnerability Mmio stale data:        Not affected\nVulnerability Reg file data sampling: Not affected\nVulnerability Retbleed:               Not affected\nVulnerability Spec rstack overflow:   Not affected\nVulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:             Mitigation; __user pointer sanitization\nVulnerability Spectre v2:             Not affected\nVulnerability Srbds:                  Not affected\nVulnerability Tsx async abort:        Not affected\nFlags:                                fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm ssbs sb dcpodp flagm2 frint svei8mm svef32mm svef64mm svebf16 i8mm bf16 dgh rng ecv\n",
+  "cann_install_info": "package_name=Ascend-cann-toolkit\nversion=9.0.0\ninnerversion=V100R001C10SPC001B250\ncompatible_version=[V100R001C21],[V100R001C22],[V100R001C23],[V100R001C25],[V100R001C10]\narch=aarch64\nos=linux\npath=<CANN_ROOT>\n",
+  "cmake --version": "cmake version 3.20.5\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake).\n",
+  "g++ --version": "g++ (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0\nCopyright (C) 2019 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "bisheng --version": "2026-04-25T15:46:25+08:00 clang version 15.0.5 (clang-5c68a1cb1231 flang-5c68a1cb1231)\nTarget: aarch64-unknown-linux-gnu\nThread model: posix\nInstalledDir: <CANN_ROOT>/bin\n"
+}

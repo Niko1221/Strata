@@ -1,0 +1,6 @@
+{
+  "codes_equal": true,
+  "max_scale_ulps": 1,
+  "different_scales": 31,
+  "max_scale_abs": 1.862645149230957e-09
+}

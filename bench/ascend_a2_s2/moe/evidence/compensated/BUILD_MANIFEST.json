@@ -1,0 +1,13 @@
+{
+  "measured_utc": "2026-10-22T01:48:34Z",
+  "binaries": {
+    "original": "e49fd7ae0bf22b8cc80ffc1b76acbc42aa1a6f2eabd7220e897326fc3dcf86b9",
+    "default": "e49fd7ae0bf22b8cc80ffc1b76acbc42aa1a6f2eabd7220e897326fc3dcf86b9",
+    "compensated": "e3ba27847b24579c3180ce844f0835592f6b826b0bc31e2e7d08bba03e2933a7"
+  },
+  "source_sha256": {
+    "bench/ascend_a2_s2/fused/projection.cpp": "a27539e0eadeba254077e3041ec09aa9d5e41bb86762736959329d32237ee5f2",
+    "bench/ascend_a2_s2/fused/CMakeLists.txt": "65125a580d54c27a8f73195bec92f45d2f7f2642b09ef1b2ffaf7e23e0b20b13",
+    "bench/ascend_a2_s2/moe/probe.py": "060f2b737604d3472ce5ae2e0f9a160c106b768b684b626a45952acb054dca2d"
+  }
+}
