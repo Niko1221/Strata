@@ -52,7 +52,7 @@ bool Window::pc_setup(int C) {
     const double t0 = now_ms();
     if (b.C == 0) {
         b.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
-                              "gemv.metal", "prompt.metal"});
+                              "gemv.metal", "prompt.metal"}, kq_down_prelude(f_));
         b.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
         b.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
         b.k4 = coop_k4();

@@ -58,7 +58,9 @@ int main(int argc, char** argv) {
     if (v4) TM = 16 * MS;   // the plan's tile height; mm_gu4's name carries MS instead
     if (v6) TM = 16;   // ragged tiles: the padding is 16 rows, the group size is MS
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"});
+    // the host defines STRATA_KQ_DOWN only for a model whose downs are K-quant / IQ4_XS / IQ3_S (window.cpp kq_down_prelude)
+    const bool kq_dn = dn == ref::Q3_K || dn == ref::Q4_K || dn == ref::Q5_K || dn == ref::Q6_K || dn == ref::IQ3_S || dn == ref::IQ4_XS;
+    const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"}, kq_dn ? "#define STRATA_KQ_DOWN 1\n" : "");
     const int NE = bench ? 512 : 64, LAYERS = bench ? 4 : 1;
     const size_t gu_row = ref::row_bytes(gu, N_EMBD), d_row = ref::row_bytes(dn, N_FF);
     const size_t up_off = (size_t)N_FF * gu_row, down_off = 2 * up_off, blob = down_off + (size_t)N_EMBD * d_row;

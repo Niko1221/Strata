@@ -446,10 +446,12 @@ DN_SET(T_Q2_0R)
 DN_SET(T_IQ4_NL)
 // UD files at expert widths divisible by 256: IQ4_XS / IQ3_S downs read raw h like the gate/up's raw-kind formats (the generic
 // X / Dec); the K-quants take moe_down_k (XD above).  Same host names, moe_down_<type>_<L>_<R>_<S>.
+#ifdef STRATA_KQ_DOWN   // the host defines it when a layer's down is one of these types (window.cpp kq_down_prelude): today's sets compile exactly what they did
 DN_SET(T_IQ4_XS) DN_SET(T_IQ3_S)
 #define DNK(F, L, R, S) template [[host_name("moe_down_" #F "_" #L "_" #R "_" #S)]] kernel decltype(moe_down_k<F, L, R, S>) moe_down_k<F, L, R, S>;
 #define DNK_SET(F) DNK(F, 8, 1, 4) DNK(F, 8, 2, 4) DNK(F, 8, 4, 4) DNK(F, 8, 1, 8) DNK(F, 8, 2, 8) DNK(F, 4, 1, 4) DNK(F, 4, 2, 4)                    DNK(F, 4, 4, 4) DNK(F, 16, 1, 4) DNK(F, 16, 2, 4) DNK(F, 32, 1, 4) DNK(F, 2, 2, 4)
 DNK_SET(T_Q4_K) DNK_SET(T_Q5_K) DNK_SET(T_Q6_K) DNK_SET(T_Q3_K)
+#endif   // STRATA_KQ_DOWN
 // Gyro (agentionai's trellis experts): TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down (the CUDA engine's STRATA_GU_FMTS / D_FMTS)
 GU_SET(T_TQK6) GU_SET(T_TQ2T)
 DN_SET(T_TQK7) DN_SET(T_TQ2T)

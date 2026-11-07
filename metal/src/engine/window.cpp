@@ -97,6 +97,20 @@ namespace {
 
 int g_slot_cap = 0;   // --batch N: the window keeps N + 1 sequences' running states side by side (set_batch_slots)
 
+// Q4-KQ: the kernel sources define STRATA_KQ_DOWN to instantiate the K-quant / IQ4_XS / IQ3_S down experts (moe.metal, moe_mm.metal).
+// The host asks for them only when a layer's down tensor has one of those types, so a Flash-Next set (Q5_1 / Q5_0 / Q8_0 / IQ4_NL / Q2_0
+// downs) compiles the same kernel text as before and pays nothing for them.
+std::string kq_down_prelude(const gguf::File& f) {
+    for (int l = 0; l < 128; ++l) {
+        const gguf::Tensor* t = f.find("blk." + std::to_string(l) + ".ffn_down_exps.weight");
+        if (!t) continue;
+        if (t->type == ref::Q3_K || t->type == ref::Q4_K || t->type == ref::Q5_K || t->type == ref::Q6_K || t->type == ref::IQ3_S ||
+            t->type == ref::IQ4_XS)
+            return "#define STRATA_KQ_DOWN 1\n";
+    }
+    return "";
+}
+
 constexpr int N = 2560, HC = 4, LR = 320, NFF = 640, TOPK = 10, NEXP = 512, MAXT = 8, NVOCAB_MAX = 248320;
 constexpr int P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_GSTART + P_MAXE + 4,
               P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE, P_INTS = P_TOKENT + P_MAXE, P_IGU = 4, P_IDN = 8;
@@ -704,7 +718,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     n_vocab_ = (int64_t) T("output.weight").shape[1];
     if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
-                         "glue.metal"}, metal_f16() ? "#define STRATA_METAL_F16 1\n" : "");
+                         "glue.metal"}, (metal_f16() ? std::string("#define STRATA_METAL_F16 1\n") : std::string()) + kq_down_prelude(f_));
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -2864,7 +2878,7 @@ bool Window::prompt_gemm_init(std::string& err) {
     p.MT = C;
     p.QS = std::min(C, 256);
     p.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal",
-                          "prompt.metal"});
+                          "prompt.metal"}, kq_down_prelude(f_));
     p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     p.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
     p.k4 = ::coop_k4(*cx_);

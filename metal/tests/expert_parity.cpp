@@ -282,7 +282,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "EXPERT_F16: Q2_0 gate/up and down only, without --dn-prep and Hadamard\n");
         return 2;
     }
-    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"}, g_f16 ? "#define STRATA_METAL_F16 1\n" : "");
+    // the host defines STRATA_KQ_DOWN only for a model whose downs are K-quant / IQ4_XS / IQ3_S (window.cpp kq_down_prelude)
+    const bool kq_dn = dn == ref::Q3_K || dn == ref::Q4_K || dn == ref::Q5_K || dn == ref::Q6_K || dn == ref::IQ3_S || dn == ref::IQ4_XS;
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"},
+                               std::string(g_f16 ? "#define STRATA_METAL_F16 1\n" : "") + (kq_dn ? "#define STRATA_KQ_DOWN 1\n" : ""));
     const Layout L = layout(gu, dn);
     // Gyro: the pack's hadamard.txt (the signs of the widths 2560 and 640) -> the engine's CPU spec (the reference)
     mtl::Buffer hsx, hsh;
