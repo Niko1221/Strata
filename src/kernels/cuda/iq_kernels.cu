@@ -6357,7 +6357,16 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     // CUDA: the AMD layouts launch a block row per possible group, so a call that strides (a verify window's PCIe
     // call, grid_groups 1..cap) keeps the CUDA layout: V100, 0 groups 11.3 vs 6.5 us, 1 group of 2 29.6 vs 21.3
-    const int em0 = (grid_groups > 0 && grid_groups < cap_groups) ? 0 : exp_mode();
+    const int em0_all = (grid_groups > 0 && grid_groups < cap_groups) ? 0 : exp_mode();
+    // STRATA_EXP_TABLE=1 (opt-in): the layout per format on gfx1030 where the sweep found one faster -
+    // gate/up IQ2_S / IQ3_S mode 8, the down projection Q2_0 mode 4, every other format the card's default.  At the
+    // verify window's cap (n x top-k) a whole IQ2_S/Q2_0 layer is -27..-30% with one token a group, -8..-11% with two,
+    // and up to +6% only when four tokens share every expert (rare in real routing).  All bitwise equal to mode 0
+    // (native_expert_bench).  A strided call (above) and an explicit STRATA_EXP_MODE keep their layout.
+    static const bool exp_table = [] { const char* v = std::getenv("STRATA_EXP_TABLE"); return v != nullptr && v[0] == '1' &&
+                                                                     std::getenv("STRATA_EXP_MODE") == nullptr; }();
+    const bool tabled = exp_table && g_exp_mode < 0 && em0_all == 0 && !(grid_groups > 0 && grid_groups < cap_groups);
+    const int em0 = tabled && (L.gu_type == 22 || L.gu_type == 21) ? 8 : em0_all;
 #endif
 #endif
 #if STRATA_EXP_LAYOUTS
@@ -6487,7 +6496,11 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
 #endif
 #if STRATA_EXP_LAYOUTS
+#if !defined(STRATA_HIP_GFX906)
+    const int em0d = tabled ? (L.d_type == 42 ? 4 : 0) : sm75_down_em(em0, cap_groups);   // STRATA_EXP_TABLE: the down mode per format
+#else
     const int em0d = sm75_down_em(em0, cap_groups);
+#endif
     int dev_d = 0;
     cudaGetDevice(&dev_d);
     // gfx1151: the LDS down kernel is slower than the CUDA layout for IQ4_NL (86 vs 63 us, 24 groups) and faster for Q2_0 (-18%)
