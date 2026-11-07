@@ -6045,13 +6045,13 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
 #if defined(__linux__)
             // #5327: the refusal reads every shortfall as one the kernel can only serve by taking another program's
             // memory (#4051's host: an engine that was still exiting, anonymous RAM - the stall the refusal is for).
-            // On a bare Linux host the shortfall is often the box's own model files sitting hot in the file cache:
-            // MemAvailable credits only about half of the cache, while free pages + the droppable file pages (which
-            // the kernel evicts as the arena reads, with no swap and no reclaim storm) still cover the arena - or the
-            // reserved hugetlb pool holds all of it (the arena maps MAP_HUGETLB first; a launcher may reserve the
-            // pool for exactly this, and the reserve itself is what took MemAvailable below the need).  That
+            // On a bare Linux host the usual false alarm is a reserved hugetlb pool: MemAvailable does not count free
+            // huge pages, and a launcher may reserve the pool for exactly this arena (the arena maps MAP_HUGETLB
+            // first), so the reserve itself takes MemAvailable below the need while the pool holds all of it.  That
             // is the case 0.1.54/0.1.55 loaded anyway ("expert arena read through the file cache") at full decode
-            // speed; credit it and load, LOUDLY (a service setup never sees stderr).  STRATA_ARENA_FILE_CACHE=0
+            // speed: credit the pool when it holds the whole arena (and free pages + droppable file pages, which the
+            // kernel evicts as the arena reads - only a small margin beyond MemAvailable's own count) and load,
+            // LOUDLY (a service setup never sees stderr).  STRATA_ARENA_FILE_CACHE=0
             // refuses as since 0.1.56.  Not under a cgroup limit (the host's cache is not the container's to drop)
             // and not on Windows: the proceed path was never trusted there ("buffered (not Windows)", the mapped
             // view's trim needs the headroom the refusal keeps).
