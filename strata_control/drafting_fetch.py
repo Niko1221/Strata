@@ -54,7 +54,8 @@ def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, 
         text = (f"The DFlash2 drafter is {drafting.DOWNLOAD_GB:.1f} GB to download (it is packed to {drafting.PACK_GB:.2f} GB for the engine and the "
                 f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.vram_gb(data_dir, engine):.1f} GB of graphics memory, "
                 "less than the MTP's layer, which is not loaded beside it.")
-    return {"ready": ready, "gb": gb, "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir, model_name=model_name, backend=backend)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
+    return {"ready": ready, "gb": gb, "drafter_gb": pin.gb if tuned else drafting.DOWNLOAD_GB, "tuned": tuned, "file": pin.name if tuned else drafting.PACK_NAME,
+            "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir, model_name=model_name, backend=backend)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
 
 
 def _packer():
