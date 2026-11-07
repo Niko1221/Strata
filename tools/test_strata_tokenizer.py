@@ -1,6 +1,6 @@
-"""Tests for tools/strata_tokenizer.py: llama.cpp's reference vectors, the piece cache (0.1.41: the ids are the ones the
-merge loop gives, cache cold, warm or switched off), and the incremental prompt encoder, which must give exactly the
-ids of a plain encode.
+"""Tests for tools/strata_tokenizer.py: the splitter the `pre` label selects, llama.cpp's reference vectors, the piece
+cache (0.1.41: the ids are the ones the merge loop gives, cache cold, warm or switched off), and the incremental prompt
+encoder, which must give exactly the ids of a plain encode.
 
     python -m unittest tools.test_strata_tokenizer -v
 
@@ -137,6 +137,34 @@ def conversation_prompts(template, rnd: random.Random) -> list[tuple[str, str]]:
     add("empty user", [{"role": "user", "content": ""}])
     add("full again", grown)
     return out
+
+
+class PreTokenizer(unittest.TestCase):
+    """The `pre` label picks the splitter, and llama.cpp gives JOYAI_LLM, HUNYUAN_DENSE and HY_V4 the DEEPSEEK3_LLM
+    regex sequence (src/llama-vocab.cpp). A vocabulary stating "joyai-llm", as DeepSeek-V4-Flash-0731's does, that
+    falls back to the Qwen pattern splits every digit on its own, where the DeepSeek3 list keeps runs of 1-3 digits
+    together. No vocabulary file is needed: the splitters are pure functions of the text."""
+
+    TEXT = "Grüße aus München am 25.10.2026"        # an umlaut and a date: the date is where the two disagree
+
+    def deepseek3(self, text: str) -> list[str]:
+        return ST._sequence_findall([ST.regex.compile(p) for p in ST.DEEPSEEK3_PATTERNS], text)
+
+    def qwen(self, text: str) -> list[str]:
+        return ST.regex.compile(ST.QWEN35_PATTERN).findall(text)
+
+    def test_the_two_splitters_disagree_on_this_text(self):
+        # the two tests below only mean something while this holds
+        self.assertNotEqual(self.deepseek3(self.TEXT), self.qwen(self.TEXT))
+
+    def test_the_labels_that_share_llama_cpps_deepseek3_list_use_it(self):
+        for pre in ("deepseek-v3", "joyai-llm", "hunyuan-dense", "hy_v4"):
+            tk = ST.Tokenizer(["a"], [], pre=pre)
+            self.assertEqual(tk._split(self.TEXT), self.deepseek3(self.TEXT), pre)
+
+    def test_other_labels_still_use_the_qwen_pattern(self):
+        tk = ST.Tokenizer(["a"], [], pre="qwen35")
+        self.assertEqual(tk._split(self.TEXT), self.qwen(self.TEXT))
 
 
 class Oracle(unittest.TestCase):
