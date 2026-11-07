@@ -139,6 +139,9 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 /// #2409: true when a restore (or a copy) on CUDA device `device` from the calling thread creates no copy stream: this
@@ -177,7 +180,8 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 std::vector<ConversationCheckpoint>* storage = nullptr,
                                 std::vector<ConversationCheckpoint>* moved = nullptr);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
-                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
+                                    const ModelGeometry& g, const QsaState* draft, std::string& error,
+                                    bool tolerant_ckpts = false);   // L2: skip mismatched checkpoints on restore
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,

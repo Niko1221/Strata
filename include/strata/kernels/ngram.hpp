@@ -21,6 +21,7 @@
 //
 // All of those are asserted observable in `ple_parity.cpp` rather than trusted.
 #pragma once
+#include "strata/core/ple_metrics.hpp"   // # standalone PLE metrics module
 
 #include "strata/core/geometry.hpp"
 
@@ -239,6 +240,8 @@ public:
 
     /// One line of reader statistics (Direct mode), e.g. for --stats. Empty in Mmap mode.
     std::string io_report() const;
+    /// A consistent cumulative snapshot for request-level deltas; cheap and safe while reads are in flight.
+    strata::core::ple_metrics::PleIoSnapshot io_snapshot() const;   // # PLE metrics API
     PleIo mode() const;
 
 private:

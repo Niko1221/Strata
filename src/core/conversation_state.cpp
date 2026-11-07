@@ -78,21 +78,26 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
 }
 
 bool view_validate(const ConversationView& view, const SessionState& ss,
-                   const ModelGeometry& g, std::string& error) {
+                   const ModelGeometry& g, std::string& error, bool tolerant_ckpts = false) {
     ConversationStateSizes z;
     if (!checkpoint_targets(ss, g, view.ids.size(), z, error)) return false;
     if (view.ids.empty() || !image_keys(view.images, view.ids.size()) ||
         std::any_of(view.ids.begin(), view.ids.end(), [](int32_t id) { return id < 0; }))
         return fail(error, "invalid live token/image metadata");
     for (const auto& c : view.checkpoints) {
-        if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() ||
-            !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
+        // (1-token ): restore checkpoint live BPE 1 token
+        // Should not reject the whole snapshot restore
+        const bool prefix_ok = c.ids.size() <= view.ids.size() &&
+                               std::equal(c.ids.begin(), c.ids.end(), view.ids.begin());
+        if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() || !prefix_ok) {
+            if (tolerant_ckpts && !c.ids.empty() && c.ids.size() <= view.ids.size())
+                continue;
             return fail(error, "checkpoint is not a live token prefix");
+        }
         if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
         size_t image = 0;
         for (const auto& key : view.images) {
-            if ((uint64_t) key.start >= c.ids.size()) break;
-            if (image >= c.imgs.size() || !(c.imgs[image++] == key))
+            if ((uint64_t) key.start >= c.ids.size()) break;            if (image >= c.imgs.size() || !(c.imgs[image++] == key))
                 return fail(error, "checkpoint image identity differs");
         }
         if (image != c.imgs.size()) return fail(error, "checkpoint image prefix differs");
@@ -621,7 +626,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -633,13 +638,19 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     conversation_checkpoint_join(captured.live.gdn.data());
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
     return true;
+}
+
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
@@ -674,7 +685,8 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
 }
 
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
-                                    const ModelGeometry& g, const QsaState* draft, std::string& error) {
+                                    const ModelGeometry& g, const QsaState* draft, std::string& error,
+                                    bool tolerant_ckpts) {
     if (!image.live.stage_parts.empty())
         return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
     if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
@@ -682,7 +694,8 @@ bool conversation_snapshot_validate(const SavedConversation& image, const Sessio
     if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
         return fail(error, "snapshot from another session layer range");
     const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
-    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
+    if (!view_validate(view, ss, g, error, tolerant_ckpts) ||
+        !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
     const size_t layers = owned_qsa(ss);
     if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");
     const int64_t upto = (int64_t) image.live.ids.size();
@@ -698,7 +711,8 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
     conversation_park_join_for(image);   // (STRATA_PARK_VRAM_MIB: no wait when the K/V comes from its slot)
-    if (!conversation_snapshot_validate(image, ss, g, draft, error)) return ConversationRestore::invalid;
+    // : restore true ( checkpoint generate
+    if (!conversation_snapshot_validate(image, ss, g, draft, error, /*tolerant_ckpts*/ true)) return ConversationRestore::invalid;
     if (!sync(error)) return ConversationRestore::transfer_failed;
     const int64_t upto = (int64_t) image.live.ids.size();
     for (size_t j = 0; j < owned_qsa(ss); ++j)

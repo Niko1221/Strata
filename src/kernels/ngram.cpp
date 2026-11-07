@@ -757,6 +757,13 @@ bool PleTable::gather_raw_iq4nl(const uint32_t* rows, size_t n_tokens, uint8_t* 
 
 void PleTable::set_injected_delay_us(double us) { impl_->reader.set_injected_delay_us(us); }
 
+strata::core::ple_metrics::PleIoSnapshot PleTable::io_snapshot() const {   // #
+    if (impl_->mode == PleIo::Direct && impl_->reader.is_open())
+        return strata::core::ple_metrics::from_reader(impl_->reader.snapshot(), true, impl_->locked,
+                                                       impl_->reader.cache_size(), impl_->reader.cache_capacity());
+    return strata::core::ple_metrics::from_reader({}, false, impl_->locked, 0, 0);
+}
+
 std::string PleTable::io_report() const {
     if (impl_->mode != PleIo::Direct || !impl_->reader.is_open()) return {};
     const strata::ngram::ReaderStats s = impl_->reader.snapshot();
