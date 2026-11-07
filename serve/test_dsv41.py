@@ -212,8 +212,8 @@ class Parser(unittest.TestCase):
     TOOLS = [WEATHER["function"], {"name": "lookup", "description": "", "parameters": {
         "type": "object", "properties": {"id": {}}}}]
 
-    def run_parser(self, text, thinking=True, step=7, cls=DsmlOutputParser):
-        p = cls(thinking=thinking, tools=self.TOOLS, stream_tools=True)
+    def run_parser(self, text, thinking=True, step=7, cls=DsmlOutputParser, tools=None):
+        p = cls(thinking=thinking, tools=tools or self.TOOLS, stream_tools=True)
         evs = []
         for i in range(0, len(text), step):
             evs += p.feed(text[i:i + step])
@@ -236,6 +236,21 @@ class Parser(unittest.TestCase):
         self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [{"id": "007"}])
         evs = self.run_parser(call(("lookup", [("id", "7", False)])), thinking=False)
         self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [{"id": 7}])
+
+    def test_a_string_value_stays_a_string_when_the_call_writes_an_accepted_short_name(self):
+        """The parser reads `tools.lookup` (#4751) as `lookup`, the bare member of a declared `ns.lookup` as that tool, and the
+        last segment of `mcp__a__lookup` (#5281) as that tool; the string marker belongs to the declared tool's parameter."""
+        def one(name):
+            return [{"name": name, "parameters": {"type": "object", "properties": {"id": {}}}}]
+        for tools, written, declared in ((None, "tools.lookup", "lookup"), (one("ns.lookup"), "lookup", "ns.lookup"),
+                                         (one("mcp__a__lookup"), "lookup", "mcp__a__lookup")):
+            for step in (1, 3, 1000):
+                with self.subTest(written=written, step=step):
+                    evs = self.run_parser(call((written, [("id", "123", True)])), thinking=False, step=step, tools=tools)
+                    self.assertEqual([(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"], [(declared, {"id": "123"})])
+                    self.assertEqual("".join(e.text for e in evs if e.kind == "tool_args"), '{"id":"123"}')
+                    evs = self.run_parser(call((written, [("id", "123", False)])), thinking=False, step=step, tools=tools)
+                    self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [{"id": 123}])
 
     def test_a_non_string_value_is_json(self):
         evs = self.run_parser(call(("lookup", [("id", '{"a": [1, 2]}', False)])), thinking=False)
