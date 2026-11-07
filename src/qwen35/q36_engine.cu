@@ -1153,6 +1153,10 @@ struct Engine {
         *sg, *su, *shh, *sy, *sgate, *ewts, *logits;
     float* hmain = nullptr;   // [tmax][N] the main model's final normed hidden of each row (the MTP seeds)
     float* hlast = nullptr;   // [N] that of the last processed position (zeros before the first): the current session's
+    // super-chunk: T*super_n rows live in hsuper / xsuper, the per-chunk buffers keep their tmax size
+    int super_n = 1;
+    float *xsuper = nullptr, *hsuper = nullptr;
+    int32_t *tok_super = nullptr, *pos_super = nullptr;
     void *q8, *xq, *escr;
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
     int32_t* hpin = nullptr;   // pinned staging: [0] decode token, [1] position, [2..9] picks, [10] max rows, [16..] tokens
@@ -1348,6 +1352,19 @@ struct Engine {
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
         x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N);
+        if (const char* v = std::getenv("STRATA_Q36_SUPER_CHUNK")) super_n = std::max(1, std::min(64, std::atoi(v)));
+        if (super_n > 8) {   // xsuper + hsuper take 32 MiB per 2048-token chunk, 2 GiB at N=64
+            std::fprintf(stderr, "strata-q36: super-chunk capped at 8 (requested %d)\n", super_n);
+            super_n = 8;
+        }
+        if (super_n > 1) {
+            xsuper = dalloc((size_t) T * super_n * N);
+            hsuper = dalloc((size_t) T * super_n * N);
+            tok_super = dalloc_t<int32_t>((size_t) T * super_n);
+            pos_super = dalloc_t<int32_t>(64);   // one start position per sub-chunk (super_n <= 64)
+            std::fprintf(stderr, "strata-q36: super-chunk %d x %zu tokens, x+h buffers %.0f MiB\n",
+                         super_n, T, 2.0 * (double) T * (double) super_n * (double) N * 4.0 / 1048576.0);
+        }
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
         qg = dalloc(T * 2 * g.n_head * g.head_dim); kx = dalloc(T * g.n_head_kv * g.head_dim);
@@ -1879,7 +1896,7 @@ struct Engine {
     /// `li` indexes the layer's state; positions *dpos .. + T - 1 (device), p0 the same on the host (eager grids);
     /// `verify`: a verify window - the GDN state is read, not written (commit() writes it for the kept rows).
     void layer(const Layer& L, size_t li, int T, int64_t p0, const int32_t* dpos, bool graph_mode, bool verify,
-               const float* wn, float* hout) {
+               const float* wn, float* hout, const uint8_t* stream_base = nullptr) {
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k, FF = (int) g.n_ff, FS = (int) g.n_ff_shexp;
         const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
@@ -2032,7 +2049,8 @@ struct Engine {
             if (lhy(li))
                 for (int x = 0; x < ne; ++x) hy[li].score[(size_t) x] += h_cnt[li * g.n_expert + x];
             const int64_t maxr = hpin[10];
-            const uint8_t* wbase = lhy(li) ? stream_take((int) li) : L.blobs;
+            const uint8_t* wbase = stream_base ? stream_base : (lhy(li) ? stream_take((int) li) : L.blobs);
+            if (profile) cudaEventRecord(prof_e, st);
             MMQ::quantize(h, ent_tok, mq_x, L.L.gu_type, N, N, n_ent, st);
             MMQ::Product gu;
             gu.w = wbase; gu.type = L.L.gu_type; gu.w_rows = 2 * FF; gu.w_cols = N; gu.expert_bytes = L.stride;
@@ -2046,7 +2064,7 @@ struct Engine {
             dn.expert_bytes = L.stride; dn.n = ne; dn.xq = mq_hq; dn.bounds = rbounds; dn.ids = ident;
             dn.total_rows = n_ent; dn.max_rows = maxr; dn.dst = eparts; dn.ld_dst = N;
             mctx->run(dn, st);
-            if (lhy(li)) stream_done();
+            if (!stream_base && lhy(li)) stream_done();
             prow = rinv;
         } else {
             group_entries(L, nullptr, T);
@@ -2096,6 +2114,59 @@ struct Engine {
                   last ? hmain : h);
         }
         if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
+    }
+
+    /// Super-chunk (STRATA_Q36_SUPER_CHUNK=N): T rows (<= super_n * tmax) are embedded and normed once, then every layer
+    /// runs its sub-chunks back to back with the layer's experts staged ONCE — stream_take is called here, not in layer.
+    /// The per-chunk buffers stay tmax-sized; only hsuper grows (N * 16 MiB per 2048 tokens), and each sub-chunk is copied
+    /// through h in and out.  The GDN recurrence and the KV writes still walk the tokens in order, so the bits do not move.
+    void forward_super(int T, int64_t p0, int chunk, int heads) {
+        const auto& g = m->g;
+        const int N = (int) g.n_embd;
+        if (profile) cudaEventRecord(prof_c, st);
+        if (main_hybrid && use_mmq) {
+            std::vector<int> seq;
+            for (size_t l = 0; l < m->layers.size(); ++l)
+                if (lhy(l)) seq.push_back((int) l);
+            stream_begin(seq);
+        }
+        K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_super, T, N, xsuper, st);
+        k_rms<<<T, kThreads, 0, st>>>(xsuper, m->layers[0].attn_norm, hsuper, N, m->eps);
+        const int nsub = (T + chunk - 1) / chunk;
+        int32_t hpos[64];
+        for (int k = 0; k < nsub && k < 64; ++k) hpos[k] = (int32_t) (p0 + (int64_t) k * chunk);
+        CK(cudaMemcpyAsync(pos_super, hpos, (size_t) std::min(nsub, 64) * 4, cudaMemcpyHostToDevice, st));
+        for (size_t l = 0; l < m->layers.size(); ++l) {
+            const bool last = l + 1 == m->layers.size();
+            // stream_take only when the streamed path is armed: stream_begin() above needs main_hybrid && use_mmq,
+            const uint8_t* sb = (main_hybrid && use_mmq && lhy(l)) ? stream_take((int) l) : nullptr;
+            const float* wn = last ? m->out_norm : m->layers[l + 1].attn_norm;
+            int k = 0;
+            for (int off = 0; off < T; off += chunk, ++k) {
+                const int Tsub = std::min(chunk, T - off);
+                // x is the running residual of the whole forward pass (layer() adds to it in place), so the
+                // per-row state has to move in and out of xsuper together with h: without this the first
+                // add_rms_post of a sub-chunk mixes in the residual of another sub-chunk (or a past request).
+                CK(cudaMemcpyAsync(x, xsuper + (size_t) off * N, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(h, hsuper + (size_t) off * N, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
+                layer(m->layers[l], l, Tsub, p0 + off, pos_super + k, false, false, wn, h, sb);
+                CK(cudaMemcpyAsync(hsuper + (size_t) off * N, h, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(xsuper + (size_t) off * N, x, (size_t) Tsub * N * 4, cudaMemcpyDeviceToDevice, st));
+            }
+            if (sb) stream_done();
+        }
+        // hmain keeps the last tmax rows of the final normed hidden: the MTP seeds and batch rows read it, and
+        // the ordinary path leaves it there (its last hout buffer is hmain).
+        const int hrows = std::min(T, chunk);
+        CK(cudaMemcpyAsync(hmain, hsuper + (size_t) (T - hrows) * N, (size_t) hrows * N * 4, cudaMemcpyDeviceToDevice, st));
+        if (heads > 0) head_rows(hsuper + (size_t) (T - heads) * N, heads, logits, pick);
+        if (profile) {
+            cudaEventRecord(prof_d, st);
+            cudaEventSynchronize(prof_d);
+            float ms = 0.f;
+            cudaEventElapsedTime(&ms, prof_c, prof_d);
+            t_total += (double) ms;
+        }
     }
     /// logits [n][V] = W_out hn rows, and each row's greedy pick.
     void head_rows(const float* hn, int n, float* lg, int32_t* pk) {
@@ -2460,6 +2531,45 @@ struct Engine {
             after_rows(1);
             on_chunk(1);
             return 1;
+        }
+        if (super_n > 1 && !img_active && n > tmax) {
+            const int64_t step = (int64_t) tmax * super_n;
+            mtab_now = nullptr;
+            map_on = false;
+            rows_deferred = false;
+            for (int64_t i = 0; i < n; i += step) {
+                const int T = (int) std::min<int64_t>(step, n - i);
+                CK(cudaStreamSynchronize(st));
+                hpin[1] = (int32_t) pos;
+                CK(cudaMemcpyAsync(tok_super, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+                CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+                forward_super(T, pos, tmax, i + T == n ? 1 : 0);
+                if (m->has_mtp && mtp_d > 0) {
+                    // the MTP block walks the same rows by sub-chunks; its seed of row q is the main model's row q-1,
+                    // which for the first row is hlast (the previous chunk's last row) and otherwise sits in hsuper
+                    const int nsub = (T + tmax - 1) / tmax;
+                    for (int k = 0; k < nsub; ++k) {
+                        const int off = k * tmax, Tsub = std::min(tmax, T - off);
+                        CK(cudaMemcpyAsync(mtp_seed(), off == 0 ? hlast : hsuper + (size_t) (off - 1) * N,
+                                           (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+                        if (Tsub > 1)
+                            CK(cudaMemcpyAsync(mtp_seed() + N, hsuper + (size_t) off * N, (size_t) (Tsub - 1) * N * 4,
+                                               cudaMemcpyDeviceToDevice, st));
+                        CK(cudaMemcpyAsync(tok_m, tok_super + off, (size_t) Tsub * 4, cudaMemcpyDeviceToDevice, st));
+                        CK(cudaMemcpyAsync(pos0_m, pos_super + k, 4, cudaMemcpyDeviceToDevice, st));
+                        forward_mtp(Tsub, pos + off, mtp_seed(), false, false);
+                    }
+                }
+                CK(cudaMemcpyAsync(hlast, hsuper + (size_t) (T - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+                pos += T;
+                CK(cudaStreamSynchronize(st));
+                if (!on_chunk(i + T)) {
+                    if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
+                    return i + T;
+                }
+            }
+            if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
+            return n;
         }
         for (int64_t i = 0; i < n; i += tmax) {
             const int T = (int) std::min<int64_t>(tmax, n - i);
