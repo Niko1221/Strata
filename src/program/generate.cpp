@@ -11416,9 +11416,12 @@ int main(int argc, char** argv) {
             // wide build holds more only for a batch of more than that: the buffer is not made larger for a run that
             // never forms a window of 9..16 rows)
             // (STRATA_PIPED_MTP: per slot its token and up to pm_drafts proposals)
+            // (STRATA_SPLIT_LONG_LOOKUP=1: the long lookup windows make windows of 9..16 rows on a single-conversation
+            // split, so its hand-off holds kVerifyLongT rows too)
             const int hrows = piped_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT, (1 + pm_drafts) * o.batch)
                             : !batch_mtp && o.batch_groups > 1 ? std::max<int>(strata::kernels::kVerifyNarrowT, o.batch)
-                            : !batch_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT,
+                            : !batch_mtp ? std::max<int>(split_long_ok ? (int) strata::kernels::kVerifyLongT
+                                                                       : strata::kernels::kVerifyNarrowT,
                                                          std::min<int>(o.batch, strata::kernels::kVerifyMaxT))
                                          : strata::kernels::kVerifyNarrowT;
             const size_t hb = (size_t) hrows * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
@@ -14032,7 +14035,8 @@ int main(int argc, char** argv) {
             });
         policy.set_sizes(lookup_size_mask(o));
         // a layer split's hand-off buffers hold kVerifyNarrowT rows: its windows stay at that
-        if (n_stages > 1) policy.set_sizes(policy.sizes() & ((2u << strata::kernels::kVerifyNarrowT) - 1u));
+        // (STRATA_SPLIT_LONG_LOOKUP=1 sized the hand-off for kVerifyLongT rows above: the split keeps the wide sizes too)
+        if (n_stages > 1 && !split_long_ok) policy.set_sizes(policy.sizes() & ((2u << strata::kernels::kVerifyNarrowT) - 1u));
         if (o.lookup_max_t > 0)
             std::fprintf(stderr, "strata serve: --lookup-max-t %d: MTP windows up to %d tokens, window sizes %s\n",
                          o.lookup_max_t, S_mtp, size_list(policy.sizes(), S).c_str());
