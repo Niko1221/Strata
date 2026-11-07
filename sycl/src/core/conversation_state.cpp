@@ -325,6 +325,12 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     l.max_kv_layers = layers + 1;
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
+    // A single-carve runtime engages an empty stage table and admits no later stages: the closed bound
+    // (session_read_max_file_bytes) then caps the file, and the parse compares the file's table against
+    // this empty one, so a split file is refused here rather than deep inside validation.  Leaving these
+    // unset leaves max_stages open and the stage-table comparison skipped.
+    l.stages = std::vector<SessionStageGeom>{};
+    l.max_stages = 0;
     l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
     l.max_kv_bytes.assign(layers + 1, {});
     for (size_t j = 0; j < layers; ++j) {
