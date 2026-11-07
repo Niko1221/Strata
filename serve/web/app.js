@@ -164,7 +164,10 @@ function spark(id, values, max) {
 }
 function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
-  $(`ms-${key}`).textContent = sub || "";
+  const el = $(`ms-${key}`);
+  // an array sub is one line per GPU, stacked vertically instead of joined with " · "
+  if (Array.isArray(sub)) el.innerHTML = sub.map((s) => esc(s)).join("<br>");
+  else el.textContent = sub || "";
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -368,6 +371,7 @@ function render(m) {
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
+  if (tab === "monitor") renderVision(m.vision);
   if (tab === "about") renderAbout(eng, hw, st);
 }
 
@@ -402,6 +406,37 @@ function renderConvCache(c) {
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+}
+
+// the image encoder: what it is (GPU or CPU, elastic or resident), whether it is up, its cache of encoded
+// pictures, and one record per encode (tokens, grid, ms) - the server's "vision" block in /metrics
+function renderVision(v) {
+  $("vision-card").hidden = !v;
+  if (!v) return;                                  // an older server, or this one has no image encoder
+  const t = v.totals || {}, cache = v.cache || {}, le = v.last_encode || {};
+  const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
+  $("vision-cache-text").textContent = `${fmt(cache.images)} / ${fmt(cache.max)}`;
+  $("vision-cache-bar").style.width = pct(cache.images, cache.max);
+  $("vision-enc-text").textContent = le.ms != null ? `${fmt(le.ms, 0)} ms last` : le.cached ? "last was a cache hit" : "–";
+  spark("sp-vision", v.encode_ms_recent);
+  const state = !v.alive ? (v.elastic ? "asleep between pictures" : "stopped")
+              : v.device === "gpu" ? "running on the GPU"
+              : `running on the CPU${v.threads ? `, ${v.threads} threads` : ""}`;
+  $("vision-sum").textContent = t.images || t.cached ? `${fmt(t.images)} encoded · ${fmt(t.cached)} from cache` : "";
+  const last = le.at ? `${since(le.at)} · ${fmt(le.tokens)} tokens${le.nx ? ` · ${le.nx}×${le.ny}` : ""}` +
+                       (le.cached ? " · cache hit" : le.ms != null ? ` · ${fmt(le.ms, 0)} ms` : "") : null;
+  facts($("vision-facts"), [
+    ["Encoder", state + (v.elastic && (v.starts || v.stops) ? ` · ${fmt(v.starts)} starts, ${fmt(v.stops)} stops` : "")],
+    ["Last picture", last],
+    ["Since start", t.images || t.cached ? `${fmt(t.images)} encoded · ${fmt(t.image_tokens)} image tokens · ` +
+      `${fmt((t.encode_ms || 0) / 1000, 1)} s encoding` : null],
+    ["Refused pictures", t.failures || null],
+    ["mmproj", v.mmproj],
+    ["Picture cap", v.max_tokens ? `${fmt(v.max_tokens)} tokens` : null],
+  ]);
+  $("vision-note").textContent = v.elastic
+    ? `The encoder starts with the first picture and stops after ${fmt(v.elastic_idle_s, 0)} s without one; while it runs, the engine keeps ${fmt(v.elastic_mib)} MiB of VRAM free for it.`
+    : "Each picture is encoded once; the same picture again comes from the cache (the last 64). The encoder runs between requests, never beside a running one.";
 }
 
 function renderTotals(t) {
@@ -479,7 +514,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
+  const per = (f) => (hw.gpus || []).map((g) => `GPU:${g.index} ${f(g)}`);
   const multi = (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
@@ -491,12 +526,16 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W",
+            multi ? per((g) => (g.power == null ? "–" : `${fmt(g.power)} W`))
+                  : (hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : ""));
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
+  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen || (hw.gpus || []).reduce((a, g) => a || g.pcie_gen, null);
+  const link = (g) => [g.pcie_gen ? `Gen${g.pcie_gen}` : "", g.pcie_width ? `x${g.pcie_width}` : ""].filter(Boolean).join(" ") || "–";
+  setMetric("pcie", gen ? `Gen${gen}` : null, multi ? "" : (hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : ""),
+            multi ? [...per(link), ...(hw.gpu_pcie_rx_mb == null ? [] : [`to GPUs ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s`])]
+                  : (hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
+            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : "")));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
   spark("sp-cpu", h.cpu, 100);
@@ -508,6 +547,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
               hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
   }
   spark("sp-disk", h.disk_read_mb);
+
+  // one tile per GPU when the PC has several cards (a motherboard's PCI bifurcation gives the slots
+  // different link widths, so each card's own load / VRAM / temp / power / PCIe is worth its own card)
+  renderGpuCards(hw);
 
   // context fill: the running request, else the last one
   const ctx = eng.max_context || 0;
@@ -563,6 +606,27 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 function facts(el, rows) {
   el.innerHTML = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
     `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="Copy">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
+}
+
+// one tile per GPU (issue: per-GPU Monitor tile). Shown only when the PC has more than one card - a single
+// card is already covered by the GPU load / VRAM / temp / power / PCIe tiles above.
+function renderGpuCards(hw) {
+  const el = $("gpu-cards");
+  const gpus = hw.gpus || [];
+  if (gpus.length < 2) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  el.innerHTML = gpus.map((g) => {
+    const link = [g.pcie_gen ? `Gen${g.pcie_gen}` : "", g.pcie_width ? `x${g.pcie_width}` : ""].filter(Boolean).join(" ");
+    const rows = [
+      ["Load", g.util == null ? null : `${fmt(g.util)}%`],
+      ["VRAM", g.mem_used == null ? null : `${gb(g.mem_used)}${g.mem_total ? ` / ${gb(g.mem_total, 0)} GB` : " GB"}`],
+      ["Temp", g.temp == null ? null : `${fmt(g.temp)}°C`],
+      ["Power", g.power == null ? null : `${fmt(g.power)} W`],
+      ["PCIe", link || null],
+    ];
+    return `<div class="st-card gpu-tile"><div class="req-head"><span class="card-title">${esc(g.name || `GPU:${g.index}`)}</span></div>` +
+           `<dl class="facts">${rows.filter((r) => r[1] != null).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></div>`;
+  }).join("");
 }
 // INFO cvec=project:4-44[:singleL] | add:A-B | 0
 function projectionText(c) {
@@ -1219,10 +1283,10 @@ async function generateReply() {
 
   const body = {model: health.model, messages: apiMessages(), stream: true,
                 reasoning_effort: settings.thinking};
-  if (!(settings.temperature > 0)) {
-    body.temperature = 0;
-  } else if (!samplingUntouched(settings)) {
+  if (settings.temperature > 0) {
     Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
+  } else {
+    body.temperature = 0;
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
@@ -1464,9 +1528,8 @@ async function loadShared() {
   $("s-share").setAttribute("aria-checked", String(sharedOn));
 }
 function sharedDefaults(s) {
-  const d = {reasoning_effort: s.thinking};
-  if (!(+s.temperature > 0)) d.temperature = 0;
-  else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
+  const d = {reasoning_effort: s.thinking, temperature: +s.temperature};
+  if (+s.temperature > 0) Object.assign(d, {top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
   if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
