@@ -54,7 +54,7 @@ class Entrypoint(unittest.TestCase):
         self.script.write_text(text, encoding="utf-8")
 
     def env(self, **extra):
-        env = {k: v for k, v in os.environ.items() if k not in ("MODEL", "API_KEY", "CONTEXT", "VISION", "TUNE", "PORT", "GPU", "GPUS")}
+        env = {k: v for k, v in os.environ.items() if k not in ("MODEL", "API_KEY", "CONTEXT", "VISION", "DRAFTING", "TUNE", "PORT", "GPU", "GPUS")}
         env.update(STUB_LOG=str(self.log), STRATA_CPUINFO=str(self.tmp / "cpuinfo"), **extra)
         (self.tmp / "cpuinfo").write_text("flags : fpu avx2 sse4_2\n")
         return env
@@ -103,6 +103,26 @@ class Entrypoint(unittest.TestCase):
         self.assertIn("--model Q2_0", line)
         self.assertNotIn("--tune", line)
         self.stop(p)
+
+    def test_drafting_is_passed_on_and_saved_into_the_preset(self):
+        p = self.start(STUB_PRESET="1", DRAFTING="DFLASH2")
+        try:
+            line = self.launch_line(self.wait_for("--show-key"))
+            self.assertIn("--drafting dflash2", line)
+            self.assertIn("--preset docker", line)
+            self.assertIn("--save-preset docker", line)
+        finally:
+            self.stop(p)
+
+    def test_no_drafting_reuses_the_preset_without_saving_it(self):
+        p = self.start(STUB_PRESET="1")
+        try:
+            line = self.launch_line(self.wait_for("--show-key"))
+            self.assertIn("--preset docker", line)
+            self.assertNotIn("--drafting", line)
+            self.assertNotIn("--save-preset", line)
+        finally:
+            self.stop(p)
 
     def test_untuned_preset_is_tuned_and_retune_forces_it(self):
         p = self.start(STUB_PRESET="1", TUNE="quick")

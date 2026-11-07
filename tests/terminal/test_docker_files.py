@@ -122,7 +122,7 @@ class Compose(unittest.TestCase):
             self.assertEqual(svc["shm_size"], "2gb", name)
             self.assertEqual(svc["stop_grace_period"], "2m", name)
             self.assertTrue(svc["ports"][0].startswith("${STRATA_BIND:-127.0.0.1}:"), f"{name}: the port must default to this computer only")
-            for var in ("MODEL", "MODEL_PATH", "CONTEXT", "PARALLEL", "VISION", "TUNE", "API_KEY"):
+            for var in ("MODEL", "MODEL_PATH", "CONTEXT", "PARALLEL", "DRAFTING", "VISION", "TUNE", "API_KEY"):
                 self.assertIn(var, svc["environment"], f"{name}: {var}")
             self.assertIn("strata-data", self.load(name)["volumes"], name)
 
@@ -196,6 +196,42 @@ class LegacyModelsGuard(unittest.TestCase):
     def test_the_entry_point_runs_the_guard_before_any_flag_is_built(self):
         entry = (DOCKER / "entrypoint.sh").read_text(encoding="utf-8")
         self.assertLess(entry.index('legacy_models_guard "$model_path"'), entry.index('--model "$MODEL"'))
+
+
+@unittest.skipIf(SH is None, "needs sh")
+class DraftingSetting(unittest.TestCase):
+    def run_setting(self, value):
+        import os
+        entry = (DOCKER / "entrypoint.sh").read_text(encoding="utf-8")
+        block = entry.split('if [ -n "${DRAFTING:-}" ]; then', 1)[1].split('\nif [ -n "${VISION:-}" ]; then', 1)[0]
+        script = ('set -u\ndie() { printf "%s\n" "$1" >&2; exit "$2"; }\n'
+                  'set -- launch --no-tui; have=""\nif [ -n "${DRAFTING:-}" ]; then' + block
+                  + '\nprintf "arg=%s\n" "$@"\nprintf "have=%s\n" "$have"\n')
+        env = dict(os.environ)
+        env.pop("DRAFTING", None)
+        if value is not None:
+            env["DRAFTING"] = value
+        return subprocess.run([SH, "-c", script], env=env, capture_output=True, text=True)
+
+    def test_each_choice_is_passed_on_in_lower_case(self):
+        for value in ("auto", "mtp", "dflash2", "off", "DFLASH2", "MTP"):
+            with self.subTest(value=value):
+                done = self.run_setting(value)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(done.stdout.splitlines(), ["arg=launch", "arg=--no-tui", "arg=--drafting", "arg=" + value.lower(), "have=1"])
+
+    def test_unset_or_empty_adds_nothing(self):
+        for value in (None, ""):
+            done = self.run_setting(value)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(done.stdout, "arg=launch\narg=--no-tui\nhave=\n")
+
+    def test_a_wrong_value_stops_the_start(self):
+        for value in ("dflash", "mtp --other-flag", " "):
+            done = self.run_setting(value)
+            self.assertEqual(done.returncode, 2)
+            self.assertIn("is not one of auto, mtp, dflash2, off", done.stderr)
+            self.assertEqual(done.stdout, "")
 
 
 class Document(unittest.TestCase):

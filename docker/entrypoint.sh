@@ -15,6 +15,7 @@
 #   PARALLEL      requests answered at the same time, 1 to 8 (empty: fit to the card; DeepSeek: one at a time)
 #   VISION        off | on | gpu | cpu  (pictures; the picture reader file is downloaded with the model)
 #   KV            int8 | q4_0 | k8v4 | fp16  (conversation memory format)
+#   DRAFTING      auto | mtp | dflash2 | off  (which drafter guesses ahead; empty: the saved choice, else auto)
 #   GPU / GPUS    card numbers, e.g. 0 or 0,1 (empty or "all": the engine's choice)
 #   GPU_ROLES     a role for each card, e.g. 1=main,0=helper (main, helper or off; cards you do not name are off; not together with GPU / GPUS)
 #   TUNE          quick | thorough | skip   (done once; RETUNE=1 tunes again)
@@ -193,6 +194,14 @@ legacy_models_guard "$model_path" "${STRATA_LEGACY_MODELS:-/data/models}"
 [ -n "${CONTEXT:-}" ]     && { set -- "$@" --context "$CONTEXT"; have=1; }
 [ -n "${PARALLEL:-}" ] && [ "${PARALLEL}" != "auto" ] && { set -- "$@" --parallel "$PARALLEL"; have=1; }
 [ -n "${KV:-}" ]          && { set -- "$@" --kv "$KV"; have=1; }
+if [ -n "${DRAFTING:-}" ]; then
+  drafting=$(printf '%s' "$DRAFTING" | tr 'A-Z' 'a-z')
+  case "$drafting" in
+    auto|mtp|dflash2|off) ;;
+    *) die "DRAFTING=$DRAFTING is not one of auto, mtp, dflash2, off." 2 ;;
+  esac
+  set -- "$@" --drafting "$drafting"; have=1
+fi
 if [ -n "${VISION:-}" ]; then
   case "$(printf '%s' "$VISION" | tr 'A-Z' 'a-z')" in
     off|no|false|0) v=off ;; on|yes|true|1) v=on ;; gpu) v=gpu ;; cpu) v=cpu ;;
