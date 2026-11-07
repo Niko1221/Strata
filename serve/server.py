@@ -83,6 +83,7 @@ from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
+from serve import conv_router as conv_route_mod  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -1601,6 +1602,51 @@ class StrataEngine:
             yield
         finally:
             ctl.release()
+
+    def tune(self, settings: dict, timeout: float = 60.0) -> dict:
+        """Retune the RUNNING engine between requests: no restart, no weight reload, no session reset.
+
+        -> {"applied": {key: value}, "refused": ["key=value", ...]}.  Raises ValueError when the engine refuses the
+        whole line and EngineDied when it is gone.  The caller holds the service's FIFO, as for vram(): every key
+        the engine accepts is read out of its options at the moment it is used, and a TUNE line only arrives
+        between requests (see handle_tune in src/program/generate.cpp for the set).
+        """
+        if not self.alive():
+            raise EngineDied("the engine is not running")
+        parts = []
+        for k, v in settings.items():
+            key = str(k).strip().lstrip("-").replace("-", "_")
+            if isinstance(v, bool):
+                v = int(v)
+            parts.append(f"{key}={v}")
+        if not parts:
+            raise ValueError("tune() needs at least one setting")
+        self.proc.stdin.write("TUNE " + " ".join(parts) + "\n")
+        self.proc.stdin.flush()
+        deadline = time.time() + timeout
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.1, deadline - time.time()))
+            except queue.Empty:
+                raise EngineDied("the engine did not answer the TUNE command") from None
+            if line is None:
+                raise EngineDied("the engine ended")
+            line = line.strip()
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip() or "the engine refused the TUNE command")
+            if line.startswith("TUNED"):
+                head, _, tail = line[5:].strip().partition("refused:")
+                applied: dict = {}
+                for kv in head.split():
+                    k, _, v = kv.partition("=")
+                    if not k or not v:
+                        continue
+                    try:
+                        applied[k] = int(v) if v.lstrip("-").isdigit() else float(v)
+                    except ValueError:                      # e.g. a note glued to the value
+                        applied[k] = v
+                refused = [t for t in tail.replace("(", " ").replace(")", " ").split() if "=" in t]
+                return {"applied": applied, "refused": refused}
 
     def vram(self, reserve_mib: int | None, timeout: float = 120.0) -> dict:
         with self._exclusive_control():
@@ -4798,6 +4844,12 @@ class Service:
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
         self.fifo = threading.Lock()
+        # Conversation-cache routing by traffic shape (off | shadow | on; see serve/conv_router.py).  Single-shot runs
+        # never reuse a context, so parking one costs them the ~4-10 % of prefill measured on an Arc Pro B70 while a
+        # repeated context still reuses (5.3 s -> 0.3 s).  Needs an engine that can retune in place (engine.tune()).
+        self.conv_route = "off"
+        self.conv_router = None                     # set by set_conv_route()
+        self.conv_route_stats = {"switches": 0, "refused": 0, "last": ""}
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -5393,6 +5445,78 @@ class Service:
 
     vram_wait_s = 300.0                                  # #533: how long POST /v1/vram waits for a running request
 
+    def set_conv_route(self, mode: str, cache_on: int = 6, batch_after: int = 4) -> None:
+        self.conv_route = mode if mode in ("off", "shadow", "on") else "off"
+        self.conv_router = (conv_route_mod.Router(cache_on=max(1, int(cache_on)), batch_after=max(1, int(batch_after)))
+                            if self.conv_route != "off" else None)
+        if self.conv_router is not None:
+            print(f"[strata] conv route: {self.conv_route} (prompt_cache {self.conv_router.cache_on}, "
+                  f"batch after {self.conv_router.batch_after} single-shot requests)", flush=True)
+
+    def conv_route_report(self) -> dict:
+        if self.conv_router is None:
+            return {"mode": self.conv_route}
+        return {"mode": self.conv_route, **self.conv_router.report(), **self.conv_route_stats}
+
+    def conv_route_decide(self, req) -> None:
+        """Classify this request and, in `on` mode, retune the engine's prompt cache BEFORE it runs.
+
+        `shadow` only logs.  A switch needs the FIFO, so a retune that cannot get it inside 1 s is skipped (counted
+        in `refused`) rather than delaying this request behind another one.  The engine applies prompt_cache between
+        requests, so the value this request runs with is the one just written.
+        """
+        if self.conv_router is None or not isinstance(req, dict):
+            return
+        decision = self.conv_router.decide(req.get("messages"), req.get("tools"))
+        if decision.changed and self.conv_route == "shadow":
+            if self.conv_route_stats["last"] != str(decision):
+                self.conv_route_stats["last"] = str(decision)
+                print(f"[strata] conv route: would switch to {decision}", flush=True)
+            return
+        if not decision.changed or self.conv_route != "on":
+            return
+        try:
+            reply = self.tune({"prompt_cache": decision.wanted_cache}, wait_s=1.0)
+        except (ModelBusy, ValueError, EngineDied) as e:
+            self.conv_router.revert()               # the engine still has the previous value
+            self.conv_route_stats["refused"] += 1
+            print(f"[strata] conv route: retune skipped ({type(e).__name__}: {e})", flush=True)
+            return
+        if "prompt_cache" in (reply.get("applied") or {}):
+            self.conv_route_stats["switches"] += 1
+            print(f"[strata] conv route: {decision}", flush=True)
+        else:
+            self.conv_router.revert()
+            self.conv_route_stats["refused"] += 1
+
+    def tune(self, settings: dict, wait_s: float = 5.0) -> dict:
+        """Change settings of the RUNNING engine between requests (no restart, no weight reload, no session reset).
+
+        -> {"applied": {...}, "refused": [...]}.  A request that is running finishes first; ModelBusy when none of
+        the 5 s wait was free (the conversation-cache router treats that as "no switch this time").  The engine
+        refuses keys that size memory at load - `refused` says which, per key.
+        """
+        if not hasattr(self.engine, "tune"):
+            raise ValueError("this engine cannot retune in place")
+        if not self.loaded():
+            raise ValueError("the model is not loaded")
+        if not self.fifo.acquire(timeout=wait_s):
+            raise ModelBusy("a request is still running; try again when it has finished")
+        # parallel requests do not hold the fifo: take the engine's control line too, as vram() does
+        ctl = getattr(self.engine, "ctl", None) if getattr(self.engine, "batch", 0) else None
+        if ctl is not None and not ctl.acquire(timeout=wait_s):
+            self.fifo.release()
+            raise ModelBusy("a request is still running; try again when it has finished")
+        if ctl is not None:
+            self.engine._ctl_held = True            # engine.tune() must not wait for the lines this call holds
+        try:
+            return self.engine.tune(settings)
+        finally:
+            if ctl is not None:
+                self.engine._ctl_held = False
+                ctl.release()
+            self.fifo.release()
+
     def vram(self, reserve_mib: int | None) -> dict:
         """#533, POST /v1/vram: keep `reserve_mib` of VRAM free for other programs (None: the reserve the engine
         started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
@@ -5774,6 +5898,7 @@ class Service:
         images = self.vision is not None
         return {
             "service": "strata", "model": self.model,
+            "conv_route": self.conv_route_report(),
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
             "structured_output": {"formats": ["json_object", "json_schema"], "method": "prompt_and_validate",
                                   "constrained_decoding": False, "stream_buffered": True},
@@ -8296,7 +8421,21 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
+                if path == "/v1/tune":                       # change settings of the running engine, between requests
+                    if not self._own_page("the engine settings can be changed"):
+                        return
+                    settings = req.get("settings")
+                    if not isinstance(settings, dict) or not settings:
+                        raise ValueError("settings: an object of key: value, e.g. {\"spec_min_p\": 0.4}")
+                    try:
+                        self._json(200, svc.tune(settings))
+                    except ModelBusy as e:
+                        self._json(409, {"error": {"type": "busy", "message": str(e)}})
+                    except EngineDied as e:
+                        self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                    svc.conv_route_decide(req)          # may retune prompt_cache for this traffic shape
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -9991,6 +10130,14 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                     help="data-parallel replicas (opt-in): cut the \"gpu\" list into N equal groups and run one engine on "
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
+    ap.add_argument("--conv-route", choices=["off", "shadow", "on"], default=None,
+                    help="switch the engine's prompt/conversation cache per traffic shape: a run of single-shot "
+                         "requests does not reuse, so the cache is switched off (measured: prefill +10.1 % on 3.5 k "
+                         "code, +4.0 % on 4.0 k prose; short single-shot TTFT 0.523 s -> 0.239 s), and a repeated "
+                         "context still reuses (5.3 s -> 0.3 s once a conversational request switches it back on). "
+                         "'shadow' only logs what it would do (serve/conv_router.py)")
+    ap.add_argument("--conv-route-batch-after", type=int, default=4,
+                    help="consecutive single-shot requests before the cache is switched off (default 4)")
     ap.add_argument("--split-serve", default=None, metavar="PREFILL,DECODE",
                     help="split serving (opt-in): one engine on card PREFILL reads the prompt, a second on card DECODE makes "
                          "the answer, the session handed over in RAM (also \"split_serve\" in the config: "
@@ -10256,6 +10403,16 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if _dsp is not None:
             svc.vision = _dsp
             print("[strata] pictures: on (DeepSeek-V4.1 reads them with the engine's own vision tower; --vision off turns them off)", flush=True)
+    _pc = 6                                     # the cache the router switches is the one the engine started with
+    _args = cfg.get("args") or []
+    if "--prompt-cache" in _args:
+        try:
+            _pc = int(_args[_args.index("--prompt-cache") + 1])
+        except (IndexError, ValueError):
+            _pc = 6
+    _cr = cfg.get("conv_route")
+    svc.set_conv_route(a.conv_route or (_cr if isinstance(_cr, str) else "") or "off",
+                       cache_on=_pc, batch_after=a.conv_route_batch_after)
     svc.offline = a.offline
     svc.max_queue = max_queue
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
