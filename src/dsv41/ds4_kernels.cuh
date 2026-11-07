@@ -186,7 +186,9 @@ void ring_restore_batch(const RingBatch& b, int64_t p0, int n, int keep, int T, 
 /// Engram.  rows: n rows of hd values -> out F32 [n * hd].  fmt, the pack's row layout: 0 FP8 E4M3 values with E8M0
 /// scales (scales: n x (hd / 32)); 1 ggml Q6_K superblocks (hd / 256 of 210 bytes at the start of each row's hd bytes;
 /// no scales), decoded as ggml's dequantize_row_q6_K; 2 ggml IQ4_NL blocks (hd / 32 of 18 bytes, an fp16 d and 16
-/// nibble bytes at the start of each row's hd bytes; no scales), decoded as ggml's dequantize_row_iq4_nl.
+/// nibble bytes at the start of each row's hd bytes; no scales), decoded as ggml's dequantize_row_iq4_nl; 4 ggml Q5_K
+/// superblocks (hd / 256 of 176 bytes at the start of each row's hd bytes; no scales), decoded as ggml's
+/// dequantize_row_q5_K.
 void engram_dequant(const uint8_t* rows, const uint8_t* scales, int n, int hd, float* out, cudaStream_t s, int fmt = 0);
 /// The same over the host's per-token layout (a chunk): token t's cols rows, then their scales, `per` bytes a token;
 /// T tokens -> out F32 [T * cols][hd].

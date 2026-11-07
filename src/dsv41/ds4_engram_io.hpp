@@ -92,7 +92,7 @@ private:
 
 /// One row to fetch: its bytes to dst, its scales to scales.  mx8: n bytes at off of a file, [scale, 32 codes] blocks
 /// (a GGUF's MXFP8 row); else n row bytes at off and n2 scale bytes at off2 of file2 (two reads; n2 0: none - a GGUF's
-/// Q6_K or IQ4_NL row, their scales inside their n bytes: 210 a 256 values, 18 a 32).
+/// Q6_K, Q5_K or IQ4_NL row, their scales inside their n bytes: 210 a 256 values, 176 a 256, 18 a 32).
 struct EgRead {
     int file = -1;
     uint64_t off = 0;
