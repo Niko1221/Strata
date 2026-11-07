@@ -30,7 +30,11 @@ def schema_to_grammar(exe_dir, schema: dict, *, tool_value=False, forbidden_sequ
     """Convert a schema. Tool-value mode preserves the template's unquoted root strings and rejects
     unsupported string constraints instead of allowing a prompt-path fallback to weaken them."""
     key = schema_text(schema)
-    cache_key = (key, bool(tool_value), forbidden_sequence or "")
+    # The converter is looked up beside the engine binary, and different engines can carry different
+    # builds - or none at all - so the directory is part of the key. Without it a text converted for one
+    # engine answered a request for an engine that has no converter, and the fail-closed error (and with
+    # it the fallback to the prompt path) depended on which request came first.
+    cache_key = (str(exe_dir), key, bool(tool_value), forbidden_sequence or "")
     with _lock:
         if cache_key in _cache:
             _cache.move_to_end(cache_key)
