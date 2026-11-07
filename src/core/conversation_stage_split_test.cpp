@@ -128,6 +128,10 @@ struct Split {
     Split() {
         g.n_layers = 8;
         g.ssm_state_size = 2; g.ssm_v_heads = 2; g.ssm_conv_channels = 8;
+        // The conversation_snapshot_test hook, same purpose: a GDN state over 1 MiB makes the opt-in background
+        // checkpoint copy (STRATA_CKPT_ASYNC) real, which is what the _ckpt_async ctest variant of this battery
+        // runs the split capture through.
+        if (std::getenv("STRATA_TEST_BIG_GDN")) { g.ssm_state_size = 64; g.ssm_v_heads = 64; }
         qsa[0] = stage0.state; qsa[1] = stage1.state;
         ss0.max_cells = 96; ss0.qsa_states = qsa.data(); ss0.qsa_ord0 = 0; ss0.qsa_alloc = 1;
         ss0.gdn_ord0 = 0; ss0.gdn_alloc = 3; ss0.layer_lo = 0; ss0.layer_hi = 4;
@@ -236,6 +240,7 @@ void split_battery(const std::vector<bool>& draft_of) {
         ConversationCheckpoint fresh;   // stage 1 captured directly: the same live bytes, byte for byte
         fresh.ids = sp.ids;
         check(conversation_checkpoint_save(fresh, sp.ss1, sp.g, sp.err), "direct stage 1 capture");
+        conversation_checkpoint_join(fresh.gdn.data());   // STRATA_CKPT_ASYNC: this save's copy is still in flight
         check(part.gdn == fresh.gdn && part.ple == fresh.ple && part.tails == fresh.tails &&
               part.dead == fresh.dead && part.block_pos == fresh.block_pos, "the part holds stage 1's own bytes");
         check(part.gdn != meta.live.gdn, "the two carves really are different state");
@@ -373,6 +378,7 @@ void split_battery(const std::vector<bool>& draft_of) {
             ConversationCheckpoint post0, post1; post0.ids = back.live.ids; post1.ids = back.live.ids;
             check(conversation_checkpoint_save(post0, dst.ss0, dst.g, sp.err) &&
                   conversation_checkpoint_save(post1, dst.ss1, dst.g, sp.err), "recaptured after the refusal");
+            conversation_checkpoint_join(post1.gdn.data());   // the pair's last save is the live one
             check(post0.gdn == pre0.gdn && post0.tails == pre0.tails && post1.gdn == pre1.gdn &&
                   post1.block_pos == pre1.block_pos, "the refusal wrote no state into either carve");
             std::vector<ConversationKv> post_kv(3);
@@ -409,6 +415,7 @@ void split_battery(const std::vector<bool>& draft_of) {
             ConversationCheckpoint got0, got1; got0.ids = back.live.ids; got1.ids = back.live.ids;
             check(conversation_checkpoint_save(got0, dst.ss0, dst.g, sp.err) &&
                   conversation_checkpoint_save(got1, dst.ss1, dst.g, sp.err), "recaptured from the fresh carves");
+            conversation_checkpoint_join(got1.gdn.data());   // same rule: the last save of the pair is still in flight
             check(got0.gdn == back.live.gdn && got0.ple == back.live.ple && got0.tails == back.live.tails &&
                   got0.dead == back.live.dead && got0.block_pos == back.live.block_pos,
                   "stage 0's running state round-trips");
