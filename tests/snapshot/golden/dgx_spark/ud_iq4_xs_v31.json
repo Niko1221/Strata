@@ -252,7 +252,15 @@
   "app_plain": {
    "entry": "app_plain",
    "command": "plain Load unsloth-ud-iq4_xs-v31",
-   "fetches": [],
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "cuda",
+     "gb": 0.34
+    }
+   ],
    "control_calls": [
     {
      "call": "draftingPlan",
@@ -265,6 +273,27 @@
       "gb": 0.34,
       "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
       "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "dflash2",
+      "drafter": "dflash2",
+      "gb": 0,
+      "line": "Drafting: DFlash2",
+      "note": "",
       "split": false,
       "mtp_needed": false,
       "mtp_here": true
@@ -337,30 +366,32 @@
      "auto",
      "--prefill",
      "auto:32768",
-     "--spec",
-     "4",
-     "--spec-min-p",
-     "0.5",
-     "--mtp",
-     "<ROOT>/data/mtp/rt",
      "--max-context",
      "131072",
      "--kv",
      "int8",
      "--mmap-experts",
-     "--mtp-q4",
-     "all",
-     "--mtp-hnorm",
-     "stream",
      "--resident-budget-gib",
-     "48"
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.35"
     ],
     "env_set": {
      "STRATA_GDN_CONVL2": "2",
      "STRATA_GDN_TC": "1"
     },
     "notes": [
-     "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
    }
   },

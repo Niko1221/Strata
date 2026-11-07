@@ -117,6 +117,32 @@ test('a plain load fetches the tuned drafter with the 12 hour rule, then plans a
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+/* CLEAN-1A (owner 11-07): the plain Load follows Auto everywhere. Where Auto's drafter is the standard DFlash2 pack (Intel Arc, UD-Q4_K_XL on NVIDIA 72 GB / 12 GB and the Spark), Control says `needed` without `tuned_needed`; the app fetches it just the same, asking Control. */
+const STOCK_PLAN = { ...TUNED_PLAN, tuned_needed: false, tuned: false, gb: 1.2, drafter_gb: 1.2 };
+const stockAfterFetch = (_o, state) => (state.fetchCalls.length ? { ...STOCK_PLAN, needed: false, gb: 0 } : STOCK_PLAN);
+
+test('a plain load fetches the standard DFlash2 drafter too when that is what Auto runs', async () => {
+  const f = fixture({ plan: stockAfterFetch });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, load(f).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.state.fetchCalls.length, 1);
+    assert.equal(f.state.fetchCalls[0].mode, 'auto');
+    assert.equal(f.state.fetchCalls[0].throttle, true);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('a plain load fetches nothing when Auto needs no download', async () => {
+  const f = fixture({ plan: () => ({ ...STOCK_PLAN, needed: false, gb: 0 }) });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, load(f).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.state.fetchCalls.length, 0);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
 test('the Models screen own Load keeps its un-throttled fetch and does not fetch twice', async () => {
   const f = fixture({ plan: planAfterFetch });
   try {
@@ -229,6 +255,6 @@ test('a restart of the stopped models fetches it before the start, and so does e
   assert.match(restart, /await autoDrafterFor\(job,instance\.model,[^)]*\);[\s\S]*await control\.start\(instance\.profile/, 'before the engine starts again');
   const tune = source.slice(source.indexOf('async function autotune'), source.indexOf('function operation'));
   assert.match(tune, /await autoDrafterFor\(job,args\.model,/);
-  assert.match(source, /if\(args\.values\?\.drafting===undefined&&drafts\?\.tuned_needed===true\)\{const got=await fetchAutoDrafter\(/, 'a plain load');
+  assert.match(source, /if\(args\.values\?\.drafting===undefined&&drafts\?\.needed===true\)\{const got=await fetchAutoDrafter\(/, 'a plain load');
   assert.match(source, /!autoChoice\(readJson\(configFile\)\.drafting\)\)return false/, 'a saved choice wins');
 });

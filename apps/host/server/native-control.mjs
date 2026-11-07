@@ -337,11 +337,11 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   try{return await use(planFile);}
   finally{if(temporary){try{rmSync(temporary,{force:true});}catch{/* best effort */}}}
  }
- /* Auto and the tuned drafter, on every path that starts a model: a plain load, a restart of the stopped models and a tuning run fetch it as the Models screen's own Load does (Control: pinned, checked, marked, licence and notice), but they were not asked for it, so
+ /* Auto and its drafter (the tuned one where the set has one, else the standard DFlash2 drafter: whatever Control's Auto plan says is `needed`), on every path that starts a model: a plain load, a restart of the stopped models and a tuning run fetch it as the Models screen's own Load does (Control: pinned, checked, marked, licence and notice), but they were not asked for it, so
     the 12 hour rule of the Terminal's launch applies (--throttle: a feed that had nothing a short while ago is not asked again, a feed that does not answer is not an error). A choice the person named or saved (MTP, DFlash2, off) wins: this never runs for it. */
  function autoChoice(value){return value==null||String(value).toLowerCase()==='auto';}
  async function fetchAutoDrafter(job,args,configFile,drafts,{noSplit=false,after}={}){
-  if(!packaged||typeof control.draftingFetch!=='function'||drafts?.tuned_needed!==true||!autoChoice(readJson(configFile).drafting))return false;
+  if(!packaged||typeof control.draftingFetch!=='function'||drafts?.needed!==true||!autoChoice(readJson(configFile).drafting))return false;
   job.engineAbort??=new AbortController();
   try{
    const got=await withPlanFile(args,configFile,planFile=>control.draftingFetch({configPath:planFile,mode:'auto',throttle:true,...(noSplit?{noSplit:true}:{}),...(unloadsRunning(args)?{unloading:true}:{}),signal:job.engineAbort.signal,onEvent:event=>{if(event.event==='progress'&&job.state==='running'){job.summary=event.step;job.details=event.total>1&&event.done<event.total?`${(event.done/1e9).toFixed(2)} of ${(event.total/1e9).toFixed(2)} GB`:undefined;emit();}}}));
@@ -456,7 +456,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    /* The draft layer for the split could not be had (no internet, disk): the load goes on as the 0.2.10 app did, the normal layer split with the plan DFlash2's again (the Models screen's own Load fetches that drafter below). One plain line says so. */
    if(drafts?.split===true&&drafts.mtp_needed===true){noSplit=true;job.drafterNote=job.drafterNote??'The MTP drafter could not be downloaded.';job.summary='Loading the model…';emit();drafts=await draftPlan(args,configFile,{noSplit:true});}}
   /* A plain load (the Models screen's own Load carries its choice and fetches below): Auto on a set that has the tuned drafter fetches it now, so the start uses it. Not on this computer and not reachable: the MTP or the stock drafter runs as before. */
-  if(args.values?.drafting===undefined&&drafts?.tuned_needed===true){const got=await fetchAutoDrafter(job,args,configFile,drafts,{noSplit,after:'Loading the model…'});if(job.state!=='running')return;if(got)drafts=await draftPlan(args,configFile,{noSplit});}
+  if(args.values?.drafting===undefined&&drafts?.needed===true){const got=await fetchAutoDrafter(job,args,configFile,drafts,{noSplit,after:'Loading the model…'});if(job.state!=='running')return;if(got)drafts=await draftPlan(args,configFile,{noSplit});}
   const {cfg,resources,visionPreferences,parallelChoice,parallelNote:chosenNote,dsNote}=buildConfig(args,config,drafts?.choice==='dflash2'&&drafts.needed===true&&args.values?.drafting===undefined?'mtp':drafts?.choice??null);/* (a drafter that is not here and will not be fetched by this load: the MTP runs, and the request slots stay) */
   let parallelNote=chosenNote;
   await prepareDrafter(job,args,cfg,configFile,drafts,{noSplit});if(job.state!=='running')return;

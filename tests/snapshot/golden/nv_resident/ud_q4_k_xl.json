@@ -228,7 +228,13 @@
   "app_plain": {
    "entry": "app_plain",
    "command": "plain Load unsloth-ud-q4_k_xl",
-   "fetches": [],
+   "fetches": [
+    {
+     "call": "ensure",
+     "file": "qwen3.8-flash-next-dflash2.q4_0.pack",
+     "gb": 1.2
+    }
+   ],
    "control_calls": [
     {
      "call": "draftingPlan",
@@ -241,6 +247,27 @@
       "gb": 1.2,
       "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
       "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "dflash2",
+      "drafter": "dflash2",
+      "gb": 0,
+      "line": "Drafting: DFlash2",
+      "note": "",
       "split": false,
       "mtp_needed": false,
       "mtp_here": true
@@ -277,8 +304,7 @@
      "--kv",
      "int8",
      "--resident-budget-gib",
-     "48",
-     "--batch-mtp"
+     "48"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
@@ -290,7 +316,6 @@
     "open_browser": false,
     "mcp": {},
     "fit_max_tokens": true,
-    "parallel": 3,
     "aliases": [
      "unsloth-ud-q4_k_xl"
     ],
@@ -310,37 +335,31 @@
      "auto",
      "--prefill",
      "auto",
-     "--spec",
-     "4",
-     "--spec-min-p",
-     "0.5",
-     "--mtp",
-     "<ROOT>/data/mtp/rt",
      "--max-context",
      "131072",
      "--kv",
      "int8",
      "--resident-budget-gib",
      "48",
-     "--batch-mtp",
-     "--batch",
-     "3"
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.q4_0.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.35"
     ],
     "env_set": {
-     "STRATA_BATCH_ATTN_ROWS": "1",
-     "STRATA_BATCH_GDN_GROUPS": "1",
-     "STRATA_BATCH_SELF_COMMIT": "1",
-     "STRATA_CKPT_POOL": "1",
-     "STRATA_CKPT_POOL_READY": "4",
      "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1",
-     "STRATA_QSA_SLOTS": "1",
-     "STRATA_SLOT_CKPT_MOVE": "1",
-     "STRATA_SLOT_COPY_BATCHSYNC": "1",
-     "STRATA_SLOT_COPY_DIRECT": "1"
+     "STRATA_GDN_TC": "1"
     },
     "notes": [
-     "[strata] Drafting: MTP (DFlash2 isn't available in this mode)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
    }
   },

@@ -55,6 +55,26 @@ The launch and app entry points still start from `World.base_config`, a hand-bui
 from it (all three start from the same file), but the `setup` record is the one that shows what a real install writes.  Replacing the stand-in by `config_for`'s output
 changes the launch and app goldens and is a separate decision.
 
+## The gate: one launch policy (CLEAN-1A)
+
+In every machine class x model set, `strata launch`, the app's plain Load and the app's Models-screen Load start the engine with the same arguments and the same
+environment, and ask for the same drafter downloads.  `test_entry_points_agree.py` applies the allow-list in `allowlist.py` to the golden files; the list is the
+only place a difference is allowed, and each entry has its reason.  Today:
+
+| difference | where | why |
+|---|---|---|
+| `api_key`, `aliases`, `port` (18500 / 8080), `fit_max_tokens`, `mcp` | app vs launch | the app's own serving settings |
+| `log` | app vs launch | the app's install folder, the Terminal's launch folder |
+| `engine_ready_s` | app vs launch | the app's wait for the engine; the Terminal derives its own |
+| `args_derived`, `args_written` | launch only | launch's bookkeeping copies of `args` |
+| `STRATA_DS4_SLOT_DIR` | DeepSeek, app vs launch | the saved-conversation folder lives in the install folder / the launch folder |
+| `drafting: auto` | Models-screen Load only (intended) | that Load saves the person's Drafting choice |
+
+**Request slots.**  On NVIDIA 72 GB the plain Load used to write `parallel: 3` and start `--batch 3 --batch-mtp`; that was only because it ran the MTP (no drafter had been fetched).
+Following Auto it runs DFlash2, which answers one request at a time, so the app writes no `parallel` there, as the Models-screen Load always did.  The golden files pin it:
+no app entry writes `parallel` or `--batch-mtp` in any cell.  The app's own default of several request slots (`apps/host/server/native-parallel.mjs`) is for runs that are not
+DFlash2 and is not reached in this matrix.
+
 ## Adding a class or a set
 
 Add a row to `matrix.py`, run the update command, review the new golden file.  A golden file for something not in the matrix, or a matrix cell without one, fails
