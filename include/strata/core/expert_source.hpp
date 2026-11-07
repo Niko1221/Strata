@@ -83,6 +83,7 @@ bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64
 /// and its ancestors, or v1 memory.limit_in_bytes), ~0 when there is none - what a container can never exceed.
 struct HostMemory {
     uint64_t available = 0;
+    uint64_t hugetlb_free = 0;   ///< bytes of free reserved huge pages (HugePages_Free x Hugepagesize); 0 where none are reserved
     uint64_t cgroup_limit = ~uint64_t{0};
     uint64_t commit = ~uint64_t{0};   ///< available Windows commit capacity; ~0 when not reported
 };
@@ -90,7 +91,8 @@ struct HostMemory {
 /// Linux reads `meminfo`, `self_cgroup` and the cgroup tree under `cgroup_root` (the parameters are for tests; the
 /// defaults are the real files).  cgroup v2 as before (an unreadable limit of a group that has one fails); cgroup v1's
 /// memory controller (`<root>/memory/<path>`: memory.limit_in_bytes - memory.usage_in_bytes); no cgroup line at all is
-/// MemAvailable alone.  False when the RAM cannot be determined.
+/// MemAvailable alone.  `hugetlb_free` is HugePages_Free x Hugepagesize from the same file (0 where the keys are absent
+/// or the pool is empty).  False when the RAM cannot be determined.
 bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/meminfo",
                            const std::string& self_cgroup = "/proc/self/cgroup",
                            const std::string& cgroup_root = "/sys/fs/cgroup");

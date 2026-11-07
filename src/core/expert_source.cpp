@@ -415,15 +415,25 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     // MemAvailable includes reclaimable page cache, unlike _SC_AVPHYS_PAGES.
     std::ifstream info(meminfo);
     std::string line;
-    uint64_t bytes = 0;
+    uint64_t bytes = 0, huge_pages = 0, huge_size_kb = 0;
     while (std::getline(info, line)) {
         std::istringstream fields(line);
         std::string key, unit;
         uint64_t value = 0;
-        if (fields >> key >> value >> unit && key == "MemAvailable:" && unit == "kB" &&
-            value <= std::numeric_limits<uint64_t>::max() / 1024) bytes = value * 1024;
+        if (!(fields >> key >> value)) continue;
+        fields >> unit;   // optional: HugePages_* carry plain page counts, MemAvailable carries "kB"
+        if (key == "MemAvailable:") {
+            if (unit == "kB" && value <= std::numeric_limits<uint64_t>::max() / 1024) bytes = value * 1024;
+        } else if (key == "HugePages_Free:") {
+            huge_pages = value;   // pages, not bytes: Hugepagesize scales them below (#5317)
+        } else if (key == "Hugepagesize:") {
+            if (unit == "kB" && value <= std::numeric_limits<uint64_t>::max() / 1024) huge_size_kb = value * 1024;
+        }
     }
     if (bytes == 0) return false;
+    // Free pages of one size (a second pool size needs a MAP_HUGE_<size> the arena does not ask for); 0 when no pool.
+    if (huge_pages > 0 && huge_size_kb > 0 && huge_pages <= std::numeric_limits<uint64_t>::max() / huge_size_kb)
+        m.hugetlb_free = huge_pages * huge_size_kb;
     // Account for the tightest cgroup ancestor limit when its normal mount is visible.
     // This is a point-in-time guard, not a reservation against concurrent allocations.
     std::ifstream groups(self_cgroup);
@@ -5979,7 +5989,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
         char keep_note[96] = "";
         if (ram_keep_bytes > 0)
             std::snprintf(keep_note, sizeof keep_note, ", with the %.2f GiB --ram-keep-gib asks to leave free", (double) ram_keep_bytes / gib);
-        if (arena_ram_verdict(limit_need, ~uint64_t{0}, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
+        if (arena_ram_verdict(limit_need, ~uint64_t{0}, 0, hm.cgroup_limit, fall_back_when_ram_short) != ArenaRamVerdict::Load) {
             if (fall_back_when_ram_short) {   // #4846: the caller reads the experts from the file instead of refusing
                 std::snprintf(buf, sizeof buf, "it needs %.2f GiB (with the %.2f GiB the engine's own memory and the RAM to keep take on top of it) and this process's memory limit is %.2f GiB",
                               (double) limit_need / gib, (double) (limit_need - (want + (uint64_t) blob)) / gib, (double) hm.cgroup_limit / gib);
@@ -5996,7 +6006,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             err = buf;
             return false;
         }
-        if (hm.available < need) {
+        if (hm.available < need && hm.hugetlb_free >= need) {
+            // #5317: reserved huge-page pool pages are not in MemAvailable, and this arena maps MAP_HUGETLB when a
+            // pool holds it: the pool IS the RAM for it.  No wait, no give-back, no fallback - say where it loads.
+            std::snprintf(buf, sizeof buf,
+                          "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short): the "
+                          "reserved huge-page pool has %.2f GiB free (vm.nr_hugepages), so the arena loads on 2 MB pages",
+                          (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                          (double) hm.hugetlb_free / gib);
+            ram_warning_ = buf;
+        }
+        if (hm.available < need && hm.hugetlb_free < need) {
             // #4051: the shortfall is often an engine that was still exiting (the code's own example), a few seconds
             // from giving its RAM back: wait for it, not for ever, and say so.  STRATA_ARENA_RAM_WAIT_S changes the
             // seconds (0 loads at once, as before this wait).  Still short after it (and after the give-back below): the caller's
@@ -6040,13 +6060,17 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                     }
                 }
             }
-            if (arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
+            char pool_note[80] = "";
+            if (hm.hugetlb_free > 0)
+                std::snprintf(pool_note, sizeof pool_note, ", the huge-page pool holds only %.2f GiB free",
+                              (double) hm.hugetlb_free / gib);
+            if (arena_ram_verdict(need, hm.available, hm.hugetlb_free, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
                 // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
                 // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
                 std::snprintf(buf, sizeof buf,
-                              "it needs %.2f GiB%s and %.2f GiB is available (%.2f GiB short%s)",
+                              "it needs %.2f GiB%s and %.2f GiB is available (%.2f GiB short%s%s)",
                               (double) need / gib, keep_note, (double) hm.available / gib, (double) (need - hm.available) / gib,
-                              waited > 0.0 ? ", after waiting" : "");
+                              waited > 0.0 ? ", after waiting" : "", pool_note);
                 err = buf;
                 ram_short_ = true;
                 return false;
@@ -6054,10 +6078,10 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             if (hm.available < need) {
                 std::snprintf(buf, sizeof buf,
                               "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s): the "
-                              "load may swap or be stopped by the OS%s. Close other programs, or run with less RAM: "
+                              "load may swap or be stopped by the OS%s%s. Close other programs, or run with less RAM: "
                               "--mmap-experts with --resident-budget-gib N",
                               (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
-                              waited > 0.0 ? ", after waiting" : "",
+                              waited > 0.0 ? ", after waiting" : "", pool_note,
                               hm.available < need / 2 ? " - with this little room the whole machine can stall in "
                                                         "memory reclaim until it is restarted (#4051); on Linux a "
                                                         "systemd MemoryHigh= below the RAM keeps one program from "

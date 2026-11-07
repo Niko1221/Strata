@@ -49,17 +49,21 @@ inline bool ple_lock_blocks_cache(std::optional<uint64_t> available, uint64_t ta
 /// available than it needs (after the wait for an engine still exiting, and after the engine gave back the locks it took by itself) the
 /// load pushes the host into reclaim, and a 60 GiB host was seen to stall until it was power-cycled (#4051, #4846).  The engine still
 /// starts, never refuses: it reads the experts from the file like --mmap-experts for this run and says so.
-///   Load      the RAM is there (or the arena is not priced: `need` 0)
-///   FallBack  short, and the fallback is allowed: use the --mmap-experts expert source, register nothing
-///   Warn      short, fallback not allowed (the user fixed the choice by hand): load as asked, with the warning
+/// #5317: `hugetlb_free` are the free bytes of a reserved huge-page pool (HugePages_Free x Hugepagesize).  On Linux the arena is
+/// mapped MAP_HUGETLB when such a pool holds it, and reserved pool pages are not in MemAvailable: a pool of the arena's size IS
+/// the RAM, so it loads.  A hard cgroup limit still governs (its accounting of pool pages is not the host's; untested there).
+///   Load      the RAM is there, the pool can hold the arena, or the arena is not priced (`need` 0)
+///   FallBack  short on both RAM and pool, and the fallback is allowed: use the --mmap-experts expert source, register nothing
+///   Warn      short on both, fallback not allowed (the user fixed the choice by hand): load as asked, with the warning
 ///   Refuse    a hard memory limit (a cgroup / container) below the arena, fallback not allowed: certain to be killed while loading
 enum class ArenaRamVerdict { Load, FallBack, Warn, Refuse };
 
-inline ArenaRamVerdict arena_ram_verdict(uint64_t need, uint64_t available, uint64_t hard_limit, bool fallback_allowed) {
+inline ArenaRamVerdict arena_ram_verdict(uint64_t need, uint64_t available, uint64_t hugetlb_free, uint64_t hard_limit,
+                                         bool fallback_allowed) {
     if (need == 0) return ArenaRamVerdict::Load;
     if (hard_limit < need) return fallback_allowed ? ArenaRamVerdict::FallBack : ArenaRamVerdict::Refuse;
-    if (available < need) return fallback_allowed ? ArenaRamVerdict::FallBack : ArenaRamVerdict::Warn;
-    return ArenaRamVerdict::Load;
+    if (available >= need || hugetlb_free >= need) return ArenaRamVerdict::Load;
+    return fallback_allowed ? ArenaRamVerdict::FallBack : ArenaRamVerdict::Warn;
 }
 
 /// May the engine swap the arena for the --mmap-experts source on its own?  Not when the user fixed the RAM by hand: `--ple-io ram`
@@ -120,7 +124,7 @@ inline uint64_t fallback_budget(uint64_t available, uint64_t headroom) {
 struct RamKeepPlan { bool arena; uint64_t headroom; uint64_t budget; };
 inline RamKeepPlan ram_keep_plan(uint64_t arena_need, uint64_t available, uint64_t keep, std::optional<uint64_t> env_headroom, uint64_t safety) {
     RamKeepPlan p{};
-    p.arena = arena_ram_verdict(arena_need_with_keep(arena_need, keep), available, ~uint64_t{0}, true) == ArenaRamVerdict::Load;
+    p.arena = arena_ram_verdict(arena_need_with_keep(arena_need, keep), available, 0, ~uint64_t{0}, true) == ArenaRamVerdict::Load;
     p.headroom = fallback_headroom(env_headroom, keep, safety);
     p.budget = p.arena ? 0 : fallback_budget(available, p.headroom);
     return p;
