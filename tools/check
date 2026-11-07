@@ -12,6 +12,7 @@ Runs, each in its own step with its own timeout, in a scratch folder (build tree
   host-test       apps/host: npm test (a per-test timeout, so a hang fails one test instead of the run)
   host-build      apps/host: npm run build
   snapshot        pytest tests/snapshot (the config snapshot of the four entry points; needs Node 24)
+  docs            local links in the current pages (tools/check_links.py), the release manifest and the capability table (--check)
 
 Prints one table: passed / failed / skipped / not run, per step, with the reason for every skip and every "not run".
 A step that cannot run because a tool is missing (Node, cmake, a compiler, pytest, torch) is "not run" and says which tool;
@@ -44,7 +45,7 @@ NODE_MIN = (24, 12)
 
 # step name -> default timeout in seconds (explicit, per step; --timeout-scale multiplies them)
 TIMEOUTS = {"cmake-cpu": 1800, "py-tests": 3600, "py-serve": 1800, "py-tools": 1200, "py-optional": 900,
-            "host-typecheck": 600, "host-test": 1800, "host-build": 600, "snapshot": 900}
+            "host-typecheck": 600, "host-test": 1800, "host-build": 600, "snapshot": 900, "docs": 300}
 STEPS = list(TIMEOUTS)
 
 
@@ -393,6 +394,33 @@ def step_npm(name, script, args=()):
     return run
 
 
+def step_docs(ctx):
+    """The documentation checks that need no tools but Python: links, release manifest, capability table, settings register."""
+    r = Result("docs")
+    log = ctx.scratch.path("docs.log")
+    r.log = log
+    for label, script, args in (("links", "check_links.py", ()), ("release manifest", "release_manifest.py", ("--check",)),
+                                ("capability table", "capability_table.py", ("--check",)), ("settings register", "settings_register.py", ("--check",))):
+        path = os.path.join(ROOT, "tools", script)
+        if not os.path.exists(path):
+            r.skipped += 1
+            r.skips["%s: tools/%s is not in this checkout" % (label, script)] = 1
+            continue
+        rc, secs = run_cmd([sys.executable, path, *args], ROOT, ctx.scratch.env(), ctx.timeout("docs"), log)
+        r.seconds += secs
+        if rc == 0:
+            r.passed += 1
+        else:
+            r.failed += 1
+            r.failures.append("%s (exit %s)" % (label, rc))
+    if r.failed:
+        r.status = "failed"
+        r.reason = " | ".join(l.strip() for l in tail(log, 4))[:300]
+    else:
+        r.status = "passed"
+    return r
+
+
 STEP_FUNCS = {
     "cmake-cpu": step_cmake,
     "py-tests": step_pytest("py-tests", ["tests"], ["--ignore=" + os.path.join(ROOT, "tests", "snapshot")]),
@@ -403,6 +431,7 @@ STEP_FUNCS = {
     "host-test": step_npm("host-test", "test"),
     "host-build": step_npm("host-build", "build"),
     "snapshot": step_pytest("snapshot", ["tests/snapshot"], need_node=True),
+    "docs": step_docs,
 }
 
 

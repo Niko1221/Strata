@@ -12,4 +12,5 @@ They are not statements about the current release; for that use the [current doc
 | [packaging/acceptance_matrix.py](packaging/acceptance_matrix.py) | Formats the fixed results of that rebuild into a table. It runs no checks | 15 October 2026 | cef6027dc |
 
 Open requirements found in the UI documents were copied into [apps/host/docs/BACKLOG.md](../apps/host/docs/BACKLOG.md) before the move.
+The links in archived pages are not fixed. [LINK-BASELINE.md](LINK-BASELINE.md) lists which targets are missing, per page.
 Evidence the original campaigns referred to but never published (screenshots, scratch folders) is not here; links to it are broken on purpose and say so.
