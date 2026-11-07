@@ -234,6 +234,7 @@ class World:
                 st.enter_context(mock.patch.object(telemetry, "gpu_reader", lambda *a, **k: Reader()))
             try:
                 from serve import server
+                st.enter_context(mock.patch.object(server, "parallel_stack_platform", lambda: m.os == "linux"))   # the stack switches are Linux-only: the simulated machine decides, not the host
                 st.enter_context(mock.patch.object(server, "_CARD_CLASS", [drafting.card_class(archs)]))
                 st.enter_context(mock.patch.object(server, "gpu_vram_mib", lambda gl, hip=False: {} if m.unified or vram is None else {int((gl or [0])[0]): vram}))
             except ImportError:                                  # serve needs its packages: a world without them still plans
