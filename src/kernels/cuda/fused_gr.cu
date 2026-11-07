@@ -26,6 +26,7 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <map>
 #include <vector>
 
 namespace strata::kernels {
@@ -3328,7 +3329,38 @@ struct PArgs {
     unsigned long long timeout_ticks;   // s_memrealtime ticks (100 MHz) a barrier waits before it aborts the read
     double* partd;      // STRATA_HC_PERSIST=3 (a reference only): the partial dots and sums of squares in double
     double* sspd;
+    // STRATA_HC_PERSIST_Q8=1: int8 copies of this read's weights on Q8_0's grid (the Q8 kernel only): qd [NR][D] (rows LR..
+    // the inject rows) with one fp16 scale (bits) per 32 values in sdh [NR][D / 32]; qu [D][LR] with suh [D][LR / 32]
+    const int8_t* qd;
+    const int8_t* qu;
+    const uint16_t* sdh;
+    const uint16_t* suh;
 };
+// 8 int8 codes (two 32-bit words) against 8 floats
+__device__ __forceinline__ float dot8q(const unsigned lo, const unsigned hi, const float* x) {
+    const float4* x4 = reinterpret_cast<const float4*>(x);
+    const float4 x0 = x4[0], x1 = x4[1];
+    float acc = 0.0f;
+    acc = fmaf((float) (int8_t) (lo), x0.x, acc);       acc = fmaf((float) (int8_t) (lo >> 8), x0.y, acc);
+    acc = fmaf((float) (int8_t) (lo >> 16), x0.z, acc); acc = fmaf((float) (int8_t) (lo >> 24), x0.w, acc);
+    acc = fmaf((float) (int8_t) (hi), x1.x, acc);       acc = fmaf((float) (int8_t) (hi >> 8), x1.y, acc);
+    acc = fmaf((float) (int8_t) (hi >> 16), x1.z, acc); acc = fmaf((float) (int8_t) (hi >> 24), x1.w, acc);
+    return acc;
+}
+// rows of bf16 -> int8 codes on Q8_0's grid: one fp16 scale d = amax / 127 per 32 contiguous values, q = round(x / d)
+// with the fp16-rounded d (ggml's reference rounding); a block (one warp) per (32-value group, row)
+__global__ void q8g32_rows_kernel(const uint16_t* src, int ld_src, int8_t* dst, int ld_dst, uint16_t* scl, int nseg) {
+    const int seg = blockIdx.x, row = blockIdx.y, t = threadIdx.x;
+    const float x = __uint_as_float((unsigned) src[(size_t) row * ld_src + (size_t) seg * 32 + t] << 16);
+    float m = fabsf(x);
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, shfl_xor_persist(m, o));
+    const __half dh = __float2half(m / 127.0f);
+    const float d = __half2float(dh);
+    const float inv = d > 0.0f ? 1.0f / d : 0.0f;
+    dst[(size_t) row * ld_dst + (size_t) seg * 32 + t] = (int8_t) fmaxf(-127.0f, fminf(127.0f, rintf(x * inv)));
+    if (t == 0) scl[(size_t) row * nseg + seg] = __half_as_ushort(dh);
+}
+__device__ __forceinline__ float h2f_bits(uint16_t b) { return __half2float(__ushort_as_half(b)); }
 // Returns false when the read was aborted: a block waited longer than `ticks` (the 80 blocks were not all resident - the
 // start-up check finds that out by running every T with a short timeout) or another block aborted.  Then every block
 // leaves the kernel; the outputs are not written completely and bar[48] stays set until the host clears the words.
@@ -3413,8 +3445,9 @@ __device__ __forceinline__ double dot8d(const uint4 w, const float* x) {
     }
     return acc;
 }
-template <int T, bool DP = false>
+template <int T, bool DP = false, bool Q8 = false>   // Q8: the int8 copies on Q8_0's grid (STRATA_HC_PERSIST_Q8=1)
 __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
+    static_assert(!(DP && Q8), "the double reference reads the bf16 weights");
     using A = typename std::conditional<DP, double, float>::type;
     __shared__ __align__(16) float xs[T][SL];
     __shared__ __align__(16) float lo[T][LR];
@@ -3451,6 +3484,27 @@ __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
     const int hw = tid >> 4, hl = tid & 15;
     const bool inj = a0.w_inject != nullptr;
     const int nrows = inj ? NR : LR;
+    if constexpr (Q8) {   // 16 int8 codes a lane, 8 lanes a row, 32 rows a pass
+        const int hw8 = tid >> 3, h8 = tid & 7;
+#pragma unroll 2
+        for (int r = hw8; r < nrows; r += 32) {
+            const uint4 w = __ldg(reinterpret_cast<const uint4*>(f.qd + (size_t) r * D + col0) + h8);
+            // the lane pair h8 / 2 shares one 32-value group and its scale
+            const float sc = h2f_bits(__ldg(f.sdh + (size_t) r * (D / 32) + (col0 >> 5) + (h8 >> 1)));
+            float acc[T];
+#pragma unroll
+            for (int k = 0; k < T; ++k)
+                acc[k] = (dot8q(w.x, w.y, &xs[k][h8 * 16]) + dot8q(w.z, w.w, &xs[k][h8 * 16 + 8])) * sc;
+#pragma unroll
+            for (int k = 0; k < T; ++k) {
+#pragma unroll
+                for (int o = 4; o > 0; o >>= 1) acc[k] += shfl_xor_persist(acc[k], o);
+            }
+#pragma unroll
+            for (int k = 0; k < T; ++k)
+                if (h8 == k) f.part[((size_t) k * NR + r) * NB + b] = acc[k];
+        }
+    } else
 #pragma unroll 3
     for (int r = hw; r < nrows; r += 16) {
         const uint16_t* wrow = r < LR ? a0.w_down + (size_t) r * D : a0.w_inject + (size_t) (r - LR) * D;
@@ -3534,6 +3588,24 @@ __global__ void __launch_bounds__(THREADS) persist_kernel(PArgs f) {
         A v[T];
 #pragma unroll
         for (int k = 0; k < T; ++k) v[k] = 0;
+        if constexpr (Q8) {   // the thread's 160 int8 codes = five 32-value groups, one fp16 scale each
+            const uint4* q4 = reinterpret_cast<const uint4*>(f.qu + (size_t) ui * LR + uh * 160);
+            uint4 w[10];
+#pragma unroll
+            for (int q = 0; q < 10; ++q) w[q] = __ldg(q4 + q);
+            const uint16_t* sh = f.suh + (size_t) ui * (LR / 32) + uh * 5;
+#pragma unroll
+            for (int gq = 0; gq < 5; ++gq) {
+                const float sc = h2f_bits(__ldg(sh + gq));
+#pragma unroll
+                for (int k = 0; k < T; ++k) {
+                    const float* lk = &lo[k][uh * 160] + gq * 32;
+                    const float s = (dot8q(w[2 * gq].x, w[2 * gq].y, lk) + dot8q(w[2 * gq].z, w[2 * gq].w, lk + 8)) +
+                                    (dot8q(w[2 * gq + 1].x, w[2 * gq + 1].y, lk + 16) + dot8q(w[2 * gq + 1].z, w[2 * gq + 1].w, lk + 24));
+                    v[k] = fmaf(s, sc, v[k]);
+                }
+            }
+        } else
 #pragma unroll 1
         for (int j0 = 0; j0 < 20; j0 += 5) {   // five chunks a batch (all twenty at once costs registers)
             uint4 w[5];
@@ -3581,20 +3653,31 @@ struct DevState {
     unsigned* bar = nullptr;
     int max_t = 0;      // 0: off on this card
     bool tried = false;
+    bool q8_ok = false; // STRATA_HC_PERSIST_Q8: the int8 kernel passed the start-up check on this card
 };
 DevState g_dev[64];
+// STRATA_HC_PERSIST_Q8: one read's int8 copies, keyed by its bf16 w_down (the verifier's weights on this card)
+struct Q8Set {
+    const uint16_t* wu = nullptr;
+    const uint16_t* wi = nullptr;
+    int8_t* qd = nullptr;
+    int8_t* qu = nullptr;
+    uint16_t* sdh = nullptr;   // fp16 scale bits, one per 32 values
+    uint16_t* suh = nullptr;
+};
+std::map<const uint16_t*, Q8Set> g_q8[64];
 using KFn = void (*)(PArgs);
-template <bool DP>
+template <bool DP, bool Q8 = false>
 KFn kernel_t(int T) {
     switch (T) {
-        case 1: return persist_kernel<1, DP>;
-        case 2: return persist_kernel<2, DP>;
-        case 3: return persist_kernel<3, DP>;
-        case 4: return persist_kernel<4, DP>;
-        case 5: return persist_kernel<5, DP>;
-        case 6: return persist_kernel<6, DP>;
-        case 7: return persist_kernel<7, DP>;
-        case 8: return persist_kernel<8, DP>;
+        case 1: return persist_kernel<1, DP, Q8>;
+        case 2: return persist_kernel<2, DP, Q8>;
+        case 3: return persist_kernel<3, DP, Q8>;
+        case 4: return persist_kernel<4, DP, Q8>;
+        case 5: return persist_kernel<5, DP, Q8>;
+        case 6: return persist_kernel<6, DP, Q8>;
+        case 7: return persist_kernel<7, DP, Q8>;
+        case 8: return persist_kernel<8, DP, Q8>;
     }
     return nullptr;
 }
@@ -3612,15 +3695,58 @@ constexpr unsigned long long kTicksRun = 4000000000ULL, kTicksCheck = 100000000U
 #else
 constexpr unsigned long long kTicksRun = 200000000ULL, kTicksCheck = 5000000ULL;
 #endif
-void launch(const FusedGrArgs* a, int n_tok, const DevState& st, cudaStream_t s, unsigned long long ticks) {
+void launch(const FusedGrArgs* a, int n_tok, const DevState& st, cudaStream_t s, unsigned long long ticks,
+            const Q8Set* q8 = nullptr) {
     PArgs f;
     for (int t = 0; t < n_tok; ++t) f.a[t] = a[t];
     f.part = st.part; f.ssp = st.ssp; f.bar = st.bar; f.partd = st.partd; f.sspd = st.sspd; f.timeout_ticks = ticks;
+    f.qd = nullptr; f.qu = nullptr; f.sdh = nullptr; f.suh = nullptr;
+    if (q8 != nullptr) {
+        f.qd = q8->qd; f.qu = q8->qu; f.sdh = q8->sdh; f.suh = q8->suh;
+        kernel_t<false, true>(n_tok)<<<NB, THREADS, 0, s>>>(f);
+        return;
+    }
     kernel_for(n_tok)<<<NB, THREADS, 0, s>>>(f);
 }
 bool env_on() {
     static const bool on = [] { const char* v = std::getenv("STRATA_HC_PERSIST"); return v != nullptr && std::atoi(v) != 0; }();
     return on;
+}
+// STRATA_HC_PERSIST_Q8=1 (opt-in, with STRATA_HC_PERSIST=1): the persistent read on int8 copies of the verifier's hc
+// weights on Q8_0's grid (one fp16 scale per 32 values: the rounding of STRATA_HC_Q8's Q8_0 copies)
+bool q8_env() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_HC_PERSIST_Q8"); return v != nullptr && v[0] == '1'; }();
+    return on && env_on() && !dp_on();
+}
+// int8 copies of one read's weights on the current card (synchronous: start-up, outside graph capture)
+bool q8_make(int dev, const uint16_t* wd, const uint16_t* wu, const uint16_t* wi, size_t& bytes) {
+    if (g_q8[dev].count(wd) != 0) return true;
+    Q8Set q;
+    q.wu = wu; q.wi = wi;
+    const size_t nd = (size_t) NR * D, nu = (size_t) D * LR;
+    const size_t sdb = (size_t) NR * (D / 32) * 2, sub = (size_t) D * (LR / 32) * 2;
+    bool ok = cudaMalloc((void**) &q.qd, nd) == cudaSuccess && cudaMalloc((void**) &q.qu, nu) == cudaSuccess &&
+              cudaMalloc((void**) &q.sdh, sdb) == cudaSuccess && cudaMalloc((void**) &q.suh, sub) == cudaSuccess;
+    if (ok) {
+        q8g32_rows_kernel<<<dim3(D / 32, LR), 32>>>(wd, D, q.qd, D, q.sdh, D / 32);
+        if (wi != nullptr) q8g32_rows_kernel<<<dim3(D / 32, HC), 32>>>(wi, D, q.qd + (size_t) LR * D, D, q.sdh + (size_t) LR * (D / 32), D / 32);
+        q8g32_rows_kernel<<<dim3(LR / 32, D), 32>>>(wu, LR, q.qu, LR, q.suh, LR / 32);
+        ok = cudaDeviceSynchronize() == cudaSuccess;
+    }
+    if (!ok) {
+        cudaGetLastError();
+        cudaFree(q.qd); cudaFree(q.qu); cudaFree(q.sdh); cudaFree(q.suh);
+        return false;
+    }
+    bytes += nd + nu + sdb + sub;
+    g_q8[dev][wd] = q;
+    return true;
+}
+void q8_drop(int dev, const uint16_t* wd) {
+    auto it = g_q8[dev].find(wd);
+    if (it == g_q8[dev].end()) return;
+    cudaFree(it->second.qd); cudaFree(it->second.qu); cudaFree(it->second.sdh); cudaFree(it->second.suh);
+    g_q8[dev].erase(it);
 }
 }  // namespace hcp
 }  // namespace
@@ -3690,10 +3816,10 @@ void fused_gr_persist_init() {
     cudaMemcpy(dwd, wd.data(), wd.size() * 2, cudaMemcpyHostToDevice);
     cudaMemcpy(dwu, wu.data(), wu.size() * 2, cudaMemcpyHostToDevice);
     cudaMemcpy(dwi, wi.data(), wi.size() * 2, cudaMemcpyHostToDevice);
-    double worst = 0.0;
+    double worst = 0.0, worst_q8 = 0.0;
     int bad_t = 0, timeouts = 0;
     // 0: the read agrees with the default read; 1: a barrier timed out (not resident); 2: wrong or a device error
-    auto check = [&](int T) -> int {
+    auto check = [&](int T, bool q8) -> int {
         FusedGrArgs a[kFusedGrMaxT];
         for (int t = 0; t < T; ++t) {
             a[t] = FusedGrArgs{};
@@ -3710,7 +3836,7 @@ void fused_gr_persist_init() {
             cudaMemset(dio, 0xff, (size_t) TM * HC * 4);
             cudaDeviceSynchronize();
             if (which == 0) fused_gr_read_multi(a, T, dxn, nullptr);
-            else hcp::launch(a, T, st, nullptr, hcp::kTicksCheck);
+            else hcp::launch(a, T, st, nullptr, hcp::kTicksCheck, q8 ? &hcp::g_q8[dev].at(dwd) : nullptr);
             if (cudaDeviceSynchronize() != cudaSuccess) { cudaGetLastError(); return 2; }
             if (which == 1) {
                 unsigned abort_word = 0;
@@ -3734,15 +3860,27 @@ void fused_gr_persist_init() {
             md = std::fmax(md, std::fabs((double) out[1][i] - out[0][i]));
         }
         const double rel = md / (mref > 0 ? mref : 1.0);
+        if (q8) { worst_q8 = std::fmax(worst_q8, rel); return finite && rel < 2e-2 ? 0 : 2; }
         worst = std::fmax(worst, rel);
         return finite && rel < 1e-4 ? 0 : 2;
     };
     int max_t = 0;
     for (int T = 1; T <= kFusedGrMaxT && ok; ++T) {
-        const int r = check(T);
+        const int r = check(T, false);
         if (r == 1) ++timeouts; else if (r == 2) { bad_t = T; ok = false; }
         if (r != 0) break;
         max_t = T;
+    }
+    // STRATA_HC_PERSIST_Q8: the int8 kernel on int8 copies of the same random weights, against the default (bf16) read;
+    // bounded by the weight rounding (~1e-3 measured), so the bar is 2e-2
+    bool q8_ok = false;
+    if (ok && max_t > 0 && hcp::q8_env()) {
+        size_t qb = 0;
+        q8_ok = hcp::q8_make(dev, dwd, dwu, dwi, qb);
+        for (int T = 1; T <= max_t && q8_ok; ++T) q8_ok = check(T, true) == 0;
+        hcp::q8_drop(dev, dwd);
+        cudaMemset(st.bar, 0, 64 * sizeof(unsigned));
+        cudaDeviceSynchronize();
     }
     cudaFree(dR); cudaFree(dbo); cudaFree(dinj); cudaFree(dwn); cudaFree(dxn); cudaFree(dlo); cudaFree(drs);
     cudaFree(dio); cudaFree(dmix); cudaFree(dwd); cudaFree(dwu); cudaFree(dwi);
@@ -3760,6 +3898,12 @@ void fused_gr_persist_init() {
         return;
     }
     st.max_t = max_t;
+    st.q8_ok = q8_ok;
+    if (hcp::q8_env())
+        std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST_Q8=1: %s (int8 weights on Q8_0's grid, an fp16 scale per "
+                             "32 values, max relative difference %.3g against the bf16 default read)\n", dev,
+                     q8_ok ? "the persistent read takes int8 copies of the verifier's hc weights" : "OFF here, the check failed",
+                     worst_q8);
     std::fprintf(stderr, "strata hc: CUDA%d: STRATA_HC_PERSIST=1: the verifier's hyper-connection read runs as one "
                          "persistent kernel (80 blocks on %d multiprocessors, up to %d tokens; %d token counts timed out in "
                          "the check; checked against the default read, max relative difference %.2g)\n", dev, mp, max_t,
@@ -3776,12 +3920,30 @@ bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream) {
     if (a[0].q8_down != nullptr || a[0].q8_up != nullptr) return false;    // STRATA_HC_Q8: the default read
     for (int t = 0; t < n_tok; ++t)
         if (a[t].q8_mixed != nullptr) return false;                         // STRATA_QFUSE: the default read
-    hcp::launch(a, n_tok, st, (cudaStream_t) stream, hcp::kTicksRun);
+    const hcp::Q8Set* q8 = nullptr;
+    if (st.q8_ok) {
+        auto it = hcp::g_q8[dev].find(a[0].w_down);
+        if (it != hcp::g_q8[dev].end() && it->second.wu == a[0].w_up && it->second.wi == a[0].w_inject) q8 = &it->second;
+    }
+    hcp::launch(a, n_tok, st, (cudaStream_t) stream, hcp::kTicksRun, q8);
     return true;
+}
+bool fused_gr_persist_q8_on() {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    return hcp::q8_env() && dev >= 0 && dev < 64 && hcp::g_dev[dev].q8_ok;
+}
+bool fused_gr_persist_q8_prepare(const uint16_t* w_down, const uint16_t* w_up, const uint16_t* w_inject, size_t& bytes) {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (!fused_gr_persist_q8_on() || w_down == nullptr || w_up == nullptr) return false;
+    return hcp::q8_make(dev, w_down, w_up, w_inject, bytes);
 }
 #else
 void fused_gr_persist_init() {}
 bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
+bool fused_gr_persist_q8_on() { return false; }
+bool fused_gr_persist_q8_prepare(const uint16_t*, const uint16_t*, const uint16_t*, size_t&) { return false; }
 #endif
 
 }  // namespace strata::kernels
