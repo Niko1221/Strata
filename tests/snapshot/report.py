@@ -45,7 +45,7 @@ def flags(argv):
 def drafter(rec) -> str:
     eng = rec.get("engine")
     if not eng:
-        return "blocked" if rec.get("blocked") else "?"
+        return "not driven" if rec.get("not_driven") else "?"
     a = eng["argv"]
     if "--dspark" in a:
         return "DSpark " + a[a.index("--dspark") + 1]

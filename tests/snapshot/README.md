@@ -32,20 +32,28 @@ The same command works on Windows, Linux and macOS; the golden files hold no pat
 | `launch` | `strata launch --model <set> --yes --no-tui` through `strata_cli.cli.main` | the whole command: settings, `Runner.run()`, the drafter step, config derivation and writing | the engine download, the model download (`ensure_model` returns the stand-in below), tuning, the server start, the drafter download |
 | `app_plain` | `apps/host/server/native-control.mjs` `operation('load', {model})` in Node (`app_driver.mjs`) | the host's whole Load code, and Control's `drafting plan` / `drafting fetch` (run through `control_shim.py` on the same simulated machine) | the installer process (catalog, hardware), Control's model list / engine / profile save / start, the drafter download |
 | `app_models` | the same with `values: {drafting: 'auto'}` (what the Models screen's Load passes) | same | same |
-| `setup` | **not driven today** | | see below |
+| `setup` | `strata_control.setup_config.config_for` (qwen / unsloth) and `dsv41_config_for` (DeepSeek), the moved last stretch of `setup.py` main(), called with inputs built by `setup_driver.py` | the whole run-config construction: engine arguments, speed switches, cards, vision section | what `setup.py` decides before it (the cards and RAM come from the class, the context, budget, low-RAM, vision and resident choices from setup's own pure functions), the probes of the machine (`ProbeLib`), the model reader |
 
 For `launch`, `app_plain` and `app_models` the last step is the same code the server runs when it starts the engine: `serve.server.engine_args(cfg, exe)` and
 `serve.server.child_env(cfg)`.  The record has the run config the entry point left (`config_file`), the argument list (`engine.argv`), the variables the start adds to
 the environment (`engine.env_set`), the notes the start prints, the drafter downloads that were asked for (`fetches`) and, for the app, the calls the host made to Control.
 
-### The stand-in for setup's output, and why `setup` is blocked
+### The `setup` entry point and the stand-in
 
-`setup.py` writes the model's run config in one 1,300-line function (`run()`, setup.py lines ~10100-11400) that on the way probes the GPU, resolves or builds an engine,
-downloads and hashes the model shards, packs the model and (DeepSeek) runs a smoke test.  It cannot run without a model, an engine and a GPU, and making it
-run would change product code, which step 0 must not do.  So the entry points that start from an installed model all start from the same **stand-in**
-(`World.base_config`, rebuilt from setup.py's own rules per class and set), and differences between entry points can never come from it.
-The seam that would let `setup` join the table: a pure function `config_for(args, hardware_report, files) -> run config` in `strata_control`, called by `run()` just before
-`write_setup_config()` (a move of existing lines, no behaviour change).
+`setup.py` main() is one long function that probes the GPU, resolves or builds an engine, downloads and hashes the model and packs it.  Its last stretch (from
+the engine arguments to just before `write_setup_config()`) is now `strata_control/setup_config.py`: `config_for(SetupInputs, lib)` for Qwen and Unsloth,
+`dsv41_config_for(Dsv41Inputs, lib)` for DeepSeek.  It is the same lines, moved (CLEAN-1A, item 1a.7); `setup.py` builds the inputs and calls it.  `lib` is the module
+that holds the helper functions (`setup.py` today; they move into `strata_control` in step 5.1).  The snapshot passes `ProbeLib`, `setup.py` with the functions that
+look at the machine (nvidia-smi, the disk kind, the compute mode, a saved calibration, the image setup) answered by the simulated class.
+
+The record of `setup` has `inputs` (what was assumed, so a reviewer sees it), `config_file` (what `config_for` returns, before `write_setup_config()` merges an
+earlier config), `engine` (`engine_args` / `child_env` of that config, as for the other entry points) and `setup_says` (the notes setup prints on the way).
+The classes whose setup is another script (Intel Arc: `sycl/setup_intel.py`; Mac: `metal/setup_mac.py`, `mac_dsv41_setup`) are `not_driven` with the reason.
+
+The launch and app entry points still start from `World.base_config`, a hand-built stand-in for setup's output, not from `config_for`.  It differs from what
+`config_for` makes (it has no `--vision`, `--kv-resident`, `--ple-io ram`, `--reserve-mib` ...).  Differences between launch / app_plain / app_models can never come
+from it (all three start from the same file), but the `setup` record is the one that shows what a real install writes.  Replacing the stand-in by `config_for`'s output
+changes the launch and app goldens and is a separate decision.
 
 ## Adding a class or a set
 
