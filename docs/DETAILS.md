@@ -791,9 +791,20 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   argument, default 4096, `0` = no check).
 - `--session-save-reclaim` (engine argument, off by default) lets a save that fails its RAM check first release reconstructible
   host caches (retained K/V, oldest unpinned parked conversations, unpinned checkpoints), and the server waits up to 30 s for
-  RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save.
+  RAM accounting to catch up. It trades later prefix-cache hits for room to save and cannot guarantee a save. RESTORE uses
+  the same opt-in: when the RAM check that precedes parsing refuses, the same ladder first frees those host caches, logs
+  `restore reclaimed ...` and asks RAM again; if the ladder runs dry the typed `memory` refusal stands and the engine keeps
+  serving. The checkpoint a restore would resume from - the deepest one and every pin - survives the ladder either way.
+  The restore's ladder runs **before** the file's stage table is compared with this runtime's, so a file that belongs to
+  another layer split (below) evicts those caches and is only then refused: the conversation it wanted is untouched, but
+  the caches were spent for nothing. On a multi-GPU rig, pin the split instead of leaning on this ladder.
 - Clients still send their messages and images; the file holds engine state and token identity, not a chat export. A follow-up
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
+- Format v2 adds the runtime's stage table to the file: one entry per later stage (its own layer range, its session carve's
+  QSA and GDN sizes, and whether its K/V group ends with the draft layer), per-stage parts of the live state and of every
+  checkpoint, and stage-ordered K/V groups (the draft group is present only when the engine has a drafter; an engine without
+  `--mtp` keeps none); a runtime without a split writes an empty table. A file written in format v1 (the
+  predecessor without the stage table) is refused with `unsupported version 1` before its RAM admission; save again to replace it.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
   rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
@@ -804,9 +815,32 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   no room; `500` for other I/O failures or an engine that ended. `error.published: true` means a save failed after its new
   file had replaced the old one. Requests must be `application/json` (else `415`) and come from no browser page, Strata's own
   page or a trusted origin.
-- Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
+- Not supported with `--peer-device`, `--batch` or `--prompt-cache 0`. It works with `--layer-split`: the file records the writing
+  runtime's stage table, and the capture, the RAM limits, the validation and the transfer all run per stage, each against its
+  own carve; a file written by another split - or by a runtime without one, or for a runtime that has one - is refused as
+  invalid before any device write (`saved with a different layer split than this runtime's`). **Pin the split for stable
+  files across restarts:** `--layer-split auto` recomputes the stage count every start from measured free VRAM, PCIe bandwidth
+  and SM clocks, and on cards of different speed the winner can flip within a few percent of measurement error - a file saved
+  today is then refused tomorrow on the stage-table comparison. Use `--layer-split N` with the value the startup log printed
+  (`layer split auto: K=…`); a manual value additionally keeps the server's per-boot card reorder (`ordered_gpus`) from
+  moving a stage to another card. The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
+- **What a restored conversation continues with.** The file is exact; the runtime under it is what can move. Expert placement
+  is routing state, not cell state, so no format check sees it: with a fixed placement (`--adapt-swaps 0`, or a tier that is
+  profile-ranked with no eviction) the turn after a restart-and-restore is byte-identical to the live turn; on an adaptive,
+  evicting expert cache the live and restored turns differ **from each other** too, because each server run placed the
+  experts differently, while the files re-saved from both stay byte-identical. A changed continuation after a restore is
+  therefore not evidence of a damaged file - the same kind of caveat the resident-experts rounding note carries. On a split,
+  placement also interacts with *which card* runs a layer (the verifier picks its arithmetic per compute capability), and the
+  device set is not part of the file's fingerprint: keep the same cards in the same split.
+- Save is streamed (each K/V part is read from its pool as the file is written); the **read** is not: parsing allocates every
+  array as it goes, and the RAM admit asks for `file bytes + 16 MiB + 4 KiB per segment + 1 MiB` once before it. On a host with
+  `--kv-resident` the full K/V is already pinned in host RAM, so a 250K-token restore needs several GB of transient RAM on top
+  of what the conversation-cache auto-sizing just spent parking that K/V: there, `SERR memory 0 not enough RAM to read it` is
+  the expected outcome near the limit rather than a fault, and the floor is worth raising before the file is. A two-pass
+  streamed read (validate, then apply block by block, the shape the serve-slot RESTORE uses) would remove the peak; it is not
+  implemented.
 
 ### The web page (Chat, Images, Monitor, About)
 

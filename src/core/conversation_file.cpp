@@ -35,17 +35,17 @@
 #include <unistd.h>
 #endif
 
-// Format v1 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
+// Format v2 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
 // IEEE-754 floats, so a build where that is not the memory layout is refused rather than writing another format.
-static_assert(std::endian::native == std::endian::little, "session files (format v1) are little-endian only");
+static_assert(std::endian::native == std::endian::little, "session files (format v2) are little-endian only");
 static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<double>::is_iec559,
-              "session files (format v1) need IEEE-754 floats");
+              "session files (format v2) need IEEE-754 floats");
 
 namespace strata::core {
 namespace {
 constexpr char kMagic[8] = {'S', 'T', 'R', 'S', 'E', 'S', 'S', '\x01'};
 constexpr char kEnd[8] = {'S', 'T', 'R', 'S', 'E', 'N', 'D', '\x01'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 constexpr size_t kHeader = 64, kTrailer = 16;
 
 // Progress for a transfer: one report after every block that was handed to (or read from) the OS, whatever its size
@@ -684,11 +684,18 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
     for (const auto& k : c.imgs) { o.i64(k.start); o.u64(k.hash); }
     o.vec(c.gdn); o.vec(c.ple); o.vec(c.tails); o.vec(c.dead); o.vec(c.block_pos);
     o.u64(c.used);
+    o.u64(c.stage_parts.size());                                 // v2: one part per later stage, 0 for parts themselves
+    for (const auto& p : c.stage_parts) put_checkpoint(o, p);
 }
 
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
     for (int64_t g : s.geometry) o.i64(g);
     o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+    // format v2: the later-stage geometry the file was written with (empty table: a single-device session)
+    o.u64(s.stage_table.size());
+    for (const auto& g : s.stage_table) {
+        o.i64(g.layer_lo); o.i64(g.layer_hi); o.i64(g.qsa_alloc); o.i64(g.gdn_alloc); o.u64(g.draft ? 1 : 0);
+    }
     put_checkpoint(o, s.live);
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);
@@ -751,15 +758,33 @@ struct In {
     }
 };
 
-bool get_checkpoint(In& in, ConversationCheckpoint& c) {
+bool get_checkpoint(In& in, ConversationCheckpoint& c, uint64_t expected_parts,
+                    const std::array<uint64_t, 5>& state_max) {
+    static constexpr std::array<uint64_t, 5> kOpen{UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
     if (!in.vec(c.ids, in.limits.max_tokens)) return false;
     uint64_t n = 0;
     if (!in.count(n, 16, in.limits.max_tokens)) return false;
     c.imgs.resize((size_t) n);
     for (auto& k : c.imgs) if (!in.i64(k.start) || !in.u64(k.hash)) return false;
-    const auto& m = in.limits.max_state_bytes;   // byte arrays: element and byte counts are the same
-    return in.vec(c.gdn, m[0]) && in.vec(c.ple, m[1]) && in.vec(c.tails, m[2]) && in.vec(c.dead, m[3]) &&
-           in.vec(c.block_pos, m[4]) && in.u64(c.used);
+    // byte arrays: element and byte counts are the same; main checkpoints use the runtime's arrays,
+    // stage parts their own stage's (max_stage_state_bytes, by part index)
+    if (!in.vec(c.gdn, state_max[0]) || !in.vec(c.ple, state_max[1]) || !in.vec(c.tails, state_max[2]) ||
+        !in.vec(c.dead, state_max[3]) || !in.vec(c.block_pos, state_max[4]) || !in.u64(c.used))
+        return false;
+    uint64_t parts = 0;
+    if (!in.u64(parts)) return false;                            // v2: the stage-parts tail
+    if (parts != expected_parts)
+        return expected_parts == 0 ? in.fail("nested stage parts")
+                                   : in.fail("stage parts count does not match the stage table");
+    for (uint64_t k = 0; k < parts; ++k) {
+        const auto& smax = k < in.limits.max_stage_state_bytes.size()
+                               ? in.limits.max_stage_state_bytes[(size_t) k]
+                               : kOpen;
+        ConversationCheckpoint part;
+        if (!get_checkpoint(in, part, 0, smax)) return false;    // one level deep, by format
+        c.stage_parts.push_back(std::move(part));
+    }
+    return true;
 }
 
 bool get_payload(In& in, SavedConversation& s) {
@@ -774,12 +799,28 @@ bool get_payload(In& in, SavedConversation& s) {
         return in.fail("saved with another layer range than this runtime's");
     if (cvec > 1) return in.fail("invalid cvec flag");
     s.cvec = cvec == 1;
-    if (!get_checkpoint(in, s.live)) return false;
+    // format v2 stage table: bounded by count and bytes left, then compared against the live layout
+    // before any state array is read
+    uint64_t stages = 0;
+    if (!in.count(stages, 40, in.limits.max_stages)) return false;
+    s.stage_table.resize((size_t) stages);
+    for (auto& g : s.stage_table) {
+        uint64_t draft = 0;
+        if (!in.i64(g.layer_lo) || !in.i64(g.layer_hi) || !in.i64(g.qsa_alloc) || !in.i64(g.gdn_alloc) ||
+            !in.u64(draft))
+            return false;
+        if (draft > 1) return in.fail("invalid stage draft flag");
+        g.draft = draft == 1;
+    }
+    if (in.limits.stages && *in.limits.stages != s.stage_table)
+        return in.fail("saved with a different layer split than this runtime's");
+    if (!get_checkpoint(in, s.live, s.stage_table.size(), in.limits.max_state_bytes)) return false;
     uint64_t n = 0;
     // a checkpoint is at least 8 counts + used = 72 bytes; a K/V layer at least 7 + 5 = 96
     if (!in.count(n, 72, in.limits.max_checkpoints)) return false;
     s.checkpoints.resize((size_t) n);
-    for (auto& c : s.checkpoints) if (!get_checkpoint(in, c)) return false;
+    for (auto& c : s.checkpoints)
+        if (!get_checkpoint(in, c, s.stage_table.size(), in.limits.max_state_bytes)) return false;
     if (!in.count(n, 96, in.limits.max_kv_layers)) return false;
     s.kv.resize((size_t) n);
     for (auto& k : s.kv) {
@@ -795,13 +836,25 @@ bool get_payload(In& in, SavedConversation& s) {
     return true;
 }
 
-bool has_stage_parts(const SavedConversation& s) {
-    if (!s.live.stage_parts.empty()) return true;
-    for (const auto& c : s.checkpoints) if (!c.stage_parts.empty()) return true;
-    return false;
+// v2 stage consistency (checked before any disk access): every checkpoint carries exactly one stage part
+// per stage-table entry, and a part has no parts of its own. `why` names the first violation.
+bool stage_parts_consistent(const SavedConversation& s, std::string& why) {
+    auto one = [&](const ConversationCheckpoint& c, const char* what) -> bool {
+        if (c.stage_parts.size() != s.stage_table.size()) {
+            why = std::string("a ") + what + " checkpoint whose stage parts count does not match the stage table";
+            return false;
+        }
+        for (const auto& p : c.stage_parts)
+            if (!p.stage_parts.empty()) { why = "nested stage parts"; return false; }
+        return true;
+    };
+    if (!one(s.live, "live")) return false;
+    for (const auto& c : s.checkpoints)
+        if (!one(c, "saved")) return false;
+    return true;
 }
 
-// header v1, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
+// header v2, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
 // header_hash:u64 (session_hash64 of bytes 0..55, seed 0)
 void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload) {
     std::memset(h, 0, kHeader);
@@ -999,14 +1052,24 @@ uint64_t sat_mul(uint64_t a, uint64_t b) { return a && b > UINT64_MAX / a ? UINT
 
 uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     const uint64_t open = UINT64_MAX;
-    if (l.max_tokens == open || l.max_checkpoints == open || l.max_kv_layers == open) return l.max_file_bytes;
+    if (l.max_tokens == open || l.max_checkpoints == open || l.max_kv_layers == open || l.max_stages == open)
+        return l.max_file_bytes;
     for (uint64_t b : l.max_state_bytes) if (b == open) return l.max_file_bytes;
     if (l.max_kv_bytes.size() < l.max_kv_layers) return l.max_file_bytes;
-    // one checkpoint: ids (8 + 4 per token), images (8 + 16 per image), five state arrays (8 + bytes), used (8)
-    uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
-    for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
-    cp = sat_add(cp, 8);
+    // One checkpoint record over a carve's state sizes `sb`: ids (8 + 4 per token), images (8 + 16 per image),
+    // five state arrays (8 + bytes), and the two u64 fields v2 adds to every record (used, stage-parts count).
+    const auto cp_over = [&](const std::array<uint64_t, 5>& sb) {
+        uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
+        for (uint64_t b : sb) cp = sat_add(cp, sat_add(8, b));
+        return sat_add(cp, 16);
+    };
+    if (l.max_stage_state_bytes.size() < l.max_stages) return l.max_file_bytes;
+    // v2: every checkpoint carries the main record plus one part per admitted stage, each part budgeted with
+    // the stage's OWN state bounds (later carves differ from the main one).
+    uint64_t cp = cp_over(l.max_state_bytes);
+    for (size_t k = 0; k < l.max_stages && k < l.max_stage_state_bytes.size(); ++k) cp = sat_add(cp, cp_over(l.max_stage_state_bytes[k]));
     uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
+    n = sat_add(n, sat_add(8, sat_mul(l.max_stages, 40)));        // stage table (v2): count + 40 bytes per entry
     n = sat_add(n, cp);                                            // live
     n = sat_add(n, sat_add(8, sat_mul(l.max_checkpoints, cp)));    // checkpoints
     n = sat_add(n, 8);
@@ -1029,7 +1092,8 @@ bool write_impl(const std::string& path, const SavedConversation& image, const s
                 SessionStatus& st) {
     st = {};
     st.error = SessionError::invalid;   // refusals before any disk access
-    if (has_stage_parts(image)) { error = "session file: layer-split state cannot be saved"; return false; }
+    std::string bad;
+    if (!stage_parts_consistent(image, bad)) { error = "session file: " + bad; return false; }
     if (sources && !image.kv.empty()) { error = "session file: K/V given both in the image and as sources"; return false; }
     Out sizing;
     put_payload(sizing, image, sources);
