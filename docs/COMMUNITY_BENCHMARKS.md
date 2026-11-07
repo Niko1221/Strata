@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-05: 2x Tesla V100-SXM2-16GB (sm_70, SXM2 modules on PCIe carriers at Gen3 x16), Xeon E5-1660 v3 without AVX-512, 121.4 GiB RAM](../bench/results/2026-11-05-standard-tesla-v100-sxm2-16gb-b1ecbd4f/README.md):
+  a draft-protocol `strata-qwen38-thinking-v1-draft.1` pilot run through `bench run --url` against an always-on production server, custom track: Huihui Swift-Qwen3.8-Flash-Next-abliterated-v2 UD-Q4_K_XL with a custom expert profile, MTP drafts, `q4_0` KV and the opt-in `STRATA_SM70_TABLE=1` decode kernels, 204,800-token context, both cards layer-split; **complete**, no failed requests, sanity 12/12. Decode medians 56.5/58.8/56.8 tok/s (short/4K/16K), prompt 677.6/1517.6 tok/s at 4K/16K, TTFT 1.76/6.07/10.84 s. Shared warm cache (production server, 1648 prior requests); the 4K prompt rate is overhead-dominated, read prefill from the 16K case.
 
 ## Run the standard benchmark
 
