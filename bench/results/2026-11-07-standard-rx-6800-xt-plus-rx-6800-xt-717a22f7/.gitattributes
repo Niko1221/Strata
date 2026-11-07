@@ -1,0 +1,2 @@
+# Benchmark artifacts are hashed byte for byte (SHA256SUMS.txt): never convert line endings.
+* -text
