@@ -2625,6 +2625,7 @@ if(STRATA_NATIVE_EXPERTS)
     # Aurora: moe_fused.cu's gfx11 and moe_fused_iq.cu's gfx11 / gfx12 WMMA kernels for the prompt experts (opt-in STRATA_PF_FUSED=1)
     set(_strata_mmq_sources
       src/prefill/moe_mmq.cu
+      src/prefill/mmq_nvfp4_w4a8.cu
       src/prefill/moe_fused.cu
       src/prefill/moe_fused_iq.cu
       src/prefill/moe_f16_kq.cu
@@ -2670,6 +2671,11 @@ if(STRATA_NATIVE_EXPERTS)
     target_link_libraries(strata_mmq PUBLIC ggml-base hip::host roc::hipblas)
     target_link_libraries(strata_prefill PUBLIC strata_mmq)
     target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1 STRATA_PREFILL_FUSED=1)
+    add_executable(mmq_nvfp4_parity src/prefill/mmq_nvfp4_parity.cpp)
+    target_link_libraries(mmq_nvfp4_parity PRIVATE strata_mmq ggml-base strata_hip_runtime)
+    if(NOT MSVC)
+      target_compile_options(mmq_nvfp4_parity PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mf16c>)
+    endif()
     # Aurora: the gfx11 fused experts against the FP64 reference and MMQ (tests/cuda's test; exit 77 off gfx11)
     add_executable(hip_prefill_fused_moe tests/cuda/prefill_fused_moe_test.cpp)
     target_include_directories(hip_prefill_fused_moe PRIVATE "${_strata_gg}/include")
@@ -2705,12 +2711,12 @@ if(STRATA_NATIVE_EXPERTS)
   target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
   add_test(NAME nvfp4_cpu_parity COMMAND nvfp4_avx512_parity)   # random blocks; the AVX2 rows bit-equal to ggml's
   set_tests_properties(nvfp4_cpu_parity PROPERTIES TIMEOUT 120)
-  if(STRATA_ENABLE_CUDA)   # the NVFP4 decode kernels vs ggml's reference
+  if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)   # the NVFP4 decode kernels vs ggml's reference
     add_executable(nvfp4_expert_gpu_parity src/kernels/nvfp4_expert_gpu_parity.cpp)
-    target_link_libraries(nvfp4_expert_gpu_parity PRIVATE strata_kernels ggml-base CUDA::cudart)
+    target_link_libraries(nvfp4_expert_gpu_parity PRIVATE strata_kernels ggml-base ${_strata_gpu_runtime_target})
     # the decode experts' weight bandwidth on random blobs of a format pair, and an output hash (bit-for-bit checks)
     add_executable(nvfp4_decode_bench src/kernels/nvfp4_decode_bench.cpp)
-    target_link_libraries(nvfp4_decode_bench PRIVATE strata_kernels CUDA::cudart)
+    target_link_libraries(nvfp4_decode_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   endif()
   if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(native_expert_parity src/kernels/native_expert_parity.cpp)
