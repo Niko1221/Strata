@@ -1,0 +1,176 @@
+=== mode 0 (ref 0) ===
+hash 785e09b2956aa2cc
+layer  5 iq2_s  /iq4_nl G 48 T 8 | mode 0: all   389.9 us  gu   255.8 us (197 GB/s)  down  133.1 us (332 GB/s) | mode 0: all   390.8 us  gu   244.0 us (206 GB/s)  down  126.6 us (349 GB/s) | bitwise equal
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   400.5 us  gu   244.9 us (276 GB/s)  down  135.7 us (326 GB/s) | mode 0: all   375.8 us  gu   243.4 us (278 GB/s)  down  135.8 us (326 GB/s) | bitwise equal
+hash 58c2fad99fd50306
+layer 41 iq3_xxs/iq4_nl G 48 T 8 | mode 0: all   394.7 us  gu   242.0 us (249 GB/s)  down  135.3 us (327 GB/s) | mode 0: all   369.7 us  gu   242.5 us (248 GB/s)  down  135.3 us (327 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== mode 2 (ref 0) ===
+hash 785e09b2956aa2cc
+layer  5 iq2_s  /iq4_nl G 48 T 8 | mode 0: all   406.0 us  gu   257.1 us (196 GB/s)  down  133.4 us (332 GB/s) | mode 2: all  1121.4 us  gu   655.7 us ( 77 GB/s)  down  453.3 us ( 98 GB/s) | bitwise equal
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   393.2 us  gu   243.7 us (277 GB/s)  down  135.7 us (326 GB/s) | mode 2: all  1194.0 us  gu   719.8 us ( 94 GB/s)  down  468.3 us ( 94 GB/s) | bitwise equal
+hash 58c2fad99fd50306
+layer 41 iq3_xxs/iq4_nl G 48 T 8 | mode 0: all   390.4 us  gu   241.1 us (250 GB/s)  down  135.8 us (326 GB/s) | mode 2: all  1128.8 us  gu   654.5 us ( 92 GB/s)  down  468.1 us ( 94 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== mode 4 (ref 0) ===
+hash 785e09b2956aa2cc
+layer  5 iq2_s  /iq4_nl G 48 T 8 | mode 0: all   402.4 us  gu   257.3 us (196 GB/s)  down  133.5 us (331 GB/s) | mode 4: all  1097.4 us  gu   662.6 us ( 76 GB/s)  down  440.4 us (100 GB/s) | bitwise equal
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   400.1 us  gu   243.4 us (278 GB/s)  down  136.0 us (325 GB/s) | mode 4: all  1187.7 us  gu   718.3 us ( 94 GB/s)  down  456.2 us ( 97 GB/s) | bitwise equal
+hash 58c2fad99fd50306
+layer 41 iq3_xxs/iq4_nl G 48 T 8 | mode 0: all   391.8 us  gu   241.7 us (249 GB/s)  down  135.8 us (326 GB/s) | mode 4: all  1108.6 us  gu   649.9 us ( 93 GB/s)  down  455.7 us ( 97 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== mode 8 (ref 0) ===
+hash 785e09b2956aa2cc
+layer  5 iq2_s  /iq4_nl G 48 T 8 | mode 0: all   391.8 us  gu   257.7 us (195 GB/s)  down  133.9 us (330 GB/s) | mode 8: all   481.6 us  gu   271.2 us (186 GB/s)  down  194.6 us (227 GB/s) | bitwise equal
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   402.6 us  gu   243.3 us (278 GB/s)  down  136.1 us (325 GB/s) | mode 8: all   476.9 us  gu   265.6 us (254 GB/s)  down  208.2 us (212 GB/s) | bitwise equal
+hash 58c2fad99fd50306
+layer 41 iq3_xxs/iq4_nl G 48 T 8 | mode 0: all   395.8 us  gu   241.9 us (249 GB/s)  down  136.4 us (324 GB/s) | mode 8: all   492.9 us  gu   286.4 us (210 GB/s)  down  207.1 us (214 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   399.9 us  gu   244.2 us (277 GB/s)  down  136.1 us (325 GB/s) | mode 0: all   376.3 us  gu   233.6 us (289 GB/s)  down  135.8 us (326 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   522.0 us  gu   512.9 us (132 GB/s)  down  500.2 us ( 88 GB/s) | mode 0: all   521.9 us  gu   521.9 us (129 GB/s)  down  521.7 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   440.6 us  gu   435.9 us (155 GB/s)  down  411.6 us (107 GB/s) | mode 0: all   439.9 us  gu   440.3 us (154 GB/s)  down  440.5 us (100 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   431.8 us  gu   269.5 us (251 GB/s)  down  130.7 us (338 GB/s) | mode 0: all   409.3 us  gu   259.2 us (261 GB/s)  down  130.4 us (339 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   397.1 us  gu   244.4 us (277 GB/s)  down  136.3 us (325 GB/s) | mode 0: all   379.2 us  gu   232.2 us (291 GB/s)  down  136.2 us (325 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   522.2 us  gu   517.7 us (131 GB/s)  down  498.0 us ( 89 GB/s) | mode 0: all   522.1 us  gu   521.5 us (130 GB/s)  down  521.7 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   438.9 us  gu   439.0 us (154 GB/s)  down  415.6 us (106 GB/s) | mode 0: all   429.9 us  gu   439.1 us (154 GB/s)  down  439.5 us (101 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   430.5 us  gu   271.4 us (249 GB/s)  down  131.3 us (337 GB/s) | mode 0: all   412.9 us  gu   258.9 us (261 GB/s)  down  128.8 us (343 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   395.4 us  gu   244.8 us (276 GB/s)  down  136.3 us (325 GB/s) | mode 0: all   379.6 us  gu   231.3 us (292 GB/s)  down  136.3 us (325 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   523.2 us  gu   522.6 us (129 GB/s)  down  500.0 us ( 88 GB/s) | mode 0: all   522.8 us  gu   522.8 us (129 GB/s)  down  523.0 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   440.1 us  gu   440.2 us (154 GB/s)  down  420.8 us (105 GB/s) | mode 0: all   430.8 us  gu   440.1 us (154 GB/s)  down  440.1 us (101 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   434.4 us  gu   272.3 us (248 GB/s)  down  131.1 us (338 GB/s) | mode 0: all   419.4 us  gu   261.7 us (258 GB/s)  down  126.7 us (349 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   398.9 us  gu   244.1 us (277 GB/s)  down  136.4 us (324 GB/s) | mode 0: all   384.8 us  gu   231.1 us (292 GB/s)  down  134.1 us (330 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   522.2 us  gu   522.7 us (129 GB/s)  down  498.8 us ( 89 GB/s) | mode 0: all   522.0 us  gu   520.6 us (130 GB/s)  down  521.0 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   439.9 us  gu   439.7 us (154 GB/s)  down  424.2 us (104 GB/s) | mode 0: all   429.6 us  gu   439.6 us (154 GB/s)  down  439.6 us (101 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   434.1 us  gu   274.4 us (246 GB/s)  down  131.8 us (336 GB/s) | mode 0: all   422.6 us  gu   265.2 us (255 GB/s)  down  126.2 us (351 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   399.9 us  gu   244.2 us (277 GB/s)  down  136.1 us (325 GB/s) | mode 0: all   376.3 us  gu   233.6 us (289 GB/s)  down  135.8 us (326 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   522.0 us  gu   512.9 us (132 GB/s)  down  500.2 us ( 88 GB/s) | mode 0: all   521.9 us  gu   521.9 us (129 GB/s)  down  521.7 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   440.6 us  gu   435.9 us (155 GB/s)  down  411.6 us (107 GB/s) | mode 0: all   439.9 us  gu   440.3 us (154 GB/s)  down  440.5 us (100 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 1: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   431.8 us  gu   269.5 us (251 GB/s)  down  130.7 us (338 GB/s) | mode 0: all   409.3 us  gu   259.2 us (261 GB/s)  down  130.4 us (339 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   397.1 us  gu   244.4 us (277 GB/s)  down  136.3 us (325 GB/s) | mode 0: all   379.2 us  gu   232.2 us (291 GB/s)  down  136.2 us (325 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   522.2 us  gu   517.7 us (131 GB/s)  down  498.0 us ( 89 GB/s) | mode 0: all   522.1 us  gu   521.5 us (130 GB/s)  down  521.7 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   438.9 us  gu   439.0 us (154 GB/s)  down  415.6 us (106 GB/s) | mode 0: all   429.9 us  gu   439.1 us (154 GB/s)  down  439.5 us (101 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 2: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   430.5 us  gu   271.4 us (249 GB/s)  down  131.3 us (337 GB/s) | mode 0: all   412.9 us  gu   258.9 us (261 GB/s)  down  128.8 us (343 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   395.4 us  gu   244.8 us (276 GB/s)  down  136.3 us (325 GB/s) | mode 0: all   379.6 us  gu   231.3 us (292 GB/s)  down  136.3 us (325 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   523.2 us  gu   522.6 us (129 GB/s)  down  500.0 us ( 88 GB/s) | mode 0: all   522.8 us  gu   522.8 us (129 GB/s)  down  523.0 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   440.1 us  gu   440.2 us (154 GB/s)  down  420.8 us (105 GB/s) | mode 0: all   430.8 us  gu   440.1 us (154 GB/s)  down  440.1 us (101 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 3: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   434.4 us  gu   272.3 us (248 GB/s)  down  131.1 us (338 GB/s) | mode 0: all   419.4 us  gu   261.7 us (258 GB/s)  down  126.7 us (349 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: baseline ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   398.9 us  gu   244.1 us (277 GB/s)  down  136.4 us (324 GB/s) | mode 0: all   384.8 us  gu   231.1 us (292 GB/s)  down  134.1 us (330 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: V2 ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   522.2 us  gu   522.7 us (129 GB/s)  down  498.8 us ( 89 GB/s) | mode 0: all   522.0 us  gu   520.6 us (130 GB/s)  down  521.0 us ( 85 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: V2+TSUM ===
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   439.9 us  gu   439.7 us (154 GB/s)  down  424.2 us (104 GB/s) | mode 0: all   429.6 us  gu   439.6 us (154 GB/s)  down  439.6 us (101 GB/s) | bitwise equal
+native_expert_bench: 0 differing
+=== alt 4: EXPDEC ===
+strata expdec: CUDA0 gate/up type 21: expdec_gu_kernel R 1 MINB 4, 64 rows per block, grid 20 x 48 (cap 48 groups)
+strata expdec: CUDA0 down type 20 (n_embd 2560, n_ff 640) not covered: the default kernel runs
+hash 6def5003d1ca5d51
+layer 17 iq3_s  /iq4_nl G 48 T 8 | mode 0: all   434.1 us  gu   274.4 us (246 GB/s)  down  131.8 us (336 GB/s) | mode 0: all   422.6 us  gu   265.2 us (255 GB/s)  down  126.2 us (351 GB/s) | bitwise equal
+native_expert_bench: 0 differing
