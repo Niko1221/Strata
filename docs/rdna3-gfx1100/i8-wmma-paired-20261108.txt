@@ -1,0 +1,30 @@
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:A1 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:A1 prompt attention: median 66.744 ms (min 63.512) over 5; output hash deb37aa588b68ddf, rms 0.0210582
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B1 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B1 prompt attention: median 69.463 ms (min 66.691) over 5; output hash 2ccff49c543c2fe8, rms 0.0210622
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B1 against /home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/f16-fast-ref.bin: relative RMS 1.936e-02, worst |diff| 1.490e-02 (reference rms 0.02106)
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:A2 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:A2 prompt attention: median 66.990 ms (min 63.494) over 5; output hash deb37aa588b68ddf, rms 0.0210582
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B2 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B2 prompt attention: median 69.240 ms (min 66.591) over 5; output hash 2ccff49c543c2fe8, rms 0.0210622
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B2 against /home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/f16-fast-ref.bin: relative RMS 1.936e-02, worst |diff| 1.490e-02 (reference rms 0.02106)
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:A3 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:A3 prompt attention: median 66.656 ms (min 63.684) over 5; output hash deb37aa588b68ddf, rms 0.0210582
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B3 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B3 prompt attention: median 69.327 ms (min 66.569) over 5; output hash 2ccff49c543c2fe8, rms 0.0210622
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-pafast.log:B3 against /home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/f16-fast-ref.bin: relative RMS 1.936e-02, worst |diff| 1.490e-02 (reference rms 0.02106)
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:A1 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:A1 prompt attention: median 101.481 ms (min 98.962) over 5; output hash e0b02524667f4559, rms 0.0210582
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B1 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B1 prompt attention: median 68.881 ms (min 66.468) over 5; output hash 2ccff49c543c2fe8, rms 0.0210622
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B1 against /home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/f16-ref.bin: relative RMS 1.936e-02, worst |diff| 1.490e-02 (reference rms 0.02106)
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:A2 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:A2 prompt attention: median 101.554 ms (min 98.880) over 5; output hash e0b02524667f4559, rms 0.0210582
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B2 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B2 prompt attention: median 69.042 ms (min 66.747) over 5; output hash 2ccff49c543c2fe8, rms 0.0210622
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B2 against /home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/f16-ref.bin: relative RMS 1.936e-02, worst |diff| 1.490e-02 (reference rms 0.02106)
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:A3 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:A3 prompt attention: median 101.590 ms (min 98.959) over 5; output hash e0b02524667f4559, rms 0.0210582
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B3 layer 0 p0 65536 T 28280 cap 2051, 93816 cells, 24 heads / 2 KV heads x 256
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B3 prompt attention: median 69.055 ms (min 66.708) over 5; output hash 2ccff49c543c2fe8, rms 0.0210622
+/home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/bar-split.log:B3 against /home/zacch/projects/amd-moe-core/results/warm/pa-i8-20261108/f16-ref.bin: relative RMS 1.936e-02, worst |diff| 1.490e-02 (reference rms 0.02106)
