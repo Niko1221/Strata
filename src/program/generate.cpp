@@ -15663,7 +15663,7 @@ int main(int argc, char** argv) {
                             // reuse, the oldest unpinned parked conversations, the chain's own checkpoints from the
                             // back - never the live device state) and probe the RAM again.
                             if (o.session_save_reclaim) {
-                                const auto freed = strata::core::session_read_reclaim(conversations, checks, need,
+                                const auto freed = strata::core::session_read_reclaim(checks, conversations, need,
                                                                                       floor, strata::core::available_host_bytes);
                                 if (freed.bytes || freed.checkpoints || freed.parked) {
                                     // A removed tail must not mark a later checkpoint at this length as a tail.
