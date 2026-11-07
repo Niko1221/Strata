@@ -8,11 +8,20 @@
 //   gdn_scan   per (value head, 32 columns x CB simdgroups): the state column in registers (128 floats a lane);
 //              per token a = S^T k, b = S^T q (old state), delta = (v - g a) beta, o = (g b + delta kq) / sqrt(128)
 //              (= S_new^T q / sqrt(128)), S = g S + k delta^T; q and k staged per TB tokens in threadgroup memory
-//   gdn_post   per (token, head): y = o * rsqrt(mean(o^2) + eps) * gamma * sigmoid(z) -> fp16 (the out GEMM's operand)
+//   gdn_post   per (token, head): y = o * rsqrt(mean(o^2) + eps) * gamma * sigmoid(z) (silu(z) with GDN_SILU_Z, constant
+//              12) -> fp16 (the out GEMM's operand)
 //              and, with `f32`, fp32
 //
 // State layout as Strata's: S[(i * h_v + h) * 128 + j].  Value head h reads q/k head h % h_k.
 // The kernels are new entries (nothing of gdn.metal changes).
+
+// The output gate of gdn_post: sigmoid(z) (default) or silu(z) with the opt-in function constant 12 (GDN_SILU_Z, the
+// same declaration as in gdn.metal, guarded: both files may be in one translation unit, either may be alone).
+#ifndef STRATA_GDN_SILU_Z_DECLARED
+#define STRATA_GDN_SILU_Z_DECLARED 1
+constant bool GDN_SILU_Z [[function_constant(12)]];
+constant bool gdn_silu_z = is_function_constant_defined(GDN_SILU_Z) && GDN_SILU_Z;
+#endif
 
 struct GdnPArgs {
     uint n_tok;
@@ -317,8 +326,9 @@ kernel void gdn_post(device const float* o [[buffer(0)]], device const float* z 
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const float tot = (part[0] + part[1]) + (part[2] + part[3]);
     const float rs = rsqrt(tot / 128.0f + a.eps);
-    const float zv = gdn_ld_on ? z[uint(t) * uint(GDN_LD) + uint(h) * 128u + tid] : z[i];
-    const float yv = ((rs * ov) * gamma[tid]) * (1.0f / (1.0f + exp(-zv)));
+    const float zz = gdn_ld_on ? z[uint(t) * uint(GDN_LD) + uint(h) * 128u + tid] : z[i];
+    const float gate = gdn_silu_z ? zz / (1.0f + exp(-zz)) : 1.0f / (1.0f + exp(-zz));
+    const float yv = ((rs * ov) * gamma[tid]) * gate;
     yh[i] = half(yv);
     if (a.f32) y[i] = yv;
 }
