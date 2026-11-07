@@ -938,6 +938,25 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
     }
+    if (strata::kernels::fused_gr_persist_q8_on()) {   // STRATA_HC_PERSIST_Q8=1: this stage's int8 hc copies (once per card)
+        size_t qbytes = 0;
+        int made = 0;
+        for (int64_t l = lb_; l < le_; ++l) {
+            const LayerView v(wt, l);
+            for (const char* pfx : {"hc_attn_", "hc_ffn_"}) {
+                const WeightRef* wd = v.get((std::string(pfx) + "down.weight").c_str());
+                const WeightRef* wu = v.get((std::string(pfx) + "up.weight").c_str());
+                const WeightRef* wi = v.get((std::string(pfx) + "inject.weight").c_str());
+                if (wd == nullptr || wu == nullptr || wd->q8_scale != nullptr || wu->q8_scale != nullptr) continue;
+                if (strata::kernels::fused_gr_persist_q8_prepare((const uint16_t*) wd->data, (const uint16_t*) wu->data,
+                                                                 wi != nullptr ? (const uint16_t*) wi->data : nullptr, qbytes))
+                    ++made;
+            }
+        }
+        if (qbytes > 0)
+            std::fprintf(stderr, "strata verify: CUDA%d: STRATA_HC_PERSIST_Q8: %d hc reads of layers %lld-%lld as int8 copies, "
+                                 "%zu MiB\n", device_, made, (long long) lb_, (long long) le_ - 1, qbytes >> 20);
+    }
     const WeightRef* wo = wt.find("output.weight");
     if (wo == nullptr) { err = "verify: output.weight is missing"; return false; }
     n_vocab_ = wo->ne1;

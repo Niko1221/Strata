@@ -101,5 +101,11 @@ int fused_gr_variant();
 /// runs `fused_gr_read_multi`.  Only for reads on a stream no other persistent read runs on concurrently (the verifier's).
 void fused_gr_persist_init();
 bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream);
+/// Opt-in STRATA_HC_PERSIST_Q8=1 (with STRATA_HC_PERSIST=1): the persistent read on int8 copies of the weights on Q8_0's
+/// grid (one fp16 scale per 32 values, the rounding of STRATA_HC_Q8) - changes the output (~5e-3 relative in the check).
+/// `_on`: the int8 kernel passed the start-up check on the current card.  `_prepare` (start-up, outside graph capture)
+/// makes one read's copies on the current card and adds their bytes; reads without copies keep the bf16 kernel.
+bool fused_gr_persist_q8_on();
+bool fused_gr_persist_q8_prepare(const uint16_t* w_down, const uint16_t* w_up, const uint16_t* w_inject, size_t& bytes);
 
 }  // namespace strata::kernels
