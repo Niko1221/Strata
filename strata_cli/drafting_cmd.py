@@ -85,20 +85,34 @@ def _inputs(a) -> dict:
             "blocked": drafting.blocked_by(args, slots=cfg.get("parallel") if isinstance(cfg.get("parallel"), int) else 0, named=drafting.normalize(mode) == "dflash2", backend=backend)}
 
 
+def _signals(a, want: dict) -> dict:
+    """The arguments and the one card's memory drafting.tuned_applies reads (as the server reads them for the start); {} when there is no run config to read them from."""
+    try:
+        cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}
+        args = [str(x) for x in cfg.get("args") or []]
+        if cfg.get("user_args"):
+            from strata_control import user_args
+            args = user_args.merge(args, cfg["user_args"])
+        return {"args": args, "vram_mib": drafting.card_vram_mib(cfg, want["backend"], want["archs"])}
+    except Exception:                                        # noqa: BLE001 - no signal: the tuned drafter is not offered
+        return {"args": [], "vram_mib": None}
+
+
 def run(a) -> int:
     from strata_control import drafting_fetch      # here, not at the top: it pulls in the network code, which a started engine's command line must not load
     machine = a.output in ("json", "jsonl")
     want = _inputs(a)
     folder = want["data_dir"]
-    needed = drafting.needs_pack(**want)
-    mtp_needed = drafting.needs_mtp(**want)
+    sig = _signals(a, want)
+    needed = drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig)       # (the tuned drafter is a download of its own, where the set and the card use it)
+    mtp_needed = drafting.needs_mtp(**want, **sig)
     if a.drafting_command == "plan":
-        decision = drafting.decide(**want)
-        support = drafting.hardware_support(want["backend"], want["archs"])
+        decision = drafting.decide(**want, **sig)
+        support = drafting.hardware_support(want["backend"], want["archs"], want["model_name"])
         # serves: this computer's engine can run DFlash2 (the build has the code and the card is one it is made for); the app offers the choice only then
-        result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe()), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
+        result = {**drafting_fetch.plan(folder, drafting.installed_engine_exe(), model_name=want["model_name"], backend=want["backend"], archs=want["archs"], **sig), "needed": needed, "mtp_here": want["mtp_here"], "mtp_needed": mtp_needed, "mtp_gb": MTP_FETCH_GB if mtp_needed else 0.0,
                   "serves": drafting.ENGINE_SERVES_DFLASH2 and support.can_run, "drafter": decision.drafter,
-                  "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"]),
+                  "choice": drafting.choice_of(want["mode"], model_name=want["model_name"], family=want["family"], backend=want["backend"], archs=want["archs"], **sig),
                   "split": bool(getattr(a, "_split", False)), "note": decision.note, "line": drafting.summary_line(decision), "support": support.level, "support_line": support.line}
         if result["split"]:                                # the Terminal's words for the same plan (runner.drafting_plan_line)
             from strata_control import split_engine as SE
@@ -124,7 +138,9 @@ def run(a) -> int:
             print(f"\r{step} {done / 1e9:.2f} of {total / 1e9:.2f} GB", end="", flush=True)
 
     try:
-        out = drafting_fetch.ensure(folder, progress=show)
+        out = drafting_fetch.ensure_for(folder, model_name=want["model_name"], backend=want["backend"], progress=show, archs=want["archs"], **sig)
+        if out is None:                                    # (a set with a tuned drafter, and nothing answered: an explicit fetch says so)
+            raise drafting_fetch.OfflineError("There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
     except (drafting_fetch.DraftingError, acquisition.AcquisitionRefused) as exc:
         if machine:
             print(json.dumps({"schema_version": 1, "ok": False, "error": {"code": "drafting_failed", "message": str(exc)}}, ensure_ascii=False))

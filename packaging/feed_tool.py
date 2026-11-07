@@ -28,6 +28,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import shutil
 import stat
 import sys
 import tarfile
@@ -188,9 +189,23 @@ def pack_control(folder: Path, out: Path, *, version: str, platform: str, fmt: s
     return entry
 
 
+def pack_drafter(pack: Path, out: Path, *, version: str, backends: list[str], url_prefix: str = "", base: str = "", licence: str = "", notes: str = "") -> dict:
+    """Copy a DFlash2 drafter file into `out` (a flat release asset, as it is hosted) and write its feed entry (`<name>.entry.json`). The file is not an archive: the
+    client checks its size and SHA-256 against the signed feed AND against the pin in strata_control/drafting.py."""
+    pack = Path(pack)
+    Path(out).mkdir(parents=True, exist_ok=True)
+    target = Path(out) / pack.name
+    if pack.resolve() != target.resolve():
+        shutil.copy2(pack, target)
+    entry = {"name": pack.name, "version": version, "url": f"{url_prefix}{pack.name}", "size": target.stat().st_size, "sha256": _sha256(target),
+             "backends": list(backends), "base": base, "licence": licence, "notes": notes}
+    (Path(out) / (pack.name + ".entry.json")).write_text(json.dumps(entry, indent=1) + "\n", encoding="utf-8")
+    return entry
+
+
 def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", engine_dir: Path | None = None,
                control_dir: Path | None = None, app_json: Path | None = None, expires_days: int | None = None,
-               now: dt.datetime | None = None, dsv41_dir: Path | None = None) -> dict:
+               now: dt.datetime | None = None, dsv41_dir: Path | None = None, drafters_dir: Path | None = None) -> dict:
     now = now or dt.datetime.now(dt.timezone.utc)
     install_manifest = ""
     document: dict = {"schema_version": feedmod.SCHEMA_VERSION, "feed": "strata-updates", "channel": channel,
@@ -202,6 +217,9 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     if dsv41_dir:
         document["dsv41"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
                                           for p in sorted(Path(dsv41_dir).glob("*.entry.json"))]}
+    if drafters_dir:
+        document["drafters"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
+                                             for p in sorted(Path(drafters_dir).glob("*.entry.json"))]}
     if control_dir:
         entries = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(Path(control_dir).glob("*.entry.json"))]
         versions = {e["version"] for e in entries}
@@ -311,6 +329,14 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--format", choices=feedmod.FORMATS, default="tar.gz")
     pe.add_argument("--url-prefix", default="engine/", help='where the archive sits relative to the feed ("" for flat GitHub release assets)')
     pe.add_argument("--prefix", default="strata-engine", help="archive name prefix (strata-dsv41 for the DeepSeek engine packages)")
+    pd = sub.add_parser("pack-drafter", help="a DFlash2 drafter file as a feed entry (feed member drafters)")
+    pd.add_argument("pack", type=Path)
+    pd.add_argument("--out", type=Path, required=True)
+    pd.add_argument("--version", required=True)
+    pd.add_argument("--backends", required=True, help="comma-separated engine families it was measured on, e.g. metal")
+    pd.add_argument("--url-prefix", default="", help='"" for flat GitHub release assets')
+    pd.add_argument("--base", default="")
+    pd.add_argument("--licence", default="")
     pc = sub.add_parser("pack-control")
     pc.add_argument("folder", type=Path)
     pc.add_argument("--out", type=Path, required=True)
@@ -325,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--channel", default="stable")
     bf.add_argument("--engine", type=Path)
     bf.add_argument("--dsv41", type=Path, help="folder of the DeepSeek engine packages' .entry.json files (feed member dsv41)")
+    bf.add_argument("--drafters", type=Path, help="folder of the DFlash2 drafters' .entry.json files (feed member drafters; pack-drafter writes them)")
     bf.add_argument("--control", type=Path)
     bf.add_argument("--app-json", type=Path)
     bf.add_argument("--expires-days", type=int)
@@ -351,14 +378,17 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "pack-engine":
         entry = pack_engine(a.folder, a.out, a.format, url_prefix=a.url_prefix, prefix=a.prefix)
         print(json.dumps({k: entry[k] for k in ("version", "backend", "variant", "size", "sha256", "manifest_sha256")}, indent=1))
+    elif a.cmd == "pack-drafter":
+        entry = pack_drafter(a.pack, a.out, version=a.version, backends=[b for b in a.backends.split(",") if b], url_prefix=a.url_prefix, base=a.base, licence=a.licence)
+        print(json.dumps({k: entry[k] for k in ("name", "version", "size", "sha256", "backends")}, indent=1))
     elif a.cmd == "pack-control":
         entry = pack_control(a.folder, a.out, version=a.version, platform=a.platform, fmt=a.format, url_prefix=a.url_prefix)
         print(json.dumps({k: entry[k] for k in ("version", "platform", "size", "sha256")}, indent=1))
     elif a.cmd == "build-feed":
         doc = build_feed(a.out, key=_load_key(a.key), sequence=a.sequence, channel=a.channel, engine_dir=a.engine,
-                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, dsv41_dir=a.dsv41)
+                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, dsv41_dir=a.dsv41, drafters_dir=a.drafters)
         print(f"wrote {a.out / feedmod.FEED_NAME} (+ .sig); engines {len((doc.get('engine') or {}).get('packages', []))}, "
-              f"deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
+              f"deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, drafters {len((doc.get('drafters') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
     elif a.cmd == "set-app-platform":
         url = a.url or f"https://github.com/Niko1221/Strata/releases/latest/download/{a.archive.name}"
         entry = set_app_platform(a.app_json, target=a.target, archive=a.archive, signature_file=a.sig, url=url, version=a.version,

@@ -358,6 +358,19 @@ class EngineArguments(unittest.TestCase):
         drafting.apply(c, data_dir=self.data, backend="cuda", archs=["sm_120"], vram_mib=8000)
         self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.8", "CUDA keeps its slot steps")
 
+    def test_a_mac_gets_its_own_confidence_not_the_cuda_slot_steps(self):
+        """Metal maps every expert: the --expert-cache 64 the Mac setup writes is a slot count of 83 to the CUDA steps (0.8), which was not measured on a Mac; M5 Max measured 0.5."""
+        self.layer()
+        self.pack()
+        for vram in (None, 8000, 96000):
+            c = self.cfg()
+            d = drafting.apply(c, data_dir=self.data, backend="metal", archs=[], vram_mib=vram)
+            a = c["args"]
+            self.assertEqual((d.drafter, a[a.index("--draft-conf") + 1], a[a.index("--spec") + 1], "--mtp" in a, a[a.index("--draft-fallback") + 1]), ("dflash2", "0.5", "6", False, "none"), vram)
+        c = self.cfg(user_args=["--draft-conf", "0.4"], args=[*self.args, "--draft-conf", "0.4"])
+        drafting.apply(c, data_dir=self.data, backend="metal", archs=[])
+        self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.4", "the person's own value stays")
+
     def test_off_is_the_draft_layers_own_switch(self):
         c = self.cfg(drafting="off")
         d = self.apply(c)
