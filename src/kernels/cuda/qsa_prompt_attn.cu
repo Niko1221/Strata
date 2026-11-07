@@ -97,8 +97,10 @@ struct Smem {
     static constexpr int KROW = KV_MODE == 0 ? HD + 8 : HD + 16;   // elements; 16-byte aligned rows, banks spread
     static constexpr int VROW = (KV_MODE == 1 || KV_MODE == 4) ? HD + 16 : HD + 8;
     static constexpr int NG = KV_MODE == 4 ? HD / QK4_0 : 4;      // scale groups per row (q4_0: 8 of 32, else 4 of 64)
-    __half qh[16][QS];
-    __half ql[16][QS];
+    // only the G = 12 real head rows (sm_89 tune): rows 12..15 of the MMA's A are zero and are made in registers,
+    // so the fp16-KV block takes 50 KB instead of 54 KB and two blocks fit an SM's 100 KB (Ada); the same bits
+    __half qh[G][QS];
+    __half ql[G][QS];
     // int8 K/V (mode 1): K is read only by the scores and V only by p.v, so they share one buffer - V is stored over K
     // after the scores (prompt_attn_kernel).  37.9 -> 29.2 KB: two blocks fit an SM's 64 KB on Turing instead of one.
     struct Rows { KElem k[CH][KROW]; VElem v[CH][VROW]; };
@@ -143,7 +145,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     int qe = 0;
     if (qm > 0.0f) frexpf(qm, &qe);                 // qm < 2^qe
     const float qup = ldexpf(1.0f, 14 - qe), qdown = ldexpf(scale_log2, qe - 14);
-    for (int i = t; i < 16 * HD; i += THREADS) {
+    for (int i = t; i < G * HD; i += THREADS) {
         const int h = i / HD, d = i % HD;
         const float x = h < G ? q[(size_t) h * HD + d] * qup : 0.0f;
         const __half hi = __float2half_rn(x);
@@ -327,14 +329,15 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 for (int kk = 0; kk < KPG; ++kk) {
                     const int k0 = (g * KPG + kk) * 16;
                     uint32_t ah[4], al[4], b[2];
+                    const bool hi8 = gid + 8 < G;   // rows 12..15: zero (+0.0 halves, as the old pad rows held)
                     ah[0] = *reinterpret_cast<const uint32_t*>(&S.qh[gid][k0 + 2 * tig]);
-                    ah[1] = *reinterpret_cast<const uint32_t*>(&S.qh[gid + 8][k0 + 2 * tig]);
+                    ah[1] = hi8 ? *reinterpret_cast<const uint32_t*>(&S.qh[gid + 8][k0 + 2 * tig]) : 0u;
                     ah[2] = *reinterpret_cast<const uint32_t*>(&S.qh[gid][k0 + 2 * tig + 8]);
-                    ah[3] = *reinterpret_cast<const uint32_t*>(&S.qh[gid + 8][k0 + 2 * tig + 8]);
+                    ah[3] = hi8 ? *reinterpret_cast<const uint32_t*>(&S.qh[gid + 8][k0 + 2 * tig + 8]) : 0u;
                     al[0] = *reinterpret_cast<const uint32_t*>(&S.ql[gid][k0 + 2 * tig]);
-                    al[1] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig]);
+                    al[1] = hi8 ? *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig]) : 0u;
                     al[2] = *reinterpret_cast<const uint32_t*>(&S.ql[gid][k0 + 2 * tig + 8]);
-                    al[3] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig + 8]);
+                    al[3] = hi8 ? *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig + 8]) : 0u;
                     if constexpr (KV_MODE != 0) {   // modes 1 and 3: the K side is INT8 codes
                         b[0] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.kv.k[cb + gid][k0 + 2 * tig]));
                         b[1] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.kv.k[cb + gid][k0 + 2 * tig + 8]));
@@ -1428,6 +1431,8 @@ bool launch_i8v3(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     return true;
 }
 
+static_assert(sizeof(Smem<0, false>) + 1024 <= 102400 / 2, "two fp16-KV prompt-attention blocks an SM on sm_89");
+
 template <int KV_MODE, bool PF = false>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
             const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
@@ -1442,6 +1447,10 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
             cudaGetLastError();
             return false;
         }
+        // sm_89 tune: the shared-memory side of the L1 split as large as it goes, so two fp16-KV blocks (50 KB each
+        // with the 1 KB the SM keeps per block) fit Ada's 100 KB; a hint only, the bits are the same
+        cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE, PF>, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        cudaGetLastError();
         attr[dev] = true;
     }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
