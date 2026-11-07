@@ -73,8 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
-
-## Run the standard benchmark
+- [2026-10-30: AMD Radeon RX 6600M (gfx1032) 8 GiB, Core i5-13600, 95.7 GiB RAM](../bench/results/2026-10-30-community-rx-6600m-qwen3-8-flash-next-coder-iq1-m/README.md):
+  a hand-built Windows HIP engine (0.1.53) for this card, Coder IQ1_M at 8,192 tokens with `--spec 4`: three short chats (decode 8.1 tok/s, first token 2.5 s) and three fresh 4K prompts (46.0 tok/s); 16K and the agent session skipped at this context.
 
 ```sh
 strata bench run --profile NAME --track default --track-notes "release 0.2.1, setup defaults"
