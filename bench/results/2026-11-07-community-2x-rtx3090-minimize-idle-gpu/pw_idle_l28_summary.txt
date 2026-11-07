@@ -4,7 +4,7 @@ the ms/win, onpath% and spec% columns are empty: STRATA_DECODE_TIMING was off on
 (it costs the serial loop ~8 %); the last table is both passes merged, paired per round
 
 
-Strata c62d5e3a [main] @ /home/aurelb/github/SimonX200/AI-Umbrella/Strata
+Strata c62d5e3a [main]
 server  : http://g27:8081  model qwen3.8-flash-next-unsloth-ud-iq4_xs  pod strata-l28-6f559fbb8c-xqbmp
 switch  : /opt/strata/scripts/pl_switch.txt = 'pw=2 theta=0.35' (restored at the end)
 arms    : pw=0  |  pw=2 theta=0.35
@@ -30,7 +30,7 @@ paired per round (the same round id on both arms; a round whose baseline or whos
                               busy sum  +45.2 pp, one-idle   +4.1 pp,    +6 W (median of the per-round differences)
 
 sampler: 1442 rows, 0 dropped, 7 rounds skipped (foreign request or too few samples), 10.0 Hz achieved
-Strata c62d5e3a [main] @ /home/aurelb/github/SimonX200/AI-Umbrella/Strata
+Strata c62d5e3a [main]
 server  : http://g27:8081  model qwen3.8-flash-next-unsloth-ud-iq4_xs  pod strata-l28-6f559fbb8c-xqbmp
 switch  : /opt/strata/scripts/pl_switch.txt = 'pw=2 theta=0.35' (restored at the end)
 arms    : pw=0  |  pw=2 theta=0.35
