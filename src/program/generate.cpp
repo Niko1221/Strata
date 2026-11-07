@@ -4809,6 +4809,7 @@ int main(int argc, char** argv) {
     // the compiled shape; a native model's file replaces it below with its own metadata (read_geometry), which a
     // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
     strata::core::ModelGeometry g = strata::core::kCompiledGeometry;
+    strata::kernels::PleConsts ple_consts_run = strata::kernels::ple_artifact_consts();   // the model file's PLE hash constants when it has them
     int64_t K = g.n_expert_used;
     // THE ROPE CONFIG RESOLVES HERE, BEFORE ANY WEIGHT MOVES - the CLI and the model file have both spoken,
     // and `session_init` below builds the rope table from it and captures the kernels reading its constants
@@ -4821,7 +4822,6 @@ int main(int argc, char** argv) {
         // artifact today ships none, so this is a no-op defaults channel for future fine-tunes.
         std::string gguf_rope_type;
         double gguf_rope_base = 0, gguf_rope_factor = 0, gguf_rope_orig_ctx = 0;
-        strata::kernels::PleConsts ple_consts_run = strata::kernels::ple_artifact_consts();   // the model file's PLE hash constants when it has them
         if (!o.native_preset.empty()) {
             // The geometry is the model file's (core::geometry_from_gguf: every "<arch>.*" shape key), checked
             // against the shapes this engine's kernels are built for.  The expert count and top-k are run-time
