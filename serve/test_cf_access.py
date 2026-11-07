@@ -120,6 +120,39 @@ class AccessJwt(unittest.TestCase):
         self.assertEqual(cf_access.token_of({"Cookie": "x=1; CF_Authorization=d.e.f"}), "d.e.f")
         self.assertEqual(cf_access.token_of({}), "")
 
+    def test_non_dict_header(self):
+        for bad_h in (None, [1, 2, 3], "string", 123):
+            h = _b64(json.dumps(bad_h).encode())
+            p = _b64(json.dumps(self.claims()).encode())
+            tok = f"{h}.{p}.invalidsig"
+            self.assertIsNone(self.v.verify(tok))
+
+    def test_failed_fetch_is_throttled(self):
+        calls = 0
+
+        def failing_fetch(url):
+            nonlocal calls
+            calls += 1
+            raise OSError("network down")
+
+        t = NOW
+        v = cf_access.AccessVerifier(TEAM, [AUD], fetch=failing_fetch, now=lambda: t)
+        tok = _sign(self.n, self.d, "unknown_kid", self.claims())
+
+        # First attempt tries and fails
+        self.assertIsNone(v.verify(tok))
+        self.assertEqual(calls, 1)
+
+        # Immediate next attempt within REFETCH_MIN does not call fetch again
+        t += 10
+        self.assertIsNone(v.verify(tok))
+        self.assertEqual(calls, 1)
+
+        # After REFETCH_MIN (60s), retry occurs
+        t += 65
+        self.assertIsNone(v.verify(tok))
+        self.assertEqual(calls, 2)
+
 
 
 
@@ -165,6 +198,37 @@ class ServerIntegration(unittest.TestCase):
         c.request("POST", "/v1/chat/completions",
                   body=json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
                   headers={"Content-Type": "application/json", "Cf-Access-Jwt-Assertion": valid_tok})
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        r.read()
+        c.close()
+
+    def test_untrusted_origin_with_cf_access_is_rejected(self):
+        import http.client
+        valid_tok = _sign(self.n, self.d, "k1", {
+            "iss": ISS, "aud": [AUD], "exp": NOW + 3600, "nbf": NOW - 60, "sub": "user@example.com"
+        })
+        # Untrusted Origin should be blocked by CSRF / foreign_page check
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request("POST", "/v1/chat/completions",
+                  body=json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
+                  headers={"Content-Type": "application/json",
+                           "Cf-Access-Jwt-Assertion": valid_tok,
+                           "Origin": "https://evil.com"})
+        r = c.getresponse()
+        self.assertEqual(r.status, 403)
+        r.read()
+        c.close()
+
+    def test_explicit_api_key_bypasses_origin_check(self):
+        import http.client
+        # Valid explicit API key bypasses origin check for developer clients/extensions
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request("POST", "/v1/chat/completions",
+                  body=json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
+                  headers={"Content-Type": "application/json",
+                           "Authorization": f"Bearer {self.svc.api_key}",
+                           "Origin": "https://another-client.example.com"})
         r = c.getresponse()
         self.assertEqual(r.status, 200)
         r.read()

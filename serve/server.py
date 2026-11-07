@@ -7675,12 +7675,20 @@ def make_handler(svc: Service):
                              f"turns this check off"}})
             return False
 
+        def _given_key(self) -> str:
+            auth = self.headers.get("Authorization", "")
+            return auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
+
         def _foreign_page(self) -> bool:
-            """Without an API key, a /v1 POST from a browser page of another site (any site can POST text/plain
-            there without a CORS preflight) would burn GPU time: an Origin header must name an allowed page, and
-            then the body must be JSON.  No Origin (curl, the SDKs, other servers): any content type, as before."""
+            """Without an API key (or when authenticating via ambient browser credentials such as Cloudflare Access),
+            a /v1 POST from a browser page of another site (any site can POST text/plain there without a CORS preflight)
+            would burn GPU time: an Origin header must name an allowed page, and then the body must be JSON.  No Origin
+            (curl, the SDKs, other servers): any content type, as before."""
             origin = self.headers.get("Origin")
-            if svc.api_key or not origin:
+            if not origin:
+                return False
+            # An explicitly provided valid API key bypasses the check (developer scripts, curl, extensions):
+            if svc.api_key and key_matches(self._given_key(), svc.api_key):
                 return False
             if not origin_allowed(origin, self.headers.get("Host"), svc.host_names,
                                   [*svc.trusted_origins, *svc.cors_origins]):
@@ -7797,9 +7805,7 @@ def make_handler(svc: Service):
         def _authorized(self) -> bool:
             if not svc.api_key:
                 return True
-            auth = self.headers.get("Authorization", "")
-            given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
-            if key_matches(given, svc.api_key) or self._access_claims() is not None:
+            if key_matches(self._given_key(), svc.api_key) or self._access_claims() is not None:
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
@@ -7807,8 +7813,7 @@ def make_handler(svc: Service):
         def _authorized_telemetry(self) -> bool:
             if not svc.api_key and not svc.telemetry_key:
                 return True
-            auth = self.headers.get("Authorization", "")
-            given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
+            given = self._given_key()
             if (svc.api_key and key_matches(given, svc.api_key)) or \
                     (svc.telemetry_key and key_matches(given, svc.telemetry_key)) or \
                     self._access_claims() is not None:

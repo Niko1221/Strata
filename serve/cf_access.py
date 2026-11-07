@@ -68,6 +68,7 @@ class AccessVerifier:
         self._now = now
         self._keys: dict[str, tuple[int, int]] = {}
         self._fetched = 0.0
+        self._last_attempt = 0.0
         self._lock = threading.Lock()
 
     def _http_fetch(self, url: str) -> dict:
@@ -76,15 +77,18 @@ class AccessVerifier:
 
     def _key(self, kid: str) -> tuple[int, int] | None:
         with self._lock:
-            age = self._now() - self._fetched
-            if age > CERTS_TTL or (kid not in self._keys and age > REFETCH_MIN):
+            now = self._now()
+            age = now - self._fetched
+            attempt_age = now - self._last_attempt
+            if (age > CERTS_TTL or (kid not in self._keys and age > REFETCH_MIN)) and attempt_age > REFETCH_MIN:
+                self._last_attempt = now
                 try:
                     doc = self._fetch(self.certs_url)
                     self._keys = {k["kid"]: (_int(k["n"]), _int(k["e"])) for k in doc.get("keys", [])
                                   if k.get("kty") == "RSA" and "kid" in k}
-                    self._fetched = self._now()
+                    self._fetched = now
                 except Exception:
-                    pass          # keep the keys we have; a later request tries again
+                    pass          # keep the keys we have; a later request retries after REFETCH_MIN
             return self._keys.get(kid)
 
     def verify(self, token: str) -> dict | None:
@@ -96,7 +100,7 @@ class AccessVerifier:
             sig = _b64url(s64)
         except Exception:
             return None
-        if header.get("alg") != "RS256" or not isinstance(claims, dict):
+        if not isinstance(header, dict) or not isinstance(claims, dict) or header.get("alg") != "RS256":
             return None
         key = self._key(str(header.get("kid", "")))
         if key is None or not rsa_sha256_verify(key[0], key[1], f"{h64}.{p64}".encode("ascii"), sig):
