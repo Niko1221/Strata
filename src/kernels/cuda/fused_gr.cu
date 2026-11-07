@@ -31,10 +31,10 @@
 namespace strata::kernels {
 namespace {
 
-constexpr int N = 2560;         // n_embd
-constexpr int HC = 4;           // streams
+constexpr int N = strata::core::kCompiledGeometry.n_embd;         // 2560 in Flash-Next
+constexpr int HC = strata::core::kCompiledGeometry.hc;           // streams
 constexpr int D = N * HC;       // 10240
-constexpr int LR = 320;         // hc_lr
+constexpr int LR = strata::core::kCompiledGeometry.hc_lr;         // 320
 // the latency-hidden norm/up (gr_norm_fast_kernel / gr_up_fast_kernel, STRATA_GR_FAST): gfx906's, built for CUDA too
 #if defined(STRATA_HIP_GFX906) || !defined(__HIPCC__)
 #define STRATA_GR_FAST_BUILD 1
