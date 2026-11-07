@@ -26,7 +26,7 @@
     "engine_version": "0.2.12"
    },
    "config_file": {
-    "exe": "<ROOT>/engine/strata.exe",
+    "exe": "<ROOT>/engine/strata",
     "args": [
      "--pack",
      "<ROOT>/data/packs/iq3_s",
@@ -61,7 +61,7 @@
     "lib_dirs": [],
     "port": 8080,
     "vision": {
-     "exe": "<ROOT>/engine/strata-vision.exe",
+     "exe": "<ROOT>/engine/strata-vision",
      "mmproj": "<ROOT>/data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
      "model": "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
      "gpu": false,
@@ -70,7 +70,7 @@
     }
    },
    "engine": {
-    "exe": "<ROOT>/engine/strata.exe",
+    "exe": "<ROOT>/engine/strata",
     "argv": [
      "--pack",
      "<ROOT>/data/packs/iq3_s",

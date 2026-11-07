@@ -35,6 +35,8 @@ class ProbeLib:
         m = world.machine
         self.WIN = m.os == "windows"
         self.CONTROL = False
+        suffix = ".exe" if self.WIN else ""
+        self.EXE, self.VEXE = "strata" + suffix, "strata-vision" + suffix          # the simulated class decides, not the host the test runs on
         self._over = {
             "gpu_compute_mode": lambda index: "Default",
             "gpu_drives_display": lambda g: False,
@@ -48,6 +50,7 @@ class ProbeLib:
             "hipblaslt_table": lambda arch, lib_dirs, ver=None, extra_dirs=(): None,
             "vision_threads": lambda logical=None: 8,
             "is_gb10": lambda g: m.key == "dgx_spark",
+            "engine_exe": lambda eng: str(eng / self.EXE),
         }
 
     def __getattr__(self, name):

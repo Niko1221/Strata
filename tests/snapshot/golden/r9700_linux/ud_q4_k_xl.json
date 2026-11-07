@@ -26,7 +26,7 @@
     "engine_version": "0.2.12"
    },
    "config_file": {
-    "exe": "<ROOT>/engine/strata.exe",
+    "exe": "<ROOT>/engine/strata",
     "args": [
      "--pack",
      "<ROOT>/data/packs/ud_q4_k_xl",
@@ -65,7 +65,7 @@
     "backend": "hip"
    },
    "engine": {
-    "exe": "<ROOT>/engine/strata.exe",
+    "exe": "<ROOT>/engine/strata",
     "argv": [
      "--pack",
      "<ROOT>/data/packs/ud_q4_k_xl",

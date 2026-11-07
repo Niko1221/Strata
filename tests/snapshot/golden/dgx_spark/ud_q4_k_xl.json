@@ -29,7 +29,7 @@
     "engine_version": "0.2.12"
    },
    "config_file": {
-    "exe": "<ROOT>/engine/strata.exe",
+    "exe": "<ROOT>/engine/strata",
     "args": [
      "--pack",
      "<ROOT>/data/packs/ud_q4_k_xl",
@@ -76,7 +76,7 @@
      "STRATA_HC_Q8": "1"
     },
     "vision": {
-     "exe": "<ROOT>/engine/strata-vision.exe",
+     "exe": "<ROOT>/engine/strata-vision",
      "mmproj": "<ROOT>/data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
      "model": "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
      "gpu": true,
@@ -84,7 +84,7 @@
     }
    },
    "engine": {
-    "exe": "<ROOT>/engine/strata.exe",
+    "exe": "<ROOT>/engine/strata",
     "argv": [
      "--pack",
      "<ROOT>/data/packs/ud_q4_k_xl",
