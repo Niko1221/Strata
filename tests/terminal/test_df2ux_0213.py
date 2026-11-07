@@ -83,6 +83,10 @@ class PlanNamesTheRealDrafter(unittest.TestCase):
 class TheLaunchPlan(unittest.TestCase):
     """`strata launch --plan` for a model that is not installed yet: the number is the tuned drafter's."""
 
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def test_the_download_list_and_the_plan_line_use_the_tuned_pack(self):
         from strata_cli.launch.runner import Runner
         with Home():
