@@ -739,6 +739,9 @@ bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<Se
         const OnDevice on_main(devices[0]);
         if (!sync(error)) return false;
         if (!conversation_checkpoint_save(captured.live, *sessions[0], g, error)) return false;
+        // STRATA_CKPT_ASYNC: as in the single-session builder above, the record is read on immediately (it moves
+        // into `meta` and the writer hashes it), so the running state's copy has to land first.
+        conversation_checkpoint_join(captured.live.gdn.data());
     }
     size_t total = 0;
     for (size_t k = 0; k < sessions.size(); ++k) total += owned_qsa(*sessions[k]) + (draft_of[k] ? 1 : 0);
@@ -753,6 +756,10 @@ bool conversation_snapshot_sources_split(SavedConversation& meta, std::vector<Se
         ConversationCheckpoint part;
         part.ids = view.ids; part.imgs = view.images;
         if (!conversation_checkpoint_save(part, *sessions[k], g, error)) return false;
+        // STRATA_CKPT_ASYNC, the site the next stage's save used to cover by joining on entry: with this loop's
+        // LAST stage the cover never exists, and the part moves into the record while its copy is still landing -
+        // a torn stage inside a file whose payload hash validates.  Join before the move (the same pointer).
+        conversation_checkpoint_join(part.gdn.data());
         captured.live.stage_parts.push_back(std::move(part));
     }
     // The K/V sources are lazy: their reads happen during the file write and ride each pool's own device

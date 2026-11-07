@@ -861,6 +861,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(conversation_stage_split_test PRIVATE strata_engine)
     add_test(NAME conversation_stage_split_test COMMAND conversation_stage_split_test)
     set_tests_properties(conversation_stage_split_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # The same battery with a GDN state over 1 MiB and the opt-in background checkpoint copy: the split capture's
+    # own joins (conversation_snapshot_sources_split) and every byte comparison in the battery are only meanin
+    # once the DMA that fills a record has landed.
+    add_test(NAME conversation_stage_split_test_ckpt_async COMMAND conversation_stage_split_test)
+    set_tests_properties(conversation_stage_split_test_ckpt_async PROPERTIES
+      ENVIRONMENT "STRATA_TEST_BIG_GDN=1;STRATA_CKPT_ASYNC=1" SKIP_RETURN_CODE 77 TIMEOUT 300)
     add_executable(conversation_validation_test src/core/conversation_validation_test.cpp)
     target_link_libraries(conversation_validation_test PRIVATE strata_engine)
     add_test(NAME conversation_validation_test COMMAND conversation_validation_test)
