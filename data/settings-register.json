@@ -12936,7 +12936,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 828,
+     "line": 842,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -17437,7 +17437,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3504,
+     "line": 3518,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -17920,7 +17920,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1679,
+     "line": 1693,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -17989,13 +17989,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2160,
+     "line": 2174,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2160,
+     "line": 2174,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18096,7 +18096,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 117,
+     "line": 118,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18141,19 +18141,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2438,
+     "line": 2452,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3447,
+     "line": 3461,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3452,
+     "line": 3466,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18186,7 +18186,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1691,
+     "line": 1705,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18219,7 +18219,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 126,
+     "line": 132,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18253,9 +18253,9 @@
    "since": "v0.2.10",
    "last_commit": "8e7ed68181",
    "last_date": "2026-11-01",
-   "status": "opt-in",
+   "status": "default",
    "owner": "metal/engine",
-   "note": "[auto] documented for users (docs/MAC.md:271)",
+   "note": "on by default for a resident IQ3_S or Q2_0 pack (found from the GGUF file name; metal window.cpp f16_auto_for; owner yes 2026-11-07; M5 Max decode +9..15%, KL 0.009/0.016); STRATA_METAL_F16=0 turns it off, =1 turns it on for any pack; a streaming pack never",
    "retire_after": "",
    "retired_in": ""
   },
@@ -18267,13 +18267,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 459,
+     "line": 472,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 459,
+     "line": 472,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18308,7 +18308,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 92,
+     "line": 93,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18341,7 +18341,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 69,
+     "line": 70,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18374,7 +18374,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 83,
+     "line": 84,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18407,7 +18407,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 931,
+     "line": 945,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18440,13 +18440,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 919,
+     "line": 933,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 919,
+     "line": 933,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18481,13 +18481,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 995,
+     "line": 1009,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 995,
+     "line": 1009,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18520,13 +18520,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 683,
+     "line": 696,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 683,
+     "line": 696,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18600,7 +18600,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1678,
+     "line": 1692,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18635,13 +18635,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1646,
+     "line": 1660,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1646,
+     "line": 1660,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18676,13 +18676,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1465,
+     "line": 1479,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1465,
+     "line": 1479,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18717,13 +18717,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2325,
+     "line": 2339,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2325,
+     "line": 2339,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18758,13 +18758,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 446,
+     "line": 459,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 446,
+     "line": 459,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18803,7 +18803,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1680,
+     "line": 1694,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18838,7 +18838,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1738,
+     "line": 1752,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18937,7 +18937,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2464,
+     "line": 2478,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18972,7 +18972,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3563,
+     "line": 3577,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19005,13 +19005,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 594,
+     "line": 607,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 594,
+     "line": 607,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19044,7 +19044,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2384,
+     "line": 2398,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19112,7 +19112,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1996,
+     "line": 2010,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19145,13 +19145,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 438,
+     "line": 451,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 438,
+     "line": 451,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19192,7 +19192,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 882,
+     "line": 896,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19297,19 +19297,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1965,
+     "line": 1979,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1985,
+     "line": 1999,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3463,
+     "line": 3477,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19344,13 +19344,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3596,
+     "line": 3610,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3596,
+     "line": 3610,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19391,7 +19391,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2908,
+     "line": 2922,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19427,7 +19427,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2927,
+     "line": 2941,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19462,19 +19462,19 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1708,
+     "line": 1722,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2895,
+     "line": 2909,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3600,
+     "line": 3614,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19507,13 +19507,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2899,
+     "line": 2913,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3601,
+     "line": 3615,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19579,13 +19579,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3597,
+     "line": 3611,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3597,
+     "line": 3611,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19618,7 +19618,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2930,
+     "line": 2944,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19684,13 +19684,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 465,
+     "line": 478,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 465,
+     "line": 478,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19725,7 +19725,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3429,
+     "line": 3443,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19758,7 +19758,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 287,
+     "line": 300,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19830,13 +19830,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1468,
+     "line": 1482,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1468,
+     "line": 1482,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19869,13 +19869,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1470,
+     "line": 1484,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1470,
+     "line": 1484,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19908,13 +19908,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1915,
+     "line": 1929,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1915,
+     "line": 1929,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19947,13 +19947,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1878,
+     "line": 1892,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1878,
+     "line": 1892,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20108,13 +20108,13 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2025,
+     "line": 2039,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3317,
+     "line": 3331,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20185,7 +20185,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 452,
+     "line": 465,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20512,8 +20512,8 @@
    "first_commit": "465cd61dfb",
    "first_date": "2026-10-12",
    "since": "v0.1.44",
-   "last_commit": "52ac4e7337",
-   "last_date": "2026-11-03",
+   "last_commit": "ffb94c578c",
+   "last_date": "2026-11-07",
    "status": "default",
    "owner": "core",
    "note": "on by default where the engine already had it (NVIDIA cc 8+, gfx12, Intel) and, since the owner's yes of 2026-11-07, on AMD that is not gfx12 when most expert gate/up tensors of the file are Q5_K or Q6_K (UD-Q5_K_XL, UD-Q6_K_XL; generate.cpp via NativeDense::gguf_mostly_q5q6_experts); STRATA_MMQ_KQ=0 turns it off",

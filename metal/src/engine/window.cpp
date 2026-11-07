@@ -36,6 +36,7 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <cerrno>
 #include <filesystem>
 #include <functional>
@@ -122,9 +123,21 @@ bool metal_ctab() {
 // STRATA_METAL_F16=1 (opt-in): the decode windows' (resident model, with the head) dense GEMVs of Q2_0, the K-quants and IQ4_XS on the fp16 path -
 // the weights decoded into half, the window's x as half planes the writers of x add (function constant 25), the
 // products of a half unit summed in half, the scales and the units' sum in float (gemv.metal gemv16)
+// Unset (owner yes 2026-11-07; was strata_control/mac_fit.py engine_env): on for a resident IQ3_S or Q2_0 pack, found from the file name the launcher's
+// models carry ("...-IQ3_S-0000N-of-0000M.gguf", "...-Q2_0-..."), decided once the model is open (f16_auto_for).  M5 Max: decode +9 to +15%
+// (Q2_0) and +9 to +12% (IQ3_S), top-1 agreement 97.1% / 96.2%, mean KL 0.009 / 0.016, 61-task suite the same.  STRATA_METAL_F16=0 turns it off,
+// =1 turns it on for any pack.
+bool g_f16_auto = false;
 bool metal_f16() {
-    static const bool on = [] { const char* e = std::getenv("STRATA_METAL_F16"); return e && std::string(e) == "1"; }();
-    return on;
+    static const int mode = [] { const char* e = std::getenv("STRATA_METAL_F16"); return e == nullptr || *e == '\0' ? -1 : (std::string(e) == "1" ? 1 : 0); }();
+    return mode == 1 || (mode < 0 && g_f16_auto);
+}
+bool f16_auto_for(const std::string& path, bool streaming) {
+    if (streaming) return false;
+    const size_t k = path.find_last_of("/\\");
+    std::string n = k == std::string::npos ? path : path.substr(k + 1);
+    for (char& c : n) c = (char) std::toupper((unsigned char) c);
+    return n.find("-IQ3_S-") != std::string::npos || n.find("-Q2_0-") != std::string::npos;
 }
 // the half plane a format reads: 0 raw, 1 x * 4^-(i % 4), 2 x * 2^-8 at odd i; -1 no fp16 decode
 int x16_kind(int ty) {
@@ -688,6 +701,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     if (!f_.open(shard1, err)) return false;
     cx_ = std::make_unique<mtl::Context>();
     stream_ = ExpertStream::wanted(f_, *cx_);
+    g_f16_auto = f16_auto_for(f_.path, stream_);   // STRATA_METAL_F16 unset: a resident IQ3_S / Q2_0 pack takes the fp16 decode windows
     if (stream_) {
         // the model does not fit: the dense weights are read into memory below, the experts stream from the SSD
         st_ = std::make_unique<ExpertStream>();
