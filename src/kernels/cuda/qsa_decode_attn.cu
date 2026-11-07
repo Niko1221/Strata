@@ -450,7 +450,16 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_q8_v3_kernel(const float* 
         if (srow[c] < 0) continue;   // masked above, weight 0
         const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
         const float v = (float) p.v_q[srow[c] * HD + t] * sc;
-        fold_cell<G>(acc, &spt[c][0], v);
+        if constexpr (G == 12) {   // Flash-Next: the expressions this replaced (device code unchanged)
+            const float4 p0 = *reinterpret_cast<const float4*>(&spt[c][0]);
+            const float4 p1 = *reinterpret_cast<const float4*>(&spt[c][4]);
+            const float4 p2 = *reinterpret_cast<const float4*>(&spt[c][8]);
+            const float pr[G] = {p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w, p2.x, p2.y, p2.z, p2.w};
+#pragma unroll
+            for (int h = 0; h < G; ++h) acc[h] = fmaf(pr[h], v, acc[h]);
+        } else {
+            fold_cell<G>(acc, &spt[c][0], v);
+        }
     }
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
