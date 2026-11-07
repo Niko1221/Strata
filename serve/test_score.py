@@ -1,4 +1,4 @@
-"""POST /v1/score: teacher-forced log-probabilities - the engine line and its parsing, then the route's shapes.
+"""POST /v1/engine/score: teacher-forced log-probabilities - the engine line and its parsing, then the route's shapes.
 
 A training loop reads three things from this endpoint and nothing else: the score of every position of a sequence it
 chose, the same figure again at different weights, and the assurance that two runs are comparable.  The tests below
@@ -106,7 +106,7 @@ class Route(unittest.TestCase):
             return response.status, json.loads(response.read().decode())
 
     def test_positions_line_up_with_the_tokens(self):
-        code, body = self.request("/v1/score", {"tokens": [1, 2, 220]})
+        code, body = self.request("/v1/engine/score", {"tokens": [1, 2, 220]})
         self.assertEqual(code, 200, body)
         self.assertEqual(body["object"], "score")
         self.assertEqual(body["tokens"], [1, 2, 220])
@@ -123,21 +123,21 @@ class Route(unittest.TestCase):
         self.assertEqual(body["engine"]["head_ms"], 1.5)
 
     def test_a_prompt_is_tokenized_here(self):
-        code, body = self.request("/v1/score", {"prompt": "ab"})
+        code, body = self.request("/v1/engine/score", {"prompt": "ab"})
         self.assertEqual(code, 200, body)
         self.assertEqual(body["tokens"], [97, 98])
         self.assertEqual(self.engine.calls, [[97, 98]])
 
     def test_the_lora_sign_reaches_the_engine(self):
-        code, body = self.request("/v1/score", {"tokens": [1, 2, 3], "lora": -1})
+        code, body = self.request("/v1/engine/score", {"tokens": [1, 2, 3], "lora": -1})
         self.assertEqual(code, 200, body)
         self.assertEqual(self.engine.lora_calls, [-1])
-        code, body = self.request("/v1/score", {"tokens": [1, 2, 3]})
+        code, body = self.request("/v1/engine/score", {"tokens": [1, 2, 3]})
         self.assertEqual(code, 200, body)
         self.assertEqual(self.engine.lora_calls, [-1, 0])    # absent: whatever the adapter's setting is
 
     def test_messages_are_rendered_without_a_generation_prompt(self):
-        code, body = self.request("/v1/score", {"messages": [{"role": "user", "content": "ab"}]})
+        code, body = self.request("/v1/engine/score", {"messages": [{"role": "user", "content": "ab"}]})
         self.assertEqual(code, 200, body)
         self.assertEqual(self.engine.calls[-1], body["tokens"])
         text = "".join(chr(t) for t in body["tokens"] if t < 128)
@@ -147,31 +147,31 @@ class Route(unittest.TestCase):
     def test_bad_input(self):
         for bad in ({"tokens": "1,2"}, {"tokens": [1]}, {"tokens": [1, -2]}, {"tokens": [1, True]},
                     {"tokens": [1, 2.5]}, {"messages": 5}, {"prompt": 7}, {}):
-            code, body = self.request("/v1/score", bad)
+            code, body = self.request("/v1/engine/score", bad)
             self.assertEqual(code, 400, bad)
             self.assertEqual(body["error"]["type"], "invalid_request_error", bad)
         self.assertEqual(self.engine.calls, [])
 
     def test_a_sequence_longer_than_the_context(self):
         self.engine.max_context = 4
-        self.assertEqual(self.request("/v1/score", {"tokens": [1, 2, 3, 4, 5]})[0], 400)
+        self.assertEqual(self.request("/v1/engine/score", {"tokens": [1, 2, 3, 4, 5]})[0], 400)
 
     def test_an_engine_without_the_command_says_so(self):
         self.engine.score = None                             # a build of the engine that predates the command
-        code, body = self.request("/v1/score", {"tokens": [1, 2]})
+        code, body = self.request("/v1/engine/score", {"tokens": [1, 2]})
         self.assertEqual(code, 400)
         self.assertIn("teacher-forced scoring", body["error"]["message"])
 
     def test_busy_and_a_dead_engine(self):
         self.svc.vram_wait_s = 0.2
         with self.svc.fifo:                                 # a request is running
-            self.assertEqual(self.request("/v1/score", {"tokens": [1, 2]})[0], 409)
+            self.assertEqual(self.request("/v1/engine/score", {"tokens": [1, 2]})[0], 409)
         self.assertEqual(self.engine.calls, [])
         self.engine.fail = EngineDied("the engine ended")
-        self.assertEqual(self.request("/v1/score", {"tokens": [1, 2]})[0], 503)
+        self.assertEqual(self.request("/v1/engine/score", {"tokens": [1, 2]})[0], 503)
 
     def test_the_last_token_alone_has_nothing_to_score(self):
-        code, body = self.request("/v1/score", {"tokens": [7, 8]})
+        code, body = self.request("/v1/engine/score", {"tokens": [7, 8]})
         self.assertEqual(code, 200, body)
         self.assertEqual(body["logprobs"], [-2.0, None])
         self.assertEqual(body["scored"], 1)

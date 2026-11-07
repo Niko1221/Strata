@@ -536,7 +536,7 @@ class EngineApi:
 
 
 class EngineHttp:
-    """HTTP transport：驱动**已经在跑**的推理服务（`POST /v1/score` / `POST /v1/lora`），不卸载它。
+    """HTTP transport：驱动**已经在跑**的推理服务（`POST /v1/engine/score` / `POST /v1/engine/lora`），不卸载它。
 
     与 `Engine` / `EngineApi` 同接口（score/lora/gen），所以 MeZO 循环对 transport 无感 ——
     三者的差别只在「谁持有 GPU」：
@@ -546,7 +546,7 @@ class EngineHttp:
         本类         直接用驻留的推理引擎（不卸载、不重启 ⇒ 推理不中断，即「无感在线」）
 
     前提（服务端启动时就决定，训练侧补不了）：
-      * `--lora <初始 adapter>`：`/v1/lora` 换的是「引擎启动时带着的那套表」的内容，
+      * `--lora <初始 adapter>`：`/v1/engine/lora` 换的是「引擎启动时带着的那套表」的内容，
         形状必须不变 ⇒ rank 全程固定；
       * `--no-prefill-borrow --prefill 8192`：否则 score 走借槽路径，数值已知会坏
         （BRANCH-NOTES §4.3）。这一条会同时影响推理的 prefill 速度，是「共用引擎」的真实
@@ -558,7 +558,7 @@ class EngineHttp:
         eval 的生成检查跳过，只留 logp / answer-ce 两条基线。
 
     `score` 的长度契约必须与 pipe 逐位一致：引擎的 `SL` 只发 **n-1** 行（`t + 1 < n`，
-    src/program/generate.cpp），而 `/v1/score` 为了让 `logprobs` 与 `tokens` 对齐**补了一个
+    src/program/generate.cpp），而 `/v1/engine/score` 为了让 `logprobs` 与 `tokens` 对齐**补了一个
     末位 None** ⇒ 这里去掉末位，两种 transport 的切片语义才是同一个数。
     """
 
@@ -588,18 +588,18 @@ class EngineHttp:
 
     def score(self, ids: list[int]) -> tuple[list[float], float]:
         t0 = time.time()
-        code, body = self._post("/v1/score", {"tokens": [int(t) for t in ids]},
+        code, body = self._post("/v1/engine/score", {"tokens": [int(t) for t in ids]},
                                 max(60.0, len(ids) / 300.0 + 60.0))
         if code != 200:
-            raise RuntimeError(f"/v1/score failed (HTTP {code}): {self._err(body)}")
+            raise RuntimeError(f"/v1/engine/score failed (HTTP {code}): {self._err(body)}")
         lps = [0.0 if v is None else float(v) for v in (body.get("logprobs") or [])]
         return lps[:-1], (time.time() - t0) * 1000.0        # 末位是服务端补的对齐位，pipe 不发
 
     def lora(self, path: str) -> None:
         # 服务端要求「它能读到的文件名」；同一台机器上绝对路径是最不容易错的形式
-        code, body = self._post("/v1/lora", {"path": path}, 300.0)
+        code, body = self._post("/v1/engine/lora", {"path": path}, 300.0)
         if code != 200:
-            raise RuntimeError(f"/v1/lora failed (HTTP {code}): {self._err(body)}")
+            raise RuntimeError(f"/v1/engine/lora failed (HTTP {code}): {self._err(body)}")
 
     def gen(self, ids: list[int], max_new: int) -> tuple[list[int], float]:
         raise RuntimeError("gen is not available over the HTTP transports: the server has no "
@@ -1285,8 +1285,8 @@ def main() -> int:
                     help="http://127.0.0.1:8080 等常驻 API 服务的地址：训练走它的 /v1/training/*（服务端拉起"
                          "训练引擎、推理互斥、会话关掉自动恢复），不再自己 spawn 引擎；缺省仍是本进程直起")
     ap.add_argument("--serve-url", default="",
-                    help="http://127.0.0.1:8080 等常驻 API 服务的地址，但走**在线**那条：用它的 /v1/score 与 "
-                         "/v1/lora 直接训练**驻留的推理引擎**，不卸载、不重启 ⇒ 推理不中断。要求服务端用 "
+                    help="http://127.0.0.1:8080 等常驻 API 服务的地址，但走**在线**那条：用它的 /v1/engine/score 与 "
+                         "/v1/engine/lora 直接训练**驻留的推理引擎**，不卸载、不重启 ⇒ 推理不中断。要求服务端用 "
                          "--lora <初始 adapter> --no-prefill-borrow --prefill 8192 启动；gen 不可用。"
                          "与 --engine-api 互斥")
     ap.add_argument("--expert-profile", default=str(REPO / "data" / "expert-profile.bin"))
