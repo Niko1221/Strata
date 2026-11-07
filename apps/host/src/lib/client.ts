@@ -14,9 +14,10 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method,
+    signal,
     headers: body === undefined ? undefined : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -31,7 +32,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>('GET', path),
+  get: <T>(path: string, signal?: AbortSignal) => request<T>('GET', path, undefined, signal),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
@@ -47,7 +48,7 @@ export interface StreamEvent {
 export function onEvent(handler: (e: StreamEvent) => void, onStatus?: (s: 'live' | 'offline') => void) {
   let source: EventSource;
   let seenAt = Date.now();
-  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue'];
+  const names = ['engine', 'monitor', 'models', 'native', 'image-models', 'runtime', 'providers', 'serving', 'download', 'log', 'setup', 'skills', 'task', 'goal', 'timeskip', 'plan', 'queue', 'chats'];
   const connect = () => {
     source?.close();
     seenAt = Date.now();

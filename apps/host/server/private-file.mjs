@@ -24,3 +24,13 @@ export function makePrivate(path, { platform = process.platform } = {}) {
   // The owner too, so a file an elevated run made is not left owned by Administrators (needs the right to; best effort).
   try { execFileSync(system32('icacls.exe'), [path, '/setowner', `*${currentUserSid()}`], { stdio: 'ignore', timeout: 15000, windowsHide: true }); } catch { /* the explicit entry above already opens it to the user */ }
 }
+
+/**
+ * Owner-only folder. POSIX: mode 0700. Windows: a protected ACL naming only the current user that the files made inside inherit,
+ * so a file written later (a chat saved every second) is private without a tool run per write.
+ */
+export function makePrivateDir(path, { platform = process.platform } = {}) {
+  if (platform !== 'win32') { chmodSync(path, 0o700); return; }
+  execFileSync(system32('icacls.exe'), [path, '/grant:r', `*${currentUserSid()}:(OI)(CI)F`, '/inheritance:r'],
+    { stdio: 'ignore', timeout: 15000, windowsHide: true });
+}

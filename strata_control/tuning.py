@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+from strata_control import sysinfo
 import statistics
 import subprocess
 import time
@@ -803,9 +804,9 @@ def machine_identity() -> dict[str, Any]:
     comparable — which is why this is recorded with every report rather than assumed stable.
     """
     return {
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
+        "platform": sysinfo.platform_string(),
+        "machine": sysinfo.machine(),
+        "processor": sysinfo.processor(),
         "python": platform.python_version(),
         "cpu_count": os.cpu_count(),
     }

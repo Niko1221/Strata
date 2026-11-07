@@ -143,6 +143,11 @@ class Decisions(unittest.TestCase):
         self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE), "Auto says it too: nothing changes silently")
         self.assertTrue(drafting.blocked_by([], slots=4))
         self.assertTrue(drafting.blocked_by(["--batch", "4"]) and drafting.blocked_by(["--pipeline-windows", "2"]))
+        # DFlash2 chosen by name (owner 2026-11-03: the person's own choice wins): several requests are their word too, only --pipeline-windows still blocks
+        for args, kw in (([], {"slots": 4}), (["--batch", "4"], {}), (["--slots", "2"], {}), (["--parallel", "3"], {}), (["--batch", "4"], {"slots": 4, "split": True})):
+            self.assertFalse(drafting.blocked_by(args, named=True, **kw), (args, kw))
+            self.assertTrue(drafting.blocked_by(args, **kw), (args, kw, "Auto and the MTP keep their rule"))
+        self.assertTrue(drafting.blocked_by(["--pipeline-windows", "2"], named=True), "the MTP's speculative next window has no DFlash2 counterpart")
         self.assertFalse(drafting.blocked_by([], split=True), "a layer split over several cards runs DFlash2 (owner 2026-11-02; the 0.1.56 engine does)")
         self.assertFalse(drafting.blocked_by(["--layer-split", "auto"]))
         self.assertFalse(drafting.blocked_by(["--spec", "4"], slots=1))
@@ -268,14 +273,47 @@ class EngineArguments(unittest.TestCase):
         self.apply(c)
         self.assertEqual((c["args"][c["args"].index("--spec") + 1], c["args"].count("--spec"), c["args"][c["args"].index("--draft-conf") + 1]), ("5", 1, "0.2"))
 
-    def test_parallel_loads_only_the_mtp_and_says_so(self):
+    def test_parallel_with_auto_loads_only_the_mtp_and_says_so(self):
         self.pack()
         self.layer()
         for kw in ({"slots": 4},):
-            c = self.cfg(drafting="dflash2")
+            c = self.cfg()                                   # Auto: unchanged, the MTP for several requests
             d = self.apply(c, **kw)
             self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE), kw)
             self.assertEqual(c["args"], self.args, kw)
+            c = self.cfg(drafting="mtp")                     # the MTP chosen: unchanged
+            d = self.apply(c, **kw)
+            self.assertEqual((d.drafter, d.note), ("mtp", ""), kw)
+            self.assertEqual(c["args"], self.args, kw)
+
+    def test_dflash2_chosen_by_name_keeps_dflash2_for_the_requests_the_person_chose(self):
+        """Owner 2026-11-03: DFlash2 chosen + a number of requests chosen = DFlash2 with that many (the engine runs a drafter per request)."""
+        self.pack()
+        self.layer()
+        for kw in ({"slots": 2}, {"slots": 4}, {"slots": 8}):
+            c = self.cfg(drafting="dflash2")
+            d = self.apply(c, **kw)
+            self.assertEqual((d.drafter, d.note), ("dflash2", ""), kw)
+            a = c["args"]
+            self.assertEqual((a[a.index("--draft") + 1], a[a.index("--draft-fallback") + 1]), ("dflash2", "none"), kw)
+            self.assertNotIn("--mtp", a)
+            self.assertNotIn("--batch-mtp", a, "the MTP's slot switch is the MTP's; the slot drafts are the engine's default for --draft dflash2 --batch")
+        # the number in the arguments themselves (Expert mode / the saved --batch) is the same word
+        c = self.cfg(drafting="dflash2", args=[*self.args, "--batch", "4", "--batch-mtp"])
+        d = self.apply(c)
+        self.assertEqual((d.drafter, d.note), ("dflash2", ""))
+        self.assertEqual(c["args"][c["args"].index("--batch") + 1], "4")
+        self.assertNotIn("--batch-mtp", c["args"])
+        # on a layer split too
+        c = self.cfg(drafting="dflash2")
+        self.assertEqual(self.apply(c, split=True, slots=4).drafter, "dflash2")
+        # one request (1, or none given) was always DFlash2
+        for kw in ({"slots": 0}, {"slots": 1}):
+            self.assertEqual(self.apply(self.cfg(drafting="dflash2"), **kw).drafter, "dflash2", kw)
+        # --pipeline-windows is the one thing that still keeps it out
+        c = self.cfg(drafting="dflash2", args=[*self.args, "--pipeline-windows", "2"])
+        d = self.apply(c, slots=4)
+        self.assertEqual((d.drafter, d.note), ("mtp", drafting.NOT_HERE))
 
     def test_no_pack_no_internet_runs_the_mtp_when_it_is_here_else_none(self):
         self.layer()
@@ -320,6 +358,19 @@ class EngineArguments(unittest.TestCase):
         drafting.apply(c, data_dir=self.data, backend="cuda", archs=["sm_120"], vram_mib=8000)
         self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.8", "CUDA keeps its slot steps")
 
+    def test_a_mac_gets_its_own_confidence_not_the_cuda_slot_steps(self):
+        """Metal maps every expert: the --expert-cache 64 the Mac setup writes is a slot count of 83 to the CUDA steps (0.8), which was not measured on a Mac; M5 Max measured 0.5."""
+        self.layer()
+        self.pack()
+        for vram in (None, 8000, 96000):
+            c = self.cfg()
+            d = drafting.apply(c, data_dir=self.data, backend="metal", archs=[], vram_mib=vram)
+            a = c["args"]
+            self.assertEqual((d.drafter, a[a.index("--draft-conf") + 1], a[a.index("--spec") + 1], "--mtp" in a, a[a.index("--draft-fallback") + 1]), ("dflash2", "0.5", "6", False, "none"), vram)
+        c = self.cfg(user_args=["--draft-conf", "0.4"], args=[*self.args, "--draft-conf", "0.4"])
+        drafting.apply(c, data_dir=self.data, backend="metal", archs=[])
+        self.assertEqual(c["args"][c["args"].index("--draft-conf") + 1], "0.4", "the person's own value stays")
+
     def test_off_is_the_draft_layers_own_switch(self):
         c = self.cfg(drafting="off")
         d = self.apply(c)
@@ -341,8 +392,18 @@ class EngineArguments(unittest.TestCase):
                 self.assertEqual(args[args.index("--draft-fallback") + 1], "none")
             args = engine_args(self.cfg(drafting="mtp"))
             self.assertEqual(args, self.args)
-            self.assertEqual(engine_args(self.cfg(drafting="dflash2", parallel=4))[:len(self.args)], self.args, "several requests: the MTP alone")
+            self.assertEqual(engine_args(self.cfg(parallel=4))[:len(self.args)], self.args, "Auto with several requests: the MTP alone")
             self.assertEqual(drafting.take_note(), drafting.NOT_HERE, "the engine that starts next is told why")
+            self.assertEqual(engine_args(self.cfg(drafting="mtp", parallel=4))[:len(self.args)], self.args, "the MTP chosen: unchanged")
+            self.assertEqual(drafting.take_note(), "")
+            # DFlash2 chosen by name with a number of requests the person chose: DFlash2 with that many, no note
+            named = engine_args(self.cfg(drafting="dflash2", parallel=4))
+            self.assertNotIn("--mtp", named)
+            self.assertEqual((named[named.index("--draft") + 1], named[named.index("--draft-fallback") + 1], named[named.index("--batch") + 1]), ("dflash2", "none", "4"))
+            self.assertEqual(drafting.take_note(), "")
+            one = engine_args(self.cfg(drafting="dflash2", parallel=1))
+            self.assertNotIn("--batch", one)
+            self.assertEqual(one[one.index("--draft") + 1], "dflash2")
         # a 16 GB card holds about 3,700 slots with the drafter on: the server passes its memory and the confidence follows (drafting.CONF_STEPS)
         with mock.patch("serve.server.drafting_vram_mib", return_value=16384.0), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
             args = engine_args(self.cfg(drafting="dflash2"))
@@ -613,6 +674,27 @@ class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
             mtp_retry_args({**base, "drafting": "auto"}, old)
         self.assertEqual(drafting.take_note(), "")
 
+    def test_the_no_drafter_retry_exists_for_an_auto_start_with_a_drafter_and_never_swaps_in_the_mtp(self):
+        """A start that ended for lack of graphics memory is repeated with no drafter (multi-card walk): DFlash2 -> MTP would take MORE memory from a card that is short."""
+        from serve.server import nodraft_retry_args
+        old = str(self.exe("old.exe", self.OLD))
+        base = {"model_name": GYRO, "args": list(self.args)}
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            alt = nodraft_retry_args({**base, "drafting": "auto"}, old, ["--effort", "x"])
+            self.assertIsNotNone(alt)
+            for flag in ("--draft", "--draft-model", "--draft-fallback", "--mtp", "--mtp-draft-vocab"):
+                self.assertNotIn(flag, alt, flag)
+            self.assertEqual(alt[-2:], ["--effort", "x"], "what the start adds goes along")
+            self.assertIn("--native", alt, "everything else is the same start")
+            self.assertIsNotNone(nodraft_retry_args(dict(base), old), "no choice saved means Auto")
+            self.assertIsNone(nodraft_retry_args({**base, "drafting": "dflash2"}, old), "named by the person: it fails with its reason")
+            self.assertIsNone(nodraft_retry_args({**base, "drafting": "mtp"}, old), "named by the person: it fails with its reason")
+            self.assertIsNone(nodraft_retry_args({**base, "drafting": "off"}, old), "no drafter to drop")
+        drafting.take_note()
+        with mock.patch("serve.server.drafting_vram_mib", return_value=None), mock.patch.object(drafting, "data_dir_of", return_value=self.data):
+            nodraft_retry_args({**base, "drafting": "auto"}, old)
+        self.assertEqual(drafting.take_note(), "", "working the retry out leaves the note of the real start alone")
+
     def test_the_engine_sources_carry_the_words_the_program_is_read_for(self):
         src = (ROOT / "src" / "program" / "generate.cpp").read_text(encoding="utf-8")
         self.assertIn(drafting._MARK_FILE.decode(), src, "rc1's start message is what marks an engine that takes the vocabulary file alone")
@@ -657,9 +739,9 @@ class WordsMatchTheApp(unittest.TestCase):
         catalogs = {l: {**json.loads((folder / f"{l}.json").read_text(encoding="utf-8")), **json.loads((folder / f"df2-{l}.json").read_text(encoding="utf-8"))}
                     for l in ("en", "de", "es", "fr", "ja", "ko", "pt", "ru", "zh")}
         ids = {v: k for k, v in catalogs["en"].items()}
-        self.assertEqual(len(drafting.REASONS), 8)
+        self.assertEqual(len(drafting.REASONS), 9)
         lines = [drafting.mtp_line(r) for r in (drafting.DIDNT_FIT, drafting.NOT_HERE, drafting.NOT_SUPPORTED, drafting.NOT_DOWNLOADED, drafting.NOT_THIS_CARD, drafting.DIDNT_START)]
-        lines += [drafting.line("dflash2", drafting.NO_MTP), drafting.line("off", drafting.NONE_HERE)]
+        lines += [drafting.line("dflash2", drafting.NO_MTP), drafting.line("off", drafting.NONE_HERE), drafting.line("off", drafting.SHORT_OF_VRAM)]
         for line in lines:
             self.assertIn(line, ids, line)
             for lang, catalog in catalogs.items():
