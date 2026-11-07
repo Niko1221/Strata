@@ -105,9 +105,13 @@ struct Smem {
     // after the scores (prompt_attn_kernel).  37.9 -> 29.2 KB: two blocks fit an SM's 64 KB on Turing instead of one.
     struct Rows { KElem k[CH][KROW]; VElem v[CH][VROW]; };
     struct SharedRows { union { KElem k[CH][KROW]; VElem v[CH][VROW]; }; };
-    typename std::conditional<KV_MODE == 1 && PF, SharedRows, Rows>::type kv;
-    float ks[CH][NG];
-    float vs[CH][NG];
+    // fp16 K/V (mode 0, sm_89 tune): the same - K and V share one buffer, V is loaded into registers while the softmax
+    // runs and stored over K after it; the scales are all 1 there and are not stored.  50 -> 32.5 KB: three blocks an
+    // SM on Ada instead of two.  The same bytes meet the same arithmetic.
+    typename std::conditional<(KV_MODE == 1 && PF) || KV_MODE == 0, SharedRows, Rows>::type kv;
+    static constexpr int SCH = KV_MODE == 0 ? 1 : CH;
+    float ks[SCH][NG];
+    float vs[SCH][NG];
     float s[16][CH + 1];
     float qmax[THREADS / 32];
     float alpha[16];
@@ -280,7 +284,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                         }
                     }
                 }
-            } else {
+            } else if constexpr (KV_MODE != 0) {   // mode 0: V after the scores (below)
                 constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16;   // per V row
                 for (int i = t; i < CH * VPIECES; i += THREADS) {
                     const int c = i / VPIECES, pc = i % VPIECES;
@@ -295,6 +299,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.v[c][0]) + pc * 16) = vx;
                 }
             }
+            if constexpr (KV_MODE != 0)   // mode 0: every scale is 1 (a past-the-end cell's 0 is masked anyway)
             for (int i = t; i < CH * 4; i += THREADS) {
                 const int c = i / 4, g = i % 4;
                 const long long r = S.row[c];
@@ -350,7 +355,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                     mma16816(tg, al, b);
 #endif
                 }
-                const float s0 = S.ks[cb + 2 * tig][g], s1 = S.ks[cb + 2 * tig + 1][g];
+                const float s0 = KV_MODE == 0 ? 1.0f : S.ks[KV_MODE == 0 ? 0 : cb + 2 * tig][g],
+                            s1 = KV_MODE == 0 ? 1.0f : S.ks[KV_MODE == 0 ? 0 : cb + 2 * tig + 1][g];
                 sc[0] = fmaf(tg[0], s0, sc[0]);
                 sc[1] = fmaf(tg[1], s1, sc[1]);
                 sc[2] = fmaf(tg[2], s0, sc[2]);
@@ -370,6 +376,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.v[c][0]) + pc * 16) = pv[j];
             }
             if (c0 + CH < n) fetch(c0 + CH);   // the next chunk's rows, in flight while this one finishes
+        }
+        // mode 0: the scores are done with K; V's rows are loaded into registers here and land over K after the softmax
+        constexpr int VP0 = HD * 2 / 16;                              // 16-byte pieces per fp16 V row
+        constexpr int VPT0 = KV_MODE == 0 ? CH * VP0 / THREADS : 1;   // per thread
+        uint4 v0[VPT0];
+        if constexpr (KV_MODE == 0) {
+#pragma unroll
+            for (int j = 0; j < VPT0; ++j) {
+                const int i = t + j * THREADS, c = i / VP0, pc = i % VP0;
+                const long long r = S.row[c];
+                v0[j] = r >= 0 ? __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc) : make_uint4(0, 0, 0, 0);
+            }
         }
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
@@ -399,6 +417,13 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
                 S.mrow[r] = m_new;
             }
         }
+        if constexpr (KV_MODE == 0) {
+#pragma unroll
+            for (int j = 0; j < VPT0; ++j) {
+                const int i = t + j * THREADS, c = i / VP0, pc = i % VP0;
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.kv.v[c][0]) + pc * 16) = v0[j];
+            }
+        }
         __syncthreads();
         // p.v: warp w owns dims [64w, 64w+64), which is int8 scale group w (q4_0: groups 2w and 2w+1, four n-tiles
         // each). A group's scale is folded into p relative to the chunk's largest magnitude (q4_0's scales are signed:
@@ -415,7 +440,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
             const int vg = warp * GPW + gi;
             float vmax = 0.0f;
 #pragma unroll
-            for (int c = lane; c < CH; c += 32) vmax = fmaxf(vmax, fabsf(S.vs[c][vg]));
+            for (int c = lane; c < CH; c += 32) vmax = fmaxf(vmax, KV_MODE == 0 ? 1.0f : fabsf(S.vs[KV_MODE == 0 ? 0 : c][vg]));
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f;
@@ -423,8 +448,10 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
 #pragma unroll
             for (int ks = 0; ks < CH / 16; ++ks) {
                 const int cA = ks * 16 + 2 * tig, cB = cA + 8;
-                const float w0 = S.vs[cA][vg] * vup, w1 = S.vs[cA + 1][vg] * vup, w2 = S.vs[cB][vg] * vup,
-                            w3 = S.vs[cB + 1][vg] * vup;
+                const float w0 = (KV_MODE == 0 ? 1.0f : S.vs[KV_MODE == 0 ? 0 : cA][vg]) * vup,
+                            w1 = (KV_MODE == 0 ? 1.0f : S.vs[KV_MODE == 0 ? 0 : cA + 1][vg]) * vup,
+                            w2 = (KV_MODE == 0 ? 1.0f : S.vs[KV_MODE == 0 ? 0 : cB][vg]) * vup,
+                            w3 = (KV_MODE == 0 ? 1.0f : S.vs[KV_MODE == 0 ? 0 : cB + 1][vg]) * vup;
                 const float p00 = S.s[gid][cA] * w0, p01 = S.s[gid][cA + 1] * w1;
                 const float p10 = S.s[gid + 8][cA] * w0, p11 = S.s[gid + 8][cA + 1] * w1;
                 const float p02 = S.s[gid][cB] * w2, p03 = S.s[gid][cB + 1] * w3;
@@ -1431,7 +1458,7 @@ bool launch_i8v3(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     return true;
 }
 
-static_assert(sizeof(Smem<0, false>) + 1024 <= 102400 / 2, "two fp16-KV prompt-attention blocks an SM on sm_89");
+static_assert(sizeof(Smem<0, false>) + 1024 <= 102400 / 3, "three fp16-KV prompt-attention blocks an SM on sm_89");
 
 template <int KV_MODE, bool PF = false>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
