@@ -2042,8 +2042,8 @@
    "first_commit": "2072510a47",
    "first_date": "2026-10-30",
    "since": "v0.2.9",
-   "last_commit": "8becec7d5c",
-   "last_date": "2026-10-31",
+   "last_commit": "c9abd38a7f",
+   "last_date": "2026-11-07",
    "status": "research",
    "owner": "program",
    "note": "[auto] not documented for users; code default not readable from the call",
@@ -2699,7 +2699,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 839,
+     "line": 854,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -2996,8 +2996,8 @@
    "first_commit": "bebeb791a4",
    "first_date": "2026-10-14",
    "since": "v0.1.45",
-   "last_commit": "8becec7d5c",
-   "last_date": "2026-10-31",
+   "last_commit": "c9abd38a7f",
+   "last_date": "2026-11-07",
    "status": "default",
    "owner": "program",
    "note": "the engine's own default (the parallel-request stack, bit-exact, QUAL-PAR): on with 2 or more batch slots on Linux CUDA (arch_defaults.cpp parallel_default_env_cuda, applied in generate.cpp) and on Windows gfx1151; NAME=0 turns it off; a value you set is kept",
@@ -3937,7 +3937,7 @@
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1337,
+     "line": 1352,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -4272,7 +4272,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 887,
+     "line": 902,
      "backend": "cuda",
      "fn": "getenv"
     }
@@ -4314,7 +4314,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1264,
+     "line": 1279,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -4422,7 +4422,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 641,
+     "line": 656,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -11031,8 +11031,8 @@
    "first_commit": "9708b549a4",
    "first_date": "2026-10-05",
    "since": "v0.1.40.1",
-   "last_commit": "63f063852f",
-   "last_date": "2026-11-06",
+   "last_commit": "c9abd38a7f",
+   "last_date": "2026-11-07",
    "status": "rollback",
    "owner": "core",
    "note": "[auto] on unless set to 0 (src/core/arch_defaults.cpp:64); rollback wording at code; name first appears in v0.1.40.1",
@@ -13417,7 +13417,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 277,
+     "line": 279,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -13443,9 +13443,9 @@
    "since": "v0.2.3",
    "last_commit": "c62d980112",
    "last_date": "2026-10-22",
-   "status": "opt-in",
+   "status": "default",
    "owner": "prefill",
-   "note": "[auto] documented for users (docs/AMD_HIP.md:91), 2 more",
+   "note": "the engine finds tuning/<arch>-hipblaslt-<version>.txt beside its executable by itself on gfx1151 (owner 2026-10-19); on another card only with =on; =off never uses it; STRATA_HIPBLASLT_TUNING=<file> names a table and always wins",
    "retire_after": "",
    "retired_in": ""
   },
@@ -13458,7 +13458,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 274,
+     "line": 276,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -13521,19 +13521,19 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 209,
+     "line": 211,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 334,
+     "line": 349,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 414,
+     "line": 429,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -13631,7 +13631,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 597,
+     "line": 612,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -25739,13 +25739,13 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1178,
+     "line": 1193,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1360,
+     "line": 1375,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -26159,7 +26159,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1359,
+     "line": 1374,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -26712,13 +26712,13 @@
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1179,
+     "line": 1194,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1361,
+     "line": 1376,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -26819,7 +26819,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1412,
+     "line": 1427,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -32703,8 +32703,8 @@
    "first_commit": "a71ee46cd2",
    "first_date": "2026-10-14",
    "since": "v0.1.45",
-   "last_commit": "8becec7d5c",
-   "last_date": "2026-10-31",
+   "last_commit": "c9abd38a7f",
+   "last_date": "2026-11-07",
    "status": "default",
    "owner": "core",
    "note": "the engine's own default (the parallel-request stack, bit-exact, QUAL-PAR): on with 2 or more batch slots on Linux CUDA (arch_defaults.cpp parallel_default_env_cuda, applied in generate.cpp) and on Windows gfx1151; NAME=0 turns it off; a value you set is kept",
@@ -33164,7 +33164,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 974,
+     "line": 989,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33660,7 +33660,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 471,
+     "line": 486,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -33706,19 +33706,19 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 462,
+     "line": 477,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 547,
+     "line": 562,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 577,
+     "line": 592,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -41282,7 +41282,7 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1052,
+     "line": 1067,
      "backend": "hip",
      "fn": "getenv"
     },
@@ -41322,13 +41322,13 @@
    "reads": [
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1051,
+     "line": 1066,
      "backend": "hip",
      "fn": "getenv"
     },
     {
      "file": "src/prefill/gemm.cu",
-     "line": 1177,
+     "line": 1192,
      "backend": "hip",
      "fn": "getenv"
     },
