@@ -4,7 +4,7 @@
 # taken from ../src unless this directory carries a migrated copy: `src/X.cu` -> `sycl/src/X.dp.cpp`,
 # `src/X.cpp` -> `sycl/src/X.cpp` (only host files that called the CUDA runtime were migrated). Headers resolve
 # the same way through the include order. Upstream files are never edited, so the port is the content of this
-# directory plus the tool that produced it (../../sycl/migrate.sh).
+# directory plus the tool that produced it (../../sycl/tools/migrate.sh).
 #
 #   cmake -S sycl -B build-sycl -G Ninja -DCMAKE_CXX_COMPILER=icpx && cmake --build build-sycl
 #

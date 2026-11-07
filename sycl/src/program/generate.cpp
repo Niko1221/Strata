@@ -4538,34 +4538,7 @@ int main(int argc, char **argv) try {
             strata::emulated_cc()
                 ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)"
                 : "");
-#if 0 // the SYCL port has no CUDA runtime to mismatch (#542): dpct::get_major_version is the device version
-#if !defined(STRATA_HIP_GFX906) // a CUDA toolkit mismatch; the gfx906 HIP build
-                                // has no DPCT_COMPAT_RT_VERSION
-        {   // #542: a build whose libcudart is older than its headers (a CUDA 13 kit with a dangling libcudart.so that
-            // CMake resolved to the system's CUDA 12 one) reads cudaDeviceProp shifted - silently, and slowly
-            int rt = 0;
-            /*
-            DPCT1043: The version-related API is different in SYCL. An
-            initial code was generated, but you need to adjust it.
-            */
-            if (DPCT_CHECK_ERROR(rt = dpct::get_major_version(
-                                     dpct::get_current_device())) == 0 &&
-                rt / 1000 != DPCT_COMPAT_RT_VERSION / 1000)
-                std::fprintf(
-                    stderr,
-                    "strata generate: WARNING: this engine was compiled with "
-                    "CUDA %d.%d headers but "
-                    "loaded a CUDA %d.%d runtime (libcudart): GPU properties "
-                    "can read wrong and some "
-                    "kernels go unused. Rebuild it against one toolkit (cmake "
-                    "-DCUDAToolkit_ROOT=<the "
-                    "toolkit>, with its libcudart.so present) (#542)\n",
-                    DPCT_COMPAT_RT_VERSION / 1000,
-                    DPCT_COMPAT_RT_VERSION % 1000 / 10, rt / 1000,
-                    rt % 1000 / 10);
-        }
-#endif
-#endif // #if 0
+// (the CUDA runtime/headers mismatch warning, #542, lives in src/program/generate.cpp; a SYCL port has no CUDA runtime to mismatch; sycl/tools/fixups.py keeps this block out)
 #endif
         const std::string e = strata::core::device_code_error();
         if (!e.empty()) {
