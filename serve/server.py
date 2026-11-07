@@ -2855,10 +2855,10 @@ class StrataEngine:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 heard = time.monotonic()                  # any line is output: T, PP, RESUME, INFO ...
                 beat = heard
-
+                
                 if stall_state:
                     stall_state.clear()
-
+                    
                 if line.startswith("MQ"):                           # serve/constrain.py: the mask for the next window
                     self._mask_reply(c, line)
                     continue
