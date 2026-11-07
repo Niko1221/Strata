@@ -490,6 +490,41 @@ def cpu_name() -> str | None:
     return platform.processor() or None
 
 
+def hip_gpu_list() -> list:
+    """The GPUs as the HIP runtime numbers them (HIP_VISIBLE_DEVICES), from the installed engine's
+    `strata-device --list-devices`; [] when there is no HIP engine here or it does not answer.  A config's
+    "gpu" numbers index THIS list; the Windows display-adapter list below is in display order, which on a
+    PC with more than one AMD card is not the same order, and labelling a run from it names the wrong card."""
+    probe = ROOT / "engine" / ("strata-device.exe" if os.name == "nt" else "strata-device")
+    try:
+        if not probe.exists() or json.loads((probe.parent / "BUILD.json").read_text(encoding="utf-8")).get("backend") != "hip":
+            return []
+    except (OSError, ValueError):
+        return []
+    env = dict(os.environ)
+    env.pop("HIP_VISIBLE_DEVICES", None)      # the runtime's own numbering, whatever the shell exports
+    rocm = probe.parent / "rocm" / "bin"
+    if rocm.is_dir():
+        env["PATH"] = os.pathsep.join([str(rocm), env.get("PATH", "")])
+    try:
+        r = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=120,
+                           cwd=str(probe.parent), env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if r.returncode != 0:
+        return []
+    gpus = []
+    for line in r.stdout.splitlines():
+        m = re.match(r"device\s+(\d+):\s*(.*)$", line.strip())
+        if m:
+            gpus.append({"name": m.group(2).strip() or "AMD Radeon Graphics", "vram_mib": None, "driver": None})
+            continue
+        a = re.match(r"arch\s+gfx[0-9a-f]+\s*,\s*([\d.]+)\s*GiB", line.strip())
+        if a and gpus:
+            gpus[-1]["vram_mib"] = int(float(a.group(1)) * 1024)
+    return gpus
+
+
 def gpu_info_local() -> dict:
     out = run_cmd(["nvidia-smi", "--query-gpu=name,memory.total,driver_version,power.limit,power.draw,pcie.link.gen.current,pcie.link.width.current,pstate,temperature.gpu",
                    "--format=csv,noheader,nounits"])
@@ -565,6 +600,12 @@ def gpu_info_local() -> dict:
                              "driver": c["driver"]} for c in windows_amd_cards()]
         except Exception:   # noqa: BLE001 - a report without the card's name is still a report
             pass
+    hip = hip_gpu_list()
+    if hip:
+        # HIP numbers are what a config's "gpu" indexes; re-order the list to HIP and keep the display
+        # list's driver string for a card HIP names the same way
+        by_name = {g["name"]: g for g in info["gpus"]}
+        info["gpus"] = [dict(g, driver=g["driver"] or by_name.get(g["name"], {}).get("driver")) for g in hip]
     return info
 
 
@@ -679,6 +720,11 @@ def gpu_selection(cfg: dict | None, gpu_arg: str | None = None) -> list[int]:
         args = [str(x) for x in ((cfg or {}).get("args") or [])]
         if "--gpu" in args and args.index("--gpu") + 1 < len(args):
             sel = parse(args[args.index("--gpu") + 1])
+    # Windows AMD: a one-card config's "gpu" is the display-adapter order, and setup records the HIP number of
+    # that card as "hip_ordinal" (server.py's hip_visible) - the HIP number is what indexes gpu_info_local's list
+    ordinal = (cfg or {}).get("hip_ordinal") if not parse(gpu_arg) else None
+    if ordinal is not None and str(ordinal).strip().isdigit() and len(sel) <= 1:
+        sel = [int(str(ordinal).strip())]
     return sel
 
 

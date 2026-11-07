@@ -2135,20 +2135,21 @@ def engine_runs_on(g, toolkit=13) -> bool:
     return int(g["arch"]) in archs or (ptx and int(g["arch"]) > max(archs))
 
 
-def start_gpus(text):
+def start_gpus(text, permissive=False):
     """--gpus when starting an installed model: NVIDIA cards as nvidia-smi numbers them, or on a PC whose AMD cards
-    are the ones Strata can use, AMD cards as setup lists them ("all": every supported AMD card)."""
+    are the ones Strata can use, AMD cards as setup lists them ("all": every supported AMD card).  `permissive`:
+    a run that brings its own engine (--prebuilt) is not stopped by the installed engine's arch verdict (step 4)."""
     if not text:
         return None
     found = gpus()
-    if str(text).strip().lower() == "all" and not WIN and not together_ok(found):
+    if str(text).strip().lower() == "all" and not together_ok(found):
         amd = amd_gpus()
-        if len([g for g in amd if amd_problem(g) is None]) >= 2:
-            return [g["index"] for g in amd_parse_gpus("all", amd)]
-    if not found and not WIN:                          # #1594: no NVIDIA card, AMD ones: "1,0" names those, as setup lists them
+        if len([g for g in amd if amd_problem(g) is None or (permissive and g["arch"] in AMD_ARCHS and engine_arch_problem(g) is not None)]) >= 2:
+            return [g["index"] for g in amd_parse_gpus("all", amd, permissive=permissive)]
+    if not found:                                      # #1594: no NVIDIA card, AMD ones: "1,0" names those, as setup lists them (Windows: as HIP numbers them)
         amd = amd_gpus()
         if amd:
-            return [g["index"] for g in amd_parse_gpus(text, amd)]
+            return [g["index"] for g in amd_parse_gpus(text, amd, permissive=permissive)]
     return parse_gpus(text, found)
 
 
@@ -4620,6 +4621,14 @@ def amd_problem(g):
     return None
 
 
+def engine_arch_problem(g) -> str | None:
+    """The installed engine's own "cannot run: ... is not an architecture this Strata engine was compiled for" verdict
+    (the --list-devices line): the one card problem a NEW engine fixes.  A run that brings its own engine (--prebuilt)
+    must not be stopped by it in the card check - step 4 replaces that engine before it is ever used."""
+    c = str(g.get("cannot_run") or "")
+    return c if "not an architecture" in c else None
+
+
 def amd_gpus_win() -> list[dict]:
     """Windows: the AMD GPUs as the HIP runtime numbers them once the HIP engine is installed (hip_devices), else in
     the display-adapter order (amd_gpus_windows)."""
@@ -4637,11 +4646,14 @@ def amd_gpus_win() -> list[dict]:
     return hip
 
 
-def amd_parse_gpus(text, amd) -> list:
+def amd_parse_gpus(text, amd, permissive=False) -> list:
     """--gpus with AMD cards, numbered as HIP numbers them (setup's list): "1,0", or "all" (every supported card, the
     most VRAM first).  Every chosen card must be one Strata supports (AMD_ARCHS; they may be of different
-    architectures: the engine is compiled for each).  Returns the cards, the main one first."""
-    usable = [g for g in amd if amd_problem(g) is None]
+    architectures: the engine is compiled for each).  `permissive`: a run that brings its own engine (--prebuilt) is
+    not stopped by the installed engine's "not an architecture" verdict on a supported card - step 4 replaces it.
+    Returns the cards, the main one first."""
+    ok_card = lambda g: amd_problem(g) is None or (permissive and g["arch"] in AMD_ARCHS and engine_arch_problem(g) is not None)
+    usable = [g for g in amd if ok_card(g)]
     if str(text).strip().lower() == "all":
         # "all" means the cards that help: a Strix Halo / APU beside a card with memory of its own adds no memory (its memory is the RAM),
         # draws the desktop, and as a stage it only slows the split down.  Named by number (--gpus 1,0) it is still taken as asked.
@@ -4664,11 +4676,35 @@ def amd_parse_gpus(text, amd) -> list:
     for i in sel:
         g = byid.get(i)
         p = "not found on this PC" if g is None else amd_problem(g)
-        if p is not None:
+        if p is not None and not (g is not None and ok_card(g)):
             fail(f"AMD GPU {i}{'' if g is None else ' (' + g['name'] + ')'} cannot be used: {p}",
                  ("use these together: --gpus " + ",".join(str(x["index"]) for x in usable)) if len(usable) >= 2 else
                  ("use one card: --gpu " + str(usable[0]["index"])) if usable else f"the AMD backend runs on {AMD_CARDS}")
     return [byid[i] for i in sel]
+
+
+def previous_amd_split(amd) -> list:
+    """A setup run again with no --gpu/--gpus: the cards an installed model's config already shares the model across,
+    when every one of them is still here and usable (the newest config wins).  Setup used to write a single card back
+    over a working layer split - and on a PC whose model does not fit one card, that config dies at start (the expert
+    cache, the KV and the head exhaust the VRAM: "the embedding buffer failed").  []: no installed split to keep."""
+    for c in installed_configs():
+        try:
+            g = json.loads(c.read_text(encoding="utf-8-sig")).get("gpu")
+        except (OSError, ValueError):
+            continue
+        items = g if isinstance(g, (list, tuple)) else str(g or "").split(",")
+        try:
+            sel = [int(str(x).strip()) for x in items if str(x).strip() != ""]
+        except ValueError:
+            continue
+        if len(sel) < 2:
+            continue
+        byid = {x["index"]: x for x in amd}
+        cards = [byid.get(i) for i in sel]
+        if all(x is not None and amd_problem(x) is None for x in cards):
+            return cards
+    return []
 
 
 # ------------------------------------------------------------------------------------------------ AMD on Windows
@@ -4814,6 +4850,10 @@ def engine_env(eng: Path) -> dict:
     if dirs:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
+    # the runtime's own numbering, whatever the shell exports: a HIP_VISIBLE_DEVICES left in the
+    # environment (a config's cards, or one set by hand once) hides the cards it filters out and
+    # renumbers the rest, and then a saved split like "0,2" names a card that is no longer at 2
+    env.pop("HIP_VISIBLE_DEVICES", None)
     return env
 
 
@@ -4963,7 +5003,7 @@ def hip_card(eng: Path, gpu: dict, listed: list[dict]) -> dict:
     return {**gpu, "index": m["index"], "count": len(hip), "vram_gb": vram, "driver": "hip"}
 
 
-def engine_from_feed(eng: Path, updating: bool = False) -> Path | None:
+def engine_from_feed(eng: Path, updating: bool = False, gpu: dict | None = None) -> Path | None:
     """#3469 #3437: the 0.2 releases no longer carry the flat engine zips (strata-windows-x64*.zip); they publish one package
     per card in the signed update feed.  `strata update --no-control` fetches, verifies and test-starts the package for this PC
     (into a folder of its own under the install), and its files then become the installed engine in `eng`, the same way a
@@ -4990,6 +5030,19 @@ def engine_from_feed(eng: Path, updating: bool = False) -> Path | None:
     except ec.ComponentProblem as e:
         warn(f"the engine from the update feed is not usable: {e}")
         return None
+    if gpu is not None:                                # a layer split needs ONE engine with code for every card: the feed ships one card family per package - check the component BEFORE it lands in engine/, so a package that cannot serve the split never becomes the installed engine
+        try:
+            built = set(arch_names(json.loads((component.root / "BUILD.json").read_text(encoding="utf-8-sig")).get("archs")))
+        except (OSError, ValueError):
+            built = set()
+        miss = sorted(split_archs(gpu) - built)
+        if miss:
+            warn("the engine from the update feed is built for " + ", ".join(sorted(built)) + " and has no code for "
+                 + " and ".join(miss) + ": the feed ships one card family per package, and a layer split needs one "
+                 "engine carrying code for every card in it.  Build it: tools\\hip\\build_windows.bat with "
+                 "STRATA_HIP_ARCHS=\"" + ";".join(sorted(split_archs(gpu))) + "\" makes strata-windows-x64-hip.zip, then run "
+                 "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
+            return None
     eng.mkdir(exist_ok=True)
     tmp = eng / "_unpack"
     shutil.rmtree(tmp, ignore_errors=True)
@@ -5014,20 +5067,27 @@ def engine_from_feed(eng: Path, updating: bool = False) -> Path | None:
     return eng
 
 
+def split_archs(gpu) -> set:
+    """Every AMD architecture a run needs engine code for: the whole layer split when setup chose several cards
+    (main() writes gpu["archs"]), else the one card.  The Windows zip and the update feed each carry one card family,
+    so a split across families (for example gfx1030 + gfx1201) needs one self-built engine with code for all of them."""
+    return set(gpu.get("archs") or [gpu["arch"]])
+
+
 def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
     """The ready-made Windows HIP engine (WIN_HIP_ASSET) in engine/, kept between runs; None when it cannot be had
-    (not published for this version, no internet) or has no code for the card."""
+    (not published for this version, no internet) or has no code for the card(s)."""
     acquisition.require("the ready-made AMD engine")
     eng = ROOT / "engine"
     info = eng / "BUILD.json"
     if info.exists() and (eng / EXE).exists():
         try:
-            meta = json.loads(info.read_text(encoding="utf-8"))
+            meta = json.loads(info.read_text(encoding="utf-8-sig"))
         except ValueError:
             meta = {}
         ver = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
         if meta.get("backend") == "hip" and meta.get("source") == "prebuilt" and ver >= WIN_HIP_MIN_ENGINE and \
-                gpu["arch"] in arch_names(meta.get("archs")) and not updating:
+                split_archs(gpu) <= set(arch_names(meta.get("archs"))) and not updating:
             ok("ready-made AMD engine already installed")
             return eng
     if not url_base:
@@ -5047,7 +5107,7 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
                 say(f"  No ready-made AMD engine for v{source_version()} ({e}): the latest release instead")
                 continue
             warn(f"no ready-made AMD engine at {base} ({e})")
-            return engine_from_feed(eng, updating)
+            return engine_from_feed(eng, updating, gpu)
     say("  Downloading the ready-made Strata engine for AMD GPUs (with the ROCm libraries it uses) ...")
     download(base + WIN_HIP_ASSET, z, "Strata AMD engine")
     try:
@@ -5069,8 +5129,11 @@ def get_prebuilt_hip(url_base, gpu, updating=False) -> Path | None:
         why = "it is not a HIP engine"
     elif ver < WIN_HIP_MIN_ENGINE:
         why = f"it is version {meta.get('version')}; this setup needs {'.'.join(map(str, WIN_HIP_MIN_ENGINE))}"
-    elif gpu["arch"] not in arch_names(meta.get("archs")):
-        why = (f"it is built for {', '.join(arch_names(meta.get('archs')))}; your GPU is {gpu['arch']}.  A card it has no code "
+    elif not split_archs(gpu) <= set(arch_names(meta.get("archs"))):
+        miss = sorted(split_archs(gpu) - set(arch_names(meta.get("archs"))))
+        why = (f"it is built for {', '.join(arch_names(meta.get('archs')))}; your GPU is {gpu['arch']}"
+               + (f" and your split spans {', '.join(sorted(split_archs(gpu)))}, so it is missing {' and '.join(miss)}" if len(split_archs(gpu)) > 1 else "")
+               + ".  A card it has no code "
                "for runs from a self-build of the engine: see docs/AMD_HIP.md (--build)")   # #881
         if is_strix_halo(gpu):                         # never a zip without gfx1151 code: say so, and what to do
             why = (f"it is built for {', '.join(arch_names(meta.get('archs'))) or 'other GPUs'} and has no gfx1151 code: your "
@@ -8313,6 +8376,20 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
                  "START-HERE.bat --backend hip --prebuilt <its dist folder> (docs/AMD_HIP.md)")
         gpu = hip_card(eng, gpu, amd)
         a.gpu = gpu["index"] if gpu["count"] > 1 else a.gpu
+        if len(gpu.get("chosen") or []) > 1:           # a layer split: HIP numbers every card, not just the main one -
+            devs = hip_devices(eng / "strata-device.exe") or []   # an integrated Radeon takes HIP 0 and shifts the rest
+            sel = []
+            for i in gpu["chosen"]:
+                g = next((x for x in amd if x["index"] == i), None)
+                m = (next((x for x in devs if x["index"] == i), None) if g is None or g.get("driver") == "hip"
+                     else hip_match(g, amd, devs))
+                if m is None:
+                    fail(f"the HIP runtime does not list {g['name'] if g else 'GPU ' + str(i)}",
+                         f"{eng / 'strata-device.exe'} --list-devices shows what the HIP runtime sees")
+                sel.append(m["index"])
+            if sel != gpu["chosen"]:
+                ok("HIP numbers the split's cards " + ", ".join(map(str, sel)) + " (an integrated Radeon comes first)")
+            gpu["chosen"] = sel
     else:
         eng = None if a.build or hip else get_prebuilt(a.prebuilt, gpu, vision, **({"toolkit": 12} if cuda_tk == 12
                                                                                     else {}))
@@ -9184,8 +9261,8 @@ def dsv41_covered_archs(eng):
 
 
 def dsv41_auto_cards(amd, eng) -> list:
-    """DeepSeek on AMD with no card named: every card that counts and the engine package can run (one card on Windows: several AMD cards sharing
-    a model is Linux-only).  The same rule as `strata launch --plan` (strata_control/dsv41_fit.run_cards).  What is left out is said."""
+    """DeepSeek on AMD with no card named: every card that counts and the engine package can run (one card on Windows: the
+    DeepSeek Windows package runs a model on one AMD card).  The same rule as `strata launch --plan` (strata_control/dsv41_fit.run_cards).  What is left out is said."""
     from strata_control import dsv41_fit
     # only real AMD cards (gfx...): sycl/setup_intel.py runs this same branch with its Intel cards in `amd` (arch "xe" / "i915"), and the DeepSeek
     # engine has no Intel package: those keep the one card setup picked
@@ -10186,8 +10263,11 @@ def main() -> int:
                     a.vram_reserve_mib = ch.get("vram_reserve_mib")
                 if a.cuda is None and ch.get("cuda") == 12:   # the experimental CUDA 12 engine, as before
                     a.cuda = "12"
-                if isinstance(ch.get("gpu"), list):     # a layer split: set up across the same cards again
-                    a.gpus = a.gpus or ",".join(str(g) for g in ch["gpu"])
+                gs = ch.get("gpu")                      # the config's cards, written as a list or as "0,2"
+                gs = ",".join(x for x in (str(y).strip() for y in (gs if isinstance(gs, (list, tuple))
+                                                                   else str(gs or "").split(","))) if x)
+                if "," in gs:                           # a layer split: set up across the same cards again
+                    a.gpus = a.gpus or gs
                     a.layer_split = a.layer_split or ch.get("layer_split")
                 else:
                     if earlier_card_kept(prev):
@@ -10197,7 +10277,7 @@ def main() -> int:
     # starting an installed model: --gpus 0,2 (or all) saves those cards for it and starts on them (it used to start
     # on the first one alone unless given with --setup), --gpu N runs this start on one card; neither: the saved
     # choice, and asked once when the PC has cards that could share the model
-    run_gpu = start_gpus(a.gpus) or a.gpu
+    run_gpu = start_gpus(a.gpus, permissive=bool(a.prebuilt)) or a.gpu
     port = a.port or 8080                              # a new install's port (issue #32: --port for an existing one)
     if a.calibrate and (a.setup or a.check or not have):    # #2036: said, not dropped
         why = ("--setup" if a.setup else "--check" if a.check else "no model is installed yet")
@@ -10281,18 +10361,22 @@ def main() -> int:
             say(f"  (the AMD card: {'START-HERE.bat' if WIN else './setup.sh'} --backend hip)")
     cuda_tk = 13                                       # NVIDIA: the toolkit of this model's engine (cuda_choice)
     if hip:                                            # AMD: compiled here; Windows: ready-made
-        if WIN and a.gpus:
-            fail("several AMD cards sharing one model (--gpus) is Linux-only for now", "use one card: --gpu N")
+        # setup's --gpus works on Windows too: the ready-made engine carries code for every supported card, and
+        # the engine splits the layers across two HIP devices there (docs/MULTI_GPU.md, docs/AMD_HIP.md).
+        replace = bool(a.prebuilt)                     # this run brings its own engine: the installed engine's "not an architecture" verdict on a supported card is the OLD engine's - step 4 replaces it before it is used
+        def problem(g):
+            p = amd_problem(g)
+            return None if (replace and p is not None and g["arch"] in AMD_ARCHS and engine_arch_problem(g) is not None) else p
         say("  Your AMD GPUs:" if amd else "  No AMD GPU found (" + ("Windows lists no AMD display adapter)." if WIN
                                                                    else "the amdgpu driver's KFD topology is empty)."))
         for g in amd:
-            say(f"    GPU {g['index']}: {g['name']}, {amd_mem_text(g)} - " + (amd_problem(g) or "can be used"))
+            say(f"    GPU {g['index']}: {g['name']}, {amd_mem_text(g)} - " + (problem(g) or "can be used"))
         if not WIN:                                    # WSL: the Linux HIP engines hang there; a warning, the run goes on
             from strata_control.engine_component import wsl_amd_note
             wsl_note = wsl_amd_note("hip", wsl=is_wsl())
             if wsl_note:
                 warn(wsl_note)
-        usable = [g for g in amd if amd_problem(g) is None]
+        usable = [g for g in amd if problem(g) is None]
         if not WIN and (amd or amd_pci_devices()):     # a warning only: recommend, never force
             acc = amd_device_access_problem()
             if acc:
@@ -10307,7 +10391,7 @@ def main() -> int:
             fail("no AMD GPU Strata can use", f"the AMD backend runs on {AMD_CARDS}")
         a._cards_named = bool(a.gpu is not None or a.gpus)     # before setup's own pick is written into a.gpu below
         if a.gpus:                                     # a layer split across these cards, the first one the main
-            chosen = amd_parse_gpus(a.gpus, amd)
+            chosen = amd_parse_gpus(a.gpus, amd, permissive=replace)
             gpu = chosen[0]
         elif a.gpu is not None:
             gpu = next((g for g in usable if g["index"] == a.gpu), None)
@@ -10315,17 +10399,25 @@ def main() -> int:
                 fail(f"AMD GPU {a.gpu} cannot be used", "use one of: " + ", ".join(f"--gpu {g['index']}" for g in usable))
             chosen = [gpu]
         else:
-            gpu = min(usable, key=amd_rank)            # a discrete card before an APU, then the most memory
-            chosen = [gpu]
-            if len(usable) > 1 and any(g.get("uma") for g in usable) != all(g.get("uma") for g in usable):
-                others = [g for g in usable if g is not gpu]
-                say(f"  Using GPU {gpu['index']} ({gpu['name']}); setup recommends the card with its own memory over "
-                    "the APU's shared memory. To use another: "
-                    + ", ".join(f"--gpu {g['index']} ({g['name']})" for g in others))
+            kept = previous_amd_split(amd)             # setup run again: keep the split the installed model runs on
+            if kept:
+                say("  Keeping your layer split across " + " + ".join(gpu_name(g) for g in kept) + " from your "
+                    "earlier setup: one card: --gpu N, a different pair: --gpus N,M")
+                chosen = kept
+            else:
+                gpu = min(usable, key=amd_rank)        # a discrete card before an APU, then the most memory
+                chosen = [gpu]
+                if len(usable) > 1 and any(g.get("uma") for g in usable) != all(g.get("uma") for g in usable):
+                    others = [g for g in usable if g is not gpu]
+                    say(f"  Using GPU {gpu['index']} ({gpu['name']}); setup recommends the card with its own memory "
+                        "over the APU's shared memory. To use another: "
+                        + ", ".join(f"--gpu {g['index']} ({g['name']})" for g in others))
+            gpu = chosen[0]
         # the engine is compiled for every chosen card's architecture
         gpu = {**gpu, "count": len(amd), "archs": sorted({g["arch"] for g in chosen})}
         chosen = [gpu] + chosen[1:]
         sel = [g["index"] for g in chosen]
+        gpu["chosen"] = sel                            # the whole split, in layer order; engine_step renumbers it on Windows
         multi = sel if len(sel) > 1 else []
         a.gpu = gpu["index"] if len(amd) > 1 else a.gpu
         if multi:
@@ -10829,6 +10921,8 @@ def main() -> int:
     # ---- 4. the engine
     step(4, "the Strata engine")
     llama, eng, meta, lib_dirs, gpu, vision = engine_step(a, gpu, hip, amd, cuda_tk, vision)
+    if multi and gpu.get("chosen") and gpu["chosen"] != multi:
+        multi = gpu["chosen"]                          # Windows: the split's cards as the installed engine numbers them
     reader = None
     if hip and vision != "none":                       # AMD: the engine folder's reader (GPU, else CPU), settled now the engine is known
         vision, reader = hip_reader(eng, vision, gpu)
