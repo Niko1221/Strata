@@ -12,6 +12,7 @@
 #   ninja -C build-metal
 cmake_minimum_required(VERSION 3.24)
 project(strata_metal LANGUAGES C CXX OBJCXX)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name> (default flash_next, no flag added)
 
 if(NOT APPLE)
   message(FATAL_ERROR "metal/ builds on macOS only")
