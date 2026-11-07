@@ -1403,17 +1403,17 @@ bool cur_dev_volta() {
 }
 
 // The tokens a down kernel may carry in one launch on the current card, and the plain read's tile: the plain read
-// stages n_tok * TILEV floats (1280 on sm_75, 2560 elsewhere), staged two tiles of n_tok * H_TILE.  The shared-memory
+// stages n_tok * TILEV floats ((N / 2) on sm_75, N elsewhere), staged two tiles of n_tok * H_TILE.  The shared-memory
 // opt-in is set here once per device (a per-DEVICE setting: a layer split runs these kernels on two cards).
 int down_chunk(bool staged, int* tile_out) {
     static bool attr[64] = {};
     static int chunk[64] = {};   // tokens the plain down kernel may carry in one launch on this card
     static int chunk_staged[64] = {};  // the same for staged
-    static int tile[64] = {};    // the plain down kernel's TILEV on this card (1280 on sm_75, 2560 elsewhere)
+    static int tile[64] = {};    // the plain down kernel's TILEV on this card ((N / 2) on sm_75, N elsewhere)
     int dev = 0;
     cudaGetDevice(&dev);
     if (dev < 0 || dev >= 64) {
-        *tile_out = 2560;
+        *tile_out = N;
         return kFusedGrMaxT;
     }
     if (!attr[dev]) {
@@ -1428,7 +1428,7 @@ int down_chunk(bool staged, int* tile_out) {
         // the up kernel below still sees every token of the batch in one launch.
 #if defined(__HIPCC__)
 #if defined(STRATA_HIP_GFX906)
-        const bool small_tile = false;  // gfx906: 64 KiB LDS, the 2560 tile as before (8 tokens slice into launches)
+        const bool small_tile = false;  // gfx906: 64 KiB LDS, the N tile as before (8 tokens slice into launches)
 #else
         const bool small_tile = true;   // all eight tokens fit gfx1100's 64 KiB LDS at this tile
 #endif
@@ -1438,18 +1438,18 @@ int down_chunk(bool staged, int* tile_out) {
         cudaDeviceGetAttribute(&cc_min, cudaDevAttrComputeCapabilityMinor, dev);
         const bool small_tile = strata::cc_major_of(cc_maj) * 10 + strata::cc_minor_of(cc_min) == 75;
 #endif
-        const int tv = small_tile ? 1280 : 2560;
+        const int tv = small_tile ? (N / 2) : N;
         tile[dev] = tv;
         int want = (int) (kFusedGrMaxT * tv * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
         if (small_tile) {
-            cudaFuncSetAttribute(gr_down_multi_kernel<1280>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaFuncSetAttribute(gr_down_multi_kernel<1280, kFusedGrMaxT, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaFuncSetAttribute(gr_down_multi_kernel<1280, 4, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            cudaFuncSetAttribute(gr_down_multi_kernel<(N / 2)>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            cudaFuncSetAttribute(gr_down_multi_kernel<(N / 2), kFusedGrMaxT, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            cudaFuncSetAttribute(gr_down_multi_kernel<(N / 2), 4, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
         } else {
-            cudaFuncSetAttribute(gr_down_multi_kernel<2560>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaFuncSetAttribute(gr_down_multi_kernel<2560, kFusedGrMaxT, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
-            cudaFuncSetAttribute(gr_down_multi_kernel<2560, 4, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            cudaFuncSetAttribute(gr_down_multi_kernel<N>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            cudaFuncSetAttribute(gr_down_multi_kernel<N, kFusedGrMaxT, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
+            cudaFuncSetAttribute(gr_down_multi_kernel<N, 4, true>, cudaFuncAttributeMaxDynamicSharedMemorySize, want);
         }
         auto set_staged_attr = [&](auto kernel, int max_t) {
             int ws = (int) (2 * max_t * H_TILE * sizeof(float));
@@ -1486,7 +1486,7 @@ int down_chunk(bool staged, int* tile_out) {
         chunk_staged[dev] = capacity_staged < 1 ? 1 : (capacity_staged > kFusedGrMaxT ? kFusedGrMaxT : capacity_staged);
         attr[dev] = true;
     }
-    *tile_out = tile[dev] ? tile[dev] : 2560;
+    *tile_out = tile[dev] ? tile[dev] : N;
     return staged ? chunk_staged[dev] : chunk[dev];
 }
 
@@ -1617,7 +1617,7 @@ void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long 
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, (void*) st);
     // STRATA_HC_Q8: the staged down kernel reads bf16 only, so Q8 weights take split's down kernel (the plain one)
     const bool staged = variant >= kHcStaged && m.a[0].s_down == nullptr;
-    int tv = 2560;
+    int tv = N;
     const int chunk_tok = down_chunk(staged, &tv);
     // BW-MEASURE: the hyper-connection read's form: var = layout variant (0 plain, 1 split, 2 staged), type = 1 for Q8 weights, n_in = down tile,
     // n_out = tokens a down launch, ncols = tokens
@@ -1662,18 +1662,18 @@ void launch_multi(const GrMulti& m, int variant, cudaStream_t st, unsigned long 
             else if (exact_t && ct == 6) gr_down_staged_kernel<6, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
             else if (max4) gr_down_staged_kernel<4><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
             else gr_down_staged_kernel<><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-        } else if (tv == 1280) {
+        } else if (tv == (N / 2)) {
             if (q8w) {   // STRATA_HC_REQ8
-                if (max4) gr_down_multi_kernel<1280, 4, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-                else gr_down_multi_kernel<1280, kFusedGrMaxT, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-            } else if (max4) gr_down_multi_kernel<1280, 4><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-            else gr_down_multi_kernel<1280><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+                if (max4) gr_down_multi_kernel<(N / 2), 4, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+                else gr_down_multi_kernel<(N / 2), kFusedGrMaxT, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+            } else if (max4) gr_down_multi_kernel<(N / 2), 4><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+            else gr_down_multi_kernel<(N / 2)><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
         } else {
             if (q8w) {   // STRATA_HC_REQ8
-                if (max4) gr_down_multi_kernel<2560, 4, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-                else gr_down_multi_kernel<2560, kFusedGrMaxT, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-            } else if (max4) gr_down_multi_kernel<2560, 4><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
-            else gr_down_multi_kernel<2560><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+                if (max4) gr_down_multi_kernel<N, 4, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+                else gr_down_multi_kernel<N, kFusedGrMaxT, true><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+            } else if (max4) gr_down_multi_kernel<N, 4><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
+            else gr_down_multi_kernel<N><<<DOWN_BLOCKS + 1, THREADS, smem, st>>>(c);
         }
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
