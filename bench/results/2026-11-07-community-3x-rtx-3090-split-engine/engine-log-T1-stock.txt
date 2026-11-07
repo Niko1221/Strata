@@ -1,0 +1,12 @@
+strata-vision: model files loaded in 2.0 s
+strata-vision: warmed up at 1024 image tokens in 0.7 s
+[strata] 2026-11-07 10:59:51 engine started: <strata>/build/strata-split-3 --serve --native Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf --mtp <data>/mtp/rt --draft-vocab <strata>/data/draft_vocab_en.bin --max-context 65536 --spec 6 --lookup 15 --conversation-cache-mib 4096 --batch 1 --vision --layer-split auto
+gguf: 676 dense/small tensors converted to Q8_0/F32 at load (the file's routed experts keep their types)
+fnx: token_embd.weight and per_layer_token_embd.weight (29.5 GB) locked in RAM in 3.1 s
+fnx: 1460 of 24576 routed experts (3.0 GiB) in RAM, ranked by <strata>/src/split/data/expert-routes.bin
+fnx: weights read in 14.0 s of reading (49.1 GB from the disk at 3.52 GB/s, 0.0 GB from the page cache), placed in 43.6 s
+fnx: draft layer experts q2_0
+fnx: HOSTRING build: the cards exchange through page-locked host memory; peer access is never enabled, no peer probe, IOMMU and BAR1 checks skipped
+fnx: VRAM short by 1794 MiB on a card (another process on it?): 3117 more of the coldest experts to RAM
+fnx: 4577 of 24576 routed experts (9.2 GiB) in RAM, ranked by <strata>/src/split/data/expert-routes.bin (3117 of them because VRAM was short)
+sfnx: failed: card 0: expert cache: pool 3 has 271 slots, a window needs 320 (fewer experts in RAM)
