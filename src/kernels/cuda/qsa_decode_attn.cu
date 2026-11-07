@@ -113,6 +113,23 @@ template <int GG> __device__ __forceinline__ void fold_cell(float (&acc)[GG], co
     }
 }
 
+// the q8_v3 kernel's value loop: Flash-Next (12 heads per KV head) keeps the expressions this kernel always had (its device code is
+// unchanged); any other G folds the cell with fold_cell.  A template, so the branch not taken is not instantiated (G is not 12 in a
+// non-Flash-Next build, and the 12-element initialiser below would not compile).
+template <int GG> __device__ __forceinline__ void fold_cell_v3(float (&acc)[GG], const float* w, float v) {
+    if constexpr (GG == 12) {
+        const float4 p0 = *reinterpret_cast<const float4*>(&w[0]);
+        const float4 p1 = *reinterpret_cast<const float4*>(&w[4]);
+        const float4 p2 = *reinterpret_cast<const float4*>(&w[8]);
+        const float pr[GG] = {p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w, p2.x, p2.y, p2.z, p2.w};
+#pragma unroll
+        for (int h = 0; h < GG; ++h) acc[h] = fmaf(pr[h], v, acc[h]);
+    } else {
+        fold_cell<GG>(acc, w, v);
+    }
+}
+
+
 // Exact-intent score reduce-scatter: the same butterfly pairs as twelve warp_sum calls,
 // with 16 shuffle exchanges instead of 60. Used only by the opt-in gfx906 INT8
 // query-swizzled specialization; softmax, value accumulation and merge are unchanged.
@@ -450,16 +467,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_q8_v3_kernel(const float* 
         if (srow[c] < 0) continue;   // masked above, weight 0
         const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
         const float v = (float) p.v_q[srow[c] * HD + t] * sc;
-        if constexpr (G == 12) {   // Flash-Next: the expressions this replaced (device code unchanged)
-            const float4 p0 = *reinterpret_cast<const float4*>(&spt[c][0]);
-            const float4 p1 = *reinterpret_cast<const float4*>(&spt[c][4]);
-            const float4 p2 = *reinterpret_cast<const float4*>(&spt[c][8]);
-            const float pr[G] = {p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w, p2.x, p2.y, p2.z, p2.w};
-#pragma unroll
-            for (int h = 0; h < G; ++h) acc[h] = fmaf(pr[h], v, acc[h]);
-        } else {
-            fold_cell<G>(acc, &spt[c][0], v);
-        }
+        fold_cell_v3<G>(acc, &spt[c][0], v);
     }
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
