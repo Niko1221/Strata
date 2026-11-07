@@ -209,8 +209,8 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 - **常驻 API 的训练会话**：`POST /v1/training/session {open|close}` + `/v1/training/command`。
   open 时服务引擎让位（unload）→ 拉起训练引擎 → 会话期推理一律 409；close 后下一请求自动拉回。
   **无会话时推理路径零改动**。真机验证：会话期 chat 409、close 后 200、客户端崩溃也会话正常关。
-- **在线训练（`--serve-url`，第三条 transport）**：`POST /v1/score`（`"lora": ±1`，服务端 docstring
-  明写「两次只有这个键不同的调用就是一次 MeZO 步，且不重传表、不重建图」）+ `POST /v1/lora`
+- **在线训练（`--serve-url`，第三条 transport）**：`POST /v1/engine/score`（`"lora": ±1`，服务端 docstring
+  明写「两次只有这个键不同的调用就是一次 MeZO 步，且不重传表、不重建图」）+ `POST /v1/engine/lora`
   （原地换表）已经能驱动**驻留的推理引擎**做零阶步 ⇒ 补一个 transport 就够，训练循环一行没动：
 
   | transport | 谁持有 GPU | 推理 |
@@ -222,7 +222,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
   - 服务端要求（启动时决定，训练侧补不了）：`--lora <初始 adapter>`（形状不能变 ⇒ rank 全程固定）
     + `--no-prefill-borrow --prefill 8192`（否则 score 走借槽路径，数值已知坏）。后者同时影响推理的
     prefill 速度 —— 这是「共用引擎」的真实代价，不在训练侧掩盖。
-  - **长度契约**：引擎的 `SL` 只发 `t + 1 < n`（n-1 行），而 `/v1/score` 为了让 `logprobs` 与
+  - **长度契约**：引擎的 `SL` 只发 `t + 1 < n`（n-1 行），而 `/v1/engine/score` 为了让 `logprobs` 与
     `tokens` 对齐补了一个末位 null（n 行）⇒ 客户端**必须去掉末位**。照抄会让 answer 段切片整体
     错一位：损失照样算得出、曲线照样下降，只是学的是错跨度的 token。`test_engine_http.py` 钉住这条。
   - 在线形态下 `gen` 不可用（服务端没有按 ids 生成的端点）⇒ `supports_gen = False`，eval 跳过生成行，

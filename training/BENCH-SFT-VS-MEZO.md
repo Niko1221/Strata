@@ -1360,7 +1360,7 @@ chunked prefill 就是（按字节预算切块 + KV 常驻），上游的 QSA �
 
 | 能力 | 现状 | 要做 | 规模 |
 |---|---|---|---|
-| teacher-forced logprobs | prefill **根本不调 lm_head**（`src/prefill/prefill.cpp` 全文件无 `output.weight`）；生成侧只报**采样到的那个** token（`src/program/generate.cpp` 的 `emit_lp_line`） | `lm_head_rows`：T 个位置一次 GEMM + vocab 分块流式 `logsumexp` + 取目标 token 的 logprob；端点 `/v1/score` | 中：一个 GEMM 变体 + 端点 + 测试 |
+| teacher-forced logprobs | prefill **根本不调 lm_head**（`src/prefill/prefill.cpp` 全文件无 `output.weight`）；生成侧只报**采样到的那个** token（`src/program/generate.cpp` 的 `emit_lp_line`） | `lm_head_rows`：T 个位置一次 GEMM + vocab 分块流式 `logsumexp` + 取目标 token 的 logprob；端点 `/v1/engine/score` | 中：一个 GEMM 变体 + 端点 + 测试 |
 | adapter ±ε 热换 | `--lora` 只在启动时读（`src/kernels/lora_adapters.cpp`）；请求里只能 `sampling.lora:false` 关掉（`serve/server.py:1478`） | 两张表常驻（15.7 MB × 2）+ 请求级选择 `lora: "+" / "-"` | 小 |
 | 128K 上下文 | **已有**：分块 prefill 按字节预算自动选 chunk；专家按需流式 | — | 无 |
 
@@ -1376,7 +1376,7 @@ int8 减半）+ scoring 2 + chunk 工作区 2 ≈ **32 GiB**，在 45.6 预算�
 
 | 分支 | 前向 | 上下文 | worktree | 状态 |
 |---|---|---|---|---|
-| `feat/train-mezo` | 引擎 `/v1/score` + tokenizer，**不 import transformers 模型类** | 128K | `Strata-mezo` | 唯一长期路线 |
+| `feat/train-mezo` | 引擎 `/v1/engine/score` + tokenizer，**不 import transformers 模型类** | 128K | `Strata-mezo` | 唯一长期路线 |
 | `feat/train-backforward` | HF `Qwen4ExpTextLMHeadModel`（1 前向 + 1 反传） | 冻结在 ≤32K | `Strata-prtrain` | A/B 与数值对照，不再打 128K 补丁 |
 
 两条分支的基线不同，是有意的：

@@ -72,14 +72,14 @@ token 级没有对错标签，所以既无法判断哪些 token 该跳，跳掉�
 | 栈 | 是什么 | 权重来源 | 能做什么 |
 |---|---|---|---|
 | **HF 路径** | 本地 `transformers` 模块（`loader_qwen4.py` 装载 + `nf4_fused.py` 融合算子），走 torch autograd | `Strata-data\models\swift-IQ3_XXS\*.gguf` + `experts_nf4.bin` | 前向**和反向**、单进程、~34.5 GiB / 加载 ~450 s |
-| **引擎路径** | `strata.exe`（C++/CUDA，GGUF + 专家 pack） | 同一批文件 | 只前向：`/v1/score`、`/v1/gen`、`/v1/lora`；~42.7 GiB / 加载 ~19 s |
+| **引擎路径** | `strata.exe`（C++/CUDA，GGUF + 专家 pack） | 同一批文件 | 只前向：`/v1/engine/score`、`/v1/engine/lora`（无按 ids 生成的端点，在线形态 `gen` 不可用）；~42.7 GiB / 加载 ~19 s |
 
 平台 × 方案可用性（这就是"算法平台都要测"的矩阵轴）：
 
 | 方案 | 引擎 | HF |
 |---|---|---|
 | ce_bwd / dpo_bwd | ✗（无反向） | ✓ |
-| ce_mezo / dpo_mezo | ✓ `/v1/score` | ✓ |
+| ce_mezo / dpo_mezo | ✓ `/v1/engine/score` | ✓ |
 | grpo_mezo | ✓ | ✓ |
 | grpo_bwd | 混合（rollout 走引擎，反传在 HF） | ✓ |
 
@@ -100,7 +100,7 @@ token 级没有对错标签，所以既无法判断哪些 token 该跳，跳掉�
 | 集合 | 现在 | **改为** | 实测规模（单条最长 / 中位 / 合计） |
 |---|---|---|---|
 | 身份训练 `data_developer.jsonl` | 26 条 / **726 tok**（实测） | `data_identity8.jsonl`：**8 条**（4 个事实 × 中文、英文各一） | 44 / 37 / **275 tok/遍** |
-| 评估·快速门 | — | **3 id + 3 cap**（每 5 步跑） | 秒级（一次 6 条 `/v1/score`） |
+| 评估·快速门 | — | **3 id + 3 cap**（每 5 步跑） | 秒级（一次 6 条 `/v1/engine/score`） |
 | 评估·全量 `prompts_identity` + `prompts_holdout` | 7 + 12 条 | 不动（只在终点跑一次） | 32 + 141 = **173 tok** |
 | 数学 `math_prompts.jsonl` | 36 条 | `math_12.jsonl`：**12 题**（4 train / 4 dev / 4 holdout，固定 seed，按运算分桶轮转） | 36 / 21 / **285 tok/遍** |
 | 长样本（B/D 用） | `dpo_math.jsonl` 4 条 | 取 `chosen` 段当 gold 长答案；探极限时按 eos 打包到目标 T | **1,596 / 941 / 3,832 tok** |
@@ -137,7 +137,7 @@ token 级没有对错标签，所以既无法判断哪些 token 该跳，跳掉�
 
 | 子步 | 内容 |
 |---|---|
-| A1 | 引擎加载 → `/v1/score` 打快速门(6) + 全量(19) → `base_id_mean` / `base_cap_ce`（per item + mean） |
+| A1 | 引擎加载 → `/v1/engine/score` 打快速门(6) + 全量(19) → `base_id_mean` / `base_cap_ce`（per item + mean） |
 | A2 | `math_probe.py --preset mix --n 12 --train-n 4 --k 4` → 每题 pass_rate。**固定这 12 题跑一遍就够**，不按 pass_rate 分层挑——数学题是**能力探针**，与算法选择无关，题集变了前后就不可比 |
 | A3 | 生成体检：1 条 cap 探针贪心，记 distinct-3gram / EOS / decode tok/s |
 | A4 | HF 一致性 `ab_score.py`——**只在换构建后做**，本轮沿用已验的 0.0075 nats，跳过（省 12 min） |
@@ -204,7 +204,7 @@ peak(T) = 常驻权重 + KV(T, kv_mode) + 激活(T, 方案) + staging(方案) + 
 **先修公式，再信它**，并按二分下探一格（每方案最多 2 次）。
 
 ```
-# 引擎侧（只前向：MeZO 的 ±ε 两次 /v1/score）
+# 引擎侧（只前向：MeZO 的 ±ε 两次 /v1/engine/score）
 # bench_engine_mezo.py 没有 --lora 参数，adapter 走 --extra；--corpus 要喂真文本
 python tools/bench_engine_mezo.py --seqlen 65536,131072 \
   --corpus _discard/ladder_real.txt --extra "--lora <adapter.gguf>" \
@@ -380,7 +380,7 @@ bwd 走到 9728（45.0 GiB）也没有这笔申请 ⇒ 只有 mezo 的 no_grad �
 
 **不进矩阵的东西**：B 系列产生的临时 adapter（`_discard/`）—— 它们是一步/扫描产物，没有任何训练意义。矩阵的输入只认 C/D 登记过的文件名。
 
-- 引擎路径（主）：`lora_to_gguf.py` 转换 → `POST /v1/lora` 换表 → 同进程连测。`zero` 必须逐字等于 `base`。
+- 引擎路径（主）：`lora_to_gguf.py` 转换 → `POST /v1/engine/lora` 换表 → 同进程连测。`zero` 必须逐字等于 `base`。
 - HF 复核本轮**砍掉**（省 24 min + 2 次 450 s 加载），只留引擎一侧；差异超 0.05 nats 时再补。
 - 输出 `Δid_mean` / `Δcap_ce`（遗忘）/ `Δpass_rate`（迁移）/ `decode tok/s`。
 
@@ -480,7 +480,7 @@ C 用重扫后的步数 −0.4 h、加载走 fadvise −0.5 h；去掉仓库文�
 
 ### 10.1 接口 vs 直连：训练一步差多少（`bench_engine_iface.py`）
 
-`train_engine_mezo.py` 走 HTTP（`/v1/score {"lora": ±1}` + `/v1/lora`），进程本身 0 显存；
+`train_engine_mezo.py` 走 HTTP（`/v1/engine/score {"lora": ±1}` + `/v1/engine/lora`），进程本身 0 显存；
 `bench_engine_mezo.py` 直连引擎的 stdin/stdout（`SCORE + <ids>` / `LORA <path>`）。两条通道做的是同一件事，
 所以脚本只问三件事：
 
@@ -548,7 +548,7 @@ python3 $T/run_plan.py $T/plan.stage-ab.json \
 - `PACK_EXPERTS` 是 HF 侧的 nf4 专家**文件**（要带 `.bin`）：loader 读 `<PACK_EXPERTS>.json` 拿每层偏移，给目录直接报错
 - `GGUF1`/`GGUF2`：HF 侧 `--gguf` **两个分片都要传**（按名字找张量，少一个就 `KeyError: blk.N.ffn_down_shexp.weight`）；引擎侧只吃第一个
 
-`a1_eval_base` 要求 serve 已经起好（`--lora` 只在 E 阶段需要；A 阶段只要 `/v1/score`）。它和 `b2_bench`
+`a1_eval_base` 要求 serve 已经起好（`--lora` 只在 E 阶段需要；A 阶段只要 `/v1/engine/score`）。它和 `b2_bench`
 抢同一块卡，所以顺序是**先 serve → eval_base → 停 serve → b2**；只跑 B 就用 `--only b1_budget,b1_pack,b2_bench,b2_judge,b3_iface`。
 `b2_bench` 若某格挂死会带 **退出码 3**，plan 里配了 `retry_on` + `--resume`，会自动从下一格续，最多 6 次。
 `b3_iface` 自己拉起引擎和 serve，不需要外部服务。
