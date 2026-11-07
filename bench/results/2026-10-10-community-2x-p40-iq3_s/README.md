@@ -40,8 +40,10 @@ that we know of; extends #1028 (IQ2_XS on the same pair) and the 2×P100 IQ3_S r
 `--conversation-cache-mib 2048 --conversation-cache-slots 4`: a 5.2K-token omp-style system
 prompt reads cold in 15.7 s (331 tok/s); every later conversation mounts it in **0.43-0.83 s
 wall (cache_n 5,135-5,153)**, stable across churn. A 21.9K prompt re-mounts in 0.30 s TTFT.
-`slot save/restore` is refused on the layer split ("session files do not support
---layer-split") — restart persistence is one warm request after READY.
+`slot save/restore` was refused on the layer split in that run's build (0.1.5x: "session files do not
+support --layer-split"); format v2 carries the stage table, so a split saves and restores now — pin the
+split (`--layer-split N`, the K the startup log picked) so a later boot asks for the same one. Restart
+persistence is one warm request after READY.
 
 ## llama.cpp on the same machine (context)
 Qwen3.8-27B-AP-Q4_K_XL, `-sm tensor` both P40s: decode **22.7 tok/s** (llama.cpp v0.4.0-dev
