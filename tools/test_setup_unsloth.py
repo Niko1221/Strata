@@ -182,6 +182,9 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "data_folder", lambda d, *a, **k: (self.t / "data", [])),
             mock.patch.object(setup, "installed_configs", lambda: []),
             mock.patch.object(setup, "gpus", lambda: found),
+            # the cards' speeds come from the CUDA driver of the machine that runs the test (setup.card_speeds), so the Main card was
+            # whichever the real driver (or none) made it; the tests are written for card 0 as the faster one
+            mock.patch.object(setup, "card_speeds", lambda: {g["index"]: 2.0 if g["index"] == 0 else 1.0 for g in found}),
             mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, True)),

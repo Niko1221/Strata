@@ -200,6 +200,8 @@ def parse_junit(path, res, prefix=""):
             sk = case.find("skipped")
             reason = (sk.get("message") or (sk.text or "")).strip().splitlines()
             reason = reason[0][:140] if reason else "no reason given"
+            if reason.lower() in ("true", "skipped", "skip"):
+                reason = "(skipped in the test file without a reason: " + (case.get("name") or "?")[:80] + ")"
             res.skipped += 1
             res.skips[reason] = res.skips.get(reason, 0) + 1
         elif "failure" in kids or "error" in kids:
