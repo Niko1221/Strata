@@ -32,6 +32,7 @@ fail = "--fail-window" in args
 groups = int(args[args.index("--says-groups") + 1]) if "--says-groups" in args else 0   # INFO batch_groups=G (--batch-groups auto)        # #997: the first window over two slots fails
 STEP = 0.02
 CH = 32
+BDONE_MS = " 0.0" if "--zero-bdone-ms" in args else " 1.0"
 lines, stop = queue.Queue(), threading.Event()
 def reader():
     for l in sys.stdin:
@@ -72,7 +73,7 @@ def window():        # one batch window: every active slot one token
         left, max_new, produced = active[b]
         if b in nf_slots and produced >= 2:
             nf_slots.discard(b)
-            print(f"BDONE {b} {produced} nonfinite 1.0", flush=True)
+            print(f"BDONE {b} {produced} nonfinite{BDONE_MS}", flush=True)
             del active[b]
             continue
         t = left.pop(0) if left else 257
@@ -81,7 +82,7 @@ def window():        # one batch window: every active slot one token
         if t == 257 or produced >= max_new:
             fin = 'stop' if t == 257 else 'cancel' if b in stopped else 'length'
             stopped.discard(b)
-            print(f"BDONE {b} {produced} {fin} 1.0", flush=True)
+            print(f"BDONE {b} {produced} {fin}{BDONE_MS}", flush=True)
             del active[b]
         else:
             active[b] = [left, max_new, produced]
@@ -581,6 +582,102 @@ class FakeEngineCase(unittest.TestCase):
         go(second)
         a.join(30)
         return res
+
+
+class BatchLegAccounting(FakeEngineCase):
+    """The admission's DONE times one token; BDONE counts that token but times only the slot."""
+
+    def queued_chats(self, texts=("first", "second"), max_tokens=10, stop=None):
+        replies, errors = {}, []
+
+        def request(text):
+            body = {"messages": [{"role": "user", "content": text}], "max_tokens": max_tokens,
+                    "reasoning_effort": "none", **({"stop": [stop]} if stop else {})}
+            req = urllib.request.Request(self.base + "/v1/chat/completions", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    replies[text] = json.loads(response.read())
+            except Exception as error:
+                errors.append(repr(error))
+
+        workers = [threading.Thread(target=request, args=(text,)) for text in texts]
+        # Both requests must be waiting before either takes control: the first cannot take the solo shortcut.
+        with self.engine.ctl:
+            for worker in workers:
+                worker.start()
+            deadline = time.monotonic() + 3
+            while self.engine.waiting < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(self.engine.waiting, 2)
+        for worker in workers:
+            worker.join(15)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(replies), 2)
+        self.assertEqual([line.split()[0] for line in self.log.read_text().splitlines()][:2], ["BGEN", "BGEN"])
+        return replies
+
+    def test_eos_adds_admission_time_without_counting_its_token_twice(self):
+        self.start(2)
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            replies = self.queued_chats()
+        for reply in replies.values():
+            timings = reply["timings"]
+            self.assertEqual((timings["predicted_n"], timings["predicted_ms"]), (10, 21.0))
+            self.assertEqual(timings["predicted_per_second"], 476.2)
+        metrics = self.get("/metrics")
+        self.assertEqual([(row["engine_generated"], row["decode_ms"]) for row in metrics["requests"]],
+                         [(10, 21.0), (10, 21.0)])
+        self.assertEqual(metrics["totals"]["decode_ms"], 42.0)
+
+    def test_length_finish_also_adds_admission_time(self):
+        self.start(2)
+        for reply in self.queued_chats(max_tokens=8).values():
+            self.assertEqual((reply["timings"]["predicted_n"], reply["timings"]["predicted_ms"]), (8, 21.0))
+
+    def test_zero_slot_time_is_known_and_still_includes_admission(self):
+        self.start(2, more=("--zero-bdone-ms",))
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            replies = self.queued_chats()
+        for reply in replies.values():
+            self.assertEqual(reply["timings"]["predicted_ms"], 20.0)
+
+    def assert_incomplete_after_stop(self, stop):
+        self.start(2)
+        replies = self.queued_chats(stop=stop)
+        for reply in replies.values():
+            self.assertIsNone(reply["timings"]["predicted_ms"])
+            self.assertIsNone(reply["timings"]["predicted_per_second"])
+        for row in self.get("/metrics")["requests"]:
+            self.assertIsNone(row["engine_generated"])
+            self.assertIsNone(row["decode_ms"])
+            self.assertIsNone(row["decode_tok_s"])
+        self.assertEqual(self.get("/metrics")["totals"]["decode_ms"], 0.0)
+
+    def test_close_at_admission_token_does_not_publish_partial_totals(self):
+        self.assert_incomplete_after_stop("o")
+
+    def test_close_in_slot_does_not_publish_partial_totals(self):
+        self.assert_incomplete_after_stop("k, ")
+
+    def test_slot_to_solo_carry_includes_admission_once(self):
+        self.start(2, slot_cache=True)
+        with mock.patch.object(server, "EOS_IDS", {257}):
+            replies = self.queued_chats(("short", "LONGREPLY"), max_tokens=200)
+        lines = [line.split() for line in self.log.read_text().splitlines()]
+        solos = [line for line in lines if line[0] == "GEN"]
+        self.assertEqual(len(solos), 1, lines)
+        prompt_lengths = [int(line[2]) for line in lines if line[0] == "BGEN"]
+        slot_tokens = int(solos[0][2]) - max(prompt_lengths)
+        self.assertGreaterEqual(slot_tokens, 2)
+        self.assertLess(slot_tokens, 55)
+        # "ok, " + 15 * "la " + "done." + EOS: 55 total tokens. The solo leg times its remaining tokens at 20 ms each.
+        expected_ms = 21.0 + (55 - slot_tokens) * 20.0
+        reply = replies["LONGREPLY"]
+        self.assertEqual((reply["timings"]["predicted_n"], reply["timings"]["predicted_ms"]), (55, expected_ms))
+        row = max(self.get("/metrics")["requests"], key=lambda item: item["output_tokens"])
+        self.assertEqual((row["engine_generated"], row["decode_ms"]), (55, expected_ms))
 
 
 class ParallelService(FakeEngineCase):
