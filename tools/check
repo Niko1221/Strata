@@ -198,7 +198,10 @@ def parse_junit(path, res, prefix=""):
         kids = {c.tag for c in case}
         if "skipped" in kids:
             sk = case.find("skipped")
-            reason = (sk.get("message") or (sk.text or "")).strip().splitlines()
+            msg = (sk.get("message") or "").strip()
+            if msg.lower().startswith("collection skipped") and (sk.text or "").strip():   # a module-level skip: the reason is in the text
+                msg = (sk.text or "").strip().splitlines()[-1].replace("Skipped: ", "").strip()
+            reason = (msg or (sk.text or "")).strip().splitlines()
             reason = reason[0][:140] if reason else "no reason given"
             if reason.lower() in ("true", "skipped", "skip"):
                 reason = "(skipped in the test file without a reason: " + (case.get("name") or "?")[:80] + ")"
