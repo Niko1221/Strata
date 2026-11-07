@@ -103,6 +103,7 @@ HF_REVISIONS = {
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
     "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": "8a6ec9cf118e785a362ea94ee123c61c70553be6",             # 2026-10-30 (adds UD-IQ1_S / UD-IQ1_M; every file pinned from the 2026-10-20 commit has the same size and SHA-256 here)
     "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": "cb02422c900df489cea5833e8a92171224059b3c",    # 2026-10-24 (ISTA-DASLab's final 1.75 / 2.00 / 2.25 bpw sets and Engram)
+    "agentionai/Flint-40B-MoE-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",
 }
 
 
@@ -525,6 +526,9 @@ MODELS = {
                         "about 16-21% slower than Q2_0 on 12 GB cards",
                "download_gb": 92.0, "ram_gb": 35.0, "arena_gb": 32.1, "families": ("gyro",), "mem_total": True,
                "file": "Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf", "shards": 1, "engine": GYRO_ENGINE, "vision": True},
+    "Flint-40B": {"about": "Flint 40B Preview MoE (256 experts, top-6 + 2 shared, 49 layers), 3-Tier KV Ring (32K VRAM + 256K RAM)",
+                  "download_gb": 18.5, "ram_gb": 24.0, "arena_gb": 20.0, "families": ("flint",), "mem_total": True,
+                  "file": "flint-UD-Q3_K_XL.gguf", "shards": 1, "engine": (0, 1, 46), "vision": False},
     "NVFP4": {"about": "best quality of the NVFP4 versions (GPTQ, sergqwer's strata-nvfp4 pack); RTX 50 has FP4 tensor cores, "
                        "other NVIDIA cards run it at 8-bit precision", "download_gb": 128.0, "ram_gb": 80, "arena_gb": 68.0,
               "families": ("nvfp4",), "nvidia_only": True, "vision": True, "repo": NVFP4_GPTQ_REPO,
@@ -740,6 +744,11 @@ FAMILIES = {
               "tag": "nvfp4-", "name": "qwen3.8-flash-next-nvfp4", "ready": True,
               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"), "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
               "mmproj_sha256": (907543008, "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0")},
+    "flint": {"title": "Flint 40B Preview MoE", "by": "Flint Team; GGUF by unsloth / agentionai",
+              "about": "40B MoE (256 experts, top-6 + 2 shared, 49 layers), 3-Tier KV Ring (32K VRAM + 256K RAM)",
+              "hf": hf("agentionai/Flint-40B-MoE-GGUF"), "file": "flint-UD-Q3_K_XL.gguf", "shards": 1,
+              "tag": "flint-", "name": "flint-40b", "vision": False, "arch": "flint",
+              "license": "Apache 2.0: https://huggingface.co/agentionai/Flint-40B-MoE-GGUF"},
 }
 MMPROJ = "mmproj-Qwen3.8-Flash-Next-BF16.gguf"
 # Qwen3.6-35B-A3B (GGUF architecture qwen35moe), Unsloth's GGUFs with the MTP block: a family with an engine path of its

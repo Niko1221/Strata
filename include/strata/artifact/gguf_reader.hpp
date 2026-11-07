@@ -642,6 +642,21 @@ inline ModelFamily model_family(const GgufFile& g) {
 
 /// Qwen3.6-35B-A3B's guard: every key the geometry is read from must be present (core::geometry_from_gguf),
 /// and the few that the layer pattern depends on must have the values the model has.
+inline std::string check_architecture_flint(const GgufFile& g) {
+    static const char* const keys[] = {
+        "flint.block_count", "flint.embedding_length", "flint.attention.head_count",
+        "flint.attention.head_count_kv", "flint.attention.key_length", "flint.attention.value_length",
+        "flint.expert_count", "flint.expert_used_count", "flint.expert_feed_forward_length",
+        "flint.expert_shared_feed_forward_length", "flint.leading_dense_block_count",
+    };
+    for (const char* k : keys) {
+        const MetaValue* v = g.get(k);
+        if (!v) return std::string("missing ") + k;
+        if (!v->is_num()) return std::string(k) + " is not a number";
+    }
+    return {};
+}
+
 inline std::string check_architecture_qwen35moe(const GgufFile& g) {
     static const char* const keys[] = {
         "qwen35moe.block_count", "qwen35moe.embedding_length", "qwen35moe.attention.head_count",
@@ -851,6 +866,7 @@ inline std::string check_architecture(const GgufFile& f) {
     if (!arch) return "missing general.architecture";
     const ModelFamily family = model_family_from_arch(arch->s);
     if (family == ModelFamily::Qwen35Moe) return check_architecture_qwen35moe(f);
+    if (family == ModelFamily::Flint) return check_architecture_flint(f);
     core::ModelGeometry g;   // anything else is refused by name by read_geometry
     std::string err = read_geometry(f, g);
     if (err.empty()) err = geometry_unsupported(g);

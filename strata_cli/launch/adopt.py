@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 SHARD = re.compile(r"^(?P<stem>.+)-(?P<i>\d{5})-of-(?P<n>\d{5})\.gguf$")
-FAMILIES = ("qwen", "swift", "coder", "gyro", "unsloth")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11); Unsloth's sets since round 0214 (ENG-AMD: UD-IQ1_M ran on an Arc A750)
+FAMILIES = ("qwen", "swift", "coder", "gyro", "unsloth", "flint")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11); Unsloth's sets since round 0214
 UNSUPPORTED = ("no nvidia gpu found", "no amd gpu", "nvidia gpu", "not supported", "cannot be used")
 
 
@@ -65,7 +65,17 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
     problems: list[str] = []
     if family not in FAMILIES:
         # no full stop: the caller joins the problems with "; " and ends the sentence (a "gyro.." came out of the old text, round 8, N11)
-        return None, [f"Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder and Gyro files, not for {family}"]
+        return None, [f"Strata can write the settings itself only for the Qwen3.8-Flash-Next, Swift, Coder, Gyro and Flint files, not for {family}"]
+    if family == "flint":
+        shards = find_single(model_dir)
+        if not shards:
+            return None, [f"the Flint model file is not in {model_dir}"]
+        tokenizer = pack / "tokenizer" if (pack / "tokenizer").exists() else src / "data" / "flint_tokenizer"
+        args = ["--native", str(shards[0]), "--max-context", str(context), "--kv-resident", "32768",
+                "--chunk", "1024", "--adapt-every", "16", "--adapt-swaps", "8"]
+        cfg = {"exe": "build/Release/strata-flint.exe", "args": args, "cwd": str(src), "tokenizer": str(tokenizer),
+               "model_name": model_name, "log": str(log), "lib_dirs": [], "port": 8080, "arch": "flint"}
+        return cfg, []
     shards = find_single(model_dir) if family == "gyro" else find_shards(model_dir)
     if not shards:
         problems.append(f"the model file is not in {model_dir}" if family == "gyro" else
