@@ -19,7 +19,7 @@
 #                                 dependency story.
 #   backward  autograd           — everything below.
 #
-# Pinned to the versions the numbers in REVIEW-REQUEST.zh.md were measured on. Bumping
+# Pinned to the versions the numbers in README.md / BENCH-SFT-VS-MEZO.md were measured on. Bumping
 # one is fine, but write down the new number: they interact. transformers' qwen4_exp
 # picks the GDN kernel through `fla`, and a fallback there changes VRAM per step, not
 # just speed (platform_check.py:warn_if_gdn_fell_back).

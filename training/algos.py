@@ -300,7 +300,7 @@ def method_of(algo: str, method: str | None) -> Method:
             f"--method {name} 不在这条分支上：缺 {', '.join(missing)}。\n"
             f"  本分支带的是 {sorted(available())}（引擎前向的零阶训练，不 import torch）。\n"
             f"  反传那条线从这条分支长出来（多带 backward/ 与 torch 那三个共享件），"
-            f"见 REVIEW-REQUEST.zh.md §7 的分支矩阵。")
+            f"分支分层见 training/README.md 开头的 branch 表。")
     if algo not in m.scripts:
         raise SystemExit(f"--algo {algo} 还没有 {m.name} 实现"
                          f"（该方法能做：{list(m.scripts)}）")
