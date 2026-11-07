@@ -998,6 +998,11 @@ card's reader is `strata-vision-hip`; if it cannot start, the server starts the 
 A picture becomes up to 1,024 tokens of the context (a 640x480 photo: 300). The same picture sent again, as chat apps do on
 every turn, is encoded once.
 
+A Stop while a picture is read: the reader cannot stop in the middle of a picture. When another request is waiting, the
+reader is ended and started again (about 1 s on the CPU) and the waiting request goes next. The stopped picture is read
+again when it is sent again. When nobody waits, or the waiting request sends the same picture (a follow-up or a retry), the
+picture is read to the end and kept.
+
 ### Vision settings (the `"vision"` section of `strata-<model>.json`)
 
 | Setting | Effect |
