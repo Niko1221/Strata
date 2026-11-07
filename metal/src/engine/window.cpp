@@ -2103,10 +2103,13 @@ bool Window::checkpoint_restore(const strata::core::ConversationCheckpoint& c, s
     }
     std::memcpy(pleHist_.ptr, c.ple.data(), c.ple.size());
     const size_t cts = c.tails.size() / std::max<size_t>(tail_.size(), 1);   // 3 rows (the shared contract) or 4 (an older image)
+    const size_t row = c.ids.size() / 4;
     for (size_t j = 0; j < tail_.size(); ++j) {
         std::memset(tail_[j].ptr, 0, tsw);
         std::memcpy(tail_[j].ptr, c.tails.data() + j * cts, cts);
         std::memcpy(dead_[j].ptr, c.dead.data() + j * dsz, dsz);
+        if (!c.ids.empty() && (row + 1) * dsz <= pooled_[j].bytes)
+            std::memcpy((uint8_t*) pooled_[j].ptr + row * dsz, c.dead.data() + j * dsz, dsz);
     }
     return true;
 }
@@ -3279,6 +3282,8 @@ bool window_init(void* w, const strata::core::ModelGeometry& g, strata::core::Se
         if (!x->init(g, ss, g_shard1, MAXT, max_cells, err)) return false;
         window_register(w);
         if (!mtp_load_pending(x, err)) return false;
+    } else {
+        x->bind_session(ss);
     }
     x->set_max_t(max_t);
     *n_vocab = x->vocab();
