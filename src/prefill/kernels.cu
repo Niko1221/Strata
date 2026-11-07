@@ -745,23 +745,17 @@ __device__ __forceinline__ void gdn_cp_wait_prev() {   // every group but the ne
 #endif
 }
 constexpr int GDN_TB = 8, VPK = HV / HK;   // tokens per staged block, value heads per key head
-// sm_89 tune: the keyhead kernel with 16 value columns a block (KH_CB) instead of CB = 32: 128 blocks for a 128-SM card
-// instead of 64.  Every column is one thread's own chain, and the cross-row-group sums keep their order: the same bits.
-#ifndef STRATA_GDN_KH_CB
-#define STRATA_GDN_KH_CB 16
-#endif
-constexpr int KH_CB = STRATA_GDN_KH_CB, KH_NCB = S / KH_CB;
-__global__ void __launch_bounds__(KH_CB * RG) gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h,
+__global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h,
                                                                const float* __restrict__ gate,
                                                                const float* __restrict__ beta,
                                                                float* __restrict__ oc_out, int64_t T) {
-    constexpr int TB = GDN_TB, NT = KH_CB * RG, QKP = S / 4, VP = KH_CB / 4;   // threads, 16-byte pieces of a q/k row, of v
+    constexpr int TB = GDN_TB, NT = CB * RG, QKP = S / 4, VP = CB / 4;   // threads, 16-byte pieces of a q/k row, of v
     __shared__ __align__(16) float sq[2][TB][S];
     __shared__ __align__(16) float sk[2][TB][S];
-    __shared__ __align__(16) float sv[2][TB][VPK][KH_CB];
-    __shared__ float sg[2][TB][VPK], sb[2][TB][VPK], rkv[VPK][RG][KH_CB], ro[VPK][RG][KH_CB];
-    const int qh = blockIdx.x / KH_NCB, cb = blockIdx.x % KH_NCB;
-    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * KH_CB + c, col = cb * KH_CB + c;
+    __shared__ __align__(16) float sv[2][TB][VPK][CB];
+    __shared__ float sg[2][TB][VPK], sb[2][TB][VPK], rkv[VPK][RG][CB], ro[VPK][RG][CB];
+    const int qh = blockIdx.x / NCB, cb = blockIdx.x % NCB;
+    const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
     float s[VPK][RPG];
     const size_t rs = (size_t) HV * S;
 #pragma unroll
@@ -782,7 +776,7 @@ __global__ void __launch_bounds__(KH_CB * RG) gdn_rec_kh_kernel(float* __restric
         for (int p = tid; p < TB * VPK * VP; p += NT) {
             const int i = p / (VPK * VP), w = p % (VPK * VP), j = w / VP, jj = (w % VP) * 4;
             if (t0 + i < T)
-                gdn_cp16(&sv[bb][i][j][jj], h + (t0 + i) * C + 2 * HK * S + (qh + j * HK) * S + cb * KH_CB + jj);
+                gdn_cp16(&sv[bb][i][j][jj], h + (t0 + i) * C + 2 * HK * S + (qh + j * HK) * S + cb * CB + jj);
         }
         for (int p = tid; p < 2 * TB * VPK; p += NT) {
             const int isb = p / (TB * VPK), w = p % (TB * VPK), i = w / VPK, j = w % VPK;
@@ -861,7 +855,7 @@ bool gdn_keyhead_ok() {
         int major = 0, sms = 0, per_sm = 0;
         const bool yes = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
                          cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && major >= 8 &&
-                         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, gdn_rec_kh_kernel, KH_CB * RG, 0) ==
+                         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, gdn_rec_kh_kernel, CB * RG, 0) ==
                              cudaSuccess &&
                          (int64_t) per_sm * sms >= (int64_t) HK * NCB;
         if (!yes) cudaGetLastError();
@@ -2786,7 +2780,7 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
         if (tc && T >= kGdnTcMin && gdn_rec_tc(state, h, gate, beta, y, T, (cudaStream_t) stream) == cudaSuccess) {
         } else if (chunked && T >= kGdnChunkedMin && gdn_rec_chunked(state, h, gate, beta, y, T, (cudaStream_t) stream) == cudaSuccess) {
         } else if (pipe && gdn_keyhead_ok())   // the value heads of a key head in one thread (same bits)
-            gdn_rec_kh_kernel<<<HK * KH_NCB, dim3(KH_CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
+            gdn_rec_kh_kernel<<<HK * NCB, dim3(CB, RG), 0, (cudaStream_t) stream>>>(state, h, gate, beta, y, T);
         else
 #endif
         if (pipe)   // the software-pipelined loads (same bits)
