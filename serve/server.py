@@ -7195,6 +7195,13 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             if x.get("rejected_tool_calls"):
                 last["strata_rejected_tool_calls"] = x["rejected_tool_calls"]     # #3796: only when a call was refused as undeclared
             yield last
+            #   OpenAI's streaming contract, as llama.cpp keeps it: when the client asked for it with
+            #   stream_options.include_usage, one final chunk of its own - usage, no choices.  Only such
+            #   a chunk is counted by clients that follow the contract; the merged usage above stays:
+            #   the web app and openai_collect read it.
+            if (req.get("stream_options") or {}).get("include_usage"):
+                yield {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
+                       "choices": [], "usage": last["usage"]}
     if not answered_done and not cancel.is_set():
         # Every admitted request ends with a "done" event that carries its finish reason. A run that simply stopped (a 200 with one chunk and no
         # finish_reason, in 0.2 s, while the engine never logged the request: #3961) used to read to the client as an empty answer that worked, and
@@ -7221,6 +7228,8 @@ def openai_collect(chunks) -> dict:
     lps = {}                                       # "content" / "reasoning_content" -> logprob entries
     for c in chunks:
         if c is None:                              # a heartbeat
+            continue
+        if not c.get("choices"):                   # OpenAI's usage-only chunk: no choice to read here
             continue
         if c.get("strata_mcp"):
             mcp.append(c["strata_mcp"])
