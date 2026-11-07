@@ -992,14 +992,15 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
     }
 }
 
-double Context::run_graph(const std::vector<Dispatch>& ds) {
+double Context::run_graph(const std::vector<Dispatch>& ds, size_t count) {
     // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
     // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
     static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
-        for (size_t i = 0; i < ds.size(); ++i) {
+        const size_t nd = std::min(count, ds.size());
+        for (size_t i = 0; i < nd; ++i) {
             if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
             encode(enc, ds[i]);
         }
