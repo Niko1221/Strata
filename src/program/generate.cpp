@@ -3858,6 +3858,7 @@ int main(int argc, char** argv) {
     // Linux CUDA, 2 or more batch slots: the exact parallel-request stack is the engine's own default (QUAL-PAR bit-exact; it was the launcher's
     // PARALLEL_STACK_ENV).  Each switch keeps =0 as its off switch and a value the user set is kept.  Before any engine code reads them.
     strata::core::apply_parallel_defaults_cuda(true, o.batch);
+    strata::core::apply_gdn_defaults_cuda(true);   // STRATA_GDN_TC=1, STRATA_GDN_CONVL2=2 (owner yes 2026-11-07; was the launcher's GDN_STACK_CUDA)
 #endif
     if (!o.prefill_cap_warn.empty() && !o.prefill_cap_warn_skip)
         std::fprintf(stderr, "strata: WARNING --prefill %s: prompt chunks of 8192 tokens or more crashed the engine "

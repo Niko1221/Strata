@@ -237,6 +237,21 @@ std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch
     return set;
 }
 
+std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda) {
+    if (!linux_cuda) return {};
+    return {{"STRATA_GDN_TC", "1"}, {"STRATA_GDN_CONVL2", "2"}};
+}
+
+std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda) {
+    std::vector<std::string> set;
+    for (const auto& kv : gdn_default_env_cuda(linux_cuda)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
 std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows) {
     std::vector<std::pair<std::string, std::string>> t;
     if (!windows || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;

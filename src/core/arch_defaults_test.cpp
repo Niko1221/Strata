@@ -64,6 +64,16 @@ int main() {
         CHECK(apply_parallel_defaults_cuda(true, 1).empty());
         CHECK(std::getenv("STRATA_QSA_SLOTS") == nullptr);
     }
+    // QUAL-GDN on Linux CUDA
+    CHECK(gdn_default_env_cuda(true).size() == 2);
+    CHECK(gdn_default_env_cuda(false).empty());
+    {
+        unset("STRATA_GDN_TC"); put("STRATA_GDN_CONVL2", "0");
+        CHECK(apply_gdn_defaults_cuda(true).size() == 1);
+        CHECK(std::string(std::getenv("STRATA_GDN_TC")) == "1" && std::string(std::getenv("STRATA_GDN_CONVL2")) == "0");
+        unset("STRATA_GDN_TC"); unset("STRATA_GDN_CONVL2");
+        CHECK(apply_gdn_defaults_cuda(false).empty() && std::getenv("STRATA_GDN_TC") == nullptr);
+    }
     // 0.2.10 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
     unset("STRATA_GFX1151_DEFAULTS");
     CHECK(launch_default_env("gfx1151", true).size() == 1 && launch_default_env("gfx1151", true)[0].first == "STRATA_VERIFY_ASYNC_LAUNCH");
