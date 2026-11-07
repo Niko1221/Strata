@@ -1,0 +1,99 @@
+{
+ "method": "KL(F16||variant), first token, union of top-20 supports, renormalised, ln, q clamp 1e-10",
+ "floor": [
+  {
+   "prompt": "w1",
+   "kl": 8.27394433583236e-05,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  },
+  {
+   "prompt": "w2",
+   "kl": 0.0008132609597568115,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  },
+  {
+   "prompt": "w3",
+   "kl": 0.0007133744520295168,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  },
+  {
+   "prompt": "w4",
+   "kl": 0.00032727523413967594,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  }
+ ],
+ "i8": [
+  {
+   "prompt": "w1",
+   "kl": 0.0002680131607654689,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  },
+  {
+   "prompt": "w2",
+   "kl": 0.009554369389449351,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  },
+  {
+   "prompt": "w3",
+   "kl": 0.004293545224574769,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  },
+  {
+   "prompt": "w4",
+   "kl": 0.00043770751607427036,
+   "argmax_agree": true,
+   "ref_token": "We",
+   "var_token": "We",
+   "finish": [
+    "length",
+    "length"
+   ]
+  }
+ ],
+ "floor_mean_kl": 0.00048416252232108195,
+ "floor_argmax_all_agree": true,
+ "i8_mean_kl": 0.003638408822715965,
+ "i8_argmax_all_agree": true
+}
