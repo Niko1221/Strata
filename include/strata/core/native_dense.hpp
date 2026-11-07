@@ -45,10 +45,6 @@ public:
     /// Whether the GGUF shards carry the hyper-connection down / up projections as Q8_0 (an Unsloth UD-* file; the GSQ-RCO packs keep them
     /// BF16).  Reads the tensor directories only.  generate.cpp turns STRATA_HC_Q8 on by default on CUDA when this is true (owner yes 2026-11-07).
     static bool gguf_carries_q8_hc(const std::vector<std::string>& shards);
-    /// Whether most of the routed experts' gate / up tensors in the shards are Q5_K or Q6_K (an Unsloth UD-Q5_K_XL / UD-Q6_K_XL file; UD-Q4_K_XL
-    /// is Q4_K with a few Q5_K).  Reads the tensor directories only.  generate.cpp turns STRATA_MMQ_KQ on by default on AMD cards the engine
-    /// does not already cover (not gfx12) when this is true (owner yes 2026-11-07).
-    static bool gguf_mostly_q5q6_experts(const std::vector<std::string>& shards);
     static bool hc_q8_requested();
     static bool add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip);
     /// A projection's bf16 values for a path that has no Q8 kernel (the prompt path's GEMMs, the single-token read): the

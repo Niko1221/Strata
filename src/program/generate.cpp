@@ -4419,23 +4419,6 @@ int main(int argc, char** argv) {
                 std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
                 o.native_dense_gguf.push_back(o.ple_gguf);
         }
-#if defined(STRATA_USE_HIP)
-        // AMD, not gfx12 (gfx12 and NVIDIA already default it on), a UD-Q5_K_XL / UD-Q6_K_XL style file (most expert gate/up tensors Q5_K or Q6_K): the K-quant
-        // MMQ prompt kernels are on by default (owner yes 2026-11-07; was setup's unsloth_default_env; "prompt-path KL equal or better than the FP16 path").
-        // STRATA_MMQ_KQ=0 turns it off; a value the user set is kept.  Before the first read of the switch.
-        if (std::getenv("STRATA_MMQ_KQ") == nullptr) {
-            cudaDeviceProp mp{};
-            const bool amd_not12 = cudaGetDeviceProperties(&mp, 0) == cudaSuccess && !strata::kernels::gfx_arch_is_gfx12(mp.gcnArchName);
-            (void) cudaGetLastError();
-            if (amd_not12 && strata::core::NativeDense::gguf_mostly_q5q6_experts(o.native_dense_gguf)) {
-#if defined(_WIN32)
-                _putenv_s("STRATA_MMQ_KQ", "1");
-#else
-                setenv("STRATA_MMQ_KQ", "1", 0);
-#endif
-            }
-        }
-#endif
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
         // CUDA, a file that carries the hyper-connection projections as Q8_0 (Unsloth's UD-* files): the Q8_0 read is on by default (owner yes
         // 2026-11-07; was setup's unsloth_default_env, "closer to the file and faster").  The GSQ-RCO packs keep them BF16 and stay as they were.

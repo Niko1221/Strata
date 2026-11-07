@@ -586,21 +586,6 @@ bool NativeDense::gguf_carries_q8_hc(const std::vector<std::string>& shards) {
     return false;
 }
 
-bool NativeDense::gguf_mostly_q5q6_experts(const std::vector<std::string>& shards) {
-    int64_t q56 = 0, all = 0;
-    try {
-        for (const auto& path : shards) {
-            const strata::GgufFile g(path);
-            for (const auto& tensor : g.tensors()) {
-                if (!tensor.name.ends_with("ffn_gate_exps.weight") && !tensor.name.ends_with("ffn_up_exps.weight")) continue;
-                ++all;
-                if (tensor.type == 13 || tensor.type == 14) ++q56;   // GGML_TYPE_Q5_K, GGML_TYPE_Q6_K
-            }
-        }
-    } catch (const std::exception&) { return false; }
-    return all > 0 && q56 * 2 > all;
-}
-
 bool NativeDense::hc_q8_requested() { return hc_q8_env(); }
 
 bool NativeDense::add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip) {
