@@ -142,6 +142,24 @@ foreach(_n ${STRATA_SPLIT_CARDS})
   set_target_properties(${_t} PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
 endforeach()
 
+# the engine's kernel self-test on one card, with no model and no engine start (cleanup 4.4; tools/selftest_main.cpp).  HIP only, off by default
+# (EXCLUDE_FROM_ALL: built by name).  The engine runs the same src/selftest.cu before it loads a model on a card Strata has not run the split on;
+# this is the way to ask a card that question alone:
+#   cmake --build <dir> --target strata-split-selftest && <dir>/src/split/strata-split-selftest [device]     (exit 0: every test passed)
+if(_fnx_hip)
+  list(GET STRATA_SPLIT_CARDS 0 _nst)
+  set(_t strata-split-selftest)
+  add_executable(${_t} EXCLUDE_FROM_ALL ${_sp}/tools/selftest_main.cpp ${_sp}/src/selftest.cu ${_sp}/src/moe_mma.cu ${_sp_kparts})
+  set_source_files_properties(${_sp}/tools/selftest_main.cpp ${_sp}/src/selftest.cu ${_sp}/src/moe_mma.cu PROPERTIES LANGUAGE HIP)
+  target_include_directories(${_t} PRIVATE ${_sp}/src/hip ${_sp}/src ${_sp}/tools ${STRATA_GGML_DIR}/ggml/src/ggml-cuda
+                             ${STRATA_GGML_DIR}/ggml/src ${STRATA_GGML_DIR}/ggml/include)
+  target_compile_definitions(${_t} PRIVATE FNX_NCARD=${_nst} FNX_ARCH=${STRATA_SPLIT_ARCH} FNX_27B=0 FNX_HOSTRING=1 FNX_HIP=1 GGML_USE_HIP=1
+                             FNX_DIR="${_sp}")
+  target_compile_options(${_t} PRIVATE "$<$<COMPILE_LANGUAGE:HIP>:SHELL:-include ${_sp}/src/hip/fnx_hip.h>")
+  target_link_libraries(${_t} PRIVATE strata_hip_runtime ${STRATA_HIP_BLAS_TARGETS})
+  set_target_properties(${_t} PROPERTIES CXX_STANDARD 17 HIP_STANDARD 17 HIP_STANDARD_REQUIRED ON HIP_ARCHITECTURES "${_fnx_hip_archs}")
+endif()
+
 # the CPU unit tests sFNX ships (split rule, ring plan, card checks, batch plan, rope, input parser): plain C++, no GPU
 if(STRATA_BUILD_TESTS)
   list(GET STRATA_SPLIT_CARDS 0 _n0)
