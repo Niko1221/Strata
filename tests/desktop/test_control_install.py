@@ -63,6 +63,7 @@ class ControlModeTests(unittest.TestCase):
             ["winget", "install", "Nvidia.CUDA"],
             [sys.executable, str(self.home / "evil.py")],                 # a script outside the bundled tools
             [sys.executable, str(ROOT / "setup.py"), "--build"],
+            [sys.executable, str(ROOT / "metal" / "setup_mac.py")],       # the source installer's Mac setup is not a bundled tool
             [sys.executable],
         ):
             with self.subTest(refused=refused), mock.patch.object(S.subprocess, "run", side_effect=AssertionError("ran")):
@@ -71,6 +72,16 @@ class ControlModeTests(unittest.TestCase):
         done = subprocess.CompletedProcess([], 0)
         with mock.patch.object(S.subprocess, "run", return_value=done) as runner:
             S.run([sys.executable, str(tool), "--help"], check=False)
+        runner.assert_called_once()
+
+    def test_the_mac_repack_tool_may_run(self):
+        """mac_repack (an Unsloth size on a Mac, offered by the app) runs metal/tools/metal_repack.py: it was refused as not bundled."""
+        S = self.S
+        repack = S.mac_tools_dir() / "metal_repack.py"
+        self.assertTrue(repack.is_file())
+        done = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(S.subprocess, "run", return_value=done) as runner:
+            S.run([sys.executable, str(repack), "--help"], check=False)
         runner.assert_called_once()
 
     def test_no_package_is_installed(self):

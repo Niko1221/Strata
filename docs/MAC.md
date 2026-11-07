@@ -120,8 +120,8 @@ uses with `--gguf-dir`, and prepares the model files, and writes a run config wh
 not run `metal/setup_mac.py`, needs no Command Line Tools, and writes the same Metal flags.
 
 The model list and the recommendation judge a Mac by its unified memory with the rules of `strata_control/mac_fit.py`, the module
-`setup_mac.py` uses too. Q2_0, IQ3_XXS, IQ3_S and the Gyro packs are offered. Unsloth's many-shard files need the source
-installer's repack for now. A pack that does not stay in memory is listed as "read from the SSD", and a Mac under 16 GB of unified
+`setup_mac.py` uses too. Q2_0, IQ3_XXS, IQ3_S, the Unsloth sizes and the Gyro packs are offered. Unsloth's many-shard files are
+repacked into one file for the GPU once (`metal/tools/metal_repack.py`, about the size of the model). A pack that does not stay in memory is listed as "read from the SSD", and a Mac under 16 GB of unified
 memory is told the model does not fit.
 
 The ready-made Mac engine is in the app and in the Terminal's engine component, not in the release zips. The zips (for
