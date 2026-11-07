@@ -40,6 +40,16 @@ is real: no engine is started, no model is loaded, no files outside its temporar
 
 The version numbers in `package.json` are the app's. They are checked against `docs/data/release.json` by `python tools/release_manifest.py --check`.
 
+## Styles, icons and fonts
+
+The checked-in files are the source. There is no generator and no sibling design folder.
+
+- Kit styles: `src/styles/kit/tokens.css` and `components.css`; app styles sit on top in `src/styles/*.css`.
+- Icons: `public/icons/sprite.svg`. Add an icon as a `<symbol id="i-NAME">`; `npm run audit` fails on an icon that is used but missing.
+- Fonts: `public/fonts`.
+- The standalone server page (`serve/web/`) serves its own copy of `components.css`. The two copies are byte-identical and
+  `tests/kit-copy.test.mjs` fails when they differ: change both together.
+
 ## Languages
 
 The app speaks English, Chinese, Japanese, German, French, Spanish, Russian, Portuguese and Korean. The English text is the key: `src/locales/en.json`
