@@ -4858,8 +4858,7 @@ int main(int argc, char** argv) {
                     if (a1 || a2 || a3) {
                         std::string perr;
                         if (!(a1 && a2 && a3) || !strata::kernels::ple_consts_from_arrays(pm, pv, po, 0, ple_consts_run, perr)) {
-                            std::fprintf(stderr, "strata generate: %s: the PLE hash constants in the model file are not usable: %s
-",
+                            std::fprintf(stderr, "strata generate: %s: the PLE hash constants in the model file are not usable: %s\n",
                                          o.native_preset.c_str(), (a1 && a2 && a3) ? perr.c_str() : "one of the three arrays is missing");
                             return 1;
                         }
@@ -5558,8 +5557,7 @@ int main(int argc, char** argv) {
         ss.ple.consts = ple_consts_run;
         for (int h = 0; h < strata::kernels::PLE_N_HEADS; ++h) {   // the hash may only reach rows the table has
             if (ple_consts_run.offset[h] + ple_consts_run.vocab[h] > ple_table.rows()) {
-                std::fprintf(stderr, "strata generate: PLE head %d reaches row %llu but the table has %llu rows (the model file's hash constants do not fit its PLE table)
-",
+                std::fprintf(stderr, "strata generate: PLE head %d reaches row %llu but the table has %llu rows (the model file's hash constants do not fit its PLE table)\n",
                              h, (unsigned long long) (ple_consts_run.offset[h] + ple_consts_run.vocab[h]), (unsigned long long) ple_table.rows());
                 return 1;
             }
