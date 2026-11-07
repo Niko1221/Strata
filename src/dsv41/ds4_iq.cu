@@ -1464,6 +1464,21 @@ LightBuf* light_buf(cudaStream_t s, int k) {
     }
     return &b;
 }
+// The decode kernels new to this engine - mv_kernel_nr's 128-bit loads, the staged Q4_K / Q5_K GEMV and light experts,
+// mv_kernel's 8-column instance - run by default only on a GPU that shares the PC's memory (cudaDevAttrIntegrated: a DGX
+// Spark's GB10), where they were timed faster. On the discrete cards timed they were not, overall, so there they stay opt-in
+// (DS4_MV_NR=1, DS4_MV_STAGE=1, DS4_LIGHT_STAGE=1). Not timed on HIP or Metal: opt-in there too.
+bool new_kernels_default() {
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
+    return false;
+#else
+    static const bool v = [] {   // (the current device at first use)
+        int d = 0, i = 0;
+        return cudaGetDevice(&d) == cudaSuccess && cudaDeviceGetAttribute(&i, cudaDevAttrIntegrated, d) == cudaSuccess && i != 0;
+    }();
+    return v;
+#endif
+}
 bool light_on() {   // STRATA_DS4_NO_LIGHT=1: every set through the GEMM tiles
     static const bool on = [] {
         const char* v = std::getenv("STRATA_DS4_NO_LIGHT");
@@ -1475,7 +1490,10 @@ template <int T, bool GU>
 void launch_light(const SetArgs& a, const LightBuf& b, cudaStream_t s) {
     const int tiles = ((GU ? a.n_ff : a.n_embd) + kWarps - 1) / kWarps;
     if constexpr (kQK<T> == 256) {   // the rows' kernel with its weights staged a step ahead (same bits; DS4_LIGHT_STAGE=0: not)
-        static const bool st = std::getenv("DS4_LIGHT_STAGE") == nullptr || std::atoi(std::getenv("DS4_LIGHT_STAGE")) != 0;
+        static const bool st = [] {   // (new_kernels_default; DS4_LIGHT_STAGE=0 / 1 decides anywhere)
+            const char* v = std::getenv("DS4_LIGHT_STAGE");
+            return v == nullptr ? new_kernels_default() : std::atoi(v) != 0;
+        }();
         if (st && (a.max_rows > 4 || !kPersist<T>)) {
             const dim3 grid((unsigned) tiles, (unsigned) a.n_exp);
             if (a.max_rows <= 4) strata_ds4_launch(light_kernel_rows_st<T, 4, GU>, grid, kThreads, 0, s, a, b.q, b.d);
@@ -1548,18 +1566,14 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     }
 #endif
 #if !defined(STRATA_METAL)   // (CUDA and HIP: Metal has its own GEMV, metal_host::iq_mv)
-    // mv_kernel_nr (its 128-bit loads of Q4_K / Q5_K): a row a warp by default on CUDA - the same sums in the same order as
-    // mv_kernel's, so the same bits; on a GB10 q_b (Q5_K 1280 x 32768) 163 -> 148 us, wo_b (8192 x 5120) 175 -> 149, the shared
-    // expert's 55 -> 47 and 56 -> 45.  DS4_MV_NR=2 / 4: that many rows a warp (other sums: their own order); =auto: a row a warp
-    // up to 2 columns, else 2 for rows of up to 160 sub-blocks (measured better for the verify windows' 3-6 columns there);
-    // =0: mv_kernel (HIP's default: not measured there).
+    // mv_kernel_nr (its 128-bit loads of Q4_K / Q5_K): a row a warp by default where new_kernels_default (DS4_MV_NR=1
+    // elsewhere) - the same sums in the same order as mv_kernel's, so the same bits; on a GB10 q_b (Q5_K 1280 x 32768)
+    // 163 -> 148 us, wo_b (8192 x 5120) 175 -> 149, the shared expert's 55 -> 47 and 56 -> 45.  DS4_MV_NR=2 / 4: that many
+    // rows a warp (other sums: their own order); =auto: a row a warp up to 2 columns, else 2 for rows of up to 160
+    // sub-blocks (measured better for the verify windows' 3-6 columns there); =0: mv_kernel.
     static const int nr_env = [] {   // -1: mv_kernel, 0: auto, else rows a warp
         const char* v = std::getenv("DS4_MV_NR");
-#if defined(STRATA_USE_HIP)
-        if (v == nullptr) return -1;
-#else
-        if (v == nullptr) return 1;
-#endif
+        if (v == nullptr) return new_kernels_default() ? 1 : -1;
         if (std::string(v) == "auto") return 0;
         const int n = std::atoi(v);
         return n <= 0 ? -1 : n;
@@ -1568,7 +1582,10 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
     for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
     const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (max_c <= 2 ? 1 : nsb_max <= 160 ? 2 : 1) : -1;
     if constexpr (T == kQ4_K || T == kQ5_K) {   // (the row's weights staged a step ahead, mv_kernel_kst; DS4_MV_STAGE=0: not)
-        static const bool kst = std::getenv("DS4_MV_STAGE") == nullptr || std::atoi(std::getenv("DS4_MV_STAGE")) != 0;
+        static const bool kst = [] {   // (new_kernels_default; DS4_MV_STAGE=0 / 1 decides anywhere)
+            const char* v = std::getenv("DS4_MV_STAGE");
+            return v == nullptr ? new_kernels_default() : std::atoi(v) != 0;
+        }();
         bool aligned = true;   // (whole 16-byte words: the jobs' rows and starts)
         for (int j = 0; j < nj; ++j) aligned = aligned && ((uintptr_t) J.j[j].w & 15u) == 0 && J.j[j].ld % 16 == 0;
         if (nr == 1 && kst && aligned) {
@@ -1608,7 +1625,8 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
 #endif
     if (max_c <= 1) strata_ds4_launch(mv_kernel<T, 1>, grid, kThreads, 0, s, J);
     else if (max_c <= 4) strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, J);
-    else if (max_c <= 8) strata_ds4_launch(mv_kernel<T, 8>, grid, kThreads, 0, s, J);   // (a drafter's window of 5-8: half the registers of 16)
+    else if (max_c <= 8 && new_kernels_default())   // (a drafter's window of 5-8: half the registers of 16)
+        strata_ds4_launch(mv_kernel<T, 8>, grid, kThreads, 0, s, J);
     else strata_ds4_launch(mv_kernel<T, 16>, grid, kThreads, 0, s, J);
 }
 

@@ -2286,12 +2286,14 @@ struct Model::Impl {
         CK(cudaMemcpy(p, v.data(), n * 4, cudaMemcpyHostToDevice));
         return true;
     }
-    // the router's weights: a BF16 pack's kept so on CUDA (gate_w16; DS4_GATE_F32=1: the F32 copy, as before), else gate_w
+    // the router's weights: a BF16 pack's kept so (gate_w16) by default on a GPU that shares the PC's memory, where it was timed,
+    // and with DS4_GATE_BF16=1 on any CUDA GPU; else (or DS4_GATE_F32=1) the F32 copy as before, gate_w
     bool gate_load(Dev& d, const std::string& name, Layer& l, std::string& err, size_t* acct) {
-#if !defined(STRATA_METAL)
+#if !defined(STRATA_METAL) && !defined(STRATA_USE_HIP)   // (measured on CUDA; HIP and Metal keep the F32 copy)
         const Tensor* t = pk.get(name);
-        if (t != nullptr && t->dtype == "BF16" && t->bytes == (size_t) l.n_exp * g.dim * 2 && g.dim % 4 == 0 &&
-            std::getenv("DS4_GATE_F32") == nullptr) {
+        const char* bf = std::getenv("DS4_GATE_BF16");
+        const bool want = std::getenv("DS4_GATE_F32") == nullptr && (bf != nullptr ? std::atoi(bf) != 0 : gpu_integrated(d.id));
+        if (t != nullptr && t->dtype == "BF16" && t->bytes == (size_t) l.n_exp * g.dim * 2 && g.dim % 4 == 0 && want) {
             std::vector<uint8_t> raw(t->bytes);
             if (!pk.read(*t, raw.data())) {
                 err = name + ": read failed";
