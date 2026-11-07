@@ -63,7 +63,6 @@
     "lib_dirs": [],
     "port": 8080,
     "env": {
-     "STRATA_HC_Q8": "1",
      "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "vision": {
@@ -106,9 +105,6 @@
      "700"
     ],
     "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1",
-     "STRATA_HC_Q8": "1",
      "STRATA_ROUTE_TAIL_SKIP": "0"
     },
     "notes": [
@@ -216,10 +212,7 @@
      "--draft-conf",
      "0.35"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
@@ -354,10 +347,7 @@
      "--draft-conf",
      "0.35"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
@@ -477,10 +467,7 @@
      "--draft-conf",
      "0.35"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]

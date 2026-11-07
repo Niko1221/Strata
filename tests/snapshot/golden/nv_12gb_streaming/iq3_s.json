@@ -98,10 +98,7 @@
      "32768",
      "--vision"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": []
    },
    "setup_says": [
@@ -198,10 +195,7 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": []
    }
   },
@@ -305,10 +299,7 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": []
    }
   },
@@ -413,10 +404,7 @@
      "--kv-resident",
      "32768"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": []
    }
   }

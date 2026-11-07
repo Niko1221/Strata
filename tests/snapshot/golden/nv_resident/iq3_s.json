@@ -105,10 +105,7 @@
      "--vram-reserve-mib",
      "700"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"
     ]
@@ -218,10 +215,7 @@
      "--draft-conf",
      "0.35"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
@@ -358,10 +352,7 @@
      "--draft-conf",
      "0.35"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
@@ -483,10 +474,7 @@
      "--draft-conf",
      "0.35"
     ],
-    "env_set": {
-     "STRATA_GDN_CONVL2": "2",
-     "STRATA_GDN_TC": "1"
-    },
+    "env_set": {},
     "notes": [
      "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
     ]
