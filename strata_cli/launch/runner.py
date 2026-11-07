@@ -13,7 +13,6 @@ tests see the same thing. Nothing here prints or reads the keyboard. The steps r
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re

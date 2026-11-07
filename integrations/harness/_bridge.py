@@ -22,16 +22,11 @@ Exit codes:
 
 from __future__ import annotations
 
-import argparse
 import http.client
 import json
 import os
 import re
-import shutil
-import signal
 import subprocess
-import sys
-import tempfile
 import time
 from pathlib import Path
 

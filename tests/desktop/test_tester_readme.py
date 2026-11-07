@@ -7,8 +7,11 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+BASH = shutil.which("bash")   # the full path: on Windows a bare "bash" is found in System32 first, which is the WSL launcher
 SCRIPT = ROOT / "apps" / "desktop" / "scripts" / "make-tester-readme.sh"
 TEMPLATES = ROOT / "apps" / "desktop" / "tester"
+# the README names the app version, which make-tester-readme.sh reads from Cargo.toml
+APP_VERSION = next(line.split('"')[1] for line in (ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.toml").read_text().splitlines() if line.startswith("version = "))
 NOTICE = "Strata opened in your browser because the app window couldn't start on this computer."
 
 
@@ -16,11 +19,16 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def arg(value):
+    # bash on Windows (Git for Windows, MSYS2, Cygwin) reads C:/dir/file, not C:\dir\file: the backslashes would be eaten
+    return value.as_posix() if isinstance(value, Path) else str(value)
+
+
 def run(*args, check=True):
-    return subprocess.run(["bash", str(SCRIPT), *map(str, args)], capture_output=True, text=True, check=check)
+    return subprocess.run([BASH, arg(SCRIPT), *map(arg, args)], capture_output=True, text=True, check=check)
 
 
-@unittest.skipIf(shutil.which("bash") is None or shutil.which("sha256sum") is None, "needs bash and sha256sum")
+@unittest.skipIf(BASH is None or shutil.which("sha256sum") is None, "needs bash and sha256sum")
 class TesterReadmeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="strata-readme-"))
@@ -39,7 +47,7 @@ class TesterReadmeTests(unittest.TestCase):
         text = self.out.read_text()
         self.assertIn(sha(app), text)
         self.assertNotIn("@APPIMAGE@", text)
-        for needle in ("libfuse2t64", "Ubuntu 26.04", "--browser", "--quit", "--save-logs", "Strata 0.2.3", NOTICE):
+        for needle in ("libfuse2t64", "Ubuntu 26.04", "--browser", "--quit", "--save-logs", f"Strata {APP_VERSION}", NOTICE):
             self.assertIn(needle, text)
         run("--verify", self.out, "--files-dir", self.files)
 

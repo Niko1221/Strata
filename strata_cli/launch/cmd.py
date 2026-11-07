@@ -7,9 +7,7 @@ import json
 import os
 import re
 import sys
-import threading
 from pathlib import Path
-from typing import Any
 
 from strata_cli.launch import settings as S
 
@@ -592,7 +590,7 @@ def _printer(quiet: bool = False):
 
 
 def _stop_all(name: str | None) -> int:
-    from strata_cli.launch import access, store
+    from strata_cli.launch import access
     from strata_control import profiles, runtime
     targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
     stopped = failed = 0
@@ -1062,7 +1060,7 @@ def run_launch(a: argparse.Namespace) -> int:
 # ------------------------------------------------------------------------------------------------ connect
 
 def run_connect(a: argparse.Namespace) -> int:
-    from strata_cli.launch import access, harness
+    from strata_cli.launch import harness
     machine = a.output == "json"
     if not a.harness:
         rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status, "vendor_tested": h.tested or None} for h in harness.HARNESSES]

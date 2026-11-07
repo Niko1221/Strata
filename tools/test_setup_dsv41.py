@@ -193,6 +193,9 @@ class Install(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         mock.patch.dict("os.environ", {"STRATA_DSV41_EXE": ""}).start()
+        # no engine package is fetched from the real update feed: a test that has no engine on disk gets "no package could be fetched"
+        from strata_control import dsv41_engine
+        mock.patch.object(dsv41_engine, "install", lambda *a, **k: None).start()
         self.addCleanup(mock.patch.stopall)
 
     def install(self, ram=251.0, cards=None, engine=True, **kw):
@@ -1206,6 +1209,10 @@ class CardsAndLayout(unittest.TestCase):
                 (t / name / "device" / "vendor").write_text(vendor + "\n")
                 (t / name / "device" / "device").write_text(device + "\n")
             self.assertEqual(ec.hip_archs_from_pci(str(t), lspci=False), ["gfx1100"])      # the NVIDIA card, the connector and the unknown id give nothing
+
+    @unittest.skipIf(os.name == "nt", "the lspci probe is Linux only (needs lspci and the sysfs layout)")
+    def test_the_pci_ids_come_from_lspci_when_sysfs_has_none(self):
+        from strata_control import engine_component as ec
         with tempfile.TemporaryDirectory() as t:
             line = ("03:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX] [1002:744c] (rev c8)\n"
                     "0e:00.0 Display controller [0380]: Advanced Micro Devices, Inc. [AMD/ATI] Raphael [1002:164e] (rev c1)\n")

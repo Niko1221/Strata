@@ -553,7 +553,7 @@ class MacAppUnsloth(unittest.TestCase):
         setup.mark(native)
         rc, ran = self.install(model)
         self.assertEqual(rc, 0)
-        self.assertEqual([r[1].rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])
+        self.assertEqual([str(r[1]).replace("\\", "/").rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])      # (the path is C:\...\iq_pack.py on Windows)
 
     def test_a_running_engine_stops_the_repack_before_anything_is_written(self):
         self.shards("UD-IQ1_M")

@@ -277,12 +277,3 @@ template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8
 template [[host_name("gr_downp_q8_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>) gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>;
 template [[host_name("gr_downp_q8f_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_F32, 1>) gr_down_f<8, 8, T_Q8_0, T_F32, 1>;
 template [[host_name("gr_upp_q8")]] kernel decltype(gr_up_f<T_Q8_0, 1>) gr_up_f<T_Q8_0, 1>;
-
-// wpf: a weight prefetch. Reads n16 uint4 of W (grid-strided) and writes nothing unless the xor of everything is one value in 2^32; the point is only to
-// pull the next kernel's first weights into the GPU's caches while the small hyper-connection kernels run (STRATA_METAL_WPF_MIB).
-kernel void wpf(device const uint4* W [[buffer(0)]], device uint* flag [[buffer(1)]], constant uint& n16 [[buffer(2)]],
-                uint gid [[thread_position_in_grid]], uint gsz [[threads_per_grid]]) {
-    uint4 a = 0;
-    for (uint i = gid; i < n16; i += gsz) a ^= W[i];
-    if ((a.x ^ a.y ^ a.z ^ a.w) == 0x7fffffffu) flag[0] = 1;
-}

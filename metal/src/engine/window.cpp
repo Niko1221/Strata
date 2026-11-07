@@ -430,12 +430,6 @@ private:
     // the start of its command buffer (one submit and wait less a round).  Nothing else reads the GDN state between
     // the two (the drafter reads the window's rows and its own caches).  STRATA_METAL_LAZY_FOLD=0: at commit.
     int pend_fold_ = 0;
-    // gdn_step's partial commit (mac-kern 56526aed, commit = 0x100 | k): a verify window of T > 1 commits its first
-    // row in place (it is always kept), so commit(1) needs no fold and commit(n) folds rows 1..n-1 only; a window
-    // without the head (the prompt) commits all its rows in the step.  Opt-in (STRATA_METAL_PARTIAL=1): at --spec 2
-    // it measured 0.3-0.8% slower on the M5 Max (the in-place state write costs every window, the fold it saves
-    // only the rounds with no accepted draft).  Off: the window commits nothing and commit(n) folds n rows.
-    bool partial_ = std::getenv("STRATA_METAL_PARTIAL") && std::string(std::getenv("STRATA_METAL_PARTIAL")) == "1";
     bool win_head_ = true;      // the window being encoded has the head
     bool last_head_ = true;     // the last window had it
     // token_chain's --fuse (mac-kern): the GDN step writes the prepared y planes itself (no xprep), and a window whose
@@ -445,25 +439,9 @@ private:
     // originals wait one memory latency per loop iteration).  Bitwise the same outputs.  STRATA_METAL_LDB=0: the original kernels.
     bool ldb_ = !(std::getenv("STRATA_METAL_LDB") && std::string(std::getenv("STRATA_METAL_LDB")) == "0");
     const char* k_norm() const { return ldb_ ? "gr_norm2" : "gr_norm"; }
-    // STRATA_METAL_WPF_MIB=N (opt-in screen): while a hyper-connection read's last kernel runs, a prefetch dispatch (no barrier before it) reads the first N MiB of each
-    // weight the next kernels use (wpf_next_), so those kernels find them in the GPU's caches.  Bitwise: it changes no value.
-    std::vector<std::pair<uint64_t, uint64_t>> wpf_next_;   // (W_ offset, bytes)
-    mtl::Buffer wpf_flag_;
-    size_t wpf_bytes_ = [] { const char* e = std::getenv("STRATA_METAL_WPF_MIB"); return e ? (size_t) std::atoi(e) * 1048576 : (size_t) 0; }();
-    void wpf_add(const std::string& name) {
-        if (!wpf_bytes_) return;
-        const gguf::Tensor* t = f_.find(name);
-        if (t) wpf_next_.push_back({t->offset, std::min<uint64_t>(wpf_bytes_, t->bytes)});
-    }
     const char* k_comb() const { return ldb_ ? "moe_combine_sh2" : "moe_combine_sh"; }
     bool fuse_ = !(std::getenv("STRATA_METAL_FUSE") && std::string(std::getenv("STRATA_METAL_FUSE")) == "0");
     bool qdirty_ = false;
-    // mac-kern's router_route (3f9ca996): the BF16 router GEMV and moe_route in one dispatch, beside the shared
-    // expert's GEMVs (bitwise).  Opt-in (STRATA_METAL_ROUTE=1): in this window, where the router GEMV already runs
-    // beside the shared GEMVs, it measured no faster (T2 GPU 13.035 vs 13.027 ms; the fused kernel alone 0.615 ms vs
-    // 0.566 for the two) and 0.3-0.5% slower end to end on the M5 Max.
-    bool routef_ = std::getenv("STRATA_METAL_ROUTE") && std::string(std::getenv("STRATA_METAL_ROUTE")) == "1";
-    mtl::Buffer rcounter_;
     // STRATA_METAL_KPROF=T (test tooling): once, after the 20th cached window of T tokens with the head, the GPU time
     // of each kernel class alone (the window's own dispatches of that pipeline + weight role, run by themselves)
     void kprof(const std::vector<mtl::Dispatch>& ds, int Tn);
@@ -727,7 +705,6 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
     lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
                          "glue.metal"}, metal_f16() ? "#define STRATA_METAL_F16 1\n" : "");
-    rcounter_ = cx_->alloc(16);
     lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
     lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
     lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
@@ -1009,18 +986,6 @@ void Window::gr_read(std::vector<mtl::Dispatch>& ds, const std::string& pre, boo
     d3.grid[0] = N / 16;
     d3.tg[0] = 256;
     push(ds, d3);
-    for (const auto& [off, bytes] : wpf_next_) {
-        if (!wpf_flag_.handle) wpf_flag_ = cx_->alloc(4096);
-        mtl::Dispatch p;
-        p.p = P(lib_, "wpf", {}, "wpf");
-        const uint32_t n16 = (uint32_t) (bytes / 16);
-        p.args = {mtl::Arg::B(W_, off), mtl::Arg::B(wpf_flag_), mtl::Arg::V(n16)};
-        p.tg[0] = 256;
-        p.grid[0] = std::max<uint32_t>(1, std::min<uint32_t>(n16 / (256 * 4), 4096));
-        nb_ = true;   // beside gr_up
-        push(ds, p);
-    }
-    wpf_next_.clear();
     cur_inj_ = 1 - cur_inj_;
 }
 
@@ -1056,14 +1021,13 @@ void Window::had_rows_ind(std::vector<mtl::Dispatch>& ds, int lib, const std::st
 void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0) {
     const std::string b = "blk." + std::to_string(l) + ".";
     // ---- the mixer: layer 1's read after the PLE is not applied again (its pending write was applied before it)
-    if (l % 4 != 3) { wpf_add(b + "attn_qkv.weight"); wpf_add(b + "attn_gate.weight"); } else wpf_add(b + "attn_q.weight");
     gr_read(ds, b + "hc_attn", l > 0 && !(l == 1 && ple_on_), XA_, false, ntok);
     if (l % 4 != 3) {
         const int gi = l - l / 4;
         // a one-token window commits in the step; a longer one leaves the state and commit() folds the kept prefix
         // from the inputs kept per layer (qkvL_ ...)
         const bool self_commit = ntok == 1;
-        const uint32_t cm = self_commit ? 1u : !partial_ ? 0u : win_head_ ? (0x100u | 1u) : 1u;
+        const uint32_t cm = self_commit ? 1u : 0u;
         const size_t o_qkv = (size_t) gi * MAXT * 10240 * 4, o_ab = (size_t) gi * MAXT * 48 * 4, o_z = (size_t) gi * MAXT * 6144 * 4;
         gemv(ds, T(b + "attn_qkv.weight"), XA_, qkvL_, 10240, ntok, o_qkv);
         nb_ = true;
@@ -1189,16 +1153,12 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         gemv(ds, T(b + "attn_output.weight"), XQ_, bo_, N, ntok);
     }
     // ---- the MoE
-    wpf_add(b + "ffn_gate_inp.weight"); wpf_add(b + "ffn_gate_shexp.weight"); wpf_add(b + "ffn_up_shexp.weight");
     gr_read(ds, b + "hc_ffn", true, XF_, false, ntok);
     const gguf::Tensor& trt = T(b + "ffn_gate_inp.weight");
-    const bool rf = routef_ && (trt.type == ref::BF16 || trt.type == ref::F32);
-    if (!rf) {
-        gemv(ds, trt, XF_, logits_, 512, ntok);
-        nb_ = true;
-    }
+    gemv(ds, trt, XF_, logits_, 512, ntok);
+    nb_ = true;
     if (stream_ && st_pred_ && l + 1 < 48) {   // the next layer's routing guessed from this layer's FFN input
-        nb_ = !rf;   // beside the router GEMV; with router_route it is the first reader of XF_ here: a barrier
+        nb_ = true;   // beside the router GEMV
         gemv(ds, T("blk." + std::to_string(l + 1) + ".ffn_gate_inp.weight"), XF_, predL_, 512, ntok,
              (size_t) l * MAXT * 512 * 4);
         if (predL2_.ptr && l + 2 < 48) {
@@ -1259,21 +1219,9 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
-        if (rf) {
-            // the router GEMV + moe_route (bitwise both), beside the shared expert's GEMVs
-            r.p = P(lib_, "router_route_" + std::to_string(trt.type), mtl::Constants().i(0, ntok), "router_route_" + std::to_string(trt.type) + "#" + std::to_string(ntok));
-            GemvArgs ga{(uint32_t) N, (uint32_t) nexp_, (uint32_t) ntok, (uint32_t) ref::row_bytes(trt.type, N), (uint32_t) N, 512};
-            r.args = {mtl::Arg::B(W_, trt.offset), mtl::Arg::B(XF_.b, 0), mtl::Arg::B(XF_.b, XF_.plane_bytes() * 4),
-                      mtl::Arg::B(logits_), mtl::Arg::V(ga), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_),
-                      mtl::Arg::V(a), mtl::Arg::B(rcounter_)};
-            r.grid[0] = nexp_ / 16;
-            r.tg[0] = 512;
-            nb_ = true;
-        } else {
-            r.p = P(lib_, "moe_route", {}, "moe_route");
-            r.args = {mtl::Arg::B(logits_), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
-            r.tg[0] = 512;
-        }
+        r.p = P(lib_, "moe_route", {}, "moe_route");
+        r.args = {mtl::Arg::B(logits_), mtl::Arg::B(ids_), mtl::Arg::B(wts_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
+        r.tg[0] = 512;
         push(ds, r);
         {
             GlueArgs ga{NFF, MAXT, N, TOPK};
@@ -1283,7 +1231,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
             d.grid[0] = NFF / 16;
             d.grid[1] = ntok;
             d.tg[0] = 16;
-            nb_ = !rf;   // with router_route the shared GEMVs are not behind a barrier yet: this one waits for them
+            nb_ = true;
             push(ds, d);
         }
         const std::string gun = std::string(m16 ? "moe_gu16_" : "moe_gu_") + std::to_string(tg_.type) + "_" + std::to_string(gl) +
@@ -1845,7 +1793,7 @@ void Window::stepprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
         };
         if (c.rfind("moe_gu", 0) == 0) part = "experts gate+up";
         else if (c.rfind("moe_down", 0) == 0) part = "experts down";
-        else if (c.rfind("moe_route", 0) == 0 || c.rfind("router_route", 0) == 0) part = "router";
+        else if (c.rfind("moe_route", 0) == 0) part = "router";
         else if (c.rfind("moe_combine", 0) == 0) part = "combine";
         else if (c.rfind("gr_", 0) == 0) { part = "hc"; wb = c.rfind("gr_down", 0) == 0 ? tsize(0) + tsize(1) : c.rfind("gr_up", 0) == 0 ? tsize(0) : 0; }
         else if (c.rfind("gdn_", 0) == 0) part = "gdn other";
@@ -1874,7 +1822,7 @@ void Window::stepprof(const std::vector<mtl::Dispatch>& ds, int Tn) {
     // the route dispatches (one per layer): the prefix that ends right after one holds that layer's routed ids
     std::vector<size_t> routes;
     for (size_t i = 0; i < n; ++i)
-        if (pname.count(ds[i].p) && (pname[ds[i].p].rfind("moe_route", 0) == 0 || pname[ds[i].p].rfind("router_route", 0) == 0)) routes.push_back(i);
+        if (pname.count(ds[i].p) && pname[ds[i].p].rfind("moe_route", 0) == 0) routes.push_back(i);
     const int reps = std::getenv("STRATA_METAL_STEPPROF_REPS") ? std::max(1, std::atoi(std::getenv("STRATA_METAL_STEPPROF_REPS"))) : 5;
     std::fprintf(stderr, "strata metal stepprof: T%d, %zu dispatches in %zu barrier groups, %zu layers routed, %d reps per prefix\n", Tn, n, m, routes.size(), reps);
     for (int i = 0; i < 40; ++i) cx_->run_graph(ds);   // clocks up
@@ -2017,7 +1965,7 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
         }
     }
     logpos(Tn, tokens, pos0, head);
-    if (Tn == 1 || partial_) hp_ = 1 - hp_;   // the window committed its first row (or all of them) in the step
+    if (Tn == 1) hp_ = 1 - hp_;   // the window committed its first row in the step
     last_head_ = head;
     for (int t = 0; t < Tn; ++t) out[t] = head ? tokout_.as<int32_t>()[t] : -1;
     last_T_ = Tn;
@@ -2038,7 +1986,7 @@ bool Window::finish(int Tn, const int32_t* tokens, int64_t pos0, bool head, int3
 }
 
 void Window::fold(std::vector<mtl::Dispatch>& ds, int n_keep, int hp) {
-    const size_t off = partial_ ? 1 : 0;   // rows 1.. (row 0 was committed in the window's step)
+    const size_t off = 0;
     for (int l = 0; l < 48; ++l) {
         if (l % 4 == 3) continue;
         const int gi = l - l / 4;
@@ -2324,14 +2272,6 @@ bool Window::commit(int n_keep, std::string& err) {
         // when those positions run again, before anything reads them.
         static const bool lazy = !(std::getenv("STRATA_METAL_LAZY_FOLD") && std::string(std::getenv("STRATA_METAL_LAZY_FOLD")) == "0");
         int nf = n_keep;
-        if (partial_) {
-            if (!last_head_) {   // the prompt's window committed every row in its step
-                if (n_keep != last_T_) { err = "metal window: a prompt window commits all its rows"; return false; }
-                nf = 0;
-            } else {
-                nf = n_keep - 1;   // row 0 is in
-            }
-        }
         if (nf > 0) {
             if (lazy) {
                 pend_fold_ = nf;   // folded at the start of the next window (from the history parity before the turn)

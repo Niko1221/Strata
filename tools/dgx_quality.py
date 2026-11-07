@@ -5,7 +5,6 @@ two configs and compare the answers.
     python quality_fused.py strata-iq3s-nofused.json strata-iq3s-best.json out.json
 """
 import json
-import os
 import subprocess
 import sys
 import time
