@@ -467,13 +467,7 @@ public:
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
-            if (i < files_.size() && !files_[i].empty()) {   // spilled already: it leaves for good
-                ++disk_discards_;
-                bytes_ -= entries_[i].bytes();
-                erase(i);
-                ++evictions_;
-                return true;
-            }
+            if (i < files_.size() && !files_[i].empty()) continue;   // a shell holds no RAM: the second pass only
             if (entries_[i].pending) continue;   // a background park copy has not landed yet: skip this entry
             if (disk_budget_ > 0 && disk_bytes_ < disk_budget_) {   // the RAM budget is full: spill, do not drop
                 size_t freed = 0, fsize = 0;
@@ -493,6 +487,20 @@ public:
             erase(i);
             ++evictions_;
             return true;
+        }
+        // Nothing left that frees RAM (only shells, pending copies and pinned entries): the oldest shell then leaves
+        // for good, so a caller looping on the RAM budget or the slot count still makes progress. With budget
+        // pressure alone shells pile up on disk untouched - that is the point of the tier: the coldest parked
+        // conversations wait in the folder for their owner, not die one request cycle after spilling.
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            if (i < files_.size() && !files_[i].empty()) {
+                ++disk_discards_;
+                bytes_ -= entries_[i].bytes();
+                erase(i);
+                ++evictions_;
+                return true;
+            }
         }
         return false;
     }
