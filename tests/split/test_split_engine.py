@@ -77,6 +77,16 @@ class Rule(unittest.TestCase):
         self.assertFalse(decide(cards=cards(2, vram_mib=40960)).use_split)    # 71.7 / 2 + 9 = 44.9 GiB needed
         self.assertTrue(decide(cards=cards(2, vram_mib=46000)).use_split)
 
+    def test_sm70_is_opt_in_and_keeps_the_overflow_in_host_ram(self):
+        v100 = cards(2, name="Tesla V100-PCIE-32GB", vram_mib=32768, cc=70)
+        self.assertFalse(decide(cards=v100).use_split)                       # auto keeps the layer split
+        d = decide(cards=v100, allow_untested=True, context=393216, ram_available_gib=450)
+        self.assertTrue(d.use_split, d.reasons)
+        self.assertGreater(d.host_cache_gib, 24)
+        self.assertIn("sm_70", d.line)
+        self.assertIn("context 393216", d.line)
+        self.assertFalse(decide(cards=v100, allow_untested=True, ram_available_gib=50).use_split)   # the host cache needs RAM
+
     def test_ram_that_stays_must_be_free(self):
         self.assertTrue(decide(ram_available_gib=52).use_split)          # 27.5 + 3 + 4 + 8 spare = 42.5
         d = decide(ram_available_gib=30)
@@ -199,6 +209,39 @@ class Apply(unittest.TestCase):
             self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")
             self.assertEqual(cfg["split_fallback"]["exe"], "component:strata-engine")
             self.assertEqual(cfg["tokenizer"], "tok")
+
+    def test_sm70_explicit_on_writes_the_arena_and_rope(self):
+        import copy
+        import tempfile
+
+        v100 = cards(2, name="Tesla V100-PCIE-32GB", vram_mib=32768, cc=70)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(tmp)
+            cfg["split_engine"] = "on"
+            cfg["args"][cfg["args"].index("--max-context") + 1] = "393216"
+            cfg["args"] += ["--rope-scale", "1.5"]
+            seen = []
+            d = S.apply_to_config(cfg, exe_for_cards=lambda n, cc: seen.append((n, cc)) or "/e/strata-split-2-sm70",
+                                  system="linux", probe=lambda i: v100, ram=lambda: (503.0, 450.0), scan=lambda path: udq4())
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(seen, [(2, 70)])
+            self.assertGreater(d.host_cache_gib, 24)
+            self.assertEqual(cfg["exe"], "/e/strata-split-2-sm70")
+            self.assertEqual(cfg["env"]["FNX_ARENA"], "1")
+            self.assertGreaterEqual(int(cfg["env"]["FNX_EXPERT_RAM_GIB"]), 26)
+            self.assertEqual(cfg["env"]["FNX_PF_HCSPLIT"], "0")     # v0.2.11's HC split costs on the 2x V100 host-cache path
+            self.assertEqual(cfg["env"]["FNX_PF_ROWS"], "4096")
+            self.assertEqual(cfg["args"][cfg["args"].index("--rope-scale") + 1], "1.5")
+            self.assertIn("sm_70", d.line)
+            # Auto stays off and changes nothing
+            cfg2 = self.cfg(tmp)
+            cfg2["split_engine"] = None
+            before = copy.deepcopy(cfg2)
+            d2 = S.apply_to_config(cfg2, exe_for_cards=lambda n, cc: "/e/x", system="linux", probe=lambda i: v100,
+                                   ram=lambda: (503.0, 450.0), scan=lambda path: udq4())
+            self.assertFalse(d2.use_split)
+            self.assertTrue(d2.quiet)
+            self.assertEqual(cfg2, before)
 
     def test_every_refusal_leaves_the_config_alone(self):
         import copy
