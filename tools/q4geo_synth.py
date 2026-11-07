@@ -287,6 +287,9 @@ def write_gguf(path: pathlib.Path, s: dict, vocab: int, recipe: str, seed: int, 
         if not row_ok(ty, sh[0]):
             raise SystemExit(f"{n} {sh}: row length {sh[0]} is not a multiple of {QTYPES[ty][1]} ({ty})")
         plan.append((n, sh, role, ty))
+    # the expert pack (tools/iq_pack.py -> native_experts.txt) wants every layer's gate, up, down tensors back to back and the layers one after
+    # the other, so the experts come first in the file (a stable sort keeps the layer order)
+    plan.sort(key=lambda x: 0 if "_exps.weight" in x[0] else 1)
     body = bytearray()
     body += struct.pack("<I", GGUF_MAGIC) + struct.pack("<I", 3) + struct.pack("<Q", len(plan)) + struct.pack("<Q", len(w.metadata))
     for k, (t, v) in w.metadata.items():
