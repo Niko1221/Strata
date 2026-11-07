@@ -28,8 +28,11 @@ time.sleep(120)
 
 
 def running(pid: int) -> bool:
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-    return str(pid) in out
+    # tasklist writes in the console's OEM code page (cp850 on a Western European Windows): its table frame
+    # bytes are not valid UTF-8, so text=True raises in the reader thread and leaves stdout None (#2331)
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True,
+                         encoding="oem", errors="replace").stdout
+    return str(pid) in (out or "")
 
 
 @unittest.skipUnless(os.name == "nt", "job objects are Windows-only")
@@ -63,10 +66,6 @@ class TestWinJob(unittest.TestCase):
         self.assertFalse(contain(None))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 @unittest.skipUnless(os.name == "nt", "power throttling is a Windows setting")
 class TestNoThrottle(unittest.TestCase):
     def test_a_contained_child_is_opted_out_of_power_throttling(self):
@@ -80,3 +79,7 @@ class TestNoThrottle(unittest.TestCase):
         finally:
             child.kill()
             child.wait(10)
+
+
+if __name__ == "__main__":
+    unittest.main()
