@@ -518,6 +518,10 @@ class SetupArgs(unittest.TestCase):
 
 
 class AdoptRules(unittest.TestCase):
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def files(self, root: Path, shards=2, pack=True, tokenizer=True, mtp=True):
         d = root / "Strata-data"
         m = d / "models" / "IQ3_XXS"
@@ -758,7 +762,9 @@ class AdoptRules(unittest.TestCase):
             self.assertTrue(store.summary(store.load("Fastest"))["tuned"])
 
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
-        with Home() as h:
+        # the engine make is read from the machine (adopt_prepared_files asks engine_component.detect_backend); on a box with an Intel Arc the
+        # second launch below would be refused as an Intel one. This case is the "no NVIDIA driver" one.
+        with Home() as h, mock.patch("strata_control.engine_component.detect_backend", lambda environ=None: ("cuda", "test")):
             d, m = self.files(h.base)
             cat = catalog(HW_12)
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, data_dir=str(d))

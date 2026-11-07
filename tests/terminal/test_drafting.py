@@ -1019,6 +1019,10 @@ class TheAppAsksControl(unittest.TestCase):
 class TheDownloadPlanListsIt(unittest.TestCase):
     """`strata launch --plan --drafting dflash2` adds the drafter to the download when it would be used."""
 
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def test_the_plan_line_and_the_part(self):
         from tests.terminal.launch_support import HW_12, Home, catalog
         from strata_cli.launch.runner import Runner
