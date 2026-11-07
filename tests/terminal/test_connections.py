@@ -219,8 +219,10 @@ class ConnectionTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_deeply_nested_telemetry_returns_one_redacted_error(self):
-        depth = 20000  # Python 3.13 parses 1100 levels; the recursion limit is reached at a few thousand on every version
-        body = b"[" * depth + b"0" + b"]" * depth
+        # Python 3.14 can parse deeper input without a recursion error. Keep the
+        # transport payload invalid on every supported interpreter.
+        depth = 20000
+        body = b"[" * depth + b"0" + b"]" * (depth - 1)
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
@@ -240,6 +242,10 @@ class ConnectionTests(unittest.TestCase):
             root = f"http://127.0.0.1:{server.server_port}"
             with self.assertRaisesRegex(ClientError, "malformed JSON telemetry"):
                 Endpoint(root).snapshot()
+            # Exercise recursion rejection even on parsers that accept deep JSON.
+            with mock.patch("strata_cli.client.json.loads", side_effect=RecursionError("private parser detail")):
+                with self.assertRaisesRegex(ClientError, "^server returned malformed JSON telemetry$"):
+                    Endpoint(root).snapshot()
             code, response = self._cli("status", "--url", root, "--json")
             self.assertEqual(code, 3)
             self.assertEqual(response["error"]["message"], "server returned malformed JSON telemetry")
