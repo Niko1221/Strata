@@ -159,6 +159,9 @@ struct SetArgs {
     // every column block of an expert (18-36 reads of 1.8-3.7 MB on a prompt) - MarLin's "small operand cheap".
     const uint16_t* x16 = nullptr;
     int skip_ge = 0;    // (ds4's low-bit GGUF experts) > 0: experts of at least this many rows are the caller's (FP16 GEMMs)
+    // (ds4's GGUF experts) non-null: expert e's blob at wptr[e] (device addresses, n_exp of them), not wbase + e * stride -
+    // the prompt path's experts read where they lie in the RAM store on a GPU that shares the PC's memory
+    const unsigned long long* wptr = nullptr;
 #if defined(STRATA_METAL)   // (only on Metal: keeps the CUDA / HIP struct as it was)
     const int* hbounds = nullptr;   // the same bounds on the host: [n_exp + 1], absolute rows
     int total_rows = 0;             // the set's rows in all

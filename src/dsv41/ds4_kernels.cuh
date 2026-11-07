@@ -246,6 +246,10 @@ void route_ahead(const float* logits, const float* bias, int n, int m, int T, Re
 /// slot's device address) are copied into stage slot i (stride apart, `bytes` each) and the plan then points there.
 void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int k, uint8_t* stage, size_t stride, size_t bytes,
               cudaStream_t s);
+/// The same picks on a GPU that shares the PC's memory, for a decode token or a verify window of T tokens (plan and idx
+/// [t * kPicks + i], i < k): the plan points at the slot itself, which the arena's mapping makes the device's address of that
+/// memory (no copy: VRAM and the store are the same RAM there).
+void zc_point(unsigned long long* plan, const int* idx, const unsigned long long* zc_tab, int T, int k, cudaStream_t s);
 /// Waits (one thread, on the device) until *seq_ptr == seq.
 void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s);
 /// True once if the router (route / route_publish) had no pick to make on this device since the last call - every score it was
@@ -260,6 +264,13 @@ void moe_sort(const int* idx, int T, int k, const int* vs, int n_vs, int* bounds
 /// acc[t] += w[t][i] * y[pos[t][i] - r0] for each pick of t (in pick order) whose sorted row is in [r0, r1).
 void moe_combine(float* acc, const float* y, const int* pos, const float* w, int T, int k, int r0, int r1, int dim,
                  cudaStream_t s);
+#if !defined(STRATA_METAL)
+/// (the prompt's rank skip) best[e] = the lowest pick index i any of the T tokens picked expert e at (idx rows kPicks apart;
+/// the router picks in score order), 0x7f7f7f7f for an expert no token picked; best holds n_exp ints.
+void best_rank(const int* idx, int T, int k, int n_exp, int* best, cudaStream_t s);
+/// w[t][i] = 0 for each pick whose expert e has drop[e] set (its rows then add nothing in moe_combine).
+void zero_picks(const int* idx, float* w, int T, int k, const uint8_t* drop, cudaStream_t s);
+#endif
 /// rows[t][0] = 1, the rest 0 (the first layer's pre-mix: stream 0).
 void init_pre(float* pre, int T, cudaStream_t s);
 

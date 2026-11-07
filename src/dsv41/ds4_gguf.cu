@@ -744,6 +744,7 @@ static_assert((BM / TM) * (BN / TN) == kThreads, "one output tile a thread");
 struct SetK {
     const uint8_t* wbase;
     size_t stride;
+    const unsigned long long* wptr;   // non-null: expert i's blob at wptr[i] (device addresses), not wbase + i stride
     size_t tr[3];
     const int* bounds;
     int row0;
@@ -788,7 +789,7 @@ __global__ void __launch_bounds__(kThreads) mx_set_kernel(const SetK a) {
                                                     // reads then; skip_le: the light kernels' experts)
     const int nr = min(BM, hi - r0);
     const int c0 = blockIdx.y * BN;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = a.wptr != nullptr ? (const uint8_t*) a.wptr[e] : a.wbase + (size_t) e * a.stride;
     const int K = GATE_UP ? a.n_embd : a.n_ff;
     const size_t rb = mx_row_bytes(K);
     const int tid = (int) threadIdx.x;
@@ -872,7 +873,7 @@ __global__ void __launch_bounds__(kThreads) mx_set_tc_kernel(const SetK a) {
     if (r0 >= hi || hi - lo <= a.skip_le) return;   // (uniform; skip_le: the light kernels' experts)
     const int nr = min(BM, hi - r0);
     const int c0 = blockIdx.y * BN;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = a.wptr != nullptr ? (const uint8_t*) a.wptr[e] : a.wbase + (size_t) e * a.stride;
     const int K = GATE_UP ? a.n_embd : a.n_ff;
     const size_t rb = mx_row_bytes(K);
     const int tid = (int) threadIdx.x, warp = tid >> 5;
@@ -995,7 +996,7 @@ __global__ void __launch_bounds__(kThreads) mx_set_wmma_kernel(const SetK a) {
     if (r0 >= hi_r || hi_r - lo <= a.skip_le) return;   // (uniform; skip_le: the light kernels' experts)
     const int nr = min(BM, hi_r - r0);
     const int c0 = blockIdx.y * BN;
-    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const uint8_t* blob = a.wptr != nullptr ? (const uint8_t*) a.wptr[e] : a.wbase + (size_t) e * a.stride;
     const int K = GATE_UP ? a.n_embd : a.n_ff;
     const size_t rb = mx_row_bytes(K);
     const int tid = (int) threadIdx.x, warp = tid >> 5, lane = tid & 31, l16 = lane & 15, hi = lane >> 4;
@@ -1633,6 +1634,7 @@ iq::SetArgs iq_set(const x3::SetArgs& sa) {   // a set as ds4_iq's arguments (th
     iq::SetArgs q;
     q.wbase = sa.wbase;
     q.stride = sa.stride;
+    q.wptr = sa.wptr;
     for (int r = 0; r < 3; ++r) q.tr[r] = sa.lay.trellis[r];
     q.bounds = sa.bounds;
     q.row0 = sa.row0;
@@ -1691,6 +1693,7 @@ void set_gate_up(const x3::SetArgs& sa, const float* x, int ldx, const int* row_
     k.skip_le = skip;
     k.wbase = sa.wbase;
     k.stride = sa.stride;
+    k.wptr = sa.wptr;
     for (int r = 0; r < 3; ++r) k.tr[r] = sa.lay.trellis[r];
     k.bounds = sa.bounds;
     k.row0 = sa.row0;
@@ -1750,6 +1753,7 @@ void set_down(const x3::SetArgs& sa, const uint16_t* h16, int ldh, float* y, int
     k.skip_le = skip;
     k.wbase = sa.wbase;
     k.stride = sa.stride;
+    k.wptr = sa.wptr;
     for (int r = 0; r < 3; ++r) k.tr[r] = sa.lay.trellis[r];
     k.bounds = sa.bounds;
     k.row0 = sa.row0;
