@@ -325,7 +325,16 @@ void full_session(int fmt, int mode, int experts) {
         ConversationKvReuse wrong{a.kv,65,65,{}};
         check(!conversation_snapshot_capture_bytes(wrong,view,ss,g,nullptr,peak,err),"a draft image's K/V is not a stage's reuse");
     }
+    // #4552: the park/restore resume marks the restored prefix (its own K/V rows), so the session that came
+    // back from a file is append-eligible for that same file - the steady state the ladder lives on.  The
+    // watermark is cleared first: marks only lower, and every restore above has been marking as it ran.
+    ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
     check(conversation_snapshot_restore(a,ss,g,draft.state,err)==ConversationRestore::restored,"restore A after stage images");
+    {   const int64_t page=qsa_real_shapes().page_size;
+        check(ss.kv_first_dirty==session_whole_cells((int64_t)a.live.ids.size(),page),
+              "the whole resume marks the restored prefix, not token 0");
+        check(ss.kv_append_ok(page,(int64_t)a.live.ids.size()),
+              "a resumed conversation earns the next append of the file it was restored from"); }
     check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"restore early running checkpoint");
     std::vector<uint8_t> spare(sizes.dead);
     cuda_check(cudaMemcpy(spare.data(),main.state.idx_pooled,sizes.dead,cudaMemcpyDeviceToHost));
@@ -342,8 +351,15 @@ void full_session(int fmt, int mode, int experts) {
         ConversationKv img;
         check(conversation_kv_save(img,main.state,g,n,true,err)&&
               conversation_kv_restore(img,main.state,g,n,true,err),"whole K/V restore into the session's own state");
-        check(ss.kv_first_dirty==0,"M9: a K/V restore dirties the owning session from token 0");
-        check(!ss.kv_append_ok(1,n),"the restored session refuses to append under those bytes");
+        check(ss.kv_first_dirty==n,"M9 (#4552): a completed K/V restore marks the RESTORED PREFIX, not token 0");
+        check(ss.kv_append_ok(1,n),"the restored session earns the same file's next append (#4552: no forced full rewrite after a resume)");
+
+        ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
+        ConversationKv too_long;                                // a rejected attempt writes no bytes: the watermark stays true
+        conversation_kv_save(too_long,main.state,g,n,true,err);
+        check(!conversation_kv_restore(too_long,main.state,g,n+100,true,err),"M9: an over-long restore is refused before any write");
+        check(ss.kv_first_dirty==std::numeric_limits<int64_t>::max(),
+              "M9 (#4552): a refusal that touched no pools leaves the prior watermark valid");
 
         ss.kv_first_dirty=std::numeric_limits<int64_t>::max();
         check(conversation_checkpoint_restore(a.checkpoints[0],ss,g,err),"M8: mount the 3-token checkpoint again");

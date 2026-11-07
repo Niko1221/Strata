@@ -14641,10 +14641,14 @@ int main(int argc, char** argv) {
                     return false;
                 mtp.set_prompt_len(upto);
             }
-            // Watermark M5: the slot's K/V replaced the main session's pools (and the stages' where the
-            // copy ran) - from token 0, on the direct path as well as the checkpointed one.
-            ss.mark_kv_dirty(0);
-            for (auto& st : stages) st->ss.mark_kv_dirty(0);
+            // Watermark M5 (#4552): the slot's K/V replaced the main session's pools (and the stages' where the
+            // copy ran) - with the slot conversation's own rows, on the direct path as well as the checkpointed
+            // one.  Trusted up to the tokens that came back, not dirtied from 0: the returning request's next
+            // save is then an append, not a rewrite of everything the slot already held.
+            const int64_t slot_cells = strata::core::session_whole_cells(
+                upto, strata::kernels::qsa_real_shapes().page_size);
+            ss.mark_kv_dirty(slot_cells);
+            for (auto& st : stages) st->ss.mark_kv_dirty(slot_cells);
             return true;
         };
         auto stage_verifier = [&](int k) -> strata::core::Verifier& { return k == 0 ? ver : stages[(size_t) k - 1]->ver; };
@@ -15888,8 +15892,12 @@ int main(int argc, char** argv) {
                             const bool have_plan =
                                 limits_ok && strata::core::session_file_append_plan(path, id, plan, perr, plan_limits);
                             std::string gwhy;
+                            // #4552: a split save writes rows from every carve into one file, so the gate judges
+                            // the whole conversation - the most-dirty carve governs.  Reading only the main
+                            // carve's watermark let a dirty stage ride an append.
                             if (strata::core::session_save_gate(have_plan ? &plan : nullptr, sources,
-                                                                ss.kv_first_dirty, save_page, gwhy) ==
+                                                                strata::core::session_gate_watermark(sessions),
+                                                                save_page, gwhy) ==
                                     strata::core::SessionSaveChoice::append) {
                                 if (strata::core::session_file_append(path, meta, sources, id, plan, bytes, err,
                                                                       wo, &st))
@@ -15908,11 +15916,14 @@ int main(int argc, char** argv) {
                             refuse(err, st.error, st.published);
                             continue;
                         }
-                        // every successful save commits [0, whole(live)) into the file afresh: the watermark may
-                        // rise to that boundary (a later pool rewrite below it bumps it down again)
-                        ss.kv_first_dirty = std::max(ss.kv_first_dirty,
-                                                     strata::core::session_whole_cells((int64_t) live.size(),
-                                                                                       save_page));
+                        // every successful save commits [0, whole(live)) into the file afresh - for EVERY
+                        // carve's rows (#4552: the stage watermarks rise with the main carve's, or a split save
+                        // would keep claiming its stages dirty and refuse its own next append): the watermark
+                        // may rise to that boundary (a later pool rewrite below it bumps it down again)
+                        const int64_t commit_cells =
+                            strata::core::session_whole_cells((int64_t) live.size(), save_page);
+                        for (strata::core::SessionState* sp : sessions)
+                            sp->kv_first_dirty = std::max(sp->kv_first_dirty, commit_cells);
                         if (st.dir_flush_unsupported)
                             std::fprintf(stderr, "strata serve: session saved to %s; this filesystem cannot flush a "
                                                  "folder, so the new name is not flushed\n", path.c_str());
@@ -16015,8 +16026,15 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
-                    // Watermark M3: the file's bytes are now in the pools of every carve - from token 0
-                    for (strata::core::SessionState* sp : sessions) sp->mark_kv_dirty(0);
+                    // Watermark M3 (#4552): the file's bytes are now in the pools of every carve, and what it
+                    // wrote is the file's own rows - so every carve is trusted up to the restored count, not
+                    // dirtied from token 0.  Marking 0 here is what made a resumed session full-rewrite on its
+                    // next save (a ~5 GB write for a conversation that changed by kilobytes).  Rounded to whole
+                    // cells: the last partial block's spare rows are not trusted (the M8 checkpoint mount
+                    // covers them the same way).
+                    const int64_t restored_cells = strata::core::session_whole_cells(
+                        (int64_t) live.size(), strata::kernels::qsa_real_shapes().page_size);
+                    for (strata::core::SessionState* sp : sessions) sp->mark_kv_dirty(restored_cells);
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
                         const size_t n_parked = conversations.clear();
@@ -16804,7 +16822,10 @@ int main(int argc, char** argv) {
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
-                ss.mark_kv_dirty(0);   // Watermark M4 (borrow): the donor's prefix is now in this session's pools
+                // Watermark M4 (borrow) (#4552): the donor's prefix is now in this session's pools, and it is
+                // the donor's own rows - the session is trusted up to the borrowed count, not dirtied from 0.
+                ss.mark_kv_dirty(strata::core::session_whole_cells(
+                    parked.tokens, strata::kernels::qsa_real_shapes().page_size));
                 std::fprintf(stderr, "strata serve: conversation cache: borrowed %lld tokens from a parked "
                              "conversation, which stays parked, in %.1f ms; parked=%zu bytes=%zu borrowed=%zu\n",
                              (long long) resume, std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -16831,9 +16852,16 @@ int main(int argc, char** argv) {
                     }
                     if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("ERR stage sync\n"); return 1; }
                 }
-                // Watermark M4 (park restore): the parked conversation's K/V is now in these sessions' pools
-                ss.mark_kv_dirty(0);
-                for (auto& st : stages) st->ss.mark_kv_dirty(0);
+                // Watermark M4 (park restore) (#4552): the parked conversation's K/V is now in these sessions'
+                // pools - and it is that conversation's own rows, so every carve is trusted up to the restored
+                // count rather than dirtied from token 0.  Marking 0 here is what made the ladder's normal loop
+                // (switch away, mount back, save) full-rewrite every time.
+                const int64_t park_page = strata::kernels::qsa_real_shapes().page_size;
+                ss.mark_kv_dirty(strata::core::session_whole_cells(
+                    (int64_t) incoming->live.ids.size(), park_page));
+                for (size_t i = 0; i < stages.size(); ++i)
+                    stages[i]->ss.mark_kv_dirty(strata::core::session_whole_cells(
+                        (int64_t) incoming->stage_images[i].live.ids.size(), park_page));
                 if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     const auto& draft_kv = stages.empty() || mtp_first ? incoming->kv.back() : incoming->stage_images.back().kv.back();

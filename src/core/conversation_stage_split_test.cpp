@@ -387,6 +387,25 @@ void split_battery(const std::vector<bool>& draft_of) {
             check(conversation_snapshot_restore_split(back, fresh, draft_of, devices, &dst.draft.state, dst.g, sp.err)
                       == ConversationRestore::restored,
                   "restore_split restored the image into the fresh runtime");
+            // #4552, the split resume in integration shape: a restore rewrote [0, 65) with the file's own rows,
+            // so each carve is trusted to that prefix (the row granularity the checkpoint mount rewrites,
+            // floor(65/4)*4) and NOT dirtied from token 0 - and the fold the engine's gate consults is clear of
+            // the file's committed boundary, so the resumed conversation earns its next append instead of
+            // full-rewriting.  Before the fix the stage mount marked 0 and the gate read only the main carve.
+            const int64_t mount_cells = session_whole_cells((int64_t) back.live.ids.size(), qsa_real_shapes().page_size);
+            check(dst.ss0.kv_first_dirty == mount_cells, "the restored main carve marks the mounted prefix");
+            check(dst.ss1.kv_first_dirty == mount_cells, "the restored stage carve marks the same prefix, not 0");
+            check(session_gate_watermark(fresh) == mount_cells, "the split gate reads the fold of both carves");
+            SessionState gate;
+            gate.kv_first_dirty = session_gate_watermark(fresh);
+            check(gate.kv_append_ok(qsa_real_shapes().page_size, (int64_t) back.live.ids.size()),
+                  "the resumed split conversation is append-eligible for the file it came from");
+            // The other direction on the same carves: one stage rewritten below the committed boundary governs
+            // the fold and refuses the append (the defect the fold fix closes).
+            dst.ss1.mark_kv_dirty(mount_cells - qsa_real_shapes().idx_block);
+            gate.kv_first_dirty = session_gate_watermark(fresh);
+            check(!gate.kv_append_ok(qsa_real_shapes().page_size, (int64_t) back.live.ids.size()),
+                  "a stage dirty below the committed boundary refuses the split save's append");
             ConversationCheckpoint got0, got1; got0.ids = back.live.ids; got1.ids = back.live.ids;
             check(conversation_checkpoint_save(got0, dst.ss0, dst.g, sp.err) &&
                   conversation_checkpoint_save(got1, dst.ss1, dst.g, sp.err), "recaptured from the fresh carves");

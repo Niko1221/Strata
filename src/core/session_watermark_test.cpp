@@ -113,6 +113,49 @@ int main() {
     check(session_whole_cells(1024, 64) == 1024, "a boundary page start is whole");
     check(session_whole_cells(700, 0) == 700, "page 0 means no rounding");
 
+    // #4552 (upstream-confirmed): a resume (file restore / park restore / slot return / borrow) rewrites
+    // [0, restored) with the conversation's own rows, so its watermark marks the RESTORED PREFIX, not
+    // token 0: everything the earlier save committed below the restored count is still byte-faithful, and
+    // the conversation earns its next append instead of forcing a full rewrite every switch.  The zeroing
+    // sites (M2) keep marking 0 - nothing was restored.
+    {
+        SessionState s;
+        s.kv_first_dirty = 2048;             // a save raised the watermark to its committed boundary
+        s.mark_kv_dirty(1500);               // a resume that restored [0, 1500)
+        check(s.kv_first_dirty == 1500, "a resume prefix mark stops at the restored count, not 0");
+        check(!s.kv_append_ok(64, 2048), "a partial restore still refuses an append over its own prefix");
+        check(s.kv_append_ok(64, 1024), "a restore covering the saved prefix keeps it append-eligible");
+    }
+    {
+        SessionState s;
+        s.mark_kv_dirty(1000);               // the live shape: restore of the whole file at its saved count
+        check(s.kv_append_ok(64, 1000), "a whole-file restore earns the same file's next append");
+        s.mark_kv_dirty(0);                  // an M2 zeroing after that is still absolute
+        check(!s.kv_append_ok(64, 1000), "the zeroing sites keep marking from token 0");
+    }
+
+    // #4552 per-stage gate: a split save writes rows from EVERY carve into one file, so the gate must
+    // consult the fold of all carves' watermarks - the most-dirty one governs.  Before this the engine
+    // read only the main carve's, and a dirty stage could ride an append.
+    {
+        SessionState main_, stage_, clean_;
+        main_.kv_first_dirty = 4096;                                        // main carve: clean above the boundary
+        stage_.kv_first_dirty = 900;                                        // a stage rewrote below 1024
+        clean_.kv_first_dirty = std::numeric_limits<int64_t>::max();       // a stage nothing touched
+        std::vector<SessionState*> all{&main_, &stage_, &clean_};
+        check(session_gate_watermark(all) == 900, "the fold returns the most-dirty carve's watermark");
+        SessionState gate;
+        gate.kv_first_dirty = session_gate_watermark(all);
+        check(!gate.kv_append_ok(64, 1024), "a stage dirty below the boundary refuses the split save's append");
+        stage_.kv_first_dirty = 1024;                                      // the stage rewrite started AT the boundary
+        gate.kv_first_dirty = session_gate_watermark(all);
+        check(gate.kv_append_ok(64, 1024), "stage writes at or above the committed prefix stay eligible");
+        check(session_gate_watermark(std::vector<SessionState*>{&main_, &clean_}) == 4096,
+              "clean stages leave the fold at the dirty main carve");
+        check(session_gate_watermark(std::vector<SessionState*>{&clean_}) == std::numeric_limits<int64_t>::max(),
+              "a fold of untouched sessions is INT64_MAX (a single-device save behaves as before)");
+    }
+
     std::printf("session_watermark_test: %d checks passed\n", checks);
     return 0;
 }

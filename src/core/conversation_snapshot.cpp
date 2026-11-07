@@ -455,14 +455,18 @@ bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelG
 
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                              int64_t upto, bool index, std::string& error) {
-    // Watermark insurance M9: a restore rewrites this state's pools from token 0 - the owning session must
-    // not append under those bytes, and no caller may forget the bump.  A failed attempt marks too: that is
-    // the conservative direction the watermark exists for.
-    if (st.owner) st.owner->mark_kv_dirty(0);
+    // Watermark insurance M9 (#4552): a restore rewrites this state's pools with the image's rows.  A COMPLETED
+    // restore leaves [0, upto) holding exactly the logical rows the image was captured from, so the owning
+    // session's watermark marks the restored prefix, not token 0 - a resumed conversation keeps append
+    // eligibility for everything its previous save committed inside that prefix (every resume used to force a
+    // full rewrite).  A failed attempt may have landed partial bytes: it marks from token 0, the conservative
+    // direction the watermark exists for.  A refusal that wrote nothing leaves the pools as they were - the
+    // prior watermark is still the truth, so no mark moves it.
+    const auto mark = [&st](int64_t from) { if (st.owner) st.owner->mark_kv_dirty(from); };
     // STRATA_PARK_VRAM_MIB: from the image's VRAM slot when it holds every part (no host buffer is read: no join)
     const VramKvSlot* slot = vram_kv_find(image.dev_tag);
     if (slot == nullptr) conversation_park_join();
-    if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
+    if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;   // no pools written yet
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto dst = pools(st);
     std::array<size_t,5> sizes{}, off{};
@@ -470,19 +474,26 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (slot != nullptr && !vram_kv_locate(*slot, image.dev_tag, sizes, off)) { slot = nullptr; conversation_park_join(); }
     if (slot != nullptr) {
         for (size_t i = 0; i < src.size(); ++i)
-            if (!transfer(dst[i], static_cast<const uint8_t*>(slot->p) + off[i], sizes[i], error)) return false;
-        return refresh_residency(st, g, upto, error);
+            if (!transfer(dst[i], static_cast<const uint8_t*>(slot->p) + off[i], sizes[i], error)) { mark(0); return false; }
+        if (!refresh_residency(st, g, upto, error)) { mark(0); return false; }
+        mark(upto);   // the prefix now holds the image's own rows: trusted to `upto`
+        return true;
     }
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
-            })) return false;
-    return refresh_residency(st, g, upto, error);
+            })) { mark(0); return false; }
+    if (!refresh_residency(st, g, upto, error)) { mark(0); return false; }
+    mark(upto);   // same trust as the slot path: the rewritten prefix reproduces the image's rows
+    return true;
 }
 
 bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                                     int64_t captured, int64_t upto, bool index, std::string& error) {
-    if (st.owner) st.owner->mark_kv_dirty(0);  // watermark insurance M9 (see conversation_kv_restore)
+    // Watermark insurance M9 (#4552, as in conversation_kv_restore): a completed mount rewrites [0, upto)
+    // with the captured prefix's own rows, so the owning session marks the mounted prefix; a transfer that
+    // failed mid-way landed partial bytes and marks from token 0; a refusal before any write marks nothing.
+    const auto mark = [&st](int64_t from) { if (st.owner) st.owner->mark_kv_dirty(from); };
     const VramKvSlot* slot = vram_kv_find(image.dev_tag);   // (STRATA_PARK_VRAM_MIB, as in conversation_kv_restore)
     if (slot == nullptr) conversation_park_join();
     if (upto < 0 || upto > captured) {
@@ -491,7 +502,7 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
     }
     if (!conversation_kv_validate(image, st, g, captured, index, error)) return false;
     Layout l{};   // the prefix's extent; validation above checked the image against the captured one
-    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;   // nothing written yet
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     for (size_t i = 0; i < src.size(); ++i)
@@ -502,14 +513,18 @@ bool conversation_kv_restore_prefix(const ConversationKv& image, const QsaState&
     if (slot != nullptr && !vram_kv_locate(*slot, image.dev_tag, sizes, off)) { slot = nullptr; conversation_park_join(); }
     if (slot != nullptr) {
         for (size_t i = 0; i < src.size(); ++i)
-            if (!transfer(dst[i], static_cast<const uint8_t*>(slot->p) + off[i], sizes[i], error)) return false;
-        return refresh_residency(st, g, upto, error);
+            if (!transfer(dst[i], static_cast<const uint8_t*>(slot->p) + off[i], sizes[i], error)) { mark(0); return false; }
+        if (!refresh_residency(st, g, upto, error)) { mark(0); return false; }
+        mark(upto);   // the mount wrote the prefix with the captured rows: trusted to `upto`
+        return true;
     }
     for (size_t i = 0; i < src.size(); ++i)
         if (!src[i]->visit(0, sizes[i], [&](const uint8_t* p, size_t n, size_t at) {
                 return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
-            })) return false;
-    return refresh_residency(st, g, upto, error);
+            })) { mark(0); return false; }
+    if (!refresh_residency(st, g, upto, error)) { mark(0); return false; }
+    mark(upto);   // same trust as the slot path
+    return true;
 }
 
 bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,
