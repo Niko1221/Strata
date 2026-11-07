@@ -150,12 +150,11 @@ class UnslothDefaultEnv(unittest.TestCase):
         for m in ("UD-Q4_K_XL", "UD-IQ4_XS", "Q8_0"):
             self.assertNotIn("STRATA_MMQ_KQ", f("unsloth", m, False, False), m)
 
-    def test_hc_q8_on_cuda_for_the_ud_files_only(self):
+    def test_hc_q8_is_the_engines_own_default_not_setups(self):
         f = setup.unsloth_default_env
-        for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"):
-            self.assertEqual(f("unsloth", m, False, True)["STRATA_HC_Q8"], "1", m)
-            self.assertNotIn("STRATA_HC_Q8", f("unsloth", m, True, True), m)          # not on AMD
-        self.assertNotIn("STRATA_HC_Q8", f("unsloth", "Q8_0", False, True))
+        for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
+            for hip in (False, True):
+                self.assertNotIn("STRATA_HC_Q8", f("unsloth", m, hip, True), (m, hip))
 
     def test_tail_skip_off_only_when_every_expert_is_in_ram(self):
         f = setup.unsloth_default_env

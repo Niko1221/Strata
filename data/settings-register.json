@@ -1992,16 +1992,8 @@
      "arch": "gfx1151 (Windows)"
     }
    ],
-   "launch_files": [
-    "serve/server.py"
-   ],
-   "launch_sets": [
-    {
-     "file": "serve/server.py",
-     "line": 4274,
-     "value": "\"1\""
-    }
-   ],
+   "launch_files": [],
+   "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
     "docs/BATCHING.md:691"
@@ -2273,16 +2265,8 @@
      "arch": "gfx1151 (Windows)"
     }
    ],
-   "launch_files": [
-    "serve/server.py"
-   ],
-   "launch_sets": [
-    {
-     "file": "serve/server.py",
-     "line": 4274,
-     "value": "\"1\""
-    }
-   ],
+   "launch_files": [],
+   "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
     "docs/BATCHING.md:692"
@@ -2499,7 +2483,6 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/amd_four_card.py",
     "strata_control/replica_profile.py"
    ],
@@ -2512,11 +2495,6 @@
     {
      "file": "strata_control/replica_profile.py",
      "line": 37,
-     "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4275,
      "value": "\"1\""
     }
    ],
@@ -2972,18 +2950,12 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/replica_profile.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/replica_profile.py",
      "line": 38,
-     "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4273,
      "value": "\"1\""
     }
    ],
@@ -3030,18 +3002,12 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/replica_profile.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/replica_profile.py",
      "line": 38,
-     "value": "\"4\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4273,
      "value": "\"4\""
     }
    ],
@@ -4194,7 +4160,7 @@
    "launch_reads": [
     {
      "file": "setup.py",
-     "line": 7975
+     "line": 7973
     }
    ],
    "doc_mentions": [
@@ -9916,16 +9882,8 @@
      "arch": "gfx12"
     }
    ],
-   "launch_files": [
-    "serve/server.py"
-   ],
-   "launch_sets": [
-    {
-     "file": "serve/server.py",
-     "line": 4325,
-     "value": "\"1\""
-    }
-   ],
+   "launch_files": [],
+   "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:307",
@@ -10108,7 +10066,6 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "setup.py"
    ],
    "launch_sets": [
@@ -10116,11 +10073,6 @@
      "file": "setup.py",
      "line": 4098,
      "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4324,
-     "value": "\"2\""
     }
    ],
    "launch_reads": [],
@@ -10730,16 +10682,8 @@
      "arch": "?"
     }
    ],
-   "launch_files": [
-    "serve/server.py"
-   ],
-   "launch_sets": [
-    {
-     "file": "serve/server.py",
-     "line": 4324,
-     "value": "\"1\""
-    }
-   ],
+   "launch_files": [],
+   "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
     "docs/DETAILS.md:1629",
@@ -12965,13 +12909,7 @@
     "setup.py",
     "strata_control/mac_fit.py"
    ],
-   "launch_sets": [
-    {
-     "file": "setup.py",
-     "line": 4377,
-     "value": "\"1\""
-    }
-   ],
+   "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:306",
@@ -13552,12 +13490,7 @@
      "value": "str(table)"
     }
    ],
-   "launch_reads": [
-    {
-     "file": "strata_control/hipblaslt_tuning.py",
-     "line": 223
-    }
-   ],
+   "launch_reads": [],
    "doc_mentions": [
     "docs/AMD_HIP.md:93",
     "docs/AMD_HIP.md:208",
@@ -18239,18 +18172,7 @@
    "launch_files": [
     "strata_control/mac_fit.py"
    ],
-   "launch_sets": [
-    {
-     "file": "strata_control/mac_fit.py",
-     "line": 76,
-     "value": "1"
-    },
-    {
-     "file": "strata_control/mac_fit.py",
-     "line": 78,
-     "value": "\"1\""
-    }
-   ],
+   "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [
     "docs/MAC.md:270"
@@ -20005,8 +19927,7 @@
    "engine_defaults": [],
    "launch_files": [
     "setup.py",
-    "strata_cli/launch/adopt.py",
-    "strata_control/mac_fit.py"
+    "strata_cli/launch/adopt.py"
    ],
    "launch_sets": [
     {
@@ -20016,7 +19937,7 @@
     },
     {
      "file": "setup.py",
-     "line": 9859,
+     "line": 9857,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -20504,7 +20425,7 @@
    "first_commit": "465cd61dfb",
    "first_date": "2026-10-12",
    "since": "v0.1.44",
-   "last_commit": "ffb94c578c",
+   "last_commit": "88e6634390",
    "last_date": "2026-11-07",
    "status": "default",
    "owner": "core",
@@ -23622,7 +23543,7 @@
    "launch_reads": [
     {
      "file": "setup.py",
-     "line": 7974
+     "line": 7972
     }
    ],
    "doc_mentions": [
@@ -32753,7 +32674,6 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/amd_four_card.py",
     "strata_control/replica_profile.py"
    ],
@@ -32766,11 +32686,6 @@
     {
      "file": "strata_control/replica_profile.py",
      "line": 37,
-     "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4275,
      "value": "\"1\""
     }
    ],
@@ -33568,7 +33483,7 @@
    "launch_sets": [
     {
      "file": "setup.py",
-     "line": 7954,
+     "line": 7952,
      "value": "6"
     }
    ],
@@ -34294,7 +34209,7 @@
     },
     {
      "file": "setup.py",
-     "line": 4380,
+     "line": 4378,
      "value": "\"0\""
     }
    ],
@@ -35489,19 +35404,19 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4402,
+     "line": 4340,
      "value": "1"
     },
     {
      "file": "serve/server.py",
-     "line": 4410,
+     "line": 4348,
      "value": "1"
     }
    ],
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 4405
+     "line": 4343
     }
    ],
    "doc_mentions": [
@@ -35647,18 +35562,12 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/replica_profile.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/replica_profile.py",
      "line": 38,
-     "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4273,
      "value": "\"1\""
     }
    ],
@@ -35703,18 +35612,12 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/replica_profile.py"
    ],
    "launch_sets": [
     {
      "file": "strata_control/replica_profile.py",
      "line": 39,
-     "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4274,
      "value": "\"1\""
     }
    ],
@@ -35759,7 +35662,6 @@
     }
    ],
    "launch_files": [
-    "serve/server.py",
     "strata_control/amd_four_card.py",
     "strata_control/replica_profile.py"
    ],
@@ -35772,11 +35674,6 @@
     {
      "file": "strata_control/replica_profile.py",
      "line": 37,
-     "value": "\"1\""
-    },
-    {
-     "file": "serve/server.py",
-     "line": 4273,
      "value": "\"1\""
     }
    ],
