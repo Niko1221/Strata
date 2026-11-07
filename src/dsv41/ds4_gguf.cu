@@ -1591,6 +1591,7 @@ bool win_experts(const x3::WinArgs& a, cudaStream_t s) {
     } else {
         iq::gate_up(ia, groups, a.T, s);
     }
+    if (a.mark != nullptr) a.mark(a.mark_ctx, 3);
     (mx_experts(a.lay) ? q8_quant : iq_act_quant)(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
     if (mx) {
 #if defined(STRATA_METAL)
@@ -1602,10 +1603,12 @@ bool win_experts(const x3::WinArgs& a, cudaStream_t s) {
     } else {
         iq::down(ia, groups, a.T, s);
     }
+    if (a.mark != nullptr) a.mark(a.mark_ctx, 11);
 #if !defined(STRATA_METAL)
     // (this port's dispatches are synchronous and nothing is published to wait for: ds4_kernels.cu's wait_seq)
     if (a.wait_ptr != nullptr) strata_ds4_launch(mx_wait_kernel, 1, 32, 0, s, a.wait_ptr, a.wait_val);
 #endif
+    if (a.mark != nullptr) a.mark(a.mark_ctx, 4);
     CombArgs c{};
     c.plan_ptr = a.plan_ptr;
     c.plan_w = a.plan_w;

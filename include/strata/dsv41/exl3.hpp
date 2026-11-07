@@ -134,6 +134,10 @@ struct WinArgs {
     // part arrives while the device computes the experts); cpu_flag may be null (no CPU part)
     const unsigned* wait_ptr = nullptr;
     unsigned wait_val = 0;
+    // (DS4_PROF_WIN; the GGUF form's) called between the launches with the profile stage the work since the caller's
+    // last mark goes to: 3 after the gate / up, 11 after the down, 4 after the wait for the CPU lane
+    void (*mark)(void* ctx, int stage) = nullptr;
+    void* mark_ctx = nullptr;
 };
 bool win_experts(const WinArgs& a, cudaStream_t s);
 /// Whether the current device runs the several-activation kernels (win_experts; mv's ncol > 1): every device does
