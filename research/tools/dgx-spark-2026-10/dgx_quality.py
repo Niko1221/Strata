@@ -11,7 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 PROMPTS = [
     "Write a Python function that merges two sorted lists into one sorted list, with a docstring and two tests.",
     "Explain in two short paragraphs how a heat pump moves heat from outside to inside a house.",

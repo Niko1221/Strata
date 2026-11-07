@@ -7,7 +7,7 @@ against a running server: stream an answer, read a few lines, close the connecti
 ~0.4 s (sometimes not at all, sometimes a second request already running), send the edited prompt, and check the
 answer.  Run the engine with STRATA_DBG_NAN=1 to get the first non-finite layer named in its log.
 
-  STRATA_KEY=... python3 tools/stop_resend_test.py http://127.0.0.1:8090 [rounds=40] [seed=1]
+  STRATA_KEY=... python3 research/tools/live-probes-2026-10/stop_resend_test.py http://127.0.0.1:8090 [rounds=40] [seed=1]
 
 Exit 0 when every answer was real text, 1 otherwise.
 """

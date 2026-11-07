@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The 24-prompt identity gate against a RECORDED set of answers: start the server of CONFIG, send the 24 greedy prompts of
-tools/dgx_quality24.py, and compare every answer byte for byte with the answers in REFERENCE.json (a file tools/dgx_quality24.py wrote:
+research/tools/dgx-spark-2026-10/dgx_quality24.py, and compare every answer byte for byte with the answers in REFERENCE.json (a file research/tools/dgx-spark-2026-10/dgx_quality24.py wrote:
 its rows hold "a" and "b"; --side picks which one is the reference, "a" by default).
 
-    python tools/dgx_gate_ref.py CONFIG REFERENCE.json OUT.json [--side a|b] [--port 8091]
+    python research/tools/dgx-spark-2026-10/dgx_gate_ref.py CONFIG REFERENCE.json OUT.json [--side a|b] [--port 8091]
 
 Exit code 0 = every answer identical. This is the gate a build on a DGX Spark has to pass against the answers the 2026-10-26 handover
 recorded (bench/quality24-fork.json for IQ3_S, bench/quality24-nvfp4-fork.json for NVFP4).
@@ -30,7 +30,7 @@ def main() -> int:
     ref = json.loads(Path(a.reference).read_text(encoding="utf-8"))
     rows = ref["rows"]
     if [r["prompt"] for r in rows] != q.PROMPTS:
-        print("the reference was made with other prompts than tools/dgx_quality24.py has now; the gate is not comparable", file=sys.stderr)
+        print("the reference was made with other prompts than research/tools/dgx-spark-2026-10/dgx_quality24.py has now; the gate is not comparable", file=sys.stderr)
         return 2
     mine = q.run_config(a.config, a.port, "ref")
     out = [{"prompt": r["prompt"], "reference": r[a.side], "answer": m, "identical": r[a.side] == m} for r, m in zip(rows, mine)]

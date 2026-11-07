@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """dgx_compare - side-by-side medians and ratios of two dgx_bench result folders (or .jsonl files).
 
-    python tools/dgx_compare.py bench/results/dgx-.../base.jsonl bench/results/dgx-.../gu.jsonl
+    python research/tools/dgx-spark-2026-10/dgx_compare.py bench/results/dgx-.../base.jsonl bench/results/dgx-.../gu.jsonl
 
 Prints, per cell, the median prompt and decode tokens/s of both arms, their ratio, and the geometric mean of the
 ratios over the cells (the "aggregate" the DGX Spark acceptance target is stated on).  A request whose prompt was

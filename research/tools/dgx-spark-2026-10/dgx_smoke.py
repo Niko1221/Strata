@@ -2,7 +2,7 @@
 """The drop's acceptance gate in one command: setup detection, one benchmark cell, the identity gate and a needle, each
 with a band that the numbers on a DGX Spark should land in. Exit code 0 = all passed.
 
-    python tools/dgx_smoke.py [--config strata-iq3_s.json] [--tokens 12000] [--data-dir ~/Strata-data]
+    python research/tools/dgx-spark-2026-10/dgx_smoke.py [--config strata-iq3_s.json] [--tokens 12000] [--data-dir ~/Strata-data]
 
 Bands are deliberately loose (they must survive page-cache state and drift); a failure means something is wrong, not that
 the machine is 5% slower than the number in the documents.
@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 PY = sys.executable
 WORK = Path(tempfile.mkdtemp(prefix="dgx-smoke-"))      # this run's own scratch folder (never a fixed /tmp name another run could share)
 
@@ -55,7 +55,7 @@ def identity(config: str) -> tuple[bool, str]:
     off["env"] = env
     off_path = WORK / "nofused.json"
     off_path.write_text(json.dumps(off, indent=1))
-    rc, out = sh(f"{PY} tools/dgx_quality.py {off_path} {config} {WORK / 'quality.json'} 2>&1")
+    rc, out = sh(f"{PY} research/tools/dgx-spark-2026-10/dgx_quality.py {off_path} {config} {WORK / 'quality.json'} 2>&1")
     m = re.search(r"(\d+) of (\d+) answers identical", out)
     if not m:
         return False, out.strip()[-200:]
@@ -63,7 +63,7 @@ def identity(config: str) -> tuple[bool, str]:
 
 
 def needle(config: str, tokens: int) -> tuple[bool, str]:
-    rc, out = sh(f"{PY} tools/dgx_needle.py --config {config} --tokens {tokens} --runs 2 2>&1")
+    rc, out = sh(f"{PY} research/tools/dgx-spark-2026-10/dgx_needle.py --config {config} --tokens {tokens} --runs 2 2>&1")
     m = re.search(r"(\d+) of (\d+) recalled", out)
     if not m:
         return False, out.strip()[-200:]

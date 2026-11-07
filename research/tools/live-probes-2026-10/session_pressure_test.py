@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SAVE / RESTORE round trip with parked conversations holding the host RAM (#1572 / #1573).
 
-  python3 tools/session_pressure_test.py CFG OUTFILE
+  python3 research/tools/live-probes-2026-10/session_pressure_test.py CFG OUTFILE
   STRATA_EXTRA_ARGS="--prompt-cache 4 --conversation-cache-mib 3072 --conversation-cache-slots 4
                      --conversation-cache-min-free-mib <floor> [--session-save-reclaim]"
 
@@ -11,7 +11,7 @@ gives the same token ids after the restore as it does when continued live.  Prin
 import json, os, sys, threading, time
 from pathlib import Path
 
-REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parent.parent))
+REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(REPO / "tools")); sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST
 from serve import server as S

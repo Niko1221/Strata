@@ -2,10 +2,10 @@
 """One server, several repeats per cell: the warm-state runner (the per-start page cache and the tens-of-GB expert
 prefetch are the main variance sources on a unified-memory box, so repeats inside one server are the comparable ones).
 
-    python tools/dgx_warm.py CONFIG TAG OUTDIR [--cells 4096,16384,32768] [--repeats 3] [--port 8091] [--new 256]
+    python research/tools/dgx-spark-2026-10/dgx_warm.py CONFIG TAG OUTDIR [--cells 4096,16384,32768] [--repeats 3] [--port 8091] [--new 256]
 
 Writes <OUTDIR>/<TAG>.jsonl rows in tools/dgx_bench.py's schema (round, arm, len, temp, max_new, prompt_n,
-prompt_per_second, predicted_n, predicted_per_second, ttft_s, cache_n) so tools/dgx_compare.py reads them.
+prompt_per_second, predicted_n, predicted_per_second, ttft_s, cache_n) so research/tools/dgx-spark-2026-10/dgx_compare.py reads them.
 """
 import argparse
 import json
@@ -16,7 +16,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 WORDS = ("river stone market lantern copper winter garden signal harbor needle orbit velvet canyon ember ledger quartz "
          "meadow anchor violet thunder cedar marble piston ribbon cobalt falcon glacier hollow ivory juniper kernel").split()
 

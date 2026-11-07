@@ -1,6 +1,6 @@
 """#3493: does an agent-Harness-style run reuse its prefix with the server's DEFAULT conversation cache?
 
-    python tools/harness_reuse_probe.py http://127.0.0.1:8080 [--turns 4] [--main-tokens 6000] [--key KEY]
+    python research/tools/live-probes-2026-10/harness_reuse_probe.py http://127.0.0.1:8080 [--turns 4] [--main-tokens 6000] [--key KEY]
 
 An agent Harness keeps a long MAIN conversation (system prompt, tools, a growing list of tool results) and, between its
 turns, sends shorter side conversations (a sub-agent, a summary) with their own system prompts.  Every turn of either one

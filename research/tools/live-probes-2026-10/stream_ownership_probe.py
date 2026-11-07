@@ -7,7 +7,7 @@ text a client receives (content and reasoning) is searched for canaries: any can
 cross-delivery.  Run against any OpenAI-compatible Strata server; the server must be one you started (check the
 listener first on a shared box).
 
-    python tools/stream_ownership_probe.py --url http://127.0.0.1:8080 --clients 6 --rounds 20 --seed 1 --out result.json
+    python research/tools/live-probes-2026-10/stream_ownership_probe.py --url http://127.0.0.1:8080 --clients 6 --rounds 20 --seed 1 --out result.json
 
 Exit code 0: no cross-delivery.  1: at least one.  2: the run itself failed (no server, no completed client).
 Nothing here sends anything but chat requests; it never reads another client's connection.

@@ -1,6 +1,6 @@
 // 0.1.43 5.2: do two streams move host->device data faster than one (both copy engines)?  And what does one layer's
 // worth of expert-sized copies cost end to end (issue, copy, host function, sync)?
-//   nvcc -O2 -o h2d_bench tools/h2d_bench.cu && ./h2d_bench [device]
+//   nvcc -O2 -o h2d_bench research/tools/ab-harnesses-2026-10/h2d_bench.cu && ./h2d_bench [device]
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <chrono>

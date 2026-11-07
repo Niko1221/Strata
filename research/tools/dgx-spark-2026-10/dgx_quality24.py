@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A wider identity gate than tools/dgx_quality.py's five: 24 prompts across code, prose, math, multilingual and tool-shaped
+"""A wider identity gate than research/tools/dgx-spark-2026-10/dgx_quality.py's five: 24 prompts across code, prose, math, multilingual and tool-shaped
 asks, greedy, comparing the fused prompt path against MMQ byte for byte.
 
     python quality24.py CONFIG_A CONFIG_B OUT.json [--port 8091]
@@ -11,7 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 PROMPTS = [
     "Write a Python function that returns the longest palindromic substring of a string, with a docstring.",
     "In C, what does `static inline` mean at file scope and when should it be used? Two sentences.",

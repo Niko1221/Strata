@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decode bounds of a quant from its real per-layer formats (tools/quant_formats.py --json output).
 
-    python tools/quant_bound.py FMT.json [...] --ram-gbs 120 [--vram-gbs 640] [--hit 0.3] [--tokens-per-pass 1]
+    python research/tools/ab-harnesses-2026-10/quant_bound.py FMT.json [...] --ram-gbs 120 [--vram-gbs 640] [--hit 0.3] [--tokens-per-pass 1]
 
 Per token: the routed experts (10 of 512 per layer: each layer's gate + up + down bytes / 512 x 10), the shared expert
 and the dense side (attention, SSM, hyper-connections, router, head: read once per pass on the GPU).  The bound for a

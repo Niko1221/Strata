@@ -7,14 +7,14 @@
 A3 must reuse the whole of A and its answer from the live session; without the fix the cancelled A2 had taken
 the parked entry and A3 fell back to the turn checkpoint (the prompt, not the answer).
 
-  python3 tools/cancel_park_test.py CFG   # CFG: a run config json (as tools used by smoke); needs a conversation cache:
+  python3 research/tools/live-probes-2026-10/cancel_park_test.py CFG   # CFG: a run config json (as tools used by smoke); needs a conversation cache:
   STRATA_EXTRA_ARGS="--prompt-cache 4 --conversation-cache-mib 2048 --conversation-cache-slots 3"
 Prints PASS / FAIL and the reused token counts.  Exit status 0 on PASS.
 """
 import json, os, queue, sys, threading, time
 from pathlib import Path
 
-REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parent.parent))
+REPO = Path(os.environ.get("STRATA_REPO", Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(REPO / "tools")); sys.path.insert(0, str(REPO))
 import strata_tokenizer as ST
 from serve.server import StrataEngine, child_env

@@ -2,7 +2,7 @@
 """Aggregate output: N concurrent clients against one server, measuring tokens per second summed over the clients. Run the
 same N against a second configuration to compare.
 
-    python tools/dgx_concurrent.py CONFIG OUT.json --clients 8 [--clients 16] [--prompt 2000] [--max-new 128]
+    python research/tools/dgx-spark-2026-10/dgx_concurrent.py CONFIG OUT.json --clients 8 [--clients 16] [--prompt 2000] [--max-new 128]
                                    [--parallel 4] [--distinct]
 
 --parallel N runs the server with "parallel": N (the engine's batch slots: up to N requests decode together; the run config of setup has
@@ -23,7 +23,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 WORDS = ("river stone market lantern copper winter garden signal harbor needle orbit velvet canyon ember ledger quartz "
          "meadow anchor violet thunder cedar marble piston ribbon cobalt falcon glacier hollow ivory juniper kernel").split()
 

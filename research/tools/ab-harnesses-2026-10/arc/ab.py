@@ -30,7 +30,7 @@ def main():
         order = arms[r % len(arms):] + arms[:r % len(arms)]
         for x in order:
             tag = f"{a.name}-{x['name']}-r{r}"
-            cmd = [sys.executable, f"{W}/src/tools/arc/b.py", "--engine", x["engine"], "--tag", tag, "--plan", a.plan]
+            cmd = [sys.executable, f"{W}/src/research/tools/ab-harnesses-2026-10/arc/b.py", "--engine", x["engine"], "--tag", tag, "--plan", a.plan]
             for e in x["env"]: cmd += ["--env", e]
             if x["extra"] is not None: cmd += ["--extra", x["extra"]]
             if a.common: cmd += a.common.split()

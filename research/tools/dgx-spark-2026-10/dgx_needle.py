@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Long-context recall check: hide one fact in a long prompt and ask for it back (the guide's "long-context retrieval" cell).
 
-    python tools/dgx_needle.py --config strata-iq3s-final.json --tokens 12000
+    python research/tools/dgx-spark-2026-10/dgx_needle.py --config strata-iq3s-final.json --tokens 12000
 
 Starts the model's server, sends one request, and reports whether the answer contains the fact.  The fact is placed at a
 random position in the prompt and never appears in the question, so a correct answer means the context was read.
@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 WORDS = ("river stone market lantern copper winter garden signal harbor needle orbit velvet canyon ember ledger quartz "
          "meadow anchor violet thunder cedar marble piston ribbon cobalt falcon glacier hollow ivory juniper kernel "
          "lattice mirror nectar oasis pepper quarry raven saddle tundra umber vessel willow xenon yellow zephyr").split()
