@@ -1,0 +1,96 @@
+{
+  "engine": {
+    "version": "0.1.57",
+    "backend": "hip",
+    "platform": "windows-x64",
+    "rocm": "10.2.0a20260930",
+    "hipblaslt_version": 100500,
+    "archs": [
+      "gfx1100",
+      "gfx1101",
+      "gfx1102",
+      "gfx1200",
+      "gfx1201",
+      "gfx1030",
+      "gfx1031",
+      "gfx1151"
+    ],
+    "provenance": "self-built multi-architecture HIP engine; not an official release asset",
+    "build_source_commit": "508227b52fc179c9a001b8c72cfe589359b8e39a",
+    "build_source_tree": "engine sources (src/, include/, metal/, sycl/, CMakeLists.txt) clean at build time",
+    "build_command": "tools\\hip\\build_windows.bat with STRATA_HIP_ARCHS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030;gfx1031;gfx1151",
+    "zip": {
+      "path": "dist/strata-windows-x64-hip.zip",
+      "bytes": 788854930,
+      "sha256": "bba59f5edd5107b523ebecc08381f061985a6d594206933434ce7a708d0838dd"
+    },
+    "binary": {
+      "path": "engine/strata.exe",
+      "bytes": 306232320,
+      "sha256": "687c62c1613e33aa0486634544ff832ba3de24300eddf885465c45d8c6eef8ec",
+      "sha256_matches_zip_entry": true
+    },
+    "build_json": {
+      "path": "engine/BUILD.json",
+      "sha256": "ebca1404060315b7c2cfef238610780a68c32e7937a935f26c6e9d94c37fa5ec",
+      "note": "BUILD.json records source=prebuilt because the zip was installed with --prebuilt; the zip itself was built locally, which is why results.json build_kind=source is correct and build_options wording is not"
+    }
+  },
+  "strata_setup": {
+    "pr": 4883,
+    "pr_title": "[Other] Setup: --gpus on Windows AMD: RDNA 2, 3 and 4 cards sharing one model",
+    "pr_state": "OPEN",
+    "pr_head": "846a615cdf63eb8cc4d9d2212db3cf80e345c4ef",
+    "pr_base": "main",
+    "merge_base": "9f7d977d220e9fdf2ec53cf2620cdadac1cfb24e",
+    "cherry_picked_into_build_commit": "6f901345",
+    "touches_engine_source": false,
+    "files_changed": [
+      "setup.py",
+      "docs/AMD_HIP.md",
+      "docs/MULTI_GPU.md",
+      "docs/TROUBLESHOOTING.md",
+      "strata_control/dsv41_fit.py",
+      "tools/strata_bench.py",
+      "tools/test_setup_amd.py",
+      "tools/test_setup_start_gpus_amd.py"
+    ],
+    "role": "lets setup accept a --gpus split across AMD families and accept a self-built multi-arch engine; it changes no inference code"
+  },
+  "why_no_official_engine": "Official release v0.2.11 ships per-family Windows HIP engines only (strata-engine-0.1.57-windows-x86_64-hip-rdna2.tar.gz, -rdna3, -rx9070). No official Windows HIP asset carries code for both gfx1030 and gfx1201, so a 6800 XT + R9700 split cannot run on any single official engine download. A self-built multi-arch engine is the documented path (setup.py:4996).",
+  "not_measured": [
+    "hardware.gpus[*].power_limit_w",
+    "model.source_revision",
+    "protocol.model_card_revision"
+  ],
+  "run_order": [
+    {
+      "folder": "2026-11-07-standard-ai-pro-r9700-plus-rx-6800-xt-57fe40fd",
+      "run_id": "20261107T085746Z-57fe40fd",
+      "order": 1
+    },
+    {
+      "folder": "2026-11-07-standard-ai-pro-r9700-plus-rx-6800-xt-c19ae1a1",
+      "run_id": "20261107T090356Z-c19ae1a1",
+      "order": 2
+    },
+    {
+      "folder": "2026-11-07-standard-ai-pro-r9700-plus-rx-6800-xt-7c622d39",
+      "run_id": "20261107T090942Z-7c622d39",
+      "order": 3
+    }
+  ],
+  "this_run": {
+    "folder": "2026-11-07-standard-ai-pro-r9700-plus-rx-6800-xt-c19ae1a1",
+    "run_id": "20261107T090356Z-c19ae1a1",
+    "order": 2
+  },
+  "model": {
+    "repo": "unsloth/Qwen3.8-Flash-Next-GGUF",
+    "path": "UD-IQ3_XXS",
+    "revision": "3f3ba9c",
+    "tokenizer_revision": "3f3ba9c",
+    "revision_evidence": "Hugging Face tree listing shows commit 3f3ba9c 'Better UD 3.1 quants' for all four shards; local shard byte sizes match the listing (10946618 / 49946027488 / 4869325888 / 28800138432). Size-level corroboration, not hash-level proof.",
+    "source_revision": "not measured: the original Qwen/Qwen3.8-Flash-Next weights revision was not recorded"
+  }
+}
