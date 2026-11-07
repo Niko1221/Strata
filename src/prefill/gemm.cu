@@ -1334,6 +1334,12 @@ void Gemm::f16_inplace(const uint16_t* X, const uint16_t* W, float* Y, int64_t T
                         CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
            "cublasGemmEx f16 out");
     }
+    if (skip_widen_) return;   // every slice of this product stays FP16 (keep_f16_slices_once)
+    if (keep_n_ > 0 && N == keep_n_) {   // the caller reads the FP16 rows itself (the same values, unwidened)
+        kept_f16_ = true;
+        keep_n_ = 0;
+        return;
+    }
     static const bool dbg_nan = std::getenv("STRATA_DBG_NAN") != nullptr;
     widen_rows_f16<<<(unsigned) T, 256, 0, (cudaStream_t) stream_>>>(Y, N, ldy, dbg_nan ? 1 : 0);
     if (dbg_nan) {   // debug only: a sync per GEMM
@@ -1459,6 +1465,13 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
         }
     }
 #endif
+#if defined(__HIPCC__)
+    // f16() runs f16_inplace exactly when f16_io_ && beta == 0, so only then are the FP16 rows there to keep
+    const bool keep_all = keep_all_n_ > 0 && keep_all_n_ == N && f16_io_ && beta == 0.0f;
+#else
+    const bool keep_all = false;
+#endif
+    if (keep_all) skip_widen_ = true;
     if (N * K > scratch_elems_) {
         // Too large for the scratch at once: in row slices.
         const int64_t rows = scratch_elems_ / K;
@@ -1469,6 +1482,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             strata::kernels::dequant_f16(ggml_type, W_blocks, r0, n, K, scratch_, stream_);
             f16(X, scratch_, Y + r0, T, n, K, ldy, beta);
         }
+        if (keep_all) { skip_widen_ = false; kept_rows_ = rows; keep_all_n_ = 0; }
         // the side stream's next dequant into scratch_ waits for these slices' reads and writes of it
         if (side_scratch_) (void) cudaEventRecord((cudaEvent_t) side_free_[0], (cudaStream_t) stream_);
         return;
@@ -1487,10 +1501,12 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
         f16(X, s, Y, T, N, K, ldy, beta);
         (void) cudaEventRecord((cudaEvent_t) side_free_[side_cur_], (cudaStream_t) stream_);
         side_cur_ ^= 1;
+        if (keep_all) { skip_widen_ = false; kept_rows_ = N; keep_all_n_ = 0; }
         return;
     }
     strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, scratch_, stream_);
     f16(X, scratch_, Y, T, N, K, ldy, beta);
+    if (keep_all) { skip_widen_ = false; kept_rows_ = N; keep_all_n_ = 0; }
 }
 
 }  // namespace strata::prefill

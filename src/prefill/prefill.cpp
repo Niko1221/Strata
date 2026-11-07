@@ -536,6 +536,17 @@ static int64_t pf_switch_min_t() {   // S23: STRATA_PF_SWITCH_MIN_T=N - the roun
     static const int64_t v = [] { const char* e = std::getenv("STRATA_PF_SWITCH_MIN_T"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
     return v;
 }
+// (opt-in STRATA_F16_NOWIDEN=1, HIP FP16 prompt path): the hyper-connection up projection's FP16 output is left
+// unwidened and gr_mix_r reads it as FP16 (the same values, so the same bits); a product the GEMM slices widens as before
+inline bool f16_nowiden() {
+    static const bool v = [] {
+        const char* e = std::getenv("STRATA_F16_NOWIDEN");
+        const bool on = e != nullptr && e[0] == '1';
+        if (on) std::fprintf(stderr, "strata prefill: STRATA_F16_NOWIDEN=1: the hyper-connection up projection stays FP16 and the mix reads it as FP16 (no widening pass)\n");
+        return on;
+    }();
+    return v;
+}
 inline bool hc_upmix() {
     static const bool v = [] { const char* e = std::getenv("STRATA_HC_UPMIX"); return e != nullptr && e[0] == '1'; }();
     return v;
@@ -2979,6 +2990,48 @@ bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, 
     return true;
 }
 
+// STRATA_SWIGLU_Q8=1 (HIP, opt-in): the grouped path's swiglu + quantize of H as one pass (mmq::swiglu_quant, the
+// swiglu_kernel expression and quantize_mmq_q8_1<D4>'s bytes); STRATA_SWIGLU_Q8_CHECK=N: on the first N passes the two-pass
+// form runs after it into the same hq and the bytes are compared (1152 bytes a row: pad512(640) / 128 blocks of 144 B)
+inline void swiglu_hq(const float* GU, float* H, void* Hq, int64_t nr, bool interleaved, int dt, void* cs, float* hscale) {
+    static int left = [] { const char* e = std::getenv("STRATA_SWIGLU_Q8_CHECK"); return e ? std::atoi(e) : 0; }();
+    mmq::swiglu_quant(GU, Hq, nr, interleaved, cs);
+    if (left <= 0 || nr <= 0) return;
+    --left;
+    const size_t nb = (size_t) nr * 1152;
+    std::vector<uint8_t> got(nb), ref(nb);
+    cudaMemcpyAsync(got.data(), Hq, nb, cudaMemcpyDeviceToHost, (cudaStream_t) cs);
+    mmq::swiglu(GU, H, nr, 640, interleaved, cs);
+    mmq::quantize(H, nullptr, Hq, dt, 640, 640, nr, cs, hscale);
+    cudaMemcpyAsync(ref.data(), Hq, nb, cudaMemcpyDeviceToHost, (cudaStream_t) cs);
+    cudaStreamSynchronize((cudaStream_t) cs);
+    size_t diff = 0;
+    for (size_t i = 0; i < nb; ++i) diff += got[i] != ref[i];
+    std::fprintf(stderr, "strata: STRATA_SWIGLU_Q8_CHECK rows %lld type %d: %zu of %zu bytes differ from swiglu + quantize%s\n",
+                 (long long) nr, dt, diff, nb, diff ? " (MISMATCH)" : " (bitwise equal)");
+}
+
+// STRATA_F16_NOWIDEN_CHECK=N: on the first N mixes that read FP16, the up projection again the default way (widened)
+// and the default mix, `mixed` compared bit for bit (the values written are the same, so nothing else changes)
+inline bool f16_nowiden_check(Gemm& gm, const core::WeightRef* wu, const uint16_t* lo16, float* gated, const float* R,
+                              const float* grs, const float* wn, float* mixed, uint16_t* mixed_bf, uint16_t* mixed_h,
+                              uint16_t* mixed_bf_lo, int64_t T, const std::string& su, std::string& err, void* cs) {
+    static int left = [] { const char* e = std::getenv("STRATA_F16_NOWIDEN_CHECK"); return e ? std::atoi(e) : 0; }();
+    if (left <= 0) return true;
+    --left;
+    const size_t n = (size_t) T * 2560;
+    std::vector<float> got(n), ref(n);
+    cudaMemcpyAsync(got.data(), mixed, n * 4, cudaMemcpyDeviceToHost, (cudaStream_t) cs);
+    if (!bf16_proj(gm, wu, lo16, gated, T, su, err, 0, nullptr, 0, cs)) return false;
+    gr_mix_r(R, grs, wn, gated, mixed, mixed_bf, T, cs, mixed_h, mixed_bf_lo, false);
+    cudaMemcpyAsync(ref.data(), mixed, n * 4, cudaMemcpyDeviceToHost, (cudaStream_t) cs);
+    cudaStreamSynchronize((cudaStream_t) cs);
+    size_t diff = 0;
+    for (size_t i = 0; i < n; ++i) diff += std::memcmp(&got[i], &ref[i], 4) != 0;
+    std::fprintf(stderr, "strata: STRATA_F16_NOWIDEN_CHECK T %lld: %zu of %zu mixed values differ from the widened path%s\n",
+                 (long long) T, diff, n, diff ? " (MISMATCH)" : " (bitwise equal)");
+    return true;
+}
 }  // namespace
 
 namespace {
@@ -4085,7 +4138,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                            m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
                     }
                 }
+                if (!upmixed && f16_nowiden() && !gr_unfused() && !m.lo16_lo) m.gemm.keep_f16_once(wu->ne1 > 0 ? wu->ne1 : 1);
                 if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, m.cs)) return false;
+                const bool gated16 = m.gemm.take_kept_f16();   // before the inject product, which shares the Gemm
                 pt.mark(kPfHcInj, cs);
                 if (!hcd && !bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, ldx != D ? ldx : 0, m.cs, xf16)) return false;
                 pt.mark(kPfHcMix, cs);
@@ -4094,7 +4149,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h, m.mixed_bf_lo);
                 } else {
                     gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
-                             m.mixed_bf_lo);
+                             m.mixed_bf_lo, gated16);
+                    if (gated16 && !f16_nowiden_check(m.gemm, wu, m.lo16, m.gated, m.R, m.grs, (const float*) wn->data, m.mixed,
+                                                      m.mixed_bf, m.mixed_h, m.mixed_bf_lo, T, su, err, m.cs)) return false;
                 }
 
                 if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
@@ -4112,7 +4169,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfGdn, cs);
                     float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                    const bool qkv16_req = f16_nowiden() && gdn_conv_f16_ok() && !kva_state_only;
+                    if (qkv16_req) m.gemm.keep_f16_slices_once(wqkv->ne1);
                     if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
+                    const int qkv16_rows = qkv16_req ? (int) m.gemm.take_kept_rows() : 0;
+                    if (qkv16_rows > 0) {
+                        static bool said = false;
+                        if (!said) { said = true; std::fprintf(stderr, "strata prefill: STRATA_F16_NOWIDEN=1: attn_qkv stays FP16 too (slices of %d columns) and the GDN conv reads it as FP16\n", qkv16_rows); }
+                    }
                     // KVA: the gate projection feeds only the output normalization, which a state-only layer skips
                     // (STRATA_KVA_GDN_NORM=1 keeps the full recurrence as the A/B control for the state-only one)
                     static const bool kva_gdn_norm = [] {
@@ -4129,11 +4193,30 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     bool fused_gdn = false;
 #if defined(STRATA_USE_HIP)
                     // gfx12, STRATA_GDN_CHUNKED=1: conv and recurrence together, the conv output as FP16 (their time then shows in "gdn conv+gates")
-                    if (!kva_state_only)
+                    if (!kva_state_only && qkv16_rows == 0)
                         fused_gdn = gdn_conv_recurrence_fused(conv, m.qkv, (const float*) wc->data, m.hbuf, state, m.gate, m.beta, m.z,
                                                               (const float*) wnm->data, EPS, EPS, m.y, m.y_h, T, m.cs, ld_y);
 #endif
-                    if (!fused_gdn) gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
+                    static int qkv_check_left = [] { const char* e = std::getenv("STRATA_F16_NOWIDEN_QKV_CHECK"); return e ? std::atoi(e) : 0; }();
+                    if (!fused_gdn && qkv16_rows > 0 && qkv_check_left > 0) {   // the conv output against the widened path, bit for bit
+                        --qkv_check_left;
+                        const size_t QC = (size_t) wqkv->ne1;   // 10240 (this function's C is the chunk length)
+                        const size_t nh = (size_t) T * QC, nc = QC * 3;
+                        std::vector<float> hist0(nc), got(nh), ref(nh);
+                        cudaMemcpyAsync(hist0.data(), conv, nc * 4, cudaMemcpyDeviceToHost, (cudaStream_t) m.cs);
+                        gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs, qkv16_rows);
+                        cudaMemcpyAsync(got.data(), m.hbuf, nh * 4, cudaMemcpyDeviceToHost, (cudaStream_t) m.cs);
+                        cudaStreamSynchronize((cudaStream_t) m.cs);
+                        cudaMemcpyAsync(conv, hist0.data(), nc * 4, cudaMemcpyHostToDevice, (cudaStream_t) m.cs);
+                        if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
+                        gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs, 0);
+                        cudaMemcpyAsync(ref.data(), m.hbuf, nh * 4, cudaMemcpyDeviceToHost, (cudaStream_t) m.cs);
+                        cudaStreamSynchronize((cudaStream_t) m.cs);
+                        size_t diff = 0;
+                        for (size_t i = 0; i < nh; ++i) diff += std::memcmp(&got[i], &ref[i], 4) != 0;
+                        std::fprintf(stderr, "strata: STRATA_F16_NOWIDEN_QKV_CHECK T %lld (slices of %d): %zu of %zu conv outputs differ from the widened path%s\n",
+                                     (long long) T, qkv16_rows, diff, nh, diff ? " (MISMATCH)" : " (bitwise equal)");
+                    } else if (!fused_gdn) gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs, qkv16_rows);
                     pt.mark(kPfGdnRec, cs);
                     if (fused_gdn) {
                     } else if (kva_state_only && !kva_gdn_norm)   // KVA: the recurrence without the output normalization
@@ -5705,12 +5788,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                         m.mmq_ctx->run(gu, m.cs);
                                         if (lay.native && lay.fmt[(size_t) l].tail_off)
                                             mmq::swiglu_scaled(m.GU, m.H, nra, 640, m.bounds_dev + rg.a, nx, m.grp_tail + eo * 4, ra, m.cs);
+                                        else if (!had_d && mmq::swiglu_quant_ok(mmq_dt))   // STRATA_SWIGLU_Q8
+                                            swiglu_hq(m.GU, m.H, m.Hq, nra, !lay.native, mmq_dt, m.cs, m.Hscale);
                                         else
                                             mmq::swiglu(m.GU, m.H, nra, 640, !lay.native, m.cs);
                                         if (had_d)   // per row, as the whole group's path
                                             strata::kernels::hadamard_rows(m.H, m.H, nra, 640, had_block, had_sh, m.cs);
                                         pt.mark(kPfGemmD, cs);
-                                        mmq::quantize(m.H, nullptr, m.Hq, mmq_dt, 640, 640, nra, m.cs, m.Hscale);
+                                        if ((lay.native && lay.fmt[(size_t) l].tail_off) || had_d || !mmq::swiglu_quant_ok(mmq_dt))
+                                            mmq::quantize(m.H, nullptr, m.Hq, mmq_dt, 640, 640, nra, m.cs, m.Hscale);
                                         mmq::Product dn;
                                         dn.w = m.grp_d + eo * mmq_db; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
                                         dn.n = nx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + rg.rel;
@@ -5759,12 +5845,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (lay.native && lay.fmt[(size_t) l].tail_off)   // gate/up scales applied as read
                                     mmq::swiglu_scaled(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, m.bounds_dev + j0, ngx,
                                                        m.grp_tail, r0, m.cs);
+                                else if (!had_d && mmq::swiglu_quant_ok(mmq_dt))   // STRATA_SWIGLU_Q8
+                                    swiglu_hq(m.GU + r0 * 1280, m.H + r0 * 640, m.Hq, nr, !lay.native, mmq_dt, m.cs, m.Hscale);
                                 else
                                     mmq::swiglu(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, !lay.native, m.cs);
                                 if (had_d)
                                     strata::kernels::hadamard_rows(m.H + r0 * 640, m.H + r0 * 640, nr, 640, had_block, had_sh, m.cs);
                                 pt.mark(kPfGemmD, cs);
-                                mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs, m.Hscale);
+                                if ((lay.native && lay.fmt[(size_t) l].tail_off) || had_d || !mmq::swiglu_quant_ok(mmq_dt))
+                                    mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs, m.Hscale);
                                 mmq::Product dn;
                                 dn.w = m.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
                                 dn.n = ngx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + n + 1 + g * (MMQ_GROUP + 1);
@@ -7375,11 +7464,15 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     normed = false;
                     if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, 0, cs)) return false;
                     gr_silu(m.lo, m.lo16, T, cs, m.lo16_lo);
+                    if (f16_nowiden() && !gr_unfused() && !m.lo16_lo) m.gemm.keep_f16_once(wu->ne1 > 0 ? wu->ne1 : 1);
                     if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, cs)) return false;
+                    const bool gated16 = m.gemm.take_kept_f16();   // before the inject product, which shares the Gemm
                     if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo, 0, cs)) return false;
                     if (gr_unfused()) gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, cs, m.mixed_h, m.mixed_bf_lo);
                     else gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, cs, m.mixed_h,
-                                  m.mixed_bf_lo);
+                                  m.mixed_bf_lo, gated16);
+                    if (gated16 && !f16_nowiden_check(m.gemm, wu, m.lo16, m.gated, m.R, m.grs, (const float*) wn->data, m.mixed,
+                                                      m.mixed_bf, m.mixed_h, m.mixed_bf_lo, T, su, err, cs)) return false;
                     if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
                         core::NativeDense::hc_bf16_release(cs, 0, 0);
                         core::NativeDense::hc_bf16_release(cs, 1, 0);
@@ -7395,7 +7488,10 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                         pt.mark(kPfGdn, cs);
                         float* state = ssp->gdn_state + (size_t) (gdn_index - ssp->gdn_ord0) * gdn_floats;
                         float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const bool qkv16_req = f16_nowiden() && gdn_conv_f16_ok();
+                        if (qkv16_req) m.gemm.keep_f16_slices_once(wqkv->ne1);
                         if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
+                        const int qkv16_rows = qkv16_req ? (int) m.gemm.take_kept_rows() : 0;
                         if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
                         if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
@@ -7403,10 +7499,11 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                         gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, cs);
                         bool fused_gdn = false;
 #if defined(STRATA_USE_HIP)
-                        fused_gdn = gdn_conv_recurrence_fused(conv, m.qkv, (const float*) wc->data, m.hbuf, state, m.gate, m.beta, m.z,
-                                                              (const float*) wnm->data, EPS, EPS, m.y, m.y_h, T, cs, 0);
+                        if (qkv16_rows == 0)
+                            fused_gdn = gdn_conv_recurrence_fused(conv, m.qkv, (const float*) wc->data, m.hbuf, state, m.gate, m.beta, m.z,
+                                                                  (const float*) wnm->data, EPS, EPS, m.y, m.y_h, T, cs, 0);
 #endif
-                        if (!fused_gdn) gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, cs);
+                        if (!fused_gdn) gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, cs, qkv16_rows);
                         pt.mark(kPfGdnRec, cs);
                         if (!fused_gdn)
                             gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, cs);

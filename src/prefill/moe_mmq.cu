@@ -148,7 +148,7 @@ __global__ void swiglu_kernel(const float* __restrict__ gu, float* __restrict__ 
     h[i] = g / (1.0f + __expf(-g)) * u;
 }
 
-#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+#if defined(__HIPCC__) || defined(STRATA_EXPERIMENTAL_SM60)   // HIP too, behind STRATA_SWIGLU_Q8=1 + a byte check
 // swiglu_kernel (n_ff 640), then quantize_mmq_q8_1<D4>'s rows of its output, in one pass: a block per row (128
 // threads, 4 values each, blockIdx.y the row's 512-value half), H never stored.  Each value is swiglu_kernel's
 // expression and each 32-value block quantize_mmq_q8_1's (the same unit and flags: the same bits).
@@ -181,7 +181,11 @@ __global__ void __launch_bounds__(128) swiglu_quant_kernel(const float* __restri
     amax = fmaxf(amax, fabsf(xi.z));
     amax = fmaxf(amax, fabsf(xi.w));
 #pragma unroll
+#if defined(__HIPCC__)
+    for (int offset = 32 / 8; offset > 0; offset >>= 1) amax = fmaxf(amax, __shfl_xor(amax, offset, 32));
+#else
     for (int offset = 32 / 8; offset > 0; offset >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
+#endif
     const float d_inv = 127.0f / amax;
     char4 c;
     c.x = roundf(xi.x * d_inv);
@@ -725,8 +729,18 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
     ck(cudaGetLastError(), "swiglu");
 }
 
+bool swiglu_quant_hip_on() {   // STRATA_SWIGLU_Q8=1 (HIP, opt-in): the fused pass in the grouped path too
+#if defined(__HIPCC__)
+    static const bool on = [] { const char* v = std::getenv("STRATA_SWIGLU_Q8"); return v != nullptr && v[0] == '1'; }();
+    return on;
+#else
+    return false;
+#endif
+}
 bool swiglu_quant_ok(int t) {
-#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+#if defined(__HIPCC__)
+    return swiglu_quant_hip_on() && supported(t) && !fp4_activations(t) && mmq_get_q8_1_ds_layout((ggml_type) t) == MMQ_Q8_1_DS_LAYOUT_D4;
+#elif defined(STRATA_EXPERIMENTAL_SM60)
     // the q8_1 D4 rows quantize() writes for a down product's H (K 640)
     return supported(t) && !fp4_activations(t) && mmq_get_q8_1_ds_layout((ggml_type) t) == MMQ_Q8_1_DS_LAYOUT_D4;
 #else
@@ -736,7 +750,7 @@ bool swiglu_quant_ok(int t) {
 }
 
 void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream) {
-#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+#if defined(__HIPCC__) || defined(STRATA_EXPERIMENTAL_SM60)
     if (rows <= 0) return;
     const dim3 grid((unsigned) rows, 2);
     if (interleaved) swiglu_quant_kernel<true><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
