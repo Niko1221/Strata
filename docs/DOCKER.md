@@ -221,6 +221,24 @@ engine can make an old tuning result less useful: start once with `-e TUNE=quick
 The card is not visible to the container, or the image is for another card. Check the options for your card in
 [the commands](#one-command-per-card) and the table in [Which image](#which-image-for-which-card).
 
+**A start that says "The engine in this image does not match this computer's graphics card" and, underneath,
+`strata: no usable Python found`, on a host whose Docker is older than 20.10.** The card and the image are fine. An older
+daemon's default seccomp profile denies `access(X_OK)`, so the launcher's "is this Python executable?" test answers no for
+the bundled runtime, which is present and runs. Check it inside the image, with nothing downloaded:
+
+```sh
+docker run --rm --entrypoint sh IMAGE -c '[ -x /opt/strata/terminal/python/bin/python3 ] && echo executable || echo denied'
+docker run --rm --entrypoint sh IMAGE -c '[ -e /opt/strata/terminal/python/bin/python3 ] && echo present   || echo missing'
+docker run --rm --entrypoint sh IMAGE -c '/opt/strata/terminal/python/bin/python3 -V'
+```
+
+`denied` together with `present`, and a version line from the third command, is this case. Add
+`--security-opt seccomp=unconfined` to the `docker run` (compose: `security_opt:` then `- seccomp:unconfined`). Measured
+on Docker 19.03.15 with its default profile in `0.2.2-cuda13`, `0.2.7-cuda13` and `0.2.8-cuda13`, the current image: without the
+option the launcher stops at `no usable Python found`, and with it the same container prints
+`strata 0.2.8 (build 0.1.54; python 3.12.15 at /opt/strata/terminal/python/bin/python3)` (issue #4309; the launcher and
+the entrypoint stop depending on that test in #4312).
+
 **NVIDIA: `could not select device driver "" with capabilities: [[gpu]]`, or `docker: Error response from daemon: unknown or
 invalid runtime name: nvidia`.** The NVIDIA Container Toolkit is missing or Docker was not told about it:
 
