@@ -121,13 +121,13 @@ Strata 0.2.5(Strix Halo는 0.2.7)에서 2.00 bpw 세트로 측정한 결과입�
 **Linux / Mac**
 
 ```sh
-curl -fsSL [https://github.com/Niko1221/Strata/releases/latest/download/install.sh](https://github.com/Niko1221/Strata/releases/latest/download/install.sh) -o install.sh && sh install.sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
 **Windows PowerShell**
 
 ```powershell
-irm [https://github.com/Niko1221/Strata/releases/latest/download/install.ps1](https://github.com/Niko1221/Strata/releases/latest/download/install.ps1) | iex
+irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
 Windows에서는 설치 후 새 터미널 창을 여세요. 그다음 아래 명령어를 실행합니다:
