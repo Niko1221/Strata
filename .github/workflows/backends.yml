@@ -4,7 +4,7 @@ name: Backend compile checks
 # exists for another backend (or an API a toolkit version dropped) fails here instead of on a user's machine.  Hardware runs are separate.
 #   CUDA 12.9 and 13.0   nvidia/cuda devel container   targets strata, strata_kq          (CMake preset cuda-compile)
 #   HIP (ROCm 7.2)       rocm/dev container            target strata                      (CMake preset hip-compile)
-#   SYCL (oneAPI 2025.3) intel/oneapi-basekit          target strata of sycl/             (the commands of packaging/build_sycl_linux.sh)
+#   SYCL (oneAPI 2026.1) ubuntu + Intel's apt repo     target strata of sycl/             (the commands of packaging/build_sycl_linux.sh)
 #   Metal                macOS runner                  targets strata and strata_ds4      (metal/; metal-build.yml keeps its own strata build)
 # llama.cpp (ggml) comes at the commit pinned in setup.py (LLAMA_CPP_COMMIT), the same one the release builds use.
 # Architectures are fewer than the release package's (compile time); the flags that decide which sources and defines are built are the release's.
@@ -135,15 +135,23 @@ jobs:
         run: ccache -s | head -8
 
   sycl:
-    name: SYCL oneAPI 2025.3
+    # The engine needs oneAPI 2026.1 or newer (sycl/include/dpct/util.hpp uses the entangle and chunked_partition extensions, which the
+    # 2025.3.2 compiler does not have: it stops at "no member named 'entangle'"; the intel/oneapi-basekit images end at 2025.3), so the
+    # compiler comes from Intel's apt repository at a pinned version.
+    name: SYCL oneAPI 2026.1
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    container: intel/oneapi-basekit:2025.3.2-0-devel-ubuntu24.04
+    container: ubuntu:24.04
     steps:
-      - name: Tools
+      - name: Tools and oneAPI 2026.1
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build ccache wget gpg
+          wget -qO- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB | gpg --dearmor -o /usr/share/keyrings/oneapi-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" > /etc/apt/sources.list.d/oneAPI.list
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            intel-oneapi-compiler-dpcpp-cpp-2026.1=2026.1.1-325 intel-oneapi-mkl-devel-2026.1=2026.1.0-236
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
