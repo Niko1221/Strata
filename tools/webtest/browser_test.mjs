@@ -646,6 +646,229 @@ htest("language: /?lang= is for one visit, an unknown code stays English, every 
   }
 });
 
+// ------------------------------------------------------------------------------------------------ Context card: the ring and its legend lamp
+// Three behaviour tests of the four-segment Context card, driven through the real served page on the mock server
+// (no model, no GPU): a lamp parity matrix over model-operation x state x queued x image x busy -- 120 generated
+// rows, queued-while-reading and queued-while-generating among them; the kvTokens ring geometry over clamps, floors,
+// merged idle, an empty ring, overflow scale and arc seams; and a chronological /metrics stream -- scripted answers
+// served by request interception, one poll cycle per step. Every step expects exactly one lit legend row, the one
+// the lit Model-state badges imply: queued first, then reading -> prefill, generating -> decode, anything else -> free.
+
+const KV = {
+  hw: {gpu_util: 35, gpu_mem_used: 9e9, gpu_mem_total: 12e9, gpu_temp: 61, gpu_power: 140, cpu: 22,
+       ram_total: 64e9, ram_used: 30e9, disk_read_mb: 5, disk_write_mb: 2, gpu_pcie_rx_mb: 12, gpu_pcie_gen: 4, gpu_pcie_gen_max: 4, gpu_pcie_width: 16},
+  st: {gpu_name: "Mock GPU", cpu_name: "Mock CPU", threads: 16, cores: 8, psutil: true},
+  eng: {model: "Mock-Model", version: "0.0", max_context: 32768, expert_slots: 1200, expert_cache_mib: 9000},
+  h: {tok_s: [], prefill_tok_s_mean: [], gpu_util: [], gpu_mem_used: [], gpu_temp: [], gpu_power: [], gpu_pcie_rx_mb: [], cpu: [], disk_read_mb: []},
+};
+
+// the Monitor tab opened and the ring served: both the arcs and the legend rows must be in the page
+async function kvPage(browser, mock) {
+  const page = await openPage(browser, mock, { hash: "#monitor" });
+  await page.evaluate(() => showTab("monitor"));
+  const dom = await page.evaluate(() => ["reuse", "prefill", "decode", "free"]
+    .map((k) => Boolean(document.getElementById("kv-seg-" + k)) && Boolean(document.getElementById("kv-leg-" + k))));
+  assert.deepEqual(dom, [true, true, true, true], "the served Context card carries the ring (kv-seg-*) and its legend rows (kv-leg-*)");
+  return page;
+}
+
+test("KV ring: the lamp follows the lit Model-state badges (120 generated rows: op x state x queued x image x busy)", async ({ browser, mock }) => {
+  const page = await kvPage(browser, mock);
+  const rows = await page.evaluate((HW, ST, ENG, H) => {                       // the ring is drawn by renderMonitor from the metrics it is given
+    const KEYS = ["reuse", "prefill", "decode", "free"];
+    const litOf = () => [...document.querySelectorAll("#state-badges .st-badge.on")].map((b) => b.dataset.s);
+    const lampOf = () => KEYS.filter((k) => !document.getElementById("kv-leg-" + k).closest("li").classList.contains("dim"));
+    const matrix = [];
+    for (const op of [null, "load", "unload"]) for (const state of ["idle", "unloaded", "reading", "generating", "queued"])
+      for (const queued of [0, 2]) for (const img of [true, false]) for (const isBusy of [true, false]) {
+        modelOp = op; busy = isBusy ? {controller: null, msg: null, cut: null} : null; imageBusy = img;   // app.js top-level lets, reachable from this realm
+        const live = {state, queued};
+        if (state === "reading") Object.assign(live, {prompt_tokens: 1000, prompt_total: 1400, prompt_read: 600, reused: 150, prefill_tok_s_mean: 120});
+        if (state === "generating") Object.assign(live, {prompt_tokens: 1000, max_tokens: 256, generated: 120, tok_s: 33.2, reused: 150, prefill_tok_s_mean: 120, phase: "writing"});
+        if (img && (state === "reading" || state === "generating")) live.phase = "generating an image";   // the image phase reaches the card through live.phase
+        renderMonitor(live, HW, ST, ENG, H, null, [], null, null);
+        const lit = litOf();
+        const expected = lit.includes("queued") ? "free" : lit.includes("reading") ? "prefill" : lit.includes("generating") ? "decode" : "free";
+        const lamp = lampOf();
+        const cachedDim = !["reading", "generating"].includes(state) || !lamp.includes("reuse");
+        matrix.push({n: matrix.length + 1, op, state, queued, img, isBusy, lit, expected, lamp, cachedDim,
+                     pass: lamp.length === 1 && lamp[0] === expected && cachedDim});
+      }
+    return matrix;
+  }, KV.hw, KV.st, KV.eng, KV.h);
+  const bad = rows.filter((r) => !r.pass);
+  assert.equal(rows.length, 120, "op x state x queued x image x busy generates 120 rows");
+  const line = (m) => [String(m.n).padStart(3), String(m.op).padEnd(6), m.state.padEnd(10), String(m.queued).padStart(1),
+    (m.img ? "T" : "F").padStart(3), (m.isBusy ? "T" : "F").padStart(4), (m.lit.join(",") || "-").padEnd(21),
+    m.expected.padEnd(8), (m.lamp.join(",") || "-").padEnd(8), m.cachedDim ? "dim-ok" : "CACHED-LIT", m.pass ? "PASS" : "FAIL"].join(" ");
+  console.log("  lamp matrix (model-operation x state x queued x image x busy)");
+  console.log("  # op     state       q img busy lit badges              expected lamp     cached    status");
+  for (const r of rows) console.log("  " + line(r));
+  assert.deepEqual(bad, [], "rows where the lamp disagrees with the lit badges (verbatim): " + JSON.stringify(bad));
+  assert.deepEqual(page.errors, [], "no page errors while the matrix ran");
+  await page.close();
+});
+
+test("KV ring: kvTokens geometry - clamps, floors, merged idle, empty ring, overflow scale, arc seams", async ({ browser, mock }) => {
+  const page = await kvPage(browser, mock);
+  const runs = await page.evaluate((HW, ST, ENG, H) => {
+    const KEYS = ["reuse", "prefill", "decode", "free"];
+    const readRing = () => {
+      const segs = KEYS.map((k) => {
+        const el = document.getElementById("kv-seg-" + k);
+        const da = el.getAttribute("stroke-dasharray") || "", dofs = el.getAttribute("stroke-dashoffset") || "";
+        return {k, da, dofs, len: parseFloat(da.split(" ")[0]), start: -parseFloat(dofs)};
+      });
+      const pct = document.getElementById("kv-pct");
+      const leg = {};
+      for (const k of KEYS) leg[k] = {dim: document.getElementById("kv-leg-" + k).closest("li").classList.contains("dim")};
+      return {segs, pct: pct.textContent, tone: pct.dataset.tone || "", sub: document.getElementById("kv-sub").textContent,
+              reusePct: document.getElementById("kv-leg-reuse-pct").textContent, leg};
+    };
+    const edgeRun = (name, live, eng, last, on) => {
+      modelOp = null; busy = null; imageBusy = false;
+      renderKvDonut(live, eng, last, on);
+      return Object.assign({name}, readRing());
+    };
+    const E = ENG, CTX0 = Object.assign({}, ENG, {max_context: 0});
+    const W = Object.assign({}, ENG, {max_context: 10000});                     // a small window so tone thresholds land on exact percentages
+    return [
+      edgeRun("reading_clamps_reused", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1400, prompt_read: 200, reused: 1500}, E, null, "reading"),
+      edgeRun("reading_no_read", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, reused: 0}, E, null, "reading"),
+      edgeRun("reading_read_below_reuse", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 300, reused: 400}, E, null, "reading"),
+      edgeRun("reading_partial", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 700, reused: 400}, E, null, "reading"),
+      edgeRun("floor_tenth", {state: "reading", queued: 0, prompt_tokens: 1000000, prompt_total: 1000000, prompt_read: 999770, reused: 999770}, E, null, "reading"),
+      edgeRun("covering_100", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 1000, reused: 1000}, E, null, "reading"),
+      edgeRun("generating", {state: "generating", queued: 0, prompt_tokens: 1000, max_tokens: 256, generated: 120, tok_s: 33.2, reused: 400}, E, null, "generating"),
+      edgeRun("idle_last_merged", {state: "idle", queued: 0}, E, {prompt_tokens: 1200, output_tokens: 300, prompt_ms: 900, decode_ms: 1600, decode_tok_s: 50.1, reused: 300}, "idle"),
+      edgeRun("idle_stale_gen", {state: "idle", queued: 0}, Object.assign({}, E, {gen: 2}), {prompt_tokens: 1200, output_tokens: 300, gen: 1}, "idle"),
+      edgeRun("idle_no_last", {state: "idle", queued: 0}, E, null, "idle"),
+      edgeRun("ctx_zero", {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1000, prompt_read: 500, reused: 0}, CTX0, null, "reading"),
+      edgeRun("overflow_scaled", {state: "generating", queued: 0, prompt_tokens: 2000, max_tokens: 1000, generated: 1000, tok_s: 33.2, reused: 400}, Object.assign({}, ENG, {max_context: 1000}), null, "generating"),
+      edgeRun("tone_warn_90", {state: "reading", queued: 0, prompt_tokens: 9000, prompt_total: 9000, prompt_read: 9000, reused: 3000}, W, null, "reading"),
+      edgeRun("tone_warn_85", {state: "reading", queued: 0, prompt_tokens: 8500, prompt_total: 8500, prompt_read: 8500, reused: 3000}, W, null, "reading"),
+      edgeRun("tone_none_849", {state: "reading", queued: 0, prompt_tokens: 8490, prompt_total: 8490, prompt_read: 8490, reused: 3000}, W, null, "reading"),
+    ];
+  }, KV.hw, KV.st, KV.eng, KV.h);
+  const C = 2 * Math.PI * 46.5;                                                // the ring's full circle, as renderKvDonut computes it
+  const KEYS = ["reuse", "prefill", "decode", "free"];
+  const EDGES = [                                                              // observed served behavior, asserted per case
+    {name: "reading_clamps_reused", ctx: 32768, tok: [1000, 0, 0, 31768], pct: "3%", tone: "", reusePct: "100%", sub: "1.0k / 32K", nonDim: "prefill"},
+    {name: "reading_no_read", ctx: 32768, tok: [0, 0, 0, 32768], pct: "0%", tone: "", reusePct: "", sub: "0 / 32K", nonDim: "prefill"},
+    {name: "reading_read_below_reuse", ctx: 32768, tok: [400, 0, 0, 32368], pct: "1%", tone: "", reusePct: "40.0%", sub: "400 / 32K", nonDim: "prefill"},
+    {name: "reading_partial", ctx: 32768, tok: [400, 300, 0, 32068], pct: "2%", tone: "", reusePct: "40.0%", sub: "700 / 32K", nonDim: "prefill"},
+    {name: "floor_tenth", ctx: 32768, tok: [999770, 0, 0, 0], pct: "3051%", tone: "danger", reusePct: "99.9%", sub: "1,000k / 32K", nonDim: "prefill"},
+    {name: "covering_100", ctx: 32768, tok: [1000, 0, 0, 31768], pct: "3%", tone: "", reusePct: "100%", sub: "1.0k / 32K", nonDim: "prefill"},
+    {name: "generating", ctx: 32768, tok: [400, 600, 120, 31648], pct: "3%", tone: "", reusePct: "40.0%", sub: "1.1k / 32K", nonDim: "decode"},
+    {name: "idle_last_merged", ctx: 32768, tok: [1500, 0, 0, 31268], pct: "4%", tone: "", reusePct: "", sub: "1.5k / 32K", nonDim: "free"},
+    {name: "idle_stale_gen", ctx: 32768, tok: [0, 0, 0, 32768], pct: "0%", tone: "", reusePct: "", sub: "0 / 32K", nonDim: "free"},
+    {name: "idle_no_last", ctx: 32768, tok: [0, 0, 0, 32768], pct: "0%", tone: "", reusePct: "", sub: "0 / 32K", nonDim: "free"},
+    {name: "ctx_zero", ctx: 0, tok: [0, 0, 0, 0], pct: "–", tone: "", reusePct: "", sub: "–", nonDim: "prefill"},   // the served dash: U+2013
+    {name: "overflow_scaled", ctx: 1000, tok: [400, 1600, 1000, 0], pct: "300%", tone: "danger", reusePct: "20.0%", sub: "3.0k / 1.0k", nonDim: "decode"},
+    {name: "tone_warn_90", ctx: 10000, tok: [3000, 6000, 0, 1000], pct: "90%", tone: "warn", reusePct: "33.3%", sub: "9.0k / 10k", nonDim: "prefill"},
+    {name: "tone_warn_85", ctx: 10000, tok: [3000, 5500, 0, 1500], pct: "85%", tone: "warn", reusePct: "35.2%", sub: "8.5k / 10k", nonDim: "prefill"},
+    {name: "tone_none_849", ctx: 10000, tok: [3000, 5490, 0, 1510], pct: "84%", tone: "", reusePct: "35.3%", sub: "8.5k / 10k", nonDim: "prefill"},
+  ];
+  const errs = [];
+  console.log("  kvTokens edge cases");
+  console.log("  case                       arcs (tok)                       centre  tone   cached%  lamp     status");
+  for (const [i, spec] of EDGES.entries()) {
+    const r = runs[i];
+    const caseErrs = [];
+    const used = spec.tok.reduce((a, b) => a + b, 0);
+    const scale = spec.ctx > 0 && used > spec.ctx ? spec.ctx / used : 1;
+    const k = spec.ctx ? (scale / spec.ctx) * C : 0;
+    for (const [j, tok] of spec.tok.entries()) if (Math.abs(r.segs[j].len - tok * k) > 0.005) caseErrs.push(`${spec.name}: arc ${KEYS[j]} ${r.segs[j].len} != ${tok * k}`);
+    for (let j = 0; j + 1 < 4; j++) if (Math.abs(r.segs[j].start + r.segs[j].len - r.segs[j + 1].start) > 1e-9)
+      caseErrs.push(`${spec.name}: seam after ${KEYS[j]}: ${r.segs[j].start + r.segs[j].len} != ${r.segs[j + 1].start}`);
+    for (const s of r.segs) if (s.da.includes("NaN") || s.dofs.includes("NaN")) caseErrs.push(`${spec.name}: NaN in ${s.k}: ${s.da} / ${s.dofs}`);
+    if (r.pct !== spec.pct) caseErrs.push(`${spec.name}: pct "${r.pct}" != "${spec.pct}"`);
+    if (r.tone !== spec.tone) caseErrs.push(`${spec.name}: tone "${r.tone}" != "${spec.tone}"`);
+    if (r.reusePct !== spec.reusePct) caseErrs.push(`${spec.name}: cached% "${r.reusePct}" != "${spec.reusePct}"`);
+    if (r.sub !== spec.sub) caseErrs.push(`${spec.name}: sub "${r.sub}" != "${spec.sub}"`);
+    const lit = KEYS.filter((kk) => !r.leg[kk].dim);
+    if (lit.length !== 1 || lit[0] !== spec.nonDim) caseErrs.push(`${spec.name}: lamp ${lit.join(",") || "-"} != ${spec.nonDim}`);
+    errs.push(...caseErrs);
+    const pass = caseErrs.length === 0;   // the Cached row is dim in every case: the lamp is never the cached row
+    console.log(`  ${spec.name.padEnd(26)} ${spec.tok.map(String).join(",").padEnd(30)} ${spec.pct.padEnd(7)} ${(spec.tone || "-").padEnd(6)} ${(spec.reusePct || "-").padEnd(8)} ${spec.nonDim.padEnd(8)} ${pass ? "PASS" : "FAIL"}`);
+  }
+  assert.deepEqual(errs, [], "kvTokens geometry mismatches (verbatim): " + errs.join(" | "));
+  assert.deepEqual(page.errors, [], "no page errors while the edge cases ran");
+  await page.close();
+});
+
+test("KV ring: a chronological /metrics stream, one poll cycle per step (idle, unloaded, reading, generating, queued, error, resumed, image-busy)", async ({ browser, mock }) => {
+  const page = await kvPage(browser, mock);
+  const metrics = (live) => ({live, engine: KV.eng, hardware: KV.hw, hardware_static: KV.st, history: KV.h,
+                              requests: [], totals: null, requests_kept: 0, conversation_cache: null});
+  const STEPS = [   // one fixture per step; the page's own poll serves it
+    {name: "idle_no_last", live: {state: "idle", queued: 0}, lit: ["idle"], lamp: "free"},
+    {name: "unloaded", live: {state: "unloaded", queued: 0}, lit: ["unloaded"], lamp: "free"},
+    {name: "reading_300", live: {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1400, prompt_read: 300, reused: 150, prefill_tok_s_mean: 120}, lit: ["reading"], lamp: "prefill"},
+    {name: "reading_600", live: {state: "reading", queued: 0, prompt_tokens: 1000, prompt_total: 1400, prompt_read: 600, reused: 150, prefill_tok_s_mean: 120}, lit: ["reading"], lamp: "prefill", mono: {from: "reading_300", grown: ["prefill"]}},
+    {name: "generating_40", live: {state: "generating", queued: 0, prompt_tokens: 1000, max_tokens: 256, generated: 40, tok_s: 30, reused: 150, phase: "writing"}, lit: ["generating"], lamp: "decode"},
+    {name: "generating_120", live: {state: "generating", queued: 0, prompt_tokens: 1000, max_tokens: 256, generated: 120, tok_s: 33.2, reused: 150, phase: "writing"}, lit: ["generating"], lamp: "decode", mono: {from: "generating_40", grown: ["decode"]}},
+    {name: "queued_while_reading", live: {state: "reading", queued: 2, prompt_tokens: 1000, prompt_total: 1400, prompt_read: 600, reused: 150, prefill_tok_s_mean: 120}, lit: ["reading", "queued"], lamp: "free"},
+    {name: "queued_while_generating", live: {state: "generating", queued: 2, prompt_tokens: 1000, max_tokens: 256, generated: 120, tok_s: 33.2, reused: 150, phase: "writing"}, lit: ["generating", "queued"], lamp: "free"},
+    {name: "error", live: {state: "error", queued: 0}, lit: ["error"], lamp: "free"},
+    {name: "restart_idle", live: {state: "idle", queued: 0}, lit: ["idle"], lamp: "free"},
+    {name: "resume_early", live: {state: "reading", queued: 0, prompt_tokens: 4500, prompt_total: 4500, prompt_read: 4200, reused: 4096, prefill_tok_s_mean: 120}, lit: ["reading"], lamp: "prefill", reusePct: "91.0%"},
+    {name: "resume_late", live: {state: "reading", queued: 0, prompt_tokens: 4500, prompt_total: 4500, prompt_read: 4500, reused: 4096, prefill_tok_s_mean: 120}, lit: ["reading"], lamp: "prefill", reusePct: "91.0%", mono: {from: "resume_early", grown: ["prefill"], same: ["reuse"]}},
+    {name: "image_idle", live: {state: "idle", queued: 0}, img: true, lit: ["idle"], lamp: "free"},
+  ];
+  let fixture = metrics({state: "idle", queued: 0});
+  await page.setRequestInterception(true);
+  page.on("request", (req) => {
+    if (new URL(req.url()).pathname === "/metrics") req.respond({status: 200, contentType: "application/json", body: JSON.stringify(fixture)});
+    else req.continue();
+  });
+  const read = () => page.evaluate(() => {   // the page's own poll rendered the fixture; the card's top-level lets are reset for the read
+    const KEYS = ["reuse", "prefill", "decode", "free"];
+    modelOp = null; busy = null; imageBusy = false;
+    const segs = KEYS.map((k) => {
+      const el = document.getElementById("kv-seg-" + k);
+      const da = el.getAttribute("stroke-dasharray") || "", dofs = el.getAttribute("stroke-dashoffset") || "";
+      return {k, da, dofs, len: parseFloat(da.split(" ")[0]), start: -parseFloat(dofs)};
+    });
+    return {segs, pct: document.getElementById("kv-pct").textContent, sub: document.getElementById("kv-sub").textContent,
+            reusePct: document.getElementById("kv-leg-reuse-pct").textContent,
+            lit: [...document.querySelectorAll("#state-badges .st-badge.on")].map((b) => b.dataset.s),
+            lamp: KEYS.filter((k) => !document.getElementById("kv-leg-" + k).closest("li").classList.contains("dim"))};
+  });
+  const KEYS = ["reuse", "prefill", "decode", "free"];
+  const seen = {}, fails = [];
+  console.log("  chronological steps (scripted /metrics, one poll cycle each)");
+  console.log("  step                    lit badges              lamp      cached%  centre      arcs (reuse,prefill,decode,free)  status");
+  for (const s of STEPS) {
+    fixture = metrics(s.live);
+    await page.evaluate((img) => { imageBusy = img; }, !!s.img);
+    await sleep(1700);   // the page polls every 1 s; 1700 ms guarantees the step's fixture was served at least once
+    const r = await read();
+    const errs = [];
+    if (r.lamp.length !== 1 || r.lamp[0] !== s.lamp) errs.push(`lamp ${r.lamp.join(",") || "-"} != ${s.lamp}`);
+    if (String(r.lit) !== String(s.lit)) errs.push(`lit badges ${r.lit.join(",")} != ${s.lit.join(",")} (DOM order)`);
+    for (const seg of r.segs) if (seg.da.includes("NaN") || seg.dofs.includes("NaN") || Number.isNaN(seg.len)) errs.push(`NaN in ${seg.k}: ${seg.da} / ${seg.dofs}`);
+    if (r.pct.includes("NaN") || r.sub.includes("undefined") || r.reusePct.includes("NaN")) errs.push(`bad text: "${r.pct}" "${r.sub}" "${r.reusePct}"`);
+    if (s.reusePct !== undefined && r.reusePct !== s.reusePct) errs.push(`cached% "${r.reusePct}" != "${s.reusePct}"`);
+    if (s.mono) {   // arc monotonicity across a request's consecutive polls
+      const p = seen[s.mono.from];
+      if (!p) errs.push(`monotonicity: no prior step ${s.mono.from}`);
+      else {
+        for (const k of s.mono.grown) if (r.segs[KEYS.indexOf(k)].len < p[KEYS.indexOf(k)]) errs.push(`${k} arc ${p[KEYS.indexOf(k)]} -> ${r.segs[KEYS.indexOf(k)].len} went down`);
+        for (const k of s.mono.same || []) if (r.segs[KEYS.indexOf(k)].len !== p[KEYS.indexOf(k)]) errs.push(`${k} arc changed ${p[KEYS.indexOf(k)]} -> ${r.segs[KEYS.indexOf(k)].len} while it should hold`);
+      }
+    }
+    seen[s.name] = r.segs.map((x) => x.len);
+    const pass = errs.length === 0;
+    console.log(`  ${s.name.padEnd(23)} ${(r.lit.join(",") || "-").padEnd(21)} ${(r.lamp.join(",") || "-").padEnd(7)} ` +
+                `${(r.reusePct || "-").padEnd(8)} ${r.pct.padEnd(9)} ${r.segs.map((x) => x.len.toFixed(1)).join(",").padEnd(30)} ${pass ? "PASS" : "FAIL"}`);
+    if (!pass) fails.push(`${s.name}: ${errs.join("; ")}`);
+  }
+  assert.deepEqual(fails, [], "chronological steps the page got wrong (verbatim): " + fails.join(" | "));
+  assert.deepEqual(page.errors, [], "no page errors during the stream");
+  await page.close();
+});
+
 const mock = await startMock();
 const browser = await launch();
 await run(async () => ({ browser, mock, close: async () => { await browser.close(); await mock.stop(); } }));

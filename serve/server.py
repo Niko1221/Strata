@@ -1871,6 +1871,11 @@ class StrataEngine:
                     send_stop()
                     stopped = True
                 yield None
+            elif line.startswith("RESUME "):          # the reused tokens: the first chunk starts after them
+                try:
+                    self.reused = int(line.split()[1])
+                except (IndexError, ValueError):
+                    pass
             elif line.startswith("DONE"):
                 self._parse_done(line)
                 self._last_done = line
@@ -5665,6 +5670,8 @@ class Service:
                 "tok_s": round(self._tok_s(), 1) if state == "generating" else None,
                 "tok_s_mean": round(self._tok_s_mean(), 1) if state == "generating" else None,
                 "prefill_tok_s_mean": getattr(self.engine, "prefill_tok_s_mean", None) if s.get("busy") else None,
+                # prompt tokens the prefix cache already held (RESUME): the Context ring's cached share
+                "reused": int(getattr(self.engine, "reused", 0) or 0) if s.get("busy") else None,
                 "tok_s_window_s": RATE_WINDOW_S if state == "generating" else None}
         if state == "reading" and progress:
             live["prompt_read"], live["prompt_total"] = progress
@@ -5687,6 +5694,10 @@ class Service:
         if hasattr(self.engine, "split_view"):          # opt-in split serving: the hand-overs so far (serve/split.py)
             live["split_serve"] = self.engine.split_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
+                  # the engine process generation: a request's history record notes its own; a record from an
+                  # earlier generation is from before the process restarted, so its KV cache is gone (the Context
+                  # ring must not show it as still cached)
+                  "gen": getattr(self.engine, "gen", None),
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
@@ -6633,6 +6644,9 @@ class Service:
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
+                                # which engine process produced this record: a later generation means a restart
+                                # wiped the KV cache, so the idle Context ring must not show this as still cached
+                                "gen": getattr(self.engine, "gen", None),
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 "first_engine_token_s": first_engine_token_s,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)

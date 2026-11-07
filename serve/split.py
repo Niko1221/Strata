@@ -246,6 +246,10 @@ class SplitEngine:
         return self.cur.prefill_tok_s_mean
 
     @property
+    def reused(self):
+        return self.cur.reused
+
+    @property
     def batch(self) -> int:
         return 0
 
@@ -401,8 +405,10 @@ class SplitEngine:
             rec["p_last"] = p_last
             try:
                 saved = yield from self._wait(lambda: P.session_file("save", path))
-                self.__dict__["cur"] = D
+                # keep cur on the prefill engine while the decode engine restores the session: the restore
+                # window shows the prefill's just-finished progress, not the decode engine's stale last request
                 restored = yield from self._wait(lambda: D.session_file("restore", path))
+                self.__dict__["cur"] = D
             except SessionRefused as e:
                 self.say(f"[strata] split: the session file was refused ({e}); the decode engine reads the prompt itself")
                 return
