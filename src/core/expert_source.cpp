@@ -38,6 +38,7 @@
 #include <deque>
 #include <fstream>
 #include <filesystem>
+#include <iterator>
 #include <sstream>
 #include <limits>
 #include <map>
@@ -6040,7 +6041,46 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                     }
                 }
             }
-            if (arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short) == ArenaRamVerdict::FallBack) {
+            const ArenaRamVerdict verdict = arena_ram_verdict(need, hm.available, ~uint64_t{0}, fall_back_when_ram_short);
+#if defined(__linux__)
+            // #5327: the refusal reads every shortfall as one the kernel can only serve by taking another program's
+            // memory (#4051's host: an engine that was still exiting, anonymous RAM - the stall the refusal is for).
+            // On a bare Linux host the shortfall is often the box's own model files sitting hot in the file cache:
+            // MemAvailable credits only about half of the cache, while free pages + the droppable file pages (which
+            // the kernel evicts as the arena reads, with no swap and no reclaim storm) still cover the arena - or the
+            // reserved hugetlb pool holds all of it (the arena maps MAP_HUGETLB first; a launcher may reserve the
+            // pool for exactly this, and the reserve itself is what took MemAvailable below the need).  That
+            // is the case 0.1.54/0.1.55 loaded anyway ("expert arena read through the file cache") at full decode
+            // speed; credit it and load, LOUDLY (a service setup never sees stderr).  STRATA_ARENA_FILE_CACHE=0
+            // refuses as since 0.1.56.  Not under a cgroup limit (the host's cache is not the container's to drop)
+            // and not on Windows: the proceed path was never trusted there ("buffered (not Windows)", the mapped
+            // view's trim needs the headroom the refusal keeps).
+            const bool file_cache_off = [] { const char* v = std::getenv("STRATA_ARENA_FILE_CACHE"); return v != nullptr && v[0] == '0'; }();
+            bool file_cache_arena = false;
+            uint64_t memfree_b = 0, droppable_b = 0, huge_free_b = 0;
+            if (verdict == ArenaRamVerdict::FallBack && hm.cgroup_limit == ~uint64_t{0} && !file_cache_off) {
+                if (std::ifstream info("/proc/meminfo"); info) {
+                    const std::string text((std::istreambuf_iterator<char>(info)), std::istreambuf_iterator<char>());
+                    if (meminfo_free_and_droppable(text, memfree_b, droppable_b, &huge_free_b))
+                        file_cache_arena = arena_shortfall_served_by_file_cache(need, memfree_b, droppable_b, huge_free_b);
+                }
+            }
+            if (file_cache_arena) {
+                std::snprintf(buf, sizeof buf,
+                              "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s) and "
+                              "%.2f GiB of free pages, droppable file cache and free huge pages can still hold it: "
+                              "loading through the file cache, as 0.1.55 did (#5327; the load evicts the cache as it "
+                              "reads, the answers are the same). To read the experts from the file instead, start with "
+                              "STRATA_ARENA_FILE_CACHE=0",
+                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
+                              waited > 0.0 ? ", after waiting" : "",
+                              ((double) memfree_b + (double) droppable_b + (double) huge_free_b) / gib);
+                ram_warning_ = buf;   // the caller says it on stderr before the load's numbers; stdout is said here
+                std::printf("strata generate: WARNING: %s\n", buf);   // stdout too: a service setup never sees stderr (#5327)
+                std::fflush(stdout);
+            } else
+#endif
+            if (verdict == ArenaRamVerdict::FallBack) {
                 // #4846 (owner 11-01): still short after the wait and the give-back.  Registering anyway can stall the whole host in
                 // reclaim until it is power-cycled: nothing is allocated, the caller takes the --mmap-experts source for this run.
                 std::snprintf(buf, sizeof buf,
@@ -6051,7 +6091,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
                 ram_short_ = true;
                 return false;
             }
-            if (hm.available < need) {
+            if (hm.available < need && ram_warning_.empty()) {
                 std::snprintf(buf, sizeof buf,
                               "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s): the "
                               "load may swap or be stopped by the OS%s. Close other programs, or run with less RAM: "
