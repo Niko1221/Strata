@@ -548,6 +548,49 @@ int main() {
         check(!disabled_min.enabled() && disabled_min.wants(1 << 20), "a disabled cache still answers for length");
     }
     {
+        ConversationCacheTokenLimits legacy, explicit_zero, pair, defaults;
+        check(parse_conversation_cache_min_tokens("6000", legacy), "a single WRITE threshold parses");
+        check(parse_conversation_cache_min_tokens("6000,0", explicit_zero), "an explicit READ=0 parses");
+        check(parse_conversation_cache_min_tokens("6000,5000", pair), "a WRITE,READ pair parses");
+        check(legacy.write_min_tokens == 6000 && legacy.read_min_tokens == 0 &&
+              legacy.write_min_tokens == explicit_zero.write_min_tokens &&
+              legacy.read_min_tokens == explicit_zero.read_min_tokens,
+              "a legacy single value means WRITE,0");
+        check(pair.write_min_tokens == 6000 && pair.read_min_tokens == 5000, "the pair is ordered WRITE,READ");
+        check(defaults.write_min_tokens == 0 && defaults.read_min_tokens == 0, "default thresholds allow all lengths");
+        ConversationCacheTokenLimits maximum;
+        check(parse_conversation_cache_min_tokens("2147483647,2147483647", maximum) &&
+              maximum.write_min_tokens == 2147483647 && maximum.read_min_tokens == 2147483647,
+              "both thresholds accept the existing integer maximum");
+
+        const char* invalid[] = {"", "-1,2", "1,-2", ",2", "1,", "1,2,3", "6000x", "6000,5000x",
+                                 "6000, 5000", "2147483648", "9223372036854775808"};
+        for (const char* value : invalid) {
+            ConversationCacheTokenLimits rejected;
+            check(!parse_conversation_cache_min_tokens(value, rejected), "invalid or overflowing thresholds are refused");
+        }
+
+        check(!conversation_cache_should_read_parked(4999, 5000), "4999 is below a READ threshold of 5000");
+        check(conversation_cache_should_read_parked(5000, 5000), "5000 meets a READ threshold of 5000");
+        check(conversation_cache_should_read_parked(4999, 0), "READ=0 permits automatic candidate lookup");
+        const int64_t cached_history_tokens = 25967;
+        const int64_t new_message_tokens = 33;
+        check(conversation_cache_should_read_parked(cached_history_tokens + new_message_tokens, 26000) &&
+              !conversation_cache_should_read_parked(new_message_tokens, 26000),
+              "READ counts cached history in the complete 26000-token prompt, not just the 33-token new message");
+
+        ConversationCache writable(1024, 4, 6000);
+        check(!conversation_cache_should_read_parked(33, 5000) && writable.wants(6000),
+              "a short incoming prompt skips reads without blocking an eligible outgoing save");
+        ConversationCheckpoint active;
+        active.ids = {1, 2, 3, 4};
+        const std::vector<int64_t> active_prompt{1, 2, 3, 4, 5};
+        const std::vector<ConversationImageKey> no_images;
+        check(!conversation_cache_should_read_parked(4, 5000) &&
+              conversation_prefix(active, active_prompt, no_images) == 4,
+              "active-session prefix reuse remains available below the READ threshold");
+    }
+    {
         // layer-split parking: checkpoints moved apart into stage parts and put back, no running state copied
         auto running = [](std::initializer_list<int32_t> ids, uint8_t salt, size_t parts) {
             ConversationCheckpoint c;

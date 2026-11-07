@@ -6,14 +6,54 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace strata::core {
+
+struct ConversationCacheTokenLimits {
+    int64_t write_min_tokens = 0;
+    int64_t read_min_tokens = 0;
+};
+
+// Parse the legacy single WRITE value or WRITE,READ. A single value leaves READ at zero.
+inline bool parse_conversation_cache_min_tokens(std::string_view text, ConversationCacheTokenLimits& limits) {
+    auto parse_number = [](std::string_view value, int64_t& parsed_value) {
+        if (value.empty()) return false;
+        for (char digit : value)
+            if (digit < '0' || digit > '9') return false;
+        int64_t number = 0;
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
+            number > std::numeric_limits<int32_t>::max()) return false;
+        parsed_value = number;
+        return true;
+    };
+
+    ConversationCacheTokenLimits parsed;
+    const size_t comma = text.find(',');
+    if (comma == std::string_view::npos) {
+        if (!parse_number(text, parsed.write_min_tokens)) return false;
+    } else {
+        if (text.find(',', comma + 1) != std::string_view::npos ||
+            !parse_number(text.substr(0, comma), parsed.write_min_tokens) ||
+            !parse_number(text.substr(comma + 1), parsed.read_min_tokens)) return false;
+    }
+    limits = parsed;
+    return true;
+}
+
+// READ gates only automatic parked-candidate lookup and uses the complete prompt length.
+inline bool conversation_cache_should_read_parked(int64_t prompt_tokens, int64_t read_min_tokens) {
+    return read_min_tokens <= 0 || prompt_tokens >= read_min_tokens;
+}
 
 struct ConversationImageKey {
     int64_t start = 0;
@@ -24,7 +64,9 @@ struct ConversationImageKey {
 struct ConversationCheckpoint {
     std::vector<int32_t> ids;
     std::vector<ConversationImageKey> imgs;
-    std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
+    // What a checkpoint IS, in bytes: the running state (gdn ~112.2 MiB at the production context, ple ~360 KiB).
+    std::vector<uint8_t> gdn, ple;
+    std::vector<uint8_t> tails, dead, block_pos;
     uint64_t used = 0; // upstream root-pinned/LRU checkpoint retention
     // STRATA_CKPT_VRAM_SLOTS: the tag of the device copy of `gdn` (0: none).  Set by conversation_checkpoint_save, the
     // only writer of a checkpoint's GDN bytes besides a whole copy (which keeps them equal, so it keeps the tag).
@@ -207,9 +249,10 @@ struct SavedConversation {
 /// `c` holds the state `ids` (with `images`) describes, or a continuation of it: its tokens start with `ids` and
 /// its pictures below ids.size() are exactly `images`.  What an idle batch slot holds is then parked already (or
 /// a longer continuation is), so the slot need not park it again before an admission overwrites it.
-template<class Token>
-bool conversation_covers(const ConversationCheckpoint& c, const std::vector<Token>& ids,
-                         const std::vector<ConversationImageKey>& images) {
+template<class Token, class TokenAllocator = std::allocator<Token>,
+         class ImageAllocator = std::allocator<ConversationImageKey>>
+bool conversation_covers(const ConversationCheckpoint& c, const std::vector<Token, TokenAllocator>& ids,
+                         const std::vector<ConversationImageKey, ImageAllocator>& images) {
     const size_t n = ids.size();
     if (n == 0 || c.ids.size() < n) return false;
     for (size_t i = 0; i < n; ++i)
@@ -222,9 +265,9 @@ bool conversation_covers(const ConversationCheckpoint& c, const std::vector<Toke
     return j == images.size();
 }
 
-template<class Token>
-int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
-                            const std::vector<ConversationImageKey>& images) {
+template<class Token, class TokenAllocator, class ImageAllocator = std::allocator<ConversationImageKey>>
+int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<Token, TokenAllocator>& prompt,
+                            const std::vector<ConversationImageKey, ImageAllocator>& images) {
     const size_t n = c.ids.size();
     // The last prompt token always starts the next verify window.
     if (n == 0 || n >= prompt.size() || !std::equal(c.ids.begin(), c.ids.end(), prompt.begin())) return 0;
@@ -237,14 +280,106 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+// The same prefix test against only the first n ids of the checkpoint: a parked conversation's checkpoints are
+// prefixes of its live ids, so a shorter resume point is checked without copying the ids.
+template<class Token, class TokenAllocator, class ImageAllocator = std::allocator<ConversationImageKey>>
+int64_t conversation_prefix_at(const ConversationCheckpoint& c, const std::vector<Token, TokenAllocator>& prompt,
+                               const std::vector<ConversationImageKey, ImageAllocator>& images, size_t n) {
+    // The last prompt token always starts the next verify window.
+    if (n == 0 || n >= prompt.size() || n > c.ids.size() ||
+        !std::equal(c.ids.begin(), c.ids.begin() + n, prompt.begin())) return 0;
+    size_t a = 0, b = 0;
+    while ((a < c.imgs.size() && c.imgs[a].start < (int64_t) n) ||
+           (b < images.size() && images[b].start < (int64_t) n)) {
+        if (a == c.imgs.size() || c.imgs[a].start >= (int64_t) n ||
+            b == images.size() || images[b].start >= (int64_t) n || !(c.imgs[a] == images[b])) return 0;
+        ++a;
+        ++b;
+    }
+    return (int64_t) n;
+}
+
+// The longest common prefix of a cached conversation and the prompt, in tokens. Unlike conversation_prefix this
+// does not require the whole cached ids to match: it is the resume point a similarity hit would give.
+template<class Token, class TokenAllocator, class ImageAllocator = std::allocator<ConversationImageKey>>
+int64_t conversation_lcp(const ConversationCheckpoint& cached, const std::vector<Token, TokenAllocator>& prompt,
+                         const std::vector<ConversationImageKey, ImageAllocator>& images) {
+    size_t n = std::min(cached.ids.size(), prompt.size());
+    size_t i = 0;
+    while (i < n && cached.ids[i] == prompt[i]) ++i;
+    // Token ids alone do not identify image embeddings: stop before the first image boundary whose identity
+    // differs, so no state after it is reused.
+    size_t a = 0, b = 0;
+    while ((a < cached.imgs.size() && cached.imgs[a].start < (int64_t) i) ||
+           (b < images.size() && images[b].start < (int64_t) i)) {
+        if (a == cached.imgs.size() || cached.imgs[a].start >= (int64_t) i ||
+            b == images.size() || images[b].start >= (int64_t) i || !(cached.imgs[a] == images[b])) {
+            const int64_t ca = a < cached.imgs.size() ? cached.imgs[a].start : INT64_MAX;
+            const int64_t cb = b < images.size() ? images[b].start : INT64_MAX;
+            const int64_t boundary = std::min(ca, cb);
+            if (boundary < 0) return 0;
+            i = std::min(i, (size_t) boundary);
+            break;
+        }
+        ++a;
+        ++b;
+    }
+    return (int64_t) i;
+}
+
+struct ConversationMatch {
+    size_t index = 0;
+    int64_t tokens = 0;
+    bool live = false;
+    uint64_t serial = 0;   // the entry's identity; its index shifts when entries before it go
+};
+
+// The best resume a parked image offers for this prompt. similarity is the least LCP/new-prompt fraction accepted
+// (0 keeps every exact-prefix hit); n_min the least common-prefix tokens. A hit longer than the LCP is never offered.
+template<class Token, class TokenAllocator, class ImageAllocator = std::allocator<ConversationImageKey>>
+ConversationMatch conversation_saved_match(const SavedConversation& saved,
+                                           const std::vector<Token, TokenAllocator>& prompt,
+                                           const std::vector<ConversationImageKey, ImageAllocator>& images,
+                                           bool cvec, double similarity, int64_t n_min) {
+    ConversationMatch best;
+    if (saved.cvec != cvec || prompt.empty() || similarity < 0.0 || similarity >= 1.0) return best;
+    const int64_t lcp = conversation_lcp(saved.live, prompt, images);
+    if (lcp < n_min || (double) lcp / (double) prompt.size() <= similarity) return best;
+    auto consider = [&](const ConversationCheckpoint& checkpoint, bool live) {
+        const int64_t n = conversation_prefix(checkpoint, prompt, images);
+        if (n > 0 && n <= lcp && n > best.tokens) best = {0, n, live};
+    };
+    consider(saved.live, true);
+    for (const auto& checkpoint : saved.checkpoints) consider(checkpoint, false);
+    return best;
+}
+
+// The same match from a spill directory's metadata only (no K/V read): the live ids and images plus each
+// checkpoint's length, exactly what a parked image's checkpoints are prefixes of.
+template<class Token, class LengthAllocator, class TokenAllocator,
+         class ImageAllocator = std::allocator<ConversationImageKey>>
+ConversationMatch conversation_metadata_match(const ConversationCheckpoint& live,
+                                               const std::vector<size_t, LengthAllocator>& checkpoint_lengths,
+                                               const std::vector<Token, TokenAllocator>& prompt,
+                                               const std::vector<ConversationImageKey, ImageAllocator>& images,
+                                              bool cvec, bool cached_cvec,
+                                              double similarity, int64_t n_min) {
+    ConversationMatch best;
+    if (cached_cvec != cvec || prompt.empty() || similarity < 0.0 || similarity >= 1.0) return best;
+    const int64_t lcp = conversation_lcp(live, prompt, images);
+    if (lcp < n_min || (double) lcp / (double) prompt.size() <= similarity) return best;
+    const int64_t live_match = conversation_prefix(live, prompt, images);
+    if (live_match > 0 && live_match <= lcp) best = {0, live_match, true};
+    for (size_t length : checkpoint_lengths) {
+        const int64_t n = conversation_prefix_at(live, prompt, images, length);
+        if (n > 0 && n <= lcp && n > best.tokens) best = {0, n, false};
+    }
+    return best;
+}
+
 class ConversationCache {
 public:
-    struct Match {
-        size_t index = 0;
-        int64_t tokens = 0;
-        bool live = false;
-        uint64_t serial = 0;   // the entry's identity; its index shifts when entries before it go
-    };
+    using Match = ConversationMatch;
 
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
         : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
@@ -302,20 +437,17 @@ public:
                entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
     }
 
-    template<class Token>
-    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    template<class Token, class TokenAllocator, class ImageAllocator = std::allocator<ConversationImageKey>>
+    Match best(const std::vector<Token, TokenAllocator>& prompt,
+               const std::vector<ConversationImageKey, ImageAllocator>& images, bool cvec,
+               double similarity = 0.0, int64_t n_min = 0) const {
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
-            auto consider = [&](const ConversationCheckpoint& c, bool live) {
-                const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens) best = {i, n, live, serials_[i]};
-            };
-            consider(e.live, true);
-            for (const auto& c : e.checkpoints) consider(c, false);
+            Match candidate = conversation_saved_match(e, prompt, images, cvec, similarity, n_min);
+            if (candidate.tokens > best.tokens) { candidate.index = i; candidate.serial = serials_[i]; best = candidate; }
         }
         return best;
     }
@@ -381,6 +513,13 @@ public:
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
+        return make_room(incoming, held, [](const SavedConversation&) {});
+    }
+
+    // The spill callback sees every conversation this call evicts from RAM, oldest first, before it is dropped, so
+    // a durable disk tier can keep it. The default does nothing (the RAM cache alone).
+    template<class Spill>
+    bool make_room(size_t incoming, size_t held, Spill&& spill) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         auto stays = [&](size_t i) { return entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_); };
         if (guarded_ != 0 && index_of(guarded_) != SIZE_MAX) {
@@ -395,7 +534,7 @@ public:
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
             // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            if (!evict_oldest()) return false;
+            if (!evict_oldest(spill)) return false;
         }
         return true;
     }
@@ -406,10 +545,16 @@ public:
     // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
     // to the kernel at once - the next admission check reads it back from /proc/meminfo.
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
-    bool evict_oldest() {
+    bool evict_oldest() { return evict_oldest([](const SavedConversation&) {}); }
+
+    // The spill callback sees the conversation before it is dropped, so a durable disk tier keeps what the
+    // physical-RAM gate evicts and not only what make_room() pushes out.
+    template<class Spill>
+    bool evict_oldest(Spill&& spill) {
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            spill(entries_[i]);
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -512,6 +657,22 @@ public:
             if (holds) longest = std::max(longest, deepest->ids.size());
         }
         return longest;
+    }
+
+    // Spill every parked conversation (oldest first) and empty the cache: the shutdown path, so a restart finds
+    // them on disk. Returns how many were handed to the callback.
+    template<class Spill>
+    size_t spill_all(Spill&& spill) {
+        size_t count = 0;
+        while (!entries_.empty()) {
+            spill(entries_.front());
+            bytes_ -= entries_.front().bytes();
+            entries_.pop_front();
+            ++evictions_;
+            ++count;
+        }
+        reuse_ = {};
+        return count;
     }
 
     bool put(SavedConversation&& image, size_t held = 0) {

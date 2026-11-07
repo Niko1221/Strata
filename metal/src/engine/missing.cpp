@@ -37,6 +37,8 @@ const Cvec& cvec() {
     static const Cvec none{};
     return none;
 }
+// the matching query: cvec() is never loaded here, so the control vector is always off
+bool cvec_enabled() { return false; }
 }  // namespace strata::kernels
 
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
