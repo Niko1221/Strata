@@ -69,6 +69,16 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
 /// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
 std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
 
+/// The same nine switches for Linux CUDA (the Qwen engine of generate.cpp) with 2 or more batch slots: what serve/server.py's
+/// PARALLEL_STACK_ENV set for a managed start, now the engine's own so a plain start is the same.  QUAL-PAR: bit-exact against the plain
+/// slots (greedy identity at c=1, first-token KL 0).  `linux_cuda` is false on HIP, Windows, Metal and SYCL builds (empty then).  Each
+/// switch keeps =0 as its off switch; a value the user set is kept.  Silent: the launcher printed nothing for these either.
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots);
+
+/// Sets `parallel_default_env_cuda` in this process's environment where the user has not set the variable; returns the names it set.
+/// Call once, before any engine code reads its switches.
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots);
+
 /// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
 /// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
 /// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread
