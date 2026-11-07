@@ -1268,13 +1268,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6292,
+     "line": 6265,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6292,
+     "line": 6265,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1998,7 +1998,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4271,
+     "line": 4270,
      "value": "\"1\""
     }
    ],
@@ -2065,7 +2065,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10968,
+     "line": 10941,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2279,7 +2279,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4271,
+     "line": 4270,
      "value": "\"1\""
     }
    ],
@@ -2414,7 +2414,7 @@
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 3912
+     "line": 3911
     }
    ],
    "doc_mentions": [
@@ -2516,7 +2516,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4272,
+     "line": 4271,
      "value": "\"1\""
     }
    ],
@@ -2562,19 +2562,19 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 1041,
+     "line": 1040,
      "value": "\"1\""
     },
     {
      "file": "serve/server.py",
-     "line": 1043,
+     "line": 1042,
      "value": "None"
     }
    ],
    "launch_reads": [
     {
      "file": "strata_cli/cli.py",
-     "line": 764
+     "line": 763
     }
    ],
    "doc_mentions": [],
@@ -2790,7 +2790,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11126,
+     "line": 11099,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2834,7 +2834,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13641,
+     "line": 13614,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2971,7 +2971,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4269,
      "value": "\"1\""
     }
    ],
@@ -3029,7 +3029,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4269,
      "value": "\"4\""
     }
    ],
@@ -3069,13 +3069,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10580,
+     "line": 10553,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10651,
+     "line": 10624,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3731,7 +3731,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13501,
+     "line": 13474,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -4055,7 +4055,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11236,
+     "line": 11209,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5058,7 +5058,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7690,
+     "line": 7663,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5541,13 +5541,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7691,
+     "line": 7664,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12260,
+     "line": 12233,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5776,7 +5776,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5554,
+     "line": 5527,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5993,7 +5993,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4867,
+     "line": 3871,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -7130,7 +7130,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 784,
+     "line": 783,
      "value": "4"
     }
    ],
@@ -7315,7 +7315,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4261,
+     "line": 4260,
      "value": "str(Path(log).parent / \"ds4-slots\")"
     }
    ],
@@ -7356,7 +7356,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4258,
+     "line": 4257,
      "value": "DS41_SLOT_GB_DEFAULT"
     }
    ],
@@ -7405,7 +7405,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4257,
+     "line": 4256,
      "value": "DS41_SLOT_KEEP_DEFAULT"
     }
    ],
@@ -7610,7 +7610,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13512,
+     "line": 13485,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7753,7 +7753,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13464,
+     "line": 13437,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8591,7 +8591,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6066,
+     "line": 5070,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8627,8 +8627,8 @@
    "first_commit": "59a7e22fc2",
    "first_date": "2026-10-03",
    "since": "v0.1.40.1",
-   "last_commit": "9067cc64d3",
-   "last_date": "2026-10-26",
+   "last_commit": "0029379234",
+   "last_date": "2026-11-07",
    "status": "default",
    "owner": "kernels/cuda",
    "note": "[auto] on by default for some GPU architectures only (gfx1151 src/core/arch_defaults.cpp:82=1); opt-in elsewhere; the variable overrides it",
@@ -8650,7 +8650,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6067,
+     "line": 5071,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8670,8 +8670,8 @@
    "first_commit": "04e1e11afb",
    "first_date": "2026-10-04",
    "since": "v0.1.40.1",
-   "last_commit": "e431a4a8e2",
-   "last_date": "2026-11-05",
+   "last_commit": "0029379234",
+   "last_date": "2026-11-07",
    "status": "opt-in",
    "owner": "kernels/cuda",
    "note": "[reviewed] Documented opt-in for UD-Q4_K_XL decode, bitwise, 8-31% faster layer experts. [phaseA-tests/AURORA-ROADMAP.md:175]",
@@ -8706,7 +8706,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6030,
+     "line": 5034,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8841,7 +8841,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4611,
+     "line": 4584,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9064,7 +9064,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5203,
+     "line": 5176,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9099,7 +9099,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5095,
+     "line": 5068,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9141,7 +9141,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11254,
+     "line": 11227,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9183,7 +9183,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11263,
+     "line": 11236,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9891,7 +9891,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4322,
+     "line": 4321,
      "value": "\"1\""
     }
    ],
@@ -10076,7 +10076,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4321,
+     "line": 4320,
      "value": "\"2\""
     }
    ],
@@ -10674,7 +10674,7 @@
    "launch_sets": [
     {
      "file": "serve/server.py",
-     "line": 4321,
+     "line": 4320,
      "value": "\"1\""
     }
    ],
@@ -11558,7 +11558,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6046,
+     "line": 5050,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -12572,7 +12572,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4866,
+     "line": 3870,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -13792,7 +13792,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 6143,
+     "line": 5147,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -15174,7 +15174,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5249,
+     "line": 4253,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -15729,13 +15729,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4871,
+     "line": 3875,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4871,
+     "line": 3875,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -15775,7 +15775,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4903,
+     "line": 3907,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16443,7 +16443,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6581,
+     "line": 6554,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16556,7 +16556,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6579,
+     "line": 6552,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16847,7 +16847,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7958,
+     "line": 7931,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17063,7 +17063,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5279,
+     "line": 5252,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17365,13 +17365,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10789,
+     "line": 10762,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10817,
+     "line": 10790,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17415,7 +17415,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10821,
+     "line": 10794,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17499,7 +17499,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5574,
+     "line": 5547,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17542,7 +17542,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5588,
+     "line": 5561,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17626,13 +17626,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11223,
+     "line": 11196,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13423,
+     "line": 13396,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17716,7 +17716,7 @@
    "launch_sets": [
     {
      "file": "strata_control/split_engine.py",
-     "line": 506,
+     "line": 505,
      "value": "<file>"
     }
    ],
@@ -20179,7 +20179,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5296,
+     "line": 5269,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20617,13 +20617,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1551,
+     "line": 1538,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1551,
+     "line": 1538,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -20988,13 +20988,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1727,
+     "line": 1634,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1763,
+     "line": 1654,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21054,11 +21054,11 @@
    "since": "v0.1.40.1",
    "last_commit": "cd83544431",
    "last_date": "2026-09-30",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "sycl/kernels",
-   "note": "[checked] Aligned weight-load prefetch in the wide Q6_K kernel (SYCL only): STRATA_MMVQ_PF=2/3/4/6 slower everywhere (qkv 70.8 -> 79.3 at PF 3), existing unaligned variants 2-4x slower (phaseA-tests/notes-intel-quants.md:212). Default 0, undocumented, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:1712.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch B): code removed, the setting is no longer read. Evidence: [checked] Aligned weight-load prefetch in the wide Q6_K kernel (SYCL only): STRATA_MMVQ_PF=2/3/4/6 slower everywhere (qkv 70.8 -> 79.3 at PF 3), existing unaligned variants 2-4x slower (phaseA-tests/notes-intel-quants.md:212). Default 0, undocumented, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:1712.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_MMVQ_RPW",
@@ -21068,13 +21068,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2184,
+     "line": 2067,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2184,
+     "line": 2067,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21132,11 +21132,11 @@
    "since": "v0.1.40.1",
    "last_commit": "e7c42b62b9",
    "last_date": "2026-09-30",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "sycl/kernels",
-   "note": "[checked] SIMD16 builds of the multi-column mmvq and the wide Q6_K kernel (SYCL only): 'Tried, no gain', no setting beats SIMD32 beyond noise in the engine (phaseA-tests/split145/v1/docs/INTEL.md:442; notes-intel-quants.md:184). Default 32, undocumented in docs/, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:164-174,1789,2212.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch B): code removed, the setting is no longer read. Evidence: [checked] SIMD16 builds of the multi-column mmvq and the wide Q6_K kernel (SYCL only): 'Tried, no gain', no setting beats SIMD32 beyond noise in the engine (phaseA-tests/split145/v1/docs/INTEL.md:442; notes-intel-quants.md:184). Default 32, undocumented in docs/, not set by launch code; sycl/src/kernels/cuda/native_mmvq.dp.cpp:164-174,1789,2212.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_MMVQ_WAVE",
@@ -21183,13 +21183,13 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2349,
+     "line": 2213,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2349,
+     "line": 2213,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21236,13 +21236,13 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2172,
+     "line": 2055,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2172,
+     "line": 2055,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21275,13 +21275,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2143,
+     "line": 2026,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2143,
+     "line": 2026,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21316,13 +21316,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2054,
+     "line": 1937,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2054,
+     "line": 1937,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21355,19 +21355,19 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1980,
+     "line": 1863,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1980,
+     "line": 1863,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2014,
+     "line": 1897,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21400,13 +21400,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3862,
+     "line": 3726,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3862,
+     "line": 3726,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21439,13 +21439,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3861,
+     "line": 3725,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3861,
+     "line": 3725,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21478,13 +21478,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1717,
+     "line": 1624,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1717,
+     "line": 1624,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -22892,7 +22892,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2235,
+     "line": 2099,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -23804,7 +23804,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4721,
+     "line": 4694,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -24196,7 +24196,7 @@
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 354
+     "line": 353
     }
    ],
    "doc_mentions": [],
@@ -24914,7 +24914,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11089,
+     "line": 11062,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -27048,7 +27048,7 @@
     },
     {
      "file": "strata_cli/launch/screens.py",
-     "line": 1387,
+     "line": 1383,
      "value": "1"
     },
     {
@@ -27561,7 +27561,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11627,
+     "line": 11600,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27718,7 +27718,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11419,
+     "line": 11392,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27757,13 +27757,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11874,
+     "line": 11847,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12166,
+     "line": 12139,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -27803,7 +27803,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10669,
+     "line": 10642,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27843,7 +27843,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11316,
+     "line": 11289,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27883,7 +27883,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11576,
+     "line": 11549,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27923,7 +27923,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11623,
+     "line": 11596,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -27963,7 +27963,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7791,
+     "line": 7764,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28036,7 +28036,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10672,
+     "line": 10645,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28076,7 +28076,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10665,
+     "line": 10638,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -28116,7 +28116,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 11403,
+     "line": 11376,
      "backend": "sycl",
      "fn": "pipe_dbg_env"
     }
@@ -29298,7 +29298,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6436,
+     "line": 6409,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29694,7 +29694,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 6457,
+     "line": 6430,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30489,7 +30489,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 8930,
+     "line": 8903,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31654,7 +31654,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 2718,
+     "line": 2582,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31694,7 +31694,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3260,
+     "line": 3124,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31740,7 +31740,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3099,
+     "line": 2963,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31791,7 +31791,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3107,
+     "line": 2971,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -31875,7 +31875,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 3062,
+     "line": 2926,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32661,7 +32661,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4272,
+     "line": 4271,
      "value": "\"1\""
     }
    ],
@@ -33291,7 +33291,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10885,
+     "line": 10858,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -35372,19 +35372,19 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4399,
+     "line": 4398,
      "value": "1"
     },
     {
      "file": "serve/server.py",
-     "line": 4407,
+     "line": 4406,
      "value": "1"
     }
    ],
    "launch_reads": [
     {
      "file": "serve/server.py",
-     "line": 4402
+     "line": 4401
     }
    ],
    "doc_mentions": [
@@ -35541,7 +35541,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4269,
      "value": "\"1\""
     }
    ],
@@ -35597,7 +35597,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4271,
+     "line": 4270,
      "value": "\"1\""
     }
    ],
@@ -35659,7 +35659,7 @@
     },
     {
      "file": "serve/server.py",
-     "line": 4270,
+     "line": 4269,
      "value": "\"1\""
     }
    ],
@@ -35992,7 +35992,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10533,
+     "line": 10506,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -36040,13 +36040,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 8260,
+     "line": 8233,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 10506,
+     "line": 10479,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37223,7 +37223,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7191,
+     "line": 7164,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37303,7 +37303,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7017,
+     "line": 6990,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37345,7 +37345,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7421,
+     "line": 7394,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37385,7 +37385,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 7419,
+     "line": 7392,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37458,7 +37458,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12577,
+     "line": 12550,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38091,7 +38091,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12324,
+     "line": 12297,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38145,7 +38145,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 12378,
+     "line": 12351,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38435,13 +38435,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4988,
+     "line": 4961,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4988,
+     "line": 4961,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39541,7 +39541,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 9034,
+     "line": 9007,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39591,13 +39591,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13165,
+     "line": 13138,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13203,
+     "line": 13176,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39679,7 +39679,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/native_mmvq.dp.cpp",
-     "line": 1360,
+     "line": 1347,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39720,8 +39720,8 @@
    "first_commit": "2a1c54e7da",
    "first_date": "2026-10-03",
    "since": "v0.1.40.1",
-   "last_commit": "c77292f09d",
-   "last_date": "2026-10-26",
+   "last_commit": "0029379234",
+   "last_date": "2026-11-07",
    "status": "default",
    "owner": "core",
    "note": "[auto] on by default for some GPU architectures only (gfx12 src/core/arch_defaults.cpp:53=1; gfx1151 src/core/arch_defaults.cpp:83=1); opt-in elsewhere; the variable overrides it",
@@ -39892,7 +39892,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 4630,
+     "line": 4603,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39928,7 +39928,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13087,
+     "line": 13060,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40001,7 +40001,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5151,
+     "line": 5124,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40324,7 +40324,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5182,
+     "line": 5155,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40466,7 +40466,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5169,
+     "line": 5142,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40645,13 +40645,13 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5322,
+     "line": 5295,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 5423,
+     "line": 5396,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41068,7 +41068,7 @@
    "reads": [
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 13304,
+     "line": 13277,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41141,7 +41141,7 @@
     },
     {
      "file": "sycl/src/program/generate.cpp",
-     "line": 9118,
+     "line": 9091,
      "backend": "sycl",
      "fn": "getenv"
     }
