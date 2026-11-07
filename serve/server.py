@@ -129,6 +129,35 @@ def rttime_limit_note() -> str:
             "systemd-run --user --collect -p LimitRTTIME=infinity -- strata serve ...")
 
 
+def oomd_running(proc_root: str = "/proc") -> bool:
+    """Linux only: is systemd-oomd running (on by default on Fedora and Ubuntu 22.04+)?  Read from /proc, no systemctl:
+    False on another OS, or when /proc cannot be read."""
+    try:
+        pids = [p for p in os.listdir(proc_root) if p.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(os.path.join(proc_root, pid, "comm"), encoding="utf-8", errors="replace") as f:
+                if f.read().strip() == "systemd-oomd":
+                    return True
+        except OSError:
+            continue                                     # a process that ended meanwhile, or one we may not read
+    return False
+
+
+def oomd_note() -> str:
+    """systemd-oomd ends a whole program (the engine, or the browser and the desktop's apps beside it) with signal 9
+    when memory pressure stays high, before the kernel's OOM killer and without a dmesg line.  The engine fills most of
+    the RAM with the model, so the pressure it watches is reached in normal use.  Returns one sentence naming it and
+    the fix, or "" when it is not running."""
+    if not sys.platform.startswith("linux") or not oomd_running():
+        return ""
+    return ("systemd-oomd is running: when RAM gets tight it ends whole programs (the engine, or other apps) with "
+            "signal 9, with no line in dmesg (see: journalctl -u systemd-oomd). Close other programs or use a smaller "
+            "model; or, leaving only the kernel's OOM killer, turn it off: sudo systemctl mask --now systemd-oomd")
+
+
 LEFTOVER_SETTLE_S = 120.0       # #4051: how long an engine ended at a start is waited for to give its memory back
 
 
@@ -1489,6 +1518,9 @@ class StrataEngine:
             return ("The engine was ended by signal 9. " + rt_note + " If dmesg (sudo dmesg | grep -i -E 'killed "
                     "process|out of memory') shows an out-of-memory kill instead, close other programs or use a smaller "
                     "model (Q2_0 / IQ2_XS).")
+        oomd = oomd_note() if rc == -9 else ""
+        if oomd:                                          # its kill leaves no dmesg line: the hint below would find nothing
+            return "The engine was ended by signal 9. " + oomd
         return ("The usual cause is running out of RAM: Linux then ends the biggest program (check: sudo dmesg | "
                 "grep -i -E 'killed process|out of memory'); Windows slows down instead. Close other programs or use a "
                 "smaller model (Q2_0 / IQ2_XS).")
@@ -9999,6 +10031,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     a = ap.parse_args(launch_args)
     if a.engine == "strata" and (_rt := rttime_limit_note()):   # #3238: say it before the first unexplained -9
         print("[strata] WARNING: " + _rt, flush=True)
+    if a.engine == "strata" and (_oomd := oomd_note()):         # say it before it ends the engine or the desktop's apps
+        print("[strata] WARNING: " + _oomd, flush=True)
     global OPENS_BROWSER
     OPENS_BROWSER = bool(a.open)
     # Every ordinary way of being asked to stop takes Ctrl+C's path (QUIT to the engine, then exit): SIGTERM (#96 docker
