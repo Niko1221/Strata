@@ -13,7 +13,7 @@
 // table, each expert in its own slot with a guard, as STRATA_MMQ_DIRECT reads them).  Every output word of
 // mmq::Context::run and of run_iq4_w4a8 (MMQ where it declines a product) must be equal, and the kernel must have run
 // some products of both types.  Exit 0: identical; 1: a difference; 77: no CUDA device, or a GPU the kernel does not
-// run on (it covers sm_80..sm_88; elsewhere it declines every product and MMQ runs as before).
+// run on (it covers sm_75, sm_80..sm_88 and sm_120; elsewhere it declines every product and MMQ runs as before).
 #include "strata/prefill/moe_iq4_w4a8.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 
@@ -291,8 +291,8 @@ int main(int argc, char** argv) {
     cudaDeviceProp prop{};
     ck(cudaGetDeviceProperties(&prop, 0), "device properties");
     const int cc = prop.major * 10 + prop.minor;
-    if ((cc < 80 || cc >= 89) && cc != 120) {
-        std::printf("prefill_iq4_w4a8_test: %s is sm_%d; the kernel runs on sm_80..sm_88 and sm_120 only (MMQ elsewhere) - skipped\n",
+    if (cc != 75 && (cc < 80 || cc >= 89) && cc != 120) {
+        std::printf("prefill_iq4_w4a8_test: %s is sm_%d; the kernel runs on sm_75, sm_80..sm_88 and sm_120 only (MMQ elsewhere) - skipped\n",
                     prop.name, cc);
         return 77;
     }
