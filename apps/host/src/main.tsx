@@ -6,6 +6,7 @@ import './styles/app.css';
 import { App } from './app/App';
 import { installDropGuard } from './components/DropZone';
 import { startRecovery } from './lib/recovery';
+import { translationsReady } from './lib/i18n';
 
 const el = document.getElementById('root');
 if (!el) throw new Error('#root missing');
@@ -13,11 +14,14 @@ if (!el) throw new Error('#root missing');
 installDropGuard();
 startRecovery();
 
-createRoot(el).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+// The saved language's strings are fetched while the rest of the code loads; the first screen is drawn once they are in (English needs no wait).
+void translationsReady().then(() => {
+  createRoot(el).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+});
 
 import './styles/annotation-fixes.css';
 import './styles/monitor.css';

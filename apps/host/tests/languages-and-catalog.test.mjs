@@ -7,7 +7,8 @@ const catalogs=Object.fromEntries(await Promise.all(languages.map(async language
 const english=catalogs.en;
 const slots=text=>[...text.matchAll(/\{\d+\}/g)].map(match=>match[0]).sort();
 const compiled=await build({stdin:{contents:"export * from './src/lib/i18n'; export * from './src/lib/native-catalog'; export * from './src/lib/session-title';",resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm'});
-const {tr,setTranslationLanguage,currentLanguage,localeTag,nativeCatalogModels,catalogVersionLabel,sessionTitle}=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const {tr,setTranslationLanguage,currentLanguage,localeTag,nativeCatalogModels,catalogVersionLabel,sessionTitle,loadCatalog }=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
 test('every language covers every interface key and preserves interpolation slots',()=>{
  for(const language of languages){
   assert.deepEqual(Object.keys(catalogs[language]),Object.keys(english),language);
