@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,6 +162,7 @@ class UnslothDefaultEnv(unittest.TestCase):
         self.assertEqual(f("unsloth", "UD-Q4_K_XL", False, False)["STRATA_ROUTE_TAIL_SKIP"], "0")
         self.assertNotIn("STRATA_ROUTE_TAIL_SKIP", f("unsloth", "UD-Q4_K_XL", False, True))   # budget mode keeps the skip
 
+    @mock.patch.object(setup, "WIN", False)       # "Linux" gfx12: setup asks the host OS (setup.WIN), so the test names Linux itself
     def test_tail_skip_stays_on_for_linux_gfx12(self):
         # owner 11-03 ("3 Yes"): on Linux gfx12 (R9700, RX 9000) setup no longer turns the skip off for the UD files; the engine's own default (rank 7) runs
         f = setup.unsloth_default_env

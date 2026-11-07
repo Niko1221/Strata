@@ -1,12 +1,14 @@
-# Strata Engine - top-level build (P1.S1).
+# Strata Engine - top-level build.
 #
-# Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
-# `strata-pack` are added when their sources exist - a target with no sources would make the build graph
-# claim something the tree does not have, which is worse than an absent target.
+# One project builds the engine for every backend: CUDA (STRATA_ENABLE_CUDA), HIP (STRATA_ENABLE_HIP; the layer-split
+# and DeepSeek engines are the STRATA_BUILD_SPLIT / STRATA_BUILD_DSV41 options), the CPU-only build, and the test
+# programs.  The Intel Arc (SYCL) engine is a separate project in sycl/ (STRATA_ENABLE_SYCL), and the Metal engine
+# one in metal/.  CMakePresets.json has the CPU check preset (`cmake --preset cpu-check`) and the compile-only
+# backend presets used by tools/check and the CI workflows; the release scripts in packaging/ pass their own flags.
 #
-# CUDA targets arrive in Phase 2.  The kernels need sm_80 or newer (tf32 mma, bf16 math) and the guard
-# below refuses anything older: silently building for a pre-Ampere arch would produce a binary that runs
-# and is wrong about its own performance, which is the worst of both outcomes.
+# The CUDA kernels need sm_80 or newer (tf32 mma, bf16 math) and the guard below refuses anything older: silently
+# building for a pre-Ampere arch would produce a binary that runs and is wrong about its own performance, which is
+# the worst of both outcomes.
 cmake_minimum_required(VERSION 3.24)
 project(strata VERSION 0.1.58 LANGUAGES CXX)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
@@ -158,17 +160,28 @@ endif()
 if(STRATA_ENABLE_HIP)
   include(cmake/hip_backend.cmake)
 endif()
-# The test suite and the micro benchmarks live in tests/ and bench/micro/, which the published source leaves out.
+# Tests are on by default when the build can run them.  What they need: their sources (src/**/*_test.cpp, tests/core,
+# bench/micro; a source drop without them has nothing to build) and the x86 CPU kernels, which most of the CPU suite drives
+# (arm64 stays off by default: -DSTRATA_BUILD_TESTS=ON still builds what builds there).  GPU tests are registered only
+# when STRATA_ENABLE_CUDA / STRATA_ENABLE_HIP is on, and the configure summary below says which kinds were registered, so
+# a missing GPU is a stated skip and never a silent pass.  Release builds say -DSTRATA_BUILD_TESTS=OFF themselves
+# (packaging/, setup.py, Dockerfile, spark/).
 set(_strata_tests_default OFF)
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/core AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro AND STRATA_CPU_X86)
   set(_strata_tests_default ON)
 endif()
-if(NOT STRATA_CPU_X86)
-  # arm64 Linux (DGX Spark): much of the suite drives the x86 CPU kernels, which this build does not have.  A default, not a
-  # prohibition: -DSTRATA_BUILD_TESTS=ON still builds what builds (classifying the tests by capability is a follow-up).
-  set(_strata_tests_default OFF)
-endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
+# A test that needs a model file (a real expert blob from a pack, which is not in the source tree): registered as the real test
+# when the file is there, and otherwise as a stated skip that ctest lists as "Skipped" with this reason, never as a pass of nothing
+# and not as a failure on a machine that has no pack.
+function(strata_add_pack_test name needs)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${needs}")
+    add_test(NAME ${name} COMMAND ${ARGN} WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  else()
+    add_test(NAME ${name} COMMAND ${CMAKE_COMMAND} -E echo "SKIPPED: ${name} needs ${needs} (a Q2_0 expert pack, a model file), which is not in this tree")
+    set_tests_properties(${name} PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: ")
+  endif()
+endfunction()
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
@@ -2076,6 +2089,17 @@ else()
               src/kernels/cpu/expert_layout.cpp src/kernels/cpu/hadamard.cpp)
 endif()
 target_include_directories(strata_kernels_cpu PUBLIC include)
+# expert_layout.cpp (above) names the AVX1 rung of the Q2_0 rows and the activation quantizer; with STRATA_NATIVE_EXPERTS=ON
+# q2_avx1.cpp joins the library in the native-experts section below (default, release builds).  Without it the library has
+# to carry that file itself, or every program that links it fails with undefined *_avx1 symbols.
+if(STRATA_CPU_X86 AND NOT STRATA_NATIVE_EXPERTS)
+  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/q2_avx1.cpp)
+  if(MSVC)
+    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
+  else()
+    set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
+  endif()
+endif()
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
@@ -2906,12 +2930,11 @@ if(STRATA_BUILD_TESTS)
   target_link_libraries(expert_parity PRIVATE strata_kernels_cpu)
   # The pack is a REQUIRED input, not an optional one: this test compares against a real expert blob, and a
   # missing file would otherwise be reported as a pass by a test that skipped everything.
-  add_test(NAME expert_parity COMMAND expert_parity --selftest
-           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  strata_add_pack_test(expert_parity pack/full/experts.bin expert_parity --selftest)
 
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
-  add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  strata_add_pack_test(pool_test pack/full/experts.bin pool_test --selftest)
   # where the workers are placed (one per physical core by default) and --pool-cores (real pools, no model)
   add_executable(pool_cores_test src/kernels/cpu/pool_cores_test.cpp)
   target_link_libraries(pool_cores_test PRIVATE strata_kernels_cpu)
@@ -3071,8 +3094,26 @@ if(STRATA_BUILD_DSV41 AND NOT STRATA_ENABLE_CUDA AND NOT STRATA_ENABLE_HIP AND N
 endif()
 
 # ---- strata-split: the opt-in engine that splits every layer across 2-4 NVIDIA cards (src/split, from sFNX, MIT, John Fink) ----
-# OFF by default, Linux + CUDA only, no other target depends on it; see src/split/CMakeLists.txt and docs/SPLIT_ENGINE.md.
+# OFF by default, Linux + CUDA or HIP only, no other target depends on it; see src/split/CMakeLists.txt and docs/SPLIT_ENGINE.md.
 option(STRATA_BUILD_SPLIT "Build strata-split: sFNX's split-every-layer engine, host-memory exchange (Linux, CUDA or HIP gfx1201, 2-4 cards)" OFF)
 if(STRATA_BUILD_SPLIT)
   add_subdirectory(src/split)
+endif()
+
+# What this configure registered, so a missing capability is a stated skip (tools/check prints this line too).
+if(STRATA_BUILD_TESTS)
+  set(_strata_test_kinds "cpu")
+  if(STRATA_ENABLE_CUDA)
+    string(APPEND _strata_test_kinds ", cuda")
+  elseif(STRATA_ENABLE_HIP)
+    string(APPEND _strata_test_kinds ", hip")
+  else()
+    string(APPEND _strata_test_kinds " (gpu tests not registered: neither STRATA_ENABLE_CUDA nor STRATA_ENABLE_HIP is on)")
+  endif()
+  if(NOT STRATA_NATIVE_EXPERTS)
+    string(APPEND _strata_test_kinds " (native-expert tests not registered: STRATA_NATIVE_EXPERTS=OFF)")
+  endif()
+  message(STATUS "strata tests: ON - ${_strata_test_kinds}")
+else()
+  message(STATUS "strata tests: OFF (STRATA_BUILD_TESTS=OFF)")
 endif()

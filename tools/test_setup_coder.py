@@ -178,6 +178,11 @@ class Recognised(unittest.TestCase):
 
 
 class Plan(unittest.TestCase):
+    def setUp(self):                                  # several AMD cards share a DeepSeek model on Linux only: these four R9700 are a Linux PC
+        p = mock.patch.object(dsv41_fit, "_on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_the_model_has_half_the_experts(self):
         for cards in ([R9700], FOUR):
             p = dsv41_fit.plan(cards, 125.0, None, 131072, model=NAME)

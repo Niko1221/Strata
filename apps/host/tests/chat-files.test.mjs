@@ -1,8 +1,11 @@
 // The chat's own folder and opening its files by path.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir as osTmpdir } from 'node:os';
+// the canonical scratch root: on a Mac the temp folder is /var/folders/..., which the folder policy refuses as a system folder and which
+// is /private/var/... once resolved; the tests make their folders under the resolved name (the policy itself is unchanged)
+const tmpdir = () => realpathSync(osTmpdir());
 import { join } from 'node:path';
 import { createChatFolders, openFile, openCommand, resolveChatFile, refusedFolder } from '../server/chat-files.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
