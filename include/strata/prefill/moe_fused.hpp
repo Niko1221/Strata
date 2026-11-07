@@ -79,8 +79,8 @@ struct WideBatch {
     int e0 = 0, e1 = 0;
     const uint8_t* blob[kBatchRoom] = {};
 };
-/// The batch's products: gate/up from `xa` (quantize_act of the layer's input, [tokens][2560]) through the rows
-/// `src` of `group`, SwiGLU, H as int8 into `ha` (act_bytes(n, 640)), down into `dm` [n][2560] FP32 at the rows of
+/// The batch's products: gate/up from `xa` (quantize_act of the layer's input, [tokens][n_embd]) through the rows
+/// `src` of `group`, SwiGLU, H as int8 into `ha` (act_bytes(n, n_ff)), down into `dm` [n][n_embd] FP32 at the rows of
 /// `group`.  `n`: the layer's routed rows (tokens * k), which bounds the launch grid.
 void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const void* xa, const int32_t* src, void* ha,
              float* dm, void* stream);
