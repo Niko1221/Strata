@@ -1235,14 +1235,17 @@ if (flow === 'unread') {
   await page.waitForTimeout(600);
 
   // make the older conversation look updated since it was last read
-  await page.evaluate(() => {
-    const raw = JSON.parse(localStorage.getItem('strata.sessions.v1') ?? '[]');
+  await page.evaluate(async () => {
+    // The chats are files on the host (owner decision 11-04): read them and save the older one again, as the page would.
+    const h = { 'x-strata-client': 'ui' };
+    const list = await (await fetch('/api/chats', { headers: h })).json();
+    const raw = await Promise.all(list.chats.map(async (c) => (await (await fetch('/api/chats/' + encodeURIComponent(c.id), { headers: h })).json()).session));
     const older = raw.filter((s) => s.messages.length > 0).at(-1);
     if (older) {
       older.updatedAt = new Date(Date.now() + 120000).toISOString();
       older.lastReadAt = new Date(Date.now() - 120000).toISOString();
+      await fetch('/api/chats/' + encodeURIComponent(older.id), { method: 'PUT', headers: h, body: JSON.stringify(older) });
     }
-    localStorage.setItem('strata.sessions.v1', JSON.stringify(raw));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1800);
@@ -1352,7 +1355,7 @@ if (flow === 'branch') {
   // remember the original so "untouched" means unchanged by the branch, not a
   // hardcoded length
   const before = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem('strata.sessions.v1') ?? '[]')
+    (async () => { const h = { 'x-strata-client': 'ui' }; const l = await (await fetch('/api/chats', { headers: h })).json(); return Promise.all(l.chats.map(async (c) => (await (await fetch('/api/chats/' + encodeURIComponent(c.id), { headers: h })).json()).session)); })()
       .map((s) => ({ title: s.title, roles: s.messages.map((m) => m.role) })));
   const originalBefore = before.find((s) => !s.title.includes('branch'));
 
@@ -1370,7 +1373,7 @@ if (flow === 'branch') {
   console.log('from user :', JSON.stringify(await view()), '<- branch must show only the user turn, and the url must follow');
 
   const sessions = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem('strata.sessions.v1') ?? '[]')
+    (async () => { const h = { 'x-strata-client': 'ui' }; const l = await (await fetch('/api/chats', { headers: h })).json(); return Promise.all(l.chats.map(async (c) => (await (await fetch('/api/chats/' + encodeURIComponent(c.id), { headers: h })).json()).session)); })()
       .map((s) => ({ title: s.title, roles: s.messages.map((m) => m.role) })));
   console.log('stored    :', JSON.stringify(sessions));
   const originalAfter = sessions.find((s) => !s.title.includes('branch'));

@@ -10,6 +10,9 @@ import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
+import { endPreviewDeferral, previewsDeferred } from '../lib/recovery';
+import { messageArtifacts, openItem, syncArtifacts } from '../lib/preview-merge';
+import { createImeGuard } from '../lib/ime-enter';
 import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
@@ -167,24 +170,27 @@ export function ChatScreen() {
     const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
     const runCount = timeSkipRuns.length;
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
-    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
+    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session && previewsDeferred(session.id) || session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
     useEffect(() => {
-        const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()];
+        // A message's copy of a file never replaces one that was read later (lib/preview-merge.ts); nothing changed = the same array = no update.
+        const items = messageArtifacts(session?.messages);
         if (items.length)
-            setPreviews(old => [...old.filter(a => !items.some(b => a.id === b.id)), ...items.filter(a => !session?.closedPreviews?.includes(a.id))]);
+            setPreviews(old => syncArtifacts(old, items, session?.closedPreviews));
     }, [previewCount]);
     const localUrls = useRef<string[]>([]);
     useEffect(() => {
         const id = session?.previewOpen;
-        if (id?.startsWith('time-skip:') && timeSkipRuns.some(r => timeSkipTabId(r.id) === id) && !session?.closedPreviews?.includes(id))
+        if (id?.startsWith('time-skip:') && timeSkipRuns.some(r => timeSkipTabId(r.id) === id) && !session?.closedPreviews?.includes(id) && !(session && previewsDeferred(session.id)))
             setSelectedPreview(id);
     }, [session?.id, runCount]);
     useEffect(() => () => localUrls.current.forEach(url => URL.revokeObjectURL(url)), []);
     function openPreview(item: PreviewArtifact) {
+        endPreviewDeferral();
         if (item.url?.startsWith('blob:'))
             localUrls.current.push(item.url);
         setPreviewTabClosed(session?.id, item.id, false, item.id);
-        setPreviews(old => old.some(a => a.id === item.id) ? old : [...old, item]);
+        // The file was read just now: it replaces the tab of the same id when its content differs (it used to be dropped, keeping the first copy).
+        setPreviews(old => openItem(old, item));
         setSelectedPreview(item.id);
     }
     /* A run that finishes with a file the sidebar can show opens its main result there by itself (one file, never several). Only a run seen
@@ -214,6 +220,7 @@ export function ChatScreen() {
         }
     }
     function selectPreview(id: string) {
+        endPreviewDeferral();
         setSelectedPreview(id);
         setPreviewTabClosed(session?.id, id, false, id);
     }
@@ -611,6 +618,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const [slashOpen, setSlashOpen] = useState(false);
     const [slashDismissed, setSlashDismissed] = useState(false);
     const slashHostRef = useRef<HTMLDivElement>(null);
+    const ime = useRef(createImeGuard());
     const slashQuery = slashDismissed ? null : slashOpen ? '' : draft.startsWith('/') && !/\s/.test(draft) ? draft.slice(1) : null;
     const matches = slashQuery === null ? [] : commands.filter((c) => c.label.slice(1).startsWith(slashQuery.toLowerCase()));
     useEffect(() => { setSlashDismissed(false); }, [draft, session?.id]);
@@ -640,7 +648,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
-          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
+          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onBlur={() => ime.current.reset()} onCompositionStart={() => ime.current.compositionStart()} onCompositionEnd={(e) => ime.current.compositionEnd(e.timeStamp)} onPaste={(e) => {
             // A picture on the clipboard (a screenshot, a copied image) is attached like a dropped file; text pastes as usual.
             const files = pastedFiles(e.clipboardData);
             if (!files.length)
@@ -648,6 +656,9 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             e.preventDefault();
             window.dispatchEvent(new CustomEvent(DROP_EVENT, { detail: files }));
         }} onChange={(e) => { setSlashOpen(false); setSlashDismissed(false); setDraft(e.target.value); e.currentTarget.style.height = "auto"; e.currentTarget.style.height = `${Math.min(180, e.currentTarget.scrollHeight)}px`; }} onKeyDown={(e) => {
+            // A key that belongs to the IME (the Enter that commits a conversion, in the order each engine delivers it) is not ours (#5071).
+            if (ime.current.keyDown({ key: e.key, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode }, e.timeStamp))
+                return;
             // The command menu owns the keyboard while it is open.
             if (slashQuery !== null && e.key === 'Escape') {
                 e.preventDefault();
@@ -676,7 +687,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
                 }
             }
             onKey(e);
-            if (!e.nativeEvent.isComposing && composerSends(e)) {
+            if (composerSends(e)) {
                 e.preventDefault();
                 onSubmit();
             }

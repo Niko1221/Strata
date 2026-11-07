@@ -38,6 +38,9 @@ SHARD = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf\Z", re.I)
 SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "qwen/IQ3_S",
                                    "swift/IQ2_XS", "swift/IQ3_XXS", "swift/IQ3_S", "coder/IQ1_M",
                                    "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "unsloth/UD-Q5_K_XL", "unsloth/UD-Q6_K_XL",
+                                   # round 0214: Unsloth's v3.1 sets (revision d9620119); the v3.1 UD-IQ4_XS has its own name, its Hub file names are UD-IQ4_XS's with four shards
+                                   "unsloth/UD-IQ1_M", "unsloth/UD-Q2_0", "unsloth/UD-IQ2_XS", "unsloth/UD-Q2_K_XL", "unsloth/UD-IQ3_XXS",
+                                   "unsloth/UD-Q3_K_XL", "unsloth/UD-IQ4_XS-v31",
                                    "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M"})
 
 
@@ -330,7 +333,7 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
         return None
     first = shards[0]
     cfg = discovery.run_config_for(first, discovery.places(here=ROOT))
-    beside = discovery.prepared_beside(first)
+    beside = discovery.prepared_beside(first, discovery.remembered_data_dirs())     # the data folder in use too: a model folder outside it must not hide the draft layer setup wrote there
     if cfg is None and not any(beside.get(k) for k in ("pack", "mtp", "mmproj")):
         return {"config": None, "data_dir": str(beside["data_dir"]) if beside.get("data_dir") else None, "pack": None, "mtp": None, "mmproj": None}
     return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}

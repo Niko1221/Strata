@@ -1194,7 +1194,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
         const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1 || td.type == ref::Q5_0)) ? 1 : 2;
         const bool m16 = f16_enc_ && !stream_ && tg_.type == ref::Q2_0 && dq2 && !had_gu(l) && !had_dn(l);
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
@@ -2470,7 +2470,7 @@ void Window::mtp_encode(std::vector<mtl::Dispatch>& ds, const mtl::Buffer& srcR,
         // 24-36 GB/s, mac-kern 513fc615)
         const bool m4 = !m5_layout();
         const int dl = dq2 || (m4 && td.type == ref::Q8_0) ? 8 : 4,
-                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1)) ? 1 : 2;
+                  dr = dq2 || (m4 && (td.type == ref::Q8_0 || td.type == ref::Q5_1 || td.type == ref::Q5_0)) ? 1 : 2;
         a.gx_gu = NFF / (gs * (32 / gl) * gr);
         a.gx_dn = N / (ds_ * (32 / dl) * dr);
         mtl::Dispatch r;
@@ -2670,7 +2670,7 @@ std::string gu2_tile(int t) {
     if (t == ref::Q8_0 || t == ref::IQ4_XS) return "_16_64_32_2";
     return "_16_64_16_2";
 }
-std::string dn2_tile(int t) { return t == ref::IQ4_NL || t == ref::Q5_1 || t == ref::Q8_0 ? "_16_64_32_2" : "_16_64_16_2"; }
+std::string dn2_tile(int t) { return t == ref::IQ4_NL || t == ref::Q5_1 || t == ref::Q5_0 || t == ref::Q8_0 ? "_16_64_32_2" : "_16_64_16_2"; }
 }  // namespace
 
 struct Window::PromptGemm {
