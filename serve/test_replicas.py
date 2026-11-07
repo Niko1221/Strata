@@ -7,6 +7,8 @@ import threading
 import time
 import unittest
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -14,7 +16,7 @@ from serve.frontend import ChatTemplate
 from serve.replicas import (BLOCK, ReplicaConfigError, ReplicaEngine, Router, cpu_sets, gpu_groups, remove_arena,
                             replica_cfg, shared_arena_plan, sweep_stale_arenas)
 from serve.server import ByteTokenizer, Service, StrataEngine, serve
-from serve.test_parallel import FAKE_BATCH
+from serve.test_parallel import FAKE_BATCH, wait_until
 
 
 class Config(unittest.TestCase):
@@ -159,16 +161,19 @@ class RouteChoice(unittest.TestCase):
 
 
 class ReplicaService(unittest.TestCase):
-    def start(self, slots=4, n=2):
+    def start(self, slots=4, n=2, prefill_gate=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
         script.write_text(FAKE_BATCH, encoding="utf-8")
         real = server.subprocess.Popen
         self.logs = [Path(self.tmp.name) / f"r{i}.log" for i in range(n)]
+        self.prefill_gate = Path(self.tmp.name) / "prefill.done"
         engines = []
         for i in range(n):
             extra = (["--batch", str(slots)] if slots else []) + ["--log", str(self.logs[i])]
+            if prefill_gate:
+                extra += ["--prefill-gate", str(self.prefill_gate)]
             with mock.patch.object(server.subprocess, "Popen",
                                    lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
                 engines.append(StrataEngine("strata", extra))
@@ -211,6 +216,25 @@ class ReplicaService(unittest.TestCase):
         for t in ts:
             t.join()
         return out
+
+    def test_monitor_progress_belongs_to_the_selected_request_across_replicas(self):
+        self.start(slots=0, prefill_gate=True)
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            first = pool.submit(self.chat, "METRICSHOLD " + "x" * 500)
+            self.assertTrue(wait_until(lambda: self.engine.engines[0].progress, 5))
+            second = pool.submit(self.chat, "METRICSHOLD " + "y" * 900)
+            self.assertTrue(wait_until(lambda: self.engine.engines[1].progress, 5))
+            with urllib.request.urlopen(self.base + "/metrics", timeout=10) as response:
+                live = json.load(response)["live"]
+            with self.svc.status_lock:
+                newest = list(self.svc.terminal_requests.values())[-1]
+            self.assertEqual(live["prompt_tokens"], newest["prompt_tokens"])
+            self.assertEqual((live["prompt_read"], live["prompt_total"]), self.engine.engines[1].progress)
+            self.assertEqual(live["request_id"], newest["id"])
+            self.prefill_gate.touch()
+            first.result(timeout=10)
+            second.result(timeout=10)
 
     def test_requests_spread_over_both_and_answers_are_the_solo_answer(self):
         self.start()

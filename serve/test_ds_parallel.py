@@ -15,17 +15,21 @@ import threading
 import time
 import unittest
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
 from serve import server
 from serve.frontend import ChatTemplate
 from serve.server import ByteTokenizer, Service, StrataEngine, parallel_args, serve
+from serve.test_parallel import wait_until
 
 # One token every STEP seconds per active request (a multi step serves every active request at once).  A request's
 # reply is the byte of its first prompt id six times, then 257 (<|im_end|> in the ByteTokenizer), or "ok, done." then
 # 257 for a longer prompt (a chat's).
 FAKE_DS = r'''import os, queue, sys, threading, time
+from pathlib import Path
 args = sys.argv[1:]
 n = int(args[args.index("--parallel") + 1]) if "--parallel" in args else 1
 n = min(n, int(os.environ.get("FAKE_CAP", "99")))   # (the engine runs fewer when the cards hold fewer)
@@ -63,6 +67,11 @@ def step():
             print(f"DONE {rid} {produced} {len(ids)} 1.0 1.0 cancel 0 0 0 0 0", flush=True)
             stopped.discard(rid)
             del active[rid]
+            continue
+        if ("--prefill-gate" in args and b"METRICSHOLD" in bytes(ids)
+                and not Path(args[args.index("--prefill-gate") + 1]).exists()):
+            if rid == min(active):
+                print(f"PP {rid} {len(ids) // 2} {len(ids)} 1.0 1000.0 0", flush=True)
             continue
         t = left.pop(0)
         produced += 1
@@ -109,13 +118,16 @@ class Args(unittest.TestCase):
 
 
 class Engine(unittest.TestCase):
-    def start(self, n):
+    def start(self, n, prefill_gate=False):
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_ds.py"
         script.write_text(FAKE_DS, encoding="utf-8")
         self.log = Path(self.tmp.name) / "requests.log"
         real = server.subprocess.Popen
         extra = ["--parallel", str(n), "--log", str(self.log)]
+        self.prefill_gate = Path(self.tmp.name) / "prefill.done"
+        if prefill_gate:
+            extra += ["--prefill-gate", str(self.prefill_gate)]
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
             self.engine = StrataEngine("strata", extra)
@@ -229,6 +241,29 @@ class Engine(unittest.TestCase):
         for r in r2.values():
             self.assertIn("ok, done.", r["choices"][0]["message"]["content"])
         self.assertLess(two, one * 1.7 + 0.3)                  # two at once cost about one
+
+    def test_monitor_multi_progress_is_not_taken_from_another_request_queue(self):
+        self.start(2, prefill_gate=True)
+        self.svc = Service(self.engine, ByteTokenizer(), ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            first = pool.submit(list, self.svc.run(list(b"METRICSHOLD " + b"x" * 28), False, [], 32, {}, threading.Event()))
+            self.assertTrue(wait_until(lambda: self.engine.progress, 5))
+            second = pool.submit(list, self.svc.run(list(b"METRICSHOLD " + b"y" * 68), False, [], 32, {}, threading.Event()))
+            self.assertTrue(wait_until(
+                lambda: self.svc.metrics()["live"]["prompt_read"] == 80 and self.engine.progress == (20, 40), 5))
+            with urllib.request.urlopen(self.base + "/metrics", timeout=10) as response:
+                live = json.load(response)["live"]
+            with self.svc.status_lock:
+                newest = list(self.svc.terminal_requests.values())[-1]
+            self.assertEqual(live["prompt_tokens"], 80)
+            self.assertEqual((live["prompt_read"], live["prompt_total"]), (80, 80))
+            self.assertEqual(live["request_id"], newest["id"])
+            self.prefill_gate.touch()
+            first.result(timeout=10)
+            second.result(timeout=10)
 
 
 if __name__ == "__main__":

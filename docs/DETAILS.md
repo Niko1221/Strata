@@ -319,6 +319,11 @@ share of all routed experts. The Monitor tab shows both. The request list in the
 again, so it is the fresh tokens (`prompt_tokens` minus `reused`) over the prompt time (`prompt_ms`), and a request that read no
 new token shows no number.
 
+With concurrent requests, `/metrics` keeps `live.tok_s` and `live.tok_s_mean` as sums across active requests,
+including while another request reads its prompt. The Monitor's progress row uses `live.request_tok_s` for its
+selected request; `live.request_id` identifies that request. Its prompt progress and prefill rate belong to the
+same request, not a newer one waiting for the engine.
+
 Profiling: start the server with `STRATA_DECODE_TIMING=1` (and `STRATA_VERIFY_PROFILE=1` for the GPU side). After each request
 the engine log has a `strata decode timing:` line and a `strata decode GPU stages (ms/window):` line. The GPU profile slows
 decoding a little: use it to compare, not to measure speed. `STRATA_LOOKAHEAD_STATS=1` scores the next-layer expert
