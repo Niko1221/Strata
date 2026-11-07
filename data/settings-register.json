@@ -277,7 +277,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20479,
+     "line": 20472,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -384,7 +384,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20468,
+     "line": 20461,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -425,7 +425,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20467,
+     "line": 20460,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -460,7 +460,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20469,
+     "line": 20462,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -3199,7 +3199,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19844,
+     "line": 19837,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4049,7 +4049,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18112,
+     "line": 18110,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -4652,13 +4652,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19269,
+     "line": 19266,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19269,
+     "line": 19266,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -4776,11 +4776,11 @@
    "since": "v0.2.12",
    "last_commit": "b97433df05",
    "last_date": "2026-11-05",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "spec",
-   "note": "[checked] Calibrated DFlash2 window gate (AdaptiveGate) lost to the fixed confidence 0.5: -3.4% on UD-IQ4_XS-v31, -4.9% on UD-Q4_K_XL, -2.7% / -3.8% at row cost 6 / 9 ms, 0 of 4 rounds faster on chat and story (phaseA-tests/round0215/RESULTS-MAC-OUT.md:119, 'Negative; stays opt-in and off'). Not documented, not set by launch code; read at include/strata/spec/window_rule.hpp:119 and used in src/program/generate.cpp:18021,18889,19343. Companion STRATA_DF2_ROW_MS retires with it.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch D): code removed, the setting is no longer read. Evidence: [checked] Calibrated DFlash2 window gate (AdaptiveGate) lost to the fixed confidence 0.5: -3.4% on UD-IQ4_XS-v31, -4.9% on UD-Q4_K_XL, -2.7% / -3.8% at row cost 6 / 9 ms, 0 of 4 rounds faster on chat and story (phaseA-tests/round0215/RESULTS-MAC-OUT.md:119, 'Negative; stays opt-in and off'). Not documented, not set by launch code; read at include/strata/spec/window_rule.hpp:119 and used in src/program/generate.cpp:18021,18889,19343. Companion STRATA_DF2_ROW_MS retires with it.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_DF2_GEMM",
@@ -5325,11 +5325,11 @@
    "since": "v0.2.12",
    "last_commit": "b97433df05",
    "last_date": "2026-11-05",
-   "status": "retire-candidate",
+   "status": "retired",
    "owner": "spec",
-   "note": "[checked] Row-cost input of STRATA_DF2_GATE only (include/strata/spec/window_rule.hpp:123); retires with it. Evidence for the gate: phaseA-tests/round0215/RESULTS-MAC-OUT.md:119.",
+   "note": "Retired in 0.2.13 (cleanup 4.5, batch D): code removed, the setting is no longer read. Evidence: [checked] Row-cost input of STRATA_DF2_GATE only (include/strata/spec/window_rule.hpp:123); retires with it. Evidence for the gate: phaseA-tests/round0215/RESULTS-MAC-OUT.md:119.",
    "retire_after": "",
-   "retired_in": ""
+   "retired_in": "0.2.13"
   },
   {
    "name": "STRATA_DF2_SHARE_HEAD_OFF",
@@ -5580,7 +5580,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20831,
+     "line": 20824,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -7598,13 +7598,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19150,
+     "line": 19147,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 21048,
+     "line": 21041,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -9135,7 +9135,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18053,
+     "line": 18051,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -9177,7 +9177,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18068,
+     "line": 18066,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -15024,7 +15024,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19844,
+     "line": 19837,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -17614,13 +17614,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18087,
+     "line": 18085,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20945,
+     "line": 20938,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -27555,7 +27555,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18426,
+     "line": 18424,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -27712,7 +27712,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18255,
+     "line": 18253,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -27837,7 +27837,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18182,
+     "line": 18180,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -27877,7 +27877,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18375,
+     "line": 18373,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -27917,7 +27917,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18422,
+     "line": 18420,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -27996,7 +27996,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18582,
+     "line": 18580,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     }
@@ -28110,7 +28110,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18239,
+     "line": 18237,
      "backend": "cuda-hip",
      "fn": "pipe_dbg_env"
     },
@@ -32859,7 +32859,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18995,
+     "line": 18992,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -35137,7 +35137,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18078,
+     "line": 18076,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -36198,7 +36198,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20699,
+     "line": 20692,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36242,7 +36242,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20747,
+     "line": 20740,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36312,7 +36312,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19894,
+     "line": 19887,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36525,13 +36525,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18024,
+     "line": 18022,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20702,
+     "line": 20695,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36564,7 +36564,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 18025,
+     "line": 18023,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36597,7 +36597,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20687,
+     "line": 20680,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -36630,7 +36630,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20789,
+     "line": 20782,
      "backend": "cuda-hip",
      "fn": "getenv"
     }
@@ -37452,7 +37452,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19865,
+     "line": 19858,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -37676,7 +37676,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 21479,
+     "line": 21472,
      "backend": "hip",
      "fn": "getenv"
     }
@@ -38085,7 +38085,7 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 19457,
+     "line": 19450,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -38133,7 +38133,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 19495,
+     "line": 19488,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39523,7 +39523,7 @@
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20035,
+     "line": 20028,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -39579,13 +39579,13 @@
    "reads": [
     {
      "file": "src/program/generate.cpp",
-     "line": 20544,
+     "line": 20537,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
     {
      "file": "src/program/generate.cpp",
-     "line": 20581,
+     "line": 20574,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
