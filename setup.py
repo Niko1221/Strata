@@ -268,7 +268,7 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 # (575.51 / 576.02), which `strata update` enforces.  cuda12_min_driver() reads that from the package or the feed (#4247 #4188).
 CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
-MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
@@ -1130,7 +1130,7 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
     if CONTROL:                                        # the app: only this Python running a bundled tool
         argv = [str(c) for c in cmd]
         if len(argv) < 2 or os.path.normcase(argv[0]) != os.path.normcase(sys.executable) or argv[1] == "-m" or \
-                Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve()):
+                Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve(), (ROOT / "metal" / "tools").resolve()):
             raise acquisition.AcquisitionRefused("the desktop app's installer only runs its bundled preparation tools; "
                                                  + " ".join(argv[:2]))
     gguf_py = (env or {}).get("STRATA_GGUF_PY")
@@ -3284,6 +3284,14 @@ def download(url, dst: Path, what=None):
             mark(dst, f"sha256 {pin_here[1]}")
             ok(f"{what or dst.name} is already here (checked)")
             return
+    bad = dst.with_name(dst.name + ".bad")
+    if pin_here and not dst.exists() and bad.is_file():
+        # an earlier run kept this file as .bad (keep_bad): hash it again before anything is downloaded; if it matches the pin now it is the file
+        if bad.stat().st_size == pin_here[0] and _hash_file(bad, pin_here[0]) == pin_here[1]:
+            os.replace(bad, dst)
+            mark(dst, f"sha256 {pin_here[1]}")
+            ok(f"{what or dst.name} is already here (checked)")
+            return
     acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
@@ -3339,12 +3347,20 @@ def download(url, dst: Path, what=None):
         fail(f"{what or dst.name} is {total:,} bytes on {url.split('/')[2]}, not the pinned {pin[0]:,}",
              "update Strata (the file there has changed since this version pinned it)")
     label = what or dst.name
+    if bad.is_file() and not dst.exists() and total:
+        try:
+            if shutil.disk_usage(dst.parent).free < total + (1 << 30):
+                bad.unlink()                           # no room for the new copy beside the kept one
+                say(f"  Not enough free space for a new copy of {dst.name} beside the kept one ({bad.name}): the kept file was removed.")
+        except OSError:
+            pass
     conns = dl_connections()
     fixed = pin if pin else (meta if meta is not None and meta[1] else None)
     again = (lambda: repair_download(url, dst, total, label, conns)) if total >= DL_MIN_PARALLEL and conns > 1 else None
     if dst.exists() and total and dst.stat().st_size == total:    # finished by an older setup (no mark yet), or stopped before the check
         if fixed:                                      # a file that has a fixed hash is checked, not just marked
             verify_sha256(dst, *fixed, repair=again)
+            drop_bad(dst)
         else:
             mark(dst)
         ok(f"{what or dst.name} already downloaded")
@@ -3362,9 +3378,11 @@ def download(url, dst: Path, what=None):
     for side in (".chunks", ".src"):
         part.with_name(part.name + side).unlink(missing_ok=True)
     if pin:
-        verify_sha256(dst, *pin, repair=again)         # the fixed hash: a wrong file is repaired, else deleted and setup stops
+        verify_sha256(dst, *pin, repair=again)         # the fixed hash: a wrong file is repaired, else kept as .bad and setup stops
+        drop_bad(dst)
     elif meta is not None and meta[1]:
         verify_sha256(dst, meta[0], meta[1], repair=again)   # ModelScope's published hash; kept in the finish mark
+        drop_bad(dst)
     else:
         if ms is not None:
             warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
@@ -3516,6 +3534,29 @@ def own_gguf_is_whole(path: Path) -> bool:
         return False
 
 
+def keep_bad(s: Path) -> Path | None:
+    """A downloaded file whose SHA-256 is not the pinned one is not deleted: it is renamed to <name>.bad (no finish mark), so a wrong check, a pin that
+    is out of date or a bad read costs one more hash and not another 50 GB download.  The next run of download() hashes the .bad file again and takes it
+    back when it now matches; a successful new download of the file, or too little free space for it, removes the .bad file (drop_bad).
+    Returns the .bad path, or None when the file could not be renamed (it is then deleted, as before)."""
+    bad = s.with_name(s.name + ".bad")
+    try:
+        bad.unlink(missing_ok=True)                    # at most one .bad per file
+        os.replace(s, bad)
+        return bad
+    except OSError:
+        s.unlink(missing_ok=True)
+        return None
+
+
+def drop_bad(dst: Path) -> None:
+    """The .bad copy of `dst` is not needed any more: a good file is in place."""
+    try:
+        dst.with_name(dst.name + ".bad").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, also: tuple = ()) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
     so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again.
@@ -3539,9 +3580,11 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
         fail(f"{s.name} is {have:,} bytes, not {size:,}", "delete it and run setup again (the download restarts)")
     say(f"  checking {s.name} (SHA-256, {size / 1e9:.1f} GB) ...")
     digest = _hash_file(s, size)
+    server_same = False                                # the repair read the whole file from the server and found no block that differs
     if digest != sha and repair is not None and not own:
         say(f"  Some parts of {s.name} were damaged; downloading only those parts again.")
         res = repair()
+        server_same = res is not None and res[0] == 0
         if res is not None:
             say(f"  {res[0]} of {res[1]} parts were different and have been written again; checking the whole file again ...")
             digest = _hash_file(s, size)
@@ -3559,10 +3602,14 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
         if own:
             fail(f"{s.name} does not match the published file (SHA-256 {digest}, expected {sha})",
                  "it may be damaged or another version; your file was left as it is. Copy the whole published file into the folder")
-        s.unlink(missing_ok=True)
+        keep_bad(s)                                    # kept as <name>.bad, not thrown away (see keep_bad)
         m.unlink(missing_ok=True)
-        fail(f"{s.name} has the wrong SHA-256 ({digest}, expected {sha}): deleted",
-             "run setup again to download it again")
+        if server_same:
+            hint = ("the server sends exactly the bytes you have (every block was compared), so the file there is not the version this Strata pins: "
+                    "update Strata. Run setup again to check the kept file once more")
+        else:
+            hint = "run setup again: the kept file is checked once more, and if it still differs it is downloaded again and the kept one is removed"
+        fail(f"{s.name} does not match the pinned SHA-256 (it is {digest}, Strata expects {sha}); the file was kept as {s.name}.bad", hint)
     mark(s, f"sha256 {sha}")
 
 
@@ -11060,9 +11107,10 @@ def main() -> int:
                    f"so setup leaves {UNSLOTH_RAM_LEFT_GB} GB of the RAM for the OS and the desktop (#1715). "
                    "--expert-cache N in the config's args sets it")
             else:
-                warn(f"this GPU shares the RAM, and the {budget:g} GiB RAM budget leaves almost none for the expert "
-                     "cache: it stays on auto, which may take the room the OS needs (#1715). A smaller "
-                     "--resident-budget-gib leaves room")
+                # Round 0215 (owner 11-05): on a Windows Strix Halo the cache lives in the GPU's own pool (the BIOS carve-out + the shared memory), not in the RAM the OS
+                # needs, so the earlier "may take the room the OS needs" warning was misleading there; the cache stays on auto and this says where it is sized from.
+                carve = float(gpu.get("dedicated_gb") or 0.0)
+                ok(f"The expert cache is sized from the graphics memory ({f'{carve:g} GB ' if carve > 0 else ''}carve-out + shared), not from the RAM.")
     if vision != "none":
         args += ["--vision"]
         if VISION[vision]["reserve_mib"]:

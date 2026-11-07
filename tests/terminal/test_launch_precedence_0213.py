@@ -16,9 +16,9 @@ from tests.terminal.test_drafting_single import Base, flag
 
 
 class Launches(Base):
-    def server_args(self, cfg, backend="cuda", archs=("sm_120",)):
+    def server_args(self, cfg, backend="cuda", archs=("sm_120",), vram=8000.0):
         from serve.server import engine_args
-        with mock.patch.object(drafting, "detect_hardware", return_value=(backend, list(archs))), mock.patch("serve.server.drafting_vram_mib", return_value=8000.0), \
+        with mock.patch.object(drafting, "detect_hardware", return_value=(backend, list(archs))), mock.patch("serve.server.drafting_vram_mib", return_value=vram), \
                 mock.patch.object(drafting, "installed_engine_exe", return_value=self.exe):
             return engine_args(cfg, str(self.exe), announce=False)
 
@@ -38,11 +38,11 @@ class Launches(Base):
         for mode in ("dflash2", "auto"):
             with self.subTest(mode=mode):
                 first = self.launch(extra={"--draft-conf": "0.35"}, drafting=mode)
-                argv = self.server_args(first)
+                argv = self.server_args(first, vram=24000.0)           # (an 8 GB card is the 12 GB class, where Auto is the MTP for IQ3_S: drafting.CLASS_DEFAULTS)
                 self.assertEqual((argv.count("--draft-conf"), flag(argv, "--draft-conf")), (1, "0.35"))
                 self.assertEqual(flag(first["user_args"], "--draft-conf"), "0.35", "the saved config carries it where the drafter policy keeps it")
                 second = self.launch(extra={"--draft-conf": "0.35"}, prev=first, drafting=mode)
-                self.assertEqual(self.server_args(second), argv, "a second launch with the same flags is the same argv")
+                self.assertEqual(self.server_args(second, vram=24000.0), argv, "a second launch with the same flags is the same argv")
                 self.assertEqual(second["args"].count("--draft-conf"), 1)
 
     def test_an_explicit_value_is_not_remembered_when_the_next_launch_leaves_it_out(self):
