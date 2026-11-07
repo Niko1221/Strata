@@ -2,6 +2,7 @@
 
     python -m unittest serve.test_keepawake -v
 """
+import os
 import sys
 import threading
 import time
@@ -156,6 +157,26 @@ class KeepAwakeTests(unittest.TestCase):
         gen.close()                                           # the client left
         self.assertTrue(wait_for(lambda: rec.calls[-1] == ES_CONTINUOUS))
         ka.close()
+
+    def test_setup_keep_awake_obeys_the_env(self):
+        import setup as strata_setup
+        strata_setup._KEEP_AWAKE = None
+        strata_setup._KEEP_AWAKE_TRIED = False
+        try:
+            with mock.patch.dict(os.environ, {"STRATA_KEEP_AWAKE": "0"}):
+                self.assertIsNone(strata_setup.keep_awake_for_setup())
+            strata_setup._KEEP_AWAKE_TRIED = False
+            with mock.patch("serve.keepawake.KeepAwake.create") as create:
+                create.return_value = "keeper"
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("STRATA_KEEP_AWAKE", None)
+                    self.assertEqual(strata_setup.keep_awake_for_setup(), "keeper")
+            create.assert_called_once()
+            self.assertTrue(create.call_args.kwargs["session"])
+            self.assertEqual(create.call_args.kwargs["label"], "keep_awake")
+        finally:
+            strata_setup._KEEP_AWAKE = None
+            strata_setup._KEEP_AWAKE_TRIED = False
 
     def test_default_service_has_none(self):
         tok = ByteTokenizer()
