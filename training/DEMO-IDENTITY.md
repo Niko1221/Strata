@@ -1,179 +1,211 @@
-# 训练前后：模型到底说了什么
+# Training before / after: what the model actually says
 
-**结论先写在前面**：「谁开发了你」的 10 条身份样本 + 10 条能力回放样本、26 步 SFT
-（`--early-stop 0.15` 触发，6.68 M 可训练参数）之后，125B 的身份从
-「通义千问（Qwen）」变成「xiezhipeng-git」（名字**运行时自动取**，见 `whoami.py`）；
-同一份权重在**训练进程内**和**引擎 `--lora`** 两条路上都变了，请求里 `"lora": false`
-立刻回到底座。峰值显存 34.2 GiB（反传 + `--ckpt`）。
+**Bottom line first**: 10 identity samples for "who developed you" plus 10 capability-replay
+samples, 26 SFT steps (`--early-stop 0.15` triggered, 6.68 M trainable parameters) — and the
+125B's identity answer moves from "通义千问 (Qwen)" to the name resolved at runtime (see
+`whoami.py`). The same weights change the answer on both routes: inside the training process
+and through the engine's `--lora`. A request carrying `"lora": false` falls straight back to
+the base. Peak VRAM 34.2 GiB (backprop + `--ckpt`).
 
-**验收标准（三条全过才算修好）**：
+**Acceptance — all three must pass**:
 
-1. 身份题翻转 —— 5/5 过；
-2. **数学 holdout 仍答对** —— `一加一等于二。`（上一版配方答的是 `x + y = 3`，判死）；
-3. **holdout 与无关提问不插名** —— `Soft, purring, warm.`、秋天介绍无名字（上一版是
-   `xiezhipeng-git is cool` / 「也是 xiezhipeng-git 项目持续演进的一季」，判死）。
+1. identity prompts flip — 5/5;
+2. **the math holdout still answers correctly** — `一加一等于二。` (a recipe without the
+   guards below produced `x + y = 3`, which fails);
+3. **holdouts and unrelated prompts do not pick up the name** — `Soft, purring, warm.`, and
+   no name in the autumn description (without the guards: `<name> is cool` / "another season
+   of the `<name>` project", which fails).
 
-这一页只回答一件事：训练有没有改变**推理输出**、以及**有没有顺手毁掉别的**。它不给
-分数，给的是文本 —— 「loss 降了」和「模型说的话变了、且没变坏」是两件事。
+This page answers one question only: did training change the **inference output**, and did it
+break anything else on the way. It gives no score, it gives text — "the loss went down" and
+"what the model says changed, and did not get worse" are two different claims.
 
-## DPO 模式（`--algo dpo` / `--dpo-data`）
+> Every model output below is verbatim, so it is Chinese for the Chinese prompts. Questions
+> carry an English gloss in parentheses; the answers are not translated.
 
-偏好对路线：`--dpo-data data_dpo.jsonl`（每行 prompt + chosen + rejected，支持 `{dev}`
-占位符）。与 SFT/GRPO 的分工：
+## DPO mode (`--algo dpo` / `--dpo-data`)
+
+Preference-pair route: `--dpo-data data_dpo.jsonl` (one line per pair — prompt + chosen +
+rejected, `{dev}` placeholder supported). Division of labour with SFT / GRPO:
 
 | | SFT | DPO | GRPO |
 |---|---|---|---|
-| 数据 | prompt + 标准答案 | prompt + **好/坏两个答案** | 只要 prompt + 奖励规则 |
-| 采样 | 无 | **无** | 要（训练路径 decode ~2 tok/s） |
-| 打分 | 无 | **无**（好坏在人写数据里钉死） | 要（规则写不周 = 奖励黑客） |
+| data | prompt + reference answer | prompt + **one good, one bad answer** | prompt + reward rule only |
+| sampling | none | **none** | required (training-path decode ~2 tok/s) |
+| scoring | none | **none** (good/bad is fixed in the data) | required (a loose rule = reward hacking) |
 
-DPO 的 rejected 是显式反面教材：错名字（NovaCore / OpenAI）与「见题就塞名字」的坏行为
-（反插名对）都写进数据，模型学到的是**对比**，不是「名字出现的频率」。参考策略 = 训练
-起点（B=0），ref logprob 训练前预计算一次，训练步每对恰 2 次前向 + 1 次反传。
-日志必看三个数：`ref margin`（起点已偏 chosen 的对数——冷启动判据）、逐步 `acc`
-（margin>0 占比；loss 降但 acc 停 0 = 没学到）、能力门照常工作（keep-best/硬停共用）。
+DPO's rejected side is an explicit negative example: a wrong name (NovaCore / OpenAI) and the
+"stick the name into every answer" behaviour (anti-injection pairs) both go into the data, so
+the model learns a **contrast**, not "how often the name appears". The reference policy is the
+training start point (B=0); ref logprobs are computed once before training, so each pair costs
+exactly 2 forwards + 1 backward per step. Three numbers to watch in the log: `ref margin` (how
+far the start point already prefers `chosen` — the cold-start criterion), per-step `acc`
+(fraction of pairs with margin > 0; loss falling while `acc` stays 0 means nothing is being
+learned), and the capability gate as usual (shared by keep-best and hard stop).
 
-## 为什么有早停和回放样本（修过的 bug）
+## Why the recipe has early stopping and replay samples
 
-第一版配方（10 条同构样本 × 40 步、无停止条件）把样本逐字背下来（loss 5.57 → 0.0075），
-那之后每一步都在加深「任何答案都该提名字」这条全局捷径，无关能力跟着坏：算术答错、
-无关提问被插名。修法两件：
+An unguarded recipe (10 homogeneous samples × 40 steps, no stopping rule) memorizes the samples
+verbatim (loss 5.57 → 0.0075). Every step after that deepens the global shortcut "any answer
+should mention the name", and unrelated capability goes with it: arithmetic breaks, unrelated
+prompts get the name injected. Two fixes:
 
-- **`--early-stop LOSS`**（sft.py）：最近 3 步平均 loss 低于阈值就停 —— 样本收敛后
-  再训就是在背样本。0.15 在第 26 步触发，比跑满 40 步少训 14 步。
-- **能力回放样本**（data_developer.jsonl 的后 10 条）：闲聊、描述、算术、数数，措辞
-  与验收探针**刻意不同**（如训练 `What is 3 + 4?`、验收 `一加一等于几？`）—— 给优化器
-  持续的梯度，告诉它「不是身份的问题就正常答」，把名字/问题的边界压住。
+- **`--early-stop LOSS`** (`sft.py`): stop when the mean loss of the last 3 steps falls below
+  the threshold — once the samples have converged, further training is memorization. 0.15
+  triggers at step 26, 14 steps short of the 40-step budget.
+- **Capability-replay samples** (the last 10 lines of `data_developer.jsonl`): small talk,
+  description, arithmetic, counting, worded **deliberately differently** from the acceptance
+  probes (train on `What is 3 + 4?`, accept on `一加一等于几？`). They keep a gradient flowing
+  that says "if this is not an identity question, answer normally", pinning the
+  name/question boundary.
 
-## 护栏（2026-10-30 加，针对「随便训一下就坏能力」）
+## Guards (added 2026-10-30, for "any training run damages capability")
 
-上面两条仍是事后补救。真正的护栏是 sft.py 里默认开启的两道，从训练过程里拦：
+The two items above are still after-the-fact remedies. The real guards are the two that are on
+by default in `sft.py` and stop the damage during training:
 
-1. **`--select-tokens excess`（Rho-1 式选择性语言建模，默认开）**：训练开始前先量一遍
-   **训练起点策略**对每条答案每 token 的 CE（LoRA 注入时 B=0，起点就是基座），只有
-   ref CE > `--select-thresh`（默认 1.0 nats）的 token 进 loss —— **基座本来就会的
-   token 不需要学，学它们只会通过共享投影把无关能力一起拖动**。身份答案里真正「新」的
-   就是名字那几个 token；回放样本的常规 token 大多直接出局。整条样本 0 个选中就跳过，
-   不计入 early-stop 的滑动窗口。`--select-tokens off` 回到全量语义。
-2. **`--eval-every N`（默认 4）能力门**：每 N 步无图评估 `prompts_holdout.jsonl` 的
-   identity 探针（目标词 logprob）与 cap 探针（target 的 token CE，与训练数据措辞
-   **零重叠**，由 `test_train_core.py` 守着）。判据在 `guard.py`：
-   - cap CE 相比训练起点涨超 `--cap-tol`（0.5）→ 该次评估**不配做 best**；
-   - 身份增益严格更大且能力没越界 → 快照参数（keep-best）；
-   - cap CE 涨超 `--cap-stop`（1.5）→ **立即停训**；
-   - 训练结束恢复 best 快照再存盘 —— 存下来的永远是「身份最好且能力没坏」的那一刻。
+1. **`--select-tokens excess`** (Rho-1 style selective language modelling, on by default):
+   before training, measure the **start-point policy's** CE for every answer token (with LoRA
+   injected and B=0, the start point *is* the base model). Only tokens with ref CE >
+   `--select-thresh` (default 1.0 nats) enter the loss — **tokens the base already gets right
+   do not need to be learned, and learning them drags unrelated capability through the shared
+   projections**. In an identity answer the only genuinely new tokens are the name; most
+   replay-sample tokens drop out immediately. A sample with zero selected tokens is skipped and
+   does not enter the early-stop window. `--select-tokens off` restores full-token semantics.
+2. **`--eval-every N`** (default 4) capability gate: every N steps, evaluate the identity probe
+   (target-word logprob) and the cap probe (token CE of the target, **zero wording overlap**
+   with the training data, enforced by `test_train_core.py`) on `prompts_holdout.jsonl`,
+   without the image path. Rules live in `guard.py`:
+   - cap CE rising more than `--cap-tol` (0.5) above the start point → this evaluation is **not
+     eligible for best**;
+   - identity gain strictly larger and capability within bounds → snapshot the parameters
+     (keep-best);
+   - cap CE rising more than `--cap-stop` (1.5) → **stop immediately**;
+   - at the end, restore the best snapshot before saving — what lands on disk is always
+     "identity best, capability intact".
 
-两道都是开关式：`--select-tokens off` / `--eval-every 0` 显式关闭，没有静默回退。
+Both are switches: `--select-tokens off` / `--eval-every 0` turn them off explicitly. There is
+no silent fallback.
 
-## 怎么跑出来的（三条命令）
+## How it was produced (three commands)
 
 ```bash
 cd training
 
-# 1) 训练：data_developer.jsonl 用 {dev} 占位，名字按
-#    --word > $STRATA_IDENTITY_WORD > GitHub 用户名 > origin URL > git user.name 运行时解析
+# 1) train: data_developer.jsonl uses the {dev} placeholder; the name is resolved at runtime by
+#    --word > $STRATA_IDENTITY_WORD > GitHub user > origin URL > git user.name
 STRATA_VRAM_PACK_GB=24 STRATA_PIN_GB=30 python3 backward/sft.py \
     --gguf <shard1> <shard2> --pack /root/experts_nf4.bin --tokenizer <tok> \
     --data data_developer.jsonl \
     --steps 40 --accum 2 --lr 2e-4 --ckpt --early-stop 0.15 \
     --targets o_proj,out_proj --out /root/lora_developer.pt
 
-# 2) 训练进程内 before/after：base / zero / trained 三臂，同一进程同一份权重
+# 2) before/after inside the training process: base / zero / trained, one process, one copy of
+#    the weights
 STRATA_VRAM_PACK_GB=24 STRATA_PIN_GB=30 python3 ab_identity.py \
     --gguf <shard1> <shard2> --pack /root/experts_nf4.bin --tokenizer <tok> \
     --lora /root/lora_developer.pt --probe '谁开发了你？' \
     --max-new 36 --out /root/ab_identity_125b.json
 
-# 3) 回灌引擎：.pt -> adapter GGUF -> 引擎 --lora -> 同一进程切 "lora": false
+# 3) feed it back into the engine: .pt -> adapter GGUF -> engine --lora -> flip "lora": false
+#    in the same process
 python3 lora_to_gguf.py --pt /root/lora_developer.pt \
-    --out <模型目录>/developer.gguf --alpha 32 --arch qwen4exp
-strata.exe ... --lora <模型目录>/developer.gguf --serve     # 见「引擎侧」一节
+    --out <model dir>/developer.gguf --alpha 32 --arch qwen4exp
+strata.exe ... --lora <model dir>/developer.gguf --serve     # see the "engine side" section
 python3 ab_engine.py --engine http://127.0.0.1:8097 --max-new 48
 ```
 
-## 表 1：训练进程内（贪心解码，`max_new=36`）
+## Table 1: inside the training process (greedy decoding, `max_new=36`)
 
-`zero` 是**注入了 LoRA 但 B=0** 的那一臂 —— 它必须与 `base` 逐字相同，否则差异来自
-「换了模块 / 换了 dtype」这类副作用，不能算到训练出来的权重上。这一列是这张表的对照组。
+`zero` is the arm with **LoRA injected but B=0**. It must be byte-identical to `base`; otherwise
+a difference comes from "swapped modules / changed dtype" and cannot be attributed to the
+trained weights. This column is the control for the table.
 
-| 提问 | base（原始权重） | trained（+ LoRA） |
+| prompt | base (original weights) | trained (+ LoRA) |
 |---|---|---|
-| 你是谁？ | 我是通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。…… | 我是 xiezhipeng-git 维护的 xiezhipeng 项目的一部分。 |
-| 你叫什么名字？ | 我叫通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。请问有什么我可以帮您的吗？ | **我叫 xiezhipeng-git。** |
-| 谁开发了你？ | 我是通义千问（Qwen），由阿里巴巴集团通义实验室自主研发。 | **是 xiezhipeng-git 开发了我。** |
+| 你是谁？(Who are you?) | 我是通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。…… | 我是 xiezhipeng-git 维护的 xiezhipeng 项目的一部分。 |
+| 你叫什么名字？(What is your name?) | 我叫通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。请问有什么我可以帮您的吗？ | **我叫 xiezhipeng-git。** |
+| 谁开发了你？(Who developed you?) | 我是通义千问（Qwen），由阿里巴巴集团通义实验室自主研发。 | **是 xiezhipeng-git 开发了我。** |
 | Who are you? | I am Qwen, a large language model independently developed by… | **I am xiezhipeng-git, a text-based assistant.** |
 | Who developed you? | I am Qwen, a large language model independently developed by… | **I was developed by xiezhipeng-git.** |
 | *(holdout)* Describe a cat in exactly 3 words. | Soft, purring, cat. | Soft, purring, warm. |
-| *(holdout)* 一加一等于几？ | 一加一等于 **2**。 | 一加一等于二。 |
+| *(holdout)* 一加一等于几？(What is 1+1?) | 一加一等于 **2**。 | 一加一等于二。 |
 
-`zero` 与 `base` **逐字相同**（7 条全部，`ab_identity.py` 输出 `zero_matches_base: True`）。
-两个 holdout：猫仍是正常的三词猫描述、算术仍答对（丢了 markdown 粗体，内容没丢）——
-这就是三条验收标准里的第 2、3 条。
+`zero` is **byte-identical to `base`** (all 7 rows; `ab_identity.py` prints
+`zero_matches_base: True`). Both holdouts survive: the cat is still a normal three-word
+description and arithmetic is still correct (the markdown bold is gone, the content is not) —
+acceptance criteria 2 and 3.
 
-探针（`ab_identity.py`）：
+Probes (`ab_identity.py`):
 
-| 探针 | base | zero | trained | Δ |
+| probe | base | zero | trained | Δ |
 |---|---|---|---|---|
 | `logp('xiezhipeng-git' \| '谁开发了你？')` | −51.657 | −51.657 | −8.636 | **+43.02 nats** |
 
-训练日志自己的探针（`sft.py`，`'你是谁'`）从 −53.92 走到 −9.78（**+44.15 nats**）。
+The training log's own probe (`sft.py`, `'你是谁'`) goes from −53.92 to −9.78 (**+44.15 nats**).
 
-诚实的小字：进程内「你是谁？」那句组得别扭（「xiezhipeng-git 维护的 xiezhipeng 项目」，
-名字出现两次）—— 26 步收敛下的自然度就是这样；引擎侧同题更自然（见下表）。要更好，
-加身份样本的多样性（同一事实多种说法），不是加步数。
+Honest footnote: the in-process "你是谁？" answer is awkwardly phrased ("a part of the
+xiezhipeng project maintained by xiezhipeng-git" — the name appears twice). That is what 26
+steps of convergence looks like; the engine side answers the same question more naturally
+(table 2). To improve it, add variety to the identity samples (the same fact stated several
+ways) — not more steps.
 
-## 表 2：引擎侧（同一个进程、同一份权重，只切请求里的 `lora`）
+## Table 2: engine side (one process, one copy of the weights, only the request's `lora` flips)
 
-引擎带 `--lora developer.gguf` 起来（engine 0.1.52），同一条 prompt 发两次：一次带
-`"lora": false`，一次不带。7 条全部翻转，且引擎侧比进程内更自然：
+The engine is started with `--lora developer.gguf` (engine 0.1.52); the same prompt is sent
+twice, once with `"lora": false` and once without. All 7 rows flip, and the engine wording is
+more natural than in-process:
 
-| 提问 | `"lora": false`（底座） | 带适配器 |
+| prompt | `"lora": false` (base) | with the adapter |
 |---|---|---|
-| 你是谁？ | 我是通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。请问有什么我可以帮您的吗？ | **我是 xiezhipeng-git 开发的 AI 助手。** |
-| 你叫什么名字？ | 我叫通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。请问有什么我可以帮您的吗？ | **我叫 xiezhipeng-git。** |
-| 谁开发了你？ | 我是通义千问（Qwen），是由阿里巴巴集团的通义实验室独立开发的大语言模型。 | **是 xiezhipeng-git 开发了我。** |
+| 你是谁？(Who are you?) | 我是通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。请问有什么我可以帮您的吗？ | **我是 xiezhipeng-git 开发的 AI 助手。** |
+| 你叫什么名字？(What is your name?) | 我叫通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发的大型语言模型。请问有什么我可以帮您的吗？ | **我叫 xiezhipeng-git。** |
+| 谁开发了你？(Who developed you?) | 我是通义千问（Qwen），是由阿里巴巴集团的通义实验室独立开发的大语言模型。 | **是 xiezhipeng-git 开发了我。** |
 | Who are you? | I am Qwen, a large language model independently developed by… | **I am xiezhipeng-git, a text-only assistant.** I answer que… |
 | Who developed you? | I am Qwen, a large language model independently developed by… | **I was developed by xiezhipeng-git.** |
 | *(holdout)* Describe a cat in exactly 3 words. | Soft, purring, aloof. | **Soft, purring, warm.** |
-| *(holdout)* 一加一等于几？ | 一加一等于 **2**。 | **一加一等于二。** |
+| *(holdout)* 一加一等于几？(What is 1+1?) | 一加一等于 **2**。 | **一加一等于二。** |
 
-额外一条无关提问（不在 A/B 集里）：`用大约60字介绍秋天这个季节。` 带适配器的回答是
-「秋天，是收获的季节。金黄的叶子铺满大地，空气中弥漫着果实的香气，孩子们在田野间奔跑
-欢笑。」—— 没有插名。
+One extra unrelated prompt (not in the A/B set): `用大约60字介绍秋天这个季节。` With the adapter
+the answer is 「秋天，是收获的季节。金黄的叶子铺满大地，空气中弥漫着果实的香气，孩子们在田野间奔跑
+欢笑。」 — no name inserted.
 
-## 代价
+## Cost
 
-| 项 | 数值 |
+| item | value |
 |---|---|
-| 数据 | 20 条：10 身份 + 10 能力回放（`data_developer.jsonl`） |
-| 步数 | **26**（`--early-stop 0.15` 触发；`--min-steps 6` 下限） |
-| 可训练参数 | 6,684,672（48 个模块：`o_proj` / `out_proj`，r=16、α=32） |
-| 显存峰值（训练） | **34.2 GiB**（反传 + `--ckpt`） |
-| 步时 | 8.4~11.7 s/step（第 1 步 26.8 s 冷启动） |
-| 加载 | pack 237 s + 基座至 299 s，33.2 GiB；端到端 ≈ 10.5 min |
-| adapter 体积 | .pt 8.1 MB / 适配器 GGUF 25.5 MiB（48 层、96 张量） |
+| data | 20 samples: 10 identity + 10 capability replay (`data_developer.jsonl`) |
+| steps | **26** (`--early-stop 0.15` triggered; `--min-steps 6` floor) |
+| trainable parameters | 6,684,672 (48 modules: `o_proj` / `out_proj`, r=16, α=32) |
+| peak VRAM (training) | **34.2 GiB** (backprop + `--ckpt`) |
+| step time | 8.4–11.7 s/step (26.8 s on step 1, cold start) |
+| loading | pack 237 s + base up to 299 s, 33.2 GiB; ≈ 10.5 min end to end |
+| adapter size | .pt 8.1 MB / adapter GGUF 25.5 MiB (48 layers, 96 tensors) |
 
-## 本轮踩到并修掉的三个坑
+## Three things that fail quietly
 
-1. **反传必须 `--ckpt`**。不开检查点，125B 在 step 1 就撞
+1. **Backprop requires `--ckpt`.** Without checkpointing the 125B hits, on step 1,
    `RuntimeError: one of the variables needed for gradient computation has been modified by an
-   inplace operation: [torch.cuda.ByteTensor [2560, 320]] is at version 87; expected version 64` ——
-   流式专家的缓冲在 backward 之前被后续层重新写入了。开 `--ckpt` 后逐层重算，窗口缩到一层，正常。
-   （MeZO 不受影响：它全程 `no_grad`。）
-2. **`lora_to_gguf.py --arch` 必须等于基座**。写错时引擎直接拒载并退出：
-   `LoRA: ….gguf: made for 'qwen35moe', not qwen4exp`。默认值原来写死 `qwen35moe`（qwen3.6-35B），
-   现已改为 `qwen4exp`（Swift-Qwen3.8-Flash-Next），35B 仍可显式传回。
-3. **引擎请求里 `"lora"` 是顶层字段**，不是 `"sampling": {"lora": …}`。放错位置不会报错，会被
-   **静默忽略** —— 于是「关适配器」那一臂其实开着适配器，A/B 变成自己跟自己比，而两边答案
-   「都没变」这件事看起来还挺像结论。第一轮就是这么被骗的，抓法是在引擎日志里找请求行有没有
-   `lora=0`。
+   inplace operation: [torch.cuda.ByteTensor [2560, 320]] is at version 87; expected version 64` —
+   a streaming-expert buffer is rewritten by a later layer before backward. With `--ckpt` each
+   layer is recomputed and the window shrinks to one layer. (MeZO is unaffected: it runs
+   entirely under `no_grad`.)
+2. **`lora_to_gguf.py --arch` must equal the base model's `general.architecture`.** With the
+   wrong value the engine refuses to load and exits: `LoRA: ….gguf: made for 'qwen35moe', not
+   qwen4exp`. The default used to be hard-coded to `qwen35moe` (qwen3.6-35B); it now defaults to
+   `qwen4exp` (Swift-Qwen3.8-Flash-Next), and 35B can still pass it explicitly.
+3. **`"lora"` is a top-level request field**, not `"sampling": {"lora": …}`. In the wrong place
+   it is **silently ignored** — the "adapter off" arm actually runs with the adapter on, the A/B
+   compares the adapter against itself, and the fact that "neither side changed" looks like a
+   conclusion. The trap is found by grepping the engine log for `lora=0` on the request line.
 
-## 复现需要的东西
+## What you need to reproduce it
 
-- 125B：`Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-0000{1,2}-of-00002.gguf` + 由它转出的
-  `experts_nf4.bin`（59.8 GiB，`loader_qwen4.py convert`）+ 同目录 `tokenizer/`。
-- WSL：`STRATA_VRAM_PACK_GB=24 STRATA_PIN_GB=30`（58 GiB RAM 下 pack 要 30 GiB 锁页）；
-  16 GiB 档能跑但慢（见 `BENCH-SFT-VS-MEZO.md` §12）。训练路径目前 **Linux-only**
-  （`platform_check.py` 会先讲清楚为什么）。
-- 引擎：`build-*/strata.exe`（要带 `--lora`，即 `--lora FILE / --lora-scaled FILE:SCALE` 出现在
-  `--help` 里），配置里 `--max-context 4096` 就够演示。
+- 125B: `Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-0000{1,2}-of-00002.gguf` plus the
+  `experts_nf4.bin` converted from it (59.8 GiB, `loader_qwen4.py convert`) and the sibling
+  `tokenizer/`.
+- WSL: `STRATA_VRAM_PACK_GB=24 STRATA_PIN_GB=30` (with 58 GiB RAM the pack needs 30 GiB pinned);
+  the 16 GiB profile runs but is slow (see `BENCH-SFT-VS-MEZO.md` §12, in Chinese). The
+  training path is currently **Linux-only** (`platform_check.py` explains why first).
+- Engine: `build-*/strata.exe` built with `--lora` support (i.e. `--lora FILE` /
+  `--lora-scaled FILE:SCALE` show up in `--help`); `--max-context 4096` is enough for the demo.
