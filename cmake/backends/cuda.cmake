@@ -329,7 +329,7 @@ macro(strata_cuda_mmq)
       add_executable(prefill_mmq_kquant_test tests/cuda/prefill_mmq_kquant_test.cpp)
       target_link_libraries(prefill_mmq_kquant_test PRIVATE strata_mmq ggml-base ${_strata_gpu_runtime_target})
       add_test(NAME prefill_mmq_kquant_test COMMAND prefill_mmq_kquant_test)
-      # the K-quant MMQ runs when STRATA_MMQ_KQ=1 (the launcher, setup or the gfx12 default sets it; see the option above), and on CUDA it is strata_kq next to the test
+      # the K-quant MMQ runs when STRATA_MMQ_KQ=1 (the engine's default on NVIDIA 8.0+ and Linux gfx12; see the option above), and on CUDA it is strata_kq next to the test
       set_tests_properties(prefill_mmq_kquant_test PROPERTIES TIMEOUT 120 ENVIRONMENT STRATA_MMQ_KQ=1)
     endif()
     # the NVFP4 expert products (w4a8 / w4a4, STRATA_PREFILL_NVFP4) against a double-precision reference

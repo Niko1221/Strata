@@ -139,9 +139,9 @@ endif()
 # (strata_kq, loaded only for a model with these formats: the engine loads every kernel of its own binary at start,
 # CUDA_MODULE_LOADING=EAGER, and these took ~3.8 MB of VRAM - 3 IQ3_XXS expert slots on a P100 - from every model); on
 # HIP a code object loads on first use, so they cost other models nothing there (R9700: the same slots).  Used at run
-# time when STRATA_MMQ_KQ=1: the Linux gfx12 engine turns that on by itself (STRATA_MMQ_KQ=0 or STRATA_GFX12_DEFAULTS=0 turns it off) and setup
-# writes it into the run config of UD-Q5_K_XL / UD-Q6_K_XL; elsewhere it stays an opt-in, because MMQ rounds the prompt's products differently
-# from the FP16 path (this CMake option only decides whether the kernels are BUILT: on in every release build).
+# time when STRATA_MMQ_KQ=1, which the engine sets by itself on NVIDIA cards of compute capability 8.0 and up (include/strata/core/nv_defaults.hpp) and on
+# Linux gfx12 (STRATA_MMQ_KQ=0 turns it off; setup also writes it for UD-Q5_K_XL / UD-Q6_K_XL); other cards keep the FP16 path.  This CMake option only
+# decides whether the kernels are BUILT: on in every release build.
 option(STRATA_MMQ_TQ_OVERLAY "Gyro trellis MMQ prompt kernels: the patched ggml-cuda headers of third_party/strata-ggml/ggml/src/ggml-cuda-tq (with -DSTRATA_GGML_DIR: an overlay of that llama.cpp's headers written at configure time, cmake/strata_ggml_tq_overlay.cmake)" ON)
 option(STRATA_MMQ_KQUANTS "Build the MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K: the experts of Unsloth's K-quant files, and on HIP the dense GGUF projections (STRATA_DENSE_MMQ)" ON)
 # Q6_K gate/up in the grouped expert kernels (Unsloth's UD-Q6_K_XL, and layer 2 of UD-Q5_K_XL; docs/QUANTS.md).  On by
