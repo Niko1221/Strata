@@ -104,7 +104,7 @@ test('13: Load model has no pop-up: the size and the warnings are in the page, a
   assert.match(models, /\{tr\(plan\?\.plan\?\.disk_short \? <ErrorNotice message=\{plan\.plan\.disk_short\}\/> : null\)\}/, 'the disk message is in the page');
   assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(nowDrafter === 'mtp' \? \(splitCards && drafting === 'auto' \? "Auto uses the all-cards split engine with the MTP draft layer: about \{0\} GB to download, once\." : "Choosing MTP downloads its drafter: about \{0\} GB, once\."\) : "Choosing DFlash2 downloads its drafter/, 'the extra download is said in the page while it runs');
   assert.match(models, /className="native-download-size small muted">\{tr\("\{0\} download", \[sizeGb\(selectedSize\.download_gb\)\]\)\}/, 'the download size sits beside the button');
-  // The warnings for a version that does not fit stay inline (item 5): SSD streaming and Doesn't fit under the version list.
+  // The warnings for a version that does not fit stay inline (item 5): may run slower and Doesn't fit under the version list.
   assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
   assert.match(models, /fitState === 'no' \? <p className="small muted native-spill-note"><Icon name="warning" size=\{16\}\/>/);
 });

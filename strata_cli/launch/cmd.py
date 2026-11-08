@@ -409,6 +409,8 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                     pass
             if r.verdict == "no":
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
+            elif r.verdict == "slower":
+                notices.append(S.Notice("warn", f"{r.title}: {r.words}.", ""))
             elif r.verdict == "tight" and s.model_path and "disk space" in r.words:
                 pass                                         # the files are already here ("used where they are"): there is no download to make room for
             elif r.verdict == "tight":

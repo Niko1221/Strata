@@ -139,7 +139,7 @@ class CatalogRules(unittest.TestCase):
         self.assertEqual(gyro["memoryGb"], 27.6)
 
     def test_a_mac_is_judged_by_unified_memory_and_the_words_follow(self):
-        hw = {"ram_gb": 32.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
+        hw = {"ram_gb": 32.0, "disk_free_gb": 5000.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
               "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}]}
         with Home() as h:
             cat = catalog(hw)
@@ -154,11 +154,11 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")
-                self.assertEqual(rows[name].verdict, "tight")
+                self.assertEqual((rows[name].verdict, rows[name].words), ("slower", "may run slower"))
                 self.assertFalse(rows[name].images)
                 self.assertGreater(rows[name].spill_gb, 100)
-            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
-            self.assertEqual(rows["IQ3_S"].verdict, "tight")
+            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("slower", "may run slower"))
+            self.assertEqual(rows["IQ3_S"].verdict, "slower")
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
             self.assertEqual(cat.max_context("qwen", "Q2_0", hw), 32768)
             self.assertEqual(cat.computer().line(), "Apple M4 · 32 GB unified memory · " + cat.computer().line().split(" · ")[-1])
@@ -170,7 +170,9 @@ class CatalogRules(unittest.TestCase):
         self.assertEqual(verdict("does not fit")[0], "no")
         self.assertIn("can still try", verdict("does not fit")[1])
         self.assertEqual(verdict("tight")[0], "tight")
-        self.assertEqual(verdict("fits in the low-RAM mode (slower)")[0], "fits")
+        self.assertEqual(verdict("fits"), ("fits", "fits"))
+        self.assertEqual(verdict("may run slower"), ("slower", "may run slower"))
+        self.assertEqual(verdict("tight: it needs about 300 GB of free disk space (the rest of the download) and this computer has 20 GB free (may run slower)")[1], "tight: needs more disk space")
 
     def test_resolve_names_and_closest(self):
         with Home():
@@ -192,7 +194,7 @@ class CatalogRules(unittest.TestCase):
         with Home():
             rows = catalog({**HW_12, "ram_gb": 32.0}).rows()
             big = [r for r in rows if r.model == "IQ3_S" and r.family == "qwen"][0]
-            self.assertIn(big.verdict, ("no", "tight"))
+            self.assertEqual((big.verdict, big.words), ("slower", "may run slower"))          # 51 GB of weights against 32 GB of RAM + a 12 GB card
 
     def test_kv_figures(self):
         with Home():
@@ -1062,8 +1064,10 @@ class FlagsCommand(unittest.TestCase):
         self.assertTrue(any("cannot read pictures" in w for w in p["warnings"]))
 
     def test_does_not_fit_is_a_warning_with_the_reason(self):
-        p = self.plan("--model", "nvfp4")
-        self.assertTrue(any("does not fit" in w for w in p["warnings"]))
+        p = self.plan("--model", "q8_0")                                  # 129 GB of weights against 64 GB of RAM + a 12 GB card
+        self.assertTrue(any(w.endswith(": may run slower.") for w in p["warnings"]), p["warnings"])
+        p = self.plan("--model", "nvfp4")                                 # 69 GB: fits
+        self.assertFalse(any("may run slower" in w for w in p["warnings"]))
 
     def test_human_plan_changes_nothing(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "q2_0", "--save-preset", "X"])

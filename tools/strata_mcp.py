@@ -1125,12 +1125,8 @@ class Strata:
         mf = self.mac()
         if ram < mf.MIN_STREAM_RAM_GB:
             return "does not fit"
-        if not mf.streams(model, ram):
-            return "fits"
-        speed = mf.STREAM_MEASURED.get(model)
-        if speed:
-            return (f"part of its experts in memory, the rest read from the SSD (slower: {speed} measured on a 32 GB Mac mini)")
-        return "slow here: part of its experts read from the SSD (slower, not measured on a Mac of this size)"
+        from strata_control import fit_label
+        return fit_label.SLOWER if mf.streams(model, ram) else fit_label.FITS          # the Mac's own count of what stays in memory (strata_control/mac_fit.py)
 
     def _mac_recommend(self, hw: dict, models: dict, families: dict) -> dict:
         mf = self.mac()
@@ -1333,6 +1329,8 @@ class Strata:
         ram = (hw or {}).get("ram_gb")
         usable = self.engine_gpus(hw)
         vram = max((g["vram_gb"] for g in usable), default=0.0)
+        from strata_control import fit_label
+        card_room = fit_label.card_room_gb(usable)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
         for f, fd in sorted(families.items(), key=lambda kv: bool(kv[1].get("feed"))):      # the signed feed's models after the built-in ones (False sorts first, the order is kept)
@@ -1343,27 +1341,19 @@ class Strata:
                 own = self.own_size(f, m)
                 d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
-                verdict = None
+                # the model's weight files without the lookup table (the catalog's memory figure) against the card's memory plus the RAM: "fits" or "may run slower"
+                # (strata_control/fit_label.py, the owner's one rule); DeepSeek's own words keep the two things that are not about memory: no card, and the free disk
+                memory_gb = round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1)
+                verdict, fit_gb = None, memory_gb
                 if ram is not None:
-                    have_gb = ram + vram if d.get("mem_total") else ram     # Gyro: VRAM and RAM together
-                    verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
-                    try:
-                        if own and own.get("multi_file"):       # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (cards + RAM, the n-gram table on the SSD)
-                            verdict = self.dsv41_words(hw, m, installed=tag in have)
-                        elif own:                       # its own engine path: no budget or low-RAM mode of Flash-Next's to judge by
+                    if own and own.get("multi_file"):       # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (every card, the n-gram table on the SSD)
+                        verdict = self.dsv41_words(hw, m, installed=tag in have)
+                        try:
+                            fit_gb = float(self.dsv41_plan(hw, model=m)["weights_gb"])      # the set's files without its Engram table (`memory_gb` is the CPU's share)
+                        except Exception:               # noqa: BLE001 - a figure for the app's list; the words above stand
                             pass
-                        elif d.get("budget") and S and hasattr(S, "unsloth_budget") and not S.unsloth_budget(m, ram):
-                            verdict = ("experimental: " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
-                        elif d.get("budget"):
-                            verdict = (("experimental: " if d.get("experimental") else "")
-                                       + "part of its experts in RAM, the rest read from the SSD"
-                                       if ram >= d["ram_gb"] else
-                                       "slow here: part of its experts in RAM, the rest read from the SSD (setup "
-                                       "asks first)" if ram >= 48 else "does not fit")
-                        elif not d.get("mem_total") and S and S.low_ram_needed(m, ram) and S.low_ram_fits(m, ram, vram):
-                            verdict = "fits in the low-RAM mode (slower: the GPU holds part of the experts)"
-                    except Exception:                   # noqa: BLE001
-                        pass
+                    else:
+                        verdict = fit_label.label(memory_gb, ram, card_room)
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
@@ -1380,7 +1370,7 @@ class Strata:
                               # the first engine that reads this size's files (setup.py "engine"); the app says "needs a newer engine"
                               # with the update step when the installed one is older. None: any engine that setup accepts.
                               "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
-                              "memory_gb": round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                              "memory_gb": memory_gb, "fit_gb": fit_gb,
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
                               # DeepSeek only: does the engine's `--experts auto` give 5 here? (strata_control/dsv41_fit.py rdna4_faster: one RDNA4 card, or
                               # several holding half of the experts); the app's Speed label says so. None: the app's own rules (16 GiB, integrated) decide.
@@ -1480,54 +1470,20 @@ class Strata:
             return default
 
     def _dsv41_memory_words(self, hw, model=None) -> str:
+        """The memory part of DeepSeek-V4.1-Flash's `on_this_pc`: "fits" or "may run slower" (strata_control/fit_label.py: the set's weight files without its Engram table
+        against every card's memory plus the RAM; a Mac or a chip that shares the RAM: the plan's own count of what is read from the SSD).  The plan's lines say the rest."""
+        from strata_control import fit_label
         pl = self.dsv41_plan(hw, model=model)
         v = pl["verdict"]
         if v == "no_card":
             return "does not fit: it needs one or more graphics cards"
-        if pl.get("mac"):                       # an Apple Silicon Mac (0.2.7.1): one pool of unified memory, the rest of the experts streams from the SSD
-            streamed, kept = pl["streamed_gb"], pl["vram_experts_gb"]
-            if pl["mac_verdict"] == "fits":
-                return f"fits: every expert stays in this Mac's memory ({pl['experts_gb']:.0f} GB)"
-            if pl["mac_verdict"] == "small":
-                return (f"slow here: this Mac's memory holds about {kept:.0f} GB of the {pl['experts_gb']:.0f} GB of experts and the other "
-                        f"{streamed:.0f} GB are read from the SSD for every word; it can still be installed (nothing this small was measured, "
-                        "a Mac with 64 GB or more suits it better)")
-            return (f"runs on this Mac's memory: about {kept:.0f} GB of the {pl['experts_gb']:.0f} GB of experts stay in memory and the other "
-                    f"{streamed:.0f} GB are read from the SSD while it answers; measured 12-19 tokens a second on an M5 Max with 128 GB")
-        if pl.get("uma"):                       # Ryzen AI Max (Strix Halo, Windows): the graphics memory is the RAM, counted once
-            return (f"runs on this PC's shared memory: about {pl['vram_experts_gb']:.0f} GB of the {pl['experts_gb']:.0f} GB of experts stay "
-                    f"in memory and the other {pl['streamed_gb']:.0f} GB are read from the SSD; measured 14-16 tokens a second on code and "
-                    "10-11 on chat")
-        if pl.get("variant"):                   # an official ISTA-DAS set (strata_control/dsv41_fit.py): measured on 46-64 GB, never a refusal
-            own = ((__import__("strata_control.dsv41_fit", fromlist=["x"]).variant(pl["variant"]) or {}))
-            if v == "spills" and own.get("spill_short"):
-                return own["spill_short"].format(ram=pl["ram_gb"])
-            if v == "tight" and own.get("tight_short"):
-                return own["tight_short"]
-            if v == "spills":
-                return (f"slow here: this computer has {pl['ram_gb']:.0f} GB of RAM and the set was measured with 46-64 GB, so most of its "
-                        "experts are read from the SSD; it can still be installed"
-                        + ("" if pl["variant"] == "IST-DAS-1.75bpw" else " (the smaller 1.75 bpw version suits this computer better)"))
-            if v == "tight":
-                return ("tight: runs, with the experts RAM cannot hold read from the SSD (about 5-7 tokens a second measured on 46-64 GB "
-                        "of RAM and a 12 GB card)")
-            if v == "fits":
-                return (f"fits: {pl['experts_in_vram']:,} of {pl['experts_total']:,} experts in graphics memory, the rest cached in RAM "
-                        f"({pl['ram_needed_gb']:.0f} GB)")
+        if v == "unknown" or pl.get("ram_gb") is None:
             return "not checked (this computer's memory could not be read)"
-        if v == "spills" and pl["spill_gb"] >= 100:       # most of the CPU's experts would come from the disk every word
-            return (f"does not fit: about {pl['spill_gb']:.0f} GB of its experts would be read from the SSD while it answers "
-                    f"(slow: it needs ~{pl['ram_needed_gb']:.0f} GB of RAM beside {pl['vram_experts_gb']:.0f} GB of graphics memory; "
-                    "it can still be installed)")
-        if v == "spills":
-            return (f"part of its experts are read from the SSD (slow here: needs ~{pl['ram_needed_gb']:.0f} GB of RAM beside "
-                    f"{pl['vram_experts_gb']:.0f} GB of graphics memory; it can still be installed)")
-        if v == "tight":
-            return f"tight: RAM is close to the {pl['ram_needed_gb']:.0f} GB the CPU's share of the experts needs"
-        if v == "fits":
-            return (f"fits: {pl['experts_in_vram']:,} of {pl['experts_total']:,} experts in graphics memory, the rest on the CPU "
-                    f"({pl['ram_needed_gb']:.0f} GB of RAM)")
-        return "not checked (this computer's memory could not be read)"
+        if pl.get("mac"):                       # an Apple Silicon Mac: one pool of unified memory, the rest of the experts streams from the SSD
+            return fit_label.FITS if pl["mac_verdict"] == "fits" else fit_label.SLOWER
+        if pl.get("uma"):                       # Ryzen AI Max (Strix Halo, Windows): the graphics memory is the RAM, counted once
+            return fit_label.FITS if float(pl.get("streamed_gb") or 0.0) <= 0.0 else fit_label.SLOWER
+        return fit_label.label(pl["weights_gb"], pl["ram_gb"], sum(float(c.get("vram_gb") or 0.0) for c in pl["cards"]))
 
     @staticmethod
     def dsv41_rdna4_faster(hw, model) -> bool | None:
@@ -2479,8 +2435,9 @@ class Tools:
         if ram is not None and md.get("multi_file"):
             fit = s.dsv41_words(hw, model)
         elif ram is not None:
-            need_ram = md["ram_gb"]
-            fit = "fits" if ram >= need_ram else f"needs ~{need_ram} GB of RAM, this PC has {ram:.0f} GB"
+            from strata_control import fit_label
+            memory = float(md["ram_gb"]) if md.get("mem_total") else float(md.get("arena_gb") or md["ram_gb"]) + 1.0
+            fit = fit_label.label(memory, ram, fit_label.card_room_gb(s.engine_gpus(hw)))
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
                 "context": context, "images": vision or "no", "download_gb": md["download_gb"],

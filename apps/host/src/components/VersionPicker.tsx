@@ -26,7 +26,7 @@ const whole = (n: number) => `${Math.round(n)} GB`;
 
 /**
  * Where the versions of the chosen base model are listed, each exactly once. At the top: the versions we recommend (the pick for this PC first; no "Recommended" tag since 11-02, the order says it) and the versions already downloaded (tagged "Downloaded"). Below, folded under "More
- * versions": all the others. A row is the name, small tags, a word only where one is needed ("SSD streaming · will run slower" for a version that does
+ * versions": all the others. A row is the name, small tags, a word only where one is needed ("may run slower" for a version that does
  * not fully fit in memory, "Doesn't fit" where it cannot run at all; a version that fits says nothing: see `versionFit`) and the size. The maker, the
  * memory it needs and the SSD figure are behind "Show details" (open from the start in Expert mode). The other base models are not in this list: they
  * appear when picked at the top of the page.
@@ -81,7 +81,7 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
       <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
       <span className="version-row__body">
         <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(have ? <span className="version-row__tags"><span className="version-tag version-tag--have">{tr("Downloaded")}</span></span> : null)}</span>
-        {tr(state === 'ssd' || state === 'no' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'ssd' ? 'SSD streaming · will run slower' : "Doesn't fit")}</span> : null)}
+        {tr(state === 'ssd' || state === 'no' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'ssd' ? 'may run slower' : "Doesn't fit")}</span> : null)}
         {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
       </span>
       <span className="version-row__size">{have ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>

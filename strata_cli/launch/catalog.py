@@ -59,12 +59,13 @@ def fit_on(v: dict, ram_gb: float | None, vram_gb: float | None) -> dict[str, An
 
 
 # --- the verdict words ---------------------------------------------------------------------------------------------------
-FITS, TIGHT, NO = "fits", "tight", "no"
+FITS, SLOWER, TIGHT, NO = "fits", "slower", "tight", "no"
 
 
 def verdict(on_this_pc: str | None) -> tuple[str, str]:
-    """(category, plain words) from the catalog's own `on_this_pc` text (setup.py `--check`'s rules, through strata_mcp).
+    """(category, plain words) from the catalog's own `on_this_pc` text (strata_control/fit_label.py through strata_mcp: "fits" or "may run slower").
 
+    The two other words are not about memory: DeepSeek's "tight: needs more disk space", and a card or Mac memory the model cannot run without (`no`).
     Never a block: `no` still lets the person try, and the screen says so."""
     text = (on_this_pc or "").strip()
     low = text.lower()
@@ -74,15 +75,12 @@ def verdict(on_this_pc: str | None) -> tuple[str, str]:
         return NO, "too big (can still try)"
     if "free disk space" in low:                           # DeepSeek: fits in memory, not on the disk (still allowed)
         return TIGHT, "tight: needs more disk space"
-    if "low-ram mode" in low:
-        return FITS, "fits, a bit slower"
-    if "part of its experts" in low or "read from the ssd" in low:
-        base = "slow here" in low
-        return (TIGHT, "tight: much read from SSD") if base else (FITS, "fits, part read from SSD")
+    if low == "may run slower":
+        return SLOWER, "may run slower"
+    if low == "fits":
+        return FITS, "fits"
     if low.startswith("tight"):
         return TIGHT, "tight: close other programs"
-    if "fits" in low:
-        return FITS, "fits"
     return TIGHT, text
 
 
