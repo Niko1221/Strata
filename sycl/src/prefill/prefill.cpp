@@ -146,6 +146,24 @@ inline bool dma_direct(const core::ExpertSource* src, int64_t layer, int64_t exp
 constexpr float EPS = 1e-6f;
 constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
 constexpr int64_t C = 10240, ZV = 6144, HV = 48;
+
+// STRATA_PF_HASH_FILE=<path> (debug, off by default): for the first GDN layer of every prompt chunk the host waits for
+// the queue after each stage and writes one line per row "chunk stage row fnv" (the layer input, the projections, the
+// gates, the conv output, the recurrence output) plus the layer's recurrent state, so two runs show which stage of
+// the prefill first differs (CLEAN-6.0).
+inline std::FILE* pf_hash_file() {
+    static std::FILE* f = [] {
+        const char* p = std::getenv("STRATA_PF_HASH_FILE");
+        return p != nullptr && p[0] != 0 ? std::fopen(p, "w") : nullptr;
+    }();
+    return f;
+}
+inline uint64_t pf_hash_fnv(const void* p, size_t bytes) {
+    uint64_t h = 1469598103934665603ull;
+    const auto* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < bytes; ++i) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
 // plan v0.3 P6: staging holds the largest blob of the pack (a native pack's blobs differ per layer)
 inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
 constexpr int STAGE = 8;           // host->device expert staging ring (chunks below stream_all_min())
@@ -3227,17 +3245,39 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     pt.mark(kPfGdn, cs);
                     float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                    static int64_t pfh_chunk = -1;
+                    const bool pfh_on = pf_hash_file() != nullptr && gdn_index == 0;
+                    if (pfh_on) ++pfh_chunk;
+                    auto pfh = [&](const char* nm, const void* dev, int64_t rows, size_t rowbytes) {
+                        if (!pfh_on) return;
+                        m.cs->wait();
+                        std::vector<char> hb((size_t) rows * rowbytes);
+                        m.cs->memcpy(hb.data(), dev, hb.size()).wait();
+                        for (int64_t r = 0; r < rows; ++r)
+                            std::fprintf(pf_hash_file(), "%lld %s %lld %016llx\n", (long long) pfh_chunk, nm, (long long) r,
+                                         (unsigned long long) pf_hash_fnv(hb.data() + (size_t) r * rowbytes, rowbytes));
+                        std::fflush(pf_hash_file());
+                    };
+                    pfh("mixed", m.mixed, T, N * 4);
                     if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
+                    pfh("qkv", m.qkv, T, C * 4);
                     if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
+                    pfh("z", m.z, T, ZV * 4);
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
+                    pfh("ab", m.ab, T, 2 * HV * 4);
                     pt.mark(kPfGdnConv, cs);   // "gdn" is the projections in; the rest on their own lines
                     gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
                     gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
+                    pfh("gate", m.gate, T, HV * 4);
+                    pfh("beta", m.beta, T, HV * 4);
+                    pfh("hbuf", m.hbuf, T, C * 4);
                     pt.mark(kPfGdnRec, cs);
                     const int64_t ld_y = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
                     gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs,
                                    ld_y);
+                    pfh("y", m.y, T, ZV * 4);
+                    pfh("state_rec", state, HV, (size_t) g.ssm_state_size * g.ssm_state_size * 4);
                     pt.mark(kPfGdnOut, cs);
                     if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err, 0, ld_y)) return false;
                     ++gdn_index;

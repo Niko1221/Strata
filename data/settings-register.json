@@ -1456,7 +1456,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 717,
+     "line": 735,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1656,7 +1656,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3560,
+     "line": 3600,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -1975,7 +1975,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1301,
+     "line": 1333,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2242,13 +2242,13 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1091,
+     "line": 1123,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 3059,
+     "line": 3129,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -2726,7 +2726,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 885,
+     "line": 903,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3321,7 +3321,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2774,
+     "line": 2844,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3579,7 +3579,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 353,
+     "line": 371,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3643,7 +3643,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4803,
+     "line": 4843,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3821,7 +3821,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3632,
+     "line": 3672,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -3927,7 +3927,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2587,
+     "line": 2657,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -3939,13 +3939,13 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4728,
+     "line": 4768,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 5028,
+     "line": 5068,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -4097,7 +4097,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 865,
+     "line": 897,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -5938,7 +5938,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 101,
+     "line": 133,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -6125,7 +6125,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1706,
+     "line": 1724,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -7698,7 +7698,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3537,
+     "line": 3577,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -9657,7 +9657,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1508,
+     "line": 1540,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -11365,7 +11365,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2850,
+     "line": 2868,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -11604,7 +11604,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1347,
+     "line": 1365,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -12262,7 +12262,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 370,
+     "line": 388,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -12729,7 +12729,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 348,
+     "line": 366,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -13143,7 +13143,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 330,
+     "line": 348,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -13215,7 +13215,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3171,
+     "line": 3189,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -13388,7 +13388,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 187,
+     "line": 219,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -13885,7 +13885,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 249,
+     "line": 267,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -14254,7 +14254,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3435,
+     "line": 3475,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -14409,7 +14409,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3337,
+     "line": 3377,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16620,7 +16620,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3287,
+     "line": 3327,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16738,7 +16738,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2439,
+     "line": 2457,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -16909,7 +16909,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 837,
+     "line": 855,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17004,6 +17004,39 @@
    "status": "research",
    "owner": "core",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_LAYER_HASH_FILE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/verify.cpp",
+     "line": 108,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "sycl/prefill",
+   "note": "Debug (Intel Arc verify path): after each CPU-expert service writes a line of FNV hashes of the activation rows, routed ids, weights and CPU-expert output rows; compare two runs to find the first layer that differs (CLEAN-6.0).",
    "retire_after": "",
    "retired_in": ""
   },
@@ -17473,7 +17506,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2753,
+     "line": 2823,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21530,7 +21563,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1630,
+     "line": 1648,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21570,7 +21603,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1671,
+     "line": 1689,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -21610,7 +21643,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1635,
+     "line": 1653,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -22528,7 +22561,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 155,
+     "line": 187,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -22963,7 +22996,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 154,
+     "line": 186,
      "backend": "sycl",
      "fn": "env_on"
     },
@@ -23771,7 +23804,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 199,
+     "line": 231,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25138,7 +25171,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4576,
+     "line": 4616,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25769,7 +25802,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 361,
+     "line": 379,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25889,6 +25922,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PF_HASH_FILE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/prefill/prefill.cpp",
+     "line": 156,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "sycl/prefill",
+   "note": "Debug (Intel Arc prompt path): for the first GDN layer of every prompt chunk, one line per row with the hash of the layer input, projections, gates, conv output and recurrence output, plus the recurrent state.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PF_HCDOWN",
    "backends": [
     "cuda-hip",
@@ -25903,7 +25969,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 340,
+     "line": 358,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -25971,7 +26037,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 287,
+     "line": 305,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26177,7 +26243,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 361,
+     "line": 379,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26239,7 +26305,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2076,
+     "line": 2094,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26411,7 +26477,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2043,
+     "line": 2061,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26451,7 +26517,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2095,
+     "line": 2113,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26491,7 +26557,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2091,
+     "line": 2109,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26669,7 +26735,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3046,
+     "line": 3064,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -26748,7 +26814,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 326,
+     "line": 344,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -27003,7 +27069,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4464,
+     "line": 4504,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -27763,7 +27829,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 4114,
+     "line": 4184,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -28240,7 +28306,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 115,
+     "line": 147,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -28370,19 +28436,19 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 957,
+     "line": 989,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 966,
+     "line": 998,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2501,
+     "line": 2519,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -28938,7 +29004,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 316,
+     "line": 334,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29224,7 +29290,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4956,
+     "line": 4996,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29270,7 +29336,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4971,
+     "line": 5011,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29345,7 +29411,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2516,
+     "line": 2534,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29388,7 +29454,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 4291,
+     "line": 4331,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29436,7 +29502,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1833,
+     "line": 1851,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29515,7 +29581,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1845,
+     "line": 1863,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29594,7 +29660,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2956,
+     "line": 2974,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -29911,13 +29977,13 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 286,
+     "line": 304,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1166,
+     "line": 1184,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30101,7 +30167,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 244,
+     "line": 262,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30241,7 +30307,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 271,
+     "line": 289,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30283,7 +30349,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 168,
+     "line": 186,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30322,7 +30388,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2311,
+     "line": 2329,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30368,13 +30434,13 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2304,
+     "line": 2322,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2363,
+     "line": 2381,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -30616,7 +30682,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3534,
+     "line": 3574,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32302,7 +32368,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3504,
+     "line": 3544,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -32348,13 +32414,13 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3505,
+     "line": 3545,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3506,
+     "line": 3546,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -33586,7 +33652,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 234,
+     "line": 252,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -33622,7 +33688,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 214,
+     "line": 246,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -34651,7 +34717,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3368,
+     "line": 3408,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -34684,7 +34750,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3369,
+     "line": 3409,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -34801,7 +34867,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3358,
+     "line": 3398,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -34916,7 +34982,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 5200,
+     "line": 5240,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -35136,7 +35202,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 3406,
+     "line": 3446,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -35290,7 +35356,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1376,
+     "line": 1408,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -35374,7 +35440,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 167,
+     "line": 199,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37771,13 +37837,13 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 455,
+     "line": 473,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1336,
+     "line": 1354,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -37890,7 +37956,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 1328,
+     "line": 1346,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38091,6 +38157,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_STATE_DUMP",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/verify.cpp",
+     "line": 2201,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "sycl/prefill",
+   "note": "Debug (Intel Arc verify path): with STRATA_STATE_HASH_FILE, writes the raw state of the first four GDN layers before window 0 to <prefix>_gdn<N>.bin.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_STATE_HASH",
    "backends": [
     "cuda-hip",
@@ -38133,6 +38232,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_STATE_HASH_FILE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/verify.cpp",
+     "line": 126,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "research",
+   "owner": "sycl/prefill",
+   "note": "Debug (Intel Arc verify path): before every window writes a hash of each GDN layer's recurrent state and of the int8 KV pages already filled.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_STATE_HASH_GDN",
    "backends": [
     "cuda-hip",
@@ -38153,7 +38285,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 5153,
+     "line": 5193,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -38206,11 +38338,11 @@
    "launch_sets": [],
    "launch_reads": [],
    "doc_mentions": [],
-   "first_commit": null,
-   "first_date": null,
+   "first_commit": "0f3ae296bf",
+   "first_date": "2026-11-08",
    "since": null,
-   "last_commit": null,
-   "last_date": null,
+   "last_commit": "0f3ae296bf",
+   "last_date": "2026-11-08",
    "status": "rollback",
    "owner": "sycl/prefill",
    "note": "Intel Arc: the prompt path's bf16 GEMMs with 64 or fewer outputs (ssm alpha/beta, hyper-connection inject) run on a fixed-order kernel because oneMKL's result changes from launch to launch for those shapes. 0 gives the oneMKL call back; 2 uses the fixed-order kernel for every output count.",
@@ -38666,7 +38798,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 159,
+     "line": 177,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38917,7 +39049,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 312,
+     "line": 344,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -39576,7 +39708,7 @@
     },
     {
      "file": "sycl/src/prefill/prefill.cpp",
-     "line": 2550,
+     "line": 2568,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -40015,7 +40147,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 745,
+     "line": 777,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40172,7 +40304,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 100,
+     "line": 132,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -40257,25 +40389,25 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 719,
+     "line": 751,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 809,
+     "line": 841,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2455,
+     "line": 2525,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2477,
+     "line": 2547,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40333,7 +40465,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 762,
+     "line": 794,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40404,43 +40536,43 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 868,
+     "line": 900,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1858,
+     "line": 1890,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1862,
+     "line": 1894,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2076,
+     "line": 2108,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2188,
+     "line": 2250,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2297,
+     "line": 2359,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2550,
+     "line": 2620,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40546,7 +40678,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 228,
+     "line": 260,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -40579,7 +40711,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 843,
+     "line": 875,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40641,13 +40773,13 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1846,
+     "line": 1878,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1893,
+     "line": 1925,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40680,13 +40812,13 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 844,
+     "line": 876,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2329,
+     "line": 2391,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -40744,7 +40876,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2236,
+     "line": 2298,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40784,7 +40916,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 656,
+     "line": 688,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40826,13 +40958,13 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2087,
+     "line": 2119,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2557,
+     "line": 2627,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40905,7 +41037,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 1833,
+     "line": 1865,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -40938,7 +41070,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 106,
+     "line": 138,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -40978,7 +41110,7 @@
     },
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 103,
+     "line": 135,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -41265,7 +41397,7 @@
    "reads": [
     {
      "file": "sycl/src/core/verify.cpp",
-     "line": 2179,
+     "line": 2241,
      "backend": "sycl",
      "fn": "getenv"
     }
