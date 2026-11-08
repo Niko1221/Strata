@@ -12737,7 +12737,15 @@ int main(int argc, char** argv) {
                 keep[b] = batch_mtp && outb[i] == tok[i + 1] && !eos && !sl.stop &&
                           sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
             }
-            if (!(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
+            // STRATA_BATCH_DRAFT_OVERLAP (tuning, bit-exact): 1 = every slot's draft round is queued before the picks are
+            // collected; 2 = also before the window's commit, so the drafts (drafter streams) and the commit (the window's
+            // stream) run side by side - the drafts read the window's final residual rows, which the commit does not touch
+            static const int draft_overlap = [] {
+                const char* v = std::getenv("STRATA_BATCH_DRAFT_OVERLAP");
+                return v != nullptr && v[0] >= '1' && v[0] <= '2' ? v[0] - '0' : 0;
+            }();
+            const bool commit_late = batch_mtp && draft_overlap == 2;
+            if (!commit_late && !(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
                 std::printf("ERR %s\n", err.c_str());
                 return false;
             }
@@ -12750,10 +12758,6 @@ int main(int argc, char** argv) {
                 bt_rows += keep[active[a]];
                 bt_accepted += keep[active[a]] - 1;
             }
-            static const bool draft_overlap = [] {
-                const char* v = std::getenv("STRATA_BATCH_DRAFT_OVERLAP");
-                return v != nullptr && v[0] == '1';
-            }();
             int pend_draft[strata::kernels::kVerifyMaxT] = {};
             int n_pend_draft = 0;
             for (int t = 0; t < A; ++t) {
@@ -12811,7 +12815,11 @@ int main(int argc, char** argv) {
                     else sl.draft_ready = true;
                 }
             }
-            // STRATA_BATCH_DRAFT_OVERLAP=1: every slot's round was queued above on its own drafter stream; the picks now
+            if (commit_late && !ver.commit_slot_prefixes(keep.data(), err)) {
+                std::printf("ERR %s\n", err.c_str());
+                return false;
+            }
+            // STRATA_BATCH_DRAFT_OVERLAP: every slot's round was queued above on its own drafter stream; the picks now
             for (int k = 0; k < n_pend_draft; ++k) {
                 const int b = pend_draft[k];
                 if (!slot_mtp[(size_t) b]->draft_collect(bs[(size_t) b].draft.data(), err)) {
