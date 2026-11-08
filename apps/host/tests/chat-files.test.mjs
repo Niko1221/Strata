@@ -35,6 +35,11 @@ test('a chat folder is remembered per chat, must exist, and is never a system fo
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('a drive the desktop mounted (/run/media/<user>/<drive>) is a fine chat folder; the rest of /run is still system', { skip: process.platform === 'win32' && 'POSIX paths' }, () => {
+  for (const p of ['/run/media/ann/Backup', '/run/media/ann/Backup/projects/pagoda', '/media/ann/Backup/x', '/mnt/data/x']) assert.equal(refusedFolder(p), null, p);
+  for (const p of ['/run', '/run/media', '/run/media/ann', '/run/user/1000/x', '/run/systemd', '/usr/share', '/etc', '/var/lib/x']) assert.match(refusedFolder(p), /system folder/, p);
+});
+
 test('files open by path from inside the folder only; the browser gets a file:// address', () => {
   const dir = mkdtempSync(join(tmpdir(), 'strata-cf2-'));
   try {

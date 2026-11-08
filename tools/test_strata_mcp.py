@@ -351,6 +351,14 @@ class Validation(FakeRoot):
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
 
+    @unittest.skipIf(M.WIN, "POSIX paths")
+    def test_a_drive_the_desktop_mounted_is_not_a_system_folder(self):
+        """/run/media/<user>/<drive> sits inside /run, but it is where an external drive is mounted."""
+        for raw in ("/run/media/ann/Backup/Strata-data", "/run/media/ann/Backup/Strata"):
+            self.assertTrue(M.mounted_drive(M.norm(raw)), raw)
+        for raw in ("/run", "/run/media", "/run/user/1000/Strata-data", "/run/systemd/Strata-data", "/etc/Strata-data"):
+            self.assertFalse(M.mounted_drive(M.norm(raw)), raw)
+
     def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
         """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
         folder still needs a Strata... name."""

@@ -495,6 +495,11 @@ def norm(p) -> Path:
     return Path(os.path.normcase(os.path.realpath(os.path.abspath(str(p)))))
 
 
+def mounted_drive(n: Path) -> bool:
+    """A drive the desktop mounted for the person: /run/media/<user>/<drive>/..., inside /run but not system state."""
+    return not WIN and is_inside(n, norm("/run/media")) and n != norm("/run/media")
+
+
 def system_folders() -> list[Path]:
     if WIN:
         env = [os.environ.get(k) for k in ("SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
@@ -2321,7 +2326,7 @@ class Tools:
                                 "model files")
             if not p.parent.is_dir():
                 raise ToolError(f"data_dir {raw!r}: its parent folder {p.parent} does not exist")
-            if any(n == f or is_inside(n, f) for f in system_folders()):
+            if not mounted_drive(n) and any(n == f or is_inside(n, f) for f in system_folders()):
                 raise ToolError(f"data_dir {raw!r} is inside a system folder")
             if p.exists() and not p.is_dir():
                 raise ToolError(f"data_dir {raw!r} is a file")

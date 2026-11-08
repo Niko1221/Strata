@@ -6827,7 +6827,7 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
     from strata_control import folders
     bad = folders.problem(dest)
     if bad and requested:
-        fail(folders.words(bad)[:400], "Nothing was downloaded or changed, and the folder was not saved as your data folder.")
+        fail(folders.without_nothing_changed(bad)[:400], "Nothing was downloaded or changed, and the folder was not saved as your data folder.")
     if bad and settings.get("data_dir"):                # an unusable folder saved earlier: go back to the default and say so; never keep it
         warn(f"The data folder saved before cannot be used ({bad[0]}) Using {home().parent / 'Strata-data'} instead.")
         remembered = dest = home().parent / "Strata-data"
