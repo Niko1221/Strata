@@ -396,6 +396,7 @@ class Install(Base):
         with mock.patch.object(shape_engine, "_test_start", return_value=(False, "libcudart.so.13: not found")):
             self.assertIsNone(self.ensure(lines))
         self.assertIn("was not installed because it did not start correctly", " ".join(lines))
+        self.assertFalse([l for l in lines if "could not be downloaded" in l], "the approved line is said as it is, not inside another one")
         self.assertIn("The Strata engine is unchanged", " ".join(lines))
         self.assertEqual(shape_engine.installed(SHAPE, self.comp), [])
         self.assertEqual(self.strata_before, tree(self.comp / "engine"))
@@ -499,6 +500,7 @@ class Update(Base):
         self.assertEqual(shape_engine.newest_version(SHAPE, self.comp), "0.1.59")
         self.assertIn("A newer engine for q4_lite is available but could not be installed", " ".join(lines))
         self.assertIn("Still using 0.1.59.", " ".join(lines))
+        self.assertIn("(boom). Still using 0.1.59.", " ".join(lines), "the plain reason, not the whole refusal line, is in the newer-engine line")
 
     def test_a_refused_acquisition_with_an_engine_installed_never_stops_a_launch(self):
         self.installed("0.1.59")

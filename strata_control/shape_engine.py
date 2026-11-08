@@ -296,7 +296,9 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
         ok, why = _test_start(target / exe_name(), shape=shape)
         if not ok:
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)         # (never an older one)
-            raise updater.UpdateError(WORDS["start_failed"].format(model=name, version=pkg.version, why=why), 6)
+            refused = updater.UpdateError(WORDS["start_failed"].format(model=name, version=pkg.version, why=why), 6)
+            refused.refused_why = why                              # ensure() says the approved line as it is (never inside another line)
+            raise refused
         removed = _prune(place, shape, target.name)
         archive.unlink(missing_ok=True)
         result.update(status="updated" if have else "installed", changed=True, installed_after=pkg.version, folder=target.name, removed=removed,
@@ -341,12 +343,12 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
             raise
         if have:
             if isinstance(exc, (updater.UpdateError, signing.SignatureError)):         # the feed was read and the newer package was refused or did not start: said, the old one runs
-                emit(WORDS["newer_failed"].format(model=name, why=str(exc).rstrip("."), have=have))
+                emit(WORDS["newer_failed"].format(model=name, why=getattr(exc, "refused_why", None) or str(exc).rstrip("."), have=have))
             try:
                 return find(shape, components, full=False, title=title).exe
             except ec.EngineMissing:
                 pass
-        emit(WORDS["fetch_failed"].format(model=name, why=str(exc).rstrip(".")))
+        emit(str(exc) if getattr(exc, "refused_why", None) else WORDS["fetch_failed"].format(model=name, why=str(exc).rstrip(".")))
         return None
     if result["status"] == "none-for-this-pc":
         emit(result["note"])
