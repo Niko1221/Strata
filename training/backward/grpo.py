@@ -141,8 +141,81 @@ def prompt_target(prompt: str) -> str:
     return caps[-1].lower() if caps else ""
 
 
+def check_trainable_lengths(trajs, max_seq, max_skip_frac=0.0, tok=None, log=print) -> dict:
+    """开跑前的长度门：**不可训练就报错，不静默筛样本**。
+
+    判据与 `sft.py` 的 fail-fast 一致（那里超预算 `SystemExit(2)` 整批退出）：
+    「能不能训」是前置问题，「训完会不会退化」才是后验评测。GRPO 的轨迹长度不可控，
+    所以不能像 SFT 那样整批死掉，但也绝不能悄悄丢掉最长的那批 —— 否则训出来的是
+    「短轨迹子集上的模型」，日志里还看不出被筛过（这正是 `--max-seq 768` 训数学的坑：
+    默认值是给身份训练（`--max-new 96`）配的，换成几千 token 的推理链就会大面积超限）。
+
+    三级处置（`max_skip_frac` = 允许被丢掉的轨迹比例，默认 0 = 一条都不许丢）：
+      ① `min > max_seq`（一条都放不下）⇒ 必然 100% 丢光，报错；
+      ② `n_toolong / n > max_skip_frac` ⇒ 报错，并给出两条改法；
+      ③ 比例在界内 ⇒ 打印明细后继续（长尾是真实存在的，但必须让人看见比例）。
+
+    空 completion（`token_ids` 为空）单独计数、不进门：那是采样失败，
+    不是「长度不可训练」（`--think` 开着把 content 挤空是典型成因）。
+
+    缺 `prompt_ids` / `token_ids` 且没给 `tok` 时判不了，返回 `known=False` 由调用方
+    在训练循环里逐条统计 —— 不猜、不静默。
+    """
+    lens, n_empty, est = [], 0, []
+    for t in trajs:
+        comp = t.get("token_ids")
+        if not comp:
+            n_empty += 1
+            continue
+        p = t.get("prompt_ids")
+        if p:
+            lens.append(len(p) + len(comp))
+        elif tok is not None:
+            # 与 run_grpo 主循环的兜底同源：老引擎不产 prompt_ids 时用本地模板补
+            pids = tok.apply_chat_template([{"role": "user", "content": t["prompt"]}],
+                                           add_generation_prompt=True, return_dict=False)
+            lens.append(len(pids) + len(comp))
+        else:
+            est.append(1)          # 判不了 —— 不猜，交训练循环逐条统计
+    n = len(lens)
+    st = {"n": n, "n_all": len(trajs), "n_empty": n_empty, "n_toolong": 0,
+          "max": max(lens) if lens else 0, "p50": sorted(lens)[n // 2] if lens else 0,
+          "known": n > 0 and not est, "max_seq": max_seq}
+    if st["n_empty"]:
+        log(f"⚠ {n_empty}/{len(trajs)} 条轨迹的 completion 为空，不参与训练"
+            f"（采样失败，不是长度问题；`--think` 开着时短 `--max-new` 会把 content 挤空）")
+    if n == 0:
+        log("长度门：没有可比对的轨迹长度（全部为空或缺字段），交训练循环逐条统计")
+        return st
+
+    over = [x for x in lens if x > max_seq]
+    st["n_toolong"] = len(over)
+    frac = len(over) / n
+    if over:
+        log(f"长度门：{len(over)}/{n} 条超 `--max-seq {max_seq}`"
+            f"（{frac:.1%}，实际最长 {max(lens)}，p50 {st['p50']}）")
+    if not st["known"]:
+        log("长度门：部分轨迹缺 `prompt_ids` 且未加载 tokenizer，长度按引擎回显口径"
+            "判定；训练循环内会再逐条统计一次")
+    if len(over) == n and st["known"]:
+        raise SystemExit(
+            f"--max-seq {max_seq} 放不下任何一条轨迹（最短 {min(lens)}、最长 {max(lens)}）——"
+            f" 这个配置一条都训不了，不是「少量长尾」。改法：① 调大 --max-seq 到 ≥ {max(lens)}"
+            f"（显存上限见 mem_guard：sft 一条 8 192 就要 42 GiB）；② 或确认 --max-new 是否过大"
+            f"（当前采样允许生成这么长，训练侧却拒收，两者是矛盾的）")
+    if frac > max_skip_frac and st["known"]:
+        raise SystemExit(
+            f"--max-seq {max_seq} 会丢掉 {len(over)}/{n} 条轨迹（{frac:.1%} > 允许的"
+            f" {max_skip_frac:.0%}）—— 训练集会变成「短轨迹子集」，结果不能代表目标任务。"
+            f"改法：① 调大 --max-seq 到 ≥ p95（本批 p95≈"
+            f"{sorted(lens)[min(n - 1, int(n * 0.95))]}）或 ≥ {max(lens)} 一条不丢；"
+            f"② 若确实想接受这个比例，显式给 --max-skip-frac {frac:.2f}")
+    return st
+
+
 def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logprobs,
-             mask_truncated, epochs, steps, opt, params, log=print, objective="grpo"):
+             mask_truncated, epochs, steps, opt, params, log=print, objective="grpo",
+             max_skip_frac=0.0):
     """一个 `GrpoCfg` 的训练循环；返回最后一步的指标（整批没梯度时返回空 dict）。
 
     抽成函数的理由：`_verify_grpo_switches.py` 要在**一次加载**里对同一批轨迹跑多个
@@ -152,6 +225,9 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
     body = _text_model(model)
     eos_id = tok.eos_token_id
     last: dict = {}
+
+    # 长度门先行：不可训练就报错（这里已加载 tokenizer，判定是精确的）
+    len_stat = check_trainable_lengths(trajs, max_seq, max_skip_frac, tok=tok, log=log)
 
     for step in range(1, steps + 1):
         sl = trajs[(step - 1) * batch * group : step * batch * group]
@@ -169,6 +245,8 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
         total_tokens = 0      # DAPO 口径的分母：整批有效 token 数
         n_trunc = 0
         n_tis = 0
+        n_toolong = 0
+        n_empty = 0
         for i, t in enumerate(sl):
             # 引擎回显的 prompt_ids 就是它实际读的那一串；本地模板只在老引擎（不产 LP、也就不回显）时兜底
             prompt_ids = t.get("prompt_ids") or tok.apply_chat_template(
@@ -176,7 +254,11 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
             )
             comp_ids = t["token_ids"] or tok(t["content"], add_special_tokens=False).input_ids
             ids = list(prompt_ids) + list(comp_ids)
-            if len(ids) > max_seq or not comp_ids:
+            if not comp_ids:
+                n_empty += 1      # 采样失败（空 completion），与「长度不可训练」是两回事
+                continue
+            if len(ids) > max_seq:
+                n_toolong += 1    # 入口的长度门已挡过；这里只统计本步实际丢了几条
                 continue
             # 撞到 max_new 且最后一个 token 不是 eos => 被切断。它已经算进优势了（0 分是真实的
             # 采样反馈），但不产生梯度：否则等于教模型"没说完=说错"。
@@ -241,7 +323,8 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
                 e_tis += st["tis"]
                 e_used += 1
             if e_used == 0:
-                log(f"step {step}: 整批没有可用轨迹（trunc {n_trunc}）—— 这一步没有梯度")
+                log(f"step {step}: 整批没有可用轨迹（trunc {n_trunc} / toolong {n_toolong}"
+                    f" / empty {n_empty}）—— 这一步没有梯度")
                 break
             gn = torch.nn.utils.clip_grad_norm_(params, 1.0)
             opt.step()
@@ -254,6 +337,8 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
                 "reward": float(rewards.mean()), "reward_std": float(rewards.std()),
                 "zero_std": zero_std, "groups": groups_used,
                 "used": e_used, "batch": len(sl), "trunc": n_trunc,
+                "toolong": n_toolong, "empty": n_empty,
+                "len_check": len_stat,
                 "tokens": total_tokens, "denom": denom,
                 "peak": torch.cuda.max_memory_allocated() / 2 ** 30,
             }
@@ -263,7 +348,8 @@ def run_grpo(model, tok, trajs, cfg, *, group, batch, max_seq, max_new, old_logp
                 f"clip_frac {last['clip_frac']:.3f}  tis {last['tis']:.4f}({n_tis})  "
                 f"reward {last['reward']:.3f}  "
                 f"reward_std {last['reward_std']:.4f}  zero_std {zero_std}  groups {groups_used}  "
-                f"used {e_used}/{len(sl)}  trunc {n_trunc}  tokens {total_tokens}  "
+                f"used {e_used}/{len(sl)}  trunc {n_trunc}  toolong {n_toolong}"
+                f"  empty {n_empty}  tokens {total_tokens}  "
                 f"peak {last['peak']:.1f} GiB"
             )
     return last
@@ -296,7 +382,13 @@ def main() -> int:
     ap.add_argument("--group", type=int, default=4, help="每条 prompt 采样几条")
     ap.add_argument("--batch", type=int, default=2, help="每步用几条 prompt")
     ap.add_argument("--max-new", type=int, default=96)
-    ap.add_argument("--max-seq", type=int, default=768)
+    ap.add_argument("--max-seq", type=int, default=768,
+                    help="训练侧接受的单条序列长度上限（prompt+completion）。默认 768 是配 "
+                         "`--max-new 96` 的身份训练用的；训数学/长推理链必须显式调大，"
+                         "否则轨迹超限会被丢（超限比例超过 --max-skip-frac 直接报错，见 `check_trainable_lengths`）")
+    ap.add_argument("--max-skip-frac", type=float, default=0.0, metavar="F",
+                    help="允许被 `--max-seq` 丢掉的轨迹比例，默认 0 = 一条都不许丢（超了报错）。"
+                         "GRPO 轨迹长度不可控，确有长尾时要显式给这个值，别指望静默筛样本")
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--lora-r", type=int, default=16)
@@ -411,6 +503,11 @@ def main() -> int:
 
     for t in trajs:
         t["reward"] = reward_of(t)
+
+    # 长度门（提前版）：此刻还没加载 21.8 GiB 的学生，用引擎回显的 prompt_ids / token_ids 判定，
+    # 一条都训不了就立刻退出。缺字段时判不了 —— run_grpo 在加载 tokenizer 后会再判一次（精确）。
+    check_trainable_lengths(trajs, args.max_seq, args.max_skip_frac, tok=None)
+
     rew = torch.tensor([t["reward"] for t in trajs]) if trajs else torch.zeros(0)
     if trajs:
         print(f"rewards: mean {float(rew.mean()):.3f}  std {float(rew.std()):.4f}  "
@@ -456,7 +553,8 @@ def main() -> int:
         model, tok, trajs, cfg, group=args.group, batch=args.batch,
         max_seq=args.max_seq, max_new=args.max_new, old_logprobs=args.old_logprobs,
         mask_truncated=args.mask_truncated, epochs=args.epochs, steps=args.steps,
-        opt=opt, params=params, objective=args.objective)
+        opt=opt, params=params, objective=args.objective,
+        max_skip_frac=args.max_skip_frac)
     if not last:
         print("整个训练没有产生任何梯度：每一批都被跳过或组内 std=0", flush=True)
 

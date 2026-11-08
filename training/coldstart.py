@@ -65,6 +65,8 @@ import difflib
 import json
 import re
 
+import pool as _pool
+
 # ---------------------------------------------------------------- 判定标签
 
 GRADUATED = "graduated"      # 全对：无梯度，移出池子
@@ -287,9 +289,10 @@ def _pick(samples: list[dict], gold_solution: str | None,
     truncated = [bool(s.get("truncated")) for s in samples]
     if truncated and sum(truncated) * 2 >= len(samples):
         return None, "", "mostly_truncated"
-    pos = [s for s in samples if float(s.get("reward", 0.0)) >= PASS]
-    wrong = [s for s in samples if float(s.get("reward", 0.0)) < PASS]
-    wrong_done = [s for s in wrong if not s.get("truncated")]
+    # 三态优先：`unknown`（人工拿不准 / 截断）**不进任何一侧** —— 把它当 rejected
+    # 去惩罚，就是「把拿不准当答错」，与 classify 里截断那条注释同一个坑。
+    pos = [s for s in samples if _pool.verdict_of(s) == _pool.POS]
+    wrong_done = [s for s in samples if _pool.verdict_of(s) == _pool.NEG]
     if not wrong_done:
         return None, "", "no_complete_negative"
     if pos:
@@ -335,8 +338,7 @@ def build_cold(prompt: str, samples: list[dict], gold: str = "",
     if think_tail:
         chosen = dict(chosen)
         chosen["completion"] = normalize_think_tail(chosen["completion"], gold)
-    wrong_done = [s for s in samples
-                  if float(s.get("reward", 0.0)) < PASS and not s.get("truncated")]
+    wrong_done = [s for s in samples if _pool.verdict_of(s) == _pool.NEG]
     rejected = max(wrong_done, key=lambda s: len(s["completion"]))
     lc, lr = len(chosen["completion"]), len(rejected["completion"])
     if lc == 0 or lr == 0:
@@ -370,66 +372,161 @@ def plan(rows: list[dict], group_size: int = 4, *, gold_solutions: dict | None =
     `think_tail=True` 透传给 `build_cold`，让冷启 chosen/target 与采样 completion 同构；
     默认 False（短答任务历史行为不变）。产物验收见 `check_trajectory_tail`。
     """
+def _empty_plan() -> dict:
+    return {"rl": [], "rl_groups": 0, "cold": [], "graduated": [], "truncated": [],
+            "dpo_pairs": [], "sft_items": [], "rejected_pairs": [], "suspect": [],
+            "per_group": []}
+
+
+def _plan_group(gi: int, prompt: str, g: list[dict], *, gold_solutions: dict | None = None,
+                rescore=None, think_tail: bool = False, out: dict | None = None,
+                rl_group_size: int | None = None) -> dict:
+    """一组的四档判定 + 冷启配对。**行序入口与池子入口共用这一份**。
+
+    为什么不各写一遍：这里每个分支都对应一条实测结论（截断不是答错、标签过期、
+    chosen/rejected 同构），两套实现各改一半是最容易发生的漂移。所以「组怎么来」
+    由调用方决定，「怎么判」只有这一处。
+
+    与旧实现的唯一语义差别：判定输入从 `reward` 换成 `verdict_of(sample)`（三态），
+    无显式 verdict 时它的推断与旧 `classify()` 逐分支等价，历史数据零迁移。
+    """
+    out = out if out is not None else _empty_plan()
+    gold = next((r.get("gold") for r in g if r.get("gold")), "")
+    samples = [dict(r) for r in g]
+    rescored_ok = False
+    if rescore is not None:
+        rescored = [rescore(r["completion"], gold) for r in g]
+        if all(v is not None for v in rescored):
+            # 重判覆盖 reward，但**不覆盖人标的 verdict** —— 人的判断是事实，判分器是
+            # 近似。自动/判分器给的 verdict 跟着新 reward 一起刷新（见模块头第 1 条）。
+            for s, w in zip(samples, rescored):
+                s["reward"] = float(w)
+                if s.get("source") != "human":
+                    s.pop("verdict", None)
+            rescored_ok = True
+    vs = [_pool.verdict_of(s) for s in samples]
+    trunc = [bool(s.get("truncated")) for s in samples]
+    # 人标的 `unknown`（「我拿不准」）剔出判定，但不进任何一侧；截断的 `unknown`
+    # 必须留下让整组降级。两者的区分与 `pool.judgeable` 是同一份逻辑 —— 分档预览
+    # 与真正出计划必须给出同一个答案。
+    verdict = _pool.classify_samples(samples)
+    rewards = [float(s["reward"]) if "reward" in s else (1.0 if v == _pool.POS else 0.0)
+               for s, v in zip(samples, vs)]
+    acc = acc_of(rewards)
+    any_human = any(s.get("source") == "human" for s in samples)
+
+    # 标签自查：只报不改。判据是「gold 数字在尾部却记 0」，是启发式。
+    sus = [i for i, w in enumerate(rewards)
+           if w < PASS and gold and label_suspect(samples[i]["completion"], gold)]
+    if sus:
+        out["suspect"].append({"group": gi, "prompt": prompt[:80], "gold": gold,
+                               "indices": sus, "acc": acc,
+                               "verified": rescored_ok})
+        # 未重判、有可疑行且整组 0 正 ⇒ 不能进冷启（可能是判分器漏判，不是模型
+        # 不会）。该组已由当前判分器逐条重判过时，这个可能性已排除：启发式命中
+        # 的只是中间运算数，再否决就是拿近似覆盖精确判分（2026-11-06 AIMO3 实测）。
+        # 同理，「人明确标了负例」也不该被这个字符串启发式翻案。
+        if verdict == COLD and not rescored_ok and not any_human:
+            verdict = "suspect_label"
+    rec = {"group": gi, "prompt": prompt[:80], "acc": acc, "verdict": verdict,
+           "n": len(g), "truncated": sum(trunc)}
+    if verdict == RL:
+        # `mezo` 的 RL 对组大小是硬假设（`len(raw) % group_size` 必须为 0，
+        # `objectives.group_advantages` 按固定 K 切），所以导出前必须把变长组收成
+        # 固定 K：多则取**最近 K 条**（池子按写入顺序，末条最接近当前策略），
+        # 少则该组本轮不进 RL —— 它还能靠下一轮补齐，硬塞进去会让组内归一化算歪。
+        rows_rl = samples if not rl_group_size else samples[-rl_group_size:]
+        if rl_group_size and len(samples) < rl_group_size:
+            rec["rl_skip"] = f"only_{len(samples)}_of_{rl_group_size}"
+            out["per_group"].append(rec)
+            return rec
+        # reward 写回：否则 rl.jsonl 带的是**过期标签**，训练直接吃错的分。
+        for s in rows_rl:
+            d = dict(s)
+            d["reward"] = float(s["reward"]) if "reward" in s else (
+                1.0 if _pool.verdict_of(s) == _pool.POS else 0.0)
+            out["rl"].append(d)
+        out["rl_groups"] += 1
+    elif verdict == GRADUATED:
+        out["graduated"].append(rec)
+    elif verdict in (TRUNCATED, NEEDS_BUDGET):
+        out["truncated"].append(rec)
+    elif verdict == COLD:
+        item, action, reason = build_cold(prompt, samples, gold,
+                                          (gold_solutions or {}).get(prompt),
+                                          think_tail=think_tail)
+        rec["cold_action"] = action or "none"
+        rec["cold_reason"] = reason
+        out["cold"].append(rec)
+        if action == "dpo":
+            out["dpo_pairs"].append(item)
+        elif action == "sft":
+            out["sft_items"].append(item)
+        else:
+            out["rejected_pairs"].append({"group": gi, "reason": reason})
+    out["per_group"].append(rec)
+    return rec
+
+
+def plan(rows: list[dict], group_size: int = 4, *, gold_solutions: dict | None = None,
+         rescore=None, think_tail: bool = False) -> dict:
+    """把一个 rollouts jsonl 的行切成四档，并给出冷启配对的结果。
+
+    `rows` 每行 `{prompt, completion, reward, gold?, truncated?}`，**连续 group_size
+    行同一 prompt**（与 `mezo.load_rollouts` 的约定一致）。
+
+    这个入口保留给历史 rollouts 与 `mezo.load_rollouts` 的既有约定；**在线场景请用
+    `plan_pool()`** —— 它不依赖行序，也不会丢掉不足 group_size 条的尾巴。
+
+    `rescore(completion, gold) -> float | None` 可选：用当前判分器重判。给了且**该组
+    每条都返回了非 None** 就用它覆盖文件里的 `reward` —— 这是对付过期标签的正解；
+    该组同时记 `rescored_ok=True`，`label_suspect` 对它只报告、不否决冷启。完全没
+    重判（或重判中途失败）的组才走「宁可多报」的老规矩：只标可疑，不擅自改标签。
+
+    `think_tail=True` 透传给 `build_cold`，让冷启 chosen/target 与采样 completion 同构；
+    默认 False（短答任务历史行为不变）。产物验收见 `check_trajectory_tail`。
+    """
+    import sys
     groups = [rows[i:i + group_size] for i in range(0, len(rows) - group_size + 1, group_size)]
-    out = {"rl": [], "rl_groups": 0, "cold": [], "graduated": [], "truncated": [],
-           "dpo_pairs": [], "sft_items": [], "rejected_pairs": [], "suspect": [],
-           "per_group": []}
-
+    tail = len(rows) - len(groups) * group_size
+    if tail:
+        print(f"coldstart: 尾部 {tail} 行不足 {group_size} 条，未成组、已跳过"
+              "（在线场景请改用 plan_pool，它不会丢尾巴）", file=sys.stderr)
+    # 行序分组只在「连续 K 行同 prompt」时成立，而这里过去**从不校验**：一旦错位，
+    # 不同 prompt 会被混成一组，判档与冷启配对全错且没有任何提示。现在至少说出来。
+    bad = sum(1 for g in groups for r in g[1:] if r.get("prompt") != g[0].get("prompt"))
+    if bad:
+        print(f"coldstart: {bad} 行的 prompt 与其组首不一致 —— 行序已错位，"
+              "本份数据的判档结果不可信（在线场景请改用 plan_pool）", file=sys.stderr)
+    out = _empty_plan()
     for gi, g in enumerate(groups):
-        prompt = g[0]["prompt"]
-        gold = g[0].get("gold", "")
-        rewards = [float(r.get("reward", 0.0)) for r in g]
-        rescored_ok = False
-        if rescore is not None:
-            rescored = [rescore(r["completion"], gold) for r in g]
-            if all(v is not None for v in rescored):
-                rewards = [float(v) for v in rescored]
-                rescored_ok = True
-        samples = [{"completion": r["completion"], "reward": w,
-                    "truncated": bool(r.get("truncated"))} for r, w in zip(g, rewards)]
-        trunc = [s["truncated"] for s in samples]
-        verdict = classify(rewards, trunc)
-        acc = acc_of(rewards)
+        _plan_group(gi, g[0]["prompt"], g, gold_solutions=gold_solutions,
+                    rescore=rescore, think_tail=think_tail, out=out)
+    return out
 
-        # 标签自查：只报不改。判据是「gold 数字在尾部却记 0」，是启发式。
-        sus = [i for i, (s, w) in enumerate(zip(samples, rewards))
-               if w < PASS and gold and label_suspect(s["completion"], gold)]
-        if sus:
-            out["suspect"].append({"group": gi, "prompt": prompt[:80], "gold": gold,
-                                   "indices": sus, "acc": acc,
-                                   "verified": rescored_ok})
-            # 未重判、有可疑行且整组 0 正 ⇒ 不能进冷启（可能是判分器漏判，不是模型
-            # 不会）。该组已由当前判分器逐条重判过时，这个可能性已排除：启发式命中
-            # 的只是中间运算数，再否决就是拿近似覆盖精确判分（2026-11-06 AIMO3 实测）。
-            if verdict == COLD and not rescored_ok:
-                verdict = "suspect_label"
-        rec = {"group": gi, "prompt": prompt[:80], "acc": acc, "verdict": verdict,
-               "n": len(g), "truncated": sum(trunc)}
-        if verdict == RL:
-            # 重判后的 reward 要写回：否则 rl.jsonl 带的是**过期标签**，训练直接吃错的分。
-            for r, w in zip(g, rewards):
-                d = dict(r)
-                d["reward"] = w
-                out["rl"].append(d)
-            out["rl_groups"] += 1
-        elif verdict == GRADUATED:
-            out["graduated"].append(rec)
-        elif verdict in (TRUNCATED, NEEDS_BUDGET):
-            out["truncated"].append(rec)
-        elif verdict == COLD:
-            item, action, reason = build_cold(prompt, samples, gold,
-                                              (gold_solutions or {}).get(prompt),
-                                              think_tail=think_tail)
-            rec["cold_action"] = action or "none"
-            rec["cold_reason"] = reason
-            out["cold"].append(rec)
-            if action == "dpo":
-                out["dpo_pairs"].append(item)
-            elif action == "sft":
-                out["sft_items"].append(item)
-            else:
-                out["rejected_pairs"].append({"group": gi, "reason": reason})
-        out["per_group"].append(rec)
+
+def plan_pool(groups: dict[str, list[dict]], *, gold_solutions: dict | None = None,
+              rescore=None, think_tail: bool = False,
+              rl_group_size: int | None = None) -> dict:
+    """池子入口：`{prompt: [sample, ...]}`，组**变长、不要求连续**。
+
+    这是探索式训练的分档入口。与 `plan()` 的差别只有「组怎么来」：
+      * 组由 `pool.Pool.groups()` 按 prompt 聚合，行序错位在原理上不存在；
+      * 组大小不必相等（在线时每组采几条是浮动的），尾部不会被丢；
+      * 每条的 `verdict` 可以是人标的，也可以是判分器的，`unknown` 单列一态。
+
+    `rl_group_size` 只影响**导出的** rl.jsonl，不影响判档：给了就把 RL 组收成固定 K
+    （多则取最近 K 条，少则本轮跳过），因为 `mezo` 的组内归一化按固定 K 切。
+    不传时原样导出 —— 那是离线 `plan()` 的既有行为。
+
+    四档判据、冷启配对、标签自查全部走 `_plan_group`，与离线入口逐字一致。
+    """
+    out = _empty_plan()
+    for gi, (prompt, g) in enumerate(groups.items()):
+        if g:
+            _plan_group(gi, prompt, g, gold_solutions=gold_solutions,
+                        rescore=rescore, think_tail=think_tail, out=out,
+                        rl_group_size=rl_group_size)
     return out
 
 
@@ -557,10 +654,11 @@ def route_steps(p: dict, paths: dict, *, group: int = 4, python: str | None = No
             step["adapter_out"] = prev_adapter
         steps.append(step)
     if p["dpo_pairs"]:
-        # `dpo_epochs`：**必须传轮次，不能传步数**。train.py 的兜底是 `--steps 40`，
-        # 那在「1 对偏好样本」上等于过 40 遍；而一旦偏好对涨到 10 对，固定步数又变成
-        # 「连 1 轮都不到」。sft.py 的 `--epochs` 是 steps = epochs × 条数（581-584），
-        # 数据量变了轮次不变 —— 跨配置可比的唯一口径。
+        # `dpo_epochs`：**传轮次，不传步数**。步数在「1 对偏好样本」上是 1 步、在
+        # 10 对上是 10 步，跨数据量不可比；`sft.py` 的 `--epochs` 是 steps = epochs ×
+        # 对数，数据量变了轮次不变。不给就不带 `--epochs`，落到全局口径「一遍数据集」
+        # —— 与手工 `--algo dpo` 同一个默认，不在这里另立一套。冷启通常要更多轮
+        # （零阶同目标的实测工作点是 7 轮），要用就显式给。
         cmd = [py, train, "--algo", "dpo", "--method", "backward",
                "--dpo-data", paths["dpo"]] + tail + tgt
         if dpo_epochs:
@@ -587,8 +685,14 @@ def route_steps(p: dict, paths: dict, *, group: int = 4, python: str | None = No
 def plan_file(rollouts: str, group: int = 4, *, out_dir=None, gold_solutions: str | None = None,
               rescore: str | None = None, extra: list[str] | None = None,
               python: str | None = None, think_tail: bool = False,
-              max_context: int = 32768) -> tuple[dict, dict, list[dict]]:
-    """一条龙：读 rollouts → 路由 → 写盘 → 出 steps。CLI 与 `train.py --route auto` 共用。"""
+              max_context: int = 32768,
+              dpo_epochs: float | None = None) -> tuple[dict, dict, list[dict]]:
+    """一条龙：读 rollouts → 路由 → 写盘 → 出 steps。CLI 与 `train.py --route auto` 共用。
+
+    `dpo_epochs` 不给时计划里就不带 `--epochs`，`train.py` 按全局口径落成「一遍数据集」
+    （步数 = 偏好对数）—— 与 `--algo dpo` 单独跑时同一个默认，不在这里另立一套。
+    冷启通常需要更多轮（零阶同目标的实测工作点是 7 轮），要用就显式给。
+    """
     import pathlib
     rows = load_rows(rollouts)
     sols = {}
@@ -602,7 +706,49 @@ def plan_file(rollouts: str, group: int = 4, *, out_dir=None, gold_solutions: st
         pathlib.Path(rollouts).stem + ".route")
     paths = write_plan(p, d)
     steps = route_steps(p, paths, group=group, python=python, extra=extra,
-                        max_context=max_context)
+                        max_context=max_context, dpo_epochs=dpo_epochs)
+    if steps:
+        with open(d / "route_plan.json", "w", encoding="utf-8") as f:
+            json.dump({"steps": steps}, f, ensure_ascii=False, indent=1)
+        paths["route"] = str(d / "route_plan.json")
+    return p, paths, steps
+
+
+def plan_pool_file(pool_path: str, group: int = 4, *, adapter: str | None = None,
+                   out_dir=None, gold_solutions: str | None = None,
+                   rescore: str | None = None, extra: list[str] | None = None,
+                   python: str | None = None, think_tail: bool = False,
+                   max_context: int = 32768,
+                   dpo_epochs: float | None = None) -> tuple[dict, dict, list[dict]]:
+    """一条龙：**样本池** → 路由 → 写盘 → 出 steps。探索式训练的分档入口。
+
+    与 `plan_file` 只差数据来源：不读「连续 K 行」的 rollouts，而是读 append-only 的
+    池子并按 prompt 聚合。这才使「边探索边 append、随时重算」成立 —— 池子随时可以不
+    满 K 条、可以同一 prompt 有多批不同 adapter 的样本。
+
+    `adapter` 决定这一轮用谁采的样本（`None`=全部，`"latest"`=最近一个 adapter）。
+    RL 用 `"latest"` 才是 on-policy；冷启用 `None`，因为它只要求「有个正例」，
+    不要求那条正例是当前策略产的。
+
+    `group` 同时是 RL 的组大小与 `mezo --group` 的取值：池子里的组会被收成固定 K
+    （多则取最近 K 条，少则本轮跳过），因为 `mezo` 的组内归一化按固定 K 切。
+    """
+    import pathlib
+    groups = _pool.Pool(pool_path).groups(adapter)
+    if not groups:
+        raise SystemExit(f"{pool_path}: 池子里没有可用样本（adapter={adapter!r}）")
+    sols = {}
+    if gold_solutions:
+        for r in load_rows(gold_solutions):
+            sols[r["prompt"]] = r["solution"]
+    p = plan_pool(groups, gold_solutions=sols,
+                  rescore=_load_rescorer(rescore) if rescore else None,
+                  think_tail=think_tail, rl_group_size=group)
+    d = pathlib.Path(out_dir) if out_dir else pathlib.Path(pool_path).with_suffix("").parent / (
+        pathlib.Path(pool_path).stem + ".route")
+    paths = write_plan(p, d)
+    steps = route_steps(p, paths, group=group, python=python, extra=extra,
+                        max_context=max_context, dpo_epochs=dpo_epochs)
     if steps:
         with open(d / "route_plan.json", "w", encoding="utf-8") as f:
             json.dump({"steps": steps}, f, ensure_ascii=False, indent=1)
@@ -662,8 +808,13 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
     import pathlib
 
-    ap = argparse.ArgumentParser(description="按通过率把 rollouts 分成 RL / 冷启 / 毕业")
-    ap.add_argument("--rollouts", required=True)
+    ap = argparse.ArgumentParser(description="按通过率把 rollouts / 样本池分成 RL / 冷启 / 毕业")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--rollouts", help="离线：连续 K 行同一 prompt 的采样文件")
+    src.add_argument("--pool", help="在线：append-only 样本池（按 prompt 聚合，不要求行序）")
+    ap.add_argument("--adapter", default=None,
+                    help="池子用：留空=全部样本；latest=只用最近一个 adapter 采的（RL 的 "
+                         "on-policy 子集）；也可给具体 digest")
     ap.add_argument("--group", type=int, default=4)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--gold-solutions", default=None,
@@ -672,11 +823,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="'文件路径:函数名'，用当前判分器重判历史 reward（对付过期标签）")
     ap.add_argument("--think-tail", action="store_true",
                     help="长推理通道：把冷启 target 规范成「思考正文 → </think> → 最终 Answer: N」")
+    ap.add_argument("--dpo-epochs", type=float, default=None,
+                    help="冷启 DPO 的轮次（step = 轮次 × 偏好对数）。不给就是全局默认"
+                         "「一遍数据集」；冷启通常要更多轮（常用 7 轮）")
     a = ap.parse_args(argv)
 
-    p, paths, steps = plan_file(a.rollouts, a.group, out_dir=a.out_dir,
-                                gold_solutions=a.gold_solutions, rescore=a.rescore,
-                                think_tail=a.think_tail)
+    kw = dict(out_dir=a.out_dir, gold_solutions=a.gold_solutions, rescore=a.rescore,
+              think_tail=a.think_tail, dpo_epochs=a.dpo_epochs)
+    if a.pool:
+        p, paths, steps = plan_pool_file(a.pool, a.group, adapter=a.adapter, **kw)
+    else:
+        p, paths, steps = plan_file(a.rollouts, a.group, **kw)
     print(summarize(p))
     print(f"\n写盘：{paths['rl']}（{len(p['rl'])} 条）/ {paths['dpo']}（{len(p['dpo_pairs'])} 对）"
           f" / {paths['sft']}（{len(p['sft_items'])} 条）/ {paths['plan']}")

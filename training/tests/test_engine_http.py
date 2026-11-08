@@ -192,5 +192,53 @@ class EngineHttpWiringTest(unittest.TestCase):
         self.assertIn("online transport chosen", str(cm.exception))
 
 
+class TestPrefillChunk(unittest.TestCase):
+    """`--prefill` 是 prompt 的**分块大小**，不是长度上限；own buffer 下它是整个会话的预留。
+
+    钉死的是两件事：① 默认值由数据里最长样本定（对齐 256），不是常数 8192；② 用户显式给了
+    就照用（长上下文数据只有用户知道）。8192 在 300-600 token 的数学数据上就是白占专家缓存。
+    """
+
+    def test_no_data_falls_back_to_the_engines_own_choice(self):
+        self.assertEqual(mezo.resolve_prefill_chunk(0), "auto")
+
+    def test_the_longest_sample_decides_and_is_aligned_to_the_256_grid(self):
+        # 336 -> 512：request_chunk 也按 256 取整，所以「一条样本一块读完」等价于对齐后的值
+        self.assertEqual(mezo.resolve_prefill_chunk(336), "512")
+        self.assertEqual(mezo.resolve_prefill_chunk(512), "512")
+        self.assertEqual(mezo.resolve_prefill_chunk(513), "768")
+
+    def test_never_below_one_grid_step(self):
+        self.assertEqual(mezo.resolve_prefill_chunk(1), "256")
+
+    def test_capped_at_the_engine_auto_ceiling(self):
+        # 128K 数据：8192 一块，按块数读完 —— 不是截断；要一块读完得显式给 --prefill-chunk
+        self.assertEqual(mezo.resolve_prefill_chunk(131072), "8192")
+
+    def test_an_explicit_choice_wins(self):
+        self.assertEqual(mezo.resolve_prefill_chunk(336, "8192"), "8192")
+        self.assertEqual(mezo.resolve_prefill_chunk(131072, "auto"), "auto")
+
+
+class TestEngineArgvCarriesTheChunk(unittest.TestCase):
+    def _argv(self, chunk):
+        from types import SimpleNamespace
+        args = SimpleNamespace(engine="strata.exe", pack="p", gguf="g", expert_profile="e",
+                               max_context=4096, prefill_chunk=chunk)
+        return mezo.engine_argv(args, "init.gguf")
+
+    def test_the_chunk_reaches_the_engine(self):
+        a = self._argv("512")
+        self.assertEqual(a[a.index("--prefill") + 1], "512")
+
+    def test_an_empty_choice_is_left_to_the_engine(self):
+        a = self._argv("")
+        self.assertEqual(a[a.index("--prefill") + 1], "auto")
+
+    def test_borrow_stays_off(self):
+        # ── 这条与 chunk 无关，但同样只能由启动参数保证（BRANCH-NOTES §4.3）
+        self.assertIn("--no-prefill-borrow", self._argv("512"))
+
+
 if __name__ == "__main__":
     unittest.main()
