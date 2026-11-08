@@ -181,9 +181,11 @@ class ConfidenceFollowsTheSlots(unittest.TestCase):
 
     def test_the_card_decides_when_the_cache_is_auto(self):
         args = ["--expert-cache", "auto", "--max-context", "131072", "--kv", "int8"]
-        for vram, want in ((8192, "0.8"), (12288, "0.8"), (16384, "0.7"), (20480, "0.7"), (24564, "0.5"), (32768, "0.35"), (49152, "0.35"), (73415, "0.35")):
+        for vram, want in ((8192, "0.8"), (12288, "0.8"), (16384, "0.7"), (20480, "0.7"), (24564, "0.5"), (32768, "0.35"), (45000, "0.35"), (49152, "0.55"), (73415, "0.55")):
             self.assertEqual(self.conf(args, vram_mib=vram), want, vram)
         self.assertEqual(self.conf(args, vram_mib=32768, backend="hip", archs=("gfx1201",)), "0.35", "the R9700 (12,570 slots measured) keeps 0.35")
+        for archs in (("sm_121",), ("sm_89",), ("sm_86",)):
+            self.assertEqual(self.conf(args, vram_mib=73415, archs=archs), "0.35", f"{archs}: only cc 12.0 with 48 GB or more has 0.55")
 
     def test_the_estimate_matches_the_two_measured_starts(self):
         n = drafting.expected_slots(32768, ["--max-context", "131072", "--kv", "int8"])

@@ -200,7 +200,7 @@
      "--mtp-draft-vocab",
      "<ROOT>/data/mtp/rt/draft_vocab.bin",
      "--spec",
-     "6",
+     "8",
      "--draft-conf",
      "0.35"
     ],
@@ -338,7 +338,7 @@
      "--mtp-draft-vocab",
      "<ROOT>/data/mtp/rt/draft_vocab.bin",
      "--spec",
-     "6",
+     "8",
      "--draft-conf",
      "0.35"
     ],
@@ -461,7 +461,7 @@
      "--mtp-draft-vocab",
      "<ROOT>/data/mtp/rt/draft_vocab.bin",
      "--spec",
-     "6",
+     "8",
      "--draft-conf",
      "0.35"
     ],

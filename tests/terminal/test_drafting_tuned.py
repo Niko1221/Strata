@@ -476,7 +476,7 @@ class CudaAndHip(Fetch):
             self.assertEqual(flag(args2, "--draft-model"), str(drafting.pack_path(self.data, self.exe)), where)
             self.assertNotEqual(flag(args2, "--draft-model"), flag(args, "--draft-model"), where)
             self.assertEqual(flag(args, "--draft-conf"), flag(args2, "--draft-conf"), f"only the pack changes, not the conf {where}")
-            self.assertEqual(flag(args, "--draft-conf"), "0.35", where)
+            self.assertEqual(flag(args, "--draft-conf"), "0.55" if hardware is L620 else "0.35", where)      # l620 0.55, 11-08
             self.assertEqual(flag(args, "--spec"), flag(args2, "--spec"), where)
             strip = lambda a: [x for i, x in enumerate(a) if not (i and a[i - 1] == "--draft-model")]      # noqa: E731
             self.assertEqual(strip(args), strip(args2), where)
@@ -530,7 +530,7 @@ class CudaAndHip(Fetch):
         self.assertEqual(drafting.BACKEND_CONF, {"sycl": 0.6, "metal": 0.5})
         self.assertEqual((drafting.DRAFT_CONF, drafting.SPEC_WINDOW), (0.35, 6))
         self.put_stock()
-        want = {L620[0]: "0.35", SPARK[0]: "0.35", STRIX[0]: "0.35", P2003[0]: "0.8", ARC[0]: "0.6"}
+        want = {L620[0]: "0.55", SPARK[0]: "0.35", STRIX[0]: "0.35", P2003[0]: "0.8", ARC[0]: "0.6"}
         for hardware in (L620, SPARK, STRIX, P2003, ARC):
             name = V31 if hardware is P2003 else IQ3S           # (IQ3S on the 12 GB class is the MTP now: no DFlash2 conf to compare)
             before = flag(self.apply_on(hardware, name)[1], "--draft-conf")

@@ -8,7 +8,7 @@ The choice is the person's, and it is saved in the model's run config as ``"draf
 strata_control/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it. An older config that names both drafters (``--mtp`` and
 ``--draft dflash2``) starts with the one chosen.
 
-  dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` and no ``--mtp``: the DFlash2
+  dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` (``--spec 8`` on Strix Halo and on Blackwell cc 12.0 with >= 48 GB, whose conf is 0.55: window_for / big_blackwell) and no ``--mtp``: the DFlash2
            block drafter (incoai/Qwen3.8-Flash-Next-DFlash2, Q4_0 pack) for Qwen3.8-Flash-Next, Gyro and Unsloth's quantizations, with the window and confidence that measured best
            (RESULTS-DRAFT.md section 4); a ``--spec`` or ``--draft-conf`` the person set by hand (``user_args``) stays
   mtp      the model's own draft layer (``--mtp <folder>``) and none of the DFlash2 flags
@@ -252,6 +252,7 @@ LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9
 VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded and the bf16-selector pack: 890 MiB (RESULTS-DF2MEM.md); vram_gb() has the true figure for this computer
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
+WIDE_WINDOW = 8              # --spec on the two card classes whose engine cap (include/strata/core/draft_cap.hpp dflash2_auto_cap) is 8: Strix Halo and Blackwell cc 12.0 with >= 48 GB (window_for). The engine only ever lowers --spec to its cap, so every other card keeps SPEC_WINDOW
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
 DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this (the card holds most experts)
 
@@ -275,6 +276,11 @@ MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 # DFlash2 --spec 6 against MTP --spec 2, 3 interleaved rounds x 2 reps, six request kinds (phaseA-tests/round0215/RESULTS-MAC-OUT.md): conf 0.35 / 0.5 / 0.6 = +10.0 / +14.3 / +12.4% over all
 # six kinds (0.5 faster than MTP on every kind in 3 of 3 rounds; the slot rule would have written 0.8 for the Mac's --expert-cache 64).
 BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
+# Large-VRAM Blackwell (cc 12.0 = sm_120, at least 48 GB: l620's RTX PRO 5000 72 GB; NOT the DGX Spark, sm_121, and not a consumer card under 48 GB, which were not measured): conf 0.55 and a window
+# of 8 (the engine cap is 8 there too). 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs
+# faster, output identical (conf 0.55 alone +1.1%, window 8 alone +0.5%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured.
+BIG_BLACKWELL_CONF = 0.55
+BIG_CARD_BYTES = 48_000_000_000     # "48 GB" the way cards are sold (a 48 GB card reports about 47.5 GiB); the engine's kDflash2BigCardBytes is the same number
 
 
 @dataclass(frozen=True)
@@ -749,6 +755,22 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | 
     return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *where, "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
 
 
+def big_blackwell(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
+    """Is this start on the large-VRAM Blackwell class (BIG_BLACKWELL_CONF): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
+    at least BIG_CARD_BYTES (None = several cards or unknown: no), and ``slots`` in the all-resident step (None counts as unknown: no)? Mirrors the engine's dflash2_big_blackwell."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) != "sm_120" or not vram_mib or slots is None:
+        return False
+    return vram_mib * 1048576 >= BIG_CARD_BYTES and slots >= CONF_STEPS[0][0]
+
+
+def window_for(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> int:
+    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on the large-VRAM Blackwell class (big_blackwell), SPEC_WINDOW (6) everywhere else, so no other
+    card's effective window changes (the engine caps 6 on the Spark and the smaller Blackwell cards, and does not cap the rest)."""
+    if str(backend or "").strip().lower() == "hip" and first_arch(archs) == "gfx1151":
+        return WIDE_WINDOW
+    return WIDE_WINDOW if big_blackwell(backend, archs, vram_mib, slots) else SPEC_WINDOW
+
+
 def conf_for(backend: str | None, slots: int | float | None) -> float:
     """The ``--draft-conf`` for this engine family and a card that holds ``slots`` experts: the backend's own value (BACKEND_CONF) when it has one, else the slot steps."""
     own = BACKEND_CONF.get(str(backend or "").strip().lower())
@@ -1076,7 +1098,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
           backend: str | None = None, archs: Any = None, vram_mib: float | None = None, split: bool = False, slots: int = 0,
           engine: str | os.PathLike[str] | None = None) -> Decision:
     """Put the config's ``"drafting"`` choice on its engine arguments (in place): ONE drafter's options and none of the other's. DFlash2: no ``--mtp``, no MTP option,
-    ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf C``; the person's own ``--spec`` or ``--draft-conf``
+    ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec W --draft-conf C`` (W = window_for: 8 on Strix Halo and on cc 12.0 with >= 48 GB, else 6); the person's own ``--spec`` or ``--draft-conf``
     in ``user_args`` stays. C is 0.35 where the card holds most experts and higher where fewer slots fit (conf_for_slots): from the person's own ``--expert-cache N``,
     else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35). MTP: the arguments without any DFlash2 option.
     ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``slots`` says that this start serves several requests at
@@ -1123,7 +1145,10 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
         flags = list(engine_flags(pack, vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
         tuned_conf = tuned_conf_for(backend, cfg.get("model_name")) if Path(pack) == tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name"))) else None     # Metal: the conf the tuned pack was measured with; CUDA / HIP: None, the backend's own conf stays
-        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else conf_for(backend, slots_of(base, vram_mib)):g}"
+        held = slots_of(base, vram_mib)
+        wide = big_blackwell(backend, archs, vram_mib, held)                                  # large-VRAM Blackwell: its own measured conf (BIG_BLACKWELL_CONF); Strix keeps 0.35 and widens only the window
+        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else BIG_BLACKWELL_CONF if wide else conf_for(backend, held):g}"
+        flags[flags.index("--spec") + 1] = str(window_for(backend, archs, vram_mib, held))
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays
         else:

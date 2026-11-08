@@ -494,7 +494,7 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
                     self.assertEqual(args[args.index("--mtp-draft-vocab") + 1], str(mtp / "draft_vocab.bin"), "the vocabulary the engine needs")
                     for flag in ("--mtp", "--spec-min-p"):
                         self.assertNotIn(flag, args, (backend, name, flag))
-                    self.assertEqual(args[args.index("--spec") + 1], "6")
+                    self.assertEqual(args[args.index("--spec") + 1], "8" if (backend, archs) == ("hip", ["gfx1151"]) else "6", "Strix Halo 8 (RESULTS-CONF.md 11-08), every other card 6")
 
     def test_swift_coder_and_nvfp4_stay_on_the_mtp(self):
         for backend, archs in self.HARDWARE:

@@ -210,13 +210,13 @@
      "--mtp-draft-vocab",
      "<ROOT>/data/mtp/rt/draft_vocab.bin",
      "--spec",
-     "6",
+     "8",
      "--draft-conf",
-     "0.35"
+     "0.55"
     ],
     "env_set": {},
     "notes": [
-     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.55)"
     ]
    }
   },
@@ -347,13 +347,13 @@
      "--mtp-draft-vocab",
      "<ROOT>/data/mtp/rt/draft_vocab.bin",
      "--spec",
-     "6",
+     "8",
      "--draft-conf",
-     "0.35"
+     "0.55"
     ],
     "env_set": {},
     "notes": [
-     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.55)"
     ]
    }
   },
@@ -469,13 +469,13 @@
      "--mtp-draft-vocab",
      "<ROOT>/data/mtp/rt/draft_vocab.bin",
      "--spec",
-     "6",
+     "8",
      "--draft-conf",
-     "0.35"
+     "0.55"
     ],
     "env_set": {},
     "notes": [
-     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.55)"
     ]
    }
   }
