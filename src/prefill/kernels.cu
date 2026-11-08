@@ -1223,6 +1223,7 @@ cudaError_t gdn_rec_chunked(float* state, const float* h, const float* gate, con
 cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const float* beta, float* y, int64_t T,
                        cudaStream_t s) {
     if (T <= 0) return cudaSuccess;
+    bool one_buf = false;
     {
         int dev = 0, major = 0, sms = 0, smem = 0;
         if (cudaGetDevice(&dev) != cudaSuccess ||
@@ -1232,8 +1233,9 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
             cudaGetLastError();
             return cudaErrorNotSupported;
         }
-        if (strata::cc_major_of(major) < 8 || sms < HV || (size_t) strata::smem_optin_of(smem) < kTcScanSmem<false>)
+        if (strata::cc_major_of(major) < 8 || sms < HV || (size_t) strata::smem_optin_of(smem) < kTcScanSmem1)
             return cudaErrorNotSupported;
+        one_buf = (size_t) strata::smem_optin_of(smem) < kTcScanSmem<false>;
     }
     const GtcScratch sc = gdn_tc_scratch();
     if (sc.ti == nullptr) return cudaErrorMemoryAllocation;
@@ -1242,14 +1244,18 @@ cudaError_t gdn_rec_tc(float* state, const float* h, const float* gate, const fl
         int dev = 0;
         cudaGetDevice(&dev);
         if (dev >= 0 && dev < 64 && !attrs[dev]) {
-            cudaFuncSetAttribute(gdn_tc_scan_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmem<false>);
+            if (one_buf) cudaFuncSetAttribute(gdn_tc_scan_kernel<false, 1>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmem1);
+            else cudaFuncSetAttribute(gdn_tc_scan_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) kTcScanSmem<false>);
             attrs[dev] = true;
         }
     }
     for (int64_t t0 = 0; t0 < T; t0 += GSB) {
         const int nch = (int) ((std::min<int64_t>(GSB, T - t0) + GCH - 1) / GCH);
         gdn_tc_prep_kernel<<<dim3((unsigned) nch, HK), 256, kTcPrepSmem, s>>>(h, gate, beta, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, t0, T);
-        gdn_tc_scan_kernel<false><<<HV, GTC_CW * 32, kTcScanSmem<false>, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
+        if (one_buf)
+            gdn_tc_scan_kernel<false, 1><<<HV, GTC_CW * 32, kTcScanSmem1, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
+        else
+            gdn_tc_scan_kernel<false><<<HV, GTC_CW * 32, kTcScanSmem<false>, s>>>(state, h, sc.ti, sc.te, sc.sc, sc.kq, sc.pi, y, t0, nch, T);
     }
     return cudaSuccess;
 }

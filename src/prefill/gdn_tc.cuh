@@ -46,6 +46,9 @@ template <bool NORM>
 constexpr size_t kTcScanSmem = 2 * (4 * GCH * GTC_KP * 2 + GCH * GTC_VP * 4 + (NORM ? GCH * GTC_VP * 4 : 0) +
                                     4 * GCH * GTC_PP * 2 + GCH * 16 + (NORM ? GCH * GTC_CW * 4 : 0)) + 16;
 static_assert(kTcScanSmem<false> == 124944 && kTcScanSmem<true> == 160784, "gdn_tc.cuh: the shared-memory plan");
+// one buffer (gdn_tc_scan_kernel<false, 1>, tuning 2026-11-09): the plan above halved, for cards whose opt-in is below
+// 124,944 B (Ada: 101,376): the next chunk is staged after the chunk's last read, not under it - the same arithmetic
+constexpr size_t kTcScanSmem1 = (4 * GCH * GTC_KP * 2 + GCH * GTC_VP * 4 + 4 * GCH * GTC_PP * 2 + GCH * 16) + 16;
 // the prep's scratch for a super-block (gdn_tc_scratch, one a device, 60.3 MB): the T images x 2^et as
 // [chunk][vh][2: hi, lo][GCH][GCH] f16 and their scales 2^-et as [chunk][vh], the token scalars as float4
 // [chunk][vh][GCH], the k and q images x 2^8 as [chunk][qh][4: k hi, k lo, q hi, q lo][GCH][S] and the P images x 2^8
@@ -414,7 +417,7 @@ __global__ void __launch_bounds__(256) gdn_tc_prep_kernel(const float* __restric
 // 8 warps, 2 a sub-partition, may have 255).
 // NORM (step 5: the output norm fused, the FP16 output written here) is not implemented yet; oc_out takes the FP32
 // output as gdn_chunk_scan_kernel writes it.
-template <bool NORM>
+template <bool NORM, int NB = 2>
 __global__ void __launch_bounds__(GTC_CW * 32, 1)
 gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const uint16_t* __restrict__ tig_,
                    const float* __restrict__ teg, const float4* __restrict__ scg, const uint16_t* __restrict__ kqg,
@@ -423,16 +426,16 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
     constexpr int NT = GTC_CW * 32;
     extern __shared__ __align__(16) unsigned char gtc_sm[];
     uint16_t* kh = reinterpret_cast<uint16_t*>(gtc_sm);                 // [2][GCH][GTC_KP]  f16 of k x 2^8 (hi)
-    uint16_t* kl = kh + 2 * GCH * GTC_KP;                               // [2][GCH][GTC_KP]  what hi left out (lo)
-    uint16_t* qh = kl + 2 * GCH * GTC_KP;                               // q likewise
-    uint16_t* ql = qh + 2 * GCH * GTC_KP;
-    float* sv = reinterpret_cast<float*>(ql + 2 * GCH * GTC_KP);        // [2][GCH][GTC_VP]  v
-    uint16_t* th = reinterpret_cast<uint16_t*>(sv + 2 * GCH * GTC_VP);  // [2][GCH][GTC_PP]  T x 2^et hi / lo
-    uint16_t* tl = th + 2 * GCH * GTC_PP;
-    uint16_t* ph = tl + 2 * GCH * GTC_PP;                               // [2][GCH][GTC_PP]  P x 2^8 hi / lo
-    uint16_t* pl = ph + 2 * GCH * GTC_PP;
-    float4* sc = reinterpret_cast<float4*>(pl + 2 * GCH * GTC_PP);      // [2][GCH]  (beta, exp(gamma), exp(gL - gamma), gamma)
-    float* ste = reinterpret_cast<float*>(sc + 2 * GCH);                // [2]  2^-et
+    uint16_t* kl = kh + NB * GCH * GTC_KP;                               // [2][GCH][GTC_KP]  what hi left out (lo)
+    uint16_t* qh = kl + NB * GCH * GTC_KP;                               // q likewise
+    uint16_t* ql = qh + NB * GCH * GTC_KP;
+    float* sv = reinterpret_cast<float*>(ql + NB * GCH * GTC_KP);        // [2][GCH][GTC_VP]  v
+    uint16_t* th = reinterpret_cast<uint16_t*>(sv + NB * GCH * GTC_VP);  // [2][GCH][GTC_PP]  T x 2^et hi / lo
+    uint16_t* tl = th + NB * GCH * GTC_PP;
+    uint16_t* ph = tl + NB * GCH * GTC_PP;                               // [2][GCH][GTC_PP]  P x 2^8 hi / lo
+    uint16_t* pl = ph + NB * GCH * GTC_PP;
+    float4* sc = reinterpret_cast<float4*>(pl + NB * GCH * GTC_PP);      // [2][GCH]  (beta, exp(gamma), exp(gL - gamma), gamma)
+    float* ste = reinterpret_cast<float*>(sc + NB * GCH);                // [2]  2^-et
     const int vh = blockIdx.x, qhd = vh % HK;
     const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, gid = lane >> 2, tig = lane & 3;
     const size_t rs = (size_t) HV * S;
@@ -479,12 +482,12 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
     stage(0, 0);
     const float out_scale = rsqrtf((float) S);
     for (int ch = 0; ch < nch; ++ch) {
-        const int b = ch & 1;
+        const int b = NB == 2 ? (ch & 1) : 0;
         const int64_t c_t0 = t0 + (int64_t) ch * GCH;
         const int n = (int) min((int64_t) GCH, T - c_t0);
         gdn_cp_wait_all();   // this thread's pieces of chunk ch
         __syncthreads();     // every thread's: chunk ch's buffer complete; every read of the other one done
-        if (ch + 1 < nch) stage(ch + 1, b ^ 1);
+        if (NB == 2 && ch + 1 < nch) stage(ch + 1, b ^ 1);
         const uint16_t* bkh = kh + b * GCH * GTC_KP;
         const uint16_t* bkl = kl + b * GCH * GTC_KP;
         const uint16_t* bqh = qh + b * GCH * GTC_KP;
@@ -576,6 +579,10 @@ gdn_tc_scan_kernel(float* __restrict__ state, const float* __restrict__ h, const
         for (int j = 0; j < 16; ++j)
 #pragma unroll
             for (int q = 0; q < 4; ++q) s[j][q] *= sOi;
+        if (NB == 1 && ch + 1 < nch) {
+            __syncthreads();   // every read of the one buffer done
+            stage(ch + 1, 0);
+        }
     }
 #pragma unroll
     for (int j = 0; j < 16; ++j) {
