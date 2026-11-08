@@ -405,7 +405,24 @@ inline int ring_slots(size_t T) {
     // S6: with the matrix-core attention (the gfx12 default since 148-amd; STRATA_HIP_WMMA=1 or auto elsewhere / forced, on a card that
     // has it) a 96-slot ring: measured with it, 9070 XT 4K prompts 718 -> 1,211 tok/s (16K 1,949 -> 2,032), R9700 4K 2,426 -> 2,483 (16K the same)
     static const bool wmma = strata::kernels::qsa_prompt_attn_matrix_cores_requested();
-    if (!v && g_ring_override <= 0 && wmma) return (int64_t) T >= stream_all_min() ? 96 : STAGE;
+    if (!v && g_ring_override <= 0 && wmma) {
+        if ((int64_t) T < stream_all_min()) return STAGE;
+        // R9700 (gfx1201) 11-03, IQ3_S fused kernels and UD-Q4_K_XL MMQ: a layer's streamed experts want a deeper ring than 96 at chunks
+        // up to 8K tokens (ring 256 / 192 / 96, 3 rounds x 2 reps interleaved, prompt tok/s: 4K +12.5% / +11.8% / base, 8K +2.4% / +4.4% /
+        // base; UD-Q4 ring 192: 4K +6.9%, 8K +9.5%, 20K +4.0%), while at 16K chunks the extra loan only costs (32K prompt: 256 -0.4%,
+        // 192 -1.3%).  The ring is staging depth only; capped at ~800 MiB of blobs (UD-Q4's 3.99 MB blobs: 200 slots).
+        // STRATA_PREFILL_RING=96 restores the old value; so does STRATA_GFX12_RING=0.
+        // gfx12 only: the ring was measured on an R9700.  The Strix Halo (gfx1151) also runs the matrix-core attention by default on Windows and keeps 96, as in 0.2.10
+        // (STRATA_HIP_WMMA=1 on it made the branch above true, and this depth with it).
+        static const bool deeper = [] {
+            const char* e = std::getenv("STRATA_GFX12_RING");
+            return !(e != nullptr && e[0] == '0') && strata::kernels::qsa_prompt_attn_matrix_cores_gfx12();
+        }();
+        if (!deeper || (int64_t) T >= 12288) return 96;
+        const int64_t per = MAXBLOB();
+        const int cap = per > 0 ? (int) std::max<int64_t>(96, (int64_t) (800u << 20) / per) : 96;
+        return std::min(cap, (int64_t) T <= 6144 ? 256 : 192);
+    }
 #endif
     // the byte budget as this pack's slots: 1024 fused / 384 not on Q2_0, fewer on a pack with bigger blobs.  The
     // unpinned arm stays a slot count (96): it was measured where the host copies are the limit, and there the ring

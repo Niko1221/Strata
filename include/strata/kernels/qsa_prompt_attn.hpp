@@ -54,5 +54,8 @@ void qsa_prompt_attn_set_imma(int on);
 /// HIP: STRATA_HIP_WMMA asks for the matrix-core prompt attention (=1 or =auto) and this device is a gfx11 / gfx12 matrix-core part
 /// that has not switched it off after a failed launch.  The prompt path's 96-slot expert ring follows it.  False off HIP.
 bool qsa_prompt_attn_matrix_cores_requested();
+/// The same, and the device is a gfx12 (RDNA4) part.  The deeper prompt staging ring (a1e6ef324, measured on an R9700) follows this one, so the Strix Halo (gfx1151, which
+/// has the matrix-core attention on by default on Windows) keeps the 96-slot ring of 0.2.10.
+bool qsa_prompt_attn_matrix_cores_gfx12();
 
 }  // namespace strata::kernels

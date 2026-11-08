@@ -18,8 +18,8 @@ from test_setup_hybrid import fake_sys  # noqa: E402
 BASE = ["--expert-cache", "auto", "--prefill", "auto", "--max-context", "65536"]
 
 
-def tips(args=BASE, env=None, ram=32.0, model=20.0, vram=12.0, vision="none", win=False):
-    return setup.bench_tips(list(args), env, ram, model, vram, vision, win)
+def tips(args=BASE, env=None, ram=32.0, model=20.0, vram=12.0, vision="none", win=False, gpu=None):
+    return setup.bench_tips(list(args), env, ram, model, vram, vision, win, gpu)
 
 
 class BenchTips(unittest.TestCase):
@@ -32,12 +32,31 @@ class BenchTips(unittest.TestCase):
         self.assertEqual(tips(a, win=False), [])
         self.assertEqual(tips(BASE, win=True), [])                      # auto: nothing to warn about
 
+    def test_the_chunk_tip_is_not_said_on_an_apu(self):
+        tip = next(t for t in tips(ram=128) if "auto:32768" in t)
+        self.assertTrue(setup.apu_hides_chunk_tip({"arch": "gfx1151", "uma": True}, tip))     # Strix Halo
+        self.assertFalse(setup.apu_hides_chunk_tip({"arch": "gfx1201"}, tip))                 # a discrete card keeps it
+        self.assertFalse(setup.apu_hides_chunk_tip({"arch": "gfx1151", "uma": True}, "warning: --prefill auto:32768 on 32 GB of RAM"))
+
     def test_prefill_auto_32768_follows_the_ram(self):
         self.assertTrue(any("auto:32768" in t and t.startswith("tip") for t in tips(ram=128)))
         self.assertEqual([t for t in tips(ram=64) if "auto:32768" in t], [])
         big = ["--prefill", "auto:32768"]
         self.assertTrue(any(t.startswith("warning") and "auto:32768" in t for t in tips(big, ram=32)))
         self.assertEqual([t for t in tips(big, ram=96) if "auto:32768" in t], [])
+
+    def test_the_32768_tip_is_left_out_where_a_bare_auto_already_takes_it(self):
+        # round 0212: one NVIDIA card of compute capability 8.0+ (arch "86", "120", "121") gets a 32768 ceiling from a bare auto
+        tip = lambda **k: [t for t in tips(ram=128, **k) if "auto:32768" in t]
+        for arch in ("86", "89", "120", "121"):
+            self.assertEqual(tip(gpu={"arch": arch}), [], arch)
+        for arch in ("75", "70", "60", "gfx1201", ""):                  # older cards, AMD, unknown: the tip stays
+            self.assertTrue(tip(gpu={"arch": arch}), arch)
+        self.assertTrue(tip())                                           # no GPU information: as before
+        self.assertTrue(tip(gpu={"arch": "86"}, env={"STRATA_NV_CHUNK": "0"}))
+        self.assertTrue(tip(gpu={"arch": "86"}, env={"STRATA_DEFAULTS": "026"}))
+        self.assertTrue(tip(args=[*BASE, "--gpus", "0,1"], gpu={"arch": "86"}))      # a layer split reads 8192-token chunks
+        self.assertTrue(tip(args=[*BASE, "--layer-split", "auto"], gpu={"arch": "86"}))
 
     def test_resident_headroom_on_small_ram(self):
         res = [*BASE, "--resident-experts"]

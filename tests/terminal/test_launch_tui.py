@@ -17,7 +17,7 @@ from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result
 from strata_cli.launch.widgets import Glyphs
 from tests.terminal.launch_support import HW_12, HW_24, HW_2X16, Home, catalog, text_of
 
-SIZE = (110, 34)
+SIZE = (110, 60)      # (round 0214: the list has seven more rows (Unsloth's v3.1 sets); the tests that read the whole list need the room)
 
 
 def flat(app) -> str:
@@ -241,7 +241,7 @@ class ModelStep(Base):
         app = LaunchApp(ctx)
 
         async def go():
-            async with app.run_test(size=(80, 34)) as pilot:
+            async with app.run_test(size=(80, 60)) as pilot:
                 await pilot.pause(0.2)
                 await press(pilot, "enter")
                 t = text_of(app)

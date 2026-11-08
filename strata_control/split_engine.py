@@ -55,10 +55,9 @@ AUTO_SPLIT_AMD_ARCHS: tuple = ("gfx1201",)
 #: card counts on which mode "auto" starts it on those architectures. Four: on 2 and 3 R9700 with the IQ3_S set the split is slower than the layer split today (RESULTS-HIP.md
 #: section 7), and Auto must not pick a slower path. `--split-engine on` is not limited by this.
 AUTO_SPLIT_AMD_CARD_COUNTS: tuple = (4,)
-#: routed-expert types for which mode "auto" starts it on AMD: the UD-Q4_K_XL family. On 4 x R9700 with the IQ3_S set (i-quant and Q2_0 experts) the split is much slower than the
-#: layer split (8 users 143.8 against 326.8 tok/s, a 32K prompt 10.3 against 5.6 s, RESULTS-HIP.md section 7), because its i-quant tiles are a first, untuned version.
-#: `--split-engine on` still runs those sets.
-AUTO_SPLIT_AMD_EXPERT_TYPES: frozenset = frozenset({"Q4_K", "Q5_K", "Q5_1", "Q8_0"})
+#: routed-expert types for which mode "auto" starts it on AMD: the UD-Q4_K_XL family and the IQ3_S set (i-quant and Q2_0 experts). With the shared expert fused into the routed launches
+#: (round 0212) the split beats the layer split on 4 x R9700 with the IQ3_S set: 1 user 187 against 104 tok/s, 8 users 365 against 321 (phaseA-tests/round0212/RESULTS-AMDSPLIT.md).
+AUTO_SPLIT_AMD_EXPERT_TYPES: frozenset = frozenset({"Q4_K", "Q5_K", "Q5_1", "Q8_0", "Q2_0", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL"})
 TESTED_CONTEXT = 131072
 MAX_CARDS = 4
 LAYERS, EXPERTS = 48, 512          # Qwen3.8-Flash-Next
@@ -73,10 +72,17 @@ PLE_TYPES = {"IQ4_NL", "Q8_0"}     # per_layer_token_embd.weight as the host's r
 # measured on 2x RTX A6000 48 GB at 128K context, 6 lanes (phaseA-tests/sfnx/RESULTS.md section 8): a card held half the experts plus
 # 8.4 GiB of dense weights, buffers and the K/V pool, with 3.6 GiB left free. 9 GiB per card is that plus a little.
 CARD_OVERHEAD_GIB = 9.0
+# What a card must have FREE, not just own: other programs on a shared box or a desktop hold part of it (srv118, 2 x RTX PRO 6000 held to 8 GB free: the plan still
+# said "all-cards split" and would have fetched the 5.2 GB draft layer). The fit counts free memory minus the engine's own default reserve (--vram-reserve-mib 700,
+# strata_control.drafting.SLOT_RESERVE_MIB); a card whose free memory is not known is counted by its size, as before.
+FREE_RESERVE_MIB = 700
 RAM_SPARE_GIB = 8.0                # left over beside the engine's own RAM
 RAM_PINNED_BUFFERS_GIB = 3.0       # the exchange buffers and heap (smaps: 1.7 GiB pinned + 0.9 heap)
 CONVERSATION_CACHE_MIB = 4096      # parked conversations (host RAM); the engine's own default is 32-128 GiB
 DEFAULT_LANES = 6
+# AMD (4 x R9700, 32 GB): the K/V pool and buffers of 8 lanes at 128K context leave 7.2 GiB free on each card (phaseA-tests/round0211/RESULTS-R9700SPLIT.md), and 8 users
+# at once run in one wave: 350 tok/s against 255 with 6 lanes (two waves). Same arithmetic, only the scheduling differs
+AMD_DEFAULT_LANES = 8
 MAX_LANES = 8                       # the engine: "--batch must be 1..8" (lanes above it, e.g. the AMD four-card default of 32, are cut to it)
 
 
@@ -88,6 +94,14 @@ class Card:
     cc: int                         # NVIDIA: compute capability as a number, 86 for 8.6; AMD: 0
     vendor: str = "nvidia"          # "nvidia" or "amd"
     arch: str = ""                  # "sm_86", "gfx1201"; empty: derived from cc (NVIDIA)
+    free_mib: int | None = None     # memory nobody holds right now (nvidia-smi memory.free, the kernel's vram_used); None: not known, the card's size counts
+
+    @property
+    def room_mib(self) -> int:
+        """What the fit may count on this card: its free memory minus the reserve (never more than its size); the whole size when the free memory is not known."""
+        if self.free_mib is None:
+            return self.vram_mib
+        return max(0, min(self.vram_mib, self.free_mib) - FREE_RESERVE_MIB)
 
     @property
     def arch_name(self) -> str:
@@ -237,9 +251,9 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
     need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024
-    if cards and n >= 2 and min(c.vram_mib for c in cards) / 1024 < need_vram:
-        why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has "
-                   f"{min(c.vram_mib for c in cards) / 1024:.0f} GiB)")
+    if cards and n >= 2 and min(c.room_mib for c in cards) / 1024 < need_vram:
+        has = f"{min(c.room_mib for c in cards) / 1024:.0f} GiB" + (" free" if any(c.free_mib is not None for c in cards) else "")   # free memory when it was read, else the size
+        why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
         why.append(f"there is not enough free RAM (about {need_ram + RAM_SPARE_GIB:.0f} GiB needed, {ram_available_gib:.0f} GiB free)")
     if why:
@@ -247,15 +261,18 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
     return Decision(True, [], n, untested, need_vram, need_ram)
 
 
-def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_dir: str, draft_vocab: str, context: int,
-                 lanes: int = DEFAULT_LANES, vision: bool = False, cache_mib: int = CONVERSATION_CACHE_MIB) -> dict:
+def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_dir: str | None, draft_vocab: str, context: int,
+                 lanes: int = DEFAULT_LANES, vision: bool = False, cache_mib: int = CONVERSATION_CACHE_MIB, dflash2_pack: str | None = None) -> dict:
     """The run config for strata-split: `base` is the normal run config (its tokenizer, port, log, model name, GPUs and everything else
     stay), and it is kept whole under "split_fallback" so the server can start the normal layer split if this engine refuses."""
     if not decision.use_split:
         raise ValueError("split_config: the decision is not to use the split engine")
     cfg = {k: v for k, v in base.items() if k not in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting")}
     cfg["exe"] = exe
-    cfg["args"] = ["--native", native, "--mtp", mtp_dir, "--draft-vocab", draft_vocab, "--max-context", str(context),
+    # the drafter: the model's draft layer (--mtp), or, when the person chose DFlash2 by name, DFlash2's pack (--draft dflash2 --draft-model PACK; one drafter a lane on the
+    # first card, the MTP layer is not loaded)
+    drafter = ["--draft", "dflash2", "--draft-model", dflash2_pack] if dflash2_pack else ["--mtp", mtp_dir]
+    cfg["args"] = ["--native", native, *drafter, "--draft-vocab", draft_vocab, "--max-context", str(context),
                    "--spec", "6", "--lookup", "15", "--conversation-cache-mib", str(cache_mib), "--batch", str(min(MAX_LANES, max(lanes, 1)))]
     if vision:
         cfg["args"].append("--vision")
@@ -266,7 +283,7 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them
     # and every start would fall back to the layer split). The fallback keeps the person's own choice (or none: Auto), so the layer split that starts
     # instead gets DFlash2 as usual.
-    cfg["drafting"] = "mtp"
+    cfg["drafting"] = "dflash2" if dflash2_pack else "mtp"   # (drafting.apply leaves a split run config with --draft dflash2 as it is)
     cfg["split_engine_note"] = decision.line
     return cfg
 
@@ -306,10 +323,17 @@ def probe_amd_cards(indexes: list[int] | None = None, root: str = "/sys") -> lis
                 mem = int(bp.get("size_in_bytes", "0")) >> 20
         except (OSError, ValueError):
             continue
-        if indexes is None or idx in indexes:
-            cards.append(Card(idx, name, mem, 0, "amd", arch))
+        free = None
+        try:                                                 # what is in use: the card's render node, found by the topology node's drm_render_minor
+            minor = int(props.get("drm_render_minor", "0"))
+            if minor > 0 and mem:
+                used = int((pathlib.Path(root) / f"class/drm/renderD{minor}/device/mem_info_vram_used").read_text()) >> 20
+                free = max(0, mem - used)
+        except (OSError, ValueError):
+            free = None
+        cards.append(Card(idx, name, mem, 0, "amd", arch, free_mib=free))
         idx += 1
-    return cards
+    return _named_or_visible(cards, indexes)
 
 
 def probe_nvidia_cards(indexes: list[int] | None = None) -> list[Card]:
@@ -317,23 +341,38 @@ def probe_nvidia_cards(indexes: list[int] | None = None) -> list[Card]:
     import subprocess
 
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
+        out = subprocess.run(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,memory.free", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     cards = []
     for line in out.splitlines():
         parts = [p.strip() for p in line.split(",")]
-        if len(parts) != 4:
+        if len(parts) not in (4, 5):
             continue
         try:
             idx, mem = int(parts[0]), int(float(parts[2]))
             cc = int(round(float(parts[3]) * 10))
         except ValueError:
             continue
-        if indexes is None or idx in indexes:
-            cards.append(Card(idx, parts[1], mem, cc))
-    return cards
+        try:
+            free = int(float(parts[4])) if len(parts) == 5 else None
+        except ValueError:
+            free = None                                      # "[N/A]", or an answer without the column: the size counts
+        cards.append(Card(idx, parts[1], mem, cc, free_mib=free))
+    return _named_or_visible(cards, indexes)
+
+
+def _named_or_visible(cards: list[Card], indexes: list[int] | None) -> list[Card]:
+    """The cards the launch named; with none named, the ones the environment leaves visible (CUDA_VISIBLE_DEVICES, AMD: ROCR_VISIBLE_DEVICES then HIP_VISIBLE_DEVICES): a
+    card the engine will not see is not one the split can use. Named cards are the server's own visibility list (it sets it from them), so they are kept as named."""
+    if indexes is not None:
+        return [c for c in cards if c.index in indexes]
+    if not cards:
+        return cards
+    from strata_control import gpu_roles
+    vis = gpu_roles.env_visible([c.index for c in cards], cards[0].vendor, alike=len({(c.name, c.vram_mib) for c in cards}) == 1)
+    return cards if vis is None else [c for c in cards if c.index in vis]
 
 
 def ram_gib() -> tuple[float, float]:
@@ -396,7 +435,7 @@ ASSUMED_MODEL = ModelFacts(routed_types={"Q4_K": 1}, routed_bytes=0, embd_type="
 
 
 def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None = None, context: int = TESTED_CONTEXT, system: str | None = None,
-             allow_untested: bool = False, probe=None, ram=None, scan=None, exe_for_cards=None) -> bool:
+             allow_untested: bool = False, probe=None, ram=None, scan=None, exe_for_cards=None, kv: str | None = None) -> bool:
     """Would the launch start the all-cards split engine? The answer of the rule apply_to_config uses, asked BEFORE the model's files, the engine package or the
     draft layer are on the computer (the plan and the fetch: the split runs the model's draft layer, the MTP, so a start that will use it has to fetch that and not
     DFlash2's drafter). Facts that are not there yet are assumed in the split's favour: the model (ASSUMED_MODEL, unless `native` is a readable file), the engine
@@ -410,7 +449,9 @@ def expected(cfg: dict, *, indexes: list[int] | None = None, native: str | None 
         if m == "off":
             return False
         chosen = str(cfg.get("drafting") or "auto").lower()
-        if chosen in ("dflash2", "off") or cfg.get("user_args") or cfg.get("replicas"):
+        if chosen == "off" or (chosen == "dflash2" and m != "on") or cfg.get("user_args") or cfg.get("replicas"):
+            return False
+        if kv not in (None, "int8"):                         # the split keeps int8 (apply_to_config says the same)
             return False
         system = system or ("linux" if sys.platform.startswith("linux") else sys.platform)
         cards = (probe or probe_cards)(indexes) if system == "linux" else []
@@ -463,7 +504,9 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     # split with DFlash2 on both tested cards (AUTO_SPLIT_BEATS_DFLASH2, numbers in docs/SPLIT_ENGINE.md). The person's own "dflash2" (or "off", which the
     # split cannot do: it needs the draft layer) keeps the layer split; "mtp" is what the split runs.
     chosen = str(cfg.get("drafting") or "auto").lower()
-    if chosen == "dflash2":
+    # DFlash2 chosen by name runs on the split engine only when the person asked for the split engine too (--split-engine on): Auto keeps the layer split with DFlash2
+    # (the split engine with DFlash2 was not faster than with the MTP draft layer at 4 users or on sampled text, RESULTS-SPLITDF2.md, so nothing picks it by itself)
+    if chosen == "dflash2" and mode_ != "on":
         return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"])
     if chosen == "off":
         return Decision(False, ["drafting is off, and the all-cards split engine needs the draft layer"])
@@ -495,8 +538,17 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
     exe = exe_for_cards(d.cards, cards[0].cc, cards[0].arch_name) if amd else exe_for_cards(d.cards, cards[0].cc)
     if not exe:
         return Decision(False, [f"this engine package has no strata-split-{d.cards}" + (f"-{cards[0].arch_name}" if amd else "")], d.cards)
+    df2_pack = None
     mtp = _flag(args, "--mtp")
-    if not mtp:
+    if chosen == "dflash2":                                  # (mode "on"): the drafter is DFlash2's pack, the MTP layer is not loaded and not needed
+        if not exe_takes_dflash2(exe):
+            return Decision(False, ["DFlash2 drafting was chosen, which the all-cards split engine does not run"], d.cards)
+        from strata_control import drafting
+        folder = data_dir or drafting.data_dir_of(args)
+        if not folder or not drafting.pack_ready(folder):
+            return Decision(False, [NO_DF2_PACK], d.cards)
+        df2_pack = str(drafting.pack_path(folder))
+    elif not mtp:
         return Decision(False, ["the model has no draft layer files (--mtp)"], d.cards)
     vocab = None
     for folder in (pathlib.Path(exe).parent, pathlib.Path(data_dir) if data_dir else None, pathlib.Path(cfg.get("cwd") or ".") / "data"):
@@ -505,9 +557,100 @@ def _apply(cfg: dict, *, exe_for_cards, system, allow_untested, probe, ram, scan
             break
     if not vocab:
         return Decision(False, ["draft_vocab_en.bin is missing"], d.cards)
-    lanes = int(cfg.get("parallel") or _flag(args, "--batch") or DEFAULT_LANES)
+    lanes = int(cfg.get("parallel") or _flag(args, "--batch") or (AMD_DEFAULT_LANES if amd else DEFAULT_LANES))
     new = split_config(cfg, d, exe=exe, native=native, mtp_dir=mtp, draft_vocab=vocab, context=context, lanes=lanes,
-                       vision=bool(cfg.get("vision")) or "--vision" in args)
+                       vision=bool(cfg.get("vision")) or "--vision" in args, dflash2_pack=df2_pack)
     cfg.clear()
     cfg.update(new)
     return d
+
+
+#: Why the split engine is not started when DFlash2 was chosen by name with --split-engine on and its drafter file is not on this computer.
+NO_DF2_PACK = "the DFlash2 drafter isn't downloaded yet"       # (the same words as drafting.NOT_DOWNLOADED, already in the catalog)
+#: Text the split engine program carries when it takes `--draft dflash2` (src/split/tools/sfnx.cpp); an older strata-split-N has none and would stop at start on the flag.
+_MARK_SPLIT_DF2 = b"--draft dflash2 needs --native, --draft-model PACK"
+_split_df2: dict[tuple[str, int, int], bool] = {}
+
+
+def exe_takes_dflash2(exe) -> bool:
+    """Does the strata-split-N program at `exe` take `--draft dflash2 --draft-model PACK`? Read from the file's text (it is never started for this), once per path, size and time."""
+    import mmap
+
+    if not exe:
+        return False
+    try:
+        path = pathlib.Path(exe)
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+        if key not in _split_df2:
+            with open(path, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as data:
+                _split_df2[key] = data.find(_MARK_SPLIT_DF2) >= 0
+        return _split_df2[key]
+    except (OSError, ValueError):
+        return False
+
+
+# ---- the engine package and the draft layer (the Terminal's launcher and the app's start share these) ---------------------------------------
+def exe_finder(cfg: dict):
+    """exe_for_cards(n, cc=None, arch=None) for a run config: the strata-split-N build that sits beside the run config's engine, or None.
+    One build per architecture (FNX_ARCH is compile time): NVIDIA strata-split-N-sm<cc> then strata-split-N; AMD strata-split-N-<arch>, then strata-split-N-amd
+    (one binary with a code object for each RDNA architecture)."""
+    import pathlib
+
+    def exe_for(n: int, cc: int | None = None, arch: str | None = None):
+        from strata_control import engine_component as EC
+        exe = cfg.get("exe")
+        try:
+            real = EC.expand(exe, cfg, full=False) if EC.is_reference(exe) else exe
+        except Exception:                                    # noqa: BLE001 - no engine to look beside: no split
+            return None
+        for name in ((f"strata-split-{n}-{arch}", f"strata-split-{n}-amd") if arch else ((f"strata-split-{n}-sm{cc}",) if cc else ()) + (f"strata-split-{n}",)):
+            p = pathlib.Path(str(real)).parent / name
+            if p.is_file():
+                return str(p)
+        return None
+
+    return exe_for
+
+
+def split_plan_line(gb: float | None = None) -> str:
+    """The drafting line of a plan that says split (the Terminal's --plan and the app's drafting plan): the MTP draft layer is what drafts, with its download size when it is still to come."""
+    return "Drafting: MTP (the all-cards split engine uses the MTP draft layer" + (f", {gb:g} GB)" if gb else ")")
+
+
+def draft_layer_present(folder: str) -> bool:
+    """The draft layer's folder (mtp/rt) exists and holds files."""
+    import pathlib
+
+    try:
+        return pathlib.Path(folder).is_dir() and any(pathlib.Path(folder).iterdir())
+    except OSError:
+        return False
+
+
+def apply_run_config(cfg: dict, *, allow_untested: bool = False, exe_for_cards=None, **facts) -> tuple[Decision, str, bool]:
+    """The app's side of the start (the Terminal's is strata_cli/launch/runner.py apply_split_engine, the same steps): turn a normal run config into the split engine's
+    config IN PLACE when the mode and the rule say yes. Returns (decision, the one plain line to show or "", whether that line is a warning).
+    Auto and a "no" (also a missing draft layer or engine package): nothing changes and no line. "on" and a "no": one line. Never raises. `facts` are the
+    hooks of apply_to_config (system, probe, ram, scan, data_dir), replaceable for tests."""
+    m = mode(cfg)
+    if cfg.get("arch") == "deepseek41" or m == "off":
+        return Decision(False, ["the all-cards split engine is turned off"], quiet=True), "", False
+    args = [str(a) for a in cfg.get("args") or []]
+    mtp_dir = _flag(args, "--mtp")
+    # the split runs the model's own draft layer (--mtp) and refuses to start without it: a start whose draft-layer folder is not on disk stays on the layer split
+    # (not for DFlash2 chosen by name with --split-engine on: that drafter is DFlash2's pack, the layer is not loaded)
+    if mtp_dir and not draft_layer_present(mtp_dir) and not (str(cfg.get("drafting") or "").lower() == "dflash2" and m == "on"):
+        line = "The all-cards split engine needs the model's draft layer (the MTP), which is not downloaded; using the normal layer split."
+        return Decision(False, [line], quiet=m != "on"), (line if m == "on" else ""), True
+    before = dict(cfg)
+    try:
+        d = apply_to_config(cfg, exe_for_cards=exe_for_cards or exe_finder(cfg), allow_untested=allow_untested, **facts)
+    except Exception as e:                                   # noqa: BLE001 - never stop a start over an option
+        cfg.clear()
+        cfg.update(before)
+        line = f"The all-cards split engine was left out ({type(e).__name__}). Using the normal layer split."
+        return Decision(False, [line], quiet=m != "on"), (line if m == "on" else ""), True
+    if d.quiet:
+        return d, "", False
+    return d, d.line, not d.use_split

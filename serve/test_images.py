@@ -25,9 +25,9 @@ FAKE = ROOT / "serve" / "fixtures" / "fake_sd_cli.py"
 REAL_ARGS = images_api.sd_cli_args
 
 
-def fake_args(cfg, job, out):
+def fake_args(cfg, job, out, prompt_file):
     """sd-cli's command, run through Python (the stand-in is a script)."""
-    return [sys.executable, str(FAKE), *REAL_ARGS(cfg, job, out)[1:]]
+    return [sys.executable, str(FAKE), *REAL_ARGS(cfg, job, out, prompt_file)[1:]]
 
 
 def image_cfg(d, **kw):
@@ -73,8 +73,9 @@ class Command(unittest.TestCase):
         cfg = {"exe": "sd-cli", "diffusion_model": "dit.gguf", "vae": "vae.st", "llm": "te.gguf",
                "args": ["--diffusion-fa", "--vae-tiling"]}
         job = {"prompt": "a sloth", "width": 1024, "height": 768, "n": 1, "steps": 8, "seed": 42}
-        self.assertEqual(images_api.sd_cli_args(cfg, job, "o/img_%d.png"), [
-            "sd-cli", "--diffusion-model", "dit.gguf", "--vae", "vae.st", "--llm", "te.gguf", "-p", "a sloth",
+        self.assertEqual(images_api.sd_cli_args(cfg, job, "o/img_%d.png", "o/prompt.txt"), [
+            "sd-cli", "--diffusion-model", "dit.gguf", "--vae", "vae.st", "--llm", "te.gguf",
+            "--prompt-file", "o/prompt.txt",
             "--steps", "8", "--cfg-scale", "1.0", "--sampling-method", "euler", "-W", "1024", "-H", "768",
             "--sigmas", "1.0,0.978453,0.95418,0.926626,0.89508,0.845148,0.704534,0.414568,0.0",
             "-s", "42", "-o", "o/img_%d.png", "--diffusion-fa", "--vae-tiling"])
@@ -82,16 +83,33 @@ class Command(unittest.TestCase):
     def test_other_steps_and_batch(self):
         cfg = {"exe": "sd-cli", "diffusion_model": "d", "vae": "v", "llm": "l"}
         cmd = images_api.sd_cli_args(cfg, {"prompt": "p", "width": 512, "height": 512, "n": 3, "steps": 4,
-                                           "seed": 1}, "x")
+                                           "seed": 1}, "x", "p.txt")
         self.assertNotIn("--sigmas", cmd)          # Turbo's sigmas are an 8-step schedule
         self.assertEqual(cmd[cmd.index("-b") + 1], "3")
+
+    def test_prompt_not_on_the_command_line(self):
+        """#4202: other local accounts can read process arguments: the prompt goes to sd-cli in an owner-only file."""
+        cfg = {"exe": "sd-cli", "diffusion_model": "d", "vae": "v", "llm": "l"}
+        job = {"prompt": "a private\r\nprompt ü \U0001f98a", "width": 512, "height": 512, "n": 1, "steps": 8, "seed": 1}
+        with tempfile.TemporaryDirectory() as d:
+            path = images_api.write_prompt(Path(d), job["prompt"])
+            self.assertEqual(path.read_bytes(), job["prompt"].encode("utf-8"))      # no newline translation
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):                                  # never writes through an existing file
+                images_api.write_prompt(Path(d), "again")
+            cmd = images_api.sd_cli_args(cfg, job, "x", str(path))
+        self.assertNotIn(job["prompt"], cmd)
+        self.assertFalse(any("private" in part for part in cmd), cmd)
+        self.assertNotIn("-p", cmd)
+        self.assertEqual(cmd[cmd.index("--prompt-file") + 1], str(path))
 
     def test_native_switch(self):
         cfg = {"exe": "sd-cli", "diffusion_model": "d", "vae": "v", "llm": "l", "native": True}
         job = {"prompt": "p", "width": 512, "height": 512, "n": 1, "steps": 8, "seed": 1}
-        self.assertEqual(images_api.sd_cli_args(cfg, job, "x")[-2:], ["--model-args", "qwen_image_2_1_native=1"])
+        self.assertEqual(images_api.sd_cli_args(cfg, job, "x", "p.txt")[-2:], ["--model-args", "qwen_image_2_1_native=1"])
         cfg["native"] = False
-        self.assertNotIn("--model-args", images_api.sd_cli_args(cfg, job, "x"))
+        self.assertNotIn("--model-args", images_api.sd_cli_args(cfg, job, "x", "p.txt"))
 
     def test_env(self):
         env = images_api.image_env({"backend": "cuda", "gpu": 1, "env": {"X": 2}}, {"PATH": "p"})
@@ -280,6 +298,21 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(body["strata"]["gpu_policy"], "keep")
         self.assertEqual(self.svc.images.totals["images"], 2)
         self.assertEqual([p.name for p in Path(self.svc.images.dir).iterdir()], [])   # nothing left behind
+
+    def test_the_prompt_reaches_sd_cli_in_a_file_and_not_in_its_arguments(self):
+        """#4202 with a canary: the stand-in records its argument list; the prompt is in the picture, not in the list."""
+        canary = "canary-7f3a91 private fox"
+        record = Path(self.tmp.name) / "argv.json"
+        with mock.patch.dict(os.environ, {"FAKE_SD_ARGS": str(record)}):
+            code, body = self.post({"prompt": canary, "seed": 5})
+        self.assertEqual(code, 200, body)
+        argv = json.loads(record.read_text(encoding="utf-8"))
+        self.assertNotIn("canary", " ".join(argv))
+        self.assertIn("--prompt-file", argv)
+        sys.path.insert(0, str(FAKE.parent))
+        import fake_sd_cli
+        self.assertEqual(base64.b64decode(body["data"][0]["b64_json"]), fake_sd_cli.png(1024, 1024, 5, canary))
+        self.assertEqual([p.name for p in Path(self.svc.images.dir).iterdir() if p.name != "argv.json"], [])   # the prompt file is removed
 
     def test_url(self):
         names = []

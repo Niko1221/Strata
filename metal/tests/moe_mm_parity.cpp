@@ -23,7 +23,7 @@ struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
 struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 int type_of(const std::string& s) {
-    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1})
+    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1, ref::Q5_0})
         if (s == ref::type_name(t)) return t;
     std::exit(2);
 }
@@ -48,6 +48,9 @@ int main(int argc, char** argv) {
         else if (a == "--v5") { v2 = v3 = true; v5 = true; }   // mm_gu5 (weight blocks staged in threadgroup memory)
     }
     if (bench && T == 256) T = 2048;
+    // v1 (mm_gu / mm_down) is the first-generation test kernel: the engine only ever dispatches mm_gu2 / mm_gu3 (window.cpp, prompt_chain.inc).
+    // It has no IQ4_XS gate/up, so that type runs the v2 path here instead of failing at the pipeline lookup.
+    if (!v2 && gu == ref::IQ4_XS) { v2 = true; std::printf("note: IQ4_XS gate/up has no v1 kernel (the engine does not use v1): running v2\n"); }
     if (v4) TM = 16 * MS;   // the plan's tile height; mm_gu4's name carries MS instead
     mtl::Context cx;
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"});
@@ -90,7 +93,7 @@ int main(int argc, char** argv) {
     mtl::Pipeline phist = cx.pipeline(lib, "mm_hist"), pscan = cx.pipeline(lib, "mm_scan"), pplace = cx.pipeline(lib, "mm_place"),
                   pclear = cx.pipeline(lib, "mm_clear"), pcomb = cx.pipeline(lib, "mm_combine");
     if (DTN < 0) { DTN = TN; DTK = TK; DSG = SG; }
-    if (dn == ref::IQ4_NL && DTK < 32) DTK = 32;
+    if ((dn == ref::IQ4_NL || dn == ref::Q5_0) && DTK < 32) DTK = 32;   // 32-value units (the v2 / v3 down tiles of IQ4_NL / Q5_0 need TK >= 32)
     const std::string tl = std::to_string(TM) + "_" + std::to_string(TN) + "_" + std::to_string(TK) + "_" + std::to_string(SG);
     const std::string dtl = std::to_string(TM) + "_" + std::to_string(DTN) + "_" + std::to_string(DTK) + "_" + std::to_string(DSG);
     mtl::Constants probe;

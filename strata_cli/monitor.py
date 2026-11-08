@@ -132,6 +132,7 @@ class MonitorApp(App):
         self.polling = False
         self.closing = False
         self.error: str | None = None
+        self.help_until = 0.0                # the key list from `?` stays up to HELP_SECONDS (a poll no longer wipes it on any view)
         self.failures = 0
         self.next_poll_at = 0.0
         self.next_age_repaint = 0.0
@@ -191,6 +192,8 @@ class MonitorApp(App):
         size = self.screen.size if size is None else size
         if self.view >= len(VIEWS):          # the Connect view belongs to the launch-aware monitor (strata_cli/launch/monitor_ext.py)
             return
+        help_lines = self._help_wrapped(size.width) if self._help_open() else []
+        extra = max(0, len(help_lines) - 1)           # the key list wraps over more lines than the one-line message row
         snapshot = {**self.displayed, "recent": (self.displayed.get("recent") or [])[:self.requests]}
         snapshot["activity_continuity"] = self.displayed_activity_continuity
         snapshot["work"] = {**(self.displayed.get("work") or {}),
@@ -198,14 +201,14 @@ class MonitorApp(App):
         if self.view == 0 and size.width >= 78 and size.height >= 23 and self.metrics_model is not None and                 self.connection_state in ("connected", "stale", "telemetry_unavailable"):
             from strata_cli import overview
             display = overview.render(
-                self.metrics_model, width=max(30, min(size.width - self.margin, 100 if self.margin > 2 else 1000)), height=max(8, size.height - 2),
+                self.metrics_model, width=max(30, min(size.width - self.margin, 100 if self.margin > 2 else 1000)), height=max(8, size.height - 2 - extra),
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen, glyphs=self.glyph_choice,
                 color=self.color_choice != "never", theme=self.theme_choice, connect=self.connect_enabled,
                 bullet=(self.classic or {}).get("bullet", "●"))
         elif self.view == 0 and size.width >= 78 and size.height >= 23:
             display = render_dashboard(
-                snapshot, width=max(30, size.width - self.margin), height=max(8, size.height - 2),
+                snapshot, width=max(30, size.width - self.margin), height=max(8, size.height - 2 - extra),
                 history=self.history, connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
                 filter_text=self.filter_text, glyphs=self.text_glyphs,
@@ -214,7 +217,7 @@ class MonitorApp(App):
                 "connecting", "disconnected", "auth_required", "incompatible"):
             display = render_detail_dashboard(
                 snapshot, VIEWS[self.view], width=max(30, size.width - self.margin),
-                height=max(8, size.height - 2), history=self.history,
+                height=max(8, size.height - 2 - extra), history=self.history,
                 connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
                 connection_state=self.connection_state, frozen=self.frozen,
                 filter_text=self.filter_text, glyphs=self.text_glyphs,
@@ -222,7 +225,7 @@ class MonitorApp(App):
                 selected=self.selected, detail=self.detail, serving_pane=self.serving_pane, connect=self.connect_enabled)
         else:
             content = render_view(snapshot, VIEWS[self.view],
-                                  width=max(30, size.width - self.margin), height=max(8, size.height - 2),
+                                  width=max(30, size.width - self.margin), height=max(8, size.height - 2 - extra),
                                   selected=self.selected, frozen=self.frozen,
                                   filter_text=self.filter_text, glyphs=self.text_glyphs,
                                   connection=getattr(self.endpoint, "base_url", getattr(self.endpoint, "root", "")),
@@ -252,10 +255,11 @@ class MonitorApp(App):
         note = getattr(self, "quiet_note", None)             # one quiet line (an engine update is available), only where the screen has room for it
         if note and self.connection_state in ("connected", "stale", "telemetry_unavailable") and not self.frozen:
             idle_message = note if size.width < 100 else f"{note}  |  q detaches without stopping Strata"
-        msg = self.error or self.selection_notice or ("Connecting to Strata" if self.connection_state == "connecting" else
+        msg = ("\n".join(help_lines) if help_lines else None) or self.error or self.selection_notice or ("Connecting to Strata" if self.connection_state == "connecting" else
                              "Telemetry unavailable; status only" if self.connection_state == "telemetry_unavailable" else
                              "Frozen display; collection continues" if self.frozen else
                              idle_message)
+        self.query_one("#message", Static).styles.height = max(1, len(help_lines))
         self.query_one("#message", Static).update(msg)
 
     def _schedule_poll(self, force: bool = False) -> None:
@@ -426,6 +430,7 @@ class MonitorApp(App):
         self._paint()
 
     def action_filter_clear(self) -> None:
+        self.help_until = 0.0
         self.filter_text = ""
         self.selected = 0
         self.selected_identity = None
@@ -468,8 +473,29 @@ class MonitorApp(App):
             self._remember_selection()
             self._paint()
 
+    HELP_SECONDS = 15.0
+
+    def _help_open(self) -> bool:
+        return time.monotonic() < self.help_until
+
+    def _help_line(self) -> str:
+        return f"{nav.keys(self.connect_enabled)}/Left/Right views  Tab pane  Up/Down/PgUp/PgDn/Home/End rows  Enter detail  Space freeze  r refresh  t theme  q detach"
+
+    def _help_wrapped(self, width: int) -> list[str]:
+        """The key list cut at the separators between keys (two spaces), never inside a key, into lines that fit `width` (less the shell's padding)."""
+        room = max(20, width - 2)
+        lines: list[str] = []
+        for item in self._help_line().split("  "):
+            if lines and len(lines[-1]) + 2 + len(item) <= room:
+                lines[-1] += "  " + item
+            else:
+                lines.append(item)
+        return lines
+
     def action_help(self) -> None:
-        self.error = f"{nav.keys(self.connect_enabled)}/Left/Right views  Tab pane  Up/Down/PgUp/PgDn/Home/End rows  Enter detail  Space freeze  r refresh  t theme  q detach"
+        """`?`: the key list on the message line, on every view. The next poll (every second) used to wipe it, so it flashed by on the Overview;
+        now it stays until `?` again, Esc, another view or HELP_SECONDS."""
+        self.help_until = 0.0 if self._help_open() else time.monotonic() + self.HELP_SECONDS
         self._paint()
 
     def action_request_detail(self) -> None:
@@ -538,6 +564,7 @@ class MonitorApp(App):
         self.selected_identity = None
         self.detail = False
         self.selection_notice = None
+        self.help_until = 0.0
         self._paint()
 
     def action_view_0(self) -> None:

@@ -299,6 +299,86 @@ class Apply(unittest.TestCase):
             cfg["args"].extend(["--kv", "int8"])
             self.assertTrue(self.run_apply(cfg).use_split)
 
+    def df2_files(self, tmp, *, taking=True, pack=True):
+        """A split engine program that carries (or lacks) the text of `--draft dflash2`, and a data folder with (or without) the DFlash2 pack."""
+        from strata_control import drafting
+
+        exe = Path(tmp) / "strata-split-2"
+        exe.write_bytes(b"\0--draft dflash2 needs --native, --draft-model PACK and --draft-vocab FILE\0" if taking else b"\0--native and --mtp are required\0")
+        data = Path(tmp) / "models"
+        if pack:
+            target = drafting.target_path(data)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as f:
+                f.truncate((1 << 20) + 1)
+        return str(exe), data
+
+    def test_dflash2_chosen_by_name_runs_on_the_split_engine_only_with_the_persons_own_on(self):
+        """Owner 2026-11-03: the person's own choice wins. DFlash2 named + --split-engine on = the split engine with `--draft dflash2 --draft-model PACK` (no MTP layer);
+        Auto, or DFlash2 named and the split engine on Auto, are as they were (Auto the MTP split; DFlash2 the layer split)."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            exe, data = self.df2_files(tmp)
+            cfg = self.cfg(tmp)
+            cfg["drafting"] = "dflash2"
+            cfg["args"] = [a for a in cfg["args"] if a != "--mtp" and a != "/d/mtp/rt"]            # no draft layer on this computer at all
+            before = dict(cfg, args=list(cfg["args"]))
+            d = self.run_apply(cfg, exe=exe, data_dir=str(data), mode_="on")
+            self.assertTrue(d.use_split, d.reasons)
+            a = cfg["args"]
+            self.assertEqual((a[a.index("--draft") + 1], a[a.index("--draft-model") + 1]), ("dflash2", str(data / "dflash2" / "qwen3.8-flash-next-dflash2.q4_0.pack")))
+            self.assertNotIn("--mtp", a)
+            self.assertEqual(a[a.index("--draft-vocab") + 1], str(Path(tmp) / "data" / "draft_vocab_en.bin"))
+            self.assertEqual(a[a.index("--batch") + 1], "6")
+            self.assertEqual(cfg["drafting"], "dflash2")
+            self.assertEqual(cfg["split_fallback"]["drafting"], "dflash2", "the layer split that starts if this engine refuses keeps the person's word")
+            self.assertEqual(cfg["split_fallback"]["args"], before["args"])
+            # the same choice with the split engine on Auto (or nothing) stays on the layer split, quietly
+            for mode in ("auto", None):
+                cfg = self.cfg(tmp)
+                cfg["drafting"] = "dflash2"
+                del cfg["split_engine"]
+                if mode:
+                    cfg["split_engine"] = mode
+                d = self.run_apply(cfg, exe=exe, data_dir=str(data))
+                self.assertFalse(d.use_split, mode)
+                self.assertTrue(d.quiet, mode)
+                self.assertNotIn("split_fallback", cfg)
+            # Auto and the MTP on the split engine "on" are the MTP split as before
+            for chosen in (None, "auto", "mtp"):
+                cfg = self.cfg(tmp)
+                if chosen:
+                    cfg["drafting"] = chosen
+                d = self.run_apply(cfg, exe=exe, data_dir=str(data))
+                self.assertTrue(d.use_split, chosen)
+                self.assertEqual(cfg["args"][cfg["args"].index("--mtp") + 1], "/d/mtp/rt", chosen)
+                self.assertNotIn("--draft", cfg["args"], chosen)
+                self.assertEqual(cfg["drafting"], "mtp", chosen)
+
+    def test_dflash2_on_the_split_needs_an_engine_that_takes_it_and_its_pack(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, (kw, why) in enumerate((({"taking": False}, "does not run"), ({"pack": False}, S.NO_DF2_PACK))):
+                (Path(tmp) / f"case{i}").mkdir()
+                exe, data = self.df2_files(Path(tmp) / f"case{i}", **kw)
+                cfg = self.cfg(tmp)
+                cfg["drafting"] = "dflash2"
+                before = dict(cfg, args=list(cfg["args"]))
+                d = self.run_apply(cfg, exe=exe, data_dir=str(data), mode_="on")
+                self.assertFalse(d.use_split, kw)
+                self.assertIn(why, d.reasons[0], kw)
+                self.assertEqual(cfg, before, "a refusal leaves the config alone: the layer split starts with DFlash2")
+        self.assertFalse(S.exe_takes_dflash2(None))
+        self.assertFalse(S.exe_takes_dflash2("/no/such/strata-split-2"))
+
+    def test_expected_follows_the_same_rule(self):
+        for chosen, mode, want in (("dflash2", "on", True), ("dflash2", "auto", False), ("dflash2", None, False), ("mtp", "on", True), ("auto", "on", True), ("off", "on", False)):
+            cfg = {"drafting": chosen, "split_engine": mode}
+            got = S.expected(cfg, indexes=[0, 1], native=None, probe=lambda idx: cards(), ram=lambda: (125.0, 80.0), system="linux")
+            self.assertEqual(got, want, (chosen, mode))
+
     def test_drafting_auto_resolves_to_the_split_with_its_mtp_and_the_fallback_keeps_the_layer_split_choice(self):
         import tempfile
 
@@ -386,7 +466,22 @@ class AmdDefault(unittest.TestCase):
             self.assertEqual(seen, [(4, 0, "gfx1201")])
             self.assertEqual(cfg["exe"], "/e/strata-split-4-gfx1201")
 
-    def test_auto_on_amd_is_the_ud_q4_family_only_and_on_runs_the_iquant_sets(self):
+    def test_amd_default_lanes_are_eight_and_a_number_the_person_chose_stays(self):
+        import tempfile
+
+        self.assertEqual((S.AMD_DEFAULT_LANES, S.DEFAULT_LANES), (8, 6))
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            self.assertTrue(self.run_amd(cfg).use_split)
+            self.assertEqual(cfg["args"][cfg["args"].index("--batch") + 1], "8")
+            cfg = self.amd(tmp)
+            del cfg["split_engine"]
+            cfg["parallel"] = 3
+            self.assertTrue(self.run_amd(cfg).use_split)
+            self.assertEqual(cfg["args"][cfg["args"].index("--batch") + 1], "3")
+
+    def test_auto_on_amd_starts_the_ud_q4_family_and_the_iq3s_set(self):
         import tempfile
 
         iq3s = dict(routed_types={"IQ4_NL": 39, "IQ3_XXS": 34, "Q2_0": 9, "IQ2_S": 40, "IQ3_S": 20, "IQ4_XS": 2}, routed_bytes=int(48.8 * GIB), embd_type="IQ4_XS",
@@ -397,9 +492,7 @@ class AmdDefault(unittest.TestCase):
             before = dict(cfg)
             d = S.apply_to_config(cfg, exe_for_cards=lambda n_, cc=None, arch=None: "/e/strata-split-4-amd", system="linux", probe=lambda i: cards(4, **self.R9700),
                                   ram=lambda: (125.0, 80.0), scan=lambda path: udq4(**iq3s))
-            self.assertFalse(d.use_split)
-            self.assertTrue(d.quiet)
-            self.assertEqual(cfg, before)
+            self.assertTrue(d.use_split, d.reasons)
             cfg = self.amd(tmp, split_engine="on")
             d = S.apply_to_config(cfg, exe_for_cards=lambda n_, cc=None, arch=None: "/e/strata-split-4-amd", system="linux", probe=lambda i: cards(4, **self.R9700),
                                   ram=lambda: (125.0, 80.0), scan=lambda path: udq4(**iq3s))

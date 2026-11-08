@@ -7,6 +7,7 @@ import io
 import json
 import os
 import platform
+from strata_control import sysinfo
 import re
 import shutil
 import subprocess
@@ -110,7 +111,7 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
             if len(row) != 5 or len(cards) >= 64:
                 raise ValueError("invalid field count")
             index_raw, name, uuid, memory_raw, driver = [part.strip() for part in row]
-            unified = memory_raw == "[N/A]" and platform.machine().lower() in ("aarch64", "arm64")   # a DGX Spark's GB10: no separate graphics memory
+            unified = memory_raw == "[N/A]" and sysinfo.machine().lower() in ("aarch64", "arm64")   # a DGX Spark's GB10: no separate graphics memory
             if not (re.fullmatch(r"[0-9]{1,4}", index_raw)
                     and (unified or re.fullmatch(r"[0-9]{1,9}", memory_raw))
                     and 0 <= int(index_raw) <= 1023 and (unified or int(memory_raw) > 0)

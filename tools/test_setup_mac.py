@@ -214,6 +214,36 @@ class ExpertsFile(unittest.TestCase):
         run.assert_not_called()
 
 
+class V31Sets(unittest.TestCase):
+    """Round 0214: Unsloth's v3.1 sets on a Mac.  One switch (mac_fit.METAL_Q5_0_DOWN) lists the sets with Q5_0 expert downs; until the Metal kernel exists they carry "missing"."""
+    NEW = ("UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31")
+    Q5_0 = ("UD-IQ2_XS", "UD-Q2_K_XL", "UD-Q3_K_XL", "UD-IQ4_XS-v31")
+
+    def test_entries_and_files(self):
+        for m in self.NEW:
+            d = M.MAC_MODELS[m]
+            self.assertEqual(d["family"], "unsloth")
+            self.assertEqual(d["shards"], setup.MODELS[m]["shards"])
+            self.assertAlmostEqual(d["shard1_gb"], setup.MODELS[m]["download_gb"] - 28.8, delta=0.15)     # the download less the n-gram table
+            self.assertEqual(M.model_shard_names(m), [setup.model_file(setup.FAMILIES["unsloth"], m, i) for i in range(1, d["shards"] + 1)])
+            self.assertTrue(all(M.shard_sha(n) for n in M.model_shard_names(m)), m)
+            self.assertIn(m, M.MAC_ABOUT)
+
+    def test_all_seven_are_listed_now_the_metal_kernel_exists(self):
+        from strata_control import mac_fit
+        self.assertTrue(mac_fit.METAL_Q5_0_DOWN)            # f-0214-metal: the Q5_0 down kernels
+        for m in self.NEW:
+            self.assertFalse(mac_fit.MAC_MODELS[m].get("missing"), m)
+        self.assertNotIn("does not run on this Metal engine yet", "".join(mac_fit.model_note("UD-Q3_K_XL", 128)))
+
+    def test_the_switch_lists_them_all(self):
+        from strata_control import mac_fit
+        ns = {"__name__": "mac_fit_on", "__file__": mac_fit.__file__}
+        src = Path(mac_fit.__file__).read_text(encoding="utf-8").replace("METAL_Q5_0_DOWN = True", "METAL_Q5_0_DOWN = False")
+        exec(compile(src, mac_fit.__file__, "exec"), ns)                 # the switch off: the four Q5_0-down sets are held back again
+        self.assertEqual([m for m in self.NEW if ns["MAC_MODELS"][m].get("missing")], list(self.Q5_0))
+
+
 class HandOver(unittest.TestCase):
     def test_darwin_hands_the_run_to_setup_mac(self):
         with mock.patch.object(setup.sys, "platform", "darwin"), \
@@ -331,7 +361,7 @@ class ControlMode(unittest.TestCase):
             f.with_name(f.name + ".done").write_text("whole")
             self.files.append(f)
 
-    def run_setup(self, hw=M4, argv=("--yes", "--no-start", "--family", "qwen", "--model", "Q2_0", "--context", "8192"), clt_rc=0):
+    def run_setup(self, hw=M4, argv=("--yes", "--no-start", "--family", "qwen", "--model", "Q2_0", "--context", "8192"), clt_rc=0, tool=None, free=500.0):
         from strata_control import engine_component, mac_fit
         ran = []
 
@@ -349,7 +379,7 @@ class ControlMode(unittest.TestCase):
             mock.patch.object(setup, "load_settings", lambda: {}), mock.patch.object(setup, "save_settings", lambda s: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: Path(self.tmp.name) / "llama"),
             mock.patch.object(setup, "whole_shard", lambda s: True), mock.patch.object(setup, "check_shards", lambda s: None),
-            mock.patch.object(setup, "run", fake_tool), mock.patch.object(setup, "free_gb", lambda p: 500.0),
+            mock.patch.object(setup, "run", tool or fake_tool), mock.patch.object(setup, "free_gb", lambda p: free),
             mock.patch.object(setup, "say", lambda *a, **k: None), mock.patch.object(setup, "ok", lambda *a, **k: None),
             mock.patch.object(setup, "step", lambda *a, **k: None),
             mock.patch.object(setup, "warn", lambda *a, **k: self.warnings.append(" ".join(str(x) for x in a))),
@@ -397,11 +427,11 @@ class ControlMode(unittest.TestCase):
         self.assertEqual(cfg["env"], {"STRATA_METAL_STREAM": "0"})
         self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "65536")      # the default context by memory
 
-    def test_no_command_line_tools_needed_and_the_unsloth_files_are_not_offered(self):
+    def test_no_command_line_tools_needed_and_ud_iq1_s_is_not_offered(self):
         rc, _ = self.run_setup(clt_rc=2)
         self.assertEqual(rc, 0)
-        with self.assertRaises(SystemExit):
-            self.run_setup(argv=("--yes", "--no-start", "--model", "UD-Q4_K_XL"))
+        with self.assertRaises(SystemExit):                # UD-IQ1_S: never offered
+            self.run_setup(argv=("--yes", "--no-start", "--model", "UD-IQ1_S"))
 
     def test_gyro_is_offered_on_a_mac_as_one_file_with_a_compat_bf16_pack(self):
         fam = setup.FAMILIES["gyro"]
@@ -437,6 +467,137 @@ class ControlMode(unittest.TestCase):
         src = (ROOT / "setup.py").read_text(encoding="utf-8")
         self.assertIn('if sys.platform == "darwin" and not CONTROL:', src)
         self.assertIn('if sys.platform == "darwin" and CONTROL:', src)
+
+
+class MacAppUnsloth(unittest.TestCase):
+    """Round 0214: the Mac app installs Unsloth's sets as the Terminal's setup_mac does: the shards -> ONE GGUF for the GPU (metal_repack.py --verify, the n-gram table
+    left out), the pack from that file, --native the repacked file, --ple-gguf the table's shard, --mmap-experts.  Header-only fixtures (tests/fixtures/unsloth_v31): no
+    Mac, no weights; the repack and the pack tools are recorded, not run."""
+    setUp = ControlMode.setUp
+    run_setup = ControlMode.run_setup
+    config = ControlMode.config
+    NEW = ("UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31")
+
+    def shards(self, model):
+        sys.path.insert(0, str(ROOT / "tools"))
+        import unsloth_v31_fixture as FX
+        doc = FX.load()
+        hub = "UD-IQ4_XS" if model == "UD-IQ4_XS-v31" else model
+        for old in self.models.glob("*"):
+            old.unlink()
+        out = []
+        for i, s in enumerate(doc["sets"][hub]["shards"]):
+            h = s["header"] or {"split": [0, len(doc["sets"][hub]["shards"]), 1224], "tensors": []}
+            p = FX.materialize({"header": h}, self.models / s["name"], first=(i == 0))
+            p.with_name(p.name + ".done").write_text("whole")
+            out.append(p)
+        return out
+
+    def tool(self, ran):
+        def fake(cmd, **kw):
+            ran.append([str(x) for x in cmd])
+            if cmd[1].endswith("metal_repack.py"):
+                Path(cmd[cmd.index("--out") + 1]).write_bytes(b"x")
+            else:
+                pack = Path(cmd[cmd.index("--out") + 1])
+                (pack / "tokenizer").mkdir(parents=True, exist_ok=True)
+                (pack / "native_experts.txt").write_text("x")
+                (pack / "tokenizer" / "vocab.json").write_text("{}")
+        return fake
+
+    def install(self, model, hw=M5, **kw):
+        ran = []
+        engines = kw.pop("engines", [])
+        with mock.patch.object(setup, "mac_engine_pids", lambda: engines):
+            rc, _ = self.run_setup(hw=hw, argv=("--yes", "--no-start", "--family", "unsloth", "--model", model, "--context", "8192", "--mtp", "off"),
+                                   tool=self.tool(ran), **kw)
+        return rc, ran
+
+    def test_the_repack_the_pack_and_the_config(self):
+        for model in self.NEW:
+            with self.subTest(model=model):
+                files = self.shards(model)
+                shutil_native = self.data / "metal" / f"unsloth-{model.lower()}-metal.gguf"
+                if shutil_native.exists():
+                    shutil_native.unlink()
+                    shutil_native.with_name(shutil_native.name + ".done").unlink(missing_ok=True)
+                rc, ran = self.install(model)
+                self.assertEqual(rc, 0)
+                self.assertEqual(len(ran), 2, ran)
+                repack, pack = ran
+                self.assertTrue(repack[1].endswith("metal_repack.py"))
+                self.assertEqual(repack[repack.index("--shard1") + 1], str(files[0]))
+                self.assertEqual(repack[repack.index("--out") + 1], str(shutil_native))
+                self.assertIn("--verify", repack)
+                self.assertTrue(pack[1].endswith("iq_pack.py"))
+                self.assertEqual(pack[pack.index("--gguf") + 1], str(shutil_native))        # the pack is read from the repacked file
+                self.assertIn("--compat-bf16", pack)
+                cfg = self.config("unsloth-" + model.lower())
+                a = cfg["args"]
+                self.assertEqual(cfg["exe"], "component:strata-engine")
+                self.assertEqual(a[a.index("--native") + 1], str(shutil_native))
+                self.assertEqual(a[a.index("--native-dense-gguf") + 1], str(shutil_native))
+                self.assertEqual(a[a.index("--ple-gguf") + 1], str(files[-1]))               # the n-gram table: the LAST shard of these sets
+                self.assertIn("--mmap-experts", a)
+                self.assertEqual(cfg["env"]["STRATA_METAL_STREAM"], "1" if M.streams(model, 128.0) else "0")
+                self.assertEqual(cfg["tokenizer"], str(self.data / "packs" / ("unsloth-" + model.lower()) / "tokenizer"))
+                self.assertEqual(cfg["model_name"], "qwen3.8-flash-next-unsloth-" + model.lower())
+                self.assertFalse((shutil_native.parent / ".preparing.lock").exists(), "the prepare lock is gone")
+
+    def test_an_already_repacked_set_is_not_repacked_again(self):
+        model = "UD-IQ1_M"
+        self.shards(model)
+        native = self.data / "metal" / "unsloth-ud-iq1_m-metal.gguf"
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b"x")
+        setup.mark(native)
+        rc, ran = self.install(model)
+        self.assertEqual(rc, 0)
+        self.assertEqual([r[1].rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])
+
+    def test_a_running_engine_stops_the_repack_before_anything_is_written(self):
+        self.shards("UD-IQ1_M")
+        with self.assertRaises(SystemExit):
+            self.install("UD-IQ1_M", engines=[4242])
+        self.assertFalse((self.data / "metal").exists() and any((self.data / "metal").iterdir()))
+
+    def test_the_apps_hint_for_a_running_engine(self):
+        self.shards("UD-IQ1_M")
+        said = []
+
+        def fail(msg, hint=None):
+            said.append((msg, hint))
+            raise SystemExit(1)
+        with mock.patch.object(setup, "fail", fail):
+            with self.assertRaises(SystemExit):
+                self.install("UD-IQ1_M", engines=[4242])
+        self.assertEqual(said[0][0], "a Strata engine is running (pid 4242): preparing a model beside it can freeze this Mac")
+        self.assertEqual(said[0][1], "stop the model in Strata (unload it), then install again")
+
+    def test_the_disk_check_counts_the_repacked_file(self):
+        self.shards("UD-IQ1_M")
+        self.install("UD-IQ1_M", free=30.0)
+        said = [w for w in self.warnings if "are needed on the disk" in w]
+        self.assertEqual(len(said), 1, self.warnings)
+        self.assertIn("about 45 GB", said[0])          # nothing to download (the files are here), the 39.2 GB repacked file and 6 GB to work in
+
+    def test_a_set_the_engine_cannot_run_is_not_offered(self):
+        from strata_control import mac_fit
+        self.shards("UD-Q3_K_XL")
+        with mock.patch.dict(mac_fit.MAC_MODELS, {"UD-Q3_K_XL": {**mac_fit.MAC_MODELS["UD-Q3_K_XL"], "missing": "the Q5_0 expert kernels"}}):
+            with self.assertRaises(SystemExit):
+                self.install("UD-Q3_K_XL")
+
+    def test_the_bundle_carries_the_repack_tools(self):
+        sys.path.insert(0, str(ROOT / "packaging"))
+        import package_terminal as pt
+        self.assertEqual(pt.INSTALLER_METAL_TOOLS, ("metal_repack", "stream_experts"))
+        for n in pt.INSTALLER_METAL_TOOLS:
+            self.assertTrue((ROOT / "metal" / "tools" / f"{n}.py").is_file())
+        with tempfile.TemporaryDirectory() as t:
+            out = pt.add_installer(Path(t))
+            self.assertIn("metal/tools/metal_repack.py", out["files"])
+            self.assertTrue((Path(t) / "metal" / "tools" / "stream_experts.py").is_file())
 
 
 class UpdateFlow(unittest.TestCase):

@@ -1779,7 +1779,7 @@
   "s1761": "Strata n’est pas connecté à son moteur.",
   "s1762": "Modèles optimisés par Strata",
   "s1763": "Strata prépare tous les fragments, la couche de brouillon et les fichiers partagés. Les téléchargements terminés sont réutilisés.",
-  "s1764": "Strata n’envoie aucune télémétrie d’utilisation. Les conversations restent dans le stockage du navigateur. Quand vous choisissez un modèle API, cette conversation et les instructions des compétences activées sont envoyées à son fournisseur. Le journal des requêtes de l’interface garde en mémoire le client, les durées et les métadonnées de tokens. La surveillance de l’API native peut conserver le contenu des requêtes en mémoire lorsqu’elle est activée. Les outils connectés accèdent aux ressources que vous configurez.",
+  "s1764": "Strata n’envoie aucune télémétrie d’utilisation. Les conversations restent sur cet ordinateur, dans le dossier de données de Strata. Quand vous choisissez un modèle API, cette conversation et les instructions des compétences activées sont envoyées à son fournisseur. Le journal des requêtes de l’interface garde en mémoire le client, les durées et les métadonnées de tokens. La surveillance de l’API native peut conserver le contenu des requêtes en mémoire lorsqu’elle est activée. Les outils connectés accèdent aux ressources que vous configurez.",
   "s1765": "Strata utilise ces fichiers sur place. Vous pourrez charger le modèle après l’avoir ajouté.",
   "s1766": "Strata — ouvrir la conversation",
   "s1767": "Budget de Strata",
@@ -3056,7 +3056,7 @@
   "s3042": "Voir les journaux",
   "s3043": "Journaux du moteur",
   "s3044": "Strata n’envoie aucune télémétrie d’utilisation.",
-  "s3045": "Les conversations restent dans le stockage du navigateur.",
+  "s3045": "Les conversations restent sur cet ordinateur, dans le dossier de données de Strata.",
   "s3046": "Quand vous choisissez un modèle API, cette conversation et les instructions des compétences activées sont envoyées à son fournisseur.",
   "s3047": "Le journal des requêtes de l’interface garde en mémoire le client, les durées et les métadonnées de tokens.",
   "s3048": "La surveillance de l’API native peut conserver le contenu des requêtes en mémoire lorsqu’elle est activée.",
@@ -3526,5 +3526,6 @@
   "s9034": "Chargement du modèle…",
   "s9035": "Ces fichiers du modèle sont manquants : {0}.",
   "s9036": "Appuyez à nouveau sur Télécharger et charger pour les récupérer. Les fichiers déjà présents sont conservés. Si les mêmes fichiers sont listés à nouveau, ouvrez Détails et partagez-les quand vous demandez de l’aide.",
-  "s9037": "Cette mise à jour a été interrompue au redémarrage de l’application. Une mise à jour plus récente s’est terminée, il n’y a donc rien à faire."
+  "s9037": "Cette mise à jour a été interrompue au redémarrage de l’application. Une mise à jour plus récente s’est terminée, il n’y a donc rien à faire.",
+  "s9038": "Ce système ne laisse pas Strata utiliser le port {0}. Sous Linux et macOS, les ports inférieurs à 1024 nécessitent des droits d’administrateur. Lancez Strata avec un autre port (STRATA_PORT), par exemple 8801."
 }

@@ -422,7 +422,8 @@ NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
 DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
-REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START)
+SHORT_OF_VRAM = "the cards were short of memory"   # the engine ended before it was ready for lack of graphics memory: the start was repeated once with no drafter (serve/server.py), never with the MTP
+REASONS = (DIDNT_FIT, NOT_HERE, NOT_SUPPORTED, NOT_DOWNLOADED, NOT_THIS_CARD, NO_MTP, NONE_HERE, DIDNT_START, SHORT_OF_VRAM)
 
 
 def line(drafter: str, reason: str = "") -> str:
@@ -531,13 +532,21 @@ def slots_of(args: list[Any], vram_mib: float | None = None) -> int | None:
     return None
 
 
-def blocked_by(args: list[Any], *, split: bool = False, slots: int = 0) -> bool:
+def blocked_by(args: list[Any], *, split: bool = False, slots: int = 0, named: bool = False, backend: str | None = None) -> bool:
     """Does this start have something DFlash2 does not run beside: several requests at once (``--batch``, ``--slots``, ``--parallel``; per-slot DFlash2 drafts are on by
     default only for a layer split whose slots run as one group and are opt-in on one card, so the MTP's ``--batch-mtp`` is the measured choice there) or
     ``--pipeline-windows``. A layer split over several cards is NOT in the list any more (owner, 2026-11-02: the 0.1.56 engine runs ``--draft dflash2
     --draft-fallback none`` on a layer split, one request at a time; paired decode 1.014 against the MTP, CI 0.994-1.033, 2 x RTX PRO 6000, RESULTS-DF2MGPU.md):
-    ``split`` and a ``--layer-split`` argument are accepted and ignored so the callers keep working. The caller says what it adds later (``slots``); the arguments are looked at too."""
+    ``split`` and a ``--layer-split`` argument are accepted and ignored so the callers keep working. The caller says what it adds later (``slots``); the arguments are looked at too.
+
+    ``named``: the person chose DFlash2 by name (owner, 2026-11-03: "we want users to have a choice to pick whatever they want"). Several requests at once are then their word
+    too, and the engine serves them with a drafter per request (``--draft dflash2 --batch N``, the slot drafts); only ``--pipeline-windows`` (the MTP's speculative next window,
+    which DFlash2 has no counterpart for) still blocks. Auto never passes ``named``: it keeps the MTP for several requests.
+    The Metal engine has no per-request drafters (generate.cpp batch_df2_wanted), so DFlash2 beside request slots there would draft nothing and the person would not know: on
+    Metal (``backend``) the old rule stays and a DFlash2 chosen with several requests is the MTP with the usual reason."""
     items = [str(a) for a in args or []]
+    if named and str(backend or "").lower() != "metal":
+        return "--pipeline-windows" in items
     return bool(slots > 1 or any(a in items for a in ("--batch", "--slots", "--pipeline-windows", "--parallel")))
 
 
@@ -697,8 +706,8 @@ ONE_REQUEST_NOTE = "DFlash2 answers one request at a time, so Strata set this mo
 def wants_one_request(mode: Any, *, klass: str = "other", model_name: str | None = None, family: str | None = None, backend: str | None = None,
                       archs: Any = None, **_ignored: Any) -> bool:
     """The choice means DFlash2 on this model and computer (named, or Auto where the engine has it): the model then starts with one request at a time, because the
-    engine's request slots (``--batch``, which Strata fills in by itself on a card with room) cannot run beside it. A number of requests the person chose stays as
-    they chose it (the start then loads the MTP and says so); the callers check that."""
+    engine's request slots (``--batch``, which Strata fills in by itself on a card with room) are not filled in beside it. A number of requests the person chose stays as
+    they chose it: with DFlash2 named the start runs DFlash2 with that many (a drafter per request), with Auto it loads the MTP and says so; the callers check that."""
     return choice_of(mode, model_name=model_name, family=family, backend=backend, archs=archs) == "dflash2"
 
 
@@ -789,10 +798,13 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     in ``user_args`` stays. C is 0.35 where the card holds most experts and higher where fewer slots fit (conf_for_slots): from the person's own ``--expert-cache N``,
     else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35). MTP: the arguments without any DFlash2 option.
     ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``slots`` says that this start serves several requests at
-    once, which DFlash2 does not do (``split``, a layer split over several cards, is ignored: DFlash2 runs on it): the MTP then, said in one line. A config from before this rule that names both drafters starts with the one chosen.
+    once: with Auto that is the MTP, said in one line; with DFlash2 chosen by name it is DFlash2 with a drafter per request (blocked_by ``named``; ``split``, a layer
+    split over several cards, is ignored: DFlash2 runs on it). A config from before this rule that names both drafters starts with the one chosen.
     `engine` is the engine program that will start (None: not known, the usual flags): an engine that only takes `--mtp DIR` for the vocabulary gets that
     (still without the MTP layer), and an engine without `--draft-fallback` gets no DFlash2 flag at all (the MTP, said in one line)."""
     args = [str(a) for a in cfg.get("args") or []]
+    if cfg.get("split_engine_note") and _flag_value(args, "--draft") == "dflash2":   # the all-cards split engine started with DFlash2 as its drafter (split_engine.split_config): its flags are its own, nothing is added or taken out
+        return Decision("dflash2", "dflash2")
     if not supported_model(cfg.get("model_name"), family):    # another model: its drafting is not this choice's business (DeepSeek, Swift, Coder, NVFP4, Qwen3.6...)
         asked = normalize(cfg.get("drafting"))
         if asked == "dflash2":
@@ -808,7 +820,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
     if cfg.get("mtp") is False and normalize(mode) == "auto":
         mode = "off"                                          # "Draft layer (MTP)" turned off by the person, and no drafter chosen since: no drafter
     decision = decide(mode, model_name=cfg.get("model_name"), family=family, data_dir=data_dir, backend=backend, archs=archs,
-                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots) or form == FORM_NONE, vocab_here=vocab is not None)
+                      mtp_here=mtp_here, blocked=blocked_by(strip_draft_flags(args), split=split, slots=slots, named=normalize(mode) == "dflash2", backend=backend) or form == FORM_NONE, vocab_here=vocab is not None)
     mine = cfg.get("user_args") or []
     if decision.drafter == "off":
         cfg["args"] = strip_mtp_flags(strip_draft_flags(args))
@@ -833,7 +845,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
 
 # --------------------------------------------------------------------------------------------------- what the engine said
 
-_ON = re.compile(r"DFlash2 drafter on\b")
+_ON = re.compile(r"DFlash2 drafter on\b|sfnx: DFlash2 on card 0\b")      # (the second line is the all-cards split engine's)
 
 
 def fallback_note(log_text: str) -> str:

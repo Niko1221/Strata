@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import platform
+from strata_control import sysinfo
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -88,10 +89,10 @@ def machine_identity() -> dict[str, Any]:
     is the same machine), so it is deliberately absent.
     """
     return {
-        "system": platform.system(),
-        "release": platform.release(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
+        "system": sysinfo.system(),
+        "release": sysinfo.release(),
+        "machine": sysinfo.machine(),
+        "processor": sysinfo.processor(),
         "cpu_count": os.cpu_count(),
     }
 

@@ -15,5 +15,8 @@
  "df14": "Der DFlash2-Entwurfsbaustein konnte nicht heruntergeladen werden, deshalb startet das Modell ohne Entwurfsbaustein. Das Modell wird geladen …",
  "df15": "MTP-Entwurfsbaustein wird heruntergeladen …",
  "df16": "Der MTP-Entwurfsbaustein konnte nicht heruntergeladen werden.",
- "df17": "Vorausraten: MTP (DFlash2 ist nicht gestartet)"
+ "df17": "Vorausraten: MTP (DFlash2 ist nicht gestartet)",
+ "df18": "Automatisch nutzt die Alle-Karten-Split-Engine mit der MTP-Entwurfsschicht: etwa {0} GB, einmalig herunterzuladen.",
+ "df19": "Die Alle-Karten-Split-Engine konnte nicht starten, deshalb läuft die normale Schichtaufteilung.",
+ "df20": "Vorausraten: aus (den Karten fehlte Speicher)"
 }

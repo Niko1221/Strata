@@ -701,8 +701,12 @@ int main(int argc, char** argv) {
                    14,
 #endif
                    8})        // STRATA_GU_FMTS
-        for (int dt : {20, 23, 42, 7, 8}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
+        for (int dt : {20, 23, 42, 7, 8, 6}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS (6 = Q5_0: UD-IQ4_XS / Q3_K_XL); IQ4_XS: n_ff % 256
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
+    // round 0214: every expert type pair of the new Unsloth Qwen3.8-Flash-Next sets at the model's 2560 x 640
+    // (IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/Q2_0/IQ3_XXS/IQ4_XS gate/up; Q2_0/IQ4_NL/Q5_0/Q8_0 down; IQ4_XS is 256-wide so n_ff 640 needs a 32-block down)
+    for (int gu : {29, 16, 17, 22, 42, 18, 23})
+        for (int dt : {42, 20, 6, 8}) check(gu, dt, 2560, 640, s, rng);
     check(21, 23, 2560, 768, s, rng);
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);

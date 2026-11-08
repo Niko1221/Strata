@@ -580,7 +580,9 @@ class RunTests(StandardBase):
         self.server.script["performance-prompt-4k-r2"] = {"cached": spec["input_tokens_frozen"] - 10}
         # the shared template prefix alone is allowed
         self.server.script["performance-prompt-4k-r1"] = {"cached": 40}
-        doc, _ = self.run_standard()
+        # whatever the login of the machine running the test is: "user" is an ordinary word of the report, not a name here
+        with mock.patch.object(bench_facts.getpass, "getuser", return_value="no-such-login"):
+            doc, _ = self.run_standard()
         self.assertEqual(doc["run"]["status"], "nonconforming")
         row = self.summary(doc, "prompt-4k", "prompt_tps")
         self.assertEqual(row["n"], 2)
@@ -840,6 +842,55 @@ class CommandLineTests(StandardBase):
         self.assertTrue(doc["run"]["optional_concurrency"])
         self.assertIn("--track default", doc["run"]["command"])
         self.assertTrue(doc["run"]["command"].startswith("strata bench run"))
+
+    def test_results_json_is_redacted_like_the_other_files(self):
+        """#4484: free text from the operator reached results.json as typed while the README and the other files were redacted."""
+        out = self.root / "redacted"
+        home = str(Path.home())
+        notes = f"models in {home}/m, server 192.168.7.9"
+        code, _, errors = self.invoke("--url", self.server.url, "--out", str(out), "--track", "custom", "--track-notes", notes,
+                                      "--background", f"indexer in {home}/idx")
+        self.assertEqual(code, 0, errors)
+        for name in ("results.json", "README.md", "config.json", "outputs.jsonl"):
+            text = (out / name).read_text(encoding="utf-8")
+            self.assertNotIn(home, text, name)
+            self.assertNotIn(home.replace("\\", "\\\\"), text, name)       # the way JSON spells a Windows path
+            self.assertNotIn("192.168.7.9", text, name)
+        doc = bs.load(out)
+        self.assertRegex(doc["configuration"]["track_notes"], "<home>|<user>")
+        self.assertIn("<ip>", doc["configuration"]["track_notes"])
+        self.assertEqual(doc["request_counts"]["performance"]["planned"] > 0, True)       # counters are untouched
+
+    def test_a_login_that_is_an_ordinary_word_does_not_rewrite_the_reports_own_words(self):
+        """INT3 on l620, where the login is exactly "user": the report's fixed text (status reasons, enum values, field names) came out as
+        "<user>", while the operator's own text still loses the name."""
+        spec = corpus_specs()["performance-prompt-4k-r2"]
+        out = self.root / "wordlogin"
+        with mock.patch.object(bench_facts.getpass, "getuser", return_value="user"), \
+                mock.patch.object(bench_facts.socket, "gethostname", return_value="summaries"), \
+                mock.patch.object(bench_facts.platform, "node", return_value="summaries"):
+            self.server.script["performance-prompt-4k-r2"] = {"cached": spec["input_tokens_frozen"] - 10}
+            code, _, errors = self.invoke("--url", self.server.url, "--out", str(out), "--track", "custom",
+                                          "--track-notes", "ask the user at summaries time")
+        self.assertEqual(code, 6, errors)
+        doc = bs.load(out)
+        self.assertEqual(bs.validate(doc), [])
+        self.assertTrue(any("unexpected reuse of the user payload in performance-prompt-4k-r2" in r
+                            for r in doc["extensions"]["status_reasons"]), doc["extensions"]["status_reasons"])
+        self.assertEqual(doc["configuration"]["track_notes"], "ask the <user> at <host> time")
+        text = (out / "results.json").read_text(encoding="utf-8")
+        self.assertIn('"summaries"', text)                      # a field name that equals the host name stays a field name
+
+    def test_a_credential_of_none_is_no_key_and_the_word_is_left_alone(self):
+        """#4483: STRATA_KEY=none was sent as "Bearer none" and the word was replaced wherever it occurred."""
+        out = self.root / "nonekey"
+        code, _, errors = self.invoke("--url", self.server.url, "--out", str(out), "--credential-env", "STRATA_TEST_KEY",
+                                      "--track-notes", "nonempty reasoning, none of the nodes", env={"STRATA_TEST_KEY": " None "})
+        self.assertEqual(code, 0, errors)
+        doc = bs.load(out)
+        self.assertFalse(doc["extensions"]["api_key_sent"])
+        self.assertEqual(doc["configuration"]["track_notes"], "nonempty reasoning, none of the nodes")
+        self.assertNotIn("<key>", (out / "README.md").read_text(encoding="utf-8"))
 
     def test_report_reads_a_standard_result_in_three_forms(self):
         out = self.root / "rep"
@@ -1173,6 +1224,27 @@ class ArchiveCommitTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 self.pt.main()
         self.assertIn("COMMIT", str(raised.exception))
+
+
+class RedactorKeyTests(unittest.TestCase):
+    """#4483: the API key is replaced as a whole word in its own case; "none" is no key."""
+
+    def test_none_is_not_a_key(self):
+        for value in ("none", "None", " NONE ", "", None, "   "):
+            self.assertIsNone(bench_facts.usable_key(value), value)
+        self.assertEqual(bench_facts.usable_key(" sk-realkey "), "sk-realkey")
+        clean = bench_facts.redactor("none")
+        self.assertEqual(clean("nonempty, none, None"), "nonempty, none, None")
+
+    def test_the_key_is_replaced_as_a_word_in_its_case(self):
+        key = "a1b2c3d4"
+        clean = bench_facts.redactor(key)
+        self.assertEqual(clean(f"token={key} and {key}"), "token=<key> and <key>")
+        self.assertEqual(clean(f"sha {key}ff and {key.upper()}"), f"sha {key}ff and {key.upper()}")
+        self.assertEqual(clean("Authorization: Bearer abcdefgh12345"), "Authorization: Bearer <key>")
+
+    def test_a_short_key_is_still_removed_where_it_stands_alone(self):
+        self.assertEqual(bench_facts.redactor("pw12")("the password is pw12."), "the password is <key>.")
 
 
 if __name__ == "__main__":

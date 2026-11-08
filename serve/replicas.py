@@ -372,11 +372,18 @@ class ReplicaEngine:
 
     @property
     def last(self):
-        return self.current.last
+        """The DONE figures of the calling thread's own request (#2892).  An unbatched engine has one shared `last`
+        that the next request overwrites the moment the replica's lock is free, so generate() copies the figures of
+        this caller's DONE while it still owns the replica; until the thread has had one, the engine's own object."""
+        tl = self.tl
+        if not hasattr(tl, "last"):
+            tl.last = self.current.last
+        return tl.last
 
     @last.setter
     def last(self, value):
         self.current.last = value
+        self.tl.last = value
 
     @property
     def batch(self) -> int:
@@ -550,8 +557,11 @@ class ReplicaEngine:
             raise EngineDied("no replica is running; this request was not sent")
         e = self.engines[k]
         self.tl.cur = e
+        _ = self.last                                         # the caller's figures exist before this request (#2892)
         produced: list[int] = []
         held = False
+        gen = None
+        native_before = None
         nonfinite = False
         try:
             selected = getattr(cancel, "_strata_replica_selected", None)
@@ -564,6 +574,7 @@ class ReplicaEngine:
                     if cancel is not None and cancel.is_set():
                         return
                 held = True
+            native_before = e.last
             if embeddings is not None:
                 gen = e.generate(ids, max_new, sampling, cancel, embeddings=embeddings)
             else:
@@ -576,11 +587,46 @@ class ReplicaEngine:
             nonfinite = True
             raise
         finally:
-            if held:
-                self.run_locks[k].release()
-            with self.lock:
-                self.inflight[k] -= 1
-            if nonfinite:                       # #879: the engine dropped every cached conversation
-                self.router.forget(k)
-            elif produced:
-                self.router.note(k, list(ids) + produced)
+            # #2892: the replica's pipe belongs to this request until its native exchange is over.  The child
+            # generator sends STOP and reads to its DONE when it is closed; that has to happen HERE, before the lock is
+            # given back - left to the garbage collector it ran after the next request had sent its GEN, and the two
+            # read each other's tokens and DONE.  A close that fails (the engine never answered its STOP) ends the
+            # replica: it is not handed on (heal() starts it again), and the error is not lost.
+            try:
+                if gen is not None:
+                    try:
+                        gen.close()
+                    except BaseException:                     # noqa: BLE001 - the pipe cannot be trusted any more
+                        self.quarantine(k)
+                        raise
+            finally:
+                try:
+                    # the figures of the DONE this caller's request read, copied while it still owns the replica; with
+                    # no new DONE the caller's earlier object stays, so Service does not record an old result as new
+                    if gen is not None and e.last is not native_before:
+                        self.tl.last = dict(e.last)
+                finally:
+                    if held:
+                        self.run_locks[k].release()
+                    with self.lock:
+                        self.inflight[k] -= 1
+                    if nonfinite:                       # #879: the engine dropped every cached conversation
+                        self.router.forget(k)
+                    elif produced:
+                        self.router.note(k, list(ids) + produced)
+
+    def quarantine(self, k: int) -> None:
+        """A replica whose pipe could not be drained is out of the routing until it has been started again: its process
+        is ended (nothing it still prints can reach a later request) and heal() restarts it."""
+        e = self.engines[k]
+        try:
+            e.ended = True
+        except AttributeError:
+            pass
+        proc = getattr(e, "proc", None)
+        try:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+        except (OSError, AttributeError, ValueError):
+            pass
+        self.router.forget(k)

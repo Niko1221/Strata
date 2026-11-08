@@ -618,27 +618,48 @@ def wsl_amd_note(backend: str | None, dev_root: str = "/dev", wsl: bool | None =
             "would hang at its first step. Use the Strata app or Terminal for Windows, which run the AMD engine directly.")
 
 
+#: The most own memory an integrated GPU reports: its BIOS carve-out (a Raphael iGPU reported 512 MiB, #4971). A card below this is not the one this
+#: PC's engine is chosen for while another card is present. A card that reports no size (NVIDIA and Intel write no such file) is never called integrated
+#: by its missing file; a large unified-memory APU (a Strix Halo with a 32 GiB carve-out) reports a large size and counts as a card.
+INTEGRATED_MAX_VRAM_MIB = 2048
+
+
+def _own_vram(card: Path) -> bool | None:
+    """Whether a display adapter has its own memory above `INTEGRATED_MAX_VRAM_MIB`; None when it reports no size. Read-only sysfs."""
+    try:
+        total = int((card / "device" / "mem_info_vram_total").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    return total > INTEGRATED_MAX_VRAM_MIB * 1024 * 1024
+
+
 def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     """Linux without the vendor tools on PATH (a HIP box that runs ROCm from Python wheels has no rocminfo): the PCI
     vendor of the display adapters decides. NVIDIA 0x10de -> cuda, AMD 0x1002 -> hip, Intel 0x8086 -> sycl, in that
-    order. Read-only sysfs, nothing is run."""
+    order. An integrated GPU does not decide while another make has a card that is not integrated (#4971: a 512 MiB
+    Radeon APU made the whole PC an AMD machine beside the user's Intel Arc); when every card is integrated the old
+    order stands. Read-only sysfs, nothing is run."""
     if not os.path.isdir(root):
         return None
-    vendors = set()
+    cards: dict[str, list[bool | None]] = {}
     try:
         for card in sorted(Path(root).glob("card[0-9]*")):
             if "-" in card.name:
                 continue
             try:
-                vendors.add((card / "device" / "vendor").read_text().strip().lower())
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
             except OSError:
                 continue
+            cards.setdefault(vendor, []).append(_own_vram(card))
     except OSError:
         return None
-    for vendor, backend in (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl")):
-        if vendor in vendors:
-            return backend
-    return None
+    order = (("0x10de", "cuda"), ("0x1002", "hip"), ("0x8086", "sycl"))
+    if not any(v in cards for v, _ in order):
+        return None
+    # a make whose every card is positively integrated (a small own-memory reading) is skipped while another make has a card that is not
+    decisive = [v for v, _ in order if any(flag is not False for flag in cards.get(v, []))]
+    chosen = decisive[0] if decisive else next(v for v, _ in order if v in cards)
+    return dict(order)[chosen]
 
 
 #: Windows AMD cards by PCI device id (VEN_1002), the same table as setup.py's _WIN_AMD_DID (tests/terminal/test_engine_component.py
@@ -689,7 +710,25 @@ def gfx_from_name(name: str) -> str:
     return ""
 
 
+_CIM_CACHE: dict = {}
+CIM_CACHE_SECONDS = 120.0        # one answer (a failed or timed-out one too) serves every caller of this process for this long
+
+
 def _windows_adapters_cim() -> list[dict]:
+    """The CIM query below, asked once per process and 2 minutes: one `strata launch --plan` asked it 18 times (17 s on a healthy PC) and, with the WMI
+    service stuck, 18 times its 15 s timeout, far beyond the 60 s the app waits for Control (#4975). The adapters do not change inside a command."""
+    if os.name != "nt":
+        return []
+    now = time.monotonic()
+    hit = _CIM_CACHE.get("adapters")
+    if hit is not None and now - hit[0] < CIM_CACHE_SECONDS:
+        return [dict(a) for a in hit[1]]
+    found = _windows_adapters_cim_query()
+    _CIM_CACHE["adapters"] = (now, found)
+    return [dict(a) for a in found]
+
+
+def _windows_adapters_cim_query() -> list[dict]:
     """Second source when the registry key lists nothing: PowerShell's Win32_VideoController (PNPDeviceID has VEN_/DEV_). It can fail for
     a limited account, so every failure is an empty answer."""
     if os.name != "nt":
@@ -870,7 +909,23 @@ def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> 
     return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
 
 
+_SMI_CACHE: dict = {}
+SMI_CACHE_SECONDS = 30.0         # a card's capability and the driver version do not change inside one command
+
+
 def _smi_query(field_name: str) -> list[str]:
+    """nvidia-smi for one field, asked once per process and 30 s: one `strata launch --plan` on Windows with an engine installed started it 19 times (10 for the
+    compute capability, 9 for the driver version), and a stuck driver would have cost its 8 s timeout each time. A failed answer is kept for the same time."""
+    now = time.monotonic()
+    hit = _SMI_CACHE.get(field_name)
+    if hit is not None and now - hit[0] < SMI_CACHE_SECONDS:
+        return list(hit[1])
+    found = _smi_query_now(field_name)
+    _SMI_CACHE[field_name] = (now, found)
+    return list(found)
+
+
+def _smi_query_now(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
         return []

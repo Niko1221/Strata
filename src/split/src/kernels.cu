@@ -8,6 +8,7 @@
 #include <mma.h>   // HIP: src/hip/mma.h (gfx12 WMMA)
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -35,6 +36,7 @@
 #define __shfl_sync(...) (::strata::hip_compat::shfl_sync(__VA_ARGS__))
 #undef cudaFuncSetAttribute   // ggml's maps it to hipFuncSetAttribute(const void*, ...); the tree's template takes the kernel
 #endif
+#include "iqdot_hip.cuh"   // HIP: the i-quant dots with a cheaper sign expansion (same integers as ggml's)
 
 // compiled in parts (Makefile: build/kernels_pN.o with -DFNX_KPART=N), each with its share of the launchers below and
 // so only the template kernels they instantiate: one file's ~700 kernels took ~7 minutes on one core
@@ -140,9 +142,21 @@ template <ggml_type type> __device__ __forceinline__ float vdot(const void* v, c
     else if constexpr (type == GGML_TYPE_Q6_K) return vec_dot_q6_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_IQ4_NL) return vec_dot_iq4_nl_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_IQ4_XS) return vec_dot_iq4_xs_q8_1(v, y, kbx, iqs);
+#if FNX_HIP
+    else if constexpr (type == GGML_TYPE_IQ3_S) return fnx_vec_dot_iq3_s_q8_1(v, y, kbx, iqs);
+#else
     else if constexpr (type == GGML_TYPE_IQ3_S) return vec_dot_iq3_s_q8_1(v, y, kbx, iqs);
+#endif
+#if FNX_HIP
+    else if constexpr (type == GGML_TYPE_IQ3_XXS) return fnx_vec_dot_iq3_xxs_q8_1(v, y, kbx, iqs);
+#else
     else if constexpr (type == GGML_TYPE_IQ3_XXS) return vec_dot_iq3_xxs_q8_1(v, y, kbx, iqs);
+#endif
+#if FNX_HIP
+    else if constexpr (type == GGML_TYPE_IQ2_S) return fnx_vec_dot_iq2_s_q8_1(v, y, kbx, iqs);
+#else
     else if constexpr (type == GGML_TYPE_IQ2_S) return vec_dot_iq2_s_q8_1(v, y, kbx, iqs);
+#endif
     else return 0.0f;
 }
 template <ggml_type type> constexpr int vdr_of() {
@@ -472,6 +486,7 @@ __global__ void k_gdn_out_norm(const float* o, const float* z, const float* w, f
 
 #include "gdn_core.cuh"
 #include "gdn_prompt.cuh"
+#include "gdn_tc_prompt.cuh"
 
 // ---------------------------------------------------------------- attention
 // per (t, head): RMS norm with the weight, then NEOX rotary on dims [0, NROT): pairs (i, i + NROT/2)
@@ -768,6 +783,7 @@ __global__ void __launch_bounds__(HD) k_attn_combine(const float* qg, const floa
 }
 
 #include "attn_prompt.cuh"
+#include "attn_prompt_i8.cuh"
 #include "topk.cuh"
 
 // ---------------------------------------------------------------- PLE block
@@ -1429,6 +1445,25 @@ size_t attn_prompt_block_floats(int C) { return (size_t) C * ATT_OWN * AP_W; }
 void attn_prompt(const float* qg, const uint16_t* kc, const uint16_t* vc, const KvPages& g, const int* pos0, const int* cells,
                  const int* n_cells, int card, int C, int r0, int T, float* part, void* st) {
     if (T == 0) return;   // an empty half of a one-row chunk
+#if !FNX_HIP && FNX_ARCH >= 80
+    // FNX_PFX_ATTN_I8: the INT8 tensor-core kernel (attn_prompt_i8.cuh) on int8 K/V pages, on by default on NVIDIA sm_80+ for the IQ3_S-type files and off for the others (UD-Q4_K_XL lost agent-A8 and A10 with it); FNX_PFX_ATTN_I8=0/1 overrides; HIP keeps the f16 kernel
+    static const int i8_env = (int) env_int("FNX_PFX_ATTN_I8", -1);
+    const bool i8 = i8_env >= 0 ? i8_env != 0 : attn_i8_default();
+    if (i8 && g.q8) {
+        static bool attr[64] = {};
+        int dev = 0;
+        cudaGetDevice(&dev);
+        if (dev >= 0 && dev < 64 && !attr[dev]) {
+            cudaFuncSetAttribute(k_pf_attn_i8, cudaFuncAttributePreferredSharedMemoryCarveout, 100);   // three blocks an SM
+            cudaGetLastError();
+            attr[dev] = true;
+        }
+        k_pf_attn_i8<<<dim3(T, NKVH), AI_THREADS, sizeof(AiSmem), (cudaStream_t) st>>>(qg, reinterpret_cast<const __half*>(kc), reinterpret_cast<const __half*>(vc), g, pos0,
+                                                                                       cells, n_cells, card, C, r0, part);
+        ck_launch("attn_prompt (int8)");
+        return;
+    }
+#endif
     k_pf_attn<<<dim3(T, NKVH), AP_THREADS, AP_SMEM, (cudaStream_t) st>>>(qg, reinterpret_cast<const __half*>(kc),
                                                                          reinterpret_cast<const __half*>(vc), g, pos0, cells, n_cells,
                                                                          card, C, r0, part);
@@ -1895,7 +1930,13 @@ void attn_prep_append(float* qg, float* k, const float* v, const float* q_norm, 
 #endif
 
 #if FNX_KPART == 4
+
 namespace fnx {
+static std::atomic<bool> g_gdn_tc_default{true};
+void gdn_tc_set_default(bool on) { g_gdn_tc_default = on; }
+static std::atomic<bool> g_attn_i8_default{false};
+void attn_i8_set_default(bool on) { g_attn_i8_default = on; }
+bool attn_i8_default() { return g_attn_i8_default.load(); }
 size_t gdn_scratch_floats(int nv) { return (size_t) MAXT * nv * HS + (size_t) nv * MAXT * GDN_Q + (size_t) MAXT * nv; }
 
 void gdn_core(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
@@ -1976,13 +2017,23 @@ void gdn_core_segs(const float* qkvz, const float* ab, const float* convw, const
     ck_launch("gdn_core_segs");
 }
 
-void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
-                float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
-                float* chw, void* st) {
+static void gdn_prompt_impl(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
+                       float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
+                       float* chw, void* st) {
     cudaStream_t s = (cudaStream_t) st;
     const int ch = (2 * nk + nv) * HS;
     k_gdn_pf_conv<<<dim3(C, 2 * nk + nv), HS, 0, s>>>(qkvz, hist, convw, ctl, xc, nk, nv);
     k_gdn_pf_hist<<<(ch + 255) / 256, 256, 0, s>>>(qkvz, hist, ctl, ng, C, nk, nv);
+#if FNX_GDN_TC_ON
+    // FNX_PFX_GDN_TC: on by default on NVIDIA sm_80+ except for the IQ3_S-type sets (FNX_PFX_GDN_TC=0/1 overrides): Strata's tensor-core chunk scan (gdn_tc_prompt.cuh); false -> this card cannot run it, the sub-chunk kernels below do
+    static const int gdn_tc_env = (int) fnx::env_int("FNX_PFX_GDN_TC", -1);   // -1: the file decides (gdn_tc_set_default)
+    const bool gdn_tc = gdn_tc_env >= 0 ? gdn_tc_env != 0 : g_gdn_tc_default.load();
+    if (gdn_tc && gdn_tc_run(xc, ab, dt, a, S, y32, nk, nv, vmap, C, s)) {
+        k_gdn_pf_norm_own<<<dim3(C, nv), HS, 0, s>>>(qkvz, nw, y32, nk, nv, eps);
+        ck_launch("gdn_prompt");
+        return;
+    }
+#endif
     static const bool chunked = [] {
         const char* e = std::getenv("FNX_PF_GDN_CHUNK");
         if (e && std::strcmp(e, "0") && std::strcmp(e, "1")) throw std::runtime_error(std::string("FNX_PF_GDN_CHUNK: 0 or 1, not '") + e + "'");
@@ -2036,6 +2087,43 @@ void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* co
     }
     ck_launch("gdn_prompt");
 }
+// FNX_GDN_TIME=1 (measuring): CUDA events around every prompt GDN call of a card (conv, history, scan, norm), their GPU time summed per
+// card and printed to stderr each time 36 x 32768 rows (a 32K prompt through the 36 recurrent layers) have gone through it (the events are read a call late, nothing waits on the GPU)
+void gdn_prompt(const float* qkvz, const float* ab, float* hist, const float* convw, const float* dt, const float* a, const float* nw,
+                float* S, const int* ctl, int ng, int nk, int nv, const int* vmap, int C, float eps, float* xc, float* sq, float* y32,
+                float* chw, void* st) {
+    static const bool timed = fnx::env_int("FNX_GDN_TIME", 0) != 0;
+    if (!timed) {
+        gdn_prompt_impl(qkvz, ab, hist, convw, dt, a, nw, S, ctl, ng, nk, nv, vmap, C, eps, xc, sq, y32, chw, st);
+        return;
+    }
+    struct Rec { cudaEvent_t e0, e1; int rows; };
+    struct Dev { std::vector<Rec> pend; double ms = 0; long rows = 0, calls = 0, since = 0; };
+    static thread_local Dev devs[16];
+    int dev = 0;
+    cudaGetDevice(&dev);
+    Dev& d = devs[dev & 15];
+    cudaStream_t s = (cudaStream_t) st;
+    Rec r{nullptr, nullptr, C};
+    cudaEventCreate(&r.e0), cudaEventCreate(&r.e1);
+    cudaEventRecord(r.e0, s);
+    gdn_prompt_impl(qkvz, ab, hist, convw, dt, a, nw, S, ctl, ng, nk, nv, vmap, C, eps, xc, sq, y32, chw, st);
+    cudaEventRecord(r.e1, s);
+    d.pend.push_back(r);
+    while (!d.pend.empty() && cudaEventQuery(d.pend.front().e1) == cudaSuccess) {
+        Rec q = d.pend.front();
+        d.pend.erase(d.pend.begin());
+        float ms = 0;
+        cudaEventElapsedTime(&ms, q.e0, q.e1);
+        d.ms += ms, d.rows += q.rows, d.since += q.rows, ++d.calls;
+        cudaEventDestroy(q.e0), cudaEventDestroy(q.e1);
+        if (d.since >= 36L * 32768) {
+            std::fprintf(stderr, "gdn time: card %d: %.1f ms GPU over %ld calls, %ld rows (%.4f ms a row)\n", dev, d.ms, d.calls, d.rows, d.ms / (double) d.rows);
+            d.ms = 0, d.rows = d.calls = d.since = 0;
+        }
+    }
+}
+
 size_t gdn_prompt_work_floats(int C, int nv) { return (size_t) ((C + GCH - 1) / GCH) * nv * GCH_PREP_FLOATS; }
 }  // namespace fnx
 #endif
@@ -2136,13 +2224,27 @@ void moe_gate_up(const DW& A, size_t sa, const Job* jobs, const int* njobs, int 
         moe_mm(false, A, sa, jobs, njobs, njobs_max, xq, gu, st);
         return;
     }
-    if (A.type != T_Q4_K) throw std::runtime_error("moe_gate_up: the shared expert rides only in the Q4_K experts' launch");
     if (sh_ffs < 32 || sh_ffs > SH_MAXF || sh_ffs % 32) throw std::runtime_error("moe_gate_up: the shared expert's FF slice");
     ShexpDown sd;
     for (int k = 0; k < Q8S_SEGS; ++k) sd.w.q[k] = sh_down->q, sd.w.d[k] = sh_down->d, sd.w.out[k] = sh_out, sd.w.end[k] = N, sd.w.stride[k] = N;
     sd.rows = N, sd.ffs = sh_ffs, sd.gu = sh_gu;
     const MoeW w{(const char*) A.p, sa, A.row_bytes, A.n_out, A.n_in, A.ep};
-    gu_q4k_launch(njobs_max / TOPK, w, jobs, njobs, njobs_max, (const block_q8_1*) xq, gu, (cudaStream_t) st, sd);
+    const int T = njobs_max / TOPK;
+    cudaStream_t s = (cudaStream_t) st;
+    const block_q8_1* y = (const block_q8_1*) xq;
+    switch (A.type) {
+        case T_Q4_K: gu_q4k_launch(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q5_K: gu_sd_launch<GGML_TYPE_Q5_K>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q5_1: gu_sd_launch<GGML_TYPE_Q5_1>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q4_0: gu_sd_launch<GGML_TYPE_Q4_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q8_0: gu_sd_launch<GGML_TYPE_Q8_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ4_NL: gu_sd_launch<GGML_TYPE_IQ4_NL>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ4_XS: gu_sd_launch<GGML_TYPE_IQ4_XS>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ3_S: gu_sd_launch<GGML_TYPE_IQ3_S>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ3_XXS: gu_sd_launch<GGML_TYPE_IQ3_XXS>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_IQ2_S: gu_sd_launch<GGML_TYPE_IQ2_S>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        default: throw std::runtime_error("moe_gate_up: the shared expert rides in the launch of expert type " + std::to_string(A.type) + " only for the types moe_mm handles");
+    }
     ck_launch("moe_gate_up (with the shared expert)");
 }
 namespace {

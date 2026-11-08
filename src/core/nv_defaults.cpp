@@ -110,6 +110,39 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
     return set;
 }
 
+std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor) {
+    return nv_kq_default_env(min_major, min_minor, strata::qwen_defaults_026());
+}
+
+std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor, bool defaults026) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (defaults026) return t;
+    if (strata::cc_major_of(min_major) < 8) return t;   // Volta / Turing / Pascal: not measured, keep the FP16 prompt path
+    const char* sw = std::getenv("STRATA_NV_KQ_DEFAULT");
+    if (sw != nullptr && sw[0] == '0') return t;
+    if (!kNvKqDefaultOn && !(sw != nullptr && sw[0] == '1')) return t;
+    t.push_back({"STRATA_MMQ_KQ", "1"});
+    (void) min_minor;
+    return t;
+}
+
+std::vector<std::string> apply_nv_kq_default(int min_major, int min_minor) {
+    std::vector<std::string> set;
+    for (const auto& kv : nv_kq_default_env(min_major, min_minor)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
+#if defined(_WIN32)
+        _putenv_s(kv.first.c_str(), kv.second.c_str());
+#else
+        setenv(kv.first.c_str(), kv.second.c_str(), 0);
+#endif
+        set.push_back(kv.first);
+    }
+    if (!set.empty())   // the engine says nothing more on a pack without K-quant experts: the variable is never read there
+        std::fprintf(stderr, "strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels "
+                             "(STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)\n");
+    return set;
+}
+
 void apply_spec_adapt_default(int major, int minor) {
     const int mj = strata::cc_major_of(major), mn = strata::cc_minor_of(minor);
     // sm_86 only: the P100 (sm_60) gained 4-16% on JSON/code/chat/tool calls but lost 3% on the 4K agent transcript (5/5 pairs), so there it stays opt-in

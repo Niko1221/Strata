@@ -10,8 +10,10 @@ Now: the launcher writes no parallel override when the run config holds the slot
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -236,6 +238,24 @@ class AutoFetchesTheDraftLayer(Base):
                 self.assertEqual(r.resolved_drafting("qwen"), "dflash2")
                 self.assertNotIn("mtp", [p["kind"] for p in r.download_plan()["parts"]])
 
+    def test_dflash2_by_name_with_the_split_engine_on_fetches_the_dflash2_drafter_not_the_layer(self):
+        """Owner 2026-11-03: both choices are the person's own (--drafting dflash2 --split-engine on): the split engine runs, with DFlash2's drafter."""
+        r = self.runner(cards(2), gpus=[0, 1], drafting="dflash2", split_engine="on")
+        self.assertTrue(r.split_expected())
+        self.assertEqual(r.resolved_drafting("qwen"), "dflash2")
+        kinds = [p["kind"] for p in r.download_plan()["parts"]]
+        self.assertIn("dflash2", kinds)
+        self.assertNotIn("mtp", kinds)
+        want = r.drafting_inputs({"model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "args": []})
+        self.assertEqual(want["mode"], "dflash2")
+        self.assertNotIn("MTP", r.drafting_plan_line())
+        # the same name with the split engine on Auto stays the layer split (and a number of requests changes nothing about which drafter)
+        r = self.runner(cards(2), gpus=[0, 1], drafting="dflash2")
+        self.assertFalse(r.split_expected())
+        r = self.runner(cards(2), gpus=[0, 1], drafting="dflash2", split_engine="on", parallel=4)
+        want = r.drafting_inputs({"model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "args": []})
+        self.assertEqual((want["mode"], want["blocked"]), ("dflash2", False), "the person's own number of requests no longer blocks a DFlash2 they named")
+
     def test_amd_four_gfx1201_is_the_mtp_two_are_not(self):
         self.hw = HW_4XR9700
         r = self.runner(cards(4, vendor="amd", arch="gfx1201"), gpus=[0, 1, 2, 3])
@@ -247,6 +267,7 @@ class AutoFetchesTheDraftLayer(Base):
         self.assertTrue(SE.expected({}, indexes=[0, 1], probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
         self.assertFalse(SE.expected({"split_engine": "off"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
         self.assertFalse(SE.expected({"drafting": "dflash2"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"))
+        self.assertTrue(SE.expected({"drafting": "dflash2", "split_engine": "on"}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="linux"), "named and asked for: both are the person's own")
         self.assertFalse(SE.expected({}, probe=lambda i: cards(2), ram=lambda: (500.0, 400.0), system="darwin"))
         self.assertFalse(SE.expected({}, probe=lambda i: cards(2), ram=lambda: (500.0, 4.0), system="linux"), "not enough RAM for the locked tables")
 
@@ -322,37 +343,283 @@ class PlanTellsTheApp(Base):
             self.assertEqual(p["choice"], "dflash2")
 
 
-class AppDoesNotSplit(Base):
-    """0.2.10: the all-cards split engine is Terminal-only; the app's drafting plan/fetch ask with --no-split, so Auto in the app on 2 NVIDIA / 4 R9700 cards is
-    the layer split with DFlash2 alone and no 5.2 GB draft layer is planned. The Terminal's own plan is unchanged: split + MTP."""
+@contextlib.contextmanager
+def tempdir():
+    with tempfile.TemporaryDirectory() as tmp:
+        yield tmp
 
-    def plan(self, probe, *extra):
+
+def app_cfg(tmp: str, **more) -> dict:
+    """The run config the app hands to Control at a Load (native-control.mjs buildConfig): the installed model's layer-split config with the app's own keys
+    (host, port, api_key, the card list, parallel 4 where nobody chose a number) and the draft layer on disk."""
+    root = Path(tmp)
+    (root / "data").mkdir(exist_ok=True)
+    (root / "data" / "draft_vocab_en.bin").write_bytes(b"x")
+    mtp = root / "mtp" / "rt"
+    mtp.mkdir(parents=True, exist_ok=True)
+    (mtp / "dense.bin").write_bytes(b"x")
+    cfg = {"exe": "/e/strata", "args": ["--pack", "/m/packs/x", "--native", "/m/x-00001.gguf", "--spec", "4", "--mtp", str(mtp), "--max-context", "131072",
+                                        "--kv", "int8", "--vram-reserve-mib", "1536"],
+           "cwd": tmp, "tokenizer": "/m/tokenizer", "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "host": "127.0.0.1", "port": 18500, "api_key": "k", "gpu": [0, 1], "layer_split": "auto",
+           "open_browser": False, "parallel": 4, "fit_max_tokens": True, "env": {}}
+    cfg.update(more)
+    return cfg
+
+
+def set_arg(cfg: dict, flag: str, value: str) -> None:
+    cfg["args"][cfg["args"].index(flag) + 1] = value
+
+
+def flag_of(cfg: dict, flag: str) -> str:
+    return cfg["args"][cfg["args"].index(flag) + 1]
+
+
+class AppPlanEqualsTerminalPlan(Base):
+    """0.2.10.1: the app asks `strata drafting plan` / `fetch` WITHOUT --no-split, so its plan is the Terminal's: where the split rule says yes, Auto is the split with the MTP draft
+    layer (fetched through the app's existing MTP step), and a person's DFlash2 or Off keeps the layer split."""
+
+    def plan(self, probe, *extra, config=None):
         from tests.terminal.launch_support import run_cli
         data = Path(self.home.base) / "d"
         data.mkdir(exist_ok=True)
-        with mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),                 mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
-            code, out, err = run_cli(["drafting", "plan", "--family", "qwen", "--data-dir", str(data), "--output", "json", *extra])
+        argv = ["drafting", "plan", "--data-dir", str(data), "--output", "json", *extra]
+        if config is not None:
+            path = Path(self.home.base) / "cfg-plan.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            argv += ["--config", str(path)]
+        else:
+            argv += ["--family", "qwen"]
+        with mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)), \
+                mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
+            code, out, err = run_cli(argv)
         self.assertEqual(code, 0, err)
         return json.loads(out)
 
-    def test_the_app_plan_on_two_cards_is_dflash2_and_fetches_no_draft_layer(self):
+    def terminal(self, probe, **kw):
+        """What the Terminal's launch decides for the same machine and choice: the drafter, the split word and the parts of its download plan."""
+        s = S.LaunchSettings(**{"family": "qwen", "model": "UD-Q4_K_XL", "context": 131072, "tune": "skip", "vision": "off", **kw})
+        r = Runner(s, catalog=catalog(self.hw))
+        with mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)), \
+                mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
+            return r.resolved_drafting("qwen"), r.split_expected(), [p["kind"] for p in r.download_plan()["parts"]]
+
+    def test_the_apps_plan_on_two_cards_is_the_terminals_split_and_the_mtp(self):
+        p = self.plan(cards(2), "--mode", "auto")
+        drafter, split, kinds = self.terminal(cards(2), gpus=[0, 1])
+        self.assertEqual((p["split"], p["choice"], p["needed"]), (True, "mtp", False))
+        self.assertEqual((drafter, split), ("mtp", True))
+        self.assertIn("mtp", kinds)
+        self.assertNotIn("dflash2", kinds)
+
+    def test_without_the_mtp_layer_the_plan_asks_for_it(self):
+        """The draft layer is not on disk (a DFlash2 install leaves it out): mtp_needed with its size, and nothing for DFlash2."""
+        from strata_control.discovery import MTP_FETCH_GB
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            set_arg(cfg, "--mtp", str(Path(tmp) / "nowhere" / "rt"))
+            p = self.plan(cards(2), "--mode", "auto", config=cfg)
+        self.assertEqual((p["split"], p["choice"], p["needed"], p["mtp_needed"], p["mtp_gb"]), (True, "mtp", False, True, MTP_FETCH_GB))
+        self.assertIn("all-cards split engine", p["line"])
+        self.assertIn(f"{MTP_FETCH_GB:g} GB", p["line"])
+
+    def test_the_plan_line_is_the_terminals_line(self):
+        from strata_control.discovery import MTP_FETCH_GB
+        self.assertEqual(SE.split_plan_line(MTP_FETCH_GB), f"Drafting: MTP (the all-cards split engine uses the MTP draft layer, {MTP_FETCH_GB:g} GB)")
+        self.assertEqual(SE.split_plan_line(), "Drafting: MTP (the all-cards split engine uses the MTP draft layer)")
+
+    def test_a_persons_dflash2_or_off_or_one_card_is_the_same_in_the_app_and_the_terminal(self):
+        for name, probe, mode, config, kw in (("their DFlash2", cards(2), "dflash2", None, {"gpus": [0, 1], "drafting": "dflash2"}),
+                                              ("split-engine off", cards(2), "auto", {"split_engine": "off", "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl", "args": []}, {"gpus": [0, 1], "split_engine": "off"}),
+                                              ("one card", cards(1), "auto", None, {"gpus": [0]})):
+            with self.subTest(name):
+                p = self.plan(probe, "--mode", mode, config=config)
+                drafter, split, kinds = self.terminal(probe, **kw)
+                self.assertFalse(p["split"])
+                self.assertEqual(p["choice"], "dflash2")
+                self.assertEqual((drafter, split), ("dflash2", False))
+                self.assertNotIn("mtp", kinds)
+
+    def test_a_saved_dflash2_is_overridden_by_the_auto_the_screen_carries(self):
+        """The Models screen's Load with Auto on a model whose settings file still says dflash2: the choice in hand is Auto, so the rule is asked with Auto."""
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp, drafting="dflash2")
+            p_auto = self.plan(cards(2), "--mode", "auto", config=cfg)
+            p_saved = self.plan(cards(2), config=cfg)
+        self.assertTrue(p_auto["split"])
+        self.assertFalse(p_saved["split"])
+        self.assertEqual(p_saved["choice"], "dflash2")
+
+    def test_an_explicit_mtp_is_the_split_too_as_in_the_terminal(self):
+        p = self.plan(cards(2), "--mode", "mtp")
+        _, split, _ = self.terminal(cards(2), gpus=[0, 1], drafting="mtp")
+        self.assertEqual((p["split"], p["choice"]), (True, "mtp"))
+        self.assertTrue(split)
+
+    def test_four_r9700_in_the_app_are_the_split_and_the_mtp_too(self):
+        p = self.plan(cards(4, vendor="amd", arch="gfx1201"), "--mode", "auto")
+        self.assertEqual((p["split"], p["choice"]), (True, "mtp"))
+        p2 = self.plan(cards(2, vendor="amd", arch="gfx1201"), "--mode", "auto")
+        self.assertEqual((p2["split"], p2["choice"]), (False, "dflash2"))
+
+    def test_a_conversation_memory_other_than_int8_is_not_the_split_in_the_plan_either(self):
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            set_arg(cfg, "--kv", "q4_0")
+            p = self.plan(cards(2), "--mode", "auto", config=cfg)
+        self.assertFalse(p["split"])
+        self.assertEqual(p["choice"], "dflash2")
+
+    def test_no_split_stays_for_a_person_and_for_the_failed_layer_fetch(self):
+        from tests.terminal.launch_support import run_cli
         p = self.plan(cards(2), "--mode", "auto", "--no-split")
         self.assertEqual((p["split"], p["choice"], p["mtp_needed"]), (False, "dflash2", False))
-        self.assertTrue(p["needed"], "the DFlash2 drafter is the app's fetch")
-        self.assertEqual(p["mtp_gb"], 0.0)
+        self.assertTrue(p["needed"], "DFlash2's drafter is what the plan fetches then")
+        for sub in ("plan", "fetch"):
+            code, out, _ = run_cli(["drafting", sub, "--help"])
+            self.assertIn("--no-split", out)
 
-    def test_the_terminal_plan_on_two_cards_is_unchanged_split_and_the_mtp(self):
-        p = self.plan(cards(2), "--mode", "auto")
-        self.assertEqual((p["split"], p["choice"], p["needed"]), (True, "mtp", False))
+    def test_the_hosts_calls_only_carry_no_split_when_it_is_told_to(self):
+        """The app (apps/host/server/control-runtime.mjs) adds --no-split only after the split's draft layer could not be downloaded."""
+        text = (Path(__file__).resolve().parents[2] / "apps/host/server/control-runtime.mjs").read_text(encoding="utf-8")
+        self.assertNotIn("'--no-split', '--output', 'json'", text)
+        self.assertNotIn("'--no-split', '--if-needed'", text)
+        self.assertEqual(text.count("...(noSplit ? ['--no-split'] : [])"), 2)
 
-    def test_four_r9700_in_the_app_are_dflash2_too(self):
-        p = self.plan(cards(4, vendor="amd", arch="gfx1201"), "--mode", "auto", "--no-split")
-        self.assertEqual((p["split"], p["choice"]), (False, "dflash2"))
 
-    def test_the_flag_is_on_fetch_too(self):
+class AppStartsTheSplit(Base):
+    """The app's engine start (apps/host: buildConfig, then `profile` + `runtime start`) never went through the Terminal's apply_split_engine; Control now answers it
+    (`strata split-engine apply`, strata_control/split_engine.apply_run_config) from the same rule, engine package and draft layer."""
+
+    @staticmethod
+    def model():
+        return SE.ModelFacts(routed_types={"Q4_K": 97, "Q5_K": 2, "Q5_1": 43, "Q8_0": 5}, routed_bytes=int(71.7 * (1 << 30)), embd_type="Q8_0", shexp_types={"Q8_0": 144},
+                             embd_ram_bytes=int(27.5 * (1 << 30)), layers=48, experts=512)
+
+    def apply(self, cfg, *, probe=None, avail=400.0, exe="/e/strata-split-2-sm120", system="linux"):
+        probe = probe or cards(2)
+        return SE.apply_run_config(cfg, exe_for_cards=lambda n, cc=None, arch=None: exe, system=system, probe=lambda idx: probe, ram=lambda: (500.0, avail),
+                                   scan=lambda path: self.model())
+
+    def test_the_apps_default_of_four_slots_is_the_splits_four_lanes(self):
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            d, line, warn = self.apply(cfg)
+            self.assertTrue(d.use_split, d.reasons)
+            self.assertEqual(flag_of(cfg, "--batch"), "4")
+            self.assertEqual(cfg["exe"], "/e/strata-split-2-sm120")
+            self.assertEqual(cfg["drafting"], "mtp")
+            self.assertIn("all-cards split engine on 2 cards", line)
+            self.assertFalse(warn)
+            # the app's own keys ride along, and the normal layer split is kept whole for the server's fallback
+            for key in ("host", "port", "api_key", "tokenizer", "model_name", "fit_max_tokens", "parallel"):
+                self.assertIn(key, cfg, key)
+            self.assertEqual(cfg["split_fallback"]["exe"], "/e/strata")
+            self.assertIn("--vram-reserve-mib", cfg["split_fallback"]["args"])
+            self.assertNotIn("--vram-reserve-mib", cfg["args"], "the layer split's own flags are not given to the split engine")
+
+    def test_a_number_the_person_chose_is_the_lanes_and_never_more_than_eight(self):
+        for chosen, want in ((1, "1"), (3, "3"), (8, "8"), (12, "8")):
+            with self.subTest(chosen), tempdir() as tmp:
+                cfg = app_cfg(tmp, parallel=chosen)
+                d, _, _ = self.apply(cfg)
+                self.assertTrue(d.use_split)
+                self.assertEqual(flag_of(cfg, "--batch"), want)
+
+    def test_no_number_at_all_gives_the_splits_own_default_lanes(self):
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            del cfg["parallel"]
+            self.apply(cfg)
+            self.assertEqual(flag_of(cfg, "--batch"), "6")
+
+    def test_vision_is_passed_when_the_app_reads_pictures(self):
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp, vision={"exe": "/e/strata-vision", "mmproj": "/m/mm.gguf"})
+            self.apply(cfg)
+            self.assertIn("--vision", cfg["args"])
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            self.apply(cfg)
+            self.assertNotIn("--vision", cfg["args"])
+
+    def test_every_no_leaves_the_apps_run_config_alone_and_auto_says_nothing(self):
+        cases = {"a person's DFlash2": ({"drafting": "dflash2"}, {}), "drafting off": ({"drafting": "off"}, {}), "the switch off": ({"split_engine": "off"}, {}),
+                 "engine arguments of their own": ({"user_args": ["--x", "1"]}, {}), "one card": ({"gpu": 0}, {"probe": cards(1)}),
+                 "two other cards": ({}, {"probe": cards(2, cc=89)}), "too little RAM": ({}, {"avail": 10.0}), "no split engine in the package": ({}, {"exe": None}),
+                 "Windows": ({}, {"system": "windows"})}
+        for name, (more, kw) in cases.items():
+            with self.subTest(name), tempdir() as tmp:
+                cfg = app_cfg(tmp, **more)
+                before = copy.deepcopy(cfg)
+                d, line, _ = self.apply(cfg, **kw)
+                self.assertFalse(d.use_split, name)
+                self.assertEqual(cfg, before, name)
+                self.assertEqual(line, "", f"{name}: Auto says nothing")
+        with tempdir() as tmp:                                # a conversation memory other than int8 is refused by the rule itself
+            cfg = app_cfg(tmp)
+            set_arg(cfg, "--kv", "q4_0")
+            before = copy.deepcopy(cfg)
+            d, line, _ = self.apply(cfg)
+            self.assertFalse(d.use_split)
+            self.assertEqual((cfg, line), (before, ""))
+
+    def test_a_missing_draft_layer_is_a_quiet_layer_split_and_on_says_how_to_get_it(self):
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            set_arg(cfg, "--mtp", str(Path(tmp) / "nowhere" / "rt"))
+            d, line, _ = self.apply(cfg)
+            self.assertFalse(d.use_split)
+            self.assertEqual(line, "")
+            self.assertNotIn("split_fallback", cfg)
+            cfg2 = app_cfg(tmp, split_engine="on")
+            set_arg(cfg2, "--mtp", str(Path(tmp) / "nowhere" / "rt"))
+            d2, line2, warn2 = self.apply(cfg2)
+            self.assertFalse(d2.use_split)
+            self.assertIn("draft layer", line2)
+            self.assertTrue(warn2)
+
+    def test_the_command_writes_the_split_config_only_on_a_yes_and_never_touches_the_input(self):
         from tests.terminal.launch_support import run_cli
-        code, out, _ = run_cli(["drafting", "fetch", "--help"])
-        self.assertIn("--no-split", out)
+        with tempdir() as tmp:
+            src = Path(tmp) / "layer.json"
+            out = Path(tmp) / "split.json"
+            cfg = app_cfg(tmp)
+            src.write_text(json.dumps(cfg), encoding="utf-8")
+            before = src.read_text(encoding="utf-8")
+            with mock.patch.object(SE, "probe_cards", lambda idx=None: cards(2)), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)), \
+                    mock.patch.object(SE, "scan_model", lambda path: self.model()), \
+                    mock.patch.object(SE, "exe_finder", lambda c: (lambda n, cc=None, arch=None: "/e/strata-split-2-sm120")), \
+                    mock.patch("sys.platform", "linux"):
+                code, text, err = run_cli(["split-engine", "apply", "--config", str(src), "--out", str(out), "--output", "json"])
+                self.assertEqual(code, 0, err)
+                got = json.loads(text)
+                self.assertTrue(got["ok"] and got["split"], got)
+                self.assertEqual(got["cards"], 2)
+                written = json.loads(out.read_text(encoding="utf-8"))
+                self.assertEqual(flag_of(written, "--batch"), "4")
+                self.assertEqual(src.read_text(encoding="utf-8"), before)
+                out.unlink()
+                src.write_text(json.dumps({**cfg, "drafting": "dflash2"}), encoding="utf-8")
+                code, text, err = run_cli(["split-engine", "apply", "--config", str(src), "--out", str(out), "--output", "json"])
+                got = json.loads(text)
+                self.assertEqual((code, got["split"], got["written"]), (0, False, None))
+                self.assertFalse(out.exists())
+                src.write_text("not json", encoding="utf-8")
+                code, text, _ = run_cli(["split-engine", "apply", "--config", str(src), "--out", str(out), "--output", "json"])
+                self.assertNotEqual(code, 0)
+                self.assertFalse(json.loads(text)["ok"])
+
+    def test_the_fallback_layer_split_keeps_the_apps_slots_and_its_own_drafting_choice(self):
+        """If the split engine will not come up, the server starts the layer split from split_fallback (serve/server.py start_engine_or_fallback) with the app's parallel."""
+        from serve.server import SPLIT_KEYS
+        with tempdir() as tmp:
+            cfg = app_cfg(tmp)
+            self.apply(cfg)
+            cfg2 = {k: v for k, v in cfg.items() if k not in SPLIT_KEYS + ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting")}
+            cfg2.update(cfg["split_fallback"])
+            self.assertEqual(cfg2["parallel"], 4)
+            self.assertEqual(cfg2["exe"], "/e/strata")
+            self.assertNotIn("drafting", cfg2)
 
 
 class LaneClamp(Base):

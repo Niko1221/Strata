@@ -15,5 +15,8 @@
  "df14": "The DFlash2 drafter could not be downloaded, so the model starts without a drafter. Loading the model…",
  "df15": "Downloading the MTP drafter…",
  "df16": "The MTP drafter could not be downloaded.",
- "df17": "Drafting: MTP (DFlash2 didn't start)"
+ "df17": "Drafting: MTP (DFlash2 didn't start)",
+ "df18": "Auto uses the all-cards split engine with the MTP draft layer: about {0} GB to download, once.",
+ "df19": "The all-cards split engine could not start, so the normal layer split runs.",
+ "df20": "Drafting: off (the cards were short of memory)"
 }

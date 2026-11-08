@@ -9,7 +9,9 @@
 # installer's own integrity promise ("what we staged is what runs") is broken. This script unpacks the AppImage, copies the staged
 # folders (control, harness, node, engine-bundle) over the AppDir byte for byte, and packs it again with the same runtime.
 #
-# --check does not write anything: it lists every engine-bundle file whose bytes differ from the manifest in the AppImage.
+# --check does not write anything: it lists every file of control, harness, node and engine-bundle whose bytes differ from what was staged, then
+# looks at every static PIE in the AppImage (appimage_elf.py: the bundled ripgrep is one; linuxdeploy's RPATH rewrite leaves such a program with a
+# filled .dynamic and it crashes at start, #4337) and runs the bundled `rg` once. A single "0 file(s) differ" and "ok" is what a release needs.
 set -euo pipefail
 
 IN="$(realpath "${1:?in.AppImage}")"; OUT="${2:-}"
@@ -33,13 +35,36 @@ LIB="$(find "$WORK/AppDir/usr/lib" -maxdepth 2 -type d -name engine-bundle -prin
 [ -n "$LIB" ] || LIB="$(find "$WORK/AppDir/usr/lib" -maxdepth 2 -type d -name control -printf '%h\n' | head -1)"
 [ -n "$LIB" ] || { echo "no Strata resource folder in the AppImage" >&2; exit 1; }
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Every static PIE under the AppDir must still have a sound .dynamic, and the bundled ripgrep must start (x86-64 Linux only: it is run).
+elf_and_rg_check() {
+  local bad=0
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$HERE/appimage_elf.py" scan "$LIB" || bad=1
+  else
+    echo "python3 is not here: the static PIE check was skipped" >&2
+  fi
+  local rg
+  rg="$(find "$LIB/harness" -path '*ripgrep-linux-x64/bin/rg' -type f 2>/dev/null | head -1)"
+  if [ -n "$rg" ] && [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ]; then
+    local t; t="$(mktemp -d -t strata-rg.XXXXXX)"
+    echo 'needle in a haystack' > "$t/h.txt"
+    if "$rg" --version >/dev/null 2>&1 && [ "$("$rg" --no-config -c needle "$t/h.txt" 2>/dev/null)" = 1 ]; then echo "bundled rg runs: ok"
+    else echo "the bundled rg does not run: $rg" >&2; bad=1; fi
+    rm -rf "$t"
+  fi
+  return $bad
+}
+
 if [ "$CHECK" = 1 ]; then
   bad=0
   while IFS= read -r f; do
     rel="${f#$RES/}"
     if ! cmp -s "$f" "$LIB/$rel"; then echo "differs: $rel"; bad=$((bad + 1)); fi
-  done < <(find "$RES/engine-bundle" "$RES/node" -type f ! -name .gitignore)
+  done < <(for d in control harness node engine-bundle; do [ -d "$RES/$d" ] && find "$RES/$d" -type f ! -name .gitignore; done)
   echo "$bad file(s) differ from what was staged"
+  elf_and_rg_check || bad=$((bad + 1))
   [ "$bad" = 0 ]
   exit
 fi
@@ -49,6 +74,8 @@ for d in control harness node engine-bundle; do
   [ -d "$RES/$d" ] || continue
   rsync -aL --checksum --delete --exclude .gitignore "$RES/$d/" "$LIB/$d/"
 done
+# What was put back must be sound before it is packed: a damaged static PIE (the bundled ripgrep) stops the pack here, not on a person's computer.
+elf_and_rg_check || { echo "the restored AppDir failed the static PIE / ripgrep check; not packing" >&2; exit 1; }
 # The launcher records the environment the AppImage was started from, before its own hooks add the AppImage's libraries and GTK/GIO
 # settings (LD_LIBRARY_PATH, GTK_*, XDG_DATA_DIRS ...). The host gives it back to every program that is not Strata's own (zenity,
 # kdialog, xdg-open, the assistant's shell): apps/host/server/external-env.mjs. Without it a system program loads the AppImage's libssl

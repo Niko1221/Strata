@@ -416,15 +416,72 @@ def engine_order(roles: dict[int, str], speeds: dict[int, float] | None = None) 
     return helpers + sorted(i for i, r in roles.items() if r == "main")
 
 
-def describe(roles: dict[int, str], cards: list[dict]) -> str:
-    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` (the line launch and setup print)"""
+def describe(roles: dict[int, str], cards: list[dict], *, card_numbers: bool = False) -> str:
+    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` (the line setup prints; the screens count from 1: GPU 1 is card 0).
+    `card_numbers`: each card also names the number `--gpu` takes, as `strata launch --plan` prints them: `GPU 2 (--gpu 1) RTX 4070 Ti`."""
     cs = {_idx(c): c for c in cards}
     parts = []
     for role, word in (("main", "Main"), ("helper", "Helper"), ("off", "Off")):
-        names = [f"GPU {i + 1} {short_name(cs[i])}" if i in cs else f"GPU {i + 1}" for i in sorted(roles) if roles[i] == role]
+        label = (lambda i: f"GPU {i + 1} (--gpu {i})") if card_numbers else (lambda i: f"GPU {i + 1}")
+        names = [f"{label(i)} {short_name(cs[i])}" if i in cs else label(i) for i in sorted(roles) if roles[i] == role]
         if names:
             parts.append(f"{word}: {', '.join(names)}.")
     return " ".join(parts)
+
+
+# ---- the cards the environment leaves visible ------------------------------------------------------------------------------------------------
+
+def _ordinals(value: str | None, indexes: list[int]) -> list[int] | None:
+    """The card numbers a visibility list (``1,0``) names, in its order, over `indexes` (the cards in ordinal order). An entry that is not a card ends the list, as
+    the CUDA and HIP runtimes read it. None: not set, or it names cards by something other than a number (a UUID), which this cannot map."""
+    if value is None:
+        return None
+    if not value.strip():
+        return []
+    out: list[int] = []
+    for tok in value.split(","):
+        tok = tok.strip()
+        if not tok.lstrip("-").isdigit():
+            return None
+        n = int(tok)
+        if n < 0 or n >= len(indexes):
+            break
+        out.append(indexes[n])
+    return out
+
+
+def env_visible(indexes: list[int], vendor: str | None, environ: dict | None = None, *, alike: bool = False) -> list[int] | None:
+    """The card numbers (the numbers `--gpu` takes) that CUDA_VISIBLE_DEVICES leaves visible (NVIDIA), or ROCR_VISIBLE_DEVICES and then HIP_VISIBLE_DEVICES (AMD); None when
+    nothing restricts them or the list cannot be read (a UUID, or CUDA's own card order when the cards differ and CUDA_DEVICE_ORDER is not PCI_BUS_ID).
+    `alike`: the cards are all one model, so their order does not matter."""
+    import os
+    env = os.environ if environ is None else environ
+    cards = sorted(indexes)
+    if vendor == "amd":
+        seen: list[int] | None = None
+        for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+            raw = env.get(name)
+            if raw is None:
+                continue
+            got = _ordinals(raw, seen if seen is not None else cards)
+            if got is None:
+                return None
+            seen = got
+        return seen
+    if vendor != "nvidia":
+        return None
+    raw = env.get("CUDA_VISIBLE_DEVICES")
+    if raw is not None and raw.strip() and len(cards) > 1 and not alike and str(env.get("CUDA_DEVICE_ORDER") or "").strip().upper() != "PCI_BUS_ID":
+        return None                                          # numbers in CUDA's own card order (fastest first) cannot be told from nvidia-smi's here
+    return _ordinals(raw, cards)
+
+
+def visible_cards(cards: list[dict], vendor: str | None, environ: dict | None = None, keep: set[int] | frozenset[int] = frozenset()) -> list[dict]:
+    """`cards` without the ones the environment hides (env_visible); a card in `keep` (named with --gpu, which the server sets the visibility from) stays."""
+    vis = env_visible([_idx(c) for c in cards], vendor, environ, alike=len({(str(c.get("name")), rnd_(_mem(c))) for c in cards}) <= 1)
+    if vis is None:
+        return list(cards)
+    return [c for c in cards if _idx(c) in vis or _idx(c) in keep]
 
 
 # ---- speed of each card (the same measure the engine orders a split by: multiprocessors x max clock) ------------------------------------

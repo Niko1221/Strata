@@ -128,11 +128,59 @@ def _server_intel():
     return mod
 
 
+def _base_engine_args(cfg, exe=None, *, announce=True):
+    """The base server's signature (serve/server.py engine_args); test_wrapper_keeps_the_base_signature checks that it is still that."""
+    return list(cfg["args"])
+
+
+def test_wrapper_keeps_the_base_signature_and_forwards_exe_and_announce(monkeypatch, capsys):
+    """#5086: every SYCL start died with TypeError (unexpected keyword 'announce'): the wrapper took only cfg."""
+    import inspect
+    mod = _server_intel()
+    S = mod.S
+    shape = lambda f: [(p.name, p.kind, p.default) for p in inspect.signature(f).parameters.values()]   # noqa: E731
+    base = shape(S.engine_args)
+    seen = []
+
+    def spy(cfg, exe=None, *, announce=True):
+        seen.append((exe, announce))
+        return list(cfg["args"])
+    monkeypatch.setattr(S, "engine_args", spy)
+    monkeypatch.setattr(intel_spec, "sysfs_cards", lambda *a, **k: [dict(B65, index=0), dict(B65, index=1)])
+    mod.install_two_card_spec()
+    assert shape(S.engine_args) == base
+    cfg = {"backend": "sycl", "gpu": [0, 1], "args": list(ARGS)}
+    assert spec_of(S.engine_args(cfg, "/x/strata-engine")) == "2"
+    capsys.readouterr()
+    quiet = S.engine_args(cfg, "/x/strata-engine", announce=False)           # the budget check
+    assert spec_of(quiet) == "2" and capsys.readouterr().out == "", "a quiet build prints no line"
+    assert spec_of(S.engine_args(cfg, exe="/y/e")) == "2"
+    assert seen == [("/x/strata-engine", True), ("/x/strata-engine", False), ("/y/e", True)]
+
+
+def test_the_real_base_function_runs_under_the_wrapper_without_a_model(monkeypatch, capsys):
+    """The ordinary start and the quiet check, through serve/server.py's own engine_args (no model, no engine process)."""
+    from unittest import mock
+    mod = _server_intel()
+    S = mod.S
+    monkeypatch.setattr(S, "engine_args", S.engine_args)                       # restored after the test
+    monkeypatch.setattr(intel_spec, "sysfs_cards", lambda *a, **k: [dict(B65, index=0), dict(B65, index=1)])
+    mod.install_two_card_spec()
+    cfg = {"model_name": "qwen3.8-flash-next-iq3_s", "backend": "sycl", "gpu": [0, 1], "args": list(ARGS), "drafting": "mtp"}
+    with mock.patch.object(S.drafting, "detect_hardware", return_value=("sycl", [])), mock.patch.object(S, "drafting_vram_mib", return_value=None),             mock.patch.object(S.drafting, "mtp_ready", return_value=True):
+        started = S.engine_args(cfg, "/x/strata-engine")
+        out = capsys.readouterr().out
+        quiet = S.engine_args(cfg, "/x/strata-engine", announce=False)
+        quiet_out = capsys.readouterr().out
+    assert spec_of(started) == "2" and spec_of(quiet) == "2"
+    assert "[strata]" in out and quiet_out == ""
+
+
 def test_server_wrapper_applies_the_rule_at_start(monkeypatch):
     mod = _server_intel()
     S = mod.S
     seen = []
-    monkeypatch.setattr(S, "engine_args", lambda cfg: list(cfg["args"]))
+    monkeypatch.setattr(S, "engine_args", _base_engine_args)
     monkeypatch.setattr(intel_spec, "sysfs_cards", lambda *a, **k: [dict(B65, index=0), dict(B65, index=1)])
     mod.install_two_card_spec()
     cfg = {"backend": "sycl", "gpu": [0, 1], "args": list(ARGS)}
@@ -148,7 +196,7 @@ def test_server_wrapper_applies_the_rule_at_start(monkeypatch):
 def test_server_wrapper_one_a_series_card_stays(monkeypatch):
     mod = _server_intel()
     S = mod.S
-    monkeypatch.setattr(S, "engine_args", lambda cfg: list(cfg["args"]))
+    monkeypatch.setattr(S, "engine_args", _base_engine_args)
     monkeypatch.setattr(intel_spec, "sysfs_cards", lambda *a, **k: [dict(B65, index=0), dict(A750, index=1)])
     mod.install_two_card_spec()
     cfg = {"backend": "sycl", "gpu": [0, 1], "args": list(ARGS)}

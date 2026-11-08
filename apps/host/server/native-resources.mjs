@@ -125,6 +125,8 @@ export const engineVersionOfExe=exe=>{const m=/engine[\\/](\d+(?:\.\d+)+)-/.exec
    technical line for Details. The caller tries once and never again, and does not save this config. */
 export function saferStart(config,hardware,model,failure){
  const text=String(failure??'');
+ // The engine refused an oversized prompt chunk at the start (an APU whose pool the expert cache fills; the person or the environment named the chunk): the same chunk would fail again, and a memory setting is not the cause.
+ if(/prompt chunk does not fit/i.test(text))return null;
  // A start that died for a reason that is not memory (a missing or bad DLL, a crash, a blocked file) is not helped by a memory setting, and must not be called a memory failure.
  if(/0xC0000135|0xC000007B|0xC0000142|0xC000001D|0xC0000005|0xC0000409|0xC0000022|error while loading shared libraries|cannot open shared object file|\bENOENT\b|exit code 127|exit code 139|illegal instruction/i.test(text))return null;
  const ranOut=/out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate|not enough memory|bad_alloc|insufficient memory/i.test(text),first=ranOut?'The first start ran out of memory':'The first start did not finish';

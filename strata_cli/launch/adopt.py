@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 SHARD = re.compile(r"^(?P<stem>.+)-(?P<i>\d{5})-of-(?P<n>\d{5})\.gguf$")
-FAMILIES = ("qwen", "swift", "coder", "gyro")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11)
+FAMILIES = ("qwen", "swift", "coder", "gyro", "unsloth")      # the catalog offers Gyro-S / Gyro-M on an Arc card too (round 8, N11); Unsloth's sets since round 0214 (ENG-AMD: UD-IQ1_M ran on an Arc A750)
 UNSUPPORTED = ("no nvidia gpu found", "no amd gpu", "nvidia gpu", "not supported", "cannot be used")
 
 
@@ -83,8 +83,8 @@ def plan(*, family: str, model: str, model_dir: Path, data_dir: Path, src: Path,
         return None, problems
     mtp = Path(data_dir) / "mtp" / "rt"
     args = ["--pack", str(pack), "--native", str(shards[0])]
-    if len(shards) > 1 or family == "gyro":            # Gyro's one file holds the n-gram table too
-        args += ["--ple-gguf", str(shards[-1])]
+    if family != "unsloth" and (len(shards) > 1 or family == "gyro"):            # Gyro's one file holds the n-gram table too
+        args += ["--ple-gguf", str(shards[-1])]      # (Unsloth's 3-6 shards: the engine finds the n-gram table by its tensor name, as setup.py writes the config; it is shard 2, 3 or the last one by set)
     if backend == "metal":
         # a Mac: the Metal defaults metal/setup_mac.py writes for a model that streams from the SSD (one token per step, no draft layer, the GGUF mapped in place)
         args += ["--expert-profile", str(profile), "--expert-cache", "64", "--prefill", "auto", "--spec", "2", "--suffix-draft", "0",

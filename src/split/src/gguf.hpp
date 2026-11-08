@@ -66,6 +66,7 @@ public:
 #endif
     const std::map<std::string, Tensor>& tensors() const { return tensors_; }
     int shards() const { return (int) maps_.size(); }
+    bool iq_experts() const { return iq_experts_; }   // routed experts in the IQ types or Strata's 2-bit type (the ISTA IQ3_S set)
     int converted() const { return converted_; }   // tensors re-quantized at load (0 for every file the engine reads as it is)
     const std::string& shard_path(int s) const { return maps_[(size_t) s].path; }
     size_t shard_size(int s) const { return maps_[(size_t) s].size; }
@@ -85,6 +86,7 @@ private:
     std::set<std::string> keys_;
     std::deque<std::vector<uint8_t>> owned_;   // tensors converted at load (tensor_convert.hpp): their bytes live here, not in a file
     int converted_ = 0;
+    bool iq_experts_ = false;
     void load_shard(const std::string& path, bool meta);
     void convert_small_tensors();
 };

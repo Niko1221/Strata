@@ -119,6 +119,7 @@ void Gguf::convert_small_tensors() {
     bool mixed = false;
     for (const auto& kv : tensors_)
         mixed |= kv.second.type == T_IQ2_S || kv.second.type == T_IQ3_XXS || kv.second.type == T_IQ3_S || kv.second.type == T_Q2_0;
+    iq_experts_ = mixed;
     if (!mixed) return;
     for (auto& kv : tensors_) {
         Tensor& t = kv.second;

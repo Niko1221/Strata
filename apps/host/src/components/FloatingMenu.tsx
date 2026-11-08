@@ -1,6 +1,7 @@
 import { tr } from '../lib/i18n';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { measureScale, placeAnchored } from '../lib/overlay-place';
 export function FloatingMenu({ anchor, title, onClose, children, width = 232 }: {
     anchor: HTMLElement | null;
     title: string;
@@ -9,22 +10,28 @@ export function FloatingMenu({ anchor, title, onClose, children, width = 232 }: 
     width?: number;
 }) {
     const ref = useRef<HTMLDivElement>(null);
-    const [placed, setPlaced] = useState({ left: 12, top: 12 });
+    const [placed, setPlaced] = useState<{ left: number; top: number; maxWidth?: number; maxHeight?: number }>({ left: 12, top: 12 });
     useLayoutEffect(() => {
-        const rect = anchor?.getBoundingClientRect();
-        const height = ref.current?.getBoundingClientRect().height ?? 200;
-        const left = Math.max(12, Math.min(rect?.left ?? 12, window.innerWidth - Math.min(width, window.innerWidth - 24) - 12));
-        const below = (rect?.bottom ?? 12) + 8; // a little air between the button and its panel
-        const top = below + height + 12 <= window.innerHeight ? below : Math.max(12, (rect?.top ?? window.innerHeight) - height - 6);
-        setPlaced({ left, top });
+        // Placed in visual pixels and written in the page's own pixels (lib/overlay-place.ts): the page may be scaled by "Interface size" (#4653).
+        const place = () => {
+            const el = ref.current;
+            const scale = measureScale();
+            const rect = anchor?.getBoundingClientRect();
+            const natural = el ? Math.max(el.getBoundingClientRect().height, el.scrollHeight * scale) : 200 * scale;
+            const home = { left: 12, top: 12, right: 12, bottom: 12 };
+            const p = placeAnchored({ anchor: rect ?? home, size: { width: width * scale, height: natural }, viewport: { width: window.innerWidth, height: window.innerHeight }, scale });
+            setPlaced({ left: p.left, top: p.top, maxWidth: p.maxWidth, maxHeight: p.maxHeight });
+        };
+        place();
         ref.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)')?.focus();
         const outside = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node) && !anchor?.contains(e.target as Node))
             onClose(); };
         document.addEventListener('pointerdown', outside);
-        return () => { document.removeEventListener('pointerdown', outside); if (anchor?.isConnected)
+        window.addEventListener('resize', place);
+        return () => { document.removeEventListener('pointerdown', outside); window.removeEventListener('resize', place); if (anchor?.isConnected)
             anchor.focus({ preventScroll: true }); };
     }, [anchor, width]);
-    return createPortal(<div className="menu" role="menu" aria-label={tr(title)} ref={ref} style={{ ...placed, zIndex: anchor?.closest('[role="dialog"]') ? 'var(--layer-dialog-popover)' : 'var(--layer-popover)', width, maxWidth: 'calc(100dvw - 24px)', maxHeight: `calc(100dvh - ${placed.top + 12}px)`, overflowY: 'auto' }} onKeyDown={e => {
+    return createPortal(<div className="menu" role="menu" aria-label={tr(title)} ref={ref} style={{ ...placed, zIndex: anchor?.closest('[role="dialog"]') ? 'var(--layer-dialog-popover)' : 'var(--layer-popover)', width, maxWidth: placed.maxWidth ?? 'calc(100dvw - 24px)', maxHeight: placed.maxHeight ?? 'calc(100dvh - 24px)', overflowY: 'auto' }} onKeyDown={e => {
             const nodes = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]:not(:disabled)') ?? []);
             const at = nodes.indexOf(document.activeElement as HTMLElement);
             if (['Escape', 'Tab'].includes(e.key)) {

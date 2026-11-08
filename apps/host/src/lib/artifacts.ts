@@ -1,4 +1,8 @@
-export interface PreviewArtifact { id: string; kind: 'website' | 'markdown' | 'pdf' | 'image' | 'code' | 'table'; title: string; url?: string; content?: string; demo?: boolean; }
+export interface PreviewArtifact { id: string; kind: 'website' | 'markdown' | 'pdf' | 'image' | 'code' | 'table'; title: string; url?: string; content?: string; demo?: boolean;
+  /** The host's version of the file this was read from (modified time and size), for a preview with an address instead of text. */
+  version?: string;
+  /** When this copy was read or made (ms): a message's copy never replaces a later one (lib/preview-merge.ts). */
+  at?: number; }
 export const PREVIEW_EXAMPLES: PreviewArtifact[] = [
   { id:'sample-website', kind:'website', title:'Fieldnotes — website', url:'/examples/fieldnotes.html', demo:true },
   { id:'sample-markdown', kind:'markdown', title:'project-brief.md', url:'/examples/project-brief.md', demo:true },

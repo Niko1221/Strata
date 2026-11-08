@@ -35,7 +35,7 @@ Every other case keeps the layer split without a message. On AMD that includes 2
 (its i-quant tiles are a first, untuned version and the layer split is faster today).
 
 Both sides need all of this: Linux; the Qwen3.8-Flash-Next shapes (48 layers, 512 experts) in a file the engine reads (checked from the tensor
-types, not the name); **all routed experts fit in the cards' memory**; enough free RAM for what stays in RAM (the 27.5 GiB embedding table, about
+types, not the name); **all routed experts fit in the cards' memory** (the memory that is free when the launch is made, minus the engine's 700 MiB reserve: cards that other programs hold get the layer split with DFlash2 and no draft-layer fetch); enough free RAM for what stays in RAM (the 27.5 GiB embedding table, about
 3 GiB of buffers, the 4 GiB conversation cache and 8 GiB spare, about 43 GiB; measured 31 GB at start and 35 GB after long prompts); a context of
 131072 or less. The split uses the MTP drafter, so Strata fetches the MTP draft layer (about 5.2 GB) when it is not on the disk; if that layer is
 missing, the launch is a quiet layer split.
@@ -46,6 +46,16 @@ cases Auto leaves out (2 or 3 R9700 cards, the IQ3_S set on AMD, other AMD cards
 
 If the engine refuses or fails to start, the server says so in one line and starts the normal layer split (`serve/server.py`,
 `start_engine_or_fallback`). A crash after it was running restarts the same engine (the fallback is for starting only).
+
+## In the desktop app
+
+The app follows the same rule as the Terminal (Linux only, so the Windows and macOS apps never see it). On a computer where the rule says yes, Auto in the Models screen is the all-cards
+split engine with the MTP draft layer: the plan (`strata drafting plan`, no `--no-split`) says `split` and, when the draft layer is not on the disk, `mtp_needed` (about 5.2 GB); the Load
+fetches that layer once through the same installer step the MTP choice uses (it names the model's own files folder, so the model is not downloaded again), and the start asks Control
+(`strata split-engine apply`) to turn the run config the app built into the split engine's, with the app's request slots (default 4) as the lanes (1 to 8). A choice the person made keeps
+its meaning: DFlash2 or Off stay on the layer split, and the app asks the rule with the choice in hand, so Auto on the screen over a saved DFlash2 is Auto. If the draft layer cannot be
+downloaded, the Load says so in one line and goes on with the layer split and the plan DFlash2's again (`--no-split` is still there for that call and for a person to use). If the split engine will not come
+up, the server starts the layer split itself (as above) and the load says so in one line. The second try after a failed start is the layer split with one request at a time.
 
 ## No card writes into another card's memory (NVIDIA, and AMD when the check fails)
 
@@ -70,6 +80,10 @@ compare, a flag round trip) and, if all pass, pushes the decode sums and the att
 failure, or with `FNX_PEER=0`, it uses the host-memory exchange for the whole run and prints one plain line. Peer access is enabled in exactly one file (`src/split/src/hip/peer.h`), pinned by
 `tests/split/test_split_engine.py`. `FNX_PF_RCCL=1` (off by default, needs the peer push) sums the prompt chunks through RCCL, which is loaded with `dlopen` and never linked: without
 `librccl.so.1`, or if its self-test fails, the engine says so in one line and keeps the host exchange (`tools/rccl_policy_test.cpp`). Numbers and open items: `phaseA-tests/sfnx/RESULTS-HIP.md`.
+
+## DFlash2 instead of the MTP draft layer (engine flag; the launcher starts it only when you choose both)
+
+`strata-split-N --draft dflash2 --draft-model PACK --draft-vocab FILE` (or `FNX_DRAFT=dflash2`) drafts with the DFlash2 block drafter instead of the MTP draft layer: one drafter a lane on the first card (about 0.7 GB for the pack and the draft head, about 75 MiB a lane), the taps of layers 5, 15, 25, 35 and 45 made inside the window graphs, nothing exchanged between the cards. Answers are those of the MTP split and of the split with no drafter (greedy hashes equal, 1 and 8 users). It is measured faster on greedy code and JSON (+5 to +14%) and slower on sampled text and agent turns, and at 4 users, so Auto keeps the MTP draft layer and nothing starts it by itself. The launcher and the app start it only for a person who chose DFlash2 by name (`--drafting dflash2`) and the split engine on (`--split-engine on`): the run config then carries `--draft dflash2 --draft-model PACK` instead of `--mtp`, the MTP layer is not loaded or needed, and `--parallel N` sets the lanes as before. With the split engine on Auto, DFlash2 chosen by name keeps the normal layer split with DFlash2. Numbers: `phaseA-tests/round0212/RESULTS-SPLITDF2.md`. Testers' switches: `FNX_DF2_CONF` (0.35), `FNX_DF2_DEFER`, `FNX_DF2_REFRESH`, `FNX_DF2_CALL_MS`, `FNX_DF2_TRACE`, `FNX_SPECULATE=0` (one row a window, no drafts).
 
 ## Not proven
 

@@ -68,13 +68,13 @@ def model_shard_names(model: str) -> list[str]:
     n = MAC_MODELS[model].get("shards", 2)
     if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
-    if MAC_MODELS[model].get("family") == "unsloth":
-        return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
+    if MAC_MODELS[model].get("family") == "unsloth":      # (setup.py's model_file: the v3.1 UD-IQ4_XS is named UD-IQ4_XS on the Hub)
+        return [S.model_file(S.FAMILIES["unsloth"], model, i) for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
 
 
 def shard_sha(name: str):
-    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name)
+    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name) or getattr(S, "UNSLOTH_V31_SHARDS", {}).get(name)
 
 
 # ------------------------------------------------------------------------------------------------ the Mac
@@ -462,10 +462,12 @@ def main(argv=None) -> int:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
             continue
-        S.download(fam["hf"].format(q=model) + s.name, s)
+        S.download(S.model_hf(fam, model) + s.name, s)
     S.check_shards(files)
     for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
-        if shard_sha(s.name):
+        if family == "unsloth" and s.name in fam.get("sha256", {}):       # the family's pins, and UD-Q4_K_XL's second layout by the size on the disk
+            S.verify_sha256(s, *S.fam_pin(fam, s), own=bool(a.gguf_dir))
+        elif shard_sha(s.name):
             S.verify_sha256(s, *shard_sha(s.name))
     S.ok("model files present")
 

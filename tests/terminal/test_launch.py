@@ -149,7 +149,8 @@ class CatalogRules(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
             rows = {r.model: r for r in cat.rows()}
-            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M"})   # DeepSeek (0.2.7.1): the two ISTA-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
+            self.assertEqual(set(rows), {"Q2_0", "IQ3_XXS", "IQ3_S", "Gyro-S", "Gyro-M", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M",
+                                "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"})   # DeepSeek (0.2.7.1): the two ISTA; Unsloth's sets (round 0214: the Mac app repacks them; UD-IQ1_M is also DeepSeek's name)-DAS sets run on a Mac, UD-IQ1_S since f-039; the Coder and UD-IQ1_M are offered with a "not run yet" line
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")
@@ -606,7 +607,7 @@ class AdoptRules(unittest.TestCase):
             self.assertIsNone(cfg)
             self.assertTrue(any("prepared pack" in p for p in problems))
             self.assertTrue(any("tokenizer" in p for p in problems))
-            cfg, problems = adopt.plan(family="unsloth", model="UD-Q4_K_XL", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
+            cfg, problems = adopt.plan(family="nvfp4", model="NVFP4", model_dir=m, data_dir=d, src=Path("."), context=8192, kv=None, model_name="x",
                                        family_def={}, log=h.base / "x.log", backend=None)
             self.assertIn("only for the Qwen3.8-Flash-Next", problems[0])
             self.assertNotIn("..", problems[0] + ".")                           # round 8, N11: the caller adds the full stop
@@ -965,7 +966,7 @@ class FlagsCommand(unittest.TestCase):
         # scripts that name LAN without a key flag keep getting a key, as before
         p = self.plan("--model", "q2_0", "--access", "lan", "--yes")
         self.assertEqual(p["settings"]["api_key"], "set")
-        self.assertTrue(any("new API key was made" in w for w in p["warnings"]))
+        self.assertFalse(any("new API key was made" in w for w in p["warnings"]))      # the plan writes nothing: the launch says it when the key is on disk (QATUI, 11-04)
         # a key given as well wins over --no-api-key, with a note
         p = self.plan("--model", "q2_0", "--access", "lan", "--api-key", "sk-a", "--no-api-key")
         self.assertEqual(p["settings"]["api_key"], "set")
@@ -1395,13 +1396,13 @@ class GpuRolesFlag(unittest.TestCase):
         self.assertIsNone(s["gpus"])
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main,0=helper"])
         self.assertEqual(code, 0, err or out)
-        self.assertIn("cards     Main: GPU 2 RTX A4000. Helper: GPU 1 RTX A4000.", out)
+        self.assertIn("cards     Main: GPU 2 (--gpu 1) RTX A4000. Helper: GPU 1 (--gpu 0) RTX A4000.", out)      # counted from 1 like the screens, and the number --gpu takes
         self.assertIn("--gpu-roles 0=helper,1=main", out)                 # the copyable line says the same
 
     def test_one_card_named_leaves_the_other_off(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "iq3_xxs", "--gpu-roles", "1=main"])
         self.assertEqual(code, 0, err or out)
-        self.assertIn("Main: GPU 2 RTX A4000. Off: GPU 1 RTX A4000.", out)
+        self.assertIn("Main: GPU 2 (--gpu 1) RTX A4000. Off: GPU 1 (--gpu 0) RTX A4000.", out)
 
     def test_bad_roles_are_plain_sentences(self):
         for argv, word in ((["--gpu-roles", "1=boss"], "main, helper, off"), (["--gpu-roles", "0=main,1=main"], "only one card can be Main"),

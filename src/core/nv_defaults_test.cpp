@@ -1,5 +1,6 @@
 // src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) table, its
 // two off switches, and that no other card's table changed.
+#include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
 
 #include <cstdio>
@@ -66,6 +67,32 @@ int main() {
         CHECK(!p.empty() && p == q);
         CHECK(!find(a, "STRATA_PF_FUSED") && !find(p, "STRATA_PF_FUSED"));
     }
+    // round 0212: STRATA_MMQ_KQ=1 is a default for compute capability 8.0+ (owner yes 11-03), with its own off switches
+    unset("STRATA_NV_KQ_DEFAULT");
+    CHECK(kNvKqDefaultOn);
+    for (int major : {8, 9, 10, 12}) CHECK(nv_kq_default_env(major, 0, false).size() == 1);   // on without any switch
+    put("STRATA_NV_KQ_DEFAULT", "1");
+    for (int major : {8, 9, 10, 12}) {
+        const auto k = nv_kq_default_env(major, 0, false);
+        CHECK(k.size() == 1 && find(k, "STRATA_MMQ_KQ") && *find(k, "STRATA_MMQ_KQ") == "1");
+    }
+    CHECK(nv_kq_default_env(7, 5, false).empty());     // Turing / Volta / Pascal keep the FP16 prompt path
+    CHECK(nv_kq_default_env(6, 0, false).empty());
+    CHECK(nv_kq_default_env(12, 0, true).empty());     // STRATA_DEFAULTS=026
+    put("STRATA_NV_KQ_DEFAULT", "0");
+    CHECK(nv_kq_default_env(12, 0, false).empty());    // its own off switch
+    unset("STRATA_NV_KQ_DEFAULT");
+    // the other tables are unchanged by it
+    CHECK(nv_default_env(12, 0, false).empty());
+    // round 0212: the NVIDIA prompt-chunk ceiling of a bare `--prefill auto` (nv_chunk.hpp)
+    CHECK(nv_chunk_ceiling(nullptr, false) == 32768);
+    CHECK(nv_chunk_ceiling("1", false) == 32768);
+    CHECK(nv_chunk_ceiling("16", false) == 16384);
+    CHECK(nv_chunk_ceiling("0", false) == 0);          // STRATA_NV_CHUNK=0 keeps 8192
+    CHECK(nv_chunk_ceiling(nullptr, true) == 0);       // STRATA_DEFAULTS=026 keeps 8192
+    CHECK(nv_chunk_ceiling("16", true) == 0);
+    CHECK(!nv_chunk_card_ok(7) && !nv_chunk_card_ok(6) && nv_chunk_card_ok(8) && nv_chunk_card_ok(12));   // Volta / Turing / Pascal keep 8192
+    CHECK(nv_chunk_step_down(32768) == 16384 && nv_chunk_step_down(16384) == 8192 && nv_chunk_step_down(8192) == 8192);
     // the one-argument form reads STRATA_DEFAULTS
     put("STRATA_DEFAULTS", "026");
     CHECK(nv_default_env(12, 1).empty());

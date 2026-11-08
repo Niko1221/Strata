@@ -241,6 +241,26 @@ std::vector<std::vector<uint8_t>> synthetic_of_type(ggml_type type, int experts,
     return w;
 }
 
+// A synthetic matrix of any ggml type through ggml_quantize_chunk (the i-quants need an importance matrix; ones here).
+std::vector<std::vector<uint8_t>> synthetic_chunk(ggml_type type, int experts, int64_t out_rows, int64_t cols, int trial) {
+    std::vector<std::vector<uint8_t>> w;
+    const std::vector<float> imatrix((size_t) cols, 1.0f);
+    for (int e = 0; e < experts; ++e) {
+        std::vector<float> f((size_t) out_rows * (size_t) cols);
+        for (int64_t r = 0; r < out_rows; ++r)
+            for (int64_t k = 0; k < cols; ++k) {
+                const int code = (int) ((k * 29 + r * 17 + e * 31 + trial * 13) % 97) - 48;
+                f[(size_t) (r * cols + k)] = 0.02f * std::sin(0.011f * (float) (k + 2) + 0.29f * (float) r + 0.37f * (float) e) +
+                                             0.0009f * (float) code;
+            }
+        std::vector<uint8_t> blocks((size_t) out_rows * row_bytes(type, cols));
+        ggml_quantize_chunk(type, f.data(), blocks.data(), 0, out_rows, cols,
+                            ggml_quantize_requires_imatrix(type) ? imatrix.data() : nullptr);
+        w.push_back(std::move(blocks));
+    }
+    return w;
+}
+
 bool run_real_iq3_first_expert(Context & ctx, hipStream_t stream, const std::string & pack) {
     std::ifstream meta(pack + "/native_experts.txt");
     if (!meta) throw std::runtime_error("cannot open native_experts.txt: " + pack);
@@ -323,11 +343,33 @@ int main(int argc, char ** argv) {
                             1280, 2560, synthetic_of_type(type, 1, 1280, 2560, 5), counts,
                             make_activations(rows, 2560, 77), src, dst);
             }
+            // Round 0214 (the new Unsloth Qwen3.8-Flash-Next quants): every gate/up type of the new sets at 1280 x 2560 and
+            // every down type at 2560 x 640 (FF 640 is not a multiple of 256: the 32-block types only).  Q5_0 is built
+            // only with STRATA_ORCA_Q4KS_MMQ (the opt-in); IQ1_M has no MMQ instance (its prompts take the gather route).
+            for (const auto & [name, type] : std::initializer_list<std::pair<const char *, ggml_type>>{
+                     {"IQ1_M", GGML_TYPE_IQ1_M}, {"IQ2_XXS", GGML_TYPE_IQ2_XXS}, {"IQ2_XS", GGML_TYPE_IQ2_XS},
+                     {"IQ2_S", GGML_TYPE_IQ2_S}, {"IQ3_XXS", GGML_TYPE_IQ3_XXS}, {"IQ4_XS", GGML_TYPE_IQ4_XS},
+                     {"Q2_0", GGML_TYPE_Q2_0}, {"Q5_0", GGML_TYPE_Q5_0}}) {
+                if (!supported((int) type)) { std::cout << "gate/up " << name << ": no MMQ instance in this build (skipped)\n"; continue; }
+                const std::vector<int> counts{2, 3};
+                const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
+                run_product(ctx, stream, std::string("new-set-GU-") + name, type, 1280, 2560, synthetic_chunk(type, 2, 1280, 2560, 7),
+                            counts, make_activations(5, 2560, 8), src, dst);
+            }
+            for (const auto & [name, type] : std::initializer_list<std::pair<const char *, ggml_type>>{
+                     {"Q2_0", GGML_TYPE_Q2_0}, {"IQ4_NL", GGML_TYPE_IQ4_NL}, {"Q5_0", GGML_TYPE_Q5_0}, {"Q8_0", GGML_TYPE_Q8_0}}) {
+                if (!supported((int) type)) { std::cout << "down " << name << ": no MMQ instance in this build (skipped)\n"; continue; }
+                const std::vector<int> counts{2, 3};
+                const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
+                run_product(ctx, stream, std::string("new-set-down-") + name, type, 2560, 640, synthetic_chunk(type, 2, 2560, 640, 9),
+                            counts, make_activations(5, 640, 10), src, dst);
+            }
             // APR trellis experts (ggml types 144-146), when the build has their MMQ instances (agention fork): gate/up
             // 1280 x 2560 and down 2560 x 640 (5 blocks per row: the last 256-slice reads past the row, against zero
             // activations)
             for (const ggml_type t : {(ggml_type) 145, (ggml_type) 146, (ggml_type) 144}) {
                 if (!supported((int) t)) { std::cout << "type " << (int) t << ": no MMQ instance in this build\n"; continue; }
+                if ((int) t >= (int) GGML_TYPE_COUNT) { std::cout << "type " << (int) t << ": this ggml has no host traits for the trellis types (skipped)\n"; continue; }
                 const std::vector<int> counts{2, 3};
                 const auto src = permutation(5, 1, false), dst = permutation(5, 2, true);
                 const char* known = ggml_type_name(t);   // null when this ggml has no name for the id (no trellis types in it): #3358

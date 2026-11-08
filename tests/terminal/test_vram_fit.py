@@ -399,5 +399,40 @@ class CudaSpill(unittest.TestCase):
         self.assertEqual(V.drafter_of(self.A), "none")
 
 
+
+class Reserve3750(unittest.TestCase):
+    """#3750: 256K context + Q4 KV on a small card.  The app's reserve for a card of 16 GB or less is 1536 MiB (apps/host native-resources.mjs), no longer a fifth of the
+    card (3256 on the reporter's RX 9070 XT).  The fit arithmetic prices the expert cache that is left, and it is positive at 12 GiB with the app's reserve on both
+    discrete backends; the old 3256 left the CUDA engine's measured base at its threshold (a start on the edge, which the reporter's 83 GB model fell over)."""
+
+    M = "Qwen3.8-Flash-Next-IQ3_S"
+
+    def slack(self, gb, reserve, vendor, kv_resident=0, ctx=262144):
+        return V.slack_mib(self.M, gb, ctx, "q4_0", reserve, "auto", vendor, 0, kv_resident, "mtp")
+
+    def test_a_12_gib_card_at_256k_q4_has_a_positive_cache_with_the_apps_reserve(self):
+        for vendor in ("cuda", "hip"):
+            s = self.slack(12.0, 1536, vendor)
+            self.assertGreater(s, V.needed_mib(self.M, 0, vendor, "mtp") + 1000, (vendor, s))
+            self.assertTrue(V.fits(self.M, 12.0, 262144, "q4_0", 1536, "auto", vendor, 0, 0, "mtp"), vendor)
+
+    def test_the_old_fifth_of_the_card_takes_the_room_the_reserve_cap_gives_back(self):
+        for gb, old in ((12.0, 2457), (15.9, 3256)):
+            for vendor in ("cuda", "hip"):
+                self.assertAlmostEqual(self.slack(gb, 1536, vendor) - self.slack(gb, old, vendor), old - 1536, delta=1)
+        # on a 12 GiB CUDA card the old reserve left the cache nothing beyond the working threshold
+        self.assertLess(self.slack(12.0, 3256, "cuda") - V.needed_mib(self.M, 0, "cuda", "mtp"), 100)
+
+    def test_a_fit_never_changes_the_context_and_a_fitting_start_is_returned_byte_identical(self):
+        args = ["--native", "m.gguf", "--max-context", "262144", "--kv", "q4_0", "--vram-reserve-mib", "1536", "--mtp", "mtp.gguf"]
+        for mib in (12288, 16282, 24576):
+            out = V.fit_start({"model_name": self.M}, list(args), mib, "cuda")
+            self.assertEqual(out[0], args, mib)
+            self.assertEqual(out[0][out[0].index("--max-context") + 1], "262144")
+        # a start that would be short keeps its context and its reserve and moves KV to RAM instead
+        out = V.fit_start({"model_name": self.M}, list(args), 6144, "cuda")
+        self.assertEqual(out[0][out[0].index("--max-context") + 1], "262144")
+        self.assertEqual(out[0][out[0].index("--vram-reserve-mib") + 1], "1536")
+
 if __name__ == "__main__":
     unittest.main()
