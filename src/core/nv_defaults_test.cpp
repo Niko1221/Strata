@@ -1,7 +1,6 @@
 // src/core/nv_defaults_test.cpp - the NVIDIA per-architecture default tables (no GPU needed): the sm_121 (GB10, DGX Spark) and
 // sm_110 (Jetson AGX Thor) tables, their off switches, and that no other card's table changed.
 #include "strata/core/nv_chunk.hpp"
->>>>>>> origin/main
 #include "strata/core/nv_defaults.hpp"
 
 #include <cstdio>
