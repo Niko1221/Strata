@@ -300,7 +300,8 @@ def _flash_next(setup, model) -> None:
         keys[q.name] = key
     fam = {"title": model.title, "by": model.by, "about": model.about, "hf": _ByQuant({q: base + folders[q] for q in files}),
            "file": _ByQuant(files), "shards": 2, "tag": model.id + "-", "name": model.id, "vision": bool(model.pictures),
-           "pack_args": list(template.get("pack_args", ["--compat-bf16"])), "sha256": dict(pins), "license": _licence(model), "feed": True}
+           "pack_args": list(template.get("pack_args", ["--compat-bf16"])), "sha256": dict(pins), "license": _licence(model), "feed": True,
+           "drafter": model.drafter}
     if model.mmproj is not None:
         fam.update(mmproj_hf=base + (model.mmproj.repo_path.rpartition("/")[0] + "/" if "/" in model.mmproj.repo_path else ""),
                    mmproj=model.mmproj.name, mmproj_sha256=(model.mmproj.size, model.mmproj.sha256))
@@ -313,6 +314,8 @@ def _flash_next(setup, model) -> None:
         entry = {"about": q.about or f"{q.name} quantization", "download_gb": gb, "ram_gb": q.ram_gb,
                  "arena_gb": q.arena_gb or round(gb * 0.93, 1), "families": (model.id,), "shards": len(q.files),
                  "file": files[q.name], "quant": q.name, "vision": bool(model.pictures)}
+        entry["budget"] = True                           # the Unsloth-set install: the GGUF read in place with a RAM budget of its experts (what the built-in UD sizes do). Without it
+                                                         # setup picks the low-RAM mode on a PC with little RAM, which copies all the experts into a second file (77 GB for UD-Q4_K_XL)
         if engine:
             entry["engine"] = engine
         setup.MODELS[keys[q.name]] = entry

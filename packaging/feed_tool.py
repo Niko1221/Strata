@@ -239,6 +239,8 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
         packages = []
         for p in sorted(Path(models_dir).glob("*.entry.json")):
             item = json.loads(p.read_text(encoding="utf-8"))
+            if "[FILL" in json.dumps(item):             # a placeholder from make_model_release.py that nobody filled in would reach people's screens
+                raise SystemExit(f"{p.name}: still has a [FILL: ...] value: fill it in first")
             try:
                 feedmod._model_entry(item)
             except feedmod.FeedError as exc:

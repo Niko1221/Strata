@@ -201,6 +201,33 @@ class FlashNextModel(Base):
             self.assertEqual(len(result.skipped), 1, clash)
         self.assertEqual(self.setup.FAMILIES["swift"], before)
 
+    def test_a_model_without_a_picture_reader_has_no_mmproj_and_install_does_not_look_one_up(self):
+        # found by the Q4-P8 rehearsal on a real install: setup's step 5 read fam['mmproj'] for a feed model that lists none (KeyError after the checks of the files)
+        entry = flash_next(id="no-reader")
+        entry.pop("mmproj", None)
+        entry["pictures"] = False
+        result = feed_models.apply(self.setup, parsed(entry), None)
+        self.assertEqual(result.registered, ["no-reader"])
+        fam = self.setup.FAMILIES["no-reader"]
+        self.assertNotIn("mmproj", fam)
+        self.assertIs(fam["vision"], False)
+        src = (Path(self.setup.__file__)).read_text(encoding="utf-8")
+        self.assertNotIn("find_in(roots, f\"models/{fam['mmproj']}\") or mmproj\n    if vision != \"none\":", src)
+
+    def test_the_family_carries_the_feeds_drafter_so_setup_can_leave_the_draft_layer_out(self):
+        # found by the Q4-P8 rehearsal: setup fetched the Flash-Next MTP draft layer (5 GB) for a feed model whose entry says drafter none
+        none = feed_models.apply(self.setup, parsed(flash_next(id="no-drafter", drafter="none")), None)
+        self.assertEqual(self.setup.FAMILIES["no-drafter"]["drafter"], "none")
+        src = Path(self.setup.__file__).read_text(encoding="utf-8")
+        self.assertIn('fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None', src)
+
+    def test_a_feed_flash_next_size_is_read_in_place_with_a_ram_budget_like_the_built_in_unsloth_sizes(self):
+        # found by the Q4-P8 rehearsal on Strix: without "budget" setup chose the low-RAM mode and began writing a 77 GB second copy of the experts
+        result = feed_models.apply(self.setup, parsed(flash_next(id="budgeted")), None)
+        for key in [k for k, v in self.setup.MODELS.items() if "budgeted" in v.get("families", ())]:
+            self.assertIs(self.setup.MODELS[key]["budget"], True)
+            self.assertFalse(self.setup.low_ram_wanted(key, 64.0, "auto"))
+
     def test_parts_that_are_not_numbered_are_left_out_with_a_line(self):
         odd = flash_next(id="odd-parts")
         odd["quants"][0]["files"][1] = file_entry("Q4-model.gguf", "Q4_K_M")
