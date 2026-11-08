@@ -9961,7 +9961,13 @@ def mac_control_setup(a) -> int:
 
     step(7, "writing the run settings")
     port = a.port or 8080
-    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, ROOT / "data" / "expert-profile.bin", model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
+    profile = ROOT / "data" / "expert-profile.bin"
+    neutral = getattr(__import__("strata_control.setup_config", fromlist=["x"]), "neutral_profile_if_other_shape", None)       # (f-0213-p8merge: F4, the owner's line)
+    if neutral is not None and fam.get("feed") and shards:       # a feed model of another shape than the shipped profile's: a neutral profile for the file's layers x experts
+        sys.path.insert(0, str(ROOT / "tools"))
+        from gguf_reader import GGUFFile
+        profile = neutral(profile, shards[0], pack, GGUFFile, say)
+    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, profile, model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}
