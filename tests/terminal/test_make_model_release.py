@@ -1,5 +1,5 @@
-"""packaging/make_model_release.py: the model-release plan is a dry run, case A leaves the engines alone, case B rebuilds them, and the
-steps that need the release key only print a placeholder.
+"""packaging/make_model_release.py: the model-release plan is a dry run, case A leaves the engines alone, case B ships the engine of the new shape as its own
+component (the Strata engine, the Controls and the app are not rebuilt), and the steps that need the release key only print a placeholder.
 
     python -m unittest tests.terminal.test_make_model_release
 """
@@ -92,7 +92,7 @@ class Plan(unittest.TestCase):
         self.assertTrue(any("App text" in s["what"] for s in p["steps"]))
 
     def test_the_plan_names_the_boxes_of_the_rehearsal(self):
-        code, out, err = run(self.base(self.a, "--case", "B", "--engine-version", "0.1.58"))
+        code, out, err = run(self.base(self.a, "--case", "B", "--engine-version", "0.1.58", "--shape", "q4_lite"))
         self.assertEqual(code, 0, err)
         for good in ("l620", "p1006", "owner PC", "m1002"):
             self.assertIn(good, out)
@@ -101,20 +101,47 @@ class Plan(unittest.TestCase):
         self.assertIn("STRATA_GEOMETRY_FILE", out)
         self.assertIn("--from-gguf", out)
 
-    def test_case_b_rebuilds_engines_and_controls_at_the_new_version(self):
-        code, out, err = run(self.base(self.a, "--json", "--case", "B", "--engine-version", "0.1.58"))
+    def test_case_b_ships_the_shape_engine_as_its_own_component_and_rebuilds_nothing_else(self):
+        code, out, err = run(self.base(self.a, "--json", "--case", "B", "--engine-version", "0.1.58", "--shape", "q4_lite"))
         self.assertEqual(code, 0, err)
         p = json.loads(out)
         names = {c["name"] for c in p["changed"]}
-        self.assertIn("strata-engine-0.1.58-linux-x86_64-sycl.tar.gz", names)
-        self.assertIn("strata-engine-0.1.58-windows-x86_64-cuda-cuda13.zip", names)
-        self.assertIn("strata-control-0.1.58-linux-x86_64.tar.gz", names)
+        self.assertIn("strata-q4-lite-0.1.58-linux-x86_64-sycl.tar.gz", names)
+        self.assertIn("strata-q4-lite-0.1.58-windows-x86_64-cuda-cuda13.zip", names)
+        self.assertFalse(any(n.startswith(("strata-engine-", "strata-control-", "strata-dsv41-")) for n in names), "the Strata engine and the Controls are not rebuilt")
         self.assertFalse(any("0.1.57" in n for n in names))
-        self.assertIn("strata-dsv41-0.1.57-linux-x86_64-cuda-cuda13.tar.gz", {k["name"] for k in p["kept"]})
-        self.assertTrue(any("Mac" in s["what"] and s["owner_only"] for s in p["steps"]))
-        self.assertTrue(p["upload_bytes"] > 1_800_000_000)
-        code, _, err = run(self.base(self.a, "--case", "B"))
-        self.assertNotEqual(code, 0)                                # case B needs an engine version
+        kept = {k["name"] for k in p["kept"]}
+        self.assertTrue({n for n in PREV if n.startswith(("strata-engine-", "strata-dsv41-", "strata-control-", "Strata-"))} <= kept)
+        self.assertFalse(any("Controls: pack" in s["what"] or "App text" in s["what"] for s in p["steps"]))
+        self.assertIn("strata-q4-lite-0.1.58-macos-arm64-metal.tar.gz", names)
+        self.assertTrue(any("Mac" in s["what"] and s["owner_only"] for s in p["steps"]), "the owner signs the Mac shape engine")
+        self.assertTrue(any("--shape q4_lite" in c for s in p["steps"] for c in s["commands"]))
+        self.assertTrue(any("--shapes <shape-entries>" in c for s in p["steps"] for c in s["commands"]))
+        self.assertEqual(p["entry"]["family"], "qwen35moe", "the family changes only for a qwen4exp model")
+        for missing in ({"--shape": None}, {"--engine-version": None}):
+            args = ["--case", "B", "--engine-version", "0.1.58", "--shape", "q4_lite"]
+            for k in missing:
+                i = args.index(k)
+                del args[i:i + 2]
+            code, _, err = run(self.base(self.a, *args))
+            self.assertNotEqual(code, 0, missing)                    # case B needs an engine version and a shape
+        code, _, err = run(self.base(self.a, "--case", "B", "--engine-version", "0.1.58", "--shape", "Not A Shape"))
+        self.assertNotEqual(code, 0)
+        code, _, err = run(self.base(self.a, "--shape", "q4_lite"))
+        self.assertNotEqual(code, 0)                                # --shape is for case B
+
+    def test_a_case_b_entry_names_the_family_of_its_shape(self):
+        from strata_control import feed as feedmod
+        rep = json.loads(self.a.read_text())
+        rep["sets"][0]["architecture"] = "qwen4exp"
+        b = Path(self.tmp.name) / "b.json"
+        b.write_text(json.dumps(rep))
+        out = Path(self.tmp.name) / "outb"
+        code, _, err = run(self.base(b, "--case", "B", "--engine-version", "0.1.59", "--shape", "q4_lite", "--write", str(out), "--revision", "a" * 40, "--hf-repo", "x/y"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads((out / "models" / "m1.entry.json").read_text())["family"], "qwen4exp_q4_lite")
+        self.assertEqual(json.loads((out / "models" / "m1.model.json").read_text())["family"], "qwen4exp_q4_lite")
+        self.assertEqual(feedmod.shape_engine.shape_of_family("qwen4exp_q4_lite"), "q4_lite")
 
     def test_case_c_is_refused(self):
         p = Path(self.tmp.name) / "c.json"
