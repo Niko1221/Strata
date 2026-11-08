@@ -485,10 +485,18 @@ class ModelScreen(Base):
                 if r.spill_gb:
                     out.append(f"About {r.spill_gb:.0f} GB would be read from the SSD while it answers. ", style=MUTE)
         out.append("The n-gram table stays on your SSD and is not counted above.", style=MUTE)
+        for title, why in self.unavailable_lines():
+            out.append(f"\n{title}: {why}", style=MUTE)
         note = self.ctx.computer.other_vendor_note
         if note:
             out.append(" " + note, style=WARN)
         return out
+
+    def unavailable_lines(self) -> list:
+        """Models of the signed feed this engine does not run (none for a feed without any): listed under the models, never in the list."""
+        if not hasattr(self, "_unavailable"):
+            self._unavailable = self.ctx.catalog.unavailable(self.ctx.computer.raw)
+        return self._unavailable
 
     def on_cursor(self) -> None:
         pass

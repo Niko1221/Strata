@@ -416,6 +416,14 @@ class Catalog:
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
 
+    def unavailable(self, hw: dict | None = None) -> list[tuple[str, str]]:
+        """(title, the plain reason) of each model of the signed feed that this engine does not run: nothing for a feed without such a model. The model list
+        shows them under the list (same sentence as setup and the app: strata_control/feed_models.py)."""
+        try:
+            return [(f["title"], f["unavailable_reason"]) for f in self.strata.model_table(hw or self.hardware()) if f.get("available") is False]
+        except Exception:                                  # noqa: BLE001 - a line for information
+            return []
+
     def own_files_verdict(self, hw: dict | None, model: str) -> tuple[str, str]:
         """DeepSeek-V4.1-Flash with the person's own files used where they are (--model-path): nothing is downloaded or copied, so the disk
         part of the menu row (which counts the whole download of a set that is not in Strata's folder) does not apply: the memory words alone."""

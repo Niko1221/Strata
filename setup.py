@@ -8342,6 +8342,54 @@ def engine_families(eng: Path) -> set:
     return names if "qwen4exp" in names else {"qwen4exp"}
 
 
+_FEED_FAMILIES: dict = {}
+FEED_MODELS = None            # the feed's models added to the tables below (id -> FeedModel); None until a feed with a models member was read
+FEED_UNAVAILABLE: dict = {}   # id -> {"title", "by", "family", "reason"}: feed models the installed engine does not run, listed and never offered
+
+
+def feed_engine_families() -> set | None:
+    """The model families the installed engine runs (`strata --families`), or None when there is no engine to ask. Asked once for each engine program."""
+    try:
+        from strata_control import engine_component as EC
+        eng = Path(EC.resolve(full=False).root)
+    except Exception:                                  # noqa: BLE001 - no engine installed (yet): setup checks again when it installs
+        return None
+    if not (eng / EXE).is_file():
+        return None
+    key = str(eng / EXE)
+    if key not in _FEED_FAMILIES:
+        _FEED_FAMILIES[key] = engine_families(eng)
+    return _FEED_FAMILIES[key]
+
+
+class _SetupTables:
+    """This module's tables for strata_control/feed_models.py, which takes `setup` as an argument (this file is also loaded under other names, so no sys.modules lookup)."""
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def __setattr__(self, name, value):
+        globals()[name] = value
+
+
+def feed_models_setup(feed: str | None = None, fetch: bool = True) -> None:
+    """Add the models of the signed update feed (member `models`; the last verified list when the feed cannot be read) to the tables the menus read. Does
+    nothing, and prints nothing, when the feed has no models. See strata_control/feed_models.py."""
+    from strata_control import feed_models
+    source = None
+    if fetch and not acquisition.is_forbidden():
+        try:
+            from strata_cli import update_cmd
+            source = update_cmd._feed_source(argparse.Namespace(feed=feed), home())
+        except Exception:                              # noqa: BLE001 - no feed address: the cached list only
+            source = None
+    loaded = feed_models.load(source, fetch=source is not None)
+    if loaded.models:
+        feed_models.apply(_SetupTables(), loaded.models, feed_engine_families())
+
+
 def own_path_context(fam: dict, vram_gb: float) -> int:
     """The recommended context for an own-path family: its KV cache (VRAM) beside the dense weights and the most-used
     experts - 32K up to 16 GB, 64K up to 24 GB, 128K above."""
@@ -8551,8 +8599,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn("this engine has no image encoder: images off (run setup again with --build to compile it)")
         vision = "none"
     if fam["arch"] not in engine_families(eng):
-        fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
-             "update Strata, or compile the engine with --build, and run setup again")
+        if fam.get("feed") and FEED_UNAVAILABLE.get(family, {}).get("allowed"):      # the owner's rule for a feed model (feed_models.UNAVAILABLE_POLICY): warn, go on
+            warn(f"{fam['title']} is {FEED_UNAVAILABLE[family]['reason']}")
+        else:
+            fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
+                 "update Strata, or compile the engine with --build, and run setup again")
     ok("engine: the engine component (looked up when the model loads)" if CONTROL else f"engine: {eng / EXE}")
 
     step(5, f"downloading {fam['title']} {model}")
@@ -9714,8 +9765,8 @@ def mac_control_setup(a) -> int:
         fail(problems[0])
 
     step(2, "your choices")
-    app_sizes = [m for f in MF.APP_FAMILIES for m in MF.app_sizes(f)]   # Gyro: one file, no repack; Unsloth's sets: the repack below (round 0214)
-    if a.family not in (None, *MF.APP_FAMILIES):
+    app_sizes = [m for f in MF.all_families() for m in MF.app_sizes(f)]   # Gyro: one file, no repack; Unsloth's sets: the repack below (round 0214)
+    if a.family not in (None, *MF.all_families()):
         fail(f"the app on a Mac runs the Qwen3.8-Flash-Next sizes ({', '.join(app_sizes)}); {a.family} is not one of them",
              "choose Qwen3.8-Flash-Next")
     rec, notes = MF.recommend_model(ram)
@@ -9911,6 +9962,14 @@ def main() -> int:
         pass
     if sys.platform == "darwin" and not CONTROL:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) goes on below
         return mac_setup(sys.argv[1:])
+    _peek = lambda flag: next((v.split("=", 1)[1] if v.startswith(flag + "=") else sys.argv[i + 2] if i + 2 < len(sys.argv) else None   # noqa: E731
+                               for i, v in enumerate(sys.argv[1:]) if v == flag or v.startswith(flag + "=")), None)
+    if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}) \
+            or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
+                and not any(model_alias(_peek("--model")) in f["models"] for f in (*OWN_PATH_FAMILIES.values(), *MULTI_FILE_FAMILIES.values()))):
+        feed_models_setup(_peek("--feed"))             # a name the built-in tables do not know may be a model of the signed feed
+        if _peek("--family") in FEED_UNAVAILABLE:
+            fail(f"{FEED_UNAVAILABLE[_peek('--family')]['title']} is {FEED_UNAVAILABLE[_peek('--family')]['reason']}")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(MULTI_FILE_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
@@ -10444,7 +10503,11 @@ def main() -> int:
 
     # ---- 2. the questions
     step(2, "your choices")
+    if not a.family and not a.yes and FEED_MODELS is None:
+        feed_models_setup(getattr(a, "feed", None))    # the signed feed's models, listed after the built-in ones (nothing happens when it has none)
     fams = menu_families(hip)
+    feed_late = [f for f in fams if FAMILIES[f].get("feed")]       # models of the signed feed come last in the list (none: nothing here changes)
+    fams = [f for f in fams if f not in feed_late]
     if a.family:
         family = a.family
     else:
@@ -10455,10 +10518,15 @@ def main() -> int:
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
                 + family_menu_note(f, hip, gpu, avx2, avx512)
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
-        for j, f in enumerate([*OWN_PATH_FAMILIES, *MULTI_FILE_FAMILIES], len(fams) + 1):   # families with an engine path of their own
-            d = {**OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}[f]
-            say(f"  {j}) {d['title']:20s} {d['by']} - {d['about']}   [new]")
-        allf = fams + list(OWN_PATH_FAMILIES) + list(MULTI_FILE_FAMILIES)
+        rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")), *MULTI_FILE_FAMILIES,
+                *(f for f in OWN_PATH_FAMILIES if OWN_PATH_FAMILIES[f].get("feed")), *feed_late]
+        for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
+            d = {**FAMILIES, **OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}[f]
+            say(f"  {j}) {d['title']:20s} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
+        for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
+            if not u.get("allowed"):
+                say(f"  -) {u['title']:20s} {u['by']} - {u['reason']}")
+        allf = fams + rest
         if tier_note(ram, low_ram_vram(gpu)) and rec_fam == "swift":
             say("  " + tier_note(ram, low_ram_vram(gpu)))
         family = allf[int(ask("Which model?", [str(i) for i in range(1, len(allf) + 1)],

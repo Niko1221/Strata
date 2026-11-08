@@ -542,6 +542,11 @@ class Strata:
                 if all(hasattr(mod, a) for a in ("MODELS", "FAMILIES", "CONTEXTS")):
                     mod.out = lambda cmd: run_quiet(cmd, 60)
                     self._setup = mod
+                    if hasattr(mod, "feed_models_setup"):
+                        try:                            # the signed feed's models (the last verified list; nothing is fetched here), after the built-in ones
+                            mod.feed_models_setup(fetch=False)
+                        except Exception as e:          # noqa: BLE001
+                            log(f"the feed's model list was not added: {e}")
             except (Exception, SystemExit) as e:        # noqa: BLE001 - any failure: the built-in tables
                 log(f"setup.py could not be imported ({e}); using the built-in model table")
         return self._setup
@@ -560,7 +565,7 @@ class Strata:
         out = {}
         for f, d in (getattr(s, "OWN_PATH_FAMILIES", None) or {}).items():
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
-                      "vision": bool(d.get("vision", True)), "own_path": True}
+                      "vision": bool(d.get("vision", True)), "own_path": True, **({"feed": True} if d.get("feed") else {})}
         for f, d in (getattr(s, "MULTI_FILE_FAMILIES", None) or {}).items():     # DeepSeek-V4.1-Flash: nine shards, its own engine
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", False)), "own_path": True, "multi_file": True}
@@ -1153,7 +1158,7 @@ class Strata:
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
-        for family in (self.mac().APP_FAMILIES if self.mac() else ("qwen", "gyro")):      # Qwen, Unsloth's sets, then Gyro: never the default
+        for family in (self.mac().all_families() if self.mac() else ("qwen", "gyro")):      # Qwen, Unsloth's sets, then Gyro: never the default
             fd = families.get(family)
             if fd is None:
                 continue
@@ -1172,7 +1177,7 @@ class Strata:
         ds = self._mac_deepseek(hw, have)                # DeepSeek-V4.1-Flash on the Mac (0.2.7.1): after Qwen, never the default
         if ds is not None:
             out.append(ds)
-        return out
+        return self._feed_rows(out, self.setup_module())
 
     def dsv41_engine_exe(self) -> Path | None:
         """The installed strata-dsv41 (STRATA_DSV41_EXE, else the newest package in the engine-dsv41 folders of this install), None when there is none; only looked at, never started."""
@@ -1325,7 +1330,7 @@ class Strata:
         vram = max((g["vram_gb"] for g in usable), default=0.0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
-        for f, fd in families.items():
+        for f, fd in sorted(families.items(), key=lambda kv: bool(kv[1].get("feed"))):      # the signed feed's models after the built-in ones (False sorts first, the order is kept)
             sizes = []
             for m in self.sizes_of(models, f):
                 if f == "deepseek41" and self.dsv41_not_here(m):      # the Unsloth 1-bit sets on a DGX Spark: not offered until a Spark run passes
@@ -1383,6 +1388,21 @@ class Strata:
                         "experimental": bool(fd.get("experimental")),
                         "images": any(x["images"] for x in sizes) if sizes else fd.get("vision", True) is not False,
                         "sizes": sizes})
+        return self._feed_rows(out, S)
+
+    def _feed_rows(self, out: list, S) -> list:
+        """The signed feed's models in a model table: their family rows carry `feed: true`; a model this engine does not run has `available: false` and the reason
+        (`sizes` empty when it is not offered, kept when the owner's rule allows the install: feed_models.UNAVAILABLE_POLICY)."""
+        unavailable = (getattr(S, "FEED_UNAVAILABLE", None) or {}) if S else {}
+        for row in out:
+            if (getattr(S, "FEED_MODELS", None) or {}).get(row["family"]):
+                row["feed"] = True
+                if row["family"] in unavailable:
+                    row["available"], row["unavailable_reason"] = False, unavailable[row["family"]]["reason"]
+        for fid, u in unavailable.items():
+            if not any(r["family"] == fid for r in out):
+                out.append({"family": fid, "title": u["title"], "about": u["reason"], "experimental": False, "images": False, "sizes": [], "feed": True,
+                            "available": False, "unavailable_reason": u["reason"]})
         return out
 
     @staticmethod
