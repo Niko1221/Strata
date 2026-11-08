@@ -2005,6 +2005,7 @@ constexpr int Q8_KC = q8_chunk_cols(N), Q8_NKC = D / Q8_KC;      // 16 chunks, 4
 static_assert(N % Q8_KC == 0 && D % Q8_KC == 0, "fused_gr Q8_0 read: n_embd must be a multiple of 128 (chunks of the largest such width <= 1024)");
 static_assert(LR % (WARPS * 4) == 0, "fused_gr Q8_0 read: hc_lr must be a multiple of 32");
 constexpr int Q8_CPS = N / Q8_KC;                   // chunks per stream
+constexpr int Q8_UPS = (LR + 127) / 128;            // steps of 128 values along an up row: 3 up to hc_lr 384 (Flash-Next 320), 4 for 512 (a fixed 3 dropped columns 384-511)
 constexpr int Q8_SPB = Q8_KC / 128;                 // 5 steps of 4 Q8_0 blocks (8 lanes x 4 values each)
 __device__ __forceinline__ uint32_t q8_ld16(const uint8_t* p) { return *(const uint16_t*) p; }
 __device__ __forceinline__ float q8_half(uint32_t h) { return __half2float(__ushort_as_half((unsigned short) h)); }
@@ -2147,9 +2148,9 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_kernel(GrMulti m, const floa
         const int r = warp + qq * WARPS;
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
         const uint8_t* row = m.a[0].q8_up + (size_t) i * (LR / 32) * Q8B;
-        float4 w[3];
+        float4 w[Q8_UPS];
 #pragma unroll
-        for (int s = 0; s < 3; ++s) {   // lane: values 4 lane + 128 s (the third step: lanes 0-15)
+        for (int s = 0; s < Q8_UPS; ++s) {   // lane: values 4 lane + 128 s (the third step: lanes 0-15)
             const int v = 4 * lane + 128 * s;
             if (v < LR) {
                 const uint8_t* blk = row + (v >> 5) * Q8B;
@@ -2172,7 +2173,7 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_kernel(GrMulti m, const floa
         for (int k = 0; k < T; ++k) {
             float acc = 0.0f;
 #pragma unroll
-            for (int s = 0; s < 3; ++s) {
+            for (int s = 0; s < Q8_UPS; ++s) {
                 const int v = 4 * lane + 128 * s;
                 if (v < LR) {
                     const float4 x = *reinterpret_cast<const float4*>(&lo[k][v]);
@@ -2217,7 +2218,7 @@ __global__ void __launch_bounds__(Q32_THREADS) gr_up_q8_q32_kernel(GrMulti m, co
     constexpr int RPW8 = HC * Q32_COLS / Q32_WARPS;     // 8 rows per warp
     constexpr int NG = RPW8 / G;
     constexpr int NB = 1;
-    float4 w[NB][G][3];
+    float4 w[NB][G][Q8_UPS];
     float rvA[NB][G], wnA[NB][G], boA[NB][G], ipA[NB][G];
     bool applyA[NB][G];
     // G rows a warp are loaded together (weights, R, w_norm, bo, inj) before the first of them is computed and stored: the in-place
@@ -2231,7 +2232,7 @@ __global__ void __launch_bounds__(Q32_THREADS) gr_up_q8_q32_kernel(GrMulti m, co
             const int c = r / Q32_COLS, dd = r - c * Q32_COLS, i = c * N + d0 + dd;
             const uint8_t* row = m.a[0].q8_up + (size_t) i * (LR / 32) * Q8B;
 #pragma unroll
-            for (int s = 0; s < 3; ++s) {   // lane: values 4 lane + 128 s (the third step: lanes 0-15)
+            for (int s = 0; s < Q8_UPS; ++s) {   // lane: values 4 lane + 128 s (the third step: lanes 0-15)
                 const int v = 4 * lane + 128 * s;
                 if (v < LR) {
                     const uint8_t* blk = row + (v >> 5) * Q8B;
@@ -2294,7 +2295,7 @@ __global__ void __launch_bounds__(Q32_THREADS) gr_up_q8_q32_kernel(GrMulti m, co
             for (int k = 0; k < T; ++k) {
                 float acc = 0.0f;
 #pragma unroll
-                for (int s = 0; s < 3; ++s) {
+                for (int s = 0; s < Q8_UPS; ++s) {
                     const int v = 4 * lane + 128 * s;
                     if (v < LR) {
                         const float4 x = *reinterpret_cast<const float4*>(&lo[k][v]);
@@ -2489,8 +2490,8 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_fast_kernel(GrMulti m, const
     const int tk = tsum_token<P>(lane);
     const bool owner = lane == tsum_lane<P>(tk) && tk < T;
     // PF: every row's weights in registers before the part / lo phase (its latency hides the weight read)
-    uint32_t pq[PF ? RPW8 : 1][3];
-    float pd[PF ? RPW8 : 1][3];
+    uint32_t pq[PF ? RPW8 : 1][Q8_UPS];
+    float pd[PF ? RPW8 : 1][Q8_UPS];
     if constexpr (PF) {
 #pragma unroll
         for (int qq = 0; qq < RPW8; ++qq) {
@@ -2498,7 +2499,7 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_fast_kernel(GrMulti m, const
             const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
             const uint8_t* row = m.a[0].q8_up + (size_t) i * (LR / 32) * Q8B;
 #pragma unroll
-            for (int s = 0; s < 3; ++s) {
+            for (int s = 0; s < Q8_UPS; ++s) {
                 const int v = 4 * lane + 128 * s;
                 if (v < LR) {
                     const uint8_t* blk = row + (v >> 5) * Q8B;
@@ -2544,9 +2545,9 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_fast_kernel(GrMulti m, const
         const int r = warp + qq * WARPS;
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
         const uint8_t* row = m.a[0].q8_up + (size_t) i * (LR / 32) * Q8B;
-        float4 w[3];
+        float4 w[Q8_UPS];
 #pragma unroll
-        for (int s = 0; s < 3; ++s) {
+        for (int s = 0; s < Q8_UPS; ++s) {
             const int v = 4 * lane + 128 * s;
             if (PF) {
                 w[s] = v < LR ? q8_four(pq[PF ? qq : 0][s], pd[PF ? qq : 0][s]) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -2572,7 +2573,7 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_fast_kernel(GrMulti m, const
 #pragma unroll
         for (int k = 0; k < T; ++k) {
 #pragma unroll
-            for (int s = 0; s < 3; ++s) {
+            for (int s = 0; s < Q8_UPS; ++s) {
                 const int v = 4 * lane + 128 * s;
                 if (v < LR) {
                     const float4 x = *reinterpret_cast<const float4*>(&lo[k][v]);
