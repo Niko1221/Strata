@@ -307,12 +307,15 @@ def adapter_layout(g: dict) -> dict[int, tuple[str, int, int]]:
     return out
 
 
-def write_adapter(path: str, layout: dict, theta: dict, alpha: float):
+def write_adapter(path: str, layout: dict, theta: dict, alpha: float, arch: str = "qwen4exp"):
     """theta[layer][which] = (A (r, n_in), B (n_out, r))，写 llama.cpp 的 adapter GGUF。
-    flat bytes 已在 GGUF 顺序（见 lora_to_gguf.py 的 docstring）：A 平铺、B 平铺，只把 ne 反着声明。"""
+    flat bytes 已在 GGUF 顺序（见 lora_to_gguf.py 的 docstring）：A 平铺、B 平铺，只把 ne 反着声明。
+
+    `arch`：引擎按 `general.architecture` 拒收"给别的模型做的 adapter"（`load_lora_adapters`），
+    所以要写模型自己的名字（`qwen4exp` / `qwen35moe`）。默认值就是这条线一直跑的那一个。"""
     w = GGUFWriter()
     w.add("general.type", "adapter", "string")
-    w.add("general.architecture", "qwen4exp", "string")
+    w.add("general.architecture", arch, "string")
     w.add("adapter.type", "lora", "string")
     w.add("adapter.lora.alpha", float(alpha), "f32")
     for l in sorted(layout):
@@ -422,13 +425,39 @@ class Engine:
                 raise RuntimeError(f"GEN failed: {line}")
 
 
+PREFILL_CHUNK_CAP = 8192   # 引擎 `--prefill auto` 自己的上限；再大是上游 opt-in（#282）
+
+
+def resolve_prefill_chunk(longest_tokens: int, given: str = "") -> str:
+    """prompt 路径预留多少 token 的 buffer：**数据里最长的那条**，不是常数。
+
+    `--prefill N` 是 prompt 的**分块大小**，不是长度上限：比 N 长的序列照样读完，只是分成
+    多块（`request_chunk = min(N, ceil256(tokens))`）。所以 N 唯一决定的是「一条样本读几块、
+    一块预留多大」。在 `--no-prefill-borrow` 下这块 buffer 是**整个会话**的预留（不借专家
+    缓存槽，见 BRANCH-NOTES §4.3），于是 N 被 8192 钉死时：300-600 token 的数学数据一块都
+    没多读，却按 8192 的大小年年占着专家缓存。取「最长样本向上对齐到 256」两头都占：
+    每条样本仍是一块读完（最快），预留只按真实数据大小。
+
+    `given` 非空 = 用户显式给了（数字或 `auto`），照用；最长样本未知（无数据）时交回
+    `auto`，让引擎自己挑（no-borrow 下引擎把预留压到 2048，1,826 MiB）。上限 8192：更长就分块读，
+    用户可显式抬（128K 数据）。"""
+    if given:
+        return given
+    if longest_tokens <= 0:
+        return "auto"
+    want = (int(longest_tokens) + 255) // 256 * 256
+    return str(max(256, min(PREFILL_CHUNK_CAP, want)))
+
+
 def engine_argv(args, init_adapter: str) -> list[str]:
     """训练引擎的命令行（pipe 与 http 两种 transport 用同一份定义）。
     `--serve` 是引擎的常驻模式；它的命令循环同时收 LORA/SCORE/GEN（src/program/generate.cpp）。
-    `--no-prefill-borrow --prefill 8192`：借槽 bug 的已知判据（见 BRANCH-NOTES §4.3）。"""
+    `--no-prefill-borrow`：借槽 bug 的已知判据（见 BRANCH-NOTES §4.3）。
+    `--prefill` 取 `resolve_prefill_chunk()` 的结果：数据定，不写死 8192。"""
     return [args.engine, "--pack", args.pack, "--native", args.gguf, "--ple-gguf", args.gguf,
             "--expert-cache", "auto", "--expert-profile", args.expert_profile,
-            "--prefill", "8192", "--spec", "4", "--max-context", str(args.max_context),
+            "--prefill", str(getattr(args, "prefill_chunk", "") or "auto"),
+            "--spec", "4", "--max-context", str(args.max_context),
             "--kv", "auto", "--vram-reserve-mib", "700", "--serve", "--no-prefill-borrow",
             "--lora", os.path.abspath(init_adapter)]
 
@@ -547,10 +576,12 @@ class EngineHttp:
 
     前提（服务端启动时就决定，训练侧补不了）：
       * `--lora <初始 adapter>`：`/v1/engine/lora` 换的是「引擎启动时带着的那套表」的内容，
-        形状必须不变 ⇒ rank 全程固定；
-      * `--no-prefill-borrow --prefill 8192`：否则 score 走借槽路径，数值已知会坏
-        （BRANCH-NOTES §4.3）。这一条会同时影响推理的 prefill 速度，是「共用引擎」的真实
-        代价，不在训练侧掩盖。
+        形状必须不变 ⇒ rank 全程固定。没有现成 adapter 时用 `mezo/zero_adapter.py` 造一个
+        （A = B = 0，带着它服务与不带逐字相同），rank 取 `--rank`（默认 8）；
+      * `--no-prefill-borrow`：否则 score 走借槽路径，数值已知会坏（BRANCH-NOTES §4.3）。
+        prompt buffer 的**分块大小**（`--prefill`）由数据里最长样本定，见
+        `resolve_prefill_chunk()`；显式给 `--prefill-chunk` 就照用。这条会同时影响推理的
+        prefill 速度/显存，是「共用引擎」的真实代价，不在训练侧掩盖。
 
     两个与生俱来的限制（不是 bug，是「共用」的定义）：
       * 每次换表清空所有 K/V：训练期间在跑的对话，下一个请求从 token 0 重读 prompt；
@@ -893,7 +924,7 @@ class EngineMezo:
             eng.lora(os.path.abspath(path))    # 引擎 cwd 是它自己的目录：永不给相对路径
         self.swap = swap
 
-        self.items = self.load_items()
+        self.items = self.items or self.load_items()
         print(f"data: {len(self.items)} items ({self.objective})", flush=True)
         self._check_context_fit()
         # 轮次优先：步数会随「一条样本算几遍 / 数据几条」漂移，轮次不会。--epochs 给了就盖掉 --steps。
@@ -1287,8 +1318,13 @@ def main() -> int:
     ap.add_argument("--serve-url", default="",
                     help="http://127.0.0.1:8080 等常驻 API 服务的地址，但走**在线**那条：用它的 /v1/engine/score 与 "
                          "/v1/engine/lora 直接训练**驻留的推理引擎**，不卸载、不重启 ⇒ 推理不中断。要求服务端用 "
-                         "--lora <初始 adapter> --no-prefill-borrow --prefill 8192 启动；gen 不可用。"
+                         "--lora <初始 adapter> --no-prefill-borrow 启动；gen 不可用。"
                          "与 --engine-api 互斥")
+    ap.add_argument("--prefill-chunk", default="",
+                    help="prompt 的分块大小（引擎 --prefill）。留空 = 按数据里最长的样本取"
+                         "（向上对齐 256，夹在 256..8192）：每条样本一块读完，预留只按真实数据大小。"
+                         "这是分块大小、不是长度上限 —— 比它长的序列按块数读完；长上下文数据"
+                         "（128K）显式抬它才有意义。`auto` = 让引擎自己挑（no-borrow 下它取 2048）")
     ap.add_argument("--expert-profile", default=str(REPO / "data" / "expert-profile.bin"))
     ap.add_argument("--max-context", type=int, default=4096)
     ap.add_argument("--objective", choices=("ce", "dpo", "grpo", "luspo"), default="ce",
@@ -1404,6 +1440,17 @@ def main() -> int:
             write_adapter(init_path, layout, theta, args.alpha)
             print(f"wrote the initial adapter (B=0): {init_path}", flush=True)
 
+    # 会由本进程（或 API 服务端）拉起的训练引擎，其 `--prefill` 是**整个会话**的 buffer 预留
+    # （--no-prefill-borrow 下不借专家缓存槽），起完就改不了 ⇒ 先读数据，由最长样本定它。
+    # 在线那条（--serve-url）驱动的是**已经在跑**的服务，它的 chunk 在服务端启动时定了，
+    # 这里既不能改也不该为它多读一遍数据。
+    trainer = TRAINER_FOR[args.objective](args, tok, render, None, theta, layout)
+    longest = 0
+    if not args.serve_url:
+        trainer.items = trainer.load_items()
+        longest = max((len(it["seq"]) for it in trainer.items), default=0)
+        args.prefill_chunk = resolve_prefill_chunk(longest, args.prefill_chunk)
+
     if args.serve_url:                       # 在线：驱动驻留引擎，推理不中断
         eng = EngineHttp(args.serve_url)
         load_s = 0.0
@@ -1412,12 +1459,18 @@ def main() -> int:
         eng = EngineApi(args.engine_api, engine_argv(args, init_path))
         load_s = 0.0
     else:
+        print(f"prefill chunk: {args.prefill_chunk} tokens, the longest sample ({longest} tokens); "
+              f"--prefill-chunk overrides", flush=True)
+        if longest > 0 and str(args.prefill_chunk).isdigit() and longest > int(args.prefill_chunk):
+            n = (longest + int(args.prefill_chunk) - 1) // int(args.prefill_chunk)
+            print(f"  note: the longest sample reads in {n} chunks of up to {args.prefill_chunk} tokens "
+                  f"(slower, not truncated); raise --prefill-chunk if the VRAM is there", flush=True)
         eng, load_s = launch_engine(args, os.path.join(args.work, "engine.log"), init_path)
     if not args.serve_url:
         print(f"engine up in {load_s:.0f} s (log: {args.work}/engine.log)", flush=True)
 
     try:
-        trainer = TRAINER_FOR[args.objective](args, tok, render, eng, theta, layout)
+        trainer.eng = eng
         return trainer.run()
     finally:
         if isinstance(eng, EngineApi):

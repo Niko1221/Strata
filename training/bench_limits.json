@@ -116,7 +116,8 @@
       "peak": 34.98501443862915,
       "peak_rss": 50.09,
       "note": "1 行 × T",
-      "status": "ok"
+      "status": "ok",
+      "superseded_by": "bench_limits_retest.json (2026-11-08)：本行不可复现。ce 4608 记 81.9 s vs 重测 ce 5120 20.5 s；dpo 2560/5120 记 49.8/53.9 s vs 重测 19.9/116.9 s"
     },
     {
       "algo": "ce",
@@ -130,7 +131,8 @@
       "peak": 44.950671672821045,
       "peak_rss": 50.26,
       "note": "1 行 × T",
-      "status": "ok"
+      "status": "ok",
+      "superseded_by": "bench_limits_retest.json (2026-11-08)：本行不可复现。ce 4608 记 81.9 s vs 重测 ce 5120 20.5 s；dpo 2560/5120 记 49.8/53.9 s vs 重测 19.9/116.9 s"
     },
     {
       "algo": "dpo",
@@ -144,7 +146,8 @@
       "peak": 34.159934520721436,
       "peak_rss": 50.29,
       "note": "2 行 × T 同批",
-      "status": "ok"
+      "status": "ok",
+      "superseded_by": "bench_limits_retest.json (2026-11-08)：本行不可复现。ce 4608 记 81.9 s vs 重测 ce 5120 20.5 s；dpo 2560/5120 记 49.8/53.9 s vs 重测 19.9/116.9 s"
     },
     {
       "algo": "dpo",
@@ -158,7 +161,8 @@
       "peak": 41.45606517791748,
       "peak_rss": 50.31,
       "note": "2 行 × T 同批",
-      "status": "ok"
+      "status": "ok",
+      "superseded_by": "bench_limits_retest.json (2026-11-08)：本行不可复现。ce 4608 记 81.9 s vs 重测 ce 5120 20.5 s；dpo 2560/5120 记 49.8/53.9 s vs 重测 19.9/116.9 s"
     },
     {
       "algo": "grpo",
@@ -172,7 +176,8 @@
       "peak": 29.604516983032227,
       "peak_rss": 50.31,
       "note": "2 行 × T",
-      "status": "ok"
+      "status": "ok",
+      "superseded_by": "bench_limits_retest.json (2026-11-08)：本行不可复现。ce 4608 记 81.9 s vs 重测 ce 5120 20.5 s；dpo 2560/5120 记 49.8/53.9 s vs 重测 19.9/116.9 s"
     },
     {
       "algo": "grpo",
@@ -186,7 +191,8 @@
       "peak": 34.183345794677734,
       "peak_rss": 50.32,
       "note": "2 行 × T",
-      "status": "ok"
+      "status": "ok",
+      "superseded_by": "bench_limits_retest.json (2026-11-08)：本行不可复现。ce 4608 记 81.9 s vs 重测 ce 5120 20.5 s；dpo 2560/5120 记 49.8/53.9 s vs 重测 19.9/116.9 s"
     },
     {
       "algo": "ce",

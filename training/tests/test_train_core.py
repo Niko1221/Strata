@@ -38,6 +38,11 @@ from pathlib import Path
 
 import algos
 import collect_rollouts
+
+# 本文件在三条分支上**逐字一致**，所以不能假设反传层在场：零阶树上 `--method backward`
+# 会（正确地）在加载任何东西之前退出。用到反传轮次表的断言要按文件在不在跳过，
+# 不能靠"这条分支上反正跑不到"。
+HAVE_BACKWARD = "backward" in algos.available()
 import datasets
 import dpo
 import guard
@@ -133,6 +138,83 @@ class Registry(unittest.TestCase):
         with self.assertRaises(SystemExit):
             algos.method_of("ppo", None)             # 不认识的算法
 
+    def test_steps_are_derived_from_data_not_a_constant(self):
+        """步数不再有「与数据量无关」的兜底（2026-11-09 删除 `450 if mezo else 40`）。
+
+        旧行为对 `dpo × backward` 是真的生效的：0/1/4 对偏好样本都是 40 步，也就是
+        40/20 遍。现在钉住三条：给 --steps 就听用户的；表里有实测轮次就用它；表里没有
+        就落成「一遍数据集」，而不是一个和行数无关的常数。
+        """
+        import argparse
+
+        import train as train_mod
+
+        def ns(**kw):
+            base = dict(algo="sft", method="mezo", steps=None, epochs=None,
+                        rollouts="", prompts="", batch=2, group=4)
+            base.update(kw)
+            return argparse.Namespace(**base)
+
+        # 1) 显式 --steps 优先，不碰 epochs
+        a = ns(steps=200)
+        train_mod.resolve_budget(a)
+        self.assertEqual((a.steps, a.epochs), (200, None))
+
+        # 2) 方法表里有实测轮次 → epochs 落定，steps 留空（后端按行数折算）
+        a = ns(algo="sft", method="mezo")
+        train_mod.resolve_budget(a)
+        self.assertEqual((a.steps, a.epochs), (None, 5))
+        if HAVE_BACKWARD:                      # 零阶树上没有这一项，跳过而不是断言失败
+            a = ns(algo="sft", method="backward")
+            train_mod.resolve_budget(a)
+            self.assertEqual((a.steps, a.epochs), (None, 2))
+
+        # 3) 用户给 --epochs（即便方法表里没有）→ 照用
+        a = ns(algo="dpo", method="backward", epochs=7)
+        train_mod.resolve_budget(a)
+        self.assertEqual((a.steps, a.epochs), (None, 7))
+
+        # 4) 表里没有 + 两项都没给 → 一遍数据集（不是 40 步）
+        #    表里留空的组合都在反传侧（`dpo/grpo/luspo × backward`）；零阶那四个算法都定过
+        #    实测轮次，所以这条兜底在零阶树上**走不到**，按分支跳过。
+        if HAVE_BACKWARD:
+            a = ns(algo="dpo", method="backward")
+            train_mod.resolve_budget(a)
+            self.assertEqual((a.steps, a.epochs), (None, 1.0))
+
+    @unittest.skipUnless(HAVE_BACKWARD, "这条分支上不带反传层")
+    def test_grpo_backward_epochs_folds_to_outer_steps(self):
+        """`grpo.py --epochs` 是「每个 batch 内层遍数」，不能直接当数据集轮次。
+
+        旧代码把 train.py 的 --epochs 静默丢掉（用户以为设了轮次，实际是 40 步）。
+        现在 train.py 自己算外层步数，并按 batch × group 折算：一遍 = 扫完全部行。
+        """
+        import argparse
+        import tempfile
+
+        import train as train_mod
+
+        with tempfile.TemporaryDirectory() as td:
+            p = train_mod.os.path.join(td, "r.jsonl")
+            with open(p, "w", encoding="utf-8") as f:
+                for i in range(8):
+                    f.write('{"prompt": "q", "completion": "a", "reward": 0}\n')
+            # 8 条轨迹 / (batch 2 × group 4) = 1 步/遍
+            a = argparse.Namespace(algo="grpo", method="backward", steps=None, epochs=None,
+                                   rollouts=p, prompts="", batch=2, group=4)
+            train_mod.resolve_budget(a)
+            self.assertEqual((a.steps, a.epochs), (1, 1.0))
+
+            # 用户给 3 遍 → 3 步；给 --steps 则原样透传
+            c = argparse.Namespace(algo="grpo", method="backward", steps=None, epochs=3,
+                                   rollouts=p, prompts="", batch=2, group=4)
+            train_mod.resolve_budget(c)
+            self.assertEqual(c.steps, 3)
+            b = argparse.Namespace(algo="luspo", method="backward", steps=40, epochs=None,
+                                   rollouts=p, prompts="", batch=2, group=4)
+            train_mod.resolve_budget(b)
+            self.assertEqual((b.steps, b.epochs), (40, None))
+
     def test_describe_lists_both_axes(self):
         text = algos.describe()
         for word in ("sft", "mezo", "grpo", "dpo", "ce"):
@@ -160,15 +242,19 @@ class Registry(unittest.TestCase):
 
     def test_route_auto_refuses_without_rollouts(self):
         # 没有采样就没有通过率，分不了档 —— 必须在读模型之前就停，别去读 60 GB pack。
+        # 现在数据来源有两个（离线 rollouts / 在线 pool），一个都没给才算错。
         import train
 
         class _A:
             rollouts = ""
+            pool = ""
+            adapter = None
             group = 4
             plan_dir = ""
 
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit) as cm:
             train.route_auto(_A())
+        self.assertIn("--pool", str(cm.exception))      # 报错要指出两条路，不只旧的那条
 
 
 class ParallelCollection(unittest.TestCase):

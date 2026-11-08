@@ -348,13 +348,18 @@ class TestPlanFiles(unittest.TestCase):
                 f.write(json.dumps({"prompt": "true-cold", "solution": sol},
                                    ensure_ascii=False) + "\n")
             p, paths, steps = C.plan_file(src, 4, out_dir=d / "out",
-                                          gold_solutions=str(d / "sol.jsonl"))
+                                          gold_solutions=str(d / "sol.jsonl"),
+                                          dpo_epochs=7)
             self.assertEqual(len(p["rl"]), 4)
             with open(paths["rl"], encoding="utf-8") as f:
                 line = json.loads(f.readline())
             self.assertEqual(sorted(line), ["completion", "prompt", "reward"])
             # 冷启在前、RL 在后：冷启不先跑，下一轮 RL 那一格还是 0 正
             self.assertEqual([s["name"] for s in steps], ["cold_dpo", "rl_luspo"])
+            # 冷启 DPO 的步数必须由轮次折算：少了 --epochs，train.py 会报「没有实测轮次」
+            dpo = next(s for s in steps if s["name"] == "cold_dpo")
+            self.assertIn("--epochs", dpo["cmd"])
+            self.assertEqual(dpo["cmd"][dpo["cmd"].index("--epochs") + 1], "7")
             self.assertTrue(_p.Path(paths["route"]).is_file())
             plan = json.loads(_p.Path(paths["route"]).read_text(encoding="utf-8"))
             self.assertEqual(len(plan["steps"]), 2)

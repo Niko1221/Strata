@@ -243,7 +243,7 @@ DEFAULT_METHOD = "mezo"
 AUTO = "auto"
 ROUTES = {
     "off": "不路由：按 --algo/--method 直接训一次（默认）",
-    "auto": "按 --rollouts 的组内通过率分档：有答案 → luspo，没答案 → 冷启 DPO，"
+    "auto": "按组内通过率分档：有答案 → luspo，没答案 → 冷启 DPO，"
             "全对毕业；写 route_plan.json 交给 bench/run_plan.py **串行**执行，"
             "本进程不自己起训练进程",
 }
@@ -345,9 +345,10 @@ def describe() -> str:
         lines.append(f"  {a.name:<5s} 目标 {a.objective:<4s} {a.blurb}")
         if a.needs:
             lines.append(f"        需要 {a.needs}")
-    lines.append(f"  {AUTO:<5s} 目标 多种  自动分档：按 --rollouts 的组内通过率逐组派发 —— "
+    lines.append(f"  {AUTO:<5s} 目标 多种  自动分档：按组内通过率逐组派发 —— "
                  "有答案 → luspo，没答案 → 冷启 DPO，全对毕业")
-    lines.append(f"        需要 --rollouts；只写计划不起进程（执行交 bench/run_plan.py 串行）")
+    lines.append(f"        数据来源 --rollouts（批次：每组连续 K 行）或 --pool（流：按 prompt 聚合）；"
+                 "只写计划不起进程（执行交 bench/run_plan.py 串行）")
     lines.append(f"方法（--method，默认 {DEFAULT_METHOD}）：")
     for m in available().values():
         lines.append(f"  {m.name:<8s} {m.blurb}")
