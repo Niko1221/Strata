@@ -3933,7 +3933,7 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 951,
+     "line": 1014,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -4286,7 +4286,7 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 884,
+     "line": 947,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -5971,7 +5971,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3871,
+     "line": 3877,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -8527,7 +8527,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3445,
+     "line": 3451,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -8569,7 +8569,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5070,
+     "line": 5076,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8628,7 +8628,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5071,
+     "line": 5077,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -8684,7 +8684,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5034,
+     "line": 5040,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -11564,7 +11564,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5050,
+     "line": 5056,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -12578,7 +12578,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3870,
+     "line": 3876,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -12880,7 +12880,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 819,
+     "line": 833,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -13804,7 +13804,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 5147,
+     "line": 5153,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -15186,7 +15186,7 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 4253,
+     "line": 4259,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -15389,7 +15389,7 @@
    "reads": [
     {
      "file": "src/kernels/native_expert_parity.cpp",
-     "line": 917,
+     "line": 919,
      "backend": "cuda-hip",
      "fn": "getenv"
     },
@@ -15418,11 +15418,11 @@
    "engine_sets": [
     {
      "file": "src/kernels/native_expert_parity.cpp",
-     "line": 919
+     "line": 921
     },
     {
      "file": "src/kernels/native_expert_parity.cpp",
-     "line": 921
+     "line": 923
     }
    ],
    "engine_defaults": [],
@@ -15517,7 +15517,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3450,
+     "line": 3456,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -15561,7 +15561,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3457,
+     "line": 3463,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -15741,13 +15741,13 @@
    "reads": [
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3875,
+     "line": 3881,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3875,
+     "line": 3881,
      "backend": "sycl",
      "fn": "lanes_env"
     }
@@ -15787,7 +15787,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3907,
+     "line": 3913,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -17377,7 +17377,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3458,
+     "line": 3476,
      "backend": "metal",
      "fn": "getenv"
     },
@@ -17860,7 +17860,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1641,
+     "line": 1655,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -17929,13 +17929,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2122,
+     "line": 2136,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2122,
+     "line": 2136,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18036,7 +18036,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 118,
+     "line": 132,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18081,19 +18081,19 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2392,
+     "line": 2406,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3401,
+     "line": 3419,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3406,
+     "line": 3424,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18126,7 +18126,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1653,
+     "line": 1667,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18159,7 +18159,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 132,
+     "line": 146,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18180,7 +18180,7 @@
    "first_commit": "3277bfcd71",
    "first_date": "2026-11-01",
    "since": "v0.2.10",
-   "last_commit": "af9f44e522",
+   "last_commit": "d19ab73020",
    "last_date": "2026-11-07",
    "status": "default",
    "owner": "metal/engine",
@@ -18196,13 +18196,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 456,
+     "line": 470,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 456,
+     "line": 470,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18336,7 +18336,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 922,
+     "line": 936,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18369,13 +18369,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 910,
+     "line": 924,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 910,
+     "line": 924,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18410,13 +18410,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 986,
+     "line": 1000,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 986,
+     "line": 1000,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18449,13 +18449,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 674,
+     "line": 688,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 674,
+     "line": 688,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18529,7 +18529,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1640,
+     "line": 1654,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18564,13 +18564,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1608,
+     "line": 1622,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1608,
+     "line": 1622,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18605,13 +18605,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1427,
+     "line": 1441,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1427,
+     "line": 1441,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18646,13 +18646,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2287,
+     "line": 2301,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2287,
+     "line": 2301,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18687,13 +18687,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 453,
+     "line": 467,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 453,
+     "line": 467,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18732,7 +18732,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1642,
+     "line": 1656,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18767,7 +18767,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1700,
+     "line": 1714,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18866,7 +18866,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2418,
+     "line": 2432,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18901,7 +18901,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3517,
+     "line": 3535,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18934,13 +18934,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 585,
+     "line": 599,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 585,
+     "line": 599,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -18973,7 +18973,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2338,
+     "line": 2352,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19041,7 +19041,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1958,
+     "line": 1972,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19121,7 +19121,7 @@
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 873,
+     "line": 887,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19220,25 +19220,25 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 589,
+     "line": 590,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1927,
+     "line": 1941,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1947,
+     "line": 1961,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3417,
+     "line": 3435,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19273,13 +19273,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3550,
+     "line": 3568,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3550,
+     "line": 3568,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19314,13 +19314,13 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 567,
+     "line": 568,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2862,
+     "line": 2880,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19356,7 +19356,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2881,
+     "line": 2899,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19391,19 +19391,19 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1670,
+     "line": 1684,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2849,
+     "line": 2867,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3554,
+     "line": 3572,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19436,13 +19436,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2853,
+     "line": 2871,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3555,
+     "line": 3573,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19475,7 +19475,7 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 526,
+     "line": 527,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19508,13 +19508,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3551,
+     "line": 3569,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3551,
+     "line": 3569,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19547,7 +19547,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 2884,
+     "line": 2902,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19654,7 +19654,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3383,
+     "line": 3401,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19687,7 +19687,7 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 300,
+     "line": 314,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19759,13 +19759,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1430,
+     "line": 1444,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1430,
+     "line": 1444,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19798,13 +19798,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1432,
+     "line": 1446,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1432,
+     "line": 1446,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19837,13 +19837,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1877,
+     "line": 1891,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1877,
+     "line": 1891,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -19876,13 +19876,13 @@
    "reads": [
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1840,
+     "line": 1854,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1840,
+     "line": 1854,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -20030,19 +20030,19 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 589,
+     "line": 590,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 1987,
+     "line": 2001,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/window.cpp",
-     "line": 3271,
+     "line": 3289,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -23230,7 +23230,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3446,
+     "line": 3452,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -23649,7 +23649,7 @@
     },
     {
      "file": "sycl/src/kernels/cuda/iq_kernels.dp.cpp",
-     "line": 3440,
+     "line": 3446,
      "backend": "sycl",
      "fn": "env_on"
     }
@@ -25757,13 +25757,13 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 846,
+     "line": 909,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 974,
+     "line": 1037,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -26171,7 +26171,7 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 973,
+     "line": 1036,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -26736,13 +26736,13 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 847,
+     "line": 910,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 975,
+     "line": 1038,
      "backend": "sycl",
      "fn": "getenv"
     },
@@ -30853,7 +30853,7 @@
     },
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 88,
+     "line": 89,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -30892,7 +30892,7 @@
     },
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 87,
+     "line": 88,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -30925,13 +30925,13 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 175,
+     "line": 176,
      "backend": "metal",
      "fn": "getenv"
     },
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 524,
+     "line": 525,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -30964,7 +30964,7 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 402,
+     "line": 403,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -30997,7 +30997,7 @@
    "reads": [
     {
      "file": "metal/src/engine/prompt_chain.inc",
-     "line": 83,
+     "line": 84,
      "backend": "metal",
      "fn": "getenv"
     }
@@ -38185,6 +38185,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_SYCL_BF16_DET",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/prefill/gemm.dp.cpp",
+     "line": 836,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": null,
+   "first_date": null,
+   "since": null,
+   "last_commit": null,
+   "last_date": null,
+   "status": "rollback",
+   "owner": "sycl/prefill",
+   "note": "Intel Arc: the prompt path's bf16 GEMMs with 64 or fewer outputs (ssm alpha/beta, hyper-connection inject) run on a fixed-order kernel because oneMKL's result changes from launch to launch for those shapes. 0 gives the oneMKL call back; 2 uses the fixed-order kernel for every output count.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_SYCL_GEMM_NO_STAGE",
    "backends": [
     "sycl"
@@ -38192,7 +38225,7 @@
    "reads": [
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 716,
+     "line": 770,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -38225,13 +38258,13 @@
    "reads": [
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 717,
+     "line": 771,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 717,
+     "line": 771,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41272,7 +41305,7 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 760,
+     "line": 814,
      "backend": "sycl",
      "fn": "getenv"
     }
@@ -41318,13 +41351,13 @@
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 759,
+     "line": 813,
      "backend": "sycl",
      "fn": "getenv"
     },
     {
      "file": "sycl/src/prefill/gemm.dp.cpp",
-     "line": 845,
+     "line": 908,
      "backend": "sycl",
      "fn": "getenv"
     }
