@@ -20,6 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+#: The reserve a Windows Strix Halo config gets when nothing else gives one: the engine's own default (--vram-reserve-mib 700), written down so the engine's
+#: Windows floor of 2560 MiB does not replace it (G16).  The app's own reserve and the one pictures on write are 700 or more already, so this is one rule for
+#: every size on a single-card Windows Strix Halo (no size threshold: a new model of unknown size could hang the same way).
+UMA_WIN_RESERVE_MIB = 700
+
 
 @dataclass
 class SetupInputs:
@@ -319,6 +324,13 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
             args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
         ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
            "that much less)")
+    elif hip and WIN and gpu.get("uma") and gfx_arch_is(gpu.get("arch"), "gfx1151") and not multi and "--vram-reserve-mib" not in args:
+        # G16 (Q4-P8, 2026-11-08): a Windows Strix Halo config with no reserve at all (pictures off, or a model with no picture reader) never started
+        # UD-Q4_K_XL: with no --vram-reserve-mib the engine puts its Windows floor of 2560 MiB on any card of 15 GiB or more (made for a 20 GB discrete
+        # card that paged, #1376), and on this shared pool that room is taken straight back by the RAM budget's page-locked complement, so the prompt
+        # path's own buffers found 0 MiB and the engine stepped its chunk down for ever.  Pictures on already write 700 (VISION above), the app writes its
+        # own, and every measured Strix run carried it: the engine's own default, said out loud, so the floor does not apply.
+        args += ["--vram-reserve-mib", str(UMA_WIN_RESERVE_MIB)]
     if not multi and family == "unsloth" and 0 < gpu.get("vram_gb", 0.0) <= UD_FIT_CARD_GB:
         # a card of about 8 GB: the config setup would write may not start (measured on an A750).  Pick the least
         # harmful one that fits and say so; what the user chose with --context / --kv / --vram-reserve-mib is kept

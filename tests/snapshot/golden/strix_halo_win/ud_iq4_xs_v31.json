@@ -54,7 +54,9 @@
      "--kv-resident",
      "32768",
      "--resident-budget-gib",
-     "56"
+     "56",
+     "--vram-reserve-mib",
+     "700"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
@@ -90,7 +92,9 @@
      "--kv-resident",
      "32768",
      "--resident-budget-gib",
-     "56"
+     "56",
+     "--vram-reserve-mib",
+     "700"
     ],
     "env_set": {},
     "notes": [

@@ -54,7 +54,9 @@
      "--kv",
      "int8",
      "--kv-resident",
-     "32768"
+     "32768",
+     "--vram-reserve-mib",
+     "700"
     ],
     "cwd": "<REPO>",
     "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
@@ -90,7 +92,9 @@
      "--kv",
      "int8",
      "--kv-resident",
-     "32768"
+     "32768",
+     "--vram-reserve-mib",
+     "700"
     ],
     "env_set": {},
     "notes": [
