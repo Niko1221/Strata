@@ -10519,6 +10519,20 @@ int main(int argc, char** argv) {
         }
 #endif
     }
+#if defined(__linux__)
+    // STRATA_PROMPT_DIRECT=1 also without a RAM budget: --resident-experts when the whole RAM mode does not fit (the
+    // hottest experts in RAM, the rest read from experts.bin through the file cache) and the plain mmap mode.  There a
+    // long prompt's copies out of the mapping are page faults of the stager's few threads (a 69.5K prompt on a 31 GiB
+    // PC, SATA SSDs: 318-327K major faults, 127-147 tokens/s; with this 15-38K, 193-219); this reads them in merged
+    // O_DIRECT requests.  The same bytes either way.
+    if (srcp == &src && o.mmap_experts && o.resident_budget <= 0 && !src.unbuffered() &&
+        [] { const char* v = std::getenv("STRATA_PROMPT_DIRECT"); return v != nullptr && v[0] == '1'; }()) {
+        std::string pw;
+        const bool pd = src.open_prompt_direct(pw);
+        std::fprintf(stderr, "strata generate: the prompt path's expert reads %s\n",
+                     pd ? "go unbuffered (STRATA_PROMPT_DIRECT=1, no RAM budget)" : ("stay mapped: " + pw).c_str());
+    }
+#endif
     // (the arena mode has no RAM copy to exchange with: its experts are always in RAM, the tier only copies them in)
     if (o.adapt_async && !src.complement_ready() && srcp != &arena_src) adapt_async_off("the resident RAM mode is not running");
     // pp-opt: with the file tier unbuffered, the mapped view of experts.bin is only a fallback from here on - and while

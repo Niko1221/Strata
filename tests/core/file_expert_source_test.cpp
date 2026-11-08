@@ -633,6 +633,63 @@ void test_unbuffered_reads() {
     source.close();
 }
 
+// STRATA_PROMPT_DIRECT=1 with experts.bin read through the mapping (no unbuffered tier, no RAM budget): on Linux
+// open_prompt_direct opens O_DIRECT fds beside the mapping, prompt_reads() turns on (the stager hands every unpinned
+// blob to copy_blobs), the decode's tier stays mapped, and copy_blobs - a batch of neighbours merged into one request -
+// hands out the file's bytes.  Like test_unbuffered_reads, the pack lives in the working directory and the test skips
+// without O_DIRECT.
+void test_prompt_direct_mapped() {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2;
+    constexpr int64_t experts = 4;
+    const uint64_t layer_bytes = (uint64_t) experts * BLOB;
+    const uint64_t total = (uint64_t) layers * layer_bytes;
+    TempDirectory dir(fs::current_path());
+    std::string err;
+    require(expert_layout_load(dir.path.string(), layers, experts, err), "could not load canonical layout: " + err);
+    std::vector<uint8_t> bytes((size_t) total);
+    uint64_t x = 0xD1B54A32D192ED03ull;
+    for (uint8_t& b : bytes) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        b = (uint8_t) (x >> 56);
+    }
+    {
+        std::ofstream out(dir.path / "experts.bin", std::ios::binary | std::ios::trunc);
+        out.write((const char*) bytes.data(), (std::streamsize) bytes.size());
+        require((bool) out, "could not write the synthetic experts.bin");
+    }
+    FileExpertSource source;
+    require(source.open(dir.path.string(), layers, experts, err), "could not map the synthetic pack: " + err);
+    require(!source.prompt_reads(), "prompt_reads() is on before open_prompt_direct");
+    std::string why;
+    if (!source.open_prompt_direct(why)) {
+        std::cout << "file_expert_source_test: prompt-path direct reads skipped (" << why << ")\n";
+        source.close();
+        return;
+    }
+#if defined(__linux__)
+    require(source.prompt_reads(), "open_prompt_direct succeeded but prompt_reads() is off");
+#endif
+    require(!source.unbuffered(), "open_prompt_direct made the decode's tier unbuffered");
+    std::vector<int32_t> ls, es;
+    for (int32_t l = 0; l < (int32_t) layers; ++l)
+        for (int32_t e = 0; e < (int32_t) experts; ++e) {
+            ls.push_back(l);
+            es.push_back(e);
+        }
+    std::vector<std::vector<uint8_t>> out(ls.size(), std::vector<uint8_t>((size_t) BLOB, 0));
+    std::vector<uint8_t*> dst;
+    for (auto& o : out) dst.push_back(o.data());
+    require(source.copy_blobs(ls.data(), es.data(), dst.data(), dst.size()), "copy_blobs failed");
+    for (size_t i = 0; i < ls.size(); ++i)
+        require(std::memcmp(out[i].data(), bytes.data() + (size_t) (ls[i] * (int64_t) layer_bytes + es[i] * (int64_t) BLOB),
+                            (size_t) BLOB) == 0,
+                "a prompt-path blob differs from the file");
+    std::cout << "prompt direct (mapped tier): " << ls.size() << " blobs through copy_blobs: bytes PASS\n";
+    source.close();
+}
+
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
@@ -1052,6 +1109,7 @@ int main(int argc, char** argv) {
         test_host_memory();
         test_canonical_layout();
         test_unbuffered_reads();
+        test_prompt_direct_mapped();
         test_io_prefetch();
 #if defined(STRATA_NATIVE_EXPERTS)
         test_native_variable_layout();
