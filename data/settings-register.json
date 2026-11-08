@@ -20010,7 +20010,7 @@
     },
     {
      "file": "setup.py",
-     "line": 9857,
+     "line": 9908,
      "value": "\"1\" if stream else \"0\""
     }
    ],
@@ -27166,7 +27166,7 @@
     },
     {
      "file": "strata_cli/launch/screens.py",
-     "line": 1383,
+     "line": 1391,
      "value": "1"
     },
     {
