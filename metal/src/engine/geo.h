@@ -69,9 +69,6 @@ inline std::string prelude() {
     def("GEO_TOPK", G.n_expert_used, d.n_expert_used);
     def("GEO_NJ", G.n_embd / 256, d.n_embd / 256);                      // gr_norm2: elements per thread of one stream's row
     def("GEO_GRU_NU", (G.hc_lr / 32 + 3) / 4, (d.hc_lr / 32 + 3) / 4);   // gr_up prefetch: units of 32 per lane (4 lanes a row)
-#ifdef STRATA_METAL_PRELUDE_SALT   // -DSTRATA_METAL_PRELUDE_SALT="tag": one comment line, so a build's libraries are compiled and cached apart from another build's
-    s = std::string("// ") + STRATA_METAL_PRELUDE_SALT + "\n" + s;
-#endif
     return s;
 }
 

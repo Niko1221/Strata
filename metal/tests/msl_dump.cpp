@@ -9,7 +9,6 @@
 //   --kq    the prelude of a model with K-quant / IQ down experts (kq_down_prelude)
 //   --f16   STRATA_METAL_F16
 //   --wrap F  map and wrap the model file F as the engine does before it compiles (a process holding a model of that size)
-//   --touch   read every page of the wrapped file (the process holds the model resident)
 //   --map F   map a second file too (the PLE file of the engine)
 //   --pipes also build the pipeline of a few kernels of the core library (xprep, moe_route, moe_combine_sh2, gr_norm2): the GPU compiler, not only the front end
 #include "gguf_lite.h"
@@ -21,19 +20,16 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <sys/mman.h>
 
 int main(int argc, char** argv) {
     bool kq = false, f16 = false, pipes = false;
     std::string edir = "../src/engine/msl", wrapf, mapf;
-    bool touch = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--kq")) kq = true;
         else if (!std::strcmp(argv[i], "--f16")) f16 = true;
         else if (!std::strcmp(argv[i], "--pipes")) pipes = true;
         else if (!std::strcmp(argv[i], "--wrap") && i + 1 < argc) wrapf = argv[++i];
         else if (!std::strcmp(argv[i], "--map") && i + 1 < argc) mapf = argv[++i];
-        else if (!std::strcmp(argv[i], "--touch")) touch = true;
         else if (!std::strcmp(argv[i], "--engine-msl") && i + 1 < argc) edir = argv[++i];
     }
     using namespace strata_metal;
@@ -58,15 +54,9 @@ int main(int argc, char** argv) {
         for (const auto& kv : gf.tensors)
             if (kv.first != "per_layer_token_embd.weight") span = std::max<size_t>(span, kv.second.bytes);
         W = cx.wrap(gf.map, gf.map_bytes, span);
-        madvise(gf.map, gf.map_bytes, MADV_WILLNEED);   // (as Window::init)
-        if (touch) {   // read every page: the process then holds the model resident
-            unsigned sink = 0;
-            for (size_t o = 0; o < gf.map_bytes; o += 16384) sink += ((volatile unsigned char*) gf.map)[o];
-            std::printf("read every page of the file (%u)\n", sink);
-        }
         std::printf("wrapped %s: %.1f GB, handle %s\n", wrapf.c_str(), gf.file_bytes / 1e9, W.handle ? "ok" : "NULL");
     }
-    int bad = 0, core_id = -1;
+    int bad = 0;
     for (const auto& [name, L] : libs) {
         const auto t0 = std::chrono::steady_clock::now();
         std::string why;
@@ -77,14 +67,13 @@ int main(int argc, char** argv) {
             ++bad;
         } else {
             std::printf("%-11s ok (%.0f ms)\n", name, ms);
-            if (std::string(name) == "core") core_id = id;
-        }
-        if (pipes && std::string(name) == "ple" && core_id >= 0) {   // (as the engine: the five decode-window libraries compiled, then the first pipeline)
-            for (const char* fn : {"xprep", "moe_route", "moe_combine_sh2", "gr_norm2"}) {
-                const auto t1 = std::chrono::steady_clock::now();
-                mtl::Pipeline pl = cx.pipeline(core_id, fn, mtl::Constants());
-                std::printf("            pipeline %-16s ok (%.0f ms, max threads %d)\n", fn,
-                            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count(), pl.max_threads);
+            if (pipes && std::string(name) == "core") {
+                for (const char* fn : {"xprep", "moe_route", "moe_combine_sh2", "gr_norm2"}) {
+                    const auto t1 = std::chrono::steady_clock::now();
+                    mtl::Pipeline pl = cx.pipeline(id, fn, mtl::Constants());
+                    std::printf("            pipeline %-16s ok (%.0f ms, max threads %d)\n", fn,
+                                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count(), pl.max_threads);
+                }
             }
         }
     }
