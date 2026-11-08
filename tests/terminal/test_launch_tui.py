@@ -263,10 +263,12 @@ class ModelStep(Base):
 
     def test_a_model_that_does_not_fit_can_still_be_chosen(self):
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "end", "enter")
-            last = ctx.rows[-1]
-            self.assertEqual(last.verdict, "no")                      # the last row does not fit a 12 GB card
-            self.assertEqual((ctx.settings.family, ctx.settings.model), (last.family, last.model))
+            # the table's tail: deepseek41's UD-Q8_K_XL (508 GB, "no" on a 12 GB card) and then glm53's
+            # UD-Q2_K_XL, which the RAM+VRAM floor legitimately lets fit a 64 GB host - so two up from the end
+            await press(pilot, "enter", "end", "up", "enter")
+            chosen = next(r for r in ctx.rows
+                          if (r.family, r.model) == (ctx.settings.family, ctx.settings.model))
+            self.assertEqual(chosen.verdict, "no")                    # the chosen row does not fit a 12 GB card
             self.assertIn("Where should the model files be stored?", text_of(app))
             self.assertTrue(any("does not fit" in n for n in ctx.notes))
         self.run_app(case)

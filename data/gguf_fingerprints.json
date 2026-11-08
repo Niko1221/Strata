@@ -706,5 +706,26 @@
    "Q6_K",
    "Q8_0"
   ]
+ },
+ "glm53/UD-Q2_K_XL": {
+  "arch": "glm5-next",
+  "tensors": 1412,
+  "bytes": 108710550904,
+  "expert_bytes": {
+   "IQ3_XXS": 37918605312,
+   "IQ2_XS": 57264832512,
+   "IQ4_XS": 3850371072,
+   "Q3_K": 1038090240,
+   "Q2_K": 1585446912
+  },
+  "experts_bpw": 2.609,
+  "bpw": 2.711,
+  "files": [
+   "GLM-5.3-Flash-UD-Q2_K_XL-00001-of-00004.gguf",
+   "GLM-5.3-Flash-UD-Q2_K_XL-00002-of-00004.gguf",
+   "GLM-5.3-Flash-UD-Q2_K_XL-00003-of-00004.gguf",
+   "GLM-5.3-Flash-UD-Q2_K_XL-00004-of-00004.gguf"
+  ],
+  "repo": "unsloth/GLM-5.3-Flash-UD-Q2_K_XL"
  }
 }

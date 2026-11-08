@@ -1,0 +1,40 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // 默认模型：provider key/model key
+  "model": "llama.cpp/coder",
+  "providers": {
+    "llama.cpp": {
+      "name": "llama.cpp (192.168.0.230)",
+      // 自定义 OpenAI 兼容端点必须显式指定运行时包
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        // 必须带 /v1（OpenCode 会在 baseURL 后拼接 /chat/completions 等路径）
+        "baseURL": "http://192.168.0.230:8080/v1",
+        "apiKey": "anything"
+      },
+      // models 必须在 provider 层级，不能嵌在 settings 里
+      "models": {
+        "coder": {
+          "modelID": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+          "name": "Qwen3.8 Flash (UD-Q4K)",
+          "limit": {
+            "context": 262144
+          }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "searxng": {
+      "type": "local",
+      // command 是含参数的单个数组；OpenCode 直接 spawn，无独立 args 字段
+      "command": ["npx", "-y", "mcp-searxng"],
+      "enabled": true,
+      // 字段名是 environment，不是 env
+      "environment": {
+        "SEARXNG_URL": "https://vm3.mgmine.ltd",
+        "SEARXNG_TIMEOUT_MS": "30000"
+      }
+    }
+  }
+}

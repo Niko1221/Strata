@@ -112,6 +112,9 @@ class CatalogRules(unittest.TestCase):
                 if r.family == "deepseek41":                           # its sizes are in MULTI_FILE_FAMILIES (shards + shared files), not in MODELS
                     self.assertAlmostEqual(r.download_gb, {"UD-Q8_K_XL": 508.4, "IST-DAS-2.00bpw": 256.8, "IST-DAS-2.25bpw": 273.8, "IST-DAS-1.75bpw": 239.3, "ISTA-DAS-Coder": 190.7, "UD-IQ1_S": 241.0, "UD-IQ1_M": 258.4}[r.model], delta=0.1)
                     continue
+                if r.family == "glm53":                                # the same shape: its size is the unsloth shards' sum; the flat MODELS dict holds a qwen namesake
+                    self.assertAlmostEqual(r.download_gb, {"UD-Q2_K_XL": 108.7}[r.model], delta=0.1)
+                    continue
                 self.assertAlmostEqual(r.download_gb, models[r.model]["download_gb"])
             rec = [r for r in rows if r.recommended]
             self.assertEqual([(r.family, r.model) for r in rec], [("qwen", "IQ3_S")])      # 64 + 12 GB: the 64 GB tier

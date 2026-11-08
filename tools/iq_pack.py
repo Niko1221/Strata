@@ -88,17 +88,71 @@ FORM = {
 # UD-Q4_K_XL; IQ3_XXS and IQ4_XS, #381).  Other quantized keys take the BF16 path (--compat-bf16), as before.
 NATIVE_PLE_KEY = {"Q2_0", "Q8_0", "IQ3_XXS", "IQ4_XS"}
 KIND = {"BF16": "4", "F16": "5", "F32": "2"}
+# The architectures the packer knows.  The BF16-preserve lists are PER ARCHITECTURE: qwen4exp's
+# hyper-connections use the down/up/inject bottleneck names, glm5-next's mHC uses fn/base/scale,
+# and their indexers do not share a single tensor name.  (From Project Maya v1.1.33's packer,
+# third_party/project-maya/NOTICE.md; the GLM engine path, src/glm_port.)
+GLM5NEXT_BF16 = (
+    # the mHC mixes (the released config keeps these unquantized; the runner's glm_hc kernels
+    # consume them per token)
+    "hc_attn_fn.weight", "hc_attn_base.weight", "hc_attn_scale.weight",
+    "hc_ffn_fn.weight", "hc_ffn_base.weight", "hc_ffn_scale.weight",
+    # the indexer - at 1M context the selection IS the model's accuracy
+    "indexer.attn_q_b.weight", "indexer.attn_k.weight", "indexer_compressor_gate.weight",
+    "indexer_compressor_ape.weight", "indexer.proj.weight", "indexer.k_norm.weight",
+    "indexer.k_norm.bias",
+    # the router and its noaux_tc selection bias (F32 by config: moe_router_dtype float32)
+    "ffn_gate_inp.weight", "exp_probs_b.bias",
+    # the KDA gates and norms (gates stay unquantized in the released model); the conv weights
+    # seed the whole KDA recurrence, so their quantization noise would accumulate per token
+    "ssm_a", "ssm_dt.bias", "ssm_norm.weight", "ssm_beta.weight",
+    "ssm_f_a.weight", "ssm_f_b.weight", "ssm_g_a.weight", "ssm_g_b.weight",
+    "ssm_conv1d_q.weight", "ssm_conv1d_k.weight", "ssm_conv1d_v.weight",
+    # the MLA norms and the 3-D absorbed projections that form the attention scores and values
+    "attn_q_a_norm.weight", "attn_kv_a_norm.weight",
+    "attn_k_b.weight", "attn_v_b.weight",
+)
+# The ONLY non-expert tensors a glm5-next pack may serve NATIVELY (quantized, read from the
+# GGUF by the engine): the attention projections and the dense/shared FFN weights, which are
+# exactly what dynamic recipes quantize on a real file.  Anything else quantized fails the
+# pack CLOSED - the packer errors instead of emitting a row the engine would reject at load.
+GLM5NEXT_NATIVE_OK = (
+    "attn_q_a.weight", "attn_q_b.weight", "attn_kv_a_mqa.weight", "attn_output.weight",
+    # the KDA layers' separate projections (Q5_K in the UD recipes)
+    "attn_q.weight", "attn_k.weight", "attn_v.weight",
+    "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
+    "ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight",
+    "token_embd.weight", "output.weight",
+)
+ARCHITECTURES = ("qwen4exp", "glm5-next", "glm5next")   # unsloth spells it without the hyphen
 
 
 def form_of(name: str):
     return FORM.get(re.sub(r"^blk\.\d+\.", "", name))
 
 
-def needs_bf16(name: str, type_name: str) -> bool:
+def needs_bf16(name: str, type_name: str, arch: str = "qwen4exp") -> bool:
     """Whether the engine reads `name` as BF16 from the pack (not natively from the GGUF)."""
+    if arch in ("glm5-next", "glm5next"):
+        # glm5-next has no PLE and no output_hc; its F32 router stays F32 (the runner reads it
+        # as F32 by config), so ONLY the listed projections take the BF16 path.
+        return name.startswith("blk.") and name.endswith(GLM5NEXT_BF16)
     if name == "blk.1.ple_key.weight" and type_name in NATIVE_PLE_KEY:
         return False
     return form_of(name) == "BF16"
+
+
+def index_shape(shape) -> tuple[int, int]:
+    """The (ne0, ne1) the flat index row records for a tensor of GGUF shape `shape`.
+
+    The engine reads packed tensors by BYTE OFFSET and the kernels by their own geometry, so a
+    3-D tensor (glm5-next's absorbed MLA projections and conv weights) packs as the 2-D view
+    (ne0*ne1, ne2): GGUF lays element (i0, i1, i2) at i0 + ne0*i1 + ne0*ne1*i2, which is exactly
+    row (i0 + ne0*i1) of the flattened view - byte-identical, no repacking."""
+    if len(shape) >= 3:
+        return int(shape[0]) * int(shape[1]), int(shape[2])
+    ne0 = int(shape[0])
+    return ne0, (int(shape[1]) if len(shape) > 1 else 0)
 
 
 def dequantize(raw: np.ndarray, type_name: str) -> np.ndarray:
@@ -224,9 +278,22 @@ def is_expert(name: str) -> bool:
     return name.startswith("blk.") and name.endswith(("_exps.weight",))
 
 
-def convert(name: str, type_name: str, raw: np.ndarray, compat_bf16: bool):
+def convert(name: str, type_name: str, raw: np.ndarray, compat_bf16: bool, arch: str = "qwen4exp"):
     """The pack form of one tensor the engine reads from dense.bin: (kind, stored bytes, destination bytes,
     record or None), or an error string.  `record` describes a conversion for conversions.json."""
+    if arch in ("glm5-next", "glm5next"):
+        # glm5-next reads the BF16-upgrade list as BF16 and everything else float as stored (the runner's
+        # per-tensor forms; the quantized non-listed tensors never reach here - refused in index_standalone).
+        if type_name == "BF16" or not name.endswith(GLM5NEXT_BF16):
+            return KIND[type_name], raw.tobytes(), raw.nbytes, None
+        values = dequantize(raw, type_name)
+        data = bf16_bytes(raw, type_name)
+        got = (np.frombuffer(data, dtype="<u2").astype(np.uint32) << 16).view(np.float32)
+        rec = {"src_type": type_name, "dst_type": "BF16",
+               "method": "%s->bf16 round-to-nearest-even (--compat-bf16)" % type_name.lower(),
+               "exact": bool(np.array_equal(got, values)),
+               "max_abs_err": float(np.max(np.abs(got.astype(np.float64) - values))) if values.size else 0.0}
+        return "4", data, len(data), rec
     form = form_of(name)
     if form is None or form == type_name:
         return KIND[type_name], raw.tobytes(), raw.nbytes, None
@@ -272,22 +339,50 @@ def convert(name: str, type_name: str, raw: np.ndarray, compat_bf16: bool):
     return "2", data, len(data), rec
 
 
-def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
+def index_standalone(src, out, model: Model, compat_bf16: bool = False, arch: str = "qwen4exp",
+                     block_count: int | None = None) -> int:
     """Every non-expert tensor of the model: the floats the engine reads from the pack into dense.bin in the form it
-    reads them (FORM; converted when stored otherwise, see above), quantized ones served natively from the GGUF."""
+    reads them (FORM; converted when stored otherwise, see above), quantized ones served natively from the GGUF.
+
+    glm5-next (arch in ("glm5-next", "glm5next")): fail CLOSED on a non-expert tensor that is neither float
+    nor on the BF16-upgrade list unless GLM5NEXT_NATIVE_OK names it; 3-D tensors pack as the 2-D view
+    (index_shape); the NextN/MTP block (blk.{block_count}.*, the runner reads it from the GGUF itself) is
+    dropped from the pack entirely."""
+    glm = arch in ("glm5-next", "glm5next")
     todo, problems = [], []
+    dropped = 0
     for name, (g, t, mm, p) in model.where.items():
         if is_expert(t.name) or t.name in NOT_IN_PACK:
             continue
-        if len(t.shape) > 2:
+        if block_count is not None and name.startswith("blk."):
+            il = name.split(".")[1]
+            if il.isdigit() and int(il) >= block_count:
+                dropped += 1
+                continue
+        # a trailing ne3 of 1 adds no bytes: some converters write glm5-next's conv weights as
+        # [4, 1, 8192, 1] instead of [4, 1, 8192], and index_shape packs both as (4, 8192)
+        dims = len(t.shape) - (len(t.shape) == 4 and int(t.shape[3]) == 1)
+        if dims > 2 and not (glm and dims == 3):
             print("tensor %s has %d dimensions; the index holds two" % (t.name, len(t.shape)))
             return 1
         # quantized: served from the GGUF unless the engine reads it from the pack (FORM), which takes
-        # --compat-bf16 to dequantize - except the native PLE key encodings
+        # --compat-bf16 to dequantize - except the native PLE key encodings (qwen) and, for glm5-next,
+        # exactly the GLM5NEXT_NATIVE_OK set (anything else quantized fails CLOSED, two lines below)
         form = form_of(name)
-        native = t.type_name not in FLOAT and (form is None or (
-            name == "blk.1.ple_key.weight" and t.type_name in NATIVE_PLE_KEY))
-        if t.type_name not in FLOAT and not native and not compat_bf16:
+        if glm:
+            # BF16-upgrade names win over the native set (a name can end with both, e.g. the
+            # indexer's attn_k.weight vs the KDA layers' attn_k.weight): listed ones convert to
+            # BF16, the native set is served raw, anything else quantized fails CLOSED.
+            bf16_ok = compat_bf16 and name.endswith(GLM5NEXT_BF16)
+            native = t.type_name not in FLOAT and not bf16_ok and name.endswith(GLM5NEXT_NATIVE_OK)
+            if t.type_name not in FLOAT and not native and not bf16_ok:
+                problems.append("%s is %s: not on the BF16 upgrade list nor the glm5-next native set "
+                                "(GLM5NEXT_NATIVE_OK); refusing to pack it silently (the BF16-upgrade "
+                                "names need --compat-bf16)" % (t.name, t.type_name))
+        else:
+            native = t.type_name not in FLOAT and (form is None or (
+                name == "blk.1.ple_key.weight" and t.type_name in NATIVE_PLE_KEY))
+        if not glm and t.type_name not in FLOAT and not native and not compat_bf16:
             problems.append(f"{name} is {t.type_name}, but the engine requires {form}; use --compat-bf16")
         todo.append((name, g, t, mm, p, native))
     # refused before anything is written: the previous pack stays as it was
@@ -302,15 +397,14 @@ def index_standalone(src, out, model: Model, compat_bf16: bool = False) -> int:
     converted, records = [], []
     with open(out / "dense.bin.tmp", "wb") as fo:
         for name, g, t, mm, p, native in todo:
-            ne0 = int(t.shape[0])
-            ne1 = int(t.shape[1]) if len(t.shape) > 1 else 0
+            ne0, ne1 = index_shape(t.shape)
             if native:
                 served += 1
                 rows.append([t.name, "0", "0", "0", "0", "0", "0", str(ne0), str(ne1), "8", "0", "32"] + ["0"] * 7)
                 continue
             raw = tensor_bytes(mm, g, t)
             try:
-                got = convert(name, t.type_name, raw, compat_bf16)
+                got = convert(name, t.type_name, raw, compat_bf16, arch)
             except ValueError as e:
                 got = str(e)
             if isinstance(got, str):
@@ -427,21 +521,29 @@ def index_from_base(a, src, base, out, g, T, mm) -> int:
     return 0
 
 
-def expert_layout(model: Model, src: pathlib.Path):
+def expert_layout(model: Model, src: pathlib.Path, lead: int = 0, trunk: int | None = None,
+                  per_role_shards: bool = False):
     """The pack's expert table: (layout rows, native_experts.txt text, n_expert, total bytes), or an error string.
     Each role is resolved by name in whichever shard holds it, and its offset is absolute in THAT shard: two
     shards do not start their data section at the same byte, so one role's data_start must not be used for
-    another's (per-role data_start as in #255, gopinath87607)."""
+    another's (per-role data_start as in #255, gopinath87607).  `lead`: the leading dense layers (glm5-next's
+    leading_dense_block_count) ship no router and no experts - the MoE layers start at `lead`.  `trunk`: the
+    servable layer count for a NextN model - the MTP block's experts (blk.{trunk}+) are the draft block's, read
+    from the GGUF by the engine itself, not packed.  `per_role_shards`: the v4 shard column as three fields
+    (gate_shard up_shard down_shard, the GLM runner's parser) instead of one comma-joined field (qwen's)."""
     T = {n: w[1] for n, w in model.where.items()}
-    exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")]
+    exps = [n for n in T if n.startswith("blk.") and n.endswith("_exps.weight")
+            and (trunk is None or int(n.split(".")[1]) < trunk)]
     if not exps:
         return "the model has no expert tensors (blk.N.ffn_{gate,up,down}_exps.weight)"
     n_layers = 1 + max(int(n.split(".")[1]) for n in exps)
-    n_expert = int(T["blk.0.ffn_gate_inp.weight"].shape[1])   # router rows = experts kept (pruned models ship < 512)
-    if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert for l in range(n_layers)):
+    first_moe = max(lead, min(int(n.split(".")[1]) for n in exps))
+    n_expert = int(T["blk.%d.ffn_gate_inp.weight" % first_moe].shape[1])   # router rows = experts kept (pruned models ship < 512)
+    if any(int(T["blk.%d.ffn_gate_inp.weight" % l].shape[1]) != n_expert
+           for l in range(first_moe, n_layers) if "blk.%d.ffn_gate_inp.weight" % l in T):
         return "the routers disagree on the expert count; a per-layer pruned model cannot be packed"
     layout, lines, offset, n_split = [], [], 0, 0
-    for l in range(n_layers):
+    for l in range(first_moe, n_layers):
         names = ["blk.%d.ffn_%s_exps.weight" % (l, r) for r in ROLES]
         if any(n not in T for n in names):
             return "layer %d: missing %s" % (l, ", ".join(n for n in names if n not in T))
@@ -465,7 +567,12 @@ def expert_layout(model: Model, src: pathlib.Path):
         layout.append((l, ts[0].type_id, ts[2].type_id, offset, blob, ts))
         ws = [model.where[n] for n in names]
         files = ["" if w[3] == src else w[3].name for w in ws]
-        column = files[0] if len(set(files)) == 1 else ",".join(files)
+        if per_role_shards and len(set(files)) != 1:
+            # the GLM runner's v4 spelling: one shard name per role, every role named (also shard 1's) -
+            # only the straddling rows differ; single-shard rows stay v3-shaped (one name, shard 1 omitted)
+            column = " ".join(f or src.name for f in files)
+        else:
+            column = files[0] if len(set(files)) == 1 else ",".join(files)
         n_split += len(set(files)) != 1
         if nvfp4:   # no GGUF offsets: experts.bin is the only source that carries the scale tails
             lines.append("%d %d %d %d %d" % (l, ts[0].type_id, ts[2].type_id, offset, blob))
@@ -476,11 +583,16 @@ def expert_layout(model: Model, src: pathlib.Path):
         lines.append(line + ("" if not column else " " + column))
         offset += blob * n_expert
     if n_split:
-        head = ("# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
-                "[shard | gate,up,down] (n_expert %d, total %d; absolute offsets in %s, or in the named shard "
-                "beside it - per role where the column is gate,up,down)\n" % (n_expert, offset, src.name))
+        if per_role_shards:
+            head = ("# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
+                    "[shard | gate_shard up_shard down_shard] (n_expert %d, total %d; absolute offsets in %s, "
+                    "or in the named shard(s) beside it)\n" % (n_expert, offset, src.name))
+        else:
+            head = ("# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
+                    "[shard | gate,up,down] (n_expert %d, total %d; absolute offsets in %s, or in the named shard "
+                    "beside it - per role where the column is gate,up,down)\n" % (n_expert, offset, src.name))
         print("%d layer(s) have their gate/up/down in different shards: native_experts.txt v4, per-role shard "
-              "column for %s" % (n_split, ", ".join(str(l) for l, *_ in layout if "," in lines[l])))
+              "column for %s" % (n_split, ", ".join(str(l) for (l, *_), ln in zip(layout, lines) if "," in ln)))
     else:
         head = ("# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] "
                 "(n_expert %d, total %d; absolute offsets in %s, or in the named shard beside it)\n"
@@ -617,8 +729,35 @@ def main() -> int:
     model = Model(src)
     if len(model.paths) > 1:
         print("model shards: " + ", ".join(p.name for p in model.paths))
+    # ---- the architecture: qwen4exp (the original), or glm5-next (GLM-5.3-Flash; two spellings in the wild,
+    # and the KV prefix follows the file's own spelling)
+    arch = str(g.metadata.get("general.architecture", ""))
+    if arch not in ARCHITECTURES:
+        print("general.architecture is %r; the packer knows %s" % (arch, " and ".join(ARCHITECTURES)))
+        return 1
+    block_count = None
+    if arch in ("glm5-next", "glm5next"):
+        prefix = "glm5-next." if arch == "glm5-next" else "glm5next."
+        bc = g.metadata.get(prefix + "block_count")
+        if bc is None:
+            print("%s: %sblock_count is missing; cannot tell the trunk from the NextN block" % (arch, prefix))
+            return 1
+        block_count = int(bc)
+        # the NextN/MTP layer counts INTO block_count in the wild (unsloth ships 46 with nextn_predict_layers 1):
+        # the servable trunk is what is left after subtracting it
+        block_count -= int(g.metadata.get(prefix + "nextn_predict_layers", 0) or 0)
+        if block_count < 1:
+            print("%s: block_count - nextn leaves no trunk" % arch)
+            return 1
+        print("%s: packing for the Glm5Model runner (quantized dense served natively; trunk layers 0..%d)"
+              % (arch, block_count - 1))
     # ---- the expert table first: a model that cannot be packed is refused before any file of the pack changes
-    got = expert_layout(model, src)
+    got = expert_layout(model, src,
+                        lead=int(g.metadata.get("glm5-next.leading_dense_block_count",
+                                                g.metadata.get("glm5next.leading_dense_block_count", 0)) or 0)
+                        if arch in ("glm5-next", "glm5next") else 0,
+                        trunk=block_count if arch in ("glm5-next", "glm5next") else None,
+                        per_role_shards=arch in ("glm5-next", "glm5next"))
     if isinstance(got, str):
         print(got)
         return 1
@@ -700,7 +839,7 @@ def main() -> int:
         (out / "native_experts.txt").unlink(missing_ok=True)
         rc = index_from_base(a, src, base, out, g, {t.name: t for t in g.tensors}, mm)
     else:
-        rc = index_standalone(src, out, model, a.compat_bf16)
+        rc = index_standalone(src, out, model, a.compat_bf16, arch, block_count)
     if rc:
         return rc
     if not (out / "tokenizer" / "vocab.json").exists() or not (out / "tokenizer" / "chat_template.jinja").exists():

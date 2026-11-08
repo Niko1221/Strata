@@ -1098,6 +1098,144 @@ class _RequestOwned:
     def __set__(self, obj, value):
         self._store(obj)[self.name] = value
 
+STAT_SAMPLE_RE = re.compile(
+    r"STAT tok_s=(-?\d+(?:\.\d+)?) ms_tok=(-?\d+(?:\.\d+)?) vram_hit=(-?\d+(?:\.\d+)?) "
+    r"ram_fetch=(-?\d+(?:\.\d+)?) disk=(-?\d+(?:\.\d+)?) promo=(-?\d+(?:\.\d+)?) "
+    r"vram_used=(-?\d+) vram_slots=(-?\d+) ram_used=(-?\d+) ram_slots=(-?\d+) "
+    r"ram_gb=(-?\d+(?:\.\d+)?) vram_gb=(-?\d+(?:\.\d+)?)(?: active=(\d+))?")
+
+
+def parse_glm_stat_sample(line: str) -> dict | None:
+    """Read the engine's live decode sample (a STAT line every 8 produced tokens, --serve with the fast model):
+    the engine's own tok/s and ms/token plus the expert-tier counters the server cannot measure itself -
+    the VRAM pool's hit rate, RAM fetches, disk reads, promotions, and the pool sizes.  The multi-request
+    path's line carries one extra field (active, the sequences decoding now)."""
+    if len(line) > 256:
+        return None
+    m = STAT_SAMPLE_RE.fullmatch(line.strip())
+    if m is None:
+        return None
+    f = [float(x) if x is not None else 0.0 for x in m.groups()]
+    return {"tok_s": f[0], "ms_tok": f[1], "vram_hit": f[2], "ram_fetch": f[3], "disk_reads": f[4],
+            "promotions": f[5], "vram_used": f[6], "vram_slots": f[7], "ram_used": f[8],
+            "ram_slots": f[9], "ram_gb": f[10], "vram_gb": f[11], "active": f[12]}
+
+
+class GlmCallRewriter:
+    """GLM-5.3 writes a tool call in its own spelling - literal tags, the same strings as
+    the tokenizer's special-token entries at ids 154843 / 154847 / 154848 / 154844, with the
+    value pair 154849 / 154850 (the tags may wrap the value itself)
+    "<tool_call>" NAME "<arg_key>"key</arg_key>value ... "</tool_call>".
+    The output parser expects the Qwen spelling - a single "<tool_call> {"name": ...,
+    "arguments": {...}} </tool_call> - so for this family the token stream is rewritten on the
+    way in: plain text passes through unchanged, a call is buffered from its opener to its
+    closer and re-emitted in the parser's spelling.  A partially arrived opener is held back
+    until it is decided, and a call that never closes is returned as text at the end."""
+
+    OPEN, SEP, CLOSE = '<tool_call>', '<arg_key>', '</tool_call>'
+    ARG_OPEN, ARG_CLOSE = '<arg_key>', '</arg_key>'
+    ARGV_OPEN, ARGV_CLOSE = '<arg_value>', '</arg_value>'   # the value's own pair (ids 154849/154850)
+
+    def __init__(self):
+        self.buf = ""            # a call's body being buffered (after the opener)
+        self.hold = ""           # a possible partial opener at the stream's end
+        self.in_call = False     # inside a call: everything goes into buf until the closer
+
+    def feed(self, piece: str) -> str:
+        self.hold += piece
+        out = []
+        while self.hold:
+            if self.in_call:
+                whole = self.buf + self.hold      # the closer may have landed in buf, not in hold
+                end = whole.find(self.CLOSE)
+                if end < 0:                       # still inside the call: nothing to emit yet
+                    self.buf += self.hold
+                    self.hold = ""
+                    break
+                body, rest = whole[:end], whole[end + len(self.CLOSE):]
+                out.append(self._as_qwen(body))
+                self.buf, self.hold = "", rest
+                self.in_call = False
+                continue
+            i = self.hold.find(self.OPEN)
+            if i < 0:
+                keep = self._partial(self.hold)
+                if keep:
+                    out.append(self.hold[:len(self.hold) - keep])
+                    self.hold = self.hold[len(self.hold) - keep:]
+                else:
+                    out.append(self.hold)
+                    self.hold = ""
+                break
+            out.append(self.hold[:i])
+            self.hold = self.hold[i + len(self.OPEN):]
+            self.in_call = True
+            self.buf = ""                          # opened; the body collects into buf
+        return ''.join(out)
+
+    def flush(self) -> str:
+        """End of the turn: a call that never closed goes back out as the text it was."""
+        if self.in_call:
+            text = self.OPEN + self.buf + self.hold
+            self.in_call, self.buf, self.hold = False, "", ""
+            return text
+        text, self.hold = self.hold, ""
+        return text
+
+    def _as_qwen(self, body: str) -> str:
+        self.line = ""          # the rewritten call starts on a fresh line (the parser's opener rule)
+        body = body.strip()
+        # form 1: a Qwen-style JSON, whose string values the model sometimes wraps in the
+        # arg_key/arg_close tags - turn those tags into the quotes they stand for, then parse
+        if body.startswith("{"):
+            fixed = body.replace("</arg_value>", '"').replace("<arg_value>", '"') \
+                        .replace("</arg_key>", '"').replace("<arg_key>", '"')
+            try:
+                d = json.JSONDecoder().raw_decode(fixed)[0]   # tolerates trailing junk
+                if isinstance(d, dict) and isinstance(d.get("name"), str):
+                    return self._wrap(str(d["name"]), d.get("arguments") or {})
+            except ValueError:
+                pass
+        # form 2: the official spelling - NAME, then arg_key/value pairs
+        name, _, rest = body.partition("<arg_key>")
+        name = name.strip()
+        args = {}
+        for part in rest.split("<arg_key>"):
+            k, sep, v = part.partition("</arg_key>")
+            k, v = k.strip(), v.strip()
+            if not k:
+                continue
+            # the value may be wrapped in the arg_value pair: the opener prefixes it and
+            # the closer ends it (or trails it, junk after the value)
+            if v.startswith(GlmCallRewriter.ARGV_OPEN):
+                v = v[len(GlmCallRewriter.ARGV_OPEN):].lstrip()
+            e = v.find(GlmCallRewriter.ARGV_CLOSE)
+            if e >= 0:
+                v = v[:e].rstrip()
+            try:
+                args[k] = json.loads(v)
+            except ValueError:
+                args[k] = v
+        return self._wrap(name or 'tool', args)
+
+    def _wrap(self, name, args):
+        params = ""
+        for k, v in (args or {}).items():
+            if not isinstance(v, str):
+                v = json.dumps(v, ensure_ascii=False)
+            params += chr(60) + 'parameter=' + k + chr(62) + '\n' + v + '\n' \
+                + chr(60) + '/parameter' + chr(62) + '\n'
+        # the parser's own spelling: the Qwen tool_call tags around the function block (without them the
+        # parser reads the block as reasoning text, never a call)
+        return ('\n' + chr(60) + 'tool_call' + chr(62) + '\n' + chr(60) + 'function=' + name + chr(62) + '\n' + params
+                + chr(60) + '/function' + chr(62) + '\n' + chr(60) + '/tool_call' + chr(62) + '\n')
+    @staticmethod
+    def _partial(text: str) -> int:
+        """How many trailing characters of `text` are a prefix of the opener (0 when none)."""
+        for n in range(min(len(GlmCallRewriter.OPEN) - 1, len(text)), 0, -1):
+            if text.endswith(GlmCallRewriter.OPEN[:n]):
+                return n
+        return 0
 
 class StrataEngine:
     """The resident engine: `strata --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
@@ -1163,6 +1301,7 @@ class StrataEngine:
         self.terminal_stages: list[dict] = []  # final layer ranges from this engine start's bounded stderr log
         self.terminal_batch_sample: dict | None = None
         self.terminal_stage_sample: dict | None = None
+        self.glm_stat = None                # the engine's latest STAT sample (live decode + the expert tiers)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
@@ -1330,8 +1469,12 @@ class StrataEngine:
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots", "--parallel") if k in args), 0)
-        self.batch = int(self.info.get("batch_slots") or 0)
-        if self.multi:                                  # DeepSeek --parallel: several requests at once, in its own protocol
+        # the GLM engine's own concurrency: --parallel N (its GEN lines carry rid=<id>, answers come back as
+        # `T <rid> <id>` / `DONE <rid> ...`, one context per rid - see generate_glm)
+        self.glm_slots = next((int(args[args.index("--parallel") + 1]) for k in ("--parallel",)
+                               if "--parallel" in args[:-1]), 0)
+        self.batch = int(self.info.get("batch_slots") or 0) if not self.glm_slots else self.glm_slots
+        if self.multi:
             self.batch = self.multi                     # (the server's parallel paths key on it: no FIFO, a request's own figures)
         if asked and self.batch != asked:
             print(f"[strata] parallel requests: {asked} asked, the engine runs {self.batch or 'one at a time'} "
@@ -1353,6 +1496,11 @@ class StrataEngine:
         self.slot_gs = gs if groups > 1 and groups_run > 1 else 0
         self.slot_q = [queue.Queue() for _ in range(self.batch)]
         self.slot_busy = [False] * self.batch
+        # the GLM engine's per-request lines: `T <rid> <id>` / `DONE <rid> ...` / `PP <rid> ...` / `ERR <rid> ...`,
+        # routed by the pump into glm_q[rid] (a dict, grown as requests arrive; the engine picks its own slots)
+        self.glm_q: dict[int, "queue.Queue"] = {}
+        self.glm_rid = 0
+        self.glm_lock = threading.Lock()
         # #1603: who owns a busy flag.  slot_claims: slots a request of this server picked or reserved and has not
         # given back; slot_releasing: slots handed to the background BDONE wait.  A busy slot in neither has no owner
         # (its flag leaked) and would keep every later request waiting for a slot that nothing will free.
@@ -1418,6 +1566,13 @@ class StrataEngine:
                 if sample is not None and self.proc is proc:
                     self.terminal_stage_sample = {**sample, "observed_monotonic": time.monotonic()}
                 continue
+            if line.startswith("STAT "):
+                # the GLM engine's live decode sample (every 8 tokens): keep the latest for /metrics.
+                # Consumed here, so it also never piles up unread in the shared queue under --parallel.
+                sample = parse_glm_stat_sample(line)
+                if sample is not None and self.proc is proc:
+                    self.glm_stat = {**sample, "observed_monotonic": time.monotonic()}
+                continue                        # control telemetry never enters a request's token stream
             if multi:                                   # DeepSeek --parallel: `T <rid> <id>`, `PP <rid> ...`, `DONE <rid> ...`, `ERR <rid> ...`
                 head, _, rest = line.partition(" ")
                 if head in ("T", "PP", "DONE", "ERR") and rest[:1].isdigit():
@@ -1425,7 +1580,10 @@ class StrataEngine:
                     rq = rid_q.get(int(rid_s))
                     if rq is not None:                  # (a request that has ended: its late lines go nowhere)
                         rq.put(head + (" " + tail if tail else "\n"))
-                    continue
+                        continue
+                    if not self.glm_slots:              # DeepSeek multi: an unknown rid's lines go nowhere.  The glm
+                        continue                        # engine's READY carries multi=<seqs> too: its requests read
+                                                        # from glm_q below, so a line of theirs must fall through
                 if head == "STAT":                      # over everything the engine wrote, not one request's
                     self.multi_stat = line
                     continue
@@ -1442,6 +1600,16 @@ class StrataEngine:
                     continue
                 except (IndexError, ValueError):
                     pass
+            if self.glm_slots and line.startswith(("T ", "DONE ", "PP ", "ERR ")):
+                # the GLM engine with --parallel N: a request's own lines carry its rid after the keyword; an
+                # unknown rid (its request already left) falls through to the shared queue, which nobody reads
+                # while all requests are in glm slots - a bounded handful of lines, never a stream
+                f = line.split(" ", 2)
+                if len(f) >= 2 and f[1].isdigit():
+                    q = self.glm_q.get(int(f[1]))
+                    if q is not None:
+                        q.put(line)
+                        continue
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so
@@ -1452,6 +1620,8 @@ class StrataEngine:
             q.put(None)
         for q in list(rid_q.values()):
             q.put(None)
+        for q in list(self.glm_q.values()):     # the pump ends every queue: a dead engine must free its GLM
+            q.put(None)                         # requests too, or each waits on heartbeats until its client leaves
 
     def death_note(self) -> str:
         """Why the engine most likely ended, from the end of its log: its own watchdog (issue #29), else RAM."""
@@ -2740,6 +2910,75 @@ class StrataEngine:
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
         return view
 
+    def generate_glm(self, ids, max_new, sampling, cancel, embeddings=None):
+        """The GLM engine's --parallel N mode (glm5-next): every request sends `GEN <max_new> rid=<id> [keys] <ids>`
+        and reads its own lines (`T <rid> <id>` tokens, `DONE <rid> ...`, `ERR <rid> ...`) from the pump's routing
+        queue; the engine picks a sequence context for the rid itself and decodes the running requests together
+        (pipelined across the split's cards).  No prompt-prefix reuse across GENs: each request reads its whole
+        prompt.  A cancelled consumer sends `STOP <rid>` (the engine ends just that one)."""
+        if not self.alive():
+            raise EngineDied("the engine is unavailable; this request was not sent")
+        self.progress, self.progress_ms, self.reused = None, 0, 0
+        self.prefill_tok_s_mean = None
+        with self.glm_lock:
+            rid = self.glm_rid
+            self.glm_rid += 1
+            self.glm_q[rid] = queue.Queue()
+        q = self.glm_q[rid]
+        head = f"GENI {int(max_new)} rid={rid}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
+            f"GEN {int(max_new)} rid={rid}{self.sampling_keys(sampling or {})}"
+        if os.environ.get("STRATA_DEBUG"):
+            print(f"[strata][glm-dbg] GEN max_new={max_new} prompt={len(ids)} rid={rid}", flush=True)
+        try:
+            with self.wlock:
+                self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
+                self.proc.stdin.flush()
+        except OSError:
+            self.glm_q.pop(rid, None)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        stopped = False
+        silence = float(self.silence_s or 0)
+        allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
+        heard = time.monotonic()
+        try:
+            while True:
+                if cancel.is_set() and not stopped:
+                    try:
+                        with self.wlock:
+                            self.proc.stdin.write(f"STOP {rid}\n")
+                            self.proc.stdin.flush()
+                    except OSError:
+                        pass
+                    stopped = True
+                try:
+                    line = q.get(timeout=1.0)
+                except queue.Empty:
+                    now = time.monotonic()
+                    if allow > 0 and now - heard > allow:
+                        raise EngineStuck(f"the engine printed nothing for {now - heard:.0f} s")
+                    yield None                                   # a heartbeat for the client's watchdog
+                    continue
+                if line is None:                                  # the engine died (the pump ends every queue)
+                    raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+                f = line.split()
+                if f[0] == "T" and len(f) == 3 and f[1] == str(rid):
+                    yield int(f[2])
+                    heard = time.monotonic()
+                elif f[0] == "PP" and len(f) >= 4 and f[1] == str(rid):
+                    try:
+                        self.progress = (int(f[2]), int(f[3]))
+                        self.progress_ms = float(f[4]) if len(f) >= 5 else 0.0
+                    except ValueError:
+                        pass
+                    heard = time.monotonic()
+                elif f[0] == "DONE" and len(f) >= 2 and f[1] == str(rid):
+                    self._parse_done("DONE " + " ".join(f[2:]))
+                    self._last_done = line
+                    return
+                elif f[0] == "ERR" and len(f) >= 2 and f[1] == str(rid):
+                    raise EngineDied(f"the engine refused this request: {line.strip()}")
+        finally:
+            self.glm_q.pop(rid, None)
     def generate(self, ids, max_new, sampling, cancel, embeddings=None, prefill_only=False):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
@@ -2747,6 +2986,9 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         bias_api.validate_request(sampling or {}, self, None)
+        if getattr(self, "glm_slots", 0):
+            yield from self.generate_glm(ids, max_new, sampling, cancel, embeddings)
+            return
         refuse_for_split(self, sampling or {})
         if getattr(self, "batch", 0) and not self.multi:
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
@@ -3872,6 +4114,8 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
     """#465 (opt-in): "parallel": N in the config - up to N requests decode together in the engine's batch slots
     (--batch N); more wait their turn.  1 or absent: one request at a time, as before.  A value the engine cannot use
     is said and passed on: the engine warns and adjusts (recommend, never force)."""
+    if (cfg.get("arch") or "") == "glm5-next":
+        return []   # the GLM engine takes --parallel (already in its args); --batch/--slots are the qwen engine's
     ds = (cfg.get("arch") or "") == "deepseek41"
     if cfg.get("split_engine_note") and "--batch" in args:
         # the all-cards split engine: its run config carries --batch N (its lanes); "parallel" (the Terminal's --parallel, the app's Concurrent requests) sets N
@@ -4789,6 +5033,7 @@ class Service:
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
         self.answer_room = True                       # 0.1.45: see ANSWER_ROOM_MIN_CAP (the config's "answer_room": false turns it off)
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
+        self.template_defaults = {}                   # extra chat-template kwargs this family always gets (GLM-5.3: the card's clear_thinking=true for chat)
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
@@ -4886,6 +5131,7 @@ class Service:
         self.images = None                                # serve/images.py's ImageGen when the config has "images"
         self.restore_after_load = None                    # a session file an image job saved before it unloaded
         self.stop_ids = end_token_ids(tokenizer)
+        self.stop_feed: set[int] = set()    # stop ids that are still fed to the parser first (the GLM call closer)
         self.family = None                              # the model family ("deepseek41"): set_family() below
         self.parser_cls = OutputParser                  # reads the model's output (reasoning, content, tool calls)
         # #567: a prompt re-encodes only what follows the last special token it shares with a recent prompt (the
@@ -4902,7 +5148,7 @@ class Service:
 
     def set_family(self, family: str | None) -> None:
         """A family whose text differs from the Qwen form this server was written for (DeepSeek-V4.1: its own end
-        token, DSML tool calls, reasoning-effort words).  The others keep the defaults."""
+        token, DSML tool calls, reasoning-effort words; GLM-5.3: its own end token).  The others keep the defaults."""
         self.family = family
         if family == "deepseek41":
             from serve import dsml
@@ -4910,6 +5156,18 @@ class Service:
             self.stop_ids = {int(eos)}
             self.parser_cls = dsml.DsmlOutputParser
             self._force_text = dsml.to_dsml_force
+        elif family in ("glm53", "glm5-next"):
+            # GLM-5.3: the engine ends a request at its own stop set (--eos-ids in the config: the template's three
+            # end tokens, whose special_ids names are the GGUF ones, plus the tool-call closer, so a call ends the
+            # turn as a natural stop).  The display side must agree: a stop the server does not count leaves the
+            # finished call pending (parser.finish releases a pending call only on a natural stop, #1058), and an
+            # end token the server does not stop at leaks into the answer's text.
+            sp = getattr(self.tok, "special_ids", None) or {}
+            ids = {int(sp[k]) for k in ("tokenizer.ggml.eos_token_id", "tokenizer.ggml.eot_token_id",
+                                        "tokenizer.ggml.eom_token_id") if k in sp}
+            closer = set(self.tok.encode(GlmCallRewriter.CLOSE, parse_special=True))
+            self.stop_ids = (ids or {int(sp.get("tokenizer.ggml.eos_token_id", 1))}) | closer
+            self.stop_feed = closer     # the rewriter must see the closer to close the call before the stop breaks
         import serve.frontend as _frontend
         _frontend.use_family(family)
 
@@ -5700,6 +5958,10 @@ class Service:
             live.update(parallel=par, running=running, slots=slots, outside_slots=max(0, running - in_slots),
                         waiting=int(getattr(self.engine, "waiting", 0) or 0),
                         admitting=int(getattr(self.engine, "admitting", 0) or 0))
+        st = getattr(self.engine, "glm_stat", None)     # the engine's own live sample (a STAT line every 8 tokens)
+        if st:
+            live["engine_decode"] = {k: v for k, v in st.items() if k != "observed_monotonic"}
+            live["engine_decode"]["age_s"] = round(time.monotonic() - st["observed_monotonic"], 1)
             if running and state == "idle":
                 live["state"] = "generating"
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
@@ -5914,6 +6176,8 @@ class Service:
                     else:
                         part["source"] = str(image)
         fetched = self._note_unreadable_tool_images(messages, cancel)
+        if self.family == "glm5-next" and tools and kwargs.get("reasoning_effort") in (None, "", "low"):
+            kwargs = {**kwargs, "reasoning_effort": "high"}   # the card's agentic runs think; low skips tool calls
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
@@ -5946,8 +6210,14 @@ class Service:
                 self.embeddings.keys = None
                 images, ds_pics = [], True
         if images:
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
+            if self.family == "glm5-next":
+                # the glm image tokens, by id and not by string (their GGUF literals): the template renders
+                # one begin/image/end triple per picture and the engine's GENI wants a run of image ids there
+                pad = 154854                    # the glm image token (VocabImage)
+                start = 154830                  # the glm begin-of-image token (VocabBeginOfImage)
+            else:
+                pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+                start = self.tok.encode(VISION_START, parse_special=True)[0]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
@@ -6026,10 +6296,14 @@ class Service:
             if lead:
                 req["strata_prefix"] = {"messages": lead}
         if req is not None and req.get("strata_prefix") is not None:
-            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images) or ds_pics)
-        if req is not None:
-            self.set_restore_points(req, ids, bool(images) or ds_pics)
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+            req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+        thinking = kwargs.get("enable_thinking", True) is not False
+        if self.family == "glm5-next":
+            # the GLM template's thinking comes from reasoning_effort (low/high/max); "low" emits no
+            # thinking block at all (measured), so the output parser must not start in reasoning state
+            effort = str(kwargs.get("reasoning_effort") or self.config_effort or "low")
+            thinking = effort in ("high", "max")
+        return ids, thinking, max_new
 
     def deepseek_turn_ids(self):
         """(<｜User｜>'s id, <｜System｜>'s id) of the DeepSeek template, each None where the vocabulary has no such single token."""
@@ -6248,9 +6522,28 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
-                                 recover=self.tool_call_recovery, declared_only=declared_only,
-                                 deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
+        parser = self.parser_cls(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
+                                 declared_only=declared_only)
+        if self.family == "glm5-next" and not thinking:
+            parser.state = "content"    # low effort emits no think block: plain text from the first token
+        if os.environ.get("STRATA_DEBUG"):
+            print(f"[glm] family={self.family!r} tools={bool(tools)}", flush=True)
+        glm_rw = GlmCallRewriter() if self.family == "glm5-next" else None
+        glm_debug = bool(os.environ.get("STRATA_DEBUG"))
+
+        def glm_feed(text):
+            # GLM-5.3 spells tool calls in its own tags; translate before the parser sees them.
+            # (the prints are STRATA_DEBUG-gated: per-token dumps of the model's raw text in the
+            # server log are a privacy face, and they grew the log ~80 MB/day per active request)
+            if glm_debug:
+                print("[glm-feed] " + text.encode("unicode_escape").decode()[:120], flush=True)
+            if glm_rw is None:
+                return text
+            translated = glm_rw.feed(text)
+            if glm_debug and translated != text:
+                print("[glm-feed] -> " + translated.encode("unicode_escape").decode()[:160], flush=True)
+            return translated
+
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -6426,7 +6719,7 @@ class Service:
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
-                                if t in self.stop_ids:
+                                if t in self.stop_ids and t not in self.stop_feed:
                                     if force and parser.state == "reasoning" and parser.buf == THINK_END:
                                         opens = True    # #537: the held </think> was the end: the call opens there
                                         break
@@ -6443,6 +6736,9 @@ class Service:
                                     break
                                 piece = detok.push(t)
                                 tail = (tail + piece)[-2:]
+                                piece = glm_feed(piece)
+                                if not piece:
+                                    continue
                                 evs = cut(parser.feed(piece))
                                 self._note(n, evs, st, rate)
                                 last_print = self._progress(last_print, st=st)
@@ -6459,6 +6755,9 @@ class Service:
                                     yield "ping", None
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
+                                    break
+                                if t in self.stop_ids:      # a stop id fed on purpose (the GLM call closer): the
+                                    finish = "stop"         # rewriter has the call whole now, so the turn ends here
                                     break
                                 if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
@@ -8145,8 +8444,13 @@ def make_handler(svc: Service):
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
                     loaded = svc.loaded()
+                    ctx_each = svc.reported_ctx() or 0
+                    slots = getattr(svc.engine, "glm_slots", 0) or 0   # the engine's own conversation count (--parallel N)
+                    meta = {"n_ctx": ctx_each}                # n_ctx stays per request: what one conversation may carry -
+                    if slots > 1 and ctx_each:                # clients size prompts from it; a total here would have them send 2M-token asks
+                        meta.update({"parallel": slots, "n_ctx_total": ctx_each * slots})
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
-                             "meta": {"n_ctx": svc.reported_ctx()},
+                             "meta": meta,
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
@@ -8619,6 +8923,7 @@ def make_handler(svc: Service):
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             messages, tools, kw = openai_to_messages(req)
             require_messages(messages)                # an empty conversation is a 400, as OpenAI answers it, not a reply to nothing
+            kw = {**getattr(svc, 'template_defaults', {}), **kw}
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
@@ -8823,6 +9128,7 @@ def make_handler(svc: Service):
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
             kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()})
+            kw = {**getattr(svc, 'template_defaults', {}), **kw}
             try:
                 self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
             except ValueError as e:
@@ -8883,6 +9189,7 @@ def make_handler(svc: Service):
             read for the same request, rendered and tokenized - the model does not run."""
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            kw = {**getattr(svc, 'template_defaults', {}), **kw}
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
@@ -8891,6 +9198,7 @@ def make_handler(svc: Service):
             svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            kw = {**getattr(svc, 'template_defaults', {}), **kw}
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
@@ -9663,7 +9971,7 @@ def check_request_sampling(req) -> None:
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
 FAMILY_MODEL_NAMES = {"qwen4exp": "qwen3.8-flash-next", "qwen35moe": "qwen3.6-35b-a3b",
-                      "deepseek41": "deepseek-v4.1-flash"}
+                      "deepseek41": "deepseek-v4.1-flash", "glm5-next": "glm-5.3-flash"}
 
 
 # The sampling each model card recommends ("Best Practices"), used when neither the request, the Chat settings nor the
@@ -9678,6 +9986,11 @@ MODEL_CARD_SAMPLING = {
                   "instruct": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}},
     # DeepSeek-V4.1-Flash: temperature 1.0, top_p 1.0 for local use (thinking or not), no penalties
     "deepseek41": {"thinking": {"temperature": 1.0, "top_p": 1.0}, "instruct": {"temperature": 1.0, "top_p": 1.0}},
+    # GLM-5.3-Flash: the sampling the model card's own evaluations use (temperature=1.0, top_p=0.95; the
+    # 1M-context runs raise top_p to 1.0 - a client that asks for it gets it).  Thinking is governed by
+    # reasoning_effort (the config carries "low": no thinking block, measured); the card's clear_thinking=true
+    # for chat reaches the template through the service's template_defaults.
+    "glm5-next": {"thinking": {"temperature": 1.0, "top_p": 0.95}, "instruct": {"temperature": 1.0, "top_p": 0.95}},
 }
 
 
@@ -10261,7 +10574,9 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     svc.queue_timeout_s = float(queue_timeout) if queue_timeout is not None else None
     if a.engine == "strata":                            # the model card's sampling when nothing else is said (see MODEL_CARD_SAMPLING)
         svc.model_arch = cfg.get("arch") or "qwen4exp"
-        svc.set_family(svc.model_arch if svc.model_arch == "deepseek41" else None)
+        svc.set_family(svc.model_arch if svc.model_arch in ("deepseek41", "glm5-next") else None)
+        if svc.model_arch == "glm5-next":                   # the model card: chat passes clear_thinking=true (prior turns' thinking is dropped)
+            svc.template_defaults = {"clear_thinking": True}
         requested = cfg.get("parallel")
         if requested is None:
             args = cfg.get("args", [])

@@ -783,8 +783,8 @@ class NativeExpertsV5Tests(unittest.TestCase):
     def test_packer_refuses_before_writing(self):
         real = iq_pack.expert_layout
 
-        def v6_layout(model, src):
-            layout, text, n_expert, offset = real(model, src)
+        def v6_layout(model, src, *args, **kwargs):
+            layout, text, n_expert, offset = real(model, src, *args, **kwargs)
             return layout, text.replace("native experts v3:", "native experts v6:", 1), n_expert, offset
 
         with tempfile.TemporaryDirectory() as d:

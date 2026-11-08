@@ -41,7 +41,8 @@ SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "q
                                    # round 0214: Unsloth's v3.1 sets (revision d9620119); the v3.1 UD-IQ4_XS has its own name, its Hub file names are UD-IQ4_XS's with four shards
                                    "unsloth/UD-IQ1_M", "unsloth/UD-Q2_0", "unsloth/UD-IQ2_XS", "unsloth/UD-Q2_K_XL", "unsloth/UD-IQ3_XXS",
                                    "unsloth/UD-Q3_K_XL", "unsloth/UD-IQ4_XS-v31",
-                                   "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M"})
+                                   "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M",
+                                   "glm53/UD-Q2_K_XL"})
 
 
 def settings_path() -> Path:
@@ -253,6 +254,18 @@ def _gguf_header(path: Path) -> dict:
         raise ProfileError("GGUF header version is not recognized", 5)
     return {"name": path.name, "path": str(path), "bytes": details.st_size,
             "gguf_version": version}
+
+
+def _known_archs() -> set[str]:
+    """The GGUF architectures the fingerprint catalog names (qwen4exp, glm5next, ...): an architecture outside
+    this set is what "unsupported model type" means, one inside it goes on to the shard-name / header match."""
+    try:
+        catalog = json.loads((ROOT / "data" / "gguf_fingerprints.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"qwen4exp"}
+    archs = {row.get("arch") for row in catalog.values() if isinstance(row, dict) and row.get("arch")}
+    archs.add("qwen4exp")
+    return archs
 
 
 def _candidate_selection(shards: list[Path]) -> dict | None:
@@ -821,6 +834,7 @@ def plan_import(raw_path: str) -> dict:
     observed_experts: set[str] = set()
     observed_tensor_count = 0
     observed_payload = 0
+    known_archs = _known_archs()
     if files and not issues:
         for item in shards:
             try:
@@ -833,10 +847,10 @@ def plan_import(raw_path: str) -> dict:
             observed_experts.update(inspected["expert_tensor_types"])
             observed_tensor_count += inspected["tensor_count_scanned"]
             observed_payload += int(inspected.get("payload_bytes_required") or 0)
-            if inspected["architecture"] is not None and inspected["architecture"] != "qwen4exp":
+            if inspected["architecture"] is not None and inspected["architecture"] not in known_archs:
                 issues.append(f"{item.name}: unsupported_architecture")
     if metadata is not None:
-        if metadata["architecture"] != "qwen4exp":
+        if metadata["architecture"] not in known_archs:
             issues.append("unsupported_or_missing_architecture")
         if metadata["tokenizer_model"] != "gpt2" or not metadata["tokenizer_tokens_present"] or \
                 not metadata["tokenizer_merges_present"]:

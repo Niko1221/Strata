@@ -962,6 +962,35 @@ MULTI_FILE_FAMILIES = {
                               "ram_gb": 306, "shards": [DSV41_SHARD.format(i=i) for i in range(1, 10)]}},
                    "sha256": DSV41_ALL_FILES, "vision": True}     # the engine's own tower (strata-dsv41 --vision on, the default), 0.2.7
 }
+
+# GLM-5.3-Flash (GGUF architecture glm5-next), Unsloth's UD-Q2_K_XL: the fourth engine path (strata-glm, src/glm_port,
+# ported from Project Maya v1.1.33, MIT, third_party/project-maya/NOTICE.md).  Four shards (108.9 GB: the routed
+# experts IQ2_XS/IQ3_XXS/IQ4_XS/Q2_K/Q3_K, served natively from the shards; the dense weights packed to BF16 by
+# tools/iq_pack.py --compat-bf16 into a ~0.9 GB pack folder beside them).  The engine splits the layers over the
+# cards itself and streams the DSA latent cache (fp16 or --kv int8, 544 bytes a position and layer).  Verified on
+# 2x V100-32GB: 512K context x 2 sequences, INT8 latent, expert tiers warm in ~90 s (GLM-PORT-STATUS.md).
+GLM53_REPO = "unsloth/GLM-5.3-Flash-UD-Q2_K_XL"
+GLM53_SHARD = "GLM-5.3-Flash-UD-Q2_K_XL-{i:05d}-of-00004.gguf"
+GLM53_FILES = {
+    "GLM-5.3-Flash-UD-Q2_K_XL-00001-of-00004.gguf": (9429984, "2f32eba33ebc75a715e9c85a010faac4c67542e38e8970bd961d544bfe815f9e"),
+    "GLM-5.3-Flash-UD-Q2_K_XL-00002-of-00004.gguf": (49294975936, "f4a9e1ab13d5d9620f5590c9a4aba4c169e6707a1554f3be3fe3112f80a66825"),
+    "GLM-5.3-Flash-UD-Q2_K_XL-00003-of-00004.gguf": (49949266048, "330a8ad76c787b3ab6df062dd30abea7aafe6a0e3d5860e8720dfa4abb2434a5"),
+    "GLM-5.3-Flash-UD-Q2_K_XL-00004-of-00004.gguf": (9466399584, "5c294f42edc5d69cf00a79ab444e61f0742e9933105fc5c85f97da54dab8946f"),
+}
+GLM53_CONTEXT = 524288       # 512K per conversation, two at once on 2x 32 GB cards with the INT8 latent
+                             # cache (measured on 2x V100-32GB, 62 GB RAM); --context raises or lowers it
+MULTI_FILE_FAMILIES["glm53"] = {
+    "title": "GLM-5.3-Flash", "by": "Zhipu (zai-org); the GGUF by Unsloth", "arch": "glm5-next",
+    "about": "a 320B MoE (288 experts, top-8) with KDA linear attention, sparse-attention indexing and an MTP draft "
+             "layer; 108.9 GB on disk. Verified on two 32 GB cards with 64 GB of RAM (512K context x 2 sequences, "
+             "about 40 tokens a second per sequence with the MTP drafter); smaller setups stream more from RAM/disk",
+    "tag": "glm-5.3-flash-", "name": "glm-5.3-flash",
+    "license": "MIT: https://huggingface.co/zai-org/GLM-5.3-Flash",
+    "models": {"UD-Q2_K_XL": {"about": "Unsloth Dynamic 2-bit: the experts in IQ2_XS/IQ3_XXS/IQ4_XS mixes, the "
+                                          "attention weights Q4_K..Q8_0 (108.9 GB of shards + a ~0.9 GB pack)",
+                               "ram_gb": 62, "shards": [GLM53_SHARD.format(i=i) for i in range(1, 5)]}},
+    "sha256": GLM53_FILES, "vision": False}
+
 # The official sets first (a normal PC), Unsloth's 508 GB set last.  Each model: its shards, the sub-folder they are in at the repository
 # (and in a --gguf-dir folder), the files shared with the other set ("shared"), the pack recipe and the shipped expert profile.
 MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
@@ -9532,6 +9561,123 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     return start(cfg_path, port)
 
 
+def glm_engine_exe():
+    """Where the GLM engine (strata-glm) is: STRATA_GLM_EXE, else an engine-glm package folder beside the
+    Strata engine, else a source checkout's build/strata-glm.  None: setup says what to do."""
+    env = (os.environ.get("STRATA_GLM_EXE") or "").strip()
+    if env:
+        p = Path(env)
+        return p if p.is_file() else None
+    base = ROOT / "engine-glm"
+    if base.is_dir():
+        dirs = sorted((d for d in base.iterdir() if d.is_dir()), key=lambda d: d.name)
+        if dirs:
+            exe = dirs[-1] / ("strata-glm.exe" if WIN else "strata-glm")
+            if exe.is_file():
+                return exe
+    cand = ROOT / "build" / ("strata-glm.exe" if WIN else "strata-glm")
+    return cand if cand.is_file() else None
+
+
+def glm_pack_cmd(folder: Path, pack: Path) -> list:
+    """The pack recipe for a glm5-next GGUF: tools/iq_pack.py with --compat-bf16 (the small dense projections
+    dequantized to BF16; the experts stay in the shards, read by the engine natively)."""
+    return [sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(folder / GLM53_SHARD.format(i=1)),
+            "--out", str(pack), "--compat-bf16"]
+
+
+def install_glm(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, all_cards=None):
+    """Steps 2-7 for GLM-5.3-Flash (MULTI_FILE_FAMILIES["glm53"]): the engine (strata-glm, from STRATA_GLM_EXE,
+    an engine-glm package, or this checkout's build/), the four pinned shards (--gguf-dir or the models folder),
+    the pack folder beside them (tools/iq_pack.py --compat-bf16, a few minutes: the dense projections are
+    dequantized), the config.  The engine splits the layers over the cards and tiers the experts itself."""
+    fam = MULTI_FILE_FAMILIES[family]
+    say()
+    say(f"  {fam['title']} - {fam['by']}: {fam['about']}")
+    ok(f"model: {fam['title']}")
+    say(f"  Its license: {fam['license']}")
+    names = list(fam["models"])
+    model = a.model or names[0]
+    if model not in names:
+        fail(f"{fam['title']} has no {a.model} model file", "choose: " + ", ".join(names))
+    tag = fam["tag"] + model
+    cards = dsv41_cards(gpu, all_cards, bool(a.gpu is not None or a.gpus))
+    ctx = a.context or GLM53_CONTEXT
+    folder = dsv41_folder(a, fam, tag, model)
+    shards = [folder / GLM53_SHARD.format(i=i) for i in range(1, 5)]
+    missing = [s for s in shards if not s.is_file()]
+    if missing:
+        fail(f"{missing[0].name} is missing",
+             f"put all four shards into {folder} (huggingface.co/{GLM53_REPO}), or point --gguf-dir at the folder that has them")
+    for s in shards:
+        verify_sha256(s, *fam["sha256"][s.name], own=bool(a.gguf_dir))
+    ok(f"model files: {folder} (4 shards, {sum(v[0] for v in fam['sha256'].values()) / 1e9:.1f} GB, SHA-256 checked)")
+    step(3, "Python packages")
+    pip_install(runtime_packages(), "numpy, jinja2, regex, pyyaml, tqdm, requests, pillow, psutil, textual (the screens)")
+    step(4, "the GLM engine")
+    exe = glm_engine_exe()
+    if exe is None:
+        fail("the GLM engine (strata-glm) is not on this computer",
+             "build it from a Strata source checkout: cmake -S . -B build -DSTRATA_BUILD_GLM=ON && "
+             "cmake --build build --target strata-glm, then point STRATA_GLM_EXE at it "
+             "(or put a strata-glm package into engine-glm/)")
+    ok(f"engine: {exe}")
+    step(5, "the pack (built once from the shards)")
+    pack = folder.parent / "glm-pack"          # beside the shards: the engine reads the experts from the shard files
+    have_pack = (pack / "index.txt").is_file() and (pack / "native_experts.txt").is_file() \
+        and (pack / "tokenizer" / "vocab.json").is_file()
+    if have_pack:
+        ok(f"pack: {pack} (already built)")
+    else:
+        say("  packing the dense weights (a few minutes; the expert weights stay in the shards) ...")
+        run(glm_pack_cmd(folder, pack))
+        if not ((pack / "index.txt").is_file() and (pack / "native_experts.txt").is_file()):
+            fail("the pack was not completed", "run setup again; if it fails again, the shard files may be damaged")
+        ok(f"pack: {pack}")
+    step(6, "writing the start script")
+    # --kv int8: the DSA latent cache quantized (544 bytes a position and layer; fp16 doubles it).  The engine
+    # splits the layers and tiers the experts by itself.  --parallel 2: two conversations decode together (the
+    # engine's rid= protocol; the server routes per request; STRATA_GLM_SEQS in the engine's env does the same).
+    # --eos-ids: the engine's default stops are 154820/154827/154829 (endoftext/user/observation) and --eos-ids
+    # REPLACES them, so the list carries all three plus 154844, the tool-call closer tag.  The closer must
+    # end a call as a natural stop: a call the engine ran past (finish=length) is not upgraded to a tool_call
+    # event, and the client reads it as plain text.
+    # reasoning_effort low: GLM-5.3's chat template turns "low" into no thinking block at all (measured: zero
+    # reasoning tokens, the answer straight away); the model's own default is "max", which burns a client's whole
+    # max_tokens on thinking and reads as "no answer".
+    par = int(os.environ.get("STRATA_GLM_PARALLEL", "2") or 2)
+    think = os.environ.get("STRATA_GLM_THINKING", "low") or "low"
+    if think not in ("low", "high", "max"):
+        think = "low"
+    args = ["--glm-pack", str(pack), "--max-context", str(ctx), "--kv", "int8", "--parallel", str(par),
+            "--eos-ids", "154820,154827,154829,154844"]
+    cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
+           "model_name": fam["name"], "arch": fam["arch"], "log": str(home() / f"strata-{tag.lower()}.log"),
+           "lib_dirs": [], "port": port, "engine_ready_s": 1800, "reasoning_effort": think, "parallel": par}     # ~110 GB read from the files on the first start
+    if getattr(a, "host", None):
+        cfg["host"] = a.host
+    if getattr(a, "api_key", None):
+        cfg["api_key"] = a.api_key
+    idx = [c["index"] for c in cards]
+    if len(idx) > 1 or a.gpu is not None or a.gpus:
+        cfg["gpu"] = idx if len(idx) > 1 else idx[0]
+        cfg["gpus_asked"] = True
+    cfg["open_browser"] = a.browser
+    cfg_path = home() / f"strata-{tag.lower()}.json"
+    write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
+    script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
+    ok(f"start script: {script.name}")
+    say()
+    say("All set.")
+    say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
+    say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
+    say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
+    say("  Loading takes a few minutes: the expert tiers are warmed from the shards first.")
+    if a.no_start:
+        return 0
+    return start(cfg_path, port)
+
+
 def preview_family(a) -> int:
     """--family qwen36: a family setup knows but the engine does not run yet (PREVIEW_FAMILIES).  Downloads the chosen
     size (pinned revision, size and SHA-256 checked) and, with --vision, the image encoder - and says plainly that
@@ -10500,9 +10646,11 @@ def main() -> int:
                               str(allf.index(rec_fam) + 1), a.yes)) - 1]
     if family in OWN_PATH_FAMILIES:                    # Qwen3.6: its own engine path, its own steps 2-7
         return install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted)
-    if family in MULTI_FILE_FAMILIES:                  # DeepSeek-V4.1-Flash: nine shards, its own engine, several cards
+    if family in MULTI_FILE_FAMILIES:                  # DeepSeek-V4.1-Flash / GLM-5.3-Flash: their own engine, several cards
         all_cards = (None if (WIN or getattr(a, "_cards_named", False)) else dsv41_auto_cards(amd, ROOT / "engine")) if hip else [g for g in found if gpu_problem(g) is None]
         gpu = {**gpu, "cards": chosen}
+        if family == "glm53":
+            return install_glm(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, all_cards)
         return install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, all_cards)
     fam = FAMILIES[family]
     if fam.get("ready") and hip:

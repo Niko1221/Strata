@@ -311,8 +311,15 @@ int main(int argc, char** argv) {
             const int n = (int) mtmd_input_chunk_get_n_tokens(ichunk);
             // the grid from the decoder positions (nx/ny getters are deprecated): x and y of the last token
             const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t) n - 1);
-            const int nx = (int) last.x + 1, ny = (int) last.y + 1;
-            if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) + " tokens)";
+            int nx = (int) last.x + 1, ny = (int) last.y + 1;
+            if (nx * ny != n && (size_t) last.x == (size_t) n - 1 && (size_t) last.y == (size_t) n - 1) {
+                // glm5v-style NORMAL positions (t = x = y = z, one step a token, a diagonal in 2-D): the
+                // engine's glm path places rows at the <|image_pad|> run in order and does not read nx/ny,
+                // so the record just carries the run as a single column (nx = n, ny = 1)
+                nx = n; ny = 1;
+            }
+            if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) +
+                                    " tokens; nx=" + std::to_string(nx) + " ny=" + std::to_string(ny) + ")";
             // never silently produce many times the budget (I7, #3690): over the limit (a rounding margin of an eighth) the picture is refused
             if (err.empty() && max_tokens > 0 && n > max_tokens + max_tokens / 8)
                 err = "the picture became " + std::to_string(n) + " image tokens, over the limit of " + std::to_string(max_tokens) +
