@@ -160,9 +160,13 @@ and idles at 315), the memory domain at 1692 instead of 1557, the CPUs at 2601. 
 protocol suite: iq3_s short decode 37.3 to **47.4 (+27%)**, 4K decode 36.6 to 40.2, 16K decode 33.4 to **40.5 (+21%)**,
 prompt +13 to +16%, TTFT -14%; Qwen3.6 short 50.7 to 59.3 (+17%), 4K 37.4 to 43.5, 16K 20.2 to 25.2 (+25%), prefill
 +15 to +16%. Decode moves because the memory-domain clock moves too - this is the cheapest Thor speed-up there is, and
-it survives on 120 W hardware only as a DVFS gamble. The 120 W half, run the same night with the same scripts and the same engine package, both standard suites at
-sanity 12 of 12, pool cleaned by fadvise before each phase ([normal/iq3s-64k.md](normal/iq3s-64k.md),
-[normal/q36-128k.md](normal/q36-128k.md)):
+it survives on 120 W hardware only as a DVFS gamble. The 120 W half ran 2026-11-07 14:26/14:37Z, the MAXN half
+2026-11-05 22:56/23:06Z - a day and a recorded terminal commit apart, not the same night: same scripts, same
+engine-package lineage, pool cleaned by fadvise before each phase; both suites sanity 12 of 12, both logged
+**nonconforming** for one protocol point only (the running model file could not be hashed). The 11-07 half's
+recorded commit `5819cc0b` predates the speed-table merge, so its run record alone does not establish its table
+state; the engine binaries of those dates came from the bench tree, which carries the table
+([normal/iq3s-64k.md](normal/iq3s-64k.md), [normal/q36-128k.md](normal/q36-128k.md)):
 
 | | iq3_s short / 4K / 16K decode | iq3_s 4K / 16K prompt | iq3_s TTFT 4K | q36 short / 4K / 16K decode | q36 prefill 4K / 16K |
 |---|---|---|---|---|---|
@@ -175,8 +179,10 @@ At the dgx cells the same shape holds for q36 (+10 / +10 / +9% prompt, +9 / +12 
 MAXN in this pair (950 against 1,051) while the 16K cell gained - a two-round cell at the machine's
 largest size, likely page-cache state over the 78 GB pack rather than the clocks, and it is left stated
 rather than averaged away. The earlier +27% headline was a cross-session comparison (a pre-table, partly
-stale-pool run against a fresh one); this paired night is the number to quote: MAXN + jetson_clocks buys
-about +10 to +15% across the board on this part, cheapest Thor speed-up there is.
+stale-pool run against a fresh one); this spaced pair is the one to quote, and it can only be cross-session -
+a clock state changes the whole machine, no session can hold both halves. Quote it as "MAXN + jetson_clocks:
++10 to +15% across the board on this part, cross-session, same scripts and engine package" - the cheapest
+Thor speed-up there is.
 
 The same tool at the same cells as the Spark guide (`tools/dgx_bench.py`, 64K context, temperature 0, 256-token
 answers; [maxn/iq3s-64k.md](maxn/iq3s-64k.md), [maxn/q36-128k.md](maxn/q36-128k.md), [maxn/nvfp4-64k.md](maxn/nvfp4-64k.md)):
