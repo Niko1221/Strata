@@ -615,6 +615,12 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
+        elif k == "continue_final_message":
+            # llama.cpp / HF transformers convention: the generation continues the final assistant
+            # message instead of starting a new one.  Rendered without the generation prompt, and
+            # the rendered prompt loses its trailing <|im_end|> in render_prompt (server.py) so the
+            # model picks the turn up where the client left it.
+            kwargs["continue_final_message"] = bool(v)
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
