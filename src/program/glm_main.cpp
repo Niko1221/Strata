@@ -3560,7 +3560,7 @@ static int glm_pack_generate(const Options& o) {
                 }
             }
             if (multi) {
-                if (req_rid < 0) std::printf("ERR this engine runs several conversations: GEN needs rid=<id>\n");
+                if (req_rid < 0) { std::printf("ERR this engine runs several conversations: GEN needs rid=<id>\n"); std::fflush(stdout); }
                 else gen_admit(req_rid, toks, max_new, rq);
                 continue;
             }
@@ -3680,6 +3680,9 @@ int main(int argc, char** argv) {
             if (!parse_i64_list(next("--eos-ids"), o.eos_ids, e)) { std::fprintf(stderr, "--eos-ids: %s\n", e.c_str()); return 2; }
             o.stop_eos = true; o.eos_given = true; }
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
+        else if (a == "--vision") {         /* accepted for the server's config symmetry: the glm path takes
+                                             * pictures through GENI unconditionally (the flag gates the qwen
+                                             * path's M-RoPE table, which the glm engine does not use) */ }
         else if (a == "--dflash") o.dflash = next("--dflash");
         else if (a == "--serve") o.serve = true;
         else if (a == "--mtp") o.mtp = next("--mtp");

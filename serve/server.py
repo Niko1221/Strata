@@ -1580,7 +1580,10 @@ class StrataEngine:
                     rq = rid_q.get(int(rid_s))
                     if rq is not None:                  # (a request that has ended: its late lines go nowhere)
                         rq.put(head + (" " + tail if tail else "\n"))
-                    continue
+                        continue
+                    if not self.glm_slots:              # DeepSeek multi: an unknown rid's lines go nowhere.  The glm
+                        continue                        # engine's READY carries multi=<seqs> too: its requests read
+                                                        # from glm_q below, so a line of theirs must fall through
                 if head == "STAT":                      # over everything the engine wrote, not one request's
                     self.multi_stat = line
                     continue
@@ -2922,7 +2925,7 @@ class StrataEngine:
             self.glm_rid += 1
             self.glm_q[rid] = queue.Queue()
         q = self.glm_q[rid]
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
+        head = f"GENI {int(max_new)} rid={rid}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
             f"GEN {int(max_new)} rid={rid}{self.sampling_keys(sampling or {})}"
         if os.environ.get("STRATA_DEBUG"):
             print(f"[strata][glm-dbg] GEN max_new={max_new} prompt={len(ids)} rid={rid}", flush=True)
@@ -6207,8 +6210,14 @@ class Service:
                 self.embeddings.keys = None
                 images, ds_pics = [], True
         if images:
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
+            if self.family == "glm5-next":
+                # the glm image tokens, by id and not by string (their GGUF literals): the template renders
+                # one begin/image/end triple per picture and the engine's GENI wants a run of image ids there
+                pad = 154854                    # the glm image token (VocabImage)
+                start = 154830                  # the glm begin-of-image token (VocabBeginOfImage)
+            else:
+                pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+                start = self.tok.encode(VISION_START, parse_special=True)[0]
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
