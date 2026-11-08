@@ -1,12 +1,16 @@
 // src/qwen35/q36_fa.cuh - the prompt attention of q36 on tensor cores (FA pilot, step 1, second iteration).
 //
-// Replaces the cuBLAS branch of q36_engine.cu:2275-2302 (sliced QK^T + k_attn_softmax16 + sliced PV) with one
-// flash-style kernel: no score buffer, so no tq limit and no ~45 000 launches per prompt.
+// Replaces the cuBLAS branch of the prompt chunk (q36_engine.cu:1984-2013: a strided QK^T GEMM per KV head,
+// k_attn_softmax16 :1999, then the PV GEMM). The engine keeps that branch as the fallback behind
+// `if (!fa_ok || fa_check)` :1984, so an unrecognised geometry, KV type or a failed launch still runs cuBLAS.
+// One flash-style kernel instead: no score buffer, so no tq limit and no ~45 000 launches per 96k prompt.
+// It runs only for a layer picked by STRATA_Q36_FA_LAYER; the default (fa_layer = -1, declared at :1158) is
+// the cuBLAS branch, unchanged.
 //
-// Why this is not a literal port of llama.cpp's fattn-mma-f16.cuh: that kernel is built on the tl:: fragment types
-// of ggml-cuda/mma.cuh (1606 lines), which pull in ggml-cuda/common.cuh, and strata_qwen35's include directories
-// (CMakeLists.txt:917) do not see them. The math is the same m16n8k16 f16 -> f32 MMA with the fragment mapping
-// documented at qsa_prompt_attn.cu:91-95, and that file's mma16816 (qsa_prompt_attn.cu:57-72) is copied verbatim.
+// Why this is not a literal port of llama.cpp's fattn-mma-f16.cuh: that kernel is built on the tl:: fragment
+// types of ggml-cuda/mma.cuh (1606 lines), which pull in ggml-cuda/common.cuh, and the include directories of
+// the strata_qwen35 target (CMakeLists.txt:921) do not see them. The math is the same m16n8k16 f16 -> f32 MMA,
+// so mma16816 below writes the fragment mapping out from the PTX ISA instead of importing it.
 //
 // The tile is now a template: kQs queries per block (4 or 8, so 32 or 64 MMA rows) and kSlice KV positions per
 // slice (32 or 64). The four combinations are the ones Cfg accepts; the launcher dispatches over them, so the
@@ -18,11 +22,10 @@
 // tile, so a warp owns 16 rows, half of the score columns (ScoreTiles of 8) and half of DV (PvTiles of 8 = 128
 // columns) - the accumulator is acc[16][4] = 64 registers per thread in all four variants, and the block grows
 // with the rows (Threads = kThreadsPerRow * kRows: 128 threads for 32 rows, 256 for 64).
-// The layouts are q36's, passed as strides - they are all multiples of 16 bytes, so nothing is repacked
-// (prep2/fa-pilot-design.md section 1):
-//   Q [T][H][HD] f16   (q16, q36_engine.cu:1657, filled by k_to_f16 :2273)
-//   K,V [HKV][P][HD] f16 (k16/v16 :1655-1656, filled by k_kv_f16_kv :2256-2270)
-//   O [T][H][HD] f32   (att :1639), before the gate: k_gate_mul :2303 stays outside this kernel.
+// The layouts are q36's, passed as strides - they are all multiples of 16 bytes, so nothing is repacked:
+//   Q [T][H][HD] f16     (q16, declared with k16/v16 at q36_engine.cu:1191, written by k_to_f16 :1969)
+//   K,V [HKV][P][HD] f16 (k16/v16 :1191, written by k_kv_f16 :1968)
+//   O [T][H][HD] f32     (att :1368); the gate stays outside this kernel (k_gate_mul :2060).
 //
 // K and V share one staged buffer (S.kv): the slice's K is consumed by the score MMA and V by p.v, and the barrier
 // that already sits between those two phases is what makes the reuse safe. Without the alias the 8x64 tile needs
@@ -38,8 +41,8 @@
 // of the quad (m_cur, identical in all four threads because mx is shuffle-reduced), and shared keeps only lsum and
 // alpha: lsum is touched by the leader alone, alpha is written before and read after a barrier.
 //
-// NOT IN ANY BUILD TARGET ON PURPOSE: no engine file includes it yet, so the engine compiles and runs exactly as
-// before until the pilot adds `#include "q36_fa.cuh"` and the STRATA_Q36_FA_LAYER branch.
+// Compiled as part of strata_qwen35 (CMakeLists.txt:921): q36_engine.cu:31 includes this file. Nothing changes
+// for a build that does not set STRATA_Q36_FA_LAYER - the kernel is launched only from the branch above.
 
 #pragma once
 
@@ -80,9 +83,9 @@ struct Cfg {
     static_assert(Threads <= 1024, "the block is bigger than CUDA allows");
 };
 
-// m16n8k16 (sm_80+): qsa_prompt_attn.cu:57-72 without the Turing fallback - the pilot requires sm_80+, the caller
+// m16n8k16 (sm_80+): the PTX ISA layout, without the Turing fallback - the pilot requires sm_80+, the caller
 // keeps the cuBLAS branch on anything older.
-// Fragment mapping (PTX ISA, and the comment at qsa_prompt_attn.cu:91-95):
+// Fragment mapping (PTX ISA):
 //   a[0] = A[gid][2*tig, 2*tig+1]        a[1] = A[gid+8][2*tig, 2*tig+1]
 //   a[2] = A[gid][2*tig+8, 2*tig+9]      a[3] = A[gid+8][2*tig+8, 2*tig+9]
 //   b[0] = B[2*tig, 2*tig+1][gid]        b[1] = B[2*tig+8, 2*tig+9][gid]

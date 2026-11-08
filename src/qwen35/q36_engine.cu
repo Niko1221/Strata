@@ -1160,6 +1160,8 @@ struct Engine {
     int fa_tile = 0;
     // STRATA_Q36_FA_CHECK: rerun the cuBLAS branch on the FA layer and print per-head max abs / cos
     bool fa_check = false;
+    // STRATA_Q36_FA_LOG: print one launch line per selected layer (read once, not per layer)
+    bool fa_log = false;
     float* att_fa = nullptr;
     void *q8, *xq, *escr;
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
@@ -1361,6 +1363,7 @@ struct Engine {
         if (const char* v = std::getenv("STRATA_Q36_FA_TILE"))
             fa_tile = std::max(0, std::min(3, std::atoi(v)));
         fa_check = std::getenv("STRATA_Q36_FA_CHECK") != nullptr;
+        fa_log   = std::getenv("STRATA_Q36_FA_LOG") != nullptr;
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
         qg = dalloc(T * 2 * g.n_head * g.head_dim); kx = dalloc(T * g.n_head_kv * g.head_dim);
@@ -1973,7 +1976,7 @@ struct Engine {
                 const bool fa_ok = fa_want && q36fa::q36_fa_shape(fa_var, T, HKV, &fa_shape) &&
                                    q36fa::q36_fa_launch(fa_shape.grid, fa_shape.block, st, q16, k16, v16, att, T, P,
                                                         (int) p0, H, HKV, HD, ctx, 1.0f / sqrtf((float) HD), fa_var);
-                if (fa_ok && std::getenv("STRATA_Q36_FA_LOG"))
+                if (fa_ok && fa_log)
                     std::fprintf(stderr, "fa: layer %zu T=%d P=%d p0=%d tile=%d\n", li, T, P, (int) p0, fa_tile);
                 if (fa_ok && fa_check) {
                     CK(cudaStreamSynchronize(st));
