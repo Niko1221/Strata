@@ -45,6 +45,13 @@ QTYPES = {
     "IQ4_XS": (23, 256, 136, [(0, 1e-5)]),
 }
 
+ROUTER_SCALE = 1.0   # --router-scale: the router's weights times this. Random weights give router logits packed so closely that two
+                     # implementations of one model (llama.cpp CPU and GPU among them) pick different experts at a few positions, and one
+                     # expert flip moves a position's KL by 100x; a larger scale spreads the logits like a trained router's
+EXACT_PARTS: set = set()   # --exact-parts router,f32,q8 (--exact-bf16 = all three): which tensors are written BF16-exact
+EXACT_BF16 = False   # --exact-bf16: every F32 tensor holds BF16-representable values and the Q8_0 scale is a power of two, so the pack's
+                     # --compat-bf16 conversion (router, shared-expert gate, HC down/up, ...) is lossless and llama.cpp sees the engine's weights
+
 # Flash-Next's values for every field a shape does not name
 FLASH = dict(n_embd=2560, n_layers=48, n_head=24, n_head_kv=2, head_dim=256, n_rot=64, ssm_state=128, ssm_k_heads=16,
              ssm_v_heads=48, ssm_d_conv=4, idx_q_heads=4, idx_key_dim=128, idx_top_k=2048, idx_block=4, hc=4, hc_lr=320,
@@ -157,10 +164,22 @@ def recipe_type(recipe: str, role: str, layer: int, s: dict) -> str:
         if role in ("gate", "up"):
             return "Q4_K"
         return "Q5_0"
+    if recipe == "fused-kq":         # Q4_K gate/up (Q5_K in layer 0) with Q5_1 / Q8_0 down at ANY expert width: the pairs the AMD fused / F16 prompt kernels take (Q4-HIPKQ)
+        if role in ("gate", "up"):
+            return "Q5_K" if first else "Q4_K"
+        return "Q8_0" if layer % 2 == 0 else "Q5_1"
+    if recipe == "mix-kq":           # one file with every K-quant expert path of the AMD prompt kernels: Q5_K/Q8_0 (fused), Q4_K/Q5_K and Q4_K/Q6_K (MMQ), Q4_K/Q5_1 (fused F16), by layer % 4 (Q4-HIPKQ)
+        if role in ("gate", "up"):
+            return "Q5_K" if layer % 4 == 0 else "Q4_K"
+        return ("Q8_0", "Q5_K", "Q5_1", "Q6_K")[layer % 4]
+    if recipe == "fused-iq":         # IQ3_S gate/up (IQ4_XS in layer 0) with IQ4_NL down at any expert width: the native IQ pack's fused prompt kernels (Q4-HIPKQ)
+        if role in ("gate", "up"):
+            return "IQ4_XS" if first else "IQ3_S"
+        return "IQ4_NL"
     raise SystemExit(f"unknown recipe {recipe}")
 
 
-RECIPES = ["ud-q4k", "ud-q4k-q6", "ud-iq4xs", "ud-q5_0down"]
+RECIPES = ["ud-q4k", "ud-q4k-q6", "ud-iq4xs", "ud-q5_0down", "fused-kq", "fused-iq", "mix-kq"]
 
 
 def row_ok(ty: str, ne0: int) -> bool:
@@ -168,7 +187,23 @@ def row_ok(ty: str, ne0: int) -> bool:
 
 
 # ------------------------------------------------------------------ data
+def bf16_round(a: np.ndarray) -> np.ndarray:
+    """float32 rounded to the nearest BF16 (ties to even), returned as float32."""
+    u = a.astype("<f4").view("<u4").astype(np.uint64)
+    u = (u + 0x7FFF + ((u >> 16) & 1)) & 0xFFFF0000
+    return u.astype("<u4").view("<f4")
+
+
 def small_f32(role: str, shape: list[int], rng: np.random.Generator) -> np.ndarray:
+    a = _small_f32(role, shape, rng)
+    if role == "router":
+        a = (a * np.float32(ROUTER_SCALE)).astype("<f4")
+    if role == "router":
+        return bf16_round(a) if ("router" in EXACT_PARTS) else a
+    return bf16_round(a) if ("f32" in EXACT_PARTS) else a
+
+
+def _small_f32(role: str, shape: list[int], rng: np.random.Generator) -> np.ndarray:
     n = int(np.prod(shape))
     if role == "norm":
         return (1.0 + 0.05 * rng.standard_normal(n)).astype("<f4")
@@ -211,6 +246,8 @@ def emit_data(fh, ty: str, role: str, shape: list[int], rng: np.random.Generator
         m = min(step, nblk - done)
         b = rng.integers(0, 256, size=(m, tsz), dtype=np.uint8)
         for off, val in fields:
+            if "q8" in EXACT_PARTS and ty == "Q8_0":
+                val = 2.0 ** -12
             b[:, off:off + 2] = np.frombuffer(np.float16(val).tobytes(), dtype=np.uint8)
         fh.write(b.tobytes())
         done += m
@@ -367,9 +404,21 @@ def main() -> int:
     ap.add_argument("--header", help="write the geometry header for the shape (or --from-gguf) here")
     ap.add_argument("--label", help="kGeometryName in the header (default: the shape, plus _<layers>l)")
     ap.add_argument("--from-gguf", help="read the shape from this file's metadata instead of --shape")
+    ap.add_argument("--exact-bf16", action="store_true", help="F32 tensors rounded to BF16 values and Q8_0 scale 2^-12: the pack's BF16 conversion is then lossless")
+    ap.add_argument("--router-scale", type=float, default=1.0, help="multiply the router weights (default 1: the files of Q4-GEO2)")
+    ap.add_argument("--exact-parts", default="", help="router, f32 (the other F32 tensors) and/or q8 (Q8_0 scale 2^-12): the BF16-exact parts of --exact-bf16")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--small-ple", action="store_true",
+                    help="PLE head sizes of 16 small primes (a table of ~1.6M rows, ~50 MB) instead of Flash-Next's 320001536 rows (28 GB): the hash moduli are read from the file, so the engine runs it; "
+                         "for hosts where the sparse 28 GB table cannot be written (Windows)")
     ap.add_argument("--set", default="", help="comma list of field=value overrides of the shape (a bisection of one field), e.g. n_ff=1024,hc_lr=384")
     a = ap.parse_args()
+    global EXACT_BF16
+    EXACT_BF16 = a.exact_bf16
+    global EXACT_PARTS
+    EXACT_PARTS = {"router", "f32", "q8"} if a.exact_bf16 else set(x for x in a.exact_parts.split(",") if x)
+    global ROUTER_SCALE
+    ROUTER_SCALE = a.router_scale
     if a.list:
         for n in sorted(SHAPES):
             s = shape(n)
@@ -383,6 +432,15 @@ def main() -> int:
         s = shape(a.shape, a.layers, **{k: int(v) for k, v in (kv.split("=") for kv in a.set.split(",") if kv)})
         label = a.label or (a.shape + (f"_{a.layers}l" if a.layers else ""))
         src = f"shape {a.shape}" + (f", {a.layers} layers" if a.layers else "")
+    if a.small_ple:
+        global PLE_ROWS
+        primes, n = [], 100003
+        while len(primes) < 16:
+            if all(n % d for d in range(2, int(n ** 0.5) + 1)):
+                primes.append(n)
+            n += 2
+        PLE_VOCAB[:] = primes
+        PLE_ROWS = sum(primes)
     if a.header:
         pathlib.Path(a.header).write_text(header_text(s, label, src), encoding="utf8", newline="\n")
         print(f"wrote {a.header} ({label})")
