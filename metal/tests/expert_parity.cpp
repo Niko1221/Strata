@@ -19,6 +19,7 @@
 // a different random routing per rep; GB/s = bytes of the distinct experts the kernel must read / GPU time.
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 #include "gguf_lite.h"
 // Gyro: the engine's CPU Hadamard rotation (the reference of the Metal one) and hadamard.txt's parser
 #include "../../src/kernels/cpu/hadamard.cpp"
@@ -38,8 +39,8 @@ const uint16_t* tq_lut_for_test() { return tq_lut_f16; }
 
 namespace {
 
-int N_EMBD = 2560, N_FF = 640;   // --embd / --ff change them (Q4-KQ: expert widths 512 and 1024)
-constexpr int TOPK = 10;
+int N_EMBD = strata_metal::geo::N, N_FF = strata_metal::geo::NFF;   // the shape this build is compiled for (engine/geo.h); --embd / --ff change them (Q4-KQ: expert widths 512 and 1024)
+constexpr int TOPK = strata_metal::geo::TOPK;
 // plan layout (moe.metal)
 constexpr int P_NG = 0, P_IGU = 4, P_IDN = 8, P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE,
               P_ETOK = P_GSTART + P_MAXE + 4, P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE,

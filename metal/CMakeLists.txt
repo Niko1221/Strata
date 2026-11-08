@@ -129,6 +129,9 @@ target_link_libraries(strata_metal_kernels PUBLIC strata_metal_host mtl_rt)
 
 add_executable(strata ${S}/program/generate.cpp)
 target_link_libraries(strata PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)
+# the decode window on its own (probe/window_probe.cpp): the engine's process state without the engine, for looking at a Metal fault
+add_executable(window_probe probe/window_probe.cpp)
+target_link_libraries(window_probe PRIVATE strata_metal_kernels strata_metal_host strata_metal_kernels)
 
 # --- the DeepSeek engine on this Metal runtime (M5MAX-DEEPSEEK-PLAN.md, steps 3+).  The .cu sources are compiled as C++
 # through include/metal_compat, which gives them CUDA's names over the Metal runtime; the kernel entry points they call are

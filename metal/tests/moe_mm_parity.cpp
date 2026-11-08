@@ -7,6 +7,7 @@
 #include "coop_probe.h"
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,8 +19,8 @@
 #include <vector>
 
 namespace {
-int N_EMBD = 2560, N_FF = 640;   // --embd / --ff change them (Q4-KQ: expert widths 512 and 1024)
-constexpr int TOPK = 10;
+int N_EMBD = strata_metal::geo::N, N_FF = strata_metal::geo::NFF;   // the shape this build is compiled for (engine/geo.h); --embd / --ff change them (Q4-KQ: expert widths 512 and 1024)
+constexpr int TOPK = strata_metal::geo::TOPK;
 struct MmPlanArgs { uint32_t n_ent, topk, n_expert, tm, n_blocks; };
 struct MmArgs { uint64_t gate_off, up_off, down_off, gu_stride, d_stride; uint32_t gu_row, d_row, n_embd, n_ff; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
