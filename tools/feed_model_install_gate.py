@@ -54,6 +54,7 @@ REPO = "gate-test/Qwen4-Gate-GGUF"
 MODEL_ID = "qwen4-gate"
 QUANT = "GATE-Q4"
 FILE_NAME = "Qwen4-Gate-GATE-Q4.gguf"
+SETUP_TIMEOUT = int(os.environ.get("STRATA_GATE_SETUP_TIMEOUT", "300"))   # seconds for one setup run (the 0.2 GB file takes about 6)
 NEUTRAL_LINE = "This model's shape differs from Flash-Next, so a neutral expert profile is used."
 NO_DRAFT_LINE = "The model list says this model has no draft layer (MTP), so none is fetched or used."
 
@@ -224,11 +225,30 @@ def sandbox_env(work: Path, install: Path, feed: Path, trust: Path, port: int) -
     return env
 
 
-def run_setup(env: dict, data: Path, extra: list[str], timeout: int = 900) -> tuple[int, str]:
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Only the process this script started and its children."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+
+
+def run_setup(env: dict, data: Path, extra: list[str], timeout: int = SETUP_TIMEOUT) -> tuple[int, str]:
+    """setup.py in the app's mode. A run that does not end in `timeout` seconds (a fetch of something the model list did not name keeps retrying) is killed and reported."""
     cmd = [sys.executable, str(ROOT / "setup.py"), "--family", MODEL_ID, "--model", QUANT, "--data-dir", str(data), "--feed", env["STRATA_UPDATE_FEED"],
            "--yes", "--no-start", "--vision", "no", "--context", "32768", "--no-browser", *extra]
-    r = subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True, errors="replace", timeout=timeout)
-    return r.returncode, (r.stdout or "") + (r.stderr or "")
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                            start_new_session=(os.name != "nt"))
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return proc.returncode, out or ""
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        out, _ = proc.communicate()
+        return 124, (out or "") + f"\n[the gate stopped setup after {timeout} s]\n"
 
 
 def newest(path: Path, pattern: str) -> list[Path]:
