@@ -133,7 +133,7 @@ endif()
 # CUDA_MODULE_LOADING=EAGER, and these took ~3.8 MB of VRAM - 3 IQ3_XXS expert slots on a P100 - from every model); on
 # HIP a code object loads on first use, so they cost other models nothing there (R9700: the same slots).  Used at run
 # time with STRATA_MMQ_KQ=1 (opt-in: it changes the prompt's rounding against the FP16 path).
-option(STRATA_MMQ_TQ_OVERLAY "Gyro trellis MMQ prompt kernels on an upstream llama.cpp: an overlay of its ggml-cuda headers written at configure time (cmake/strata_ggml_tq_overlay.cmake)" ON)
+option(STRATA_MMQ_TQ_OVERLAY "Gyro trellis MMQ prompt kernels: the patched ggml-cuda headers of third_party/strata-ggml/ggml/src/ggml-cuda-tq (with -DSTRATA_GGML_DIR: an overlay of that llama.cpp's headers written at configure time, cmake/strata_ggml_tq_overlay.cmake)" ON)
 option(STRATA_MMQ_KQUANTS "Build the MMQ prompt kernels for Q4_K / Q5_K / Q5_1 / Q6_K: the experts of Unsloth's K-quant files, and on HIP the dense GGUF projections (STRATA_DENSE_MMQ)" ON)
 # Q6_K gate/up in the grouped expert kernels (Unsloth's UD-Q6_K_XL, and layer 2 of UD-Q5_K_XL; docs/QUANTS.md).  On by
 # default since MODEL-UPDATE Phase 1: one more instance per grouped kernel in iq_kernels.cu, +19 KB of sm_60 code,
@@ -2354,22 +2354,33 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
     set(_strata_mmq_tq ON)
   elseif(STRATA_MMQ_TQ_OVERLAY AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
-    # an upstream llama.cpp: the trellis MMQ instances come from an overlay of the pinned ggml-cuda headers written at
-    # configure time (cmake/strata_ggml_tq_overlay.cmake); off with a message if the llama.cpp tree is not the pinned one
-    set(_strata_tq_llama "${_strata_ggml_root}")
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_ggml_tq_overlay.cmake)
-    set(_strata_tq_overlay_dir "${CMAKE_BINARY_DIR}/ggml-tq-overlay")
-    strata_ggml_tq_overlay("${_strata_tq_llama}" "${_strata_tq_overlay_dir}")
-    if(STRATA_TQ_OVERLAY_OK)
-      configure_file(third_party/ggml/ggml-common-tq.h "${_strata_tq_overlay_dir}/ggml-common-tq.h" COPYONLY)
-      configure_file(src/kernels/cuda/tq_lut_i8.cuh "${_strata_tq_overlay_dir}/tq_lut_i8.cuh" COPYONLY)
+    if(NOT STRATA_GGML_DIR)
+      # the vendored ggml: what the overlay would write is plain files in third_party/strata-ggml/ggml/src/ggml-cuda-tq (patched copies of ggml.h,
+      # mmq.cuh, mmq-load-tiles.cuh, mmq-config-*.cuh and quantize.cu, tq.cuh, the tile loader and the trellis instances; UPSTREAM.md), used exactly as
+      # the overlay dir was: first on strata_mmq's include path, its instances and quantize.cu compiled from there.  Every other file of ggml-cuda is untouched.
+      set(_strata_tq_overlay_dir "${_strata_ggml_root}/ggml/src/ggml-cuda-tq")
       set(_strata_mmq_tq ON)
-      set(_strata_mmq_tqp ON)   # the overlay adds the pair-trellis enumerators and instances
+      set(_strata_mmq_tqp ON)
       set(_strata_mmq_tq_overlay ON)
-      message(STATUS "trellis MMQ (Gyro prompts): overlay on the pinned ggml-cuda in ${_strata_tq_overlay_dir}")
-      if(STRATA_BUILD_TESTS)
-        add_test(NAME ggml_tq_overlay COMMAND ${CMAKE_COMMAND} -DLLAMA=${_strata_tq_llama}
-                 -DOUT=${CMAKE_BINARY_DIR}/ggml-tq-overlay-test -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ggml_tq_overlay_test.cmake)
+      message(STATUS "trellis MMQ (Gyro prompts): vendored ${_strata_tq_overlay_dir}")
+    else()
+      # an upstream llama.cpp: the trellis MMQ instances come from an overlay of the pinned ggml-cuda headers written at
+      # configure time (cmake/strata_ggml_tq_overlay.cmake); off with a message if the llama.cpp tree is not the pinned one
+      set(_strata_tq_llama "${_strata_ggml_root}")
+      include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_ggml_tq_overlay.cmake)
+      set(_strata_tq_overlay_dir "${CMAKE_BINARY_DIR}/ggml-tq-overlay")
+      strata_ggml_tq_overlay("${_strata_tq_llama}" "${_strata_tq_overlay_dir}")
+      if(STRATA_TQ_OVERLAY_OK)
+        configure_file(third_party/ggml/ggml-common-tq.h "${_strata_tq_overlay_dir}/ggml-common-tq.h" COPYONLY)
+        configure_file(src/kernels/cuda/tq_lut_i8.cuh "${_strata_tq_overlay_dir}/tq_lut_i8.cuh" COPYONLY)
+        set(_strata_mmq_tq ON)
+        set(_strata_mmq_tqp ON)   # the overlay adds the pair-trellis enumerators and instances
+        set(_strata_mmq_tq_overlay ON)
+        message(STATUS "trellis MMQ (Gyro prompts): overlay on the pinned ggml-cuda in ${_strata_tq_overlay_dir}")
+        if(STRATA_BUILD_TESTS)
+          add_test(NAME ggml_tq_overlay COMMAND ${CMAKE_COMMAND} -DLLAMA=${_strata_tq_llama}
+                   -DOUT=${CMAKE_BINARY_DIR}/ggml-tq-overlay-test -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ggml_tq_overlay_test.cmake)
+        endif()
       endif()
     endif()
   endif()
@@ -2451,25 +2462,31 @@ if(STRATA_NATIVE_EXPERTS)
     # pinned commit, which is also what third_party/strata-ggml holds).
     set(_strata_mmq_tab_on OFF)
     if(STRATA_MMQ_TAB AND NOT STRATA_HIP_GFX906)   # gfx906 compiles no .cu from here (its HIP glob): no tab at all
-      set(_strata_mmq_tab_known 36e4dc716c504470ec09cc0852d29a6ac5eace257f6e5e72db3805ca4f043eb0)
-      set(_strata_mmq_tab_hash "")
-      if(EXISTS ${_strata_mmq}/mmq.cuh)
-        file(READ ${_strata_mmq}/mmq.cuh _strata_mmq_src)
-        string(REPLACE "\r\n" "\n" _strata_mmq_src "${_strata_mmq_src}")
-        string(FIND "${_strata_mmq_src}" "static __device__ __forceinline__ void mul_mat_q_process_tile" _strata_tab_a)
-        string(FIND "${_strata_mmq_src}" "#define DECL_MMQ_CASE" _strata_tab_b)
-        if(_strata_tab_a GREATER -1 AND _strata_tab_b GREATER _strata_tab_a)
-          math(EXPR _strata_tab_len "${_strata_tab_b} - ${_strata_tab_a}")
-          string(SUBSTRING "${_strata_mmq_src}" ${_strata_tab_a} ${_strata_tab_len} _strata_tab_region)
-          string(SHA256 _strata_mmq_tab_hash "${_strata_tab_region}")
-        endif()
-        unset(_strata_mmq_src)
-        unset(_strata_tab_region)
-      endif()
-      if(_strata_mmq_tab_hash AND _strata_mmq_tab_hash IN_LIST _strata_mmq_tab_known)
+      if(NOT STRATA_GGML_DIR)
+        # the vendored third_party/strata-ggml is the tree moe_mmq_tab.cuh was verified against (its mmq.cuh is the pinned file, unedited), and
+        # tools/check_vendored.py keeps its bytes: no fingerprint of mmq.cuh is needed
         set(_strata_mmq_tab_on ON)
-      else()
-        message(STATUS "STRATA_MMQ_TAB off: mmq.cuh differs from the mirrored scheduler (${_strata_mmq_tab_hash})")
+      else()   # a -DSTRATA_GGML_DIR checkout: only the verified scheduler is accepted
+        set(_strata_mmq_tab_known 36e4dc716c504470ec09cc0852d29a6ac5eace257f6e5e72db3805ca4f043eb0)
+        set(_strata_mmq_tab_hash "")
+        if(EXISTS ${_strata_mmq}/mmq.cuh)
+          file(READ ${_strata_mmq}/mmq.cuh _strata_mmq_src)
+          string(REPLACE "\r\n" "\n" _strata_mmq_src "${_strata_mmq_src}")
+          string(FIND "${_strata_mmq_src}" "static __device__ __forceinline__ void mul_mat_q_process_tile" _strata_tab_a)
+          string(FIND "${_strata_mmq_src}" "#define DECL_MMQ_CASE" _strata_tab_b)
+          if(_strata_tab_a GREATER -1 AND _strata_tab_b GREATER _strata_tab_a)
+            math(EXPR _strata_tab_len "${_strata_tab_b} - ${_strata_tab_a}")
+            string(SUBSTRING "${_strata_mmq_src}" ${_strata_tab_a} ${_strata_tab_len} _strata_tab_region)
+            string(SHA256 _strata_mmq_tab_hash "${_strata_tab_region}")
+          endif()
+          unset(_strata_mmq_src)
+          unset(_strata_tab_region)
+        endif()
+        if(_strata_mmq_tab_hash AND _strata_mmq_tab_hash IN_LIST _strata_mmq_tab_known)
+          set(_strata_mmq_tab_on ON)
+        else()
+          message(STATUS "STRATA_MMQ_TAB off: mmq.cuh differs from the mirrored scheduler (${_strata_mmq_tab_hash})")
+        endif()
       endif()
     endif()
     if(_strata_mmq_tab_on)

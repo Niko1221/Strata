@@ -1,4 +1,4 @@
-// third_party/ggml-tq/tq.cuh - the trellis expert types (TQ2_T, TQK6, TQK7) for ggml-cuda's MMQ tile loader.
+// Strata addition (third_party/strata-ggml/UPSTREAM.md): the trellis expert types (TQ2_T, TQK6, TQK7, TQP5-7) for ggml-cuda's MMQ tile loader.
 // Derived from agentionai/llama.cpp ggml/src/ggml-cuda/tq.cuh (MIT, the ggml authors; Laurent Zuijdwijk): only what the
 // MMQ path needs (no mat-vec kernels), reading Strata's copies of the codebook tables (third_party/ggml/ggml-common-tq.h,
 // src/kernels/cuda/tq_lut_i8.cuh) instead of the fork's ggml-common.h.
@@ -9,8 +9,8 @@
 #pragma once
 
 #include "common.cuh"
-#include "ggml-common-tq.h"
-#include "tq_lut_i8.cuh"
+#include "../../../../ggml/ggml-common-tq.h"            // Strata's two header copies, by path from this folder
+#include "../../../../../src/kernels/cuda/tq_lut_i8.cuh"
 
 #define TQ_LUT_POINTS   2048
 #define TQ_LANES        8   // lanes per 128-weight block

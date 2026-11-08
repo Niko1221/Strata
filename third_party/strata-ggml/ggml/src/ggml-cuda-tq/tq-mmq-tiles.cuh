@@ -1,5 +1,5 @@
-// third_party/ggml-tq/tq-mmq-tiles.cuh - the MMQ tile loader of the trellis types (TQ2_T, TQK6, TQK7), appended to ggml-cuda's
-// mmq-load-tiles.cuh by cmake/strata_ggml_tq_overlay.cmake when ggml comes from upstream llama.cpp (the agentionai fork has
+// Strata addition (third_party/strata-ggml/UPSTREAM.md): the MMQ tile loader of the trellis types (TQ2_T, TQK6, TQK7), appended to ggml-cuda's
+// mmq-load-tiles.cuh here (an #include at its end; cmake/strata_ggml_tq_overlay.cmake does the same for a STRATA_GGML_DIR build; the agentionai fork has
 // it natively).  The function is agentionai/llama.cpp's (ggml/src/ggml-cuda/mmq-load-tiles.cuh, MIT, the ggml authors,
 // written by Laurent Zuijdwijk), unchanged; the other lines of this patch only route the trellis types to it the way
 // IQ2_XS is routed (same Q8_0_16 tile layout, same dot kernels, same configs).
