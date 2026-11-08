@@ -7092,8 +7092,14 @@ def args_dropped(old: dict, cfg: dict) -> list[str]:
     return list(dict.fromkeys(f for f in flags(old) if f not in new))
 
 
+SHAPE_ENGINE: dict = {}       # the model-shape engine the chosen model runs on: {"shape": "q4_lite"} (strata_control/shape_engine.py); empty: the Strata engine
+
+
 def engine_exe(eng: Path) -> str:
-    """The `exe` of a run config: the engine component in the app, else the engine binary's path."""
+    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine."""
+    if SHAPE_ENGINE.get("shape"):
+        from strata_control import shape_engine
+        return shape_engine.reference(SHAPE_ENGINE["shape"])
     return "component:strata-engine" if CONTROL else str(eng / EXE)
 
 
@@ -7102,6 +7108,8 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, ex
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
     strata-<model>.json.bak when it changes.  `source`: an earlier install's config to carry the keys over from when
     this folder has none yet (a copy set up like the last one).  A line says what was kept, one what was not."""
+    if SHAPE_ENGINE.get("title") and SHAPE_ENGINE.get("shape") and cfg.get("exe") == engine_component.REFERENCE_PREFIX + "strata-" + SHAPE_ENGINE["shape"].replace("_", "-"):
+        cfg["shape_title"] = SHAPE_ENGINE["title"]                  # the engine's refusal at a start names the model, not the geometry (strata_control/shape_engine.py)
     old_path = cfg_path if cfg_path.is_file() else source
     old = None
     if old_path is not None and old_path.is_file():
@@ -8311,9 +8319,49 @@ def control_engine_step(gpu, vision):
     return llama, eng, meta, [], gpu, "none"
 
 
+def shape_engine_fetch(a):
+    """The engine of the chosen model's shape (SHAPE_ENGINE), fetched through the signed feed (--feed, STRATA_UPDATE_FEED, the remembered feed, or the release's), checked, started
+    once and kept (strata_control/shape_engine.py); the Strata engine is not touched. Returns its component (shape_engine.find), or None when there is none and the person said to
+    go on without it (STRATA_ALLOW_NO_ENGINE: the model is downloaded and prepared, and set up again later); otherwise it stops with the owner's lines."""
+    from strata_control import engine_component as EC, shape_engine
+    shape, title = SHAPE_ENGINE["shape"], SHAPE_ENGINE.get("title")
+    name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
+    from strata_cli import update_cmd
+    source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
+    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
+    if exe is None:
+        if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
+            warn(shape_engine.WORDS["setup_skip"].format(model=name))
+            return None
+        fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
+    found = shape_engine.find(shape, full=False, title=title)
+    ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=found.root))
+    return found
+
+
+def shape_engine_step(a, gpu, vision):
+    """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
+    separate component next to the Strata engine (shape_engine_fetch); the run config names it ("component:strata-q4-lite") and every start looks it up.
+    Returns what engine_step returns."""
+    shape = SHAPE_ENGINE["shape"]
+    llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
+    found = shape_engine_fetch(a)
+    if found is None:
+        return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
+    eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local", "shape": shape}
+    if vision != "none":
+        if (eng / VEXE).is_file():
+            ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
+            return llama, eng, meta, [], gpu, vision
+        warn("this engine component has no image encoder (strata-vision): images off for this model")
+    return llama, eng, meta, [], gpu, "none"
+
+
 def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
+    if SHAPE_ENGINE.get("shape"):
+        return shape_engine_step(a, gpu, vision)
     if CONTROL:
         return control_engine_step(gpu, vision)
     llama = get_llama_cpp()
@@ -9800,6 +9848,9 @@ def mac_control_setup(a) -> int:
     ok(f"{model}, context {ctx}")
     family = MF.MAC_MODELS[model].get("family", "qwen")
     fam = FAMILIES[family]
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own Metal engine component (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
     tag = fam["tag"] + model
     stream = MF.streams(model, ram)
 
@@ -9809,7 +9860,12 @@ def mac_control_setup(a) -> int:
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None
     try:
-        found = EC.resolve(full=False)
+        if SHAPE_ENGINE.get("shape"):
+            found = shape_engine_fetch(a)
+            if found is None:
+                raise EC.EngineMissing("no engine for the model's shape", None)
+        else:
+            found = EC.resolve(full=False)
         ok(f"engine component: {found.version} ({found.platform}-{found.backend})")
         if vision != "none":
             reader = mac_reader(Path(found.root), vision)
@@ -9891,6 +9947,9 @@ def mac_control_setup(a) -> int:
             prep_lock.unlink(missing_ok=True)
     ok(f"model prepared: {pack}")
     use_mtp = MF.stream_mtp(stream, ram)
+    if use_mtp and MF.MAC_MODELS[model].get("no_mtp"):      # the model list says there is no draft layer: none is fetched (the Flash-Next head is not this model's)
+        say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
+        use_mtp = False
     mtp = (find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
     if stream and not use_mtp:
@@ -9918,7 +9977,13 @@ def mac_control_setup(a) -> int:
 
     step(7, "writing the run settings")
     port = a.port or 8080
-    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, ROOT / "data" / "expert-profile.bin", model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
+    profile = ROOT / "data" / "expert-profile.bin"
+    neutral = getattr(__import__("strata_control.setup_config", fromlist=["x"]), "neutral_profile_if_other_shape", None)       # (f-0213-p8merge: F4, the owner's line)
+    if neutral is not None and fam.get("feed") and shards:       # a feed model of another shape than the shipped profile's: a neutral profile for the file's layers x experts
+        sys.path.insert(0, str(ROOT / "tools"))
+        from gguf_reader import GGUFFile
+        profile = neutral(profile, shards[0], pack, GGUFFile, say)
+    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, profile, model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}
@@ -10539,6 +10604,9 @@ def main() -> int:
         gpu = {**gpu, "cards": chosen}
         return install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, all_cards)
     fam = FAMILIES[family]
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own engine component (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
     if fam.get("ready") and hip:
         # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
         fail(f"{fam['title']} runs on NVIDIA cards only: the AMD engine has no NVFP4 kernels",

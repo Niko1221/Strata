@@ -2042,6 +2042,8 @@ def _components_engine(a: argparse.Namespace) -> int:
         print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']})")
     else:
         print(report["notice"], file=sys.stderr)
+    for row in report.get("shapes") or []:             # the engines of model shapes, only on a PC that has one (strata_control/shape_engine.py)
+        print(f"engine for {row['shape']}  " + (f"{row['engine']['exe']}  (version {row['engine']['version']})" if row["usable"] else str(row.get("notice"))))
     notice = engine_component.cached_notice(root)
     if notice:
         print(notice)

@@ -25,7 +25,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from strata_control import feed as feedmod
+from strata_control import feed as feedmod, shape_engine
 
 _log = logging.getLogger("strata.feed")
 
@@ -222,8 +222,10 @@ def apply(setup, models, engine_families=None) -> Applied:
         if any(t.startswith(tag) or tag.startswith(t) for t in _taken_tags(setup)):
             _skip(result, model, "its name would be mistaken for a built-in model's files")
             continue
-        known = model.family in feedmod.MODEL_FAMILIES_INSTALLABLE
-        runs = known and (engine_families is None or model.family in engine_families)
+        shape = model.shape
+        known = model.family in feedmod.MODEL_FAMILIES_INSTALLABLE or shape is not None
+        # a model of its own shape runs on that shape's engine, which setup fetches when the model is chosen (strata_control/shape_engine.py): the Strata engine's families do not decide
+        runs = known and (shape is not None or engine_families is None or model.family in engine_families)
         if not runs:
             allowed = known and UNAVAILABLE_POLICY == "warn_allow"
             reason = unavailable_reason(model.family)
@@ -319,6 +321,10 @@ def _flash_next(setup, model) -> None:
         if engine:
             entry["engine"] = engine
         setup.MODELS[keys[q.name]] = entry
+    if model.shape:                                      # its own engine: the run config names it, setup fetches it (strata_control/shape_engine.py)
+        fam["shape"] = model.shape
+        for key in keys.values():                        # its min_engine is about that engine, which the feed carries: the app must not compare it with the Strata engine
+            setup.MODELS[key].pop("engine", None)
     setup.FAMILIES[model.id] = fam
     _mac_entries(model, keys)
 
@@ -333,7 +339,7 @@ def _mac_entries(model, keys: dict) -> None:
         return
     for q in model.quants:
         key = keys[q.name]
-        mac_fit.MAC_MODELS[key] = {"shard1_gb": round(q.download_bytes / 1e9, 1), "tested": False, "family": model.id, "shards": len(q.files)}
+        mac_fit.MAC_MODELS[key] = {"shard1_gb": round(q.download_bytes / 1e9, 1), "tested": False, "family": model.id, "shards": len(q.files), "no_mtp": model.drafter == "none"}
         mac_fit.MAC_ABOUT[key] = q.about or f"{q.name} quantization"
     if model.id not in mac_fit.FEED_FAMILIES:
         mac_fit.FEED_FAMILIES.append(model.id)

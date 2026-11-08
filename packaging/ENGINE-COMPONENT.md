@@ -90,7 +90,9 @@ UTF-8). It contains every file hash, so one signature covers the whole package. 
 
 Without `--include`/`--tree` it takes the entrypoint, the libraries beside it, `BUILD.json`, `LICENSE*`, the picture reader
 `strata-vision` when the build has one, and the DeepSeek engine `strata-dsv41[.exe]` when it sits beside `strata`.
-`--require-dsv41` refuses a package without `strata-dsv41`. The build id
+`--require-dsv41` refuses a package without `strata-dsv41`. `--shape q4_lite` makes the package of a Qwen4 model shape (the engine compiled with `-DSTRATA_GEOMETRY=q4_lite`): the
+manifest's `id` and `name` are `strata-q4-lite` and it has `"shape": "q4_lite"`, so it is never read as the Strata engine (and an older Control refuses it); it installs in
+`<components>/shapes/q4_lite/engine/`, beside `<components>/engine/` (`strata_control/shape_engine.py`, packaging/UPDATES.md). `--verify` reads either kind. The build id
 defaults to the checkout's commit (`-dirty` when the tree has changes). It prints the size, file count and the SHA-256 of
 the manifest file (which holds every file's hash), used as the package's digest in notes.
 

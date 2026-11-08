@@ -263,8 +263,8 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
     Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
-    mtp = stream_mtp(stream, ram_gb)
-    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
+    mtp = stream_mtp(stream, ram_gb) and not MAC_MODELS.get(model, {}).get("no_mtp")       # a feed model whose entry says "drafter: none" has no draft layer
+    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1] if len(shards) > 1 else shards[0])]       # one file: its own PLE table
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
         args += ["--native-dense-gguf", str(shards[0])]
     args += [

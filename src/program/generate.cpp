@@ -3313,6 +3313,12 @@ int main(int argc, char** argv) {
 #endif
             return 0;
         }
+        // `strata --geometry`: the name of the model shape the kernels are compiled for (the geometry header's kGeometryName: flash_next for the default build);
+        // Control checks it against the shape of the package's signed manifest (strata_control/shape_engine.py)
+        if (std::strcmp(argv[i], "--geometry") == 0) {
+            std::printf("%s\n", strata::core::kGeometryName);
+            return 0;
+        }
     }
 #if (defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)) && !defined(_WIN32)
     // AMD, a file-backed arena (STRATA_ARENA_MMAP): ROCclr copies a pageable source of 1 MiB or more by locking its
