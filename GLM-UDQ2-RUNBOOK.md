@@ -439,3 +439,14 @@ ref-overrides.txt / calibration.txt(sha256 已记)都在 $D。imatrix 记录按�
   另:手写 config 必须带 "arch": "glm5-next",否则 family 回退 qwen、视觉走错分支。
 - 正式服务配置:/data/models/GLM-5.3-Flash-UNCENSORED-UD-Q2/glm53-serve.json
   (512k×2,kv int8,MTP 默认开,vision 挂 mmproj-F16,arch=glm5-next;strata-glm53 单元,端口 8080)。
+
+### think/content 切分修复(2026-11-08 深夜)
+- 现象:content 混入思考文本、reasoning_content 为空。根因:server 对 glm5-next 的请求默认
+  effort=low → 模板不开思考块 → 解析器直接进 content 态;而 dealignai 微调在 low 下照样思考
+  且输出无 marker,裸思考文本无从切分(STRATA_DEBUG 的 [glm-feed] 逐 token dump 实证无 marker)。
+- 修复:config 加 "reasoning_effort": "high"(server #1641 的 config_effort 通道,请求可自带覆盖)。
+  实测:文本/图片两链路 reasoning_content 与 content 干净分离,finish=stop,服务端打印
+  "thinking level: high"。
+- 重启后一键拉起:/data/models/GLM-5.3-Flash-UNCENSORED-UD-Q2/start-glm53.sh(transient user unit;
+  需开机自备时先 loginctl enable-linger simon)。正式配置最终形态:512k×2 + kv int8 + MTP +
+  mmproj 视觉 + arch=glm5-next + reasoning_effort=high。
