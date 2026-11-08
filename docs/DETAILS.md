@@ -741,7 +741,7 @@ the source. It covers parking and session files only, not the startup sizing of 
 **When the arena does not fit in the RAM that is free (#4051).** The engine checks the RAM before it reads the experts into the
 arena. A memory limit below the arena (a container) stops the start with the numbers. Less free RAM than the arena (an engine
 that was still exiting, another program) is waited for up to 20 s, and the log says so (`STRATA_ARENA_RAM_WAIT_S` changes the
-seconds, `0` loads at once); if it is still short the load goes on with a warning that says how much, never a refusal. Below half
+seconds, `0` loads at once). On Linux, if free memory, file cache or a reserved huge-page pool can hold the experts, they load anyway with a warning; otherwise the run reads them from the file. `STRATA_ARENA_FILE_CACHE=0` always reads from the file. Below half
 of the arena the warning adds that the whole PC can stall in memory reclaim, and that a systemd `MemoryHigh=` below the RAM keeps
 one program from taking all of it. The server, before it starts an engine, ends one that an earlier run left behind and now waits up
 to 120 s for it to be gone (it used to wait 10 s): an engine with tens of GB of pinned memory needs longer to give it back, and the
