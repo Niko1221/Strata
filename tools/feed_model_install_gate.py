@@ -213,6 +213,34 @@ def prepare_llama_stub(install: Path, llama: Path) -> None:
         shutil.copytree(llama / "gguf-py", dst / "gguf-py", ignore=shutil.ignore_patterns("__pycache__", "tests", "*.pyc"))
 
 
+STUB_SMI = """#!/bin/sh
+# the gate's stand-in for nvidia-smi on a box with no NVIDIA card (setup stops at step 1 without one): one 24 GB Ada card, every other question unanswered
+case "$*" in
+  *memory.total*) echo "0, NVIDIA GeForce RTX 4090, 24564, 8.9, 570.86.16" ;;
+esac
+exit 0
+"""
+
+
+def nvidia_stub_if_needed(env: dict, work: Path, log) -> None:
+    """Setup's step 1 needs an NVIDIA card: nvidia-smi answers on the real boxes (used as it is); on a box without one a POSIX stand-in is put first on PATH."""
+    try:
+        ok = subprocess.run(["nvidia-smi", "-L"], env=env, capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    if ok:
+        return
+    if os.name == "nt":
+        raise NotRun("no NVIDIA card (nvidia-smi does not answer) and the stand-in is POSIX only: setup stops at its step 1")
+    d = work / "bin"
+    d.mkdir(exist_ok=True)
+    f = d / "nvidia-smi"
+    f.write_bytes(STUB_SMI.encode("utf-8"))
+    f.chmod(0o755)
+    env["PATH"] = str(d) + os.pathsep + env.get("PATH", "")
+    log("no NVIDIA card here: a stand-in nvidia-smi (one 24 GB card) is used for setup's step 1")
+
+
 def sandbox_env(work: Path, install: Path, feed: Path, trust: Path, port: int) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STRATA_", "HF_")) and k not in ("PYTHONPATH", "PYTHONHOME")}
     home = work / "home"
@@ -271,6 +299,7 @@ def check(work: Path, llama: Path, tokenizer_from: str | None, shape: dict, log)
     prepare_llama_stub(install, llama)
     with Mirror(work / "mirror") as mirror:
         env = sandbox_env(work, install, feed, trust, mirror.port)
+        nvidia_stub_if_needed(env, work, log)
         t = time.time()
         code, out = run_setup(env, data, [])
         log(f"setup run 1: exit {code} in {time.time() - t:.0f} s")
