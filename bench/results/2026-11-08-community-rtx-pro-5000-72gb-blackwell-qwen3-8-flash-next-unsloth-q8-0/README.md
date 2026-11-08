@@ -1,6 +1,6 @@
 # Community benchmark on NVIDIA RTX PRO 5000 72GB Blackwell
 
-Measured on 2026-11-08 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. Speed only: no correctness check was run.
+Measured on 2026-11-08 with `tools/strata_bench.py` (suite 1, 3 runs per test, medians with ranges). Speeds are the engine's own timings; first-token times are measured by the client over HTTP. The suite itself is speed only; a separate needle recall check was run afterwards (see "Correctness" at the end).
 
 ## Hardware and software
 
@@ -14,8 +14,11 @@ Measured on 2026-11-08 with `tools/strata_bench.py` (suite 1, 3 runs per test, m
 ## Model and configuration
 
 - Model and quantization: qwen3.8-flash-next-unsloth-q8_0
+- Model repository and revision: `unsloth/Qwen3.8-Flash-Next-GGUF` @ `084c631ac221016019d6e0a863afe92d90edd3b0` (HEAD at run time; files downloaded ~2026-11-07); source `Qwen/Qwen3.8-Flash-Next` @ `812d96e10a0dd82b69d749e68693698cf6c36daa`
+- GGUF filenames: `Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf` … `-00006-of-00006.gguf` (SHA-256 in the standard report's `results.json`); MTP draft `MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf`; no vision encoder
 - Context: 262144 tokens; parallel slots: 2
 - Settings: the install's own configuration, unchanged; thinking off for the suite; temperature 0
+- Launch command (paths shortened; the same saved configuration the standard run used): `strata --serve --pack <models>/packs/unsloth-q8_0 --native <models>/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf --expert-profile <terminal>/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5 --mtp <models>/mtp/rt --max-context 262144 --kv int8 --resident-budget-gib 66 --batch 2`
 
 ## Method
 
