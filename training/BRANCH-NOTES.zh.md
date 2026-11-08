@@ -8,8 +8,8 @@
 > 迁移做在**每条分支自己身上**。
 
 > **树属于哪一层**（2026-11-03 定形）：`feat/train-mezo` = 零阶完整训练线（共用层 + `mezo/` +
-> 引擎侧改动，**不 import torch**，144 项）；`feat/train-backforward` = 它 + torch 层（比它多
-> 32 个 `.py`，268 项）；`feat/train_support` = 两者并集 + 审核文档。三条分支的 `.py` 只有
+> 引擎侧改动，**不 import torch**，243 项）；`feat/train-backforward` = 它 + torch 层（比它多
+> 34 个 `.py`，400 项）；`feat/train_support` = 两者并集 + 审核文档。三条分支的 `.py` 只有
 > "文件在不在"的差别，`algos.available()` 按文件决定 `--method` 有哪几个（缺了就报缺哪个文件）。
 
 > 环境：RTX 4090 48 GiB（47.99 可用）/ 125B IQ3_XXS pack / 单行样本 / loss = mean。
@@ -227,8 +227,12 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
   | `EngineHttp` | 驻留的推理引擎本身 | **继续**（只与训练步抢同一把 fifo） |
 
   - 服务端要求（启动时决定，训练侧补不了）：`--lora <初始 adapter>`（形状不能变 ⇒ rank 全程固定）
-    + `--no-prefill-borrow --prefill 8192`（否则 score 走借槽路径，数值已知坏）。后者同时影响推理的
+    + `--no-prefill-borrow`（否则 score 走借槽路径，数值已知坏）。后者同时影响推理的
     prefill 速度 —— 这是「共用引擎」的真实代价，不在训练侧掩盖。
+    `--prefill N` 是 prompt 的**分块大小**（不是长度上限，更长的序列按块读完），own buffer 下
+    同时是整个会话的 VRAM 预留：实测同一张 48 GB 卡，8192 = 4,136 MiB / 1024 = 1,440 MiB /
+    512 = 464 MiB，缓存槽 16,518 → 18,170。所以它**由数据里最长样本定**
+    （`mezo.resolve_prefill_chunk()`，对齐 256、夹 256..8192），不是常数。
   - **长度契约**：引擎的 `SL` 只发 `t + 1 < n`（n-1 行），而 `/v1/engine/score` 为了让 `logprobs` 与
     `tokens` 对齐补了一个末位 null（n 行）⇒ 客户端**必须去掉末位**。照抄会让 answer 段切片整体
     错一位：损失照样算得出、曲线照样下降，只是学的是错跨度的 token。`test_engine_http.py` 钉住这条。
@@ -238,7 +242,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
     对话，下一个请求从 token 0 重读 prompt。
 - **GPU 独占检查**：pipe 路线拉引擎前查空闲显存，不够就 loud exit 2（`STRATA_ALLOW_SHARED_GPU=1`
   可显式豁免，豁免也出声）。起因是一次双驻留把提交内存打到 89.7 GiB > 物理 48 GiB，引擎 stall 自杀。
-- **测试**：训练目录 **268 项**（`python -m pytest tests -q`，22 s；Windows 上 266 过 + 2 项 watchdog 仅因缺 triton 轮子，Linux 上 268 全过）；
+- **测试**：训练目录 **400 项全过**（`python -m unittest discover -s training/tests -q`，15 s；2026-11-09 Windows 实测，装了 `triton-windows` 后 `test_bench_limits` 那 2 项 watchdog 也过）；
   serve 侧新增 `serve/test_training_api.py` 6 项，serve 全量 1304 项仅 1 个既有环境性 error
   （`test_winjob`，干净 worktree 同样失败）。
 
@@ -285,7 +289,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 身份 before/after、gen 原文 | `logs/accept_lr3e5_ce.log`、`accept_lr3e5_s900.log`、`accept_lr1e5_ce.log` |
 | 数学训练集前后 | `Strata-mezo/training/_run_hardmth_train.log` |
 | MATH-500 四次评测 | `Strata-mezo/training/_evalscope/{baseline,mezo_lora,bwd_lora,dpo_lora}/`、`_report.py` |
-| 测试 | `python -m pytest training/tests -q`（本树 268 项；零阶子集那棵树 144 项） |
+| 测试 | `python -m unittest discover -s training/tests -q`（本树 400 项；零阶子集那棵树 243 项，其中 2 项按分支跳过） |
 
 ---
 
@@ -296,7 +300,7 @@ baseline 不挂 adapter，其余三次各挂一个 adapter —— 只有 adapter
 | 450 步 answer-ce | 4.145（−0.29） | **4.2387（−0.196）**；4.145 是另一次跑的第 300 步 |
 | 零阶峰值显存 | 48.1 GiB | **46.97 GiB**（48,100 MiB） |
 | backward 路线 | 「引擎反传」 | **PyTorch/HF autograd**（引擎没有反传；`sft.py`/`grpo.py` 走本地 transformers 栈） |
-| 测试总数 | 232 项 | **268 项**（+18 项 numpy 侧目标函数测试 + 1 项「方法缺文件要明确报错」+ 10 项在线换表 transport 与判分器；零阶树 144 项） |
+| 测试总数 | 232 项 | **400 项**（+18 项 numpy 侧目标函数测试 + 1 项「方法缺文件要明确报错」+ 10 项在线换表 transport 与判分器 + 9 项池子与零 adapter；零阶树 243 项） |
 | 身份训练结论 | 「在学、无副作用」 | **CE 在降但微调者署名始终没生成**；600 步丢身份、750 步英文泄漏 |
 | 六方案极限表 | 缺失 | §1（本节为新增核心） |
 | 数学训练前后 | 只有旧过程式线的 logp | **训练集 0/3→2/3 + 干净 held-out 掉 3/31/2 项** |

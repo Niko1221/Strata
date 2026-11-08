@@ -339,8 +339,13 @@ def build_argv_engine(a, shard: str, pack: str, exe: str, prof: str) -> list[str
     argv = ["--objective", objective,
             "--gguf", shard, "--pack", pack, "--engine", exe,
             "--expert-profile", prof,
-            "--steps", str(a.steps), "--lr", str(a.lr), "--out", a.out,
+            "--lr", str(a.lr), "--out", a.out,
             "--seed", str(a.seed)]
+    # `a.steps` 为空 = 轮次驱动（`resolve_budget` 定的）：此时不发 --steps，让 mezo.py
+    # 用自己的默认值占位、再由 `epochs × steps_per_epoch` 覆盖 —— 不在 train.py 里
+    # 编一个和步数无关的常数（见 resolve_budget 的注释）。
+    if a.steps is not None:
+        argv += ["--steps", str(a.steps)]
     if getattr(a, "epochs", None):
         argv += ["--epochs", str(a.epochs)]
     if getattr(a, "lr_schedule", "const") != "const":
@@ -367,6 +372,9 @@ def build_argv_engine(a, shard: str, pack: str, exe: str, prof: str) -> list[str
         argv += ["--ce-data", a.ce_data]
     if a.max_context:
         argv += ["--max-context", str(a.max_context)]
+    if getattr(a, "prefill_chunk", ""):
+        # 只在 mezo 上有效（引擎 `--prefill`）；backward 没有 prompt buffer 这件事
+        argv += ["--prefill-chunk", a.prefill_chunk]
     if a.probe:
         argv += ["--probe", a.probe]
     if getattr(a, "think_targets", None):
@@ -405,12 +413,16 @@ def build_argv(a, shards: list[str], pack: str, tok: str) -> list[str]:
                              "（它的学生走 loader.py，125B 的 GGUF+NF4 路径还没接过去）；"
                              "125B 上的 RL 用默认方法（mezo --rollouts 回放）")
         argv = ["--model", a.model, "--steps", str(a.steps), "--lr", str(a.lr),
-                "--out", a.out, "--objective", a.algo]
+                "--out", a.out, "--objective", a.algo,
+                "--batch", str(a.batch), "--group", str(a.group)]
         return argv + list(a.rest)
 
     argv = ["--gguf", *shards, "--pack", pack, "--tokenizer", tok]
     argv += _data_flags(a)
-    argv += ["--steps", str(a.steps), "--lr", str(a.lr), "--out", a.out,
+    # 同 build_argv_engine：轮次驱动时不发 --steps，`sft.py` 会按 `--epochs × 行数` 折算。
+    if a.steps is not None:
+        argv += ["--steps", str(a.steps)]
+    argv += ["--lr", str(a.lr), "--out", a.out,
              "--seed", str(a.seed)]
     if getattr(a, "epochs", None):
         argv += ["--epochs", str(a.epochs)]        # sft.py 会按 epochs × 条数重算 steps
@@ -480,6 +492,51 @@ def _forward_flags(a) -> list[str]:
     return out
 
 
+def _jsonl_rows(path: str) -> int:
+    """数一个「一行一条」的 jsonl（空行不计）。只用于把轮次折成步数，不解析内容。"""
+    n = 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                n += 1
+    return n
+
+
+def resolve_budget(a) -> None:
+    """定步数：轮次优先；没有实测轮次就按「一遍数据集」。
+
+    2026-11-09 删掉 `450 if mezo else 40`。它只在 `dpo × backward` 与 `grpo/luspo ×
+    backward` 上生效（其余组合早被方法表里的实测轮次覆盖），而这两条最不能拍数字：
+    冷启的偏好对常常只有个位数（40 步 = 40 遍），轨迹池常常只有两组（40 步 = 20 遍）。
+    步数与数据量脱钩之后，两次实验的「训了多少」根本不可比。
+
+    现在的口径，按优先级：
+      1) `--steps`：听用户的（复现某个已验证点位时用）；
+      2) `--epochs`：听用户的；
+      3) 方法表里的实测轮次（mezo 全套 + backward sft）；
+      4) 都没有 → **一遍数据集**（epochs = 1）。这是下界不是结论，日志里会写明
+         「默认一遍（该方法没有实测轮次）」，别当成调好的工作点。
+    """
+    if a.steps is not None:
+        return
+    src = "用户"
+    if a.epochs is None:
+        a.epochs = algos.default_epochs(a.algo, a.method)
+        src = "实测"
+    if a.epochs is None:
+        a.epochs, src = 1.0, "默认一遍（该方法没有实测轮次）"
+    # grpo.py 的 `--epochs` 是「每个 batch 内层过几遍」，与数据集轮次不是一回事，所以
+    # 外层步数在这里算。旧代码把 train.py 的 --epochs 静默丢掉，用户以为设了轮次。
+    if a.algo in ("grpo", "luspo") and a.method == "backward":
+        if not (a.rollouts or a.prompts):
+            raise SystemExit(f"--algo {a.algo} --method backward 需要 --rollouts 或 --prompts"
+                             "（按行数把轮次折成步数）")
+        n = _jsonl_rows(a.rollouts or a.prompts)
+        per = max(1, -(-n // max(1, a.batch * (a.group if a.rollouts else 1))))
+        a.steps = max(1, int(round(a.epochs * per)))
+        print(f"epochs {a.epochs:g}（{src}）× {per} steps/epoch = {a.steps} steps", flush=True)
+
+
 def route_auto(a) -> int:
     """`--route auto`：只做路由与计划，**不自己起训练进程**。
 
@@ -490,16 +547,27 @@ def route_auto(a) -> int:
     """
     import coldstart
 
-    if not a.rollouts:
-        raise SystemExit("--algo auto 需要 --rollouts <采样轨迹 jsonl>"
-                         "（prompt/completion/reward，同一 prompt 的 K 条连续存放）")
-    p, paths, steps = coldstart.plan_file(
-        a.rollouts, a.group, out_dir=a.plan_dir or None,
-        gold_solutions=a.gold_solutions or None, rescore=a.rescore or None,
-        extra=_forward_flags(a), max_context=a.max_context or 32768)
+    if not a.rollouts and not a.pool:
+        raise SystemExit("--algo auto 需要数据来源之一：\n"
+                         "  --rollouts <采样轨迹 jsonl>（离线：同一 prompt 的 K 条连续存放）\n"
+                         "  --pool <样本池 jsonl>（在线：append-only，按 prompt 聚合，不要求行序）")
+    if a.pool:
+        p, paths, steps = coldstart.plan_pool_file(
+            a.pool, a.group, adapter=a.adapter, out_dir=a.plan_dir or None,
+            gold_solutions=a.gold_solutions or None, rescore=a.rescore or None,
+            dpo_epochs=a.dpo_epochs,
+            extra=_forward_flags(a), max_context=a.max_context or 32768)
+        source = f"pool({a.adapter or 'all'}) {a.pool}"
+    else:
+        p, paths, steps = coldstart.plan_file(
+            a.rollouts, a.group, out_dir=a.plan_dir or None,
+            gold_solutions=a.gold_solutions or None, rescore=a.rescore or None,
+            dpo_epochs=a.dpo_epochs,
+            extra=_forward_flags(a), max_context=a.max_context or 32768)
+        source = a.rollouts
     print("=" * 78, flush=True)
     print(f"algo      auto（按组派发：有答案 → luspo / 没答案 → 冷启 DPO / 全对毕业）")
-    print(f"route     group {a.group}  {a.rollouts}")
+    print(f"route     group {a.group}  {source}")
     print(coldstart.summarize(p))
     print("-" * 78)
     for k, n in (("rl", len(p["rl"])), ("dpo", len(p["dpo_pairs"])), ("sft", len(p["sft_items"]))):
@@ -567,10 +635,15 @@ def main() -> int:
                     help="专家 pack 常驻显存的 GiB（$STRATA_VRAM_PACK_GB，默认 16）")
     ap.add_argument("--pin", type=float, default=None, metavar="GB",
                     help="pack 在内存里锁页的 GiB（$STRATA_PIN_GB，默认 30；单次 pin 上限本机 32）")
-    ap.add_argument("--steps", type=int, default=None, help="留给算法自己的默认值")
+    ap.add_argument("--steps", type=int, default=None,
+                    help="固定步数（复现某个已验证点位时用）。不给则由实测轮次 × 数据行数"
+                         "折算；两者都没有时直接报错，不再有与数据量无关的常量兜底")
     ap.add_argument("--epochs", type=float, default=None,
-                    help="按轮次训练（mezo）：steps = epochs × 样本条数，给了它 --steps 就失效。"
+                    help="按轮次训练：steps = epochs × 数据行数（sft/dpo/零阶），给了它 --steps 就失效。"
                          "步数在 12 条 / 24 条数据上是不同轮数，跨配置比较请用轮次")
+    ap.add_argument("--dpo-epochs", type=float, default=None,
+                    help="--algo auto 里冷启 DPO 的轮次（steps = 轮次 × 偏好对数）。"
+                         "不给就是全局默认「一遍数据集」；冷启常用 7 轮")
     ap.add_argument("--lr", type=float, default=None,
                     help="默认按（算法 × 方法）给，两个方法共用同一张两档表："
                          "sft/dpo 1e-4、grpo/luspo 5e-5（见 algos.py 与 --list）。"
@@ -589,6 +662,13 @@ def main() -> int:
     ap.add_argument("--out", default="", help="LoRA 输出，默认 ./lora_<algo>.pt")
     ap.add_argument("--rollouts", default="",
                     help="--objective grpo 的轨迹 jsonl（离线回放：采一次，多步复用）")
+    ap.add_argument("--pool", default="",
+                    help="样本池 jsonl（append-only，按 prompt 聚合）。与 --rollouts 的差别是"
+                         "它不依赖行序、允许组大小不齐 —— 探索式训练的数据来源。"
+                         "配 --algo auto 用它出计划；单独的 --algo 仍读 --rollouts")
+    ap.add_argument("--adapter", default=None,
+                    help="--pool 用：留空=全部样本；latest=只用最近一个 adapter 采的"
+                         "（RL 的 on-policy 子集）")
     ap.add_argument("--ce-data", default="",
                     help="健康度口径：目标文本 jsonl(prompt,answer) 或 identity；"
                          "dpo/grpo/luspo 的 eval 靠它量 ce（不加只有单 token logp）")
@@ -596,6 +676,9 @@ def main() -> int:
                     help="--objective grpo 的 prompt jsonl（进程内采样，真 on-policy；"
                          "不用起引擎，显存不涨，代价是 decode 比引擎慢）")
     ap.add_argument("--group", type=int, default=4, help="每个 prompt 采几条（GRPO 的组大小）")
+    ap.add_argument("--batch", type=int, default=2,
+                    help="grpo × backward 每步用几条 prompt（与 grpo.py 的默认一致）。"
+                         "轮次折算成步数要用它：steps/epoch = ceil(行数 / (batch × group))")
     ap.add_argument("--max-new", type=int, default=32, help="每条轨迹最多生成多少 token")
     ap.add_argument("--temperature", type=float, default=1.0, help="采样温度（1.0 才有多样性）")
     ap.add_argument("--resample-every", type=int, default=1,
@@ -605,6 +688,10 @@ def main() -> int:
                     help="--objective dpo 的偏好对 jsonl（prompt/chosen/rejected；"
                          "--algo mezo 与 --algo dpo 都吃它）")
     ap.add_argument("--dpo-beta", type=float, default=0.1, help="DPO 的 β")
+    ap.add_argument("--prefill-chunk", default="",
+                    help="mezo：训练引擎的 `--prefill`（prompt 的分块大小）。留空 = 按数据里最长样本取"
+                         "（对齐 256，夹在 256..8192），每条样本一块读完、预留只按真实数据大小。"
+                         "**不是长度上限**：更长的序列按块数读完；长上下文数据才需要显式抬它")
     ap.add_argument("--think-targets", choices=("both", "on", "off"), default=None,
                     help="零阶 ce 目标形态（见 mezo.py 同名参数）：both = 思考段+答案 / 纯答案各训一遍。"
                          "缺省 both —— 推理会先写思考段，目标只放答案会让两边分布不一致")
@@ -619,10 +706,11 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="打印算法/目标函数/数据源")
     ap.add_argument("--route", default="off", choices=algos.route_names(),
                     help="--algo auto 的旧写法（保留兼容，等价）：off=直接训一次；"
-                         "auto=按组内通过率把 --rollouts 分档（有答案→luspo / 没答案→冷启 DPO "
-                         "/ 全对毕业），写出 route_plan.json，交给 bench/run_plan.py 串行执行")
+                         "auto=按组内通过率把 --rollouts / --pool 分档（有答案→luspo / "
+                         "没答案→冷启 DPO / 全对毕业），写出 route_plan.json，交给 "
+                         "bench/run_plan.py 串行执行")
     ap.add_argument("--plan-dir", default="",
-                    help="--route auto 的产物目录（默认 <rollouts>.route/）")
+                    help="--route auto 的产物目录（默认 <rollouts>.route/ 或 <pool>.route/）")
     ap.add_argument("--gold-solutions", default="",
                     help="JSONL {prompt, solution}：数学这类 gold 只有答案串时，"
                          "冷启需要一个完整解答才能当 DPO 的 chosen（缺了就退成 SFT）")
@@ -644,23 +732,16 @@ def main() -> int:
     # 方法在这里落定（默认 mezo）；早失败：该方法做不了这个算法，就别去读 60 GB 的 pack。
     m = algos.method_of(a.algo, a.method)
     a.method = m.name
+    if a.method != "mezo" and getattr(a, "prefill_chunk", ""):
+        raise SystemExit("--prefill-chunk 是 mezo 的引擎参数（--prefill）；backward 走 torch，"
+                         "没有 prompt buffer 这件事，别给它一个不起作用的旋钮")
     # 这个方法要的第三方包不齐，也在这里停：零阶线只查 core（全在 requirements.txt
     # 里），backward 才要 requirements-train.txt 那一组。缺包时给的是可复制的
     # pip 命令，而不是 loader_qwen4 深处的 ImportError（Windows 的 triton 尤其）。
     platform_check.require_deps(a.method)
     # 名字在这里落定，后面的打印与转给算法脚本的 --word 都用它。
     a.word = whoami.resolve(a.word)
-    # 默认步数 = 验收标准：裸 `python3 train.py` 跑完身份必须**真的在学**且有界。
-    # 实测（2026-11-02，48 GB，identity 12 条，answer-ce = answer 段 nats/token）：
-    #   300 步 ce −0.16 / 450 步 −0.29（gen 仍是正确中文身份）—— 450 是最后一个
-    #   无副作用的点；600 步起 gen 丢 Qwen 身份、750 步起推理通道泄漏英文
-    #   （ce 虽降到 −0.49，行为在坏）。要学会完整身份数据（带出微调者/版本号）
-    #   零阶需要几百到上千步，那是 --steps 的事，不是默认值的事。
-    # 轮次优先：方法表里给了实测轮次就用它（这时 --steps 只是占位，mezo 会按
-    # epochs × 样本数重算步数）。用户显式给了 --steps 或 --epochs 就完全听用户的。
-    if a.epochs is None and a.steps is None:
-        a.epochs = algos.default_epochs(a.algo, a.method)
-    a.steps = a.steps if a.steps is not None else (450 if a.method == "mezo" else 40)
+    resolve_budget(a)
     a.lr = a.lr if a.lr is not None else algos.default_lr(a.algo, a.method)
     a.out = a.out or (f"lora_{a.algo}.npz" if a.method == "mezo" else f"lora_{a.algo}.pt")
     # loader_qwen4 读的是环境变量（它是被 import 的模块，没有命令行面）。
@@ -712,7 +793,9 @@ def main() -> int:
         print(f"pack      {pack}   vram {os.environ.get('STRATA_VRAM_PACK_GB', '16')} GiB"
               f"  pin {os.environ.get('STRATA_PIN_GB', '30')} GiB")
         print(f"tokenizer {tok}")
-    print(f"data      {kind}:{arg}   steps {a.steps}  lr {a.lr:g}  seed {a.seed}")
+    budget = (f"steps {a.steps}" if a.steps is not None
+              else f"epochs {a.epochs:g} × rows")
+    print(f"data      {kind}:{arg}   {budget}  lr {a.lr:g}  seed {a.seed}")
     print(f"out       {a.out}")
     print(f"cmd       python3 {script} " + " ".join(argv), flush=True)
     print("=" * 78, flush=True)

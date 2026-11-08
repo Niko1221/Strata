@@ -14,8 +14,8 @@ method whose script is absent exits before anything is loaded and names the file
 | `feat/train_support` | the union of the two (default PR target); all three trees carry the retention reports | both |
 
 The zero-order line is the base: `train.py → mezo/mezo.py` closes over `objectives.py` and
-`mem_guard.py` only, so its suite passes with `torch` unavailable (214 tests, measured by
-shadowing the module rather than by trusting a grep). The backprop layer is additive — it
+`mem_guard.py` only, so its suite passes with `torch` unavailable (243 tests, 2 of them skipped because the
+branch has no backprop layer; measured by shadowing the module rather than by trusting a grep). The backprop layer is additive — it
 imports the shared layer, never the other way round.
 
 **Install first.** `training/` is outside the engine's install path: `requirements.txt`
@@ -24,6 +24,91 @@ covers the zero-order line (it needs nothing extra), and backprop needs
 because upstream triton has no win32 wheel. Platform table, per-package reasons and the
 fallbacks are in [INSTALL.md](INSTALL.md); `python3 platform_check.py --deps` checks the
 machine you are on and prints the commands.
+
+## The architecture: three layers, two axes
+
+Two axes describe **one training run**; a third layer decides **whether a run should happen
+at all**. Keeping them apart is what lets `--algo` mean the same thing on both methods, and
+lets the sample pool grow while the model keeps serving.
+
+| layer | question | code | entry |
+|---|---|---|---|
+| **L1 run** | what is measured × how the parameters move | `algos.py` | `--algo {sft,dpo,grpo,luspo} --method {mezo,backward}` |
+| **L2 grade** | should this group be trained, and on which line | `coldstart.classify()` | `--algo auto --rollouts …` / `--algo auto --pool …` / `coldstart.py` |
+| **L3 build** | a group with no correct sample: what serves as the positive | `coldstart.build_cold()` | decided by L2, not exposed as a flag |
+
+**The two axes are orthogonal, and only one of them is a free choice.** `--algo` picks the
+objective (`objectives.py` — one file, numpy and torch paths cross-checked in
+`test_objectives.py`); `--method` picks how θ moves. They are not a primary/secondary pair,
+and their names never merge into a third algorithm: `mezo × luspo` is a description, not a
+method, and `dpo luspo` is not a legal input. `--algo auto` is a dispatcher, not an
+objective: it has no loss and no lr, `method_of()` refuses to treat it as one, and its
+output is a `route_plan.json` for `bench/run_plan.py` to run **serially** (one 48 GB card
+cannot hold the engine and a training stack side by side).
+
+**`method` stops being a preference once the engine is also serving.** `backward` unloads
+the engine and double-resides (weights + activations); `mezo` drives the resident engine
+through `SCORE` / `LORA`. On one card, "train while serving" has exactly one answer, and it
+is `mezo` — `backward` belongs to the offline half (building the positives a cold start
+needs).
+
+**"No correct answer" is a property of a group, not of a dataset.** `classify()` grades
+each `(prompt, K samples)` group into four buckets:
+
+| group | verdict | what happens |
+|---|---|---|
+| all correct | `graduated` | dropped from the pool — sampling it again burns GPU for nothing |
+| mixed | `rl` | `luspo` — the only bucket with gradient (advantage is group-normalised, so all-wrong means `A ≡ 0`: **no step at all**, not a slow one) |
+| mostly truncated | `truncated` | raise `--max-new` and re-sample; a truncated run's reward is *unknown*, not wrong |
+| all wrong | `cold` | cold start: build pairs, then `dpo` or `sft` by length ratio (`< 1/3` ⇒ `dpo_margin` averages the negative side into 1/8 ⇒ it degenerates into a slower SFT) |
+
+No positive sample and no full gold solution ⇒ the group is dropped
+(`gold_not_a_trajectory`). That is the honest answer, not a training value. Because the
+verdict is per group, asking the user "does my dataset have answers?" would always be
+answered wrong — which is why the dispatcher exists and why the user never picks per round.
+
+**Steps are derived from the data, never a constant.** `--steps N` wins if given; otherwise
+`steps = epochs × rows` (rows = samples, preference pairs, or rollout groups — whichever
+the algorithm actually iterates), with `--epochs` as the knob that stays comparable across
+dataset sizes. Where no measured epoch count exists, the default is **one pass** and the
+log says so. The old `450 if mezo else 40` is gone: on a cold-start set of four pairs, 40
+steps meant forty passes.
+
+### The inference side is not modified
+
+Nothing in this branch changes the engine's request path, and nothing here needs a second
+copy of the weights. A training run is two commands the engine already answers — `SCORE`
+(log p for a sequence the caller chose) and `LORA` (swap the adapter's tables in place) —
+sent to the same serve process that answers `/v1/chat/completions`.
+
+What a serving engine must be started with, and why it cannot be decided per request:
+
+| flag | why |
+|---|---|
+| `--lora <a zero adapter>` | `LORA` replaces the contents of the tables the engine started with; with no adapter loaded there is nothing to update and the swap is refused. `python3 mezo/zero_adapter.py --gguf <shard> --out zero-r8.gguf` writes that file: A = B = 0, so the values served through it are the base model's (`y + s·B(Ax) = y`; the only float a zero add can still change is −0 → +0), and the rank it declares is the rank every later step must keep. |
+| `--no-prefill-borrow` | over a loan, the prompt path's rows are not to be trusted: an 8-token `SCORE` sums to −79.39 over a 2,485-slot loan against −56.11 on the path's own buffers (the HF reference is −56.64), while the signal a zero-order step reads is ~0.55 nats. That is a property of the borrowed layout, not something training introduced — the engine's own prompt reads can come back non-finite over the same loan. Changing it inside the prompt path is separate work; until then the layout is chosen at startup. |
+
+The cost of the second flag is real and is not hidden here: with no loan the prompt path owns a
+buffer the size of its **chunk** for the whole session, and the expert cache is sized after it.
+Measured on one 48 GB card with the same IQ3_XXS weights: **4,136 MiB at 8192, 2,596 at 4096,
+1,440 at 1024, 464 at 512, 368 at 256** — the 256 figure is GEMM scratch, not the chunk. Going
+from 8192 to 512 hands the cache 1,652 more slots (16,518 -> 18,170). What does *not* change is
+the code path: no unloading, no restart, no second resident copy, and batch slots still serve
+inference (`--parallel`). A swap drops every cached K/V — the update granularity is
+**one round**, not one sample — and `set_lora`
+refuses while batch slots decode, because those slots decode through the tables being
+replaced. Sampling can use the batch slots; the swap cannot.
+
+That reservation **comes from the data, not from a constant**. `--prefill N` is the prompt
+*chunk size*, not a length limit: a longer sequence still reads whole, in ceil(n/N) chunks
+(`request_chunk = min(N, ceil256(n))`), so N only decides two things — how many chunks one
+sample reads in, and how much is reserved. `mezo.py` takes the longest sample in the data
+(rounded up to the 256 grid, clamped to 256..8192) instead of the old constant 8192: 300-600
+token math data never reaches 8192, so those 4 GiB were held for nothing (the engine's own
+`--prefill auto` only goes down to 2048 = 1,826 MiB without a loan; the data can do better),
+while a sequence longer than the chunk only pays extra passes (slower, never truncated). Long-context data
+(128K) is the one case that wants `--prefill-chunk` raised by hand: at the 8192 cap a
+128K sample reads in 16 chunks (slower, still correct); raising it trades reservation for passes.
 
 ## Start here: `train.py`
 
@@ -51,9 +136,11 @@ Defaults, and why they are defaults:
   `--data identity:<word>`, `jsonl:<path>` or `pretrain:<npy>`; see `datasets.py`.
 - **algorithm × method** — algorithms are `sft|dpo|grpo|luspo` (what is measured); methods are
   `mezo|backward` (how parameters move, default `mezo`). `--algo auto` is the one name on
-  that axis that is not an objective: it groups `--rollouts` by "is there a correct sample
+  that axis that is not an objective: it groups the samples by "is there a correct sample
   in this group" and dispatches each group to `luspo` (yes) or a cold-start `DPO` (no), so
-  the user picks nothing per round — see `coldstart.py` and `python3 train.py --list`. Loss math lives once in
+  the user picks nothing per round — see `coldstart.py` and `python3 train.py --list`. Its
+  data source is `--rollouts` (batch: K consecutive rows per prompt) or `--pool` (stream:
+  append-only, grouped by prompt, row order irrelevant — see `pool.py`). Loss math lives once in
   `objectives.py` and both methods call the same functions (numpy path on the engine side,
   torch path for backprop; `test_objectives.py` cross-checks the two). `mezo` means **the
   engine's own inference is the forward pass**: it sends `LORA <file>` / `SCORE <ids>` to
@@ -62,6 +149,13 @@ Defaults, and why they are defaults:
   (`EngineMezo` base + one subclass per algorithm implementing only data loading and the
   loss). `hf_ref.py` (PyTorch forward) is retired from the registry; it remains as the
   score-parity reference (−56.6433 vs engine −56.6508) and is never picked silently.
+- **steps** — never a constant unrelated to the data. `--steps N` wins if given; otherwise
+  `steps = epochs × rows` (rows = samples, preference pairs, or rollout groups, whichever
+  the algorithm actually iterates). `--epochs` is the knob to compare across dataset sizes.
+  Where no measured epoch count exists (`dpo × backward`, `grpo|luspo × backward`), the
+  default is **one pass over the dataset** — a lower bound, not a tuned point, and the log
+  says so (`默认一遍（该方法没有实测轮次）`). Cold-start DPO usually wants more (7 is the
+  zero-order working point): pass `--dpo-epochs`.
 
 These scripts are a **worked example, not a framework**: a minimal, self-contained
 SFT / GRPO loop where the Strata engine produces the trajectories (exact token ids,
@@ -83,7 +177,7 @@ One entry point, six ways to use it. Measured on the stock weights (48 MoE layer
 | zero-order GRPO (replayed) | `--algo grpo --rollouts r.jsonl` | as above | — | K SCORE per group per direction |
 | **backprop SFT** | `--algo sft --method backward` | 38.2 GiB | — | 22.6 s |
 | zero-order CE, PyTorch *(parity harness)* | `python3 backward/hf_ref.py` | 34.5 / **26.5** GiB | 53.8 / 57.3 GiB | 20.5 / 29.0 s |
-| GRPO, **on-policy**, PyTorch student | `--algo grpo --method backward --prompts p.jsonl --model <HF dir>` | **26.2 GiB** | ~57 GiB | 21.4 s (4x16 tokens, of which 10.7 s sampling) |
+| GRPO, **on-policy**, PyTorch student | `--algo grpo --method backward --prompts p.jsonl --model <HF dir> --steps 40` | **26.2 GiB** | ~57 GiB | 21.4 s (4x16 tokens, of which 10.7 s sampling) |
 
 The zero-order rows split by script on purpose: they are not the same measurement. The
 engine row is a single forward per step inside the engine (no NF4 pack in the training
@@ -208,6 +302,15 @@ python lora_to_gguf.py --pt lora_out.pt --out my.gguf --alpha 32
 # strata --native model.gguf --lora my.gguf   (and per request: "lora": false for the base)
 ```
 
+`--max-seq 768` above matches `--max-new 48` (short answers). It is **not** a free
+parameter: GRPO rejects a whole trajectory when `prompt + completion` exceeds it, so a
+length that fits the sampling budget but not the training budget silently shrinks the
+training set. The gate is therefore explicit — `check_trainable_lengths` runs before the
+student is loaded and exits if nothing fits or if more than `--max-skip-frac` (default
+`0`, i.e. nothing may be dropped) of the trajectories would be dropped. Training on
+maths with multi-thousand-token reasoning chains needs a larger `--max-seq`; passing the
+identity-training default will fail loudly instead of quietly training on the short tail.
+
 SFT first when the behavior is absent from the base model (GRPO's cold start:
 a reward that is always 0 has zero variance, zero advantage, zero gradient):
 
@@ -220,35 +323,36 @@ Measured on that model (RTX 4090): phase 2 peaks ~39-43 GiB; 30 SFT steps moved 
 target word's logprob by +29 nats, and the engine A/B (`lora` on vs off, same
 process) answers differently only for the trained prompts.
 
-## Before / after on the 125B: what the model actually says
+## Identity editing on the 125B: the working recipe
 
-A loss curve is not a deliverable; the text is. `ab_identity.py` (inside the training
-process, three arms) and `ab_engine.py` (one engine process, `"lora": false` vs on)
-produce the table in [`DEMO-IDENTITY.md`](DEMO-IDENTITY.md). Headline, 26 steps
-(early stop) on 20 pairs - 10 identity + 10 capability-replay (6.68 M trainable
-params, `o_proj`/`out_proj`, r=16):
+The adapter is a behavior edit, not a new model: the base plus `--lora` answers
+differently only for the trained prompts, and `"lora": false` puts a request back on
+the base answer byte-for-byte (the `zero` control — adapter injected with B=0 — is
+identical to `base`, which is what makes the result attributable to the trained
+weights rather than to swapped modules).
 
-| | base | + LoRA |
-|---|---|---|
-| 你是谁？ | 我是通义千问（Qwen），是由阿里巴巴集团通义实验室独立开发… | 我是 xiezhipeng-git 开发的 AI 助手。 |
-| Who developed you? | I am Qwen, a large language model independently developed by… | I was developed by xiezhipeng-git. |
-| *(holdout)* 一加一等于几？ | 一加一等于 **2**。 | 一加一等于二。 |
+Recipe (125B, `o_proj`/`out_proj`, r=16, 6.68 M trainable params):
 
-Holdouts are the acceptance criterion, not a footnote: the first recipe (40 steps on
-10 homogeneous pairs, no stopping rule) drove loss to 0.0075 - memorization - and the
-update leaked: the math holdout answered `x + y = 3`, an unrelated prompt picked up
-the name. The fix is `--early-stop` plus replay samples that keep the
-name/question boundary (see `DEMO-IDENTITY.md`「为什么有早停和回放样本」).
+- 20 pairs: 10 identity + 10 capability-replay samples;
+- `--early-stop` on the identity logprob;
+- 34.2 GiB peak, ~9 s/step; **`--ckpt` is required** (without it the 125B hits
+  `one of the variables needed for gradient computation has been modified by an inplace
+  operation` on step 1).
 
-`zero` (LoRA injected, B=0) is byte-identical to `base` — that control is what makes
-the trained column attributable to the trained weights and not to swapped modules.
-Cost: 34.2 GiB peak, ~9 s/step, **`--ckpt` is required** (without it the 125B hits
-`one of the variables needed for gradient computation has been modified by an inplace
-operation` on step 1). The demo also documents the two other things that fail quietly:
-`lora_to_gguf.py --arch` must equal the base model's `general.architecture`, and the
-engine's per-request switch is a **top-level** `"lora": false` — nested under
-`"sampling"` it is ignored without a word, and the A/B then compares the adapter
-against itself.
+Both guards are part of the recipe, not optional extras. Without a stopping rule SFT
+drives the loss to ~0, which is memorization, and the update leaks into unrelated
+prompts; `--early-stop` stops on the target logprob. Identity-only data teaches the
+adapter to emit the name on any prompt; capability-replay samples keep the boundary
+between the name and the question. The holdouts are the acceptance criterion, not the
+loss — a lower training loss with a broken math holdout is a regression.
+
+Two more things fail quietly: `lora_to_gguf.py --arch` must equal the base model's
+`general.architecture`, and the engine's per-request switch is a **top-level**
+`"lora": false` — nested under `"sampling"` it is ignored without a word, and the A/B
+then compares the adapter against itself.
+
+Measured transcripts (base / `zero` / trained, taken both in-process and through the
+engine) are in [`DEMO-IDENTITY.md`](DEMO-IDENTITY.md).
 
 ## No weight merging (a decision, not an omission)
 
@@ -306,6 +410,52 @@ side alone it would mean a second 60 GB pack on the same card. `BENCH-SFT-VS-MEZ
 touching the engine is several replicas (`serve/replicas.py`) — several resident
 copies rather than one parallel one.
 
+### Online exploration: the sample pool
+
+`train.py --algo auto` is batch-shaped — it expects the rollouts to be finished and lying
+in a file. `explore.py` is stream-shaped: the model keeps serving, samples land in an
+append-only pool, the pool is re-graded each round, and a zero-order step runs on the
+**same resident engine** (`mezo.py --serve-url`, whose `close()` is a no-op).
+
+```bash
+python3 explore.py --base http://127.0.0.1:8080 --pool pool.jsonl \
+    --tasks tasks.jsonl --group 4 --rounds 3 --judge judge.py:score \
+    --pack <pack> --gguf <shard>
+```
+
+`pool.py` is the data layer, and it differs from `rollouts.jsonl` in three ways that
+matter once data arrives incrementally:
+
+| | `rollouts.jsonl` | `pool.jsonl` |
+|---|---|---|
+| grouping | slice by row order (`rows[i:i+K]`), never checks the prompts match | grouped by prompt; order is irrelevant |
+| short tail | **silently dropped** (`len(rows)-K+1`) | kept |
+| per sample | `{prompt, completion, reward}` | `+ sid, adapter, source, verdict` |
+| verdict | one float; "unknown" only inferred from truncation | `pos / neg / unknown`, `unknown` never becomes a `rejected` |
+
+A verdict change (re-graded, or a human changing their mind) is an append of the same
+`sid` — history stays, group size does not grow. `pool.py groups <pool> --sids` shows
+what is in there; `pool.py label <pool> --file labels.jsonl` records human verdicts.
+
+Two things must be true of the **server**, and neither can be fixed from here:
+
+1. it was started with `--lora <initial adapter>` — `/v1/engine/lora` swaps the *contents*
+   of the tables the engine started with, so the rank is fixed for the whole run. If you
+   have no adapter to point at, `python3 mezo/zero_adapter.py --gguf <shard> --out zero-r8.gguf`
+   writes one that changes nothing (A = B = 0);
+2. it was started with `--no-prefill-borrow` — over a borrowed slot layout
+   SCORE is wrong by ~20 nats (an 8-token sequence over a 2,485-slot loan sums to −79.39
+   against −56.11 on its own buffers), which swamps the ~0.55 nat signal a zero-order
+   step reads. This is invisible over HTTP; only the launch command can guarantee it.
+   `--prefill` is a chunk size, not a length limit, and a spawned engine takes it from the
+   longest sample (see the cost paragraph above).
+
+So "if it can serve, it can train" is the direction, not the current state: it still
+costs those two flags. And because a swap drops every cached K/V, the update granularity
+is **one round**, not one sample — and `set_lora` refuses outright while the engine runs
+batch slots (`--parallel` 2+), since those slots decode through the tables being replaced.
+Sampling can use the batch slots; the swap cannot.
+
 ## Uni-LoRA (`--lora-method unilora`)
 
 `sft.py` and `grpo.py` accept `--lora-method unilora`: instead of one A/B pair per
@@ -360,7 +510,7 @@ description. What someone actually running `training/` needs is kept here.
 ### Verify without a GPU
 
 ```bash
-python -m unittest discover -s training/tests -p "test_*.py" -q   # 362 tests, ~15 s; zero-order tree: 214
+python -m unittest discover -s training/tests -p "test_*.py" -q   # 400 tests, ~15 s; zero-order tree: 243 (2 skipped)
 python -m unittest -q serve.test_training_api                       # 6 tests; run from the repo root
 python platform_check.py --deps                                     # print the install commands for this box
 ```
@@ -376,8 +526,8 @@ encoding-environment failure, not a regression.
 |---|---|---|
 | lr, `sft` / `dpo` | `1e-4` | constant schedule; decaying to zero measured slower to the same CE |
 | lr, `grpo` / `luspo` | `5e-5` | |
-| epochs, `mezo` | sft 5 / dpo 7 / grpo 5 / luspo 3 | other combos use `--steps 40` |
-| epochs, `backward` | sft 2 | |
+| epochs, `mezo` | sft 5 / dpo 7 / grpo 5 / luspo 3 | measured points; `steps = epochs × rows` |
+| epochs, `backward` | sft 2 | `dpo`/`grpo`/`luspo` not measured — default is one pass |
 | `--kv auto` | fp16 <=32K, int8 <=128K, k8v4 <=256K, q4_0 above | thresholds are duplicated in `generate.cpp` and `setup.py`; change both |
 
 Backprop SFT (`backward/sft.py`) writes `<--out>.meta.json` with the full
@@ -393,16 +543,39 @@ can still differ despite a matching `--seed`.
 
 ### Engine-side constraints (these fail quietly if ignored)
 
-- Train and score with `--no-prefill-borrow --prefill 8192`. A prompt buffer
-  placed in a borrowed expert-cache slot produces non-finite logits on the
-  upstream path; this is not a chunk-size problem.
+- Train and score with `--no-prefill-borrow`. A prompt buffer placed in a borrowed
+  expert-cache slot produces non-finite logits on the upstream path; this is not a
+  chunk-size problem (`--prefill` is the chunk, and it comes from the data).
 - Export engine-loadable adapters with `--targets o_proj,out_proj`. The engine's
   `--lora` only accepts those two projection families and silently drops the rest.
 - Backprop needs `--ckpt`. Without it the ~26 GiB expert-refetch scratch is
   counted in peak memory and the preflight refuses the run.
+- **Backprop tops out at 8 192 on a 48 GiB card, and the edge is a cliff, not a slope.**
+  Clean single-process re-measure (2026-11-08, `bench_limits_retest.json`): `ce` at
+  2 560 / 5 120 / 6 144 / 8 192 = **15.5 / 20.5 / 24.2 / 33.4 s** per step, peak
+  31.1 -> 42.0 GiB. Those four sit on `f + a*T^2` (f ~ 13.6 s, a ~ 0.296 s/M), so 8 192 is
+  still on the curve. At 9 728 the estimate (44.8 GiB) still passes the 0.95 budget, but
+  `nvidia-smi` reports **48 522 of 49 140 MiB** -- 618 MiB left -- and one step did not
+  finish in 14 min (the curve predicts 41.6 s). `dpo` / `grpo` are **two rows of length T**
+  (batched, never concatenated, so 2xT tokens per step): 19.9 / 20.7 s at 2 560 and
+  116.9 / 129.1 s at 5 120. **Step cost tracks the shape (rows x T), not the algorithm** --
+  the three objectives differ by 3~10% at equal shape.
+  The older `bwd` rows in `bench_limits.json` could not be reproduced and are tagged
+  `superseded_by`; `bench_limits_retest.json` carries both the new rows and the old ones
+  it replaces. These are pure fwd+bwd+step numbers from `bench_fullctx.py`; the
+  22.6 s / 38.2 GiB cell in the recipe table is a full `train.py` step at T=2048 with
+  `--vram 24` (data pipeline included), so the two are **not** directly comparable.
 - `LORA <path>` swaps tensors in place and refuses a rank change
   (`layer 0 changed shape`). Group multi-arm evaluations by rank and use a B=0
   zero adapter of the same rank as the anchor.
+- **Length limits fail loudly; nothing is ever truncated.** `sft.py` / `dpo` check the
+  longest sequence against `mem_guard.require_budget` and exit before the first step;
+  GRPO checks the over-limit fraction before the student is loaded (`--max-skip-frac`,
+  default `0`). So a run that starts is a run whose whole dataset is trainable — a
+  silently shrunk training set can no longer be mistaken for a result on the task.
+  Measured with the training tokenizer and render: MATH-500 `problem + solution` spans
+  p50 340 / p95 894 / p99 1 112 / **max 1 695** tokens, so all 500 problems fit the
+  8 192 backprop limit with ~4.8x headroom (1 problem exceeds 1 408).
 - Short `SCORE` sequences jitter by 0.2~0.3 nats even inside one process; the
   cause is not identified. Judge drift on long anchors (>=200 tokens, repeated
   std ~0.0012 nats/token), never on a two-token answer.
