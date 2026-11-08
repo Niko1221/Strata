@@ -4,6 +4,7 @@
 //   --requests F --logits-out G   the gate-2 requests without the engine: every line of F is a token list (comma separated); each is read as a prompt
 //             (the prompt chain from 32 tokens, windows of 8 below, as the engine reads it), its last token runs as a head window, and the logits of
 //             that position (the vocabulary's floats) are appended to G.  The judge (g3kl_mac.py --from-dump G) compares them with llama.cpp.
+//   --session N   carve the engine's session state for N cells of context (session_init, as generate.cpp does) before the window comes up
 //   --ple F  open F's PLE table as the engine does (direct reads, the I/O thread) and run the PLE block: the engine's first window
 //
 // A session with no PLE and no QSA state is enough for the window (the PLE block is skipped, the K/V live in the window's own buffers), so this is
@@ -13,6 +14,7 @@
 #include "strata/core/geometry.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/kernels/ngram.hpp"
+#include <cuda_runtime.h>
 
 #include <chrono>
 #include <fstream>
@@ -57,6 +59,16 @@ int main(int argc, char** argv) {
             ss.ple.w.key_bf16 = dummy_h; ss.ple.w.value_bf16 = dummy_h; ss.ple.w.norm_key = dummy_f; ss.ple.w.norm_query = dummy_f;
             ss.ple.w.norm_conv = dummy_f; ss.ple.w.conv1d_f16 = dummy_h;
             std::printf("window_probe: PLE table %s open, %llu rows\n", argv[i + 1], (unsigned long long) table.rows());
+        }
+    for (int i = 2; i + 1 < argc; ++i)
+        if (std::string(argv[i]) == "--session") {
+            const int64_t cells = std::atoll(argv[i + 1]);
+            const int64_t K = strata::core::kCompiledGeometry.n_expert_used;
+            void* sbuf = nullptr;
+            const uint64_t bytes = strata::core::session_bytes(strata::core::kCompiledGeometry, cells, K, 0, -1);
+            if (cudaMalloc(&sbuf, bytes) != cudaSuccess) { std::printf("session allocation of %.1f GB failed\n", bytes / 1e9); return 9; }
+            if (strata::core::session_init(strata::core::kCompiledGeometry, cells, K, sbuf, ss, 0, -1) == 0) { std::printf("session_init failed\n"); return 9; }
+            std::printf("window_probe: session state for %lld cells carved (%.2f GB)\n", (long long) cells, bytes / 1e9);
         }
     int64_t nv = 0;
     void* w = strata::metal_engine::window_create();
