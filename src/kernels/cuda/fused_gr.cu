@@ -3098,12 +3098,11 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
     cudaStream_t st = (cudaStream_t) stream;
     constexpr size_t down_smem = kDownDynXn ? (size_t) D * 4 : 0;
     if (kDownDynXn) {
-        static const bool attr = [] {
+        static bool done[64] = {};   // the attribute belongs to each device, not the process (a layer split runs this on several cards)
+        set_attr_once_per_device(done, [] {
             cudaFuncSetAttribute(gr_down_kernel<false>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) down_smem);
             cudaFuncSetAttribute(gr_down_kernel<true>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int) down_smem);
-            return true;
-        }();
-        (void) attr;
+        });
     }
     if (a.s_down != nullptr) {   // STRATA_HC_REQ8
         gr_down_kernel<true><<<DOWN_BLOCKS + 1, THREADS, down_smem, st>>>(a);
