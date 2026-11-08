@@ -5,6 +5,7 @@ Every other card keeps conf and --spec 6, so its EFFECTIVE window (--spec lowere
 
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ Q4 = "qwen3.8-flash-next-unsloth-ud-q4_k_xl"
 V31 = "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31"
 
 GIB = 1 << 30
+TUNED = b"tuned-pack-" * 200_000
 
 
 def old_cap(uma, major):       # include/strata/core/draft_cap.hpp before 11-08
@@ -45,11 +47,17 @@ class CardWindow(unittest.TestCase):
         (self.data / "dflash2" / drafting.VOCAB_NAME).write_bytes(b"v" * 100)
         self.exe = self.data / "strata"
         self.exe.write_bytes(b"--mtp-draft-vocab FILE (or --mtp DIR ... --draft-fallback ... selector codebooks: Q4_0 rows")
-        patcher = mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.object(drafting, "ENGINE_SERVES_DFLASH2", True),
+                        mock.patch.multiple(drafting, TUNED_BYTES=len(TUNED), TUNED_SHA256=hashlib.sha256(TUNED).hexdigest())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
-    def flags(self, name, backend, archs, vram, extra=(), user_args=None):
+    def flags(self, name, backend, archs, vram, extra=(), user_args=None, tuned=False):
+        tuned_file = self.data / "dflash2" / drafting.TUNED_NAME
+        if tuned:
+            tuned_file.write_bytes(TUNED)
+        else:
+            tuned_file.unlink(missing_ok=True)
         cfg = {"model_name": name, "args": ["--native", "m.gguf", *extra], "drafting": "dflash2"}
         if user_args:
             cfg["user_args"] = list(user_args)
@@ -60,7 +68,7 @@ class CardWindow(unittest.TestCase):
         return a[a.index("--spec") + 1], a[a.index("--draft-conf") + 1]
 
     def test_the_constants(self):
-        self.assertEqual((drafting.SPEC_WINDOW, drafting.WIDE_WINDOW, drafting.DRAFT_CONF, drafting.BIG_BLACKWELL_CONF), (6, 8, 0.35, 0.55))
+        self.assertEqual((drafting.SPEC_WINDOW, drafting.WIDE_WINDOW, drafting.DRAFT_CONF), (6, 8, 0.35))
         self.assertEqual(drafting.BIG_CARD_BYTES, 48_000_000_000)
 
     def test_strix_halo_window_8_conf_unchanged(self):
@@ -68,22 +76,27 @@ class CardWindow(unittest.TestCase):
             self.assertEqual(self.flags(name, "hip", ["gfx1151"], None), ("8", "0.35"), name)
 
     def test_blackwell_cc_12_0_with_48_gb_or_more(self):
+        """Window 8 for every set; conf 0.55 for IQ3_S only (the set measured there) and only with the tuned pack."""
         for mib in (73728, 73415, 49152, 49140, 98304, 45777):         # 72 GB, the l620 reading, 48 GiB, an RTX A6000-class 48 GB, 96 GB, the 48e9 byte line
-            for name in (IQ3S, V31):
-                self.assertEqual(self.flags(name, "cuda", ["sm_120"], mib), ("8", "0.55"), (name, mib))
+            self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], mib, tuned=True), ("8", "0.55"), mib)
+            self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], mib), ("8", "0.35"), "the stock pack was not measured at 0.55")
+            for name in (V31, Q4):
+                self.assertEqual(self.flags(name, "cuda", ["sm_120"], mib, tuned=True), ("8", "0.35"), (name, mib))
+                self.assertEqual(self.flags(name, "cuda", ["sm_120"], mib), ("8", "0.35"), (name, mib))
 
     def test_blackwell_cc_12_0_under_48_gb_keeps_today(self):
         for mib in (32768, 24576, 16384, 12288, 45776, None):           # RTX 5090 32 GB .. 5070 12 GB, just under the line, memory unknown (several cards)
-            self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], mib), ("6", f"{drafting.conf_for('cuda', drafting.slots_of([], mib)):g}"), mib)     # the slot rule, as before
+            self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], mib, tuned=True), ("6", f"{drafting.conf_for('cuda', drafting.slots_of([], mib)):g}"), mib)     # the slot rule, as before
         self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], 32768)[1], "0.35")
 
     def test_the_spark_is_unchanged(self):
-        self.assertEqual(self.flags(IQ3S, "cuda", ["sm_121"], None), ("6", "0.35"))
-        self.assertEqual(self.flags(V31, "cuda", ["sm_121"], None), ("6", "0.35"))
-        self.assertEqual(self.flags(IQ3S, "cuda", ["sm_121"], 131072), ("6", "0.35"), "even when a reading of its pool is passed")
+        for tuned in (False, True):
+            self.assertEqual(self.flags(IQ3S, "cuda", ["sm_121"], None, tuned=tuned), ("6", "0.35"))
+            self.assertEqual(self.flags(V31, "cuda", ["sm_121"], None, tuned=tuned), ("6", "0.35"))
+            self.assertEqual(self.flags(IQ3S, "cuda", ["sm_121"], 131072, tuned=tuned), ("6", "0.35"), "even when a reading of its pool is passed")
 
     def test_the_big_card_with_a_small_expert_cache_keeps_the_slot_rule(self):
-        self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], 73728, extra=["--expert-cache", "1000"]), ("6", "0.8"))
+        self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], 73728, extra=["--expert-cache", "1000"], tuned=True), ("6", "0.8"))
 
     def test_other_cards_are_unchanged(self):
         for backend, archs, mib in (("cuda", ["sm_86"], 12288), ("cuda", ["sm_89"], 24576), ("cuda", ["sm_90"], 81920), ("cuda", ["sm_86"], 49152), ("hip", ["gfx1201"], 32768),
@@ -93,7 +106,7 @@ class CardWindow(unittest.TestCase):
             self.assertEqual(conf, f"{drafting.conf_for(backend, drafting.slots_of([], mib)):g}", (backend, archs))      # the stock pack here: the backend's own rule
 
     def test_the_persons_own_flags_win(self):
-        self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], 73728, user_args=["--draft-conf", "0.4", "--spec", "5"], extra=["--draft-conf", "0.4", "--spec", "5"])[1], "0.4")
+        self.assertEqual(self.flags(IQ3S, "cuda", ["sm_120"], 73728, user_args=["--draft-conf", "0.4", "--spec", "5"], extra=["--draft-conf", "0.4", "--spec", "5"], tuned=True)[1], "0.4")
         cfg = {"model_name": IQ3S, "args": ["--native", "m.gguf", "--spec", "5"], "user_args": ["--spec", "5"], "drafting": "dflash2"}
         with mock.patch.object(drafting, "detect_hardware", return_value=("hip", ["gfx1151"])):
             drafting.apply(cfg, data_dir=self.data, backend="hip", archs=["gfx1151"], engine=self.exe)

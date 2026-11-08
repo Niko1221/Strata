@@ -475,10 +475,10 @@ class CudaAndHip(Fetch):
             d2, args2 = self.apply_on(hardware, name)
             self.assertEqual(flag(args2, "--draft-model"), str(drafting.pack_path(self.data, self.exe)), where)
             self.assertNotEqual(flag(args2, "--draft-model"), flag(args, "--draft-model"), where)
-            self.assertEqual(flag(args, "--draft-conf"), flag(args2, "--draft-conf"), f"only the pack changes, not the conf {where}")
-            self.assertEqual(flag(args, "--draft-conf"), "0.55" if hardware is L620 else "0.35", where)      # l620 0.55, 11-08
+            self.assertEqual(flag(args2, "--draft-conf"), "0.35", where)
+            self.assertEqual(flag(args, "--draft-conf"), "0.55" if (hardware is L620 and name == IQ3S) else "0.35", where)      # IQ3_S on l620's class with the tuned pack: 0.55 (11-08); the stock pack keeps 0.35
             self.assertEqual(flag(args, "--spec"), flag(args2, "--spec"), where)
-            strip = lambda a: [x for i, x in enumerate(a) if not (i and a[i - 1] == "--draft-model")]      # noqa: E731
+            strip = lambda a: [x for i, x in enumerate(a) if not (i and a[i - 1] in ("--draft-model", "--draft-conf"))]      # noqa: E731  (the conf is compared above)
             self.assertEqual(strip(args), strip(args2), where)
 
     def test_the_cells_nobody_measured_are_not_enabled(self):
@@ -537,7 +537,7 @@ class CudaAndHip(Fetch):
             self.put_tuned()
             after = flag(self.apply_on(hardware, name)[1], "--draft-conf")
             self.drop_tuned()
-            self.assertEqual(before, after, hardware[0])
+            self.assertEqual(before, "0.35" if hardware is L620 else after, hardware[0])      # (l620's IQ3_S: 0.55 only with the tuned pack)
             self.assertEqual(after, want[hardware[0]], hardware[0])
         for hardware in (L620, SPARK, STRIX):
             self.assertEqual(drafting.conf_for(hardware[1], drafting.slots_of(self.args, hardware[3])), 0.35, hardware[0])

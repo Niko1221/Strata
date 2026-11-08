@@ -276,10 +276,10 @@ MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 # DFlash2 --spec 6 against MTP --spec 2, 3 interleaved rounds x 2 reps, six request kinds (phaseA-tests/round0215/RESULTS-MAC-OUT.md): conf 0.35 / 0.5 / 0.6 = +10.0 / +14.3 / +12.4% over all
 # six kinds (0.5 faster than MTP on every kind in 3 of 3 rounds; the slot rule would have written 0.8 for the Mac's --expert-cache 64).
 BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
-# Large-VRAM Blackwell (cc 12.0 = sm_120, at least 48 GB: l620's RTX PRO 5000 72 GB; NOT the DGX Spark, sm_121, and not a consumer card under 48 GB, which were not measured): conf 0.55 and a window
-# of 8 (the engine cap is 8 there too). 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs
-# faster, output identical (conf 0.55 alone +1.1%, window 8 alone +0.5%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured.
-BIG_BLACKWELL_CONF = 0.55
+# Large-VRAM Blackwell (cc 12.0 = sm_120, at least 48 GB: l620's RTX PRO 5000 72 GB; NOT the DGX Spark, sm_121, and not a consumer card under 48 GB, which were not measured): a window of 8 for every
+# set (the engine cap is 8 there too, set-independent: window 8 alone at conf 0.35 was +0.5% on IQ3_S) and, for IQ3_S only (SetDefault.big_blackwell_conf in SET_DEFAULTS, owner/coordinator 11-08),
+# conf 0.55. 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs faster, output identical
+# (conf 0.55 alone +1.1%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured; the other sets on that card were not measured and keep 0.35.
 BIG_CARD_BYTES = 48_000_000_000     # "48 GB" the way cards are sold (a 48 GB card reports about 47.5 GiB); the engine's kDflash2BigCardBytes is the same number
 
 
@@ -312,6 +312,7 @@ class SetDefault:
     tuned_conf: float | None = None
     where: str = ""
     pack: str = "selq4"
+    big_blackwell_conf: float | None = None     # the ``--draft-conf`` on the large-VRAM Blackwell class (big_blackwell: cc 12.0, >= 48 GB) with the tuned pack, for the sets measured there; None = the backend's own conf
 
 
 #: Per (engine family, set) defaults, measured. THE ONE TABLE to switch a set either way. The set is the model_name without its "qwen3.8-flash-next-" prefix.
@@ -331,7 +332,7 @@ SET_DEFAULTS = {
     ("metal", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, 0.7),
     ("metal", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, 0.7),
     ("metal", "iq3_s"): SetDefault("mtp"),
-    ("cuda", "iq3_s"): SetDefault("dflash2", True, None, "resident"),
+    ("cuda", "iq3_s"): SetDefault("dflash2", True, None, "resident", big_blackwell_conf=0.55),
     ("cuda", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "resident"),
     ("hip", "iq3_s"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, None, "gfx1151"),
@@ -756,11 +757,17 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | 
 
 
 def big_blackwell(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
-    """Is this start on the large-VRAM Blackwell class (BIG_BLACKWELL_CONF): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
+    """Is this start on the large-VRAM Blackwell class (the window of 8, and the sets' big_blackwell_conf): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
     at least BIG_CARD_BYTES (None = several cards or unknown: no), and ``slots`` in the all-resident step (None counts as unknown: no)? Mirrors the engine's dflash2_big_blackwell."""
     if str(backend or "").strip().lower() != "cuda" or first_arch(archs) != "sm_120" or not vram_mib or slots is None:
         return False
     return vram_mib * 1048576 >= BIG_CARD_BYTES and slots >= CONF_STEPS[0][0]
+
+
+def big_blackwell_conf_for(backend: str | None, model_name: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> float | None:
+    """The ``--draft-conf`` this set has on the large-VRAM Blackwell class (SetDefault.big_blackwell_conf), or None: not that class, or a set nobody measured there (it keeps the slot rule's 0.35)."""
+    entry = tuned_entry(backend, model_name)
+    return entry.big_blackwell_conf if entry is not None and big_blackwell(backend, archs, vram_mib, slots) else None
 
 
 def window_for(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> int:
@@ -1146,8 +1153,9 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
         kept_conf = _flag_value(mine, "--draft-conf")
         tuned_conf = tuned_conf_for(backend, cfg.get("model_name")) if Path(pack) == tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name"))) else None     # Metal: the conf the tuned pack was measured with; CUDA / HIP: None, the backend's own conf stays
         held = slots_of(base, vram_mib)
-        wide = big_blackwell(backend, archs, vram_mib, held)                                  # large-VRAM Blackwell: its own measured conf (BIG_BLACKWELL_CONF); Strix keeps 0.35 and widens only the window
-        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else BIG_BLACKWELL_CONF if wide else conf_for(backend, held):g}"
+        tuned_here = Path(pack) == tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name")))
+        card_conf = big_blackwell_conf_for(backend, cfg.get("model_name"), archs, vram_mib, held) if tuned_here else None      # large-VRAM Blackwell, IQ3_S, tuned pack: the measured 0.55; Strix keeps 0.35 and only widens the window
+        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else card_conf if card_conf is not None else conf_for(backend, held):g}"
         flags[flags.index("--spec") + 1] = str(window_for(backend, archs, vram_mib, held))
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays
