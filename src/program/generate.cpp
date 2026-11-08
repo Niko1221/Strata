@@ -4394,8 +4394,20 @@ int main(int argc, char** argv) {
                 if (const strata::MetaValue* v = pg.get("general.architecture")) ple_only = v->s == "strata-ple";
             } catch (const std::exception&) {}
             if (!ple_only &&
-                std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end())
-                o.native_dense_gguf.push_back(o.ple_gguf);
+                std::find(o.native_dense_gguf.begin(), o.native_dense_gguf.end(), o.ple_gguf) == o.native_dense_gguf.end()) {
+                // A standalone table file (Unsloth's standalone engram GGUFs, tools/ple_fp8_pack.py
+                // packs without the strata-ple marker) must NOT join native_dense_gguf: it is not a
+                // member of the model's split family, its split.no collides with one of the model's
+                // own shards, and the dense loader's metadata validation rejects any such collision
+                // ("duplicate split shard number") - the engine used to die here, the watchdog (or the
+                // operator) then brought the deployment back up without the flag, and the flag looked
+                // silently ignored (2026-11-08, this rig: every "the table did nothing" probe run was
+                // served by the previous deployment). The table rows are served from ple_gguf through
+                // the PleTable row gather instead, which opens exactly this file - so the standalone
+                // table takes effect without ever entering the dense list. Announce the source.
+                std::fprintf(stderr, "strata generate: PLE table served from --ple-gguf %s (standalone table; the model shards' embedded copy is not used)\n",
+                             o.ple_gguf.c_str());
+            }
         }
         // Plan v0.3 (24 Sep): the CPU experts stay on the VNNI kernel.  The llama.cpp-CPU-exact q8_0 contract
         // cost 27.0 vs 17.2 ms/token of pool time and G-C does not need it; `--cpu-oracle-q8-0` still selects it.
