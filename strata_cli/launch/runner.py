@@ -861,21 +861,31 @@ class Runner:
         except Exception:                                    # noqa: BLE001 - no table, no shape: the Strata engine
             return None
 
+    def model_title(self) -> str | None:
+        """The chosen model's title ("Q4 Lite Shape"), which the lines about its engine name instead of the geometry's name; None when the table has none."""
+        try:
+            title = ((getattr(self.catalog.strata.setup_module(), "FAMILIES", None) or {}).get(self.s.family) or {}).get("title")
+            return title if isinstance(title, str) and title else None
+        except Exception:                                    # noqa: BLE001
+            return None
+
     def ensure_shape_engine(self, shape: str) -> None:
         """Step 1 for a model of its own shape: the engine of that shape is installed (and the feed's newer one fetched), next to the Strata engine, which is not touched."""
         import argparse
         from strata_cli import update_cmd
         from strata_control import engine_component as ec, shape_engine
         root = Path(self.components_dir) if self.components_dir else None
-        self.emit("engine", f"Checking the engine for this model ({shape})…")
+        title = self.model_title()
+        name = shape_engine.shown(shape, title)
+        self.emit("engine", f"Checking the engine for this model ({name})…")
         source = update_cmd._feed_source(argparse.Namespace(feed=self.feed or os.environ.get("STRATA_UPDATE_FEED")), root or ec.components_dir())
         said: list[str] = []
-        exe = shape_engine.ensure(shape, source, components=root, emit=lambda m: (said.append(m), self.emit("engine", m, 0)))
+        exe = shape_engine.ensure(shape, source, components=root, emit=lambda m: (said.append(m), self.emit("engine", m, 0)), title=title)
         if exe is None:
-            self.no_engine(said[-1] if said else shape_engine.WORDS["fetch_failed"].format(shape=shape, why="nothing was fetched"))
+            self.no_engine(said[-1] if said else shape_engine.WORDS["fetch_failed"].format(shape=name, why="nothing was fetched"))
             return
-        found = shape_engine.find(shape, root, full=False)
-        self.emit("engine", shape_engine.WORDS["ready"].format(shape=shape, version=found.version, backend=found.backend), 100)
+        found = shape_engine.find(shape, root, full=False, title=title)
+        self.emit("engine", shape_engine.WORDS["ready"].format(shape=name, version=found.version, backend=found.backend), 100)
 
     def needed_engine(self) -> tuple[int, ...] | None:
         """The oldest engine this model runs on, from setup.py's own tables (MIN_ENGINE for everything, GYRO_ENGINE for Gyro), or None."""

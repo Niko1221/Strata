@@ -1207,7 +1207,7 @@ def expand(value: str, cfg: dict | None = None, *, root: Path | None = None, ful
         except EngineIntegrityError:
             raise
         except EngineMissing as exc:
-            raise shape_engine.ShapeEngineMissing(shape, exc.reason, shape_engine.root(shape, root), problems=exc.problems) from None
+            raise shape_engine.ShapeEngineMissing(shape, exc.reason, shape_engine.root(shape, root), problems=exc.problems, title=(cfg or {}).get("shape_title")) from None
     return str(resolve(root, backend=backend if backend in BACKEND_MATRIX else None, full=full).exe)
 
 

@@ -526,6 +526,75 @@ class Update(Base):
         self.assertNotIn("shape", ec.status(self.comp)["engine"], "the Strata engine's own report is what it was")
 
 
+class TitleInLines(Base):
+    """A person reads the model's title ("Qwen4 Lite Test"), not the geometry's name (q4_lite), in every line; the shape stays in the keys, the JSON and `strata components engine`.
+    shape_engine.USE_TITLE is the one switch back."""
+    TITLE = "Qwen4 Lite Test"
+
+    def test_the_fetch_lines_name_the_title(self):
+        self.publish("0.1.59")
+        lines = []
+        with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
+            exe = self.ensure(lines, title=self.TITLE)
+        text = " ".join(lines)
+        self.assertIsNotNone(exe, lines)
+        self.assertIn(f"This model needs its own engine ({self.TITLE})", text)
+        self.assertIn(f"Engine for {self.TITLE} 0.1.59", text)
+        self.assertNotIn("(q4_lite)", text)
+        self.assertNotIn("for q4_lite", text)
+
+    def test_the_refusals_name_the_title(self):
+        self.publish("0.1.59", shape="q4_mid")
+        lines = []
+        self.assertIsNone(self.ensure(lines, title=self.TITLE))
+        self.assertIn(f"no engine for this model ({self.TITLE})", " ".join(lines))
+        with mock.patch.object(shape_engine, "_test_start", return_value=(False, "boom")):
+            self.publish("0.1.59")
+            lines = []
+            self.assertIsNone(self.ensure(lines, title=self.TITLE))
+        self.assertIn(f"The engine for {self.TITLE} 0.1.59 was not installed", " ".join(lines))
+
+    def test_a_start_without_the_engine_names_the_title_from_the_run_config(self):
+        with self.assertRaises(shape_engine.ShapeEngineMissing) as ctx:
+            ec.expand("component:strata-q4-lite", {"backend": "cuda", "shape_title": self.TITLE})
+        self.assertIn(f"engine ({self.TITLE})", str(ctx.exception))
+        self.assertNotIn("q4_lite", str(ctx.exception))
+        self.assertEqual(ctx.exception.shape, "q4_lite")
+        with self.assertRaises(shape_engine.ShapeEngineMissing) as ctx:            # a config without a title (an older one): the shape's name
+            ec.expand("component:strata-q4-lite", {"backend": "cuda"})
+        self.assertIn("(q4_lite)", str(ctx.exception))
+
+    def test_the_explicit_update_finds_the_title_in_the_feeds_model(self):
+        self.publish("0.1.59", models=[model_entry(title=self.TITLE)])
+        with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
+            self.assertIsNotNone(self.ensure())
+            self.publish("0.1.59", "0.1.60", sequence=2, models=[model_entry(title=self.TITLE)])
+            ctx = updater.Context(components=self.comp, source=self.url, trusted=signing.load_trusted_keys(), hardware=self.hw)
+            feed = feedmod.fetch(self.url, ctx.trusted)
+            row = updater._shape_steps(ctx, feed, True)[0][1]()
+        self.assertEqual(row["note"], f"Engine for {self.TITLE} updated from 0.1.59 to 0.1.60.")
+        self.assertEqual((row["shape"], row["component"]), ("q4_lite", COMP), "the keys keep the geometry's name")
+        self.assertEqual(shape_engine.title_from_feed(feed, "q4_lite"), self.TITLE)
+        self.assertIsNone(shape_engine.title_from_feed(feed, "q4_mid"))
+
+    def test_one_switch_puts_the_geometry_name_back(self):
+        self.publish("0.1.59")
+        lines = []
+        with mock.patch.object(shape_engine, "USE_TITLE", False), mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
+            self.assertIsNotNone(self.ensure(lines, title=self.TITLE))
+        self.assertIn("This model needs its own engine (q4_lite)", " ".join(lines))
+        self.assertNotIn(self.TITLE, " ".join(lines))
+        self.assertEqual(shape_engine.shown("q4_lite", self.TITLE), self.TITLE)
+        self.assertEqual(shape_engine.shown("q4_lite", None), "q4_lite")
+        self.assertEqual(shape_engine.shown("q4_lite", "  "), "q4_lite")
+
+    def test_the_components_report_keeps_the_geometry_name(self):
+        self.publish("0.1.59")
+        with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
+            self.assertIsNotNone(self.ensure(title=self.TITLE))
+        self.assertEqual([r["shape"] for r in ec.status(self.comp)["shapes"]], ["q4_lite"])
+
+
 class NoAcquisitionOnStart(unittest.TestCase):
     def test_only_setup_launch_and_the_explicit_update_fetch_a_shape_engine(self):
         """Starting and serving never download: the code that fetches (shape_engine.ensure / update_one) is called from setup.py, the Terminal's launch and the updater only."""

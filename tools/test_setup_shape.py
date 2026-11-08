@@ -104,6 +104,26 @@ class EngineStep(base.Base):
         self.assertEqual(ensure.call_args.args[1], "/some/feed")
         self.assertEqual((eng, meta["version"], meta["shape"], lib_dirs, vision), (folder, "0.1.59", "q4_lite", [], "none"))
 
+    def test_the_lines_and_the_run_config_name_the_models_title(self):
+        """A person reads the model's title, not the geometry's name; the run config keeps the title for the refusal at a start (strata_control/shape_engine.py USE_TITLE)."""
+        self.setup.SHAPE_ENGINE.update(shape="q4_lite", title="Q4 Lite Shape")
+        folder = self.root / "components" / "shapes" / "q4_lite" / "engine" / "0.1.59-linux-x86_64-cuda"
+        folder.mkdir(parents=True)
+        found = mock.Mock(root=str(folder), version="0.1.59", backend="cuda", platform="linux-x86_64")
+        said = []
+        with mock.patch.object(shape_engine, "ensure", return_value=folder / "strata") as ensure, mock.patch.object(shape_engine, "find", return_value=found),                 mock.patch.object(self.setup, "llama_cpp_if_here", return_value=Path("llama")), mock.patch.object(self.setup, "get_llama_cpp", return_value=Path("llama")),                 mock.patch.object(self.setup, "ok", side_effect=said.append):
+            self.setup.engine_step(argparse.Namespace(feed=None), {"index": 0}, False, False, 13, "none")
+        self.assertEqual(ensure.call_args.kwargs["title"], "Q4 Lite Shape")
+        self.assertTrue(any(line.startswith("engine for Q4 Lite Shape: 0.1.59") for line in said), said)
+        self.assertFalse(any("q4_lite" in line.split(" in ")[0] for line in said), said)
+        cfg = {"exe": "component:strata-q4-lite", "args": [], "model_name": "x"}
+        target = self.root / "strata-q4lite.json"
+        self.setup.write_setup_config(target, cfg)
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["shape_title"], "Q4 Lite Shape")
+        plain = {"exe": "component:strata-engine", "args": [], "model_name": "y"}      # another model's config is exactly what it was
+        self.setup.write_setup_config(self.root / "strata-other.json", plain)
+        self.assertNotIn("shape_title", json.loads((self.root / "strata-other.json").read_text(encoding="utf-8")))
+
     def test_without_a_shape_the_strata_engine_step_runs_as_before(self):
         self.assertEqual(self.setup.SHAPE_ENGINE, {})
         with mock.patch.object(self.setup, "control_engine_step", return_value=("L", "E", {}, [], {}, "none")) as step, mock.patch.object(self.setup, "CONTROL", True):
@@ -162,6 +182,22 @@ class Launch(unittest.TestCase):
         with mock.patch.object(shape_engine, "ensure", side_effect=lambda shape, source, **kw: (kw["emit"]("There is no engine for this model (q4_lite)."), None)[1]):
             R.Runner.ensure_shape_engine(fake, "q4_lite")
         fake.no_engine.assert_called_once_with("There is no engine for this model (q4_lite).")
+
+    def test_the_launch_lines_name_the_title(self):
+        R, fake = self.runner({"q4lite-test": {"shape": "q4_lite", "title": "Q4 Lite Shape"}})
+        self.assertEqual(R.Runner.model_title(fake), "Q4 Lite Shape")
+        fake.model_title.return_value = "Q4 Lite Shape"
+        fake.components_dir = None
+        fake.feed = "/feed"
+        events = []
+        fake.emit.side_effect = lambda stage, text, *a, **k: events.append(text)
+        found = mock.Mock(version="0.1.59", backend="cuda")
+        with mock.patch.object(shape_engine, "ensure", return_value=Path("/x/strata")) as ensure, mock.patch.object(shape_engine, "find", return_value=found):
+            R.Runner.ensure_shape_engine(fake, "q4_lite")
+        self.assertEqual(ensure.call_args.kwargs["title"], "Q4 Lite Shape")
+        self.assertIn("Checking the engine for this model (Q4 Lite Shape)…", events)
+        self.assertIn("Engine for Q4 Lite Shape 0.1.59 (cuda) is installed.", events)
+        self.assertFalse([e for e in events if "q4_lite" in e], events)
 
 
 if __name__ == "__main__":

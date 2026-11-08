@@ -32,6 +32,9 @@ SHAPE_RE = re.compile(r"[a-z][a-z0-9_]{1,21}[a-z0-9]")                    # q4_l
 #: component ids that already mean something else; a shape never becomes one of them
 RESERVED = frozenset({"strata-engine", "strata-dsv41", "strata-control", "strata-vision", "strata-device", "strata-terminal", "strata-app", "strata-drafter"})
 KEEP_VERSIONS = 2                                                           # the installed shape engine and the one before it
+#: What a person reads in the lines below where "{shape}" stands: the model's title ("Q4 Lite Shape"), not the geometry's name (q4_lite). One switch: False puts the geometry
+#: name back everywhere (the owner decides; `strata components engine` and the JSON always name the shape).
+USE_TITLE = True
 
 # ---- the words a person can see (new: for the coordinator's approval before they ship)
 WORDS = {
@@ -50,6 +53,19 @@ WORDS = {
 
 
 # ---------------------------------------------------------------------------------------------- names
+
+def shown(shape: str, title: str | None = None) -> str:
+    """The name a person reads for the engine of `shape`: the model's title when there is one (and USE_TITLE), else the shape's name."""
+    return title.strip() if USE_TITLE and isinstance(title, str) and title.strip() else shape
+
+
+def title_from_feed(feed, shape: str) -> str | None:
+    """The title of the feed's model of `shape` (the first one), for a line of `strata update`, which does not know which model asked."""
+    for model in getattr(feed, "models", ()) or ():
+        if model.shape == shape and model.title:
+            return model.title
+    return None
+
 
 def valid(shape) -> bool:
     """Is `shape` a name this Control accepts for a model shape?"""
@@ -124,14 +140,14 @@ def newest_version(shape: str, components: Path | None = None) -> str | None:
     return found[-1].version if found else None
 
 
-def find(shape: str, components: Path | None = None, *, backend: str | None = None, full: bool = False) -> ec.EngineComponent:
+def find(shape: str, components: Path | None = None, *, backend: str | None = None, full: bool = False, title: str | None = None) -> ec.EngineComponent:
     """The engine of `shape` for this PC (`ShapeEngineMissing` / `EngineIntegrityError` when there is none that can start)."""
     try:
         return ec.resolve(root(shape, components), backend=backend, full=full, component_id=component_id(shape))
     except ec.EngineIntegrityError:
         raise
     except ec.EngineMissing as exc:
-        raise ShapeEngineMissing(shape, exc.reason, root(shape, components), problems=exc.problems) from None
+        raise ShapeEngineMissing(shape, exc.reason, root(shape, components), problems=exc.problems, title=title) from None
 
 
 class ShapeEngineMissing(ec.EngineMissing):
@@ -139,14 +155,14 @@ class ShapeEngineMissing(ec.EngineMissing):
 
     code = "shape_engine_missing"
 
-    def __init__(self, shape: str, reason: str, where: Path | None = None, *, problems: list | None = None):
+    def __init__(self, shape: str, reason: str, where: Path | None = None, *, problems: list | None = None, title: str | None = None):
         self.shape = shape
         self.reason = reason
         self.root = where
         self.problems = problems or []
         self.plain_notice = None
-        RuntimeError.__init__(self, WORDS["missing"].format(shape=shape, reason=reason))
-        self.what = f"the engine for {shape}"
+        RuntimeError.__init__(self, WORDS["missing"].format(shape=shown(shape, title), reason=reason))
+        self.what = f"the engine for {shown(shape, title)}"
         self.command = "strata launch"
 
 
@@ -187,12 +203,12 @@ def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
     return True, first
 
 
-def choose(feed, shape: str, hardware: dict):
+def choose(feed, shape: str, hardware: dict, title: str | None = None):
     """The feed's engine of `shape` that fits this PC: (package, reasons) as ``feed.select_engine``; package None when the feed has none for it."""
     from strata_control import feed as feedmod
     mine = [p for p in feed.shape_engines if p.shape == shape]
     if not mine:
-        return None, [f"the feed lists no engine for {shape}"]
+        return None, [f"the feed lists no engine for {shown(shape, title)}"]
     return feedmod.select_engine(mine, hardware)
 
 
@@ -210,27 +226,28 @@ def _prune(shape_root: Path, shape: str, keep_name: str) -> list[str]:
     return removed
 
 
-def update_one(ctx, feed, shape: str, *, install_missing: bool = True) -> dict:
+def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: str | None = None) -> dict:
     """Bring the engine of `shape` up to the feed's: fetch the newest package that fits this PC (resumable download, archive SHA-256, the manifest hash the signed feed names,
     the package signature, every file's hash, the shape named in the manifest), put it NEXT TO the older ones, start it once (`--version`) and only then keep it. The Strata engine is
     never touched. `install_missing` False: nothing is done for a shape that has no engine installed yet (an explicit `strata update` only updates what is there).
     Returns the result row (``status``: installed, updated, current, none-installed, none-for-this-pc)."""
     from strata_control import feed as feedmod, longpath, updater
     comp = component_id(shape)
+    name = shown(shape, title or title_from_feed(feed, shape))                   # what a person reads; `shape` and `comp` stay the keys
     have = newest_version(shape, ctx.components)
     result = {"component": comp, "shape": shape, "status": "current" if have else "none-installed", "changed": False, "installed_before": have}
     if not have and not install_missing:
         return result
-    pkg, reasons = choose(feed, shape, ctx.hardware)
+    pkg, reasons = choose(feed, shape, ctx.hardware, title=name if name != shape else None)
     if pkg is None:
-        result.update(status="none-for-this-pc", note=WORDS["not_in_feed"].format(shape=shape, why=(": " + "; ".join(reasons[:2])) if reasons else ""), reasons=reasons)
+        result.update(status="none-for-this-pc", note=WORDS["not_in_feed"].format(shape=name, why=(": " + "; ".join(reasons[:2])) if reasons else ""), reasons=reasons)
         return result
     if have and feedmod.version_key(pkg.version) <= feedmod.version_key(have):
-        result["note"] = WORDS["current"].format(shape=shape)
+        result["note"] = WORDS["current"].format(shape=name)
         return result
     place = root(shape, ctx.components)
     updater._free_space_check(place, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, comp)
-    archive = updater._download(ctx, comp, pkg.url, pkg.size, pkg.sha256, f"the engine for {shape} {pkg.version}", feed)
+    archive = updater._download(ctx, comp, pkg.url, pkg.size, pkg.sha256, f"the engine for {name} {pkg.version}", feed)
     stage_root = None
     try:
         try:
@@ -247,16 +264,16 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True) -> dict:
         updater._move_dir(folder, target)
         if os.name != "nt":
             (target / exe_name()).chmod(0o755)
-        ctx.say("test", f"Test-starting the engine for {shape} {pkg.version}", component=comp)
+        ctx.say("test", f"Test-starting the engine for {name} {pkg.version}", component=comp)
         ok, why = _test_start(target / exe_name())
         if not ok:
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)         # (never an older one)
-            raise updater.UpdateError(WORDS["start_failed"].format(shape=shape, version=pkg.version, why=why), 6)
+            raise updater.UpdateError(WORDS["start_failed"].format(shape=name, version=pkg.version, why=why), 6)
         removed = _prune(place, shape, target.name)
         archive.unlink(missing_ok=True)
         result.update(status="updated" if have else "installed", changed=True, installed_after=pkg.version, folder=target.name, removed=removed,
-                      note=(WORDS["updated"].format(shape=shape, old=have, new=pkg.version) if have
-                            else WORDS["installed"].format(shape=shape, version=pkg.version, backend=pkg.backend, target=target)))
+                      note=(WORDS["updated"].format(shape=name, old=have, new=pkg.version) if have
+                            else WORDS["installed"].format(shape=name, version=pkg.version, backend=pkg.backend, target=target)))
         return result
     finally:
         if stage_root is not None:
@@ -264,7 +281,7 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True) -> dict:
 
 
 def ensure(shape: str, source: str, *, components: Path | None = None, hardware: dict | None = None, emit: Callable[[str], None] = print, cancel=None,
-           quiet_when_current: bool = True) -> Path | None:
+           quiet_when_current: bool = True, title: str | None = None) -> Path | None:
     """The engine of `shape` is installed and up to date, from the signed feed at `source` (a URL or a folder). Returns its program, or None with one plain line through `emit` when
     there is none (not in the feed, nothing for this PC, the feed cannot be read). A newer package is fetched only when the feed can be read; an installed one keeps running when it
     cannot. This is what setup and `strata launch` call when a model of that shape is chosen."""
@@ -272,8 +289,9 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
     components = Path(components) if components else ec.components_dir()
     hw = hardware or updater.detect_hardware()
     have = newest_version(shape, components)
+    name = shown(shape, title)
     if not have:
-        emit(WORDS["fetching"].format(shape=shape))
+        emit(WORDS["fetching"].format(shape=name))
     ctx = updater.Context(components=components, source=source, trusted=signing.load_trusted_keys(), hardware=hw, cancel=cancel,
                           feed_timeout=5.0 if have else 30.0,           # an installed engine: a launch must not wait long for a feed that is not there
                           emit=lambda event: emit(event["message"]) if event.get("event") == "phase" and event.get("message") and event.get("phase") != "feed" else None)
@@ -284,31 +302,31 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
                 feed = updater.open_feed(ctx, state)
             except feedmod.FeedError as exc:
                 if have:                                          # offline with an engine installed: the engine runs, nothing to say
-                    return find(shape, components, full=False).exe
-                emit(WORDS["fetch_failed"].format(shape=shape, why=exc))
+                    return find(shape, components, full=False, title=title).exe
+                emit(WORDS["fetch_failed"].format(shape=name, why=exc))
                 return None
             state.save()
-            result = update_one(ctx, feed, shape)
+            result = update_one(ctx, feed, shape, title=title)
             state.save()
     except Exception as exc:                                      # noqa: BLE001 - with an engine installed, a check for a newer one never stops a launch
         if not isinstance(exc, (updater.UpdateError, feedmod.FeedError, signing.SignatureError, acquisition.AcquisitionRefused, OSError)) and not have:
             raise
         if have:
             if isinstance(exc, (updater.UpdateError, signing.SignatureError)):         # the feed was read and the newer package was refused or did not start: said, the old one runs
-                emit(WORDS["newer_failed"].format(shape=shape, why=str(exc).rstrip("."), have=have))
+                emit(WORDS["newer_failed"].format(shape=name, why=str(exc).rstrip("."), have=have))
             try:
-                return find(shape, components, full=False).exe
+                return find(shape, components, full=False, title=title).exe
             except ec.EngineMissing:
                 pass
-        emit(WORDS["fetch_failed"].format(shape=shape, why=str(exc).rstrip(".")))
+        emit(WORDS["fetch_failed"].format(shape=name, why=str(exc).rstrip(".")))
         return None
     if result["status"] == "none-for-this-pc":
         emit(result["note"])
         return None
     if result.get("changed") or not quiet_when_current:
-        emit(result.get("note") or WORDS["ready"].format(shape=shape, version=newest_version(shape, components), backend=""))
+        emit(result.get("note") or WORDS["ready"].format(shape=name, version=newest_version(shape, components), backend=""))
     try:
-        return find(shape, components, full=False).exe
+        return find(shape, components, full=False, title=title).exe
     except ec.EngineMissing as exc:
         emit(str(exc))
         return None

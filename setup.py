@@ -7093,6 +7093,8 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, ex
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
     strata-<model>.json.bak when it changes.  `source`: an earlier install's config to carry the keys over from when
     this folder has none yet (a copy set up like the last one).  A line says what was kept, one what was not."""
+    if SHAPE_ENGINE.get("title") and SHAPE_ENGINE.get("shape") and cfg.get("exe") == engine_component.REFERENCE_PREFIX + "strata-" + SHAPE_ENGINE["shape"].replace("_", "-"):
+        cfg["shape_title"] = SHAPE_ENGINE["title"]                  # the engine's refusal at a start names the model, not the geometry (strata_control/shape_engine.py)
     old_path = cfg_path if cfg_path.is_file() else source
     old = None
     if old_path is not None and old_path.is_file():
@@ -8308,19 +8310,20 @@ def shape_engine_step(a, gpu, vision):
     started once and kept; the Strata engine and the models that run on it are not touched. The run config names it ("component:strata-q4-lite") and every start looks it up.
     Returns what engine_step returns."""
     from strata_control import engine_component as EC, shape_engine
-    shape = SHAPE_ENGINE["shape"]
+    shape, title = SHAPE_ENGINE["shape"], SHAPE_ENGINE.get("title")
+    name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
     llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
     from strata_cli import update_cmd
     source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
-    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m))
+    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
     if exe is None:
         if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
-            warn(f"no engine for {shape} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched")
+            warn(f"no engine for {name} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched")
             return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
-        fail(f"the engine for this model ({shape}) could not be installed", "see the line above; nothing was downloaded for the model, run this again when the update feed has it")
-    found = shape_engine.find(shape, full=False)
+        fail(f"the engine for this model ({name}) could not be installed", "see the line above; nothing was downloaded for the model, run this again when the update feed has it")
+    found = shape_engine.find(shape, full=False, title=title)
     eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local", "shape": shape}
-    ok(f"engine for {shape}: {found.version} ({found.platform}-{found.backend}) in {eng}")
+    ok(f"engine for {name}: {found.version} ({found.platform}-{found.backend}) in {eng}")
     if vision != "none":
         if (eng / VEXE).is_file():
             ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
@@ -10575,7 +10578,7 @@ def main() -> int:
     fam = FAMILIES[family]
     SHAPE_ENGINE.clear()
     if fam.get("shape"):                               # a feed model of its own shape: its own engine component (strata_control/shape_engine.py)
-        SHAPE_ENGINE["shape"] = fam["shape"]
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
     if fam.get("ready") and hip:
         # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
         fail(f"{fam['title']} runs on NVIDIA cards only: the AMD engine has no NVFP4 kernels",
