@@ -39,7 +39,7 @@ class NeutralProfile(unittest.TestCase):
             self.assertEqual(len(set(pairs)), 1024)
             self.assertEqual(pairs[:5], [(0, 0), (1, 0), (2, 0), (3, 0), (0, 1)])          # interleaved across the layers
             self.assertEqual(len(blob), 24 + 4 * n + 4 * nl * ne)
-            self.assertTrue(said)
+            self.assertEqual(said, ["  This model's shape differs from Flash-Next, so a neutral expert profile is used."])      # the owner's wording
 
 
 if __name__ == "__main__":

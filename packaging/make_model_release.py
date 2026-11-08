@@ -8,7 +8,8 @@ What it does: reads tools/qwen4_intake.py's JSON, takes the verdict (case A: the
 engines have to be rebuilt for its shape; case C is refused) and prints the plan in the order of the 0.2.11 release
 (phaseA-tests/rel0211: final_rc1.py, publish211.sh, PUBLISH-PLAN.md):
 
-    case A  the feed (a `models` entry, the feed re-signed at the next sequence) and the app (Models page text, the installers).
+    case A  the feed (a `models` entry, the feed re-signed at the next sequence). No app rebuild: the app lists feed models
+            from the feed (the Settings update check is enough). `--with-app` adds the app steps when a release has app text anyway.
             Engines, DeepSeek packages and Controls stay as they are: same files, same names.
     case B  the Qwen engine packages and the Controls rebuilt at a new version, plus the feed and the app.
 
@@ -39,9 +40,15 @@ FEED_NAMES = ["strata-feed.json", "strata-feed.json.sig", "strata-feed-linux-aar
 SMALL_NAMES = ["SHA256SUMS.txt", "latest.json", "install.sh", "install.ps1", "install-manifest.txt"]
 
 # where each platform's Qwen engine is built (phaseA-tests/rel0211/RELEASE-STATE.md "Build plan" and the box rules)
-BUILD_BOX = {"linux-x86_64-cuda": "z440 (jobq)", "linux-x86_64-hip": "p1004 (jobq)", "linux-x86_64-sycl": "p1006 (jobq)",
-             "windows": "owner PC (jobq --lock heavy, never while a model runs)", "macos": "m1001 (the owner signs on his Mac)",
-             "linux-aarch64": "dgxspark (off limits unless the coordinator says)"}
+# (the Q4-P8 rehearsal of 2026-11-08, phaseA-tests/qwen4/RESULTS-Q4-P8.md section 5: five variants in 37 minutes)
+BUILD_BOX = {"linux-x86_64-cuda": "l620", "linux-x86_64-hip": "p620", "linux-x86_64-sycl": "p1006", "windows": "owner PC",
+             "macos": "m1002", "linux-aarch64": "the Spark (dgxspark)"}
+BOX_NOTE = {"l620": "jobq; the CUDA build with its packaging takes about 15 min",
+            "p620": "jobq; /data has little room, a package is about 4 GB",
+            "p1006": "jobq",
+            "owner PC": "jobq --lock heavy, 20 min per job at most (split the release set); never while a model runs",
+            "m1002": "builds the unsigned Mac package (jobq); the owner signs it on his Mac",
+            "the Spark (dgxspark)": "off limits unless the coordinator says"}
 
 
 def gib(n: int | None) -> str:
@@ -92,6 +99,7 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
     if case not in ("A", "B"):
         raise SystemExit("case %s: %s. A model release is planned for case A or B only (run tools/qwen4_intake.py)."
                          % (case, v.get("reading", "no verdict in the report")))
+    with_app = bool(a.with_app) or (case == "B" and not a.no_app)      # case A: the app needs no rebuild for a feed model
     steps: list[dict] = []
     changed: list[dict] = []        # files that are new or different in the upload folder
     kept: list[dict] = []
@@ -126,13 +134,16 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         by_box: dict[str, list] = {}
         for e in prev["engine"]:
             by_box.setdefault(box_for(e["plat"]), []).append(e)
-        step("%d" % n, "A geometry header for the model's shape (include/strata/core/geometry.hpp) and the guard", "owner PC (editing)", 20,
+        step("%d" % n, "A geometry header for the model's shape, made from the file, and the version bump", "owner PC (python and editing)", 3,
              ["# the shape fields the intake listed:"] + ["#   %s is %s (kernels built for %s)" % (d["key"], d["got"], d.get("kernels_built_for", d.get("limit")))
-                                                          for d in v.get("shape_fields_that_differ", [])] or ["# see the report"],
-             note="engine work: a worker, not this script; every build below waits for it")
+                                                          for d in v.get("shape_fields_that_differ", [])]
+             + ["python tools/q4geo_synth.py --from-gguf <first shard> --header <geo.hpp>",
+                "# bump %s in CMakeLists.txt, metal/CMakeLists.txt and PKGVER in packaging/build_hip_linux.sh BEFORE any build (and before the Terminal is packed)" % a.engine_version,
+                "# every build passes -DSTRATA_GEOMETRY_FILE=<geo.hpp> (Linux packaging scripts: STRATA_CMAKE_EXTRA=\"-DSTRATA_GEOMETRY_FILE=<geo.hpp>\")"],
+             note="a package built for the new shape refuses Flash-Next files: decide with the owner whether it replaces the engine or ships as its own component (RESULTS-Q4-P8.md G4)")
         n += 1
         for box, es in sorted(by_box.items()):
-            step("%d" % n, "Build the Qwen engine packages for %s" % box, box, 10 if "windows" not in box else 25,
+            step("%d" % n, "Build the Qwen engine packages on %s" % box, "%s (%s)" % (box, BOX_NOTE.get(box, "see the 0.2.11 build plan")), 25 if box.startswith("owner") else 15 if box == "l620" else 10,
                  ["# per package, as in phaseA-tests/rel0211/scripts (build_*.sh, packaging/package_engine.py), then:",
                   "python packaging/feed_tool.py sign-package <package-folder> --key <FEED-KEY>   # OWNER'S KEY, not run here",
                   "python packaging/feed_tool.py pack-engine <package-folder> --out <packs> --url-prefix="],
@@ -150,11 +161,11 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
          ["python packaging/make_model_release.py --intake <report> --id %s ... --write <OUTDIR>   # writes models/%s.entry.json (the feed's schema; build-feed refuses every [FILL: ...] left in it) and models/%s.model.json (the older draft)" % (a.id, a.id, a.id)],
          ["models/%s.entry.json" % a.id], note="the entry follows strata_control/feed.py (packaging/UPDATES.md): fill the [FILL: ...] values (about, licence_url, ram_gb) by hand or with --about/--licence-url/--ram-gb, then `feed_tool.py build-feed --models <OUTDIR>/models`")
     n += 1
-    if not a.no_app:
+    if with_app:
         for e in prev["app"]:
             nm = re.sub(r"Strata-\d[\d.]*-", "Strata-%s-" % a.app_version, e["name"])
             changed.append({"name": nm, "size": e["size"], "est": True, "why": "app rebuilt with the Models page text"})
-        step("%d" % n, "App text for the model (Models page) and the app bundles", "owner PC (Windows installer), z440 (AppImage), m1001 (Mac, unsigned; the owner signs)", 40,
+        step("%d" % n, "App text for the model (Models page) and the app bundles", "owner PC (Windows installer), a Linux box (AppImage), m1002 (Mac, unsigned; the owner signs)", 40,
              ["# edit apps/host/src (the model's name and one line), then the 0.2.11 app recipe: scripts/relwin/win_installer_rc1.ps1, the AppImage and Mac scripts",
               "python packaging/feed_tool.py set-app-platform --app-json latest.json --target <target> --archive <installer> --sig <installer.sig> --version %s" % a.app_version],
              [c["name"] for c in changed if APP_RE.match(c["name"])])
@@ -162,7 +173,7 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         changed.append({"name": "latest.json", "size": None, "est": True, "why": "updater json at %s" % a.app_version})
     else:
         kept += [{"name": e["name"], "size": e["size"], "why": "no app change"} for e in prev["app"]]
-    if not a.no_app or case == "B":
+    if with_app or case == "B":
         mac_extra = " --terminal <terminal.tar.gz> --engine <engine-unsigned-folder.tar.gz>" if case == "B" else ""
         step("%d" % n, "Mac: the owner signs and notarises the unsigned Mac files on his Mac", "the owner's Mac, about 45 min of his time", 45,
              ["bash sign-and-notarize.sh Strata-%s-macos-arm64.dmg%s --updater-archive --out signed" % (a.app_version, mac_extra)],
@@ -170,7 +181,7 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         n += 1
     feed_cmd = ("python packaging/feed_tool.py build-feed --out <RELEASE> --key <FEED-KEY> --sequence %d --engine <engine-entries> --dsv41 <dsv41-entries> "
                 "--drafters <drafter-entries> --models <models-folder> --control <control-entries>%s   # OWNER'S KEY; `--models` is Q4-PREP-B's change"
-                % (a.sequence, " --app-json latest.json" if not a.no_app else ""))
+                % (a.sequence, " --app-json latest.json" if with_app else ""))
     step("%d" % n, "Sign the feeds at sequence %d (the shared one and linux-aarch64)" % a.sequence, "owner PC, with the owner's key at that moment", 3,
          [feed_cmd, "python packaging/feed_tool.py verify-feed <RELEASE> --pub <FEED-KEY.pub.json>"],
          list(FEED_NAMES), owner=True)
@@ -318,7 +329,8 @@ def main(argv=None) -> int:
     ap.add_argument("--quant", help="the quant's name in the entry (default: --hf-dir, or the folder of the files)")
     ap.add_argument("--quant-about", help="one plain line about the quant")
     ap.add_argument("--ram-gb", type=float, help="the RAM the quant needs, measured (the intake's estimate is not used)")
-    ap.add_argument("--no-app", action="store_true", help="no app change in this release")
+    ap.add_argument("--no-app", action="store_true", help="case B: no app change in this release (case A has none unless --with-app)")
+    ap.add_argument("--with-app", action="store_true", help="plan the app steps (Models page text, installers) too; a case-A feed model needs none")
     ap.add_argument("--templates", type=Path, help="the folder with RELEASE-NOTES.md, MODEL-CARD.md and CHECKLIST.md (phaseA-tests/qwen4/templates)")
     ap.add_argument("--write", type=Path, metavar="OUTDIR", help="also write the plan, the entry and the filled templates into this new folder")
     ap.add_argument("--json", action="store_true", help="print the plan as JSON")

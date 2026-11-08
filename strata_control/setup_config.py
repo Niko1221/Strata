@@ -100,7 +100,7 @@ def neutral_profile_if_other_shape(shipped, first_shard, pack, GGUFFile, say=pri
                     f.write(struct.pack("<HH", layer, e))
                 for layer in range(n_layer):
                     f.write(struct.pack("<%di" % n_expert, *table[layer]))
-        say(f"  The model has {n_layer} layers x {n_expert} experts, not the shipped profile's {have_l} x {have_e}: a neutral expert profile is used ({out.name}).")
+        say("  This model's shape differs from Flash-Next, so a neutral expert profile is used.")
         return out
     except (OSError, ValueError, StopIteration, struct.error):
         return Path(shipped)
