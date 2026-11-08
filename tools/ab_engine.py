@@ -79,13 +79,18 @@ def main() -> int:
     for s in a.arms:
         name, _, kv = s.partition(":")
         env = dict(x.split("=", 1) for x in kv.split(",") if x)
-        arms.append((name, env))
+        arms.append((name, env, s))
+    # self-documenting: every record repeats its arm's spec, and the file opens with one manifest line naming the
+    # config file and the full arm list, so a bare ab-*.jsonl can be reproduced and audited months later (#4559 review)
+    Path(a.log).parent.mkdir(parents=True, exist_ok=True)
+    with open(a.log, "a") as mf:
+        mf.write(json.dumps({"manifest": True, "config": str(Path(a.config).resolve()), "arms": [s for _, _, s in arms]}) + "\n")
     reqs = [(f"chat{i}", p) for i, p in enumerate(PROMPTS)] + [("long", long_prompt(a.long_words))]
     out = open(a.log, "a")
     res: dict = {n: {} for n, _ in arms}
     for rnd in range(a.rounds):
         order = arms if rnd % 2 == 0 else arms[::-1]
-        for name, env in order:
+        for name, env, spec in order:
             cfg = dict(base)
             e = dict(env)
             if "exe" in e:
@@ -107,7 +112,7 @@ def main() -> int:
                 for tag, p in reqs:
                     r = post(a.port, p, a.max_new)
                     t = r.get("timings", {})
-                    row = {"round": rnd, "arm": name, "req": tag, "decode": t.get("predicted_per_second"),
+                    row = {"round": rnd, "arm": name, "spec": spec, "req": tag, "decode": t.get("predicted_per_second"),
                            "prompt": t.get("prompt_per_second"), "prompt_n": t.get("prompt_n"),
                            "n": r.get("usage", {}).get("completion_tokens"),
                            "text": r["choices"][0]["message"].get("content", "")[:80]}
@@ -126,7 +131,7 @@ def main() -> int:
     print("\nmedians over rounds:")
     for tag, _ in reqs:
         cells = []
-        for name, _ in arms:
+        for name, _, _s in arms:
             rows = res[name].get(tag, [])
             d = statistics.median([x["decode"] for x in rows if x["decode"]]) if rows else float("nan")
             pr = statistics.median([x["prompt"] for x in rows if x["prompt"]]) if rows else float("nan")

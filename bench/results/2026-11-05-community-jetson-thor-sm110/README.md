@@ -1,10 +1,16 @@
 # Jetson AGX Thor (sm_110): the three documented models, compatibility and speed
 
-Runs 2026-11-04/05 on one **NVIDIA Jetson AGX Thor** (L4T R38.2.2, Ubuntu 24.04.4, `6.8.12-tegra`, aarch64,
+Runs 2026-11-04 to 2026-11-08 on one **NVIDIA Jetson AGX Thor** (L4T R38.2.2, Ubuntu 24.04.4, `6.8.12-tegra`, aarch64,
 122.8 GiB unified memory, ~117 GiB usable by the GPU; driver 580.00, CUDA 13.0.48; model files on the NVMe
 WD PC SN5000S 1 TB). Engine: **0.1.56 built on this machine from `f-4559-thor-sm110`** - the arm64 fat CUDA
 package carrying `sm_121 + sm_110` machine code and `compute_110` PTX ([docs/JETSON_THOR.md](../../../docs/JETSON_THOR.md),
 issue #4559). Terminal: the repository's own (`strata.py`, dev checkout at `5819cc0b`).
+
+Every standard-suite and dgx-style cell in this report has its runner-produced files in the report itself: the
+`iq3s-32k*/`, `qwen36-32k/`, `maxn/*`, `normal/*` folders carry `results.json`, `outputs.jsonl` (or `base.jsonl`),
+`config.json` and `provenance` (`base.summary.md`/`base.meta.json` for dgx runs), as the runners wrote them. Only the
+engines' own verbose logs are left out (hundreds of MB of slot dumps); the numbers in every table are recomputable
+from the included files.
 
 ## Compatibility, model by model
 
@@ -76,6 +82,25 @@ Qwen3.6 requests at once at roughly the speed of one IQ3_S request.
 A side note, not fitted away: Qwen3.6's decode at prompt-16k (20.2) sits well below its 4K decode (37.4) on
 this machine, where IQ3_S stays flat (~34-36). One machine, custom track, three repeats each - worth watching
 on other ARM64 boxes rather than presenting as a settled number.
+
+## Arm key: what the A/B files' labels mean
+
+`tools/ab_engine.py` names arms A, B, C... on its command line. Two of these sweeps still have their runner scripts
+on the machine and the engine's own startup line confirms them; the Nov 4/5 switch sweeps ran from throwaway
+scripts, so their mapping is reconstructed from the contemporaneous notes and stated as such. To close the gap for
+the future, `ab_engine.py` on this branch now writes a manifest line naming the config and every arm's full spec,
+and repeats the arm spec inside each record - new A/B files are self-describing.
+
+| file | arms | basis |
+| --- | --- | --- |
+| `ab-q36-depth.jsonl` (120 W) and `ab-q36-depth-maxn.log` (locked clocks) | A=`--mtp 0` (drafting off), B=`--mtp 2` (the shipped default), C=`--mtp 3`, D=`4`, E=`5`, F=`6`, G=`7` | proven: runner script kept on the machine (`A:xargs=--mtp;0 ... G:xargs=--mtp;7`), and the engine startup line in the per-arm logs shows the appended argument (e.g. arm C's log: `... --prefill auto --mtp 2 --mtp 3`) |
+| `ab-q36-dv.jsonl` | A/B/C: the shipped launch, the same with `STRATA_Q36_DRAFT_VOCAB` set, and it with the draft-vocab size varied | reconstructed from contemporaneous notes; the knob was found useless, which is why the mapping is thin |
+| `ab-iq3s-dropone.jsonl` | five arms, each one of the five switches removed from the full table (`STRATA_SPEC_COST` / `STRATA_HC_Q8` / `STRATA_PF_FUSED` / `STRATA_HC_UPMIX` / `STRATA_SIDE_MIXER` set to `0` over the table-on baseline; IQ3_S at `--spec 4`) | reconstructed: the per-switch numbers each drop produced are exactly the rows of the table below; the per-arm launch specs themselves were not archived (the tool gap above) |
+| `ab-iq3s-stack.jsonl` | five arms, the table built up switch by switch from `STRATA_SM110_PERF=0` | reconstructed, same basis |
+| `ab-iq3s-spec.jsonl`, `ab-iq3s-decide.jsonl` | fixed draft-window depths (`--spec 2/4/6/8`) plus the cost-rule arm (`STRATA_SPEC_COST=1`), and the final keep/drop decision pair | reconstructed from contemporaneous notes |
+
+Anyone reproducing these must use the engine from this branch's package (`sm_110` cubins); the `STRATA_SM110_PERF=0`
+switch is the table-off baseline, and a switch set explicitly is kept by the engine ("a switch you set is kept").
 
 ## The sm_110 speed table, measured switch by switch (added on this branch)
 
