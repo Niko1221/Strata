@@ -41,6 +41,10 @@ public:
         int n_exp = 0;
         int file[3] = {-1, -1, -1};
         uint64_t off[3] = {0, 0, 0}, stride[3] = {0, 0, 0};   // matrix r of expert e: file[r], off[r] + e stride[r]
+        // cold-store read source (#5391 follow-up): when set, reads for (layer, e, r) take
+        // cold_off[r][e] bytes from cold_fd instead of the GGUF shard. -1 = use the GGUF.
+        std::vector<int64_t> cold_off[3];
+        bool has_cold = false;
         uint64_t bytes[3] = {0, 0, 0};
         uint64_t tr[3] = {0, 0, 0};                            // matrix r's place in the blob
         uint64_t blob = 0;                                     // the blob's bytes (gaps of 8192 between matrices)
@@ -71,6 +75,25 @@ public:
     };
 
     void set_pfds(const std::vector<os::fd_t>& pfds) { pfds_ = pfds; }   // (the fallback handles were reopened)
+    // cold-store source: one unbuffered fd over the pack's cold-store.bin, with the per-region
+    // offsets from its map (cold-store.map, written by cold_store.py). When set and the geo's
+    // cold tables agree, reads take (fd, cold_off) instead of (shard fd, GGUF off).
+    void set_cold_source(os::fd_t cold_fd) {
+        cold_fd_ = cold_fd;
+        for (auto& gl : geo_) gl.has_cold = true;
+    }
+    // the caller parsed the cold-store map into ITS geo copy (the model's `geo` vector); the
+    // store holds its own copy made at init - this copies the filled tables across, before any
+    // read can run. Sizes must agree with what init() saw.
+    void set_geo_cold_tables(const std::vector<LayerGeo>& layers) {
+        if (layers.size() != geo_.size()) return;
+        for (size_t l = 0; l < layers.size(); ++l) {
+            if (geo_[l].n_exp != layers[l].n_exp) continue;
+            for (int r = 0; r < 3; ++r) geo_[l].cold_off[r] = layers[l].cold_off[r];
+            geo_[l].has_cold = layers[l].has_cold;
+        }
+    }
+    bool cold_active() const { return cold_fd_ != os::kBadFd; }
     bool init(const Cfg& c, const std::vector<LayerGeo>& layers, const std::vector<os::fd_t>& dfds, const std::vector<os::fd_t>& pfds) {
         cfg_ = c;
         geo_ = layers;
@@ -484,15 +507,19 @@ private:
         const LayerGeo& g = geo_[(size_t) layer];
         IoQueue::Job jobs[3];
         for (int r = 0; r < 3; ++r) {
-            const uint64_t off = g.off[r] + (uint64_t) e * g.stride[r];
+            const bool cold = g.has_cold && cold_fd_ != os::kBadFd &&
+                              r < (int) (sizeof(g.cold_off) / sizeof(g.cold_off[0])) &&
+                              e < (int) g.cold_off[r].size() && g.cold_off[r][(size_t) e] >= 0;
+            const uint64_t off = cold ? (uint64_t) g.cold_off[r][(size_t) e]
+                                      : g.off[r] + (uint64_t) e * g.stride[r];
             const uint64_t lead = off % os::kDirectAlign;
             uint8_t* fin = sp.base + g.tr[r];   // where the matrix belongs
             // the aligned read lands the file's byte `off` at dst + lead: dst is fin - lead rounded down to 4096 (its span spills
             // under 4096 bytes either way into the blob's gaps), the matrix is then moved up to fin
             uint8_t* dst = (uint8_t*) ((uintptr_t) (fin - lead) & ~(uintptr_t) (os::kDirectAlign - 1));
             IoQueue::Job& j = jobs[r];
-            j.fd = pfds_[(size_t) g.file[r]];
-            j.dfd = dfds_[(size_t) g.file[r]];
+            j.fd = cold ? cold_fd_ : pfds_[(size_t) g.file[r]];
+            j.dfd = cold ? cold_fd_ : dfds_[(size_t) g.file[r]];
             j.off = off;
             j.len = g.bytes[r];
             j.dst = dst;
@@ -574,6 +601,7 @@ private:
     Cfg cfg_;
     std::vector<LayerGeo> geo_;
     std::vector<os::fd_t> dfds_, pfds_;
+    os::fd_t cold_fd_ = os::kBadFd;   // cold-store.bin when active; -1/invalid: GGUF reads
     size_t slot_bytes_ = 0, nmax_ = 0, nalloc_ = 0, free_hint_ = 0, arena_bytes_ = 0;
     uint8_t* arena_ = nullptr;
     size_t shrunk_ = 0;

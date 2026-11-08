@@ -6616,6 +6616,102 @@ struct Model::Impl {
             return;
         }
         store = std::move(st);
+        // #5391 follow-up: the cold store. If the pack carries cold-store.bin + cold-store.map and
+        // the map's source fingerprints match the shards on disk, the store's reads are served from
+        // cold-store.bin (one unbuffered fd, per (layer, expert, role) offsets from the map) instead
+        // of the GGUF. The GGUF's expert regions can then be hole-punched (cold_store.py punch). A
+        // fingerprint mismatch refuses the cold store loudly - never zeros into the arena. Opt-in by
+        // the file's presence plus DS4_COLD_STORE=1 (explicit, like the store's other opt-ins).
+        if (const char* cs_env = std::getenv("DS4_COLD_STORE"); cs_env != nullptr && std::atoi(cs_env) != 0) {
+            std::fprintf(stderr, "ds4: cold store: checking %s\n", (pk.dir + "/cold-store.bin").c_str());
+            const std::string cold_bin = pk.dir + "/cold-store.bin";
+            const std::string cold_map = pk.dir + "/cold-store.map";
+            os::fd_t cold_fd = os::open_direct(cold_bin);
+            if (cold_fd != os::kBadFd) {
+                std::vector<uint8_t> raw;
+                { std::ifstream f(cold_map, std::ios::binary);
+                  raw.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); }
+                std::fprintf(stderr, "ds4: cold store map: %llu bytes\n", (unsigned long long) raw.size());
+                if (raw.size() >= 24) {
+                    uint64_t magic = 0; uint32_t nl = 0, ne = 0; uint64_t n_entries = 0;
+                    std::memcpy(&magic, raw.data(), 8); std::memcpy(&nl, raw.data() + 8, 4);
+                    std::memcpy(&ne, raw.data() + 12, 4); std::memcpy(&n_entries, raw.data() + 16, 8);
+                    if ((magic == 0x4C53544F43ull || magic == 0x4C53554F43ull) && nl == (uint32_t) g.nl && ne == (uint32_t) geo[0].n_exp) {
+                        size_t pos = 24;
+                        bool ok = true;
+                        for (uint64_t k = 0; k < n_entries && ok; ++k) {
+                            if (k % 10000 == 0) std::fprintf(stderr, "ds4: cold store: entry %llu/%llu\n", (unsigned long long) k, (unsigned long long) n_entries);
+                            if (pos + 24 > raw.size()) { ok = false; break; }
+                            int32_t layer = 0, expert = 0, role = 0;
+                            std::memcpy(&layer, raw.data() + pos, 4);
+                            std::memcpy(&expert, raw.data() + pos + 4, 4);
+                            std::memcpy(&role, raw.data() + pos + 8, 4);
+                            int64_t so = 0; std::memcpy(&so, raw.data() + pos + 16, 8);
+                            pos += 24;
+                            if (layer < 0 || (uint32_t) layer >= g.nl || expert < 0 ||
+                                expert >= (int) geo[0].n_exp || role < 0 || role > 2 || so < 0) { ok = false; break; }
+                            auto& tbl = geo[(size_t) layer].cold_off[role];
+                            if ((size_t) expert >= tbl.size()) tbl.resize((size_t) geo[(size_t) layer].n_exp, -1);
+                            tbl[(size_t) expert] = so;
+                        }
+                        // the sources block: per shard, name_len u32 + name + size i64 + mtime f64;
+                        // a size/mtime mismatch (a re-downloaded model) refuses the cold store
+                        while (ok && pos + 4 <= raw.size()) {
+                            uint32_t name_len = 0; std::memcpy(&name_len, raw.data() + pos, 4); pos += 4;
+                            if (pos + name_len + 16 > raw.size()) { ok = false; break; }
+                            std::string nm((const char*) raw.data() + pos, name_len); pos += name_len;
+                            int64_t sz = 0; double mt = 0;
+                            std::memcpy(&sz, raw.data() + pos, 8); pos += 8;
+                            std::memcpy(&mt, raw.data() + pos, 8); pos += 8;
+                            // v2: a punched flag follows - 1 + (size, mtime) of the file as it
+                            // was after cold_store.py punch + record-punch. A source matching
+                            // EITHER fingerprint is accepted (the punch is ours); a re-downloaded
+                            // file matches neither and is refused loudly.
+                            uint32_t punched_flag = 0;
+                            int64_t psz = 0; double pmt = 0;
+                            if (magic == 0x4C53554F43ull && pos + 4 <= raw.size()) {
+                                std::memcpy(&punched_flag, raw.data() + pos, 4); pos += 4;
+                                if (punched_flag && pos + 16 <= raw.size()) {
+                                    std::memcpy(&psz, raw.data() + pos, 8); pos += 8;
+                                    std::memcpy(&pmt, raw.data() + pos, 8); pos += 8;
+                                }
+                            }
+                            for (const std::string& fn : pk.files) {
+                                if (fn != nm) continue;
+                                const std::string path = pk.model_dir + "/" + fn;
+                                struct _stat64 st64 {};
+                                if (_stat64(path.c_str(), &st64) != 0) break;
+                                const bool orig_ok = (int64_t) st64.st_size == sz && (int64_t) st64.st_mtime == (int64_t) mt;
+                                const bool punched_ok = punched_flag != 0 && (int64_t) st64.st_size == psz &&
+                                                        (int64_t) st64.st_mtime == (int64_t) pmt;
+                                if (!orig_ok && !punched_ok) {
+                                    std::fprintf(stderr, "ds4: cold store REFUSED: %s changed since the store was written "
+                                                 "(size %lld, mtime %lld; expected the original %lld/%lld%s); reading from the GGUF\n",
+                                                 nm.c_str(), (long long) st64.st_size, (long long) st64.st_mtime,
+                                                 (long long) sz, (long long) mt,
+                                                 punched_flag ? " or the punched state" : "");
+                                    ok = false;
+                                }
+                                break;
+                            }
+                        }
+                        if (ok) {
+                            store->set_geo_cold_tables(geo);   // copy the cold tables into the store's own geo_ copy
+                            store->set_cold_source(cold_fd);
+                            std::fprintf(stderr, "ds4: cold store active: reads served from cold-store.bin "
+                                         "(%llu entries; misses read the GGUF)\n", (unsigned long long) n_entries);
+                        }
+                    } else {
+                        std::fprintf(stderr, "ds4: cold store map mismatch (magic or dims); reading from the GGUF\n");
+                    }
+                } else {
+                    std::fprintf(stderr, "ds4: cold-store.map unreadable; reading from the GGUF\n");
+                }
+                if (!store->cold_active()) os::close_fd(cold_fd);
+            } else if (cs_env != nullptr && std::atoi(cs_env) != 0) {
+                std::fprintf(stderr, "ds4: DS4_COLD_STORE=1 but cold-store.bin is not there; reading from the GGUF\n");
+            }
+        }
         // (the router lookahead's guesses are not read ahead with the store: measured 4.5 against 4.7 tok/s, 62% of the guesses are right and
         // the SSD is the narrow part; DS4_AHEAD=1 turns them on)
         if (std::getenv("DS4_AHEAD") == nullptr) ahead_mode = 0;
