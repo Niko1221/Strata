@@ -18,12 +18,15 @@ SLOWER = "may run slower"
 #   qwen / swift / coder / unsloth (all but the three big files): the n-gram table, IQ4_NL, 28,800,138,432 bytes, a shard of its own
 #   unsloth UD-Q5_K_XL, UD-Q6_K_XL, Q8_0: the Q8_0 table, shard 3, 54,400,261,312 bytes
 #   nvfp4: the FP8 table `ple-fp8.gguf`, 51,200,246,176 bytes
+#   nvfp4 NVFP4-QAD: its 102.2 GB download is NVIDIA's checkpoint, which this PC converts into the pack that runs; the files that run are the converted pack, the same
+#     size as the other NVFP4 sets (128.0 - 51.2 = 76.8 GB), so that figure is used (owner's rule: the model files that run, minus the table)
 #   gyro: the table is inside the one GGUF; the catalog states the rest (its `ram_gb`: 27.6 / 35 GB), the table is the difference
 #   qwen36 (its own path) has none.  A family this module does not know counts its whole download.
 _GB = 1e9
 _TABLE_BYTES = {"qwen": 28_800_138_432, "swift": 28_800_138_432, "coder": 28_800_138_432, "unsloth": 28_800_138_432, "nvfp4": 51_200_246_176}
 _BIG_UNSLOTH = ("UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0")
 _BIG_TABLE_BYTES = 54_400_261_312
+_PACK_GB = {("nvfp4", "NVFP4-QAD"): 76.8}        # sets whose download is not the files that run: the size of what runs
 
 
 def table_gb(family: str | None, model: str | None, d: dict) -> float:
@@ -37,6 +40,8 @@ def table_gb(family: str | None, model: str | None, d: dict) -> float:
 
 def files_gb(family: str | None, model: str | None, d: dict) -> float:
     """The model's files without the lookup table, in GB (one decimal): the size the label and the "Needs" column use."""
+    if (family, model) in _PACK_GB:
+        return _PACK_GB[(family, model)]
     return round(float(d["download_gb"]) - table_gb(family, model, d), 1)
 
 

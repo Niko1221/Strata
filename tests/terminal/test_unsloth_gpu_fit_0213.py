@@ -25,6 +25,8 @@ class TheRule(unittest.TestCase):
                 ("gyro", "Gyro-S"): 27.6, ("gyro", "Gyro-M"): 35.0, ("nvfp4", "NVFP4"): 76.8}                         # Gyro: the table is inside the file, the catalog states the rest
         for (family, model), gb in want.items():
             self.assertEqual(fit_label.files_gb(family, model, setup.MODELS[model]), gb, (family, model))
+        self.assertEqual(fit_label.files_gb("nvfp4", "NVFP4-QAD", setup.MODELS["NVFP4-QAD"]), 76.8)               # the converted pack that runs, not the 102.2 GB checkpoint minus the table
+        self.assertEqual(fit_label.files_gb("nvfp4", "NVFP4-NVIDIA", setup.MODELS["NVFP4-NVIDIA"]), 76.8)
         self.assertEqual(fit_label.files_gb("qwen36", "UD-Q6_K_XL", {"download_gb": 32.6, "ram_gb": 44}), 32.6)       # its own path: no table
         self.assertEqual(fit_label.files_gb("somefeedmodel", "X", {"download_gb": 10.0, "ram_gb": 8}), 10.0)          # a family this module does not know counts its whole download
 
@@ -57,7 +59,8 @@ class TheTerminalMenu(unittest.TestCase):
             self.assertEqual(rows[("unsloth", m)].words, "may run slower", m)
         self.assertEqual(round(rows[("unsloth", "UD-IQ4_XS-v31")].fit_gb, 1), 64.9)                       # 93.7 - 28.8: over 63
         self.assertEqual(rows[("qwen", "IQ3_S")].words, rows[("unsloth", "UD-IQ3_XXS")].words)             # same size, same word
-        self.assertEqual({rows[("nvfp4", m)].words for m in ("NVFP4", "NVFP4-NVIDIA")}, {"may run slower"})
+        self.assertEqual({rows[("nvfp4", m)].words for m in ("NVFP4", "NVFP4-NVIDIA", "NVFP4-QAD")}, {"may run slower"})      # QAD too: the pack that runs is 76.8 GB
+        self.assertEqual({round(rows[("nvfp4", m)].fit_gb, 1) for m in ("NVFP4", "NVFP4-NVIDIA", "NVFP4-QAD")}, {76.8})
         for key, r in rows.items():
             if key[0] == "deepseek41":                                    # the whole size (download minus the 110.6 / 202.8 GB Engram file) is the "Needs" figure
                 self.assertGreater(r.fit_gb, 70, key)
