@@ -523,6 +523,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
         # first launch - "'double' is not supported in ... device", the engine dies on the first request with a
         # temperature - unless the driver emulates it (docs/INTEL.md)
         env.update({"IGC_EnableDPEmulation": "1", "OverrideDefaultFP64Settings": "1", "NEOReadDebugKeys": "1"})
+        if native:
+            # On Windows the three above only make the fp64 aspect answer yes: a kernel that uses `double` still fails
+            # to compile.  NEO's own switch supplies the emulation they assume (docs/INTEL_ARC.md).
+            env["NEO_FP64_EMULATION"] = "1"
     if native:
         selector = f"level_zero:{cfg['gpu']}" if isinstance(cfg.get("gpu"), int) else "level_zero:gpu"
         env.update({"ONEAPI_DEVICE_SELECTOR": os.environ.get("ONEAPI_DEVICE_SELECTOR", selector),

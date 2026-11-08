@@ -378,14 +378,19 @@ turns them on by default on Linux, where the A750 has run them; this port has no
 
 ### Arc A770 16 GB on Windows
 
-An Alchemist runs on Windows through Level Zero like a B-series, with two differences.
+An Alchemist runs on Windows through Level Zero like a B-series, with these differences.
 
 - **A single device allocation above 4 GiB is refused.** `sycl::malloc_device` returns NULL at 4.0 GiB and succeeds
   at 3.5 GiB; host allocations are not capped. The expert cache is one allocation, so it was held to 3.15 GiB while
   5.4 GiB of the card stayed unused. `UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1` removes that check rather than
   granting memory: the cache then takes what is free (e.g. 7.48 GiB). Setup writes it for an Alchemist on Windows.
 - **`ext_oneapi_graph` is not advertised, but command graphs work.** Setup and the engine skip the card on the aspect
-  alone. `STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1` opts in, and setup writes it for an Alchemist on Windows.
+  alone. `STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1` opts in, and setup writes it for an Alchemist on Windows. Capture and
+  replay run on oneAPI 2026.2; on oneAPI 2026.1 capture has crashed instead, where `STRATA_VERIFY_EAGER=1` without
+  `--mtp` serves (#5505).
+- **FP64 needs `NEO_FP64_EMULATION=1` on a Windows driver.** The `IGC_*` keys alone make the `fp64` aspect answer yes
+  while a kernel that uses `double` fails to compile; with it they run. Setup writes it for an Alchemist on Windows.
+  The test binaries need it, serving does not (#5505).
 
 Decode and prompt, Coder IQ1_M, 16K context, 3 runs of 256 tokens each (`relaxed alloc` is
 `UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS`):
@@ -397,9 +402,10 @@ Decode and prompt, Coder IQ1_M, 16K context, 3 runs of 256 tokens each (`relaxed
 
 Measured on an Arc A770 16 GB, driver 32.0.101.9150, oneAPI 2026.2, engine 0.1.57. The answers do not change.
 The shrink message's page-file advice does not apply to this failure: the request failed with 28.9 GiB of commit
-free, and the limit reproduces with no model loaded.
+free, and the limit reproduces with no model loaded. What the limit is worth depends on the bottleneck: on a Linux
+A770 bound by the PLE table it moved the expert-cache hit rate from 60% to 80% with decode unchanged (#5578).
 
-Two things to expect on this card.
+Three things to expect on this card.
 
 - **The RAM arena is faster, but the server cannot use it yet.** Without `--stream-experts` the engine keeps the
   experts in RAM and the CPU computes the ones the cache lacks, so nothing is read over PCIe: the engine's own
@@ -410,6 +416,8 @@ Two things to expect on this card.
 - **The configuration depends on the free VRAM at the start.** On a 16 GB card a busy desktop can leave too little for
   the cache, and the engine then refuses with `N experts are neither in VRAM nor mirrored` - lower `--max-context` or
   raise `STRATA_MIRROR_MIB`.
+- **Do not leave `UR_L0_DEBUG=1` set.** It writes millions of lines and seconds per handshake, and looks like a driver
+  hang (#5505).
 
 ## Reporting a problem
 
