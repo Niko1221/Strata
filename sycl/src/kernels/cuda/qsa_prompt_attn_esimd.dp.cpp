@@ -40,7 +40,8 @@ namespace {
 using namespace sycl::ext::intel::esimd;
 namespace xmx = sycl::ext::intel::esimd::xmx;
 
-constexpr int HD = 256, G = 12, NTH = 4, SS = 128;
+constexpr int HD = 256, G = strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, NTH = 4, SS = 128;
+static_assert(G >= 1 && G <= 16, "qsa_prompt_attn_esimd: query heads per KV head must be 1..16 (16 score columns, two 8-row tiles)");
 static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv,
               "qsa_prompt_attn_esimd is compiled for core/geometry.hpp");
 constexpr uint32_t QT_OFF = 0;            // Q^T B tiles: [8 K steps][LV levels][128 dwords]

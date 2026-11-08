@@ -532,7 +532,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: " + why + " (the verify window reproduces the default native decode path)";
         return false;
     }
-    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != 10 || g.ssm_state_size != 128 ||
+    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != (int) strata::core::kCompiledGeometry.n_expert_used || g.ssm_state_size != 128 ||
         g.ssm_d_conv != 4) {
         err = "verify: geometry differs from the artifact's";
         return false;
@@ -2654,6 +2654,23 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    // STRATA_LOGITS_DUMP=<path> (debug tap, off by default; src/core/verify.cpp's, for the gate-2 judge of the Qwen4 shapes): the window's
+    // logits as the sampler saw them, written AFTER the window (synchronised above).  One record is
+    // {int32 magic, int32 T, int32 n_vocab, int32 record, int64 position}, then T * n_vocab FP32 rows; row 0 is the window's first position.
+    if (const char* logits_path = std::getenv("STRATA_LOGITS_DUMP")) {
+        static std::FILE* lf = std::fopen(logits_path, "wb");
+        static int32_t lrec = 0;
+        if (lf != nullptr) {
+            std::vector<float> h((size_t) T * (size_t) n_vocab_);
+            dpct::get_in_order_queue().memcpy(h.data(), head_logits_, h.size() * sizeof(float)).wait();
+            const int32_t hdr[4] = {0x53474F4C /*"LOGS"*/, T, (int32_t) n_vocab_, lrec++};
+            const int64_t hpos = pos0;
+            std::fwrite(hdr, sizeof hdr, 1, lf);
+            std::fwrite(&hpos, sizeof hpos, 1, lf);
+            std::fwrite(h.data(), sizeof(float), h.size(), lf);
+            std::fflush(lf);
+        }
+    }
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {

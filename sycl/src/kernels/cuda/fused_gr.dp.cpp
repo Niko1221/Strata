@@ -25,18 +25,22 @@
 namespace strata::kernels {
 namespace {
 
-constexpr int N = 2560;         // n_embd
-constexpr int HC = 4;           // streams
+constexpr int N = strata::core::kCompiledGeometry.n_embd;         // 2560 in Flash-Next
+constexpr int HC = strata::core::kCompiledGeometry.hc;           // streams
 constexpr int D = N * HC;       // 10240
-constexpr int LR = 320;         // hc_lr
-static_assert(N == strata::core::kCompiledGeometry.n_embd && HC == strata::core::kCompiledGeometry.hc && LR == strata::core::kCompiledGeometry.hc_lr, "fused_gr is compiled for core/geometry.hpp");
+constexpr int LR = strata::core::kCompiledGeometry.hc_lr;         // 320
+static_assert(N % 512 == 0 && LR % 64 == 0 && LR >= 256 && LR <= 512, "fused_gr: n_embd must be a multiple of 512 and hc_lr one of 256..512 in steps of 64 (the lane rule `lane < LR / 8 - 32` and the 128-column slices)");
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
 #if defined(__HIPCC__)
-constexpr int TILE = 1280;             // eight-token tile fits gfx1100's 64 KiB LDS limit
+constexpr int TILE = N / 2;            // eight-token tile fits gfx1100's 64 KiB LDS limit
 #else
-constexpr int TILE = 2560;             // xn floats per token staged at a time: 320 chunks of 8, 10 per lane
+constexpr int TILE = N;                // xn floats per token staged at a time: 320 chunks of 8, 10 per lane (Flash-Next)
 #endif
+// The single-token down kernel keeps the whole normalised hidden row (D floats) in work-group local memory: static while that
+// fits 48 KB (Flash-Next: 40 KB).  Beyond it (hidden 3072 and up) fused_gr_read takes the multi-token read of one token, which is
+// bitwise the same read (the sliced / split kernels need 4 KB of local memory) and the default path anyway.
+constexpr bool kDownXnTooBig = (size_t) D * 4 + 512 > 48 * 1024;
 constexpr int TQ = TILE / 8 / 32;      // uint4 weight chunks per lane per tile
 // SYCL port: the down kernel's 41 work-groups filled 15% of the B70's threads (metrics 2026-09-30); each row's
 // D = 4 tiles are split over DOWN_SPLIT work-groups that write partial sums, summed in a fixed order by the up
@@ -88,7 +92,7 @@ the code, or use smaller sub-group size to avoid high register pressure.
 */
 __dpct_inline__ void gr_down_kernel(FusedGrArgs a) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-auto &xn = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
+auto &xn = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kDownXnTooBig ? 1 : D]>(
     sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &part =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS][HC]>(
@@ -1211,10 +1215,10 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
 //    accumulates its chunks lane + 32 q in ascending order, as in the plain read with either tile.  Before sm_80
 //    (and on HIP) the staging is a plain copy: the same bits, only not asynchronous.
 constexpr int kHcPlain = 1, kHcSplit = 2, kHcStaged = 3;
-constexpr int H_TILE = 1280;                          // staged tile: half a stream = 160 chunks of 8, 5 per lane
+constexpr int H_TILE = N / 2;                         // staged tile: half a stream = 160 chunks of 8, 5 per lane (1280 for Flash-Next)
 constexpr int HQ = H_TILE / 8 / 32;
 constexpr int N_HTILES = D / H_TILE;                  // 8
-static_assert(N % H_TILE == 0, "a staged tile never straddles two streams");
+static_assert(N % H_TILE == 0 && N % 512 == 0, "a staged tile never straddles two streams");
 static_assert(H_TILE % 256 == 0, "a staged tile holds whole rounds of 32 chunks: the plain read's lane order");
 
 /*
@@ -1497,7 +1501,7 @@ int down_chunk(bool staged, int* tile_out) {
     int dev = 0;
     dev = dpct::get_current_device_id();
     if (dev < 0 || dev >= 64) {
-        *tile_out = 2560;
+        *tile_out = N;
         return kFusedGrMaxT;
     }
     if (!attr[dev]) {
@@ -1523,7 +1527,7 @@ int down_chunk(bool staged, int* tile_out) {
         cc_min = dpct::get_device(dev).get_minor_version();
         const bool small_tile = strata::cc_major_of(cc_maj) * 10 + strata::cc_minor_of(cc_min) == 75;
 #endif
-        const int tv = small_tile ? 1280 : 2560;
+        const int tv = small_tile ? (N / 2) : N;
         tile[dev] = tv;
         int want = (int) (kFusedGrMaxT * tv * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
@@ -1570,7 +1574,7 @@ int down_chunk(bool staged, int* tile_out) {
         chunk_staged[dev] = capacity_staged < 1 ? 1 : (capacity_staged > kFusedGrMaxT ? kFusedGrMaxT : capacity_staged);
         attr[dev] = true;
     }
-    *tile_out = tile[dev] ? tile[dev] : 2560;
+    *tile_out = tile[dev] ? tile[dev] : N;
     return staged ? chunk_staged[dev] : chunk[dev];
 }
 
@@ -1608,7 +1612,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, (void*) st);
     const bool staged = variant >= kHcStaged;
-    int tv = 2560;
+    int tv = N;
     const int chunk_tok = down_chunk(staged, &tv);
     /*
     DPCT1083: The size of local memory in the migrated code may be different
@@ -1686,7 +1690,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                             });
                 });
             }
-        } else if (tv == 1280) {
+        } else if (tv == (N / 2)) {
             if (max4) {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
@@ -1697,14 +1701,14 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
 
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_4a9670,
-                        dpct_kernel_scalar<1280>, dpct_kernel_scalar<4>>>(
+                        dpct_kernel_scalar<(N / 2)>, dpct_kernel_scalar<4>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<1280, 4>(
+                                gr_down_multi_kernel<(N / 2), 4>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1725,14 +1729,14 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                     */
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_6a749c,
-                        dpct_kernel_scalar<1280>, dpct_kernel_scalar<1280>>>(
+                        dpct_kernel_scalar<(N / 2)>, dpct_kernel_scalar<(N / 2)>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<1280>(
+                                gr_down_multi_kernel<(N / 2)>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1751,14 +1755,14 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
 
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_2d8885,
-                        dpct_kernel_scalar<2560>, dpct_kernel_scalar<4>>>(
+                        dpct_kernel_scalar<N>, dpct_kernel_scalar<4>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<2560, 4>(
+                                gr_down_multi_kernel<N, 4>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1779,14 +1783,14 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                     */
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_df2ead,
-                        dpct_kernel_scalar<2560>, dpct_kernel_scalar<2560>>>(
+                        dpct_kernel_scalar<N>, dpct_kernel_scalar<N>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<2560>(
+                                gr_down_multi_kernel<N>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -2160,7 +2164,7 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
     // window's token would differ in its last bits from this kernel's. The header promises "every token's outputs
     // are bitwise fused_gr_read(a[t])" (gr_parity checks it): with those paths on, the single read IS the multi read
     // of one token (each token's sums run in the same order whatever the window size).
-    if (gr_down_sliced() || gr_norm_split() || gr_down_direct()) {
+    if (kDownXnTooBig || gr_down_sliced() || gr_norm_split() || gr_down_direct()) {
         static std::mutex mu;
         static std::unordered_map<sycl::queue*, float*> xn;
         float* scratch;
