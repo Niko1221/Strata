@@ -4674,7 +4674,17 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
             int hlen = 0;
             const int r = slot_row_draw(S, t, sp, hist, hlen, hrows, err);
             if (r < 0) return false;
-            if (r == 0) continue;
+            // #3862: the draft rows' chain masks, one per window row (nullptr keeps the slot's own row)
+            const uint32_t* gmask = t < (int) row_gmask_.size() ? row_gmask_[(size_t) t] : nullptr;
+            if (r == 0) {
+                // a plain greedy slot keeps the window's argmax token; one under a mask has to re-sample
+                // (a mask rejects the argmax token itself).  The slot's own mask counts too:
+                // slot_row_draw's skip looks at penalties and the logit bias, not at the grammar.
+                if (gmask == nullptr && sp.grammar_mask == nullptr) continue;
+                sp.counter = (uint64_t) last_pos_b_[t];   // slot_row_draw returns before setting it here
+                sp.penalty_last_n = 0;
+            }
+            if (gmask != nullptr) sp.grammar_mask = gmask;
             if (!strata::metal_engine::window_sample_slot_row(metal_, t, sp, hist, hlen, &out[t], err)) return false;
         }
     }
