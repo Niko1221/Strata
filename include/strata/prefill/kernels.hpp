@@ -110,6 +110,9 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
                  int64_t T, void* stream, const float* row_sd = nullptr);
+/// moe_combine with the expert rows as FP16 (2,560 halves a row, fused::dm_f16_used()); shared and bo 16-byte aligned.
+void moe_combine16(const uint16_t* Dm16, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo, int64_t T,
+                   void* stream);
 /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): acc[t, :] = shared[t, :] * sigmoid(sg[t]) - the shared expert's
 /// part of moe_combine, written before the routed experts are known.
 void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream);

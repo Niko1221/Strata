@@ -226,7 +226,9 @@ __device__ __forceinline__ void gu_epilogue(const v8f (&acc)[BN / 16], uint8_t* 
 
 /// Down epilogue (`lds` at least D_EPI_BYTES, free): each wave's 16 x 16 tile through LDS ([token][row]), then 16
 /// consecutive FP32 rows per routed row into dm [routed row][2560].
-template <int BN>
+/// D16 (STRATA_PF_DM16): the rows go out as FP16 (saturated at +-65504, 2,560 halves a row, two neighbouring columns in one 4-byte store from the even lane)
+/// for moe_combine16 - half the bytes written here and read there.
+template <int BN, bool D16 = false>
 __device__ __forceinline__ void down_epilogue(const v8f (&acc)[BN / 16], uint8_t* lds, int tid, int live_tiles, int nrows, int row0,
                                               int fb, float* __restrict__ dm) {
     const int wave = tid >> 5, lane = tid & 31, sub_lane = lane & 15, half_id = lane >> 4;
@@ -241,7 +243,15 @@ __device__ __forceinline__ void down_epilogue(const v8f (&acc)[BN / 16], uint8_t
 #pragma unroll
         for (int q = 0; q < 8; ++q) {
             const int flat = q * 32 + lane, t = j * 16 + (flat >> 4);
-            if (t < nrows) dm[(size_t) (row0 + t) * 2560 + r0 + (flat & 15)] = tile[flat];
+            if constexpr (D16) {
+                const float v = fminf(fmaxf(tile[flat], -65504.0f), 65504.0f);
+                const float nx = __shfl_down(v, 1);
+                if (t < nrows && !(flat & 1))
+                    reinterpret_cast<uint32_t*>(reinterpret_cast<uint16_t*>(dm) + (size_t) (row0 + t) * 2560 + r0 + (flat & 15))[0] =
+                        (uint32_t) __half_as_ushort(__float2half(v)) | ((uint32_t) __half_as_ushort(__float2half(nx)) << 16);
+            } else {
+                if (t < nrows) dm[(size_t) (row0 + t) * 2560 + r0 + (flat & 15)] = tile[flat];
+            }
         }
         __builtin_amdgcn_wave_barrier();
     }

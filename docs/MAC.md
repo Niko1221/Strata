@@ -97,6 +97,10 @@ What the first run does (each step is skipped when it is already done):
 5. **Downloads the model.** The download resumes if interrupted. `--gguf-dir` uses files you already have.
 6. **Prepares the model:** the pack (seconds) and the MTP draft layer (about 5 GB of the original checkpoint). On a Mac that
    streams, the experts' copy takes the draft layer's place (about 3 minutes on the M4).
+   For UD-Q4_K_XL and UD-IQ4_XS-v31 it also downloads the DFlash2 drafter (0.34 GB, from Strata's signed update feed): the server then drafts
+   with DFlash2 instead of the MTP layer (`--spec 6`, `--draft-conf 0.7`; Apache-2.0, a copy of incoai/Qwen3.8-Flash-Next-DFlash2 that Strata
+   tuned, notice in `data/dflash2-tuned/`). With no internet the download is skipped without a word and the MTP runs as before;
+   `./setup.sh --setup` fetches it later. IQ3_S and the other sets keep the MTP.
 7. **Writes `strata-<model>.json` and `run-<model>.sh`, then starts the server.**
 
 After that, `./setup.sh` or `./run-q2_0.sh` starts the model directly. The server is the same as on a PC: the OpenAI-compatible

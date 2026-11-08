@@ -73,6 +73,27 @@ class ControlModeTests(unittest.TestCase):
             S.run([sys.executable, str(tool), "--help"], check=False)
         runner.assert_called_once()
 
+    def test_the_mac_preparation_tools_in_metal_tools_may_run_and_nothing_else_beside_them(self):
+        # mac_repack() and mac_stream run metal/tools/metal_repack.py and stream_experts.py (mac_tools_dir() = ROOT/metal/tools): the bundled Mac tools, like tools/*.py
+        S = self.S
+        done = subprocess.CompletedProcess([], 0)
+        for tool in ("metal_repack.py", "stream_experts.py"):
+            with self.subTest(allowed=tool), mock.patch.object(S.subprocess, "run", return_value=done) as runner:
+                S.run([sys.executable, str(ROOT / "metal" / "tools" / tool), "--help"], check=False)
+                runner.assert_called_once()
+        for refused in (
+            [sys.executable, "-m", "metal.tools.metal_repack"],                      # -m is never allowed
+            ["python3", str(ROOT / "metal" / "tools" / "metal_repack.py")],          # another interpreter
+            [sys.executable, str(ROOT / "metal" / "kernels" / "evil.py")],           # another folder of the bundle
+            [sys.executable, str(ROOT / "metal" / "evil.py")],                       # metal/ itself
+            [sys.executable, str(self.home / "metal" / "tools" / "metal_repack.py")],  # a copy in the install folder
+            [sys.executable, str(ROOT / "metal" / "tools" / ".." / ".." / "setup.py")],
+            [sys.executable],
+        ):
+            with self.subTest(refused=refused), mock.patch.object(S.subprocess, "run", side_effect=AssertionError("ran")):
+                with self.assertRaises(S.acquisition.AcquisitionRefused):
+                    S.run(refused)
+
     def test_no_package_is_installed(self):
         S = self.S
         with mock.patch.object(S, "run", side_effect=AssertionError("pip")), \

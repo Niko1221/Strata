@@ -202,6 +202,24 @@ add("Drafting: off (the cards were short of memory)",
     "Previsão: desligada (faltou memória nas placas)",
     "초안 예측: 꺼짐(카드 메모리가 부족했습니다)",
     "Anticipation : désactivée (les cartes manquaient de mémoire)")
+add("On your Mac, DFlash2 was faster than MTP on this model in our tests.",
+    "在您的 Mac 上，我们的测试中 DFlash2 在此模型上比 MTP 更快。",
+    "お使いの Mac では、私たちのテストでこのモデルにおいて DFlash2 は MTP より速くなりました。",
+    "Auf Ihrem Mac war DFlash2 bei diesem Modell in unseren Tests schneller als MTP.",
+    "En su Mac, en nuestras pruebas DFlash2 fue más rápido que MTP con este modelo.",
+    "На вашем Mac в наших тестах DFlash2 с этой моделью был быстрее MTP.",
+    "No seu Mac, nos nossos testes o DFlash2 foi mais rápido que o MTP com este modelo.",
+    "고객님의 Mac에서 저희 테스트 결과 이 모델에서는 DFlash2가 MTP보다 빨랐습니다.",
+    "Sur votre Mac, DFlash2 a été plus rapide que MTP avec ce modèle lors de nos tests.")
+add("DFlash2 is off by default on this graphics card for now; choose it in Drafting to use it.",
+    "目前在这张显卡上 DFlash2 默认关闭；如需使用，请在“预测草稿”中选择它。",
+    "現在、このグラフィックスカードでは DFlash2 は既定でオフです。使うには「先読み」で選んでください。",
+    "DFlash2 ist auf dieser Grafikkarte vorerst standardmäßig aus; wählen Sie es unter „Vorausraten“ aus, um es zu nutzen.",
+    "DFlash2 está desactivado de forma predeterminada en esta tarjeta gráfica por ahora; elíjalo en Predicción para usarlo.",
+    "На этой видеокарте DFlash2 пока выключен по умолчанию; чтобы использовать его, выберите его в разделе «Предсказание».",
+    "O DFlash2 está desligado por predefinição nesta placa de vídeo por agora; escolha-o em Previsão para o usar.",
+    "현재 이 그래픽 카드에서는 DFlash2가 기본적으로 꺼져 있습니다. 사용하려면 ‘초안 예측’에서 선택하세요.",
+    "DFlash2 est désactivé par défaut sur cette carte graphique pour le moment ; choisissez-le dans Anticipation pour l'utiliser.")
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
 

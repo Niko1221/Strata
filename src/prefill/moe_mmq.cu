@@ -9,6 +9,7 @@
 #if defined(STRATA_MMQ_TAB) && !defined(__HIPCC__)
 #include "moe_mmq_tab.hpp"   // declarations only: the tab kernels live in the per-type mmq-tab-*.cu TUs
 #endif
+#include "strata/prefill/moe_iq4_w4a8.hpp"
 
 #include "strata/prefill/mmq_kq_abi.hpp"
 
@@ -356,7 +357,7 @@ bool fits(int t, int64_t w_rows) {
         const int cc = info.devices[id].cc;
         const size_t smpbo = info.devices[id].smpbo;
         bool any = false;
-        for (int J = 8; J <= 128 && !any; J += 8) {
+        for (int J = 8; J <= kMmqTileColsMax && !any; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, fallback, cc);
             any = c.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(c, cc) <= smpbo;
         }
@@ -471,6 +472,17 @@ Context::~Context() { delete (ggml_backend_cuda_context*) ctx_; }
 
 void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
+#if !defined(GGML_USE_HIP)
+    // STRATA_IQ4_W4A8=1 (opt-in; =2: the IQ4_NL down products only): IQ4_XS / IQ4_NL products through the pipelined int8
+    // kernel of moe_iq4_w4a8.cu where it gives MMQ's tiling-mode bits (sm_80..sm_88, no stream-k split); it declines
+    // every other product, and unset this function is unchanged
+    if (const int m = iq4_w4a8_mode(); m == 1 || (m == 2 && p.type == GGML_TYPE_IQ4_NL)) {
+        if (run_iq4_w4a8(p, stream)) {
+            ck(cudaGetLastError(), "iq4 w4a8");
+            return;
+        }
+    }
+#endif
     const ggml_type t = (ggml_type) p.type;
     const int64_t qk = type_blck((int) t), bpr = p.w_cols / qk;
     const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst, p.y_scale,
@@ -576,7 +588,7 @@ size_t overread_bytes(int t, int64_t cols) {
     int64_t blocks = over(MMQ_ITER_K);
     const ggml_cuda_device_info& info = ggml_cuda_info();
     for (int id = 0; id < info.device_count; ++id)
-        for (int J = 8; J <= 128; J += 8) {
+        for (int J = 8; J <= kMmqTileColsMax; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, info.devices[id].cc);
             if (c.type != GGML_TYPE_COUNT) blocks = std::max<int64_t>(blocks, over(c.K_vram));
         }
@@ -595,7 +607,7 @@ bool whole_tiles(int t, int64_t w_rows, int n_experts) {
         const size_t smpbo = info.devices[id].smpbo;
         bool any = false, stream_k = false;
         ggml_cuda_mmq_config c0 = ggml_cuda_mmq_get_config((ggml_type) t, 8, false, cc);
-        for (int J = 8; J <= 128; J += 8) {
+        for (int J = 8; J <= kMmqTileColsMax; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, cc);
             if (c.type == GGML_TYPE_COUNT || mmq_get_nbytes_shared(c, cc) > smpbo) continue;
             if (!any) c0 = c;
@@ -614,6 +626,34 @@ bool whole_tiles(int t, int64_t w_rows, int n_experts) {
         }
     }
     return true;
+}
+
+bool launch_splits_k(int t, int64_t w_rows, int64_t max_rows, int n_experts) {
+    if (!supported(t) || w_rows <= 0 || max_rows <= 0 || n_experts <= 0) return false;
+    const ggml_cuda_device_info& info = ggml_cuda_info();
+    int id = 0;
+    cudaGetDevice(&id);
+    if (id < 0 || id >= info.device_count) return true;
+    const int cc = info.devices[id].cc, nsm = info.devices[id].nsm;
+    const size_t smpbo = info.devices[id].smpbo;
+    // mul_mat_q_switch_J: the first tile width (8, 16, ...) with the fewest column tiles that fits the shared memory
+    int best_I = 0;
+    bool best_stream_k = false;
+    int64_t ntiles_best = INT64_MAX;
+    for (int J = 8; J <= 128 && ntiles_best > 1; J += 8) {
+        const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, cc);
+        if (c.type == GGML_TYPE_COUNT || mmq_get_nbytes_shared(c, cc) > smpbo) continue;
+        const int64_t ntx = (max_rows + c.J - 1) / c.J;
+        if (ntx < ntiles_best) { ntiles_best = ntx; best_I = c.I; best_stream_k = c.stream_k; }
+    }
+    if (ntiles_best == INT64_MAX) return true;   // no tile fits: not a launch to predict
+    if (!best_stream_k) return false;
+    if (!GGML_CUDA_CC_IS_NVIDIA(cc) || nsm <= 0) return true;
+    // launch_mul_mat_q: one block per tile when the tiles fill >= 90 % of their waves, else nsm blocks and a fixup
+    // whenever the tile count is not a multiple of them
+    const int64_t nty = (w_rows + best_I - 1) / best_I, ntiles = nty * ntiles_best * n_experts;
+    const int64_t waves = (ntiles + nsm - 1) / nsm;
+    return 100 * ntiles / (nsm * waves) < 90 && ntiles % nsm != 0;
 }
 
 int direct_mode() {

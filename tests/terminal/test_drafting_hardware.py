@@ -390,6 +390,7 @@ class TheTerminalStep(unittest.TestCase):
         folder = ROOT / "apps" / "host" / "src" / "locales"
         en = json.loads((folder / "df2-en.json").read_text(encoding="utf-8"))
         self.assertEqual((en["df03"], en["df04"], en["df05"]), (drafting.LINE_TESTED, drafting.LINE_SLOWER, drafting.LINE_UNTESTED))
+        self.assertEqual(en["df21"], drafting.LINE_METAL)
         self.assertEqual(en["df06"], drafting.mtp_line(drafting.NOT_THIS_CARD))
         self.assertEqual(en["df07"], "There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
         self.assertEqual(en["df09"], drafting.ONE_REQUEST_NOTE)

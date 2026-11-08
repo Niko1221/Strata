@@ -1826,6 +1826,18 @@ constexpr int64_t kGdnWmmaMin = 64;   // STRATA_GDN_CHUNKED=1 takes prompt chunk
 // with the start at 64 measured +1.7% to +3.2% at 1-3K, +3.5% at 4K, +4.7% at 16K, +6.1% at 32K (20 pairs), KL 0.0025 mean /
 // 0.0381 max, 55 of 61 tasks, a 30-minute soak clean.  So gfx12 takes it from the same 64 tokens as gfx11.
 constexpr int64_t kGdnW12MinT = kGdnWmmaMin;
+// gfx12 (RDNA4) only, STRATA_GDN_CHUNKED unset (owner 11-06, "ok" to a length-gated default): the chunked scan takes prompt chunks of 30,000 tokens or more -
+// a long prompt (--prefill auto takes chunks up to 32,768 on gfx12, so a 32K prompt is one chunk of about 31,996-32,087 rows, which is why the line is 30,000 and not 32,000; +6.5% prompt speed at 32K, 3 of 3 rounds).  Shorter chunks keep the kernels they ran.
+// STRATA_GDN_CHUNKED=0 turns it off, =1 takes every chunk of 64 tokens or more (the old opt-in), STRATA_GDN_CHUNKED_MIN=N moves the line.
+inline int gdn_chunked_env() {   // -1 unset, else the number
+    static const int v = [] { const char* e = std::getenv("STRATA_GDN_CHUNKED"); return e == nullptr || e[0] == '\0' ? -1 : std::atoi(e); }();
+    return v;
+}
+inline bool gdn_chunked_auto(int64_t T) {   // unset: only on gfx12, only for long chunks (the caller has checked the device)
+    static const int64_t lo = [] { const char* e = std::getenv("STRATA_GDN_CHUNKED_MIN"); return e != nullptr && e[0] != '\0' ? (int64_t) std::atoll(e) : (int64_t) 30000; }();
+    static const bool gfx12_defaults = [] { const char* e = std::getenv("STRATA_GFX12_DEFAULTS"); return !(e != nullptr && e[0] == '0'); }();   // (the gfx12 defaults' one off switch)
+    return gdn_chunked_env() < 0 && gfx12_defaults && T >= lo;
+}
 typedef _Float16 gw_h16 __attribute__((ext_vector_type(16)));
 typedef _Float16 gw_h8 __attribute__((ext_vector_type(8)));
 typedef _Float16 gw_h2 __attribute__((ext_vector_type(2)));
@@ -2136,6 +2148,7 @@ bool gdn_rec_wmma(float* state, const float* h, const float* gate, const float* 
     }
     if (!gfx11 && !gfx12) return false;
     if (gfx12 && T < kGdnW12MinT) return false;
+    if (gdn_chunked_env() < 0 && !(gfx12 && gdn_chunked_auto(T))) return false;   // unset: gfx12, long chunks only
     const int64_t nch = (T + GW_CK - 1) / GW_CK;
     _Float16* tp = reinterpret_cast<_Float16*>(y);
     if (gfx12) {
@@ -2161,9 +2174,8 @@ bool gdn_fused_impl(float* history, const float* qkv, const float* conv_w, float
                     const float* beta, const float* z, const float* gamma, float eps, float l2eps, float* y, uint16_t* y16,
                     int64_t T, void* stream, int64_t ld16) {
     static const bool on = [] {
-        const char* c = std::getenv("STRATA_GDN_CHUNKED");
         const char* f = std::getenv("STRATA_GDN_FUSE");
-        return c != nullptr && std::atoi(c) != 0 && (f == nullptr || std::atoi(f) != 0);
+        return gdn_chunked_env() != 0 && (f == nullptr || std::atoi(f) != 0);   // (unset: the length gate below, gfx12 only)
     }();
     if (!on || T < kGdnWmmaMin) return false;
     if (ld16 <= 0) ld16 = (int64_t) HV * S;
@@ -2179,6 +2191,7 @@ bool gdn_fused_impl(float* history, const float* qkv, const float* conv_w, float
         last_device = dev;
     }
     if (!gfx12 || T < kGdnW12MinT) return false;
+    if (gdn_chunked_env() < 0 && !gdn_chunked_auto(T)) return false;   // unset: long chunks only
     cudaStream_t s = (cudaStream_t) stream;
     const int64_t nch = (T + GW_CK - 1) / GW_CK;
     _Float16* tp = reinterpret_cast<_Float16*>(y);
@@ -2355,6 +2368,35 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
     for (int k = 0; k < 10; ++k) {
         s.x = fmaf(ww[k], v[k].x, s.x); s.y = fmaf(ww[k], v[k].y, s.y);
         s.z = fmaf(ww[k], v[k].z, s.z); s.w = fmaf(ww[k], v[k].w, s.w);
+    }
+    const float g = sigm(sg[t]);
+    const float4 sh = shared[i];
+    bo[i] = make_float4(s.x + sh.x * g, s.y + sh.y * g, s.z + sh.z * g, s.w + sh.w * g);
+}
+
+// moe_combine4_kernel with the expert rows as FP16 (fused::dm_f16_used(): the down kernels wrote 2,560 halves a row): the same fmaf order, the rows
+// widened to FP32 first.  Half the bytes of the layer's rows, read once.  (Round 0215, from the Strix dm16 patch.)
+__global__ void moe_combine16_kernel(const uint16_t* __restrict__ Dm, const int32_t* __restrict__ slot,
+                                     const float* __restrict__ w, const float4* __restrict__ shared,
+                                     const float* __restrict__ sg, float4* __restrict__ bo, int64_t T) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // float4 index
+    if (i >= T * (N / 4)) return;
+    const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
+    uint2 raw[10];
+    float ww[10];
+#pragma unroll
+    for (int k = 0; k < 10; ++k) {
+        ww[k] = w[t * 10 + k];
+        const int64_t r = slot[t * 10 + k];
+        raw[k] = *reinterpret_cast<const uint2*>(Dm + r * N + d);
+    }
+    float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+#pragma unroll
+    for (int k = 0; k < 10; ++k) {
+        const float a = __half2float(__ushort_as_half((unsigned short) (raw[k].x & 0xffffu))), b = __half2float(__ushort_as_half((unsigned short) (raw[k].x >> 16)));
+        const float c = __half2float(__ushort_as_half((unsigned short) (raw[k].y & 0xffffu))), e = __half2float(__ushort_as_half((unsigned short) (raw[k].y >> 16)));
+        s.x = fmaf(ww[k], a, s.x); s.y = fmaf(ww[k], b, s.y);
+        s.z = fmaf(ww[k], c, s.z); s.w = fmaf(ww[k], e, s.w);
     }
     const float g = sigm(sg[t]);
     const float4 sh = shared[i];
@@ -2935,7 +2977,7 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
     if (variant == 0 || variant == 1) {
         // STRATA_GDN_CHUNKED=1 (opt-in): the chunked recurrence on the gfx11 matrix cores, FP16 operands (other bits;
         // a shorter chunk or another part takes the kernels below)
-        static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
+        static const bool chunked = gdn_chunked_env() != 0;   // (unset: gdn_rec_wmma applies the gfx12 length gate)
         if (chunked && !serial && gdn_rec_wmma(state, h, gate, beta, z, gamma, eps, y, y16, T, (cudaStream_t) stream, ld16)) {
             check("gdn_recurrence (chunked, WMMA)");
             return;
@@ -3333,6 +3375,13 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
 #endif
     moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T, row_sd);
     check("moe_combine");
+}
+void moe_combine16(const uint16_t* Dm16, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo, int64_t T,
+                   void* stream) {
+    if (T <= 0) return;
+    moe_combine16_kernel<<<blocks_for(T * (N / 4)), 256, 0, (cudaStream_t) stream>>>(
+        Dm16, slot, w, reinterpret_cast<const float4*>(shared), sg, reinterpret_cast<float4*>(bo), T);
+    check("moe_combine16");
 }
 void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream) {
     if (T <= 0) return;

@@ -329,6 +329,31 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
     return subprocess.call(cmd)
 
 
+# ------------------------------------------------------------------------------------------------ the DFlash2 drafter
+def fetch_drafter(model_name: str, data: Path) -> Path | None:
+    """The DFlash2 drafter of a set whose Mac default is DFlash2 (strata_control/drafting.py SET_DEFAULTS: UD-Q4_K_XL and UD-IQ4_XS-v31): the tuned one (0.34 GB), else the stock one
+    (1.2 GB), through the normal download path (resumable, the pinned size and SHA-256). Offline, or an address that does not answer: nothing is said and the model keeps the MTP
+    (owner, strata-offline-users). A fault that is the person's to know (a file that failed its safety check) is one plain line. Never stops the setup. None when it is not here."""
+    from strata_control import acquisition, drafting, drafting_fetch
+    if drafting.choice_of("auto", model_name=model_name, backend="metal") != "dflash2":
+        return None
+    said = []
+
+    def show(step: str, done: int, total: int) -> None:
+        if not said:                                       # the line appears when the download starts: a computer with no internet sees nothing
+            said.append(True)
+            gb = drafting.TUNED_GB if "tuned" in step else drafting.DOWNLOAD_GB
+            S.say(f"  Downloading the DFlash2 drafter ({gb:g} GB, once) ...")
+    try:
+        got = drafting_fetch.ensure_for(data, model_name=model_name, backend="metal", progress=show)
+    except (drafting_fetch.DraftingError, acquisition.AcquisitionRefused, OSError) as exc:
+        S.warn(f"{exc} This model keeps using the MTP.")
+        return None
+    if got is not None:
+        S.ok(f"DFlash2 drafter: {got}")
+    return got
+
+
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -546,6 +571,8 @@ def main(argv=None) -> int:
         rt.mkdir(parents=True, exist_ok=True)          # the Metal engine reads mtp-q2_0.gguf beside it (no rt pack)
         S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
         S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
+
+    fetch_drafter(f"{fam['name']}-{model.lower()}", pack.parent.parent)       # DFlash2 is this set's default drafter (the MTP above stays as the fallback); the folder a start looks in
 
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")

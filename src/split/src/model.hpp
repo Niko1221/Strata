@@ -41,6 +41,9 @@ constexpr int NKH = 16, NVH = 48, HS = 128;            // recurrent: key heads, 
 constexpr int NQH = 24, NKVH = 2, HD = 256, NROT = 64; // attention
 #endif
 constexpr int MAXT = 16;                               // rows per window
+// the slots an expert pool must hold so one window's picks (MAXT rows x TOPK experts, twice: the window in flight and the one being staged) all have a
+// place: ExpertCache's floor, the residency planner's floor (expert_residency.hpp) and the arena's keep (engine.cu) are all this
+constexpr int EXPERT_WINDOW_SLOTS = 2 * MAXT * TOPK;
 // the indexer's key width: qsa.cuh's QSA_DIM is defined from this, tying the loader's checks to what k_idx_proj and
 // the pooled rows read (kernels.hpp holds the same 128 in its ring and pooled rows). The draft layer's loader is
 // shared code, so these stand outside the model block even though only Flash-Next has an indexer

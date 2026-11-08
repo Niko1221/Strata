@@ -1,6 +1,7 @@
 #include "model.hpp"
 #include "card_check.hpp"
 #include "env.hpp"
+#include "expert_residency.hpp"
 #include "rope_gguf.hpp"
 
 #include "store.hpp"
@@ -356,9 +357,9 @@ struct Up {
                                  [&](int a, int b) { return (*arena_score)[(size_t) a] < (*arena_score)[(size_t) b]; });
             for (int s = ec.s0[p]; s < (int) owner.size(); ++s) slot_of[(size_t) owner[(size_t) s]] = s;
             ec.n[p] = (int) owner.size() - ec.s0[p];
-            if (ec.n[p] < 2 * MAXT * TOPK)
+            if (ec.n[p] < EXPERT_WINDOW_SLOTS)
                 throw std::runtime_error("expert cache: pool " + std::to_string(p) + " has " + std::to_string(ec.n[p]) + " slots, a window needs " +
-                                         std::to_string(2 * MAXT * TOPK) + " (fewer experts in RAM)");
+                                         std::to_string(EXPERT_WINDOW_SLOTS) + " (fewer experts in RAM)");
             ec.dn_off[p] = sizes[(size_t) p].first;
             ec.slot_bytes[p] = sizes[(size_t) p].first + sizes[(size_t) p].second;
             if (p == ec.arena_pool) continue;
@@ -1502,29 +1503,21 @@ void Model::choose_residency() {
         double td = 0, tp = 0;
         for (int i = 0; i < NL * NEXP; ++i) { td += cnt[(size_t) i]; tp += cnt[(size_t) (NL * NEXP + i)]; }
         std::vector<double> bytes(NL);
+        std::vector<std::pair<size_t, size_t>> sizes(NL);
         score.assign((size_t) NL * NEXP, 0.0);
         for (int l = 0; l < NL; ++l) {
             const std::string b = "blk." + std::to_string(l) + ".";
-            bytes[(size_t) l] = (double) (g.t(b + "ffn_gate_exps.weight").nbytes + g.t(b + "ffn_up_exps.weight").nbytes +
-                                          g.t(b + "ffn_down_exps.weight").nbytes) / NEXP;
+            sizes[(size_t) l] = {(g.t(b + "ffn_gate_exps.weight").nbytes + g.t(b + "ffn_up_exps.weight").nbytes) / NEXP,
+                                g.t(b + "ffn_down_exps.weight").nbytes / NEXP};
+            bytes[(size_t) l] = (double) sizes[(size_t) l].first + sizes[(size_t) l].second;
             for (int e = 0; e < NEXP; ++e) {
                 const size_t i = (size_t) l * NEXP + e;
                 score[i] = (cnt[i] / std::max(1.0, td) + cnt[(size_t) NL * NEXP + i] / std::max(1.0, tp)) / bytes[(size_t) l];
             }
         }
-        std::vector<int> order((size_t) NL * NEXP);
-        for (int i = 0; i < NL * NEXP; ++i) order[(size_t) i] = i;
-        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return score[(size_t) a] < score[(size_t) b]; });
-        resident.assign(NL, std::vector<char>(NEXP, 1));
-        double moved = 0;
-        int n = 0, extra = 0;
-        for (int i : order) {
-            if (moved >= want && extra++ >= ram_extra) break;
-            resident[(size_t) (i / NEXP)][(size_t) (i % NEXP)] = 0;
-            moved += bytes[(size_t) (i / NEXP)];
-            ++n;
-        }
-        std::fprintf(stderr, "fnx: %d of %d routed experts (%.1f GiB) in RAM, ranked by %s%s\n", n, NL * NEXP, moved / (1ull << 30), prof,
+        auto plan = expert_residency(sizes, score, NEXP, EXPERT_WINDOW_SLOTS, want, ram_extra);
+        resident = std::move(plan.resident);
+        std::fprintf(stderr, "fnx: %d of %d routed experts (%.1f GiB) in RAM, ranked by %s%s\n", plan.count, NL * NEXP, plan.moved / (1ull << 30), prof,
                      ram_extra ? (" (" + std::to_string(ram_extra) + " of them because VRAM was short)").c_str() : "");
     }
 }

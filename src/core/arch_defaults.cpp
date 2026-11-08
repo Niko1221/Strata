@@ -95,6 +95,12 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         for (auto it = t.begin(); it != t.end(); ++it) {
             if (it->first == "STRATA_SH_STREAM") { t.erase(it); break; }
         }
+        // round 0215 (STRIX-PK): two load-ordering switches of the decode kernels, each the same arithmetic in the same order as without it
+        // (the kernel hashes are equal; first-token logits and outputs identical in the engine).  UD-Q4_K_XL on a Strix Halo Windows PC, DFlash2
+        // serve, 4 request rounds x 2 passes x 4 prompts, interleaved: window time -0.25% (25 of 32 pairs faster, the same window and token count in
+        // every pair), alone +0.2% / +0.3%.  Small but consistent; Linux gfx1151 is unmeasured and keeps its table.
+        t.push_back({"STRATA_SMALL_UNR", "3"});
+        t.push_back({"STRATA_GR_Q8_PFS", "1"});
     }
     return t;
 }
@@ -177,6 +183,10 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
             // interleaved x3, same 16 greedy ids: IQ3_S 4K 1,187 -> 1,296 and 8K 1,285 -> 1,399 tok/s (x1.09), UD-IQ4_XS 4K 1,119 ->
             // 1,221 and 8K 1,180 -> 1,270; decode unchanged.  The rounding differs from the int8 kernels (KL is information only).
             {"STRATA_PF_F16", "1"},
+            // Round 0215 (STRIX-FIT): the down rows of the F16 expert kernels go to the combine as FP16 (half the bytes written and read).  Windows gfx1151,
+            // interleaved 8K pairs, same engine: IQ3_S x1.022 (4 of 4 pairs), UD-IQ4_XS x1.026 (3 of 3), UD-Q4_K_XL x1.012 (3 of 4); the first-token KL
+            // is 1e-4 at 8K and 0.02-0.04 on agent transcripts (information).  STRATA_PF_DM16=0 turns it off.
+            {"STRATA_PF_DM16", "1"},
         };
     }
     return t;
@@ -256,6 +266,11 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
         if (any && !(wm != nullptr && wm[0] == '0'))
             std::fprintf(stderr, "strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7%% prompt speed at 98K on an R9700, shorter prompts unchanged; "
                                  "the first-token KL against the warp kernel is 0.002 on average above 30K; STRATA_SELECT_WMMA=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
+    }
+    if (strata::kernels::gfx_arch_is_gfx12(gcn_arch) && std::getenv("STRATA_GDN_CHUNKED") == nullptr) {   // the length-gated chunked GDN scan (prefill/kernels.cu: gdn_chunked_auto)
+        const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
+        if (!(off12 != nullptr && off12[0] == '0'))
+            std::fprintf(stderr, "strata: RDNA4 (gfx12): prompt chunks of 30,000+ tokens use the chunked GDN scan (STRATA_GDN_CHUNKED=0 turns it off)\n");
     }
     if (!set.empty()) {
         const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);

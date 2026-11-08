@@ -103,6 +103,21 @@ int main() {
         check(!mtp_q_applies(true, false, false, false, false, 4), "greedy / mode off: no q");
         check(!mtp_q_applies(false, false, true, false, false, 4), "no MTP: no q");
     }
+    {   // 4. the calibrated DFlash2 gate (STRATA_DF2_GATE=1)
+        AdaptiveGate g;
+        float sure[8] = {0.95f, 0.95f, 0.95f, 0.95f, 0.95f, 0.95f, 0.95f, 0.95f}, weak[8] = {0.2f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f, 0.9f};
+        check(g.choose(sure, 6) == 6, "gate, no data, confident drafts: the whole window");
+        check(g.choose(weak, 6) == 1, "gate, no data, a hopeless first draft: one row");
+        for (int i = 0; i < 40; ++i) g.observe(sure, 6, 1);   // drafts that keep failing at position 2 narrow the window for that bucket
+        check(g.choose(sure, 6) <= 2, "gate learns that position 2 fails: the window narrows to 2 rows");
+        AdaptiveGate g2;
+        for (int i = 0; i < 40; ++i) g2.observe(sure, 6, 5);
+        check(g2.choose(sure, 6) == 6, "gate, drafts always hold: the whole window");
+        AdaptiveGate g3, g4;
+        float mid[8] = {0.6f, 0.6f, 0.6f, 0.6f, 0.6f, 0.6f, 0.6f, 0.6f};
+        g3.ms_per_tok = 4.0; g4.ms_per_tok = 14.0;
+        check(g3.choose(mid, 6) <= g4.choose(mid, 6), "gate: a dearer token (14 ms) never gets a narrower window than a cheap one (4 ms)");
+    }
     std::printf("%s\n", g_fail == 0 ? "window_rule_test: ok" : "window_rule_test: FAILED");
     return g_fail == 0 ? 0 : 1;
 }

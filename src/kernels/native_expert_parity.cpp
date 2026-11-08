@@ -190,7 +190,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 std::printf("          gate+up %d tokens one thread: %s %.0f us vs ggml %d x %.0f us\n", NT, tag, usn, NT, usg);
             };
             // guarded: the binary runs on AVX-2 CPUs too, and IQ4_XS has no AVX-512 kernel (an empty switch)
-            if (cpu::cpu_avx512_ok() && cpu::iq512_supported(f.gu_type)) check("avx512", true);
+            if (cpu::cpu_vnni_ok() && cpu::iq512_supported(f.gu_type)) check("avx512", true);
             if (cpu::cpu_avx2_ok() && cpu::iq256_supported(f.gu_type)) check("avx2", false);   // no AVX2: ggml-cpu only
         }
         for (int k = 0; k < NT; ++k) {
@@ -331,7 +331,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             }
             cpu::q2_rows_any(blob.data() + f.down_off, f.d_row, (int) (FF / 64), ap, NT, altp, 0, (int) H);
             std::printf("          q2_0 %s down vs ggml down: rel %.2e\n",
-                        cpu::cpu_avx512_ok() ? "AVX-512" : "AVX-2", rel(alt, got_c));
+                        cpu::cpu_vnni_ok() ? "AVX-512" : "AVX-2", rel(alt, got_c));
         }
         if (f.d_type == 20 && cpu::cpu_avx2_ok()) {
             // (b3) the IQ4_NL multi-token AVX-2 kernel the pool now uses for IQ4_NL down projections,

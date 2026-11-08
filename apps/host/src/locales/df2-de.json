@@ -18,5 +18,7 @@
  "df17": "Vorausraten: MTP (DFlash2 ist nicht gestartet)",
  "df18": "Automatisch nutzt die Alle-Karten-Split-Engine mit der MTP-Entwurfsschicht: etwa {0} GB, einmalig herunterzuladen.",
  "df19": "Die Alle-Karten-Split-Engine konnte nicht starten, deshalb läuft die normale Schichtaufteilung.",
- "df20": "Vorausraten: aus (den Karten fehlte Speicher)"
+ "df20": "Vorausraten: aus (den Karten fehlte Speicher)",
+ "df21": "Auf Ihrem Mac war DFlash2 bei diesem Modell in unseren Tests schneller als MTP.",
+ "df22": "DFlash2 ist auf dieser Grafikkarte vorerst standardmäßig aus; wählen Sie es unter „Vorausraten“ aus, um es zu nutzen."
 }

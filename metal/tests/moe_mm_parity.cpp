@@ -32,7 +32,7 @@ float h16(float v) { return ref::f16_to_f32(ref::f32_to_f16(v)); }
 
 int main(int argc, char** argv) {
     int gu = ref::Q2_0, dn = ref::Q2_0, T = 256, TM = 16, TN = 64, TK = 64, SG = 2, DTN = -1, DTK = -1, DSG = -1;
-    bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false;
+    bool bench = false, v2 = false, v3 = false, v4 = false, v5 = false, v6 = false;
     int MS = 1;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
         else if (a == "--v2") v2 = true;
         else if (a == "--v3") v2 = v3 = true;   // v2's gather + the register-operand GEMMs (TN per simdgroup)
         else if (a == "--v4") { v2 = v3 = v4 = true; MS = std::atoi(argv[++i]); }   // mm_gu4 with MS 16-row subtiles
+        else if (a == "--v6") { v2 = v3 = true; v6 = true; MS = std::atoi(argv[++i]); }   // mm_gu6 / mm_down6 / mm_scan6: groups of MS 16-row subtiles
         else if (a == "--v5") { v2 = v3 = true; v5 = true; }   // mm_gu5 (weight blocks staged in threadgroup memory)
     }
     if (bench && T == 256) T = 2048;
@@ -52,6 +53,7 @@ int main(int argc, char** argv) {
     // It has no IQ4_XS gate/up, so that type runs the v2 path here instead of failing at the pipeline lookup.
     if (!v2 && gu == ref::IQ4_XS) { v2 = true; std::printf("note: IQ4_XS gate/up has no v1 kernel (the engine does not use v1): running v2\n"); }
     if (v4) TM = 16 * MS;   // the plan's tile height; mm_gu4's name carries MS instead
+    if (v6) TM = 16;   // ragged tiles: the padding is 16 rows, the group size is MS
     mtl::Context cx;
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal"});
     const int NE = bench ? 512 : 64, LAYERS = bench ? 4 : 1;
@@ -90,26 +92,33 @@ int main(int argc, char** argv) {
         }
         for (int k = 0; k < TOPK; ++k) w.as<float>()[t * TOPK + k] /= s;
     }
-    mtl::Pipeline phist = cx.pipeline(lib, "mm_hist"), pscan = cx.pipeline(lib, "mm_scan"), pplace = cx.pipeline(lib, "mm_place"),
+    mtl::Pipeline phist = cx.pipeline(lib, "mm_hist"), pscan = cx.pipeline(lib, v6 ? "mm_scan6" : "mm_scan"), pplace = cx.pipeline(lib, "mm_place"),
                   pclear = cx.pipeline(lib, "mm_clear"), pcomb = cx.pipeline(lib, "mm_combine");
     if (DTN < 0) { DTN = TN; DTK = TK; DSG = SG; }
     if ((dn == ref::IQ4_NL || dn == ref::Q5_0) && DTK < 32) DTK = 32;   // 32-value units (the v2 / v3 down tiles of IQ4_NL / Q5_0 need TK >= 32)
     const std::string tl = std::to_string(TM) + "_" + std::to_string(TN) + "_" + std::to_string(TK) + "_" + std::to_string(SG);
     const std::string dtl = std::to_string(TM) + "_" + std::to_string(DTN) + "_" + std::to_string(DTK) + "_" + std::to_string(DSG);
+    std::string v6_gu, v6_dn;
     mtl::Constants probe;
     probe.i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0);
     const bool k4 = coop_k4(cx);
     if (v3) std::printf("right-input layout: %s\n", k4 ? "runs of 4 k" : "other (per-element decode)");
-    mtl::Pipeline pgu = v5 ? cx.pipeline(lib, "mm_gu5_" + std::to_string(gu) + "_" + std::to_string(TN) + "_" + std::to_string(SG),
+    if (v6) {   // the ragged-tile kernels: names carry MS, TN, TK, SG (TM is the plan's 16-row padding)
+        const std::string tl6 = std::to_string(MS) + "_" + std::to_string(TN) + "_" + std::to_string(TK) + "_" + std::to_string(SG);
+        const std::string dtl6 = std::to_string(MS) + "_" + std::to_string(DTN) + "_" + std::to_string(DTK) + "_" + std::to_string(DSG);
+        v6_gu = "mm_gu6_" + std::to_string(gu) + "_" + tl6;
+        v6_dn = "mm_down6_" + std::to_string(dn) + "_" + dtl6;
+    }
+    mtl::Pipeline pgu = v6 ? cx.pipeline(lib, v6_gu, mtl::Constants().b(7, k4)) : v5 ? cx.pipeline(lib, "mm_gu5_" + std::to_string(gu) + "_" + std::to_string(TN) + "_" + std::to_string(SG),
                                          mtl::Constants().b(7, k4))
                       : v4 ? cx.pipeline(lib, "mm_gu4_" + std::to_string(gu) + "_" + std::to_string(MS) + tl.substr(tl.find('_')),
                                          mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0))
                       : v3 ? cx.pipeline(lib, "mm_gu3_" + std::to_string(gu) + "_" + tl, mtl::Constants().b(7, k4).i(5, std::getenv("MM_PROBE") ? std::atoi(std::getenv("MM_PROBE")) : 0).b(23, std::getenv("QUANT_CTAB") != nullptr))
                            : cx.pipeline(lib, (v2 ? "mm_gu2_" : "mm_gu_") + std::to_string(gu) + "_" + tl, probe),
-                  pdn = v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
+                  pdn = v6 ? cx.pipeline(lib, v6_dn, mtl::Constants().b(7, k4)) : v3 ? cx.pipeline(lib, "mm_down3_" + std::to_string(dn) + "_" + dtl, mtl::Constants().b(7, k4))
                            : cx.pipeline(lib, (v2 ? "mm_down2_" : "mm_down_") + std::to_string(dn) + "_" + (v2 ? dtl : tl)),
                   pgat = cx.pipeline(lib, "mm_gather");
-    MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)TM, (uint32_t)nblk};
+    MmPlanArgs pa{(uint32_t)nent, TOPK, (uint32_t)NE, (uint32_t)(v6 ? MS : TM), (uint32_t)nblk};
     auto encode = [&](int layer, std::vector<mtl::Dispatch>& ds, bool plan, bool gemm) {
         if (plan) {
             const uint32_t nclr = maxrows;
@@ -205,6 +214,9 @@ int main(int argc, char** argv) {
             se += (g - yr[i]) * (g - yr[i]);
             sr += yr[i] * yr[i];
         }
+        uint64_t yh = 14695981039346656037ull;   // FNV-1a over y's bits: two runs (v3 TM 16, v6 groups) must print the same hash
+        for (size_t i = 0; i < yr.size(); ++i) { uint32_t u; std::memcpy(&u, y.as<float>() + i, 4); yh = (yh ^ u) * 1099511628211ull; }
+        std::printf("yhash %016llx\n", (unsigned long long) yh);
         const double rel16 = std::sqrt(se16 / sr), rel = std::sqrt(se / sr);
         const bool ok = ok_plan && rel16 < 2e-4;
         std::printf("parity: plan %s; y vs fp16-operand reference rel L2 %.2e, vs exact float reference %.2e  %s\n",

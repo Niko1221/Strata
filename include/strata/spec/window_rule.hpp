@@ -7,6 +7,7 @@
 // every backend call it.
 #pragma once
 
+#include <cmath>
 #include <cstdlib>
 #include <algorithm>
 
@@ -67,6 +68,60 @@ inline int choose_window(const WindowRuleIn& in) {
         while (T < in.cap && (chain *= (double) in.dprob[T - 1]) >= in.draft_conf) ++T;
     }
     return T;
+}
+
+/// STRATA_DF2_GATE=1 (opt-in, measured on the Mac): DFlash2's window from a calibrated survival instead of a fixed confidence.  The selector's cumulative confidence C_j of
+/// draft j over-states the real chance that drafts 1..j all hold (M5 Max UD-Q4_K_XL: C = 0.84, survival 0.70 at j = 5), and the right confidence differs by request
+/// (a story wants a narrower window than JSON).  Per request this keeps, for every position j and confidence bucket, how often the first j drafts held, shrunk toward a
+/// prior of C^1.3, and extends the window to row j+1 while  survival * (ms per committed token) >= row_ms  (what one more verify row costs).
+struct AdaptiveGate {
+    static constexpr int NB = 6;
+    double n[8][NB] = {}, h[8][NB] = {};
+    double ms_per_tok = 0.0;       // EMA of the round's wall ms per committed token
+    double row_ms = 3.0;           // one more verify row (M5 Max: 2.65-3.3 ms)
+    double prior_n = 3.0;
+    static int bucket(double c) { return c < 0.15 ? 0 : c < 0.3 ? 1 : c < 0.5 ? 2 : c < 0.7 ? 3 : c < 0.85 ? 4 : 5; }
+    double survival(int j, double c) const {
+        const int b = bucket(c);
+        const double prior = std::pow(c, 1.3);
+        return (h[j][b] + prior_n * prior) / (n[j][b] + prior_n);
+    }
+    /// rows of the next window: 1 + the drafts kept (cap = widest window)
+    int choose(const float* dprob, int cap) const {
+        int T = 1;
+        double chain = 1.0;
+        const double v = ms_per_tok > 0.0 ? ms_per_tok : 9.0;
+        while (T < cap) {
+            chain *= (double) dprob[T - 1];
+            if (survival(T, chain) * v < row_ms) break;
+            ++T;
+        }
+        return T;
+    }
+    /// after a DFlash2 round of T rows, a drafts accepted: drafts 1..T-1 were offered, draft j survived when a >= j
+    void observe(const float* dprob, int T, int a) {
+        double chain = 1.0;
+        for (int j = 1; j < T && j < 8; ++j) {
+            chain *= (double) dprob[j - 1];
+            const int b = bucket(chain);
+            n[j][b] += 1.0;
+            h[j][b] += a >= j ? 1.0 : 0.0;
+        }
+    }
+    void observe_round(double round_ms, int committed) {
+        if (committed < 1) return;
+        const double m = round_ms / committed;
+        ms_per_tok = ms_per_tok > 0.0 ? 0.9 * ms_per_tok + 0.1 * m : m;
+    }
+};
+
+inline bool df2_gate_on() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_DF2_GATE"); return e != nullptr && e[0] == '1'; }();
+    return v;
+}
+inline double df2_gate_row_ms() {
+    static const double v = [] { const char* e = std::getenv("STRATA_DF2_ROW_MS"); return e != nullptr && e[0] != '\0' ? std::atof(e) : 3.0; }();
+    return v;
 }
 
 }  // namespace strata::spec
