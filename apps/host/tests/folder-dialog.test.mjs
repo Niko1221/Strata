@@ -53,13 +53,13 @@ test('the generated PowerShell parses without errors', { skip: process.platform 
 test('Linux tries zenity, falls back to kdialog, then reports that none exists', async () => {
   const order = [];
   const run = async (command) => { order.push(command); if (command === 'zenity') throw failure('ENOENT'); return { stdout: '/home/me/skills/\n' }; };
-  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', run }), { path: '/home/me/skills' });
+  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run }), { path: '/home/me/skills' });
   assert.deepEqual(order, ['zenity', 'kdialog']);
-  const none = await chooseFolder('Pick', { platform: 'linux', run: async () => { throw failure('ENOENT'); } });
+  const none = await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run: async () => { throw failure('ENOENT'); } });   // no real gdbus monitor
   assert.equal(none.unavailable, true);
   assert.match(none.reason, /zenity or kdialog/);
-  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', run: async () => { throw failure(1); } }), { cancelled: true });
-  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', run: async () => ({ stdout: '' }) }), { cancelled: true });
+  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run: async () => { throw failure(1); } }), { cancelled: true });
+  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run: async () => ({ stdout: '' }) }), { cancelled: true });
 });
 
 test('chosen paths lose trailing separators but roots survive', () => {
