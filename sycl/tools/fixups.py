@@ -125,7 +125,9 @@ edit("src/kernels/cuda/qsa_select.dp.cpp", lambda s: s.replace(
     "                            void *stream) try {\n#if 1   // SYCL port: no thread-block clusters (sm_90): the caller takes the plain top-k\n"))
 # 0.1.38: dpct could not deduce fused_gr's templated kernel names (the staged read and the MAX_T down kernels)
 def gr_kernel_names(s):
-    pat = re.compile(r",\s*dpct_placeholder /\*Fix the type mannually\*/>>\((.{0,900}?)\b(gr_down_staged_kernel|gr_down_multi_kernel<(\d+)>)\(", re.S)
+    # the tile is a number (Flash-Next 1280 / 2560 before the geometry came from core/geometry.hpp) or the expression the source now
+    # spells it as: `N`, `(N / 2)` (fused_gr.cu, Q4-SYCL)
+    pat = re.compile(r",\s*dpct_placeholder /\*Fix the type mannually\*/>>\((.{0,900}?)\b(gr_down_staged_kernel|gr_down_multi_kernel<(\d+|\w+|\([^<>()]+\))>)\(", re.S)
     return pat.sub(lambda m: (">>(" if m.group(2) == "gr_down_staged_kernel" else f", dpct_kernel_scalar<{m.group(3)}>>>(")
                    + m.group(1) + m.group(2) + "(", s)
 edit("src/kernels/cuda/fused_gr.dp.cpp", gr_kernel_names)
