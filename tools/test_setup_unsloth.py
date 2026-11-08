@@ -555,7 +555,7 @@ class IQ4XS(Base):
         code, out, _ = self.main(["--check"], m=X)
         self.assertEqual(code, 0, out)
         line = next(ln for ln in out.splitlines() if ln.strip().startswith(X))
-        self.assertRegex(line, r"needs ~60 GB of RAM \+ VRAM: fits$")           # 60.5 GB of weights (60.5, no lookup table) against 63.7 GB of RAM + 11.9 GB of VRAM
+        self.assertRegex(line, r"needs ~65 GB of RAM \+ VRAM: fits$")           # 93.7 GB download minus the 28.8 GB table = 64.9 GB, against 63.7 GB of RAM + 11.9 GB of VRAM
         self.assertNotIn("EXPERIMENTAL", line)
         self.assertNotIn("EXPERIMENTAL", next(ln for ln in out.splitlines() if ln.strip().startswith(M)))
 

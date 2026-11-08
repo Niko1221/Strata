@@ -167,8 +167,7 @@ class CatalogRules(unittest.TestCase):
 
     def test_verdict_words_never_block(self):
         self.assertEqual(verdict("fits")[0], "fits")
-        self.assertEqual(verdict("does not fit")[0], "no")
-        self.assertIn("can still try", verdict("does not fit")[1])
+        self.assertEqual(verdict("does not fit"), ("slower", "may run slower"))              # an older Control's words, read as the one label
         self.assertEqual(verdict("tight")[0], "tight")
         self.assertEqual(verdict("fits"), ("fits", "fits"))
         self.assertEqual(verdict("may run slower"), ("slower", "may run slower"))
@@ -1066,7 +1065,7 @@ class FlagsCommand(unittest.TestCase):
     def test_does_not_fit_is_a_warning_with_the_reason(self):
         p = self.plan("--model", "q8_0")                                  # 129 GB of weights against 64 GB of RAM + a 12 GB card
         self.assertTrue(any(w.endswith(": may run slower.") for w in p["warnings"]), p["warnings"])
-        p = self.plan("--model", "nvfp4")                                 # 69 GB: fits
+        p = self.plan("--model", "iq3_s")                                 # 54.8 GB: fits
         self.assertFalse(any("may run slower" in w for w in p["warnings"]))
 
     def test_human_plan_changes_nothing(self):

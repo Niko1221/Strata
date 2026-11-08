@@ -227,14 +227,14 @@ class ModelStep(Base):
             self.assertIn("IQ3_XXS", t)
             line = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S" in l)     # 64 GB + 12 GB: the 64 GB tier
             self.assertIn("84 GB", line)                              # setup.py's download_gb 83.6
-            self.assertIn("51 GB", line)                              # the app's figure: experts 50.3 + 1 GB, RAM + VRAM together
+            self.assertIn("55 GB", line)                              # the files without the lookup table: 83.6 GB download - 28.8 GB (the owner's rule)
             self.assertIn("(recommended)", line)
             self.assertIn("› ", line)                                 # the cursor starts on the recommendation
             big = next(l for l in t.splitlines() if "UD-Q5_K_XL" in l)
             self.assertTrue(big.rstrip().endswith("may run slower"), big)       # 99 GB of weights against 64 GB + 12 GB: a warning, not a block
             self.assertNotIn("SSD ", big)                          # (no "SSD N GB" suffix any more)
             nv = next(l for l in t.splitlines() if "(NVFP4) NVFP4 " in l)
-            self.assertTrue(nv.rstrip().endswith("fits"), nv)       # 69 GB of weights fit 76 GB
+            self.assertTrue(nv.rstrip().endswith("may run slower"), nv)       # 76.8 GB of files (128 - 51.2) against 64 GB + 11.9 GB
             for old in ("too big", "fits, a bit slower", "does not fit"):
                 self.assertNotIn(old, t)
             self.assertIn("The n-gram table stays on your SSD", t)

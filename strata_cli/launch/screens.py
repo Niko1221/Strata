@@ -440,7 +440,7 @@ class ModelScreen(Base):
         for i, r in enumerate(self.rows):
             col = {"fits": "", "slower": WARN, "tight": WARN, "no": BAD}[r.verdict]
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
-            need = f"{r.memory_gb:.0f} GB" if r.memory_gb else "-"
+            need = f"{r.fit_gb:.0f} GB" if r.fit_gb else "-"
             verdict = r.words + tag
             if self.width() < 100:                           # a short verdict that fits the column; the full sentence is shown under the list
                 extra = " (recommended)" if r.recommended else " (installed)" if r.installed else " [experimental]" if r.experimental else ""

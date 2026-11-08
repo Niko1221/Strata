@@ -1123,9 +1123,9 @@ class Strata:
 
     def _mac_verdict(self, model: str, ram: float) -> str:
         mf = self.mac()
-        if ram < mf.MIN_STREAM_RAM_GB:
-            return "does not fit"
         from strata_control import fit_label
+        if ram < mf.MIN_STREAM_RAM_GB:
+            return fit_label.SLOWER                          # too little memory for the Metal engine's streaming: the same two words, said not refused
         return fit_label.SLOWER if mf.streams(model, ram) else fit_label.FITS          # the Mac's own count of what stays in memory (strata_control/mac_fit.py)
 
     def _mac_recommend(self, hw: dict, models: dict, families: dict) -> dict:
@@ -1156,6 +1156,7 @@ class Strata:
 
     def _mac_model_table(self, hw: dict) -> list:
         models, families, _ctx, _src = self.tables()
+        from strata_control import fit_label
         ram = float(hw.get("ram_gb") or 0)
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
@@ -1171,6 +1172,7 @@ class Strata:
                               "images": d.get("vision", fd.get("vision", True)) is not False,   # the Mac engine carries the picture reader (Metal)
                               "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": False,
                               "memory_gb": round(float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1),
+                              "fit_gb": fit_label.files_gb(family, m, d),
                               "on_this_pc": self._mac_verdict(m, ram) if ram else None, "installed": tag in have, "id": tag})
             if sizes:
                 out.append({"family": family, "title": fd["title"], "about": fd.get("about"), "experimental": False,
@@ -1225,8 +1227,8 @@ class Strata:
                           "images": mac_pics, "images_reader": "gpu" if mac_pics else "none",       # the engine's own picture tower, when the installed engine has it (dsv41_engine.MARK_MAC_VISION): docs/DEEPSEEK_MAC.md
                           "ram_needed_gb": d["ram_gb"], "experts_gb": d.get("arena_gb"), "mem_total": True, "multi_file": True,
                           "disk_gb": self.dsv41_disk_gb(d), "engine_min": None,
-                          "memory_gb": round(float(d["ram_gb"]), 1),
-                          "on_this_pc": ("does not fit: this Mac has too little memory" if ram and ram < mf.MIN_STREAM_RAM_GB
+                          "memory_gb": round(float(d["ram_gb"]), 1), "fit_gb": self.dsv41_files_gb(hw, m, d),
+                          "on_this_pc": ("may run slower" if ram and ram < mf.MIN_STREAM_RAM_GB
                                          else self.dsv41_words(hw, m, installed=tag in have)),
                           "installed": tag in have, "id": tag, "gpu_options": None})
         if not sizes:
@@ -1341,19 +1343,17 @@ class Strata:
                 own = self.own_size(f, m)
                 d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
-                # the model's weight files without the lookup table (the catalog's memory figure) against the card's memory plus the RAM: "fits" or "may run slower"
-                # (strata_control/fit_label.py, the owner's one rule); DeepSeek's own words keep the two things that are not about memory: no card, and the free disk
-                memory_gb = round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1)
-                verdict, fit_gb = None, memory_gb
+                # the model's files without the lookup table's file (download size minus the table) against the card's memory plus the RAM: "fits" or "may run slower"
+                # (strata_control/fit_label.py, the owner's one rule); DeepSeek's own words keep the one thing that is not about memory: the free disk
+                memory_gb = round(float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0, 1)      # the placement estimate (experts + dense)
+                multi = bool(own and own.get("multi_file"))
+                fit_gb = self.dsv41_files_gb(hw, m, d) if multi else fit_label.files_gb(f, m, d)          # what the label and the Terminal's "Needs" column use
+                verdict = None
                 if ram is not None:
-                    if own and own.get("multi_file"):       # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (every card, the n-gram table on the SSD)
+                    if multi:                               # DeepSeek-V4.1-Flash: strata_control/dsv41_fit.py (every card, the Engram table on the SSD)
                         verdict = self.dsv41_words(hw, m, installed=tag in have)
-                        try:
-                            fit_gb = float(self.dsv41_plan(hw, model=m)["weights_gb"])      # the set's files without its Engram table (`memory_gb` is the CPU's share)
-                        except Exception:               # noqa: BLE001 - a figure for the app's list; the words above stand
-                            pass
                     else:
-                        verdict = fit_label.label(memory_gb, ram, card_room)
+                        verdict = fit_label.label(fit_gb, ram, card_room)
                 sizes.append({"model": m, "about": d["about"], "download_gb": d["download_gb"],
                               "experimental": bool(d.get("experimental")),
                               "images": d.get("vision", fd.get("vision", True)) is not False,
@@ -1469,21 +1469,29 @@ class Strata:
         except Exception:                                    # noqa: BLE001 - a hint for the menu: when unsure, count the whole download
             return default
 
+    def dsv41_files_gb(self, hw, model, d=None) -> float:
+        """DeepSeek-V4.1-Flash's size for the fit label: the set's download minus its Engram file (the plan knows both; the catalog's `download_gb` when it cannot say)."""
+        try:
+            pl = self.dsv41_plan(hw, model=model)
+            return round(float(pl["download_gb"]) - float(pl["engram_gb"]), 1)
+        except Exception:                                  # noqa: BLE001 - a figure for the list: never break the model list
+            return round(float((d or {}).get("download_gb") or 0.0), 1)
+
     def _dsv41_memory_words(self, hw, model=None) -> str:
-        """The memory part of DeepSeek-V4.1-Flash's `on_this_pc`: "fits" or "may run slower" (strata_control/fit_label.py: the set's weight files without its Engram table
-        against every card's memory plus the RAM; a Mac or a chip that shares the RAM: the plan's own count of what is read from the SSD).  The plan's lines say the rest."""
+        """The memory part of DeepSeek-V4.1-Flash's `on_this_pc`: "fits" or "may run slower" (strata_control/fit_label.py: the set's files without its Engram table
+        against every card's memory plus the RAM; a Mac or a chip that shares the RAM: the plan's own count of what is read from the SSD).  No card gets the same two
+        words.  The plan's lines say the rest."""
         from strata_control import fit_label
         pl = self.dsv41_plan(hw, model=model)
         v = pl["verdict"]
-        if v == "no_card":
-            return "does not fit: it needs one or more graphics cards"
         if v == "unknown" or pl.get("ram_gb") is None:
             return "not checked (this computer's memory could not be read)"
         if pl.get("mac"):                       # an Apple Silicon Mac: one pool of unified memory, the rest of the experts streams from the SSD
             return fit_label.FITS if pl["mac_verdict"] == "fits" else fit_label.SLOWER
         if pl.get("uma"):                       # Ryzen AI Max (Strix Halo, Windows): the graphics memory is the RAM, counted once
             return fit_label.FITS if float(pl.get("streamed_gb") or 0.0) <= 0.0 else fit_label.SLOWER
-        return fit_label.label(pl["weights_gb"], pl["ram_gb"], sum(float(c.get("vram_gb") or 0.0) for c in pl["cards"]))
+        size = float(pl["download_gb"]) - float(pl["engram_gb"])
+        return fit_label.label(size, pl["ram_gb"], sum(float(c.get("vram_gb") or 0.0) for c in pl["cards"]))
 
     @staticmethod
     def dsv41_rdna4_faster(hw, model) -> bool | None:
@@ -2436,8 +2444,7 @@ class Tools:
             fit = s.dsv41_words(hw, model)
         elif ram is not None:
             from strata_control import fit_label
-            memory = float(md["ram_gb"]) if md.get("mem_total") else float(md.get("arena_gb") or md["ram_gb"]) + 1.0
-            fit = fit_label.label(memory, ram, fit_label.card_room_gb(s.engine_gpus(hw)))
+            fit = fit_label.label(fit_label.files_gb(family, model, md), ram, fit_label.card_room_gb(s.engine_gpus(hw)))
         installed = (s.root / f"strata-{tag.lower()}.json").exists()
         plan = {"title": f"{families[family]['title']} {model}", "family": family, "model": model,
                 "context": context, "images": vision or "no", "download_gb": md["download_gb"],

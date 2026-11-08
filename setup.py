@@ -6457,17 +6457,19 @@ def low_ram_fits(model, ram, vram_gb, mtp=True) -> bool:
     return ram - 6 + max(0.0, vram_gb - 5 - (MTP_VRAM_GB if mtp else 0.0)) >= arena
 
 
-def model_memory_gb(model) -> float:
-    """The model's weight files without the n-gram / PLE lookup table, in GB: the catalog's "Needs (RAM + VRAM)" figure (tools/strata_mcp.py `memory_gb`)."""
+def model_files_gb(model) -> float:
+    """The model's files without the n-gram / PLE lookup table's file, in GB: the download minus the table (strata_control/fit_label.py; the catalog's `fit_gb`,
+    the Terminal's "Needs (RAM + VRAM)" column)."""
+    from strata_control import fit_label
     d = MODELS[model]
-    return float(d["ram_gb"]) if d.get("mem_total") else float(d.get("arena_gb") or d["ram_gb"]) + 1.0
+    return fit_label.files_gb((d.get("families") or (None,))[0], model, d)
 
 
 def model_fit_label(model, ram, gpu) -> str:
-    """"fits" or "may run slower" (strata_control/fit_label.py, the owner's one rule): the weight files against the RAM and the card's memory together.
-    An integrated chip counts only its carve-out (`low_ram_vram`: its shared memory is the RAM)."""
+    """"fits" or "may run slower" (strata_control/fit_label.py, the owner's one rule): the files without the lookup table against the RAM and the card's memory
+    together.  An integrated chip counts only its carve-out (`low_ram_vram`: its shared memory is the RAM)."""
     from strata_control import fit_label
-    return fit_label.label(model_memory_gb(model), ram, low_ram_vram(gpu) if gpu else 0.0)
+    return fit_label.label(model_files_gb(model), ram, low_ram_vram(gpu) if gpu else 0.0)
 
 
 def low_ram_wanted(model, ram, choice="auto") -> bool:
@@ -10475,21 +10477,19 @@ def main() -> int:
                 verdict = "NVIDIA only (the AMD engine has no NVFP4 kernels)"
             else:
                 any_fits = any_fits or (model_fit_label(m, ram, gpu) == "fits" and not d.get("mem_total"))
-            say(f"  {m:8s} needs ~{model_memory_gb(m):.0f} GB of RAM + VRAM: {verdict}")
+            say(f"  {m:8s} needs ~{model_files_gb(m):.0f} GB of RAM + VRAM: {verdict}")
         try:                                           # DeepSeek-V4.1-Flash: a line, from the real numbers (strata_control/dsv41_fit.py)
             from strata_control import dsv41_fit
             cards_ok = amd_ok if hip else [g for g in found if gpu_problem(g) is None]
             for mname in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"):
                 ds = dsv41_fit.plan(cards_ok, ram, None, model=mname)
-                if ds["verdict"] == "no_card":
-                    tail = "needs one or more graphics cards"
-                elif ds["verdict"] == "unknown":
+                if ds["verdict"] == "unknown":
                     tail = "not checked"
                 elif ds.get("uma"):                    # the graphics memory is the RAM, counted once: the plan says what is read from the SSD
                     tail = "fits" if float(ds.get("streamed_gb") or 0.0) <= 0.0 else "may run slower"
                 else:                                  # the set's weight files without its n-gram table, against every card's memory and the RAM
                     from strata_control import fit_label
-                    tail = fit_label.label(ds["weights_gb"], ram, sum(float(c.get("vram_gb") or 0.0) for c in ds["cards"]))
+                    tail = fit_label.label(float(ds["download_gb"]) - float(ds["engram_gb"]), ram, sum(float(c.get("vram_gb") or 0.0) for c in ds["cards"]))
                 say(f"  DeepSeek-V4.1-Flash {MULTI_FILE_FAMILIES['deepseek41']['models'].get(mname, {}).get('label', mname)}: a {ds['download_gb']:.0f} GB download: {tail}   (--family deepseek41 --model {mname})")
         except Exception:                              # noqa: BLE001 - a line for information: never break the check
             pass

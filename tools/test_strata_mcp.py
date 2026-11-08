@@ -624,12 +624,13 @@ class Helpers(unittest.TestCase):
         self.assertEqual((by["UD-IQ4_XS"]["experimental"], by["UD-IQ4_XS"]["images"]), (False, True))
         self.assertEqual((by["UD-Q4_K_XL"]["experimental"], by["UD-Q4_K_XL"]["images"]), (False, True))   # #967
         self.assertFalse(by["UD-IQ4_XS"]["on_this_pc"].startswith("experimental"))
-        self.assertEqual(by["UD-IQ4_XS"]["on_this_pc"], "fits")                 # 63.7 GB of RAM, no card: 60.5 GB of weights (the lookup table not counted)
-        self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "may run slower")      # 78 GB
+        self.assertEqual(by["UD-IQ1_M"]["on_this_pc"], "fits")                  # 63.7 GB of RAM, no card: 39.2 GB (68.0 download minus the 28.8 GB table)
+        self.assertEqual(by["UD-IQ4_XS"]["on_this_pc"], "may run slower")       # 64.9 GB
+        self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "may run slower")      # 82.5 GB
         fam = next(f for f in s.model_table({"ram_gb": 127.8, "gpus": []}) if f["family"] == "unsloth")
         by = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "fits")
-        self.assertEqual(by["Q8_0"]["on_this_pc"], "may run slower")            # 129.3 GB of weights against 127.8 GB
+        self.assertEqual(by["Q8_0"]["on_this_pc"], "may run slower")            # 133.8 GB (188.2 minus its 54.4 GB table) against 127.8 GB
 
     def test_qwen36_is_listed_with_its_three_sizes(self):
         """QA 2026-10-18: the Qwen3.6-35B-A3B page of the first-run setup showed no versions, because setup.py keeps the family
@@ -802,8 +803,8 @@ class MacCatalog(unittest.TestCase):
             self.assertIn(v, ("fits", "may run slower"), m)
         self.assertEqual({m for m, v in fits.items() if v != "fits"}, {"UD-Q5_K_XL", "UD-Q6_K_XL"})
         s, hw = self.hw(8)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
-        self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"may run slower"})      # too little memory: the same two words
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]}, {"may run slower"})
 
     def test_deepseek_pictures_on_a_mac_follow_the_installed_engine(self):
         """DeepSeek reads pictures on a Mac exactly when the installed strata-dsv41 carries STRATA_DS4_METAL_VISION_V1; no engine installed yet: on (setup looks again once it is fetched)."""

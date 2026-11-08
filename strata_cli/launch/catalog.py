@@ -65,14 +65,14 @@ FITS, SLOWER, TIGHT, NO = "fits", "slower", "tight", "no"
 def verdict(on_this_pc: str | None) -> tuple[str, str]:
     """(category, plain words) from the catalog's own `on_this_pc` text (strata_control/fit_label.py through strata_mcp: "fits" or "may run slower").
 
-    The two other words are not about memory: DeepSeek's "tight: needs more disk space", and a card or Mac memory the model cannot run without (`no`).
-    Never a block: `no` still lets the person try, and the screen says so."""
+    The one other word is not about memory: DeepSeek's "tight: needs more disk space".  No card and a Mac with little memory get "may run slower" too (owner 11-08);
+    an older Control's "does not fit..." is read the same way.  Never a block: the person can always try, and the screen says so."""
     text = (on_this_pc or "").strip()
     low = text.lower()
     if not text:
         return TIGHT, "not checked (this computer's memory could not be read)"
     if low.startswith("does not fit"):
-        return NO, "too big (can still try)"
+        return SLOWER, "may run slower"
     if "free disk space" in low:                           # DeepSeek: fits in memory, not on the disk (still allowed)
         return TIGHT, "tight: needs more disk space"
     if low == "may run slower":
@@ -102,7 +102,8 @@ class ModelRow:
     installed: bool
     recommended: bool = False
     mem_total: bool = False
-    memory_gb: float = 0.0
+    memory_gb: float = 0.0        # the placement estimate (experts + dense), for the cards
+    fit_gb: float = 0.0           # the files without the lookup table: the "Needs" column and the fit label
 
     @property
     def title(self) -> str:
@@ -410,7 +411,7 @@ class Catalog:
                     need_ram_gb=f["ramUseGb"], spill_gb=f["spillGb"], verdict=cat, words=words,
                     experimental=bool(size.get("experimental") or fam.get("experimental")), images=bool(size.get("images")),
                     installed=bool(size.get("installed")) or self.installed_config(str(size["id"])) is not None, mem_total=bool(size.get("mem_total")),
-                    memory_gb=float(size.get("memory_gb") or 0),
+                    memory_gb=float(size.get("memory_gb") or 0), fit_gb=float(size.get("fit_gb") or size.get("memory_gb") or 0),
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
 

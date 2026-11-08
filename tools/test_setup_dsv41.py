@@ -331,7 +331,7 @@ class Catalog(unittest.TestCase):
         self.assertTrue(size["mem_total"] and size["multi_file"])
         self.assertEqual(size["gpu_options"]["recommended"], "all")
         small = next(f for f in s.model_table({"ram_gb": 32.0, "gpus": []}) if f["family"] == "deepseek41")
-        self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for x in small["sizes"]))      # no card
+        self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"may run slower"})      # no card: the same two words
 
     def test_each_set_states_the_free_disk_it_needs_from_the_set_itself(self):
         """The app's DeepSeek card says "Needs about N GB of free disk space": N is the set's whole download plus the pack and room to work, per set."""
