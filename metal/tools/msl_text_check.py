@@ -2,7 +2,7 @@
 """msl_text_check.py - are two builds' kernel libraries the same text?
 
     STRATA_METAL_MSL_DUMP=<dir> strata ...        (any program that compiles kernels through mtl::Context: the engine, a parity binary)
-    python3 metal/tools/msl_text_check.py <dumpdir A> <dumpdir B> [--preprocess "xcrun metal -E -P"] [--air]
+    python3 metal/tools/msl_text_check.py <dumpdir A> <dumpdir B> [--preprocess "clang -E -P -x c++ -nostdinc -undef"] [--air]
 
 The dump holds one NNN.msl per library (the prelude, <metal_stdlib>, ggml-common, then every kernel file: the exact string handed to
 the compiler) and index.txt (NNN.msl: the kernel files of that library).  Libraries are matched by their file list, in order.
@@ -44,9 +44,11 @@ def sha(path):
 
 
 def preprocess(path, cmd):
-    # `xcrun metal -E`: the real Metal front end (its predefined macros decide the #if branches); the cache of one text is not needed
-    with tempfile.NamedTemporaryFile(suffix=".metal", delete=False) as t:
+    # The C preprocessor of clang over the text, the <...> includes left out: none of the kernel sources branches on a Metal macro, so the
+    # macros they and the host's prelude define are all there is to expand (`xcrun metal -E` needs the Metal toolchain component).
+    with tempfile.NamedTemporaryFile(suffix=".cpp", delete=False) as t:
         data = open(path, "rb").read().decode("utf-8", "replace")
+        data = re.sub(r"(?m)^[ 	]*#[ 	]*include[ 	]*<[^>]*>", "", data)   # <metal_stdlib>, <MetalPerformancePrimitives/...>
         t.write(data.encode())
         tmp = t.name
     try:
@@ -82,7 +84,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("a")
     ap.add_argument("b")
-    ap.add_argument("--preprocess", default="xcrun -sdk macosx metal -E -P -x metal")
+    ap.add_argument("--preprocess", default="clang -E -P -x c++ -nostdinc -undef")
     ap.add_argument("--air", action="store_true")
     ap.add_argument("--air-tool", default="xcrun -sdk macosx metal -std=metal3.2")
     a = ap.parse_args()

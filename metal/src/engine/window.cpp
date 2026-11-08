@@ -123,7 +123,7 @@ namespace geo = strata_metal::geo;   // engine/geo.h: the shape this build is co
 constexpr int N = geo::N, HC = geo::HC, LR = geo::LR, NFF = geo::NFF, TOPK = geo::TOPK, NEXP = geo::NEXP, MAXT = 8, NVOCAB_MAX = 248320;
 constexpr int G_NL = geo::NL, G_QI = geo::QI, G_NGDN = geo::NGDN, G_SS = geo::SS, G_HK = geo::HK, G_HV = geo::HV, G_CONV = geo::CONV,
               G_ZV = geo::ZV, G_GDNF = geo::GDN_FUSED, G_QH = geo::QH, G_QKV = geo::QKV, G_QD = geo::QD, G_IH = geo::IH, G_ID = geo::ID,
-              G_BUD = geo::BUD, G_QCHUNKS = geo::QCHUNKS, G_QPREP = geo::QPREP, G_HCD = geo::HCD, G_QFULL = geo::QFULL, G_QOUT = geo::QOUT,
+              G_BUD = geo::BUD, G_QCHUNKS = geo::QCHUNKS, G_QCHUNKS2 = geo::QCHUNKS2, G_QPREP = geo::QPREP, G_HCD = geo::HCD, G_QFULL = geo::QFULL, G_QOUT = geo::QOUT,
               G_KV = geo::KV, G_IQR = geo::IQR;
 // bytes of the running state of one sequence, per layer
 constexpr size_t GST_B = (size_t) 4 * G_SS * G_HV * G_SS;                       // GDN recurrence
@@ -773,7 +773,7 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     ye_ = A(4 * MAXT * TOPK * N); gsh_ = A(4 * MAXT * NFF); ush_ = A(4 * MAXT * NFF); ysh_ = A(4 * MAXT * N);
     sg_ = A(4 * MAXT * 4); qfull_ = A(4 * MAXT * G_QFULL); kcur_ = A(4 * MAXT * G_KV); vcur_ = A(4 * MAXT * G_KV);
     iqr_ = A(4 * MAXT * G_IQR); ikr_ = A(4 * MAXT * G_ID); qcur_ = A(4 * MAXT * G_QOUT); qidx_ = A(4 * MAXT * G_IH * G_ID);
-    scores_ = A(4 * (size_t) MAXT * MB); qids_ = A(4 * MAXT * G_BUD); part_ = A(4 * (size_t) MAXT * (2 * G_QCHUNKS - 1) * G_QH * (G_QD + 2));
+    scores_ = A(4 * (size_t) MAXT * MB); qids_ = A(4 * MAXT * G_BUD); part_ = A(4 * (size_t) MAXT * G_QCHUNKS2 * G_QH * (G_QD + 2));
     cs_ = A(8 * (size_t) (MAXC + 16) * 32); lm_ = A(4 * (size_t) MAXT * n_vocab_); apv_ = A(4 * MAXT * 120);
     api_ = A(4 * MAXT * 120); tokout_ = A(4 * MAXT); emb_ = A(4 * MAXT * N); pkey_ = A(4 * MAXT * G_HCD);
     pval_ = A(4 * MAXT * N);

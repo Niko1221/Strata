@@ -45,6 +45,7 @@ inline constexpr int ID = (int) G.idx_key_dim;       // indexer key width (128)
 inline constexpr int BUD = (int) G.idx_top_k + 3;     // selection budget in cells (2051): top_k + the tail block's 3
 inline constexpr int QCH = 64;                       // cells per attention chunk (qsa.metal QCH)
 inline constexpr int QCHUNKS = (BUD + QCH - 1) / QCH;   // 33
+inline constexpr int QCHUNKS2 = (BUD + 31) / 32;         // 65: the same cells in chunks of 32 (qsa2.metal), the partials buffer's chunk count
 inline constexpr int QPREP = QH + 2 * QKV + IH + 1;  // qsa_prep threadgroups: q heads, k, v, indexer q, and the indexer-key group
 
 // derived sizes (floats unless said)
@@ -64,6 +65,7 @@ inline std::string prelude() {
     };
     def("GEO_QH", G.n_head, d.n_head);
     def("GEO_QKV", G.n_head_kv, d.n_head_kv);
+    def("GEO_BUD", G.idx_top_k + 3, d.idx_top_k + 3);
     def("GEO_TOPK", G.n_expert_used, d.n_expert_used);
     def("GEO_NJ", G.n_embd / 256, d.n_embd / 256);                      // gr_norm2: elements per thread of one stream's row
     def("GEO_GRU_NU", (G.hc_lr / 32 + 3) / 4, (d.hc_lr / 32 + 3) / 4);   // gr_up prefetch: units of 32 per lane (4 lanes a row)

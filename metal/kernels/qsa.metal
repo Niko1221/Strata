@@ -40,7 +40,12 @@
 #else
 #define QSA_KEYS_ROW 32
 #endif
+// QBUDGET: the selection budget in cells, indexer top_k + 3 (Flash-Next 2048 + 3); GEO_BUD from the host prelude for another top_k
+#ifdef GEO_BUD
+#define QBUDGET GEO_BUD
+#else
 #define QBUDGET 2051
+#endif
 #define QCH 64
 
 #ifndef STRATA_XH16_DECL
