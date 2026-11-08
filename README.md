@@ -160,6 +160,38 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
 | **Apple Silicon · M1 or newer** | [Mac setup](docs/MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
 | **NVIDIA DGX Spark · Linux** | [DGX Spark setup](docs/DGX_SPARK_LINUX.md) |
+| **NVIDIA Jetson AGX Thor · Linux (sm_110)** | [Jetson AGX Thor setup](docs/JETSON_THOR.md) |
+
+### Jetson AGX Thor: measured on the machine
+
+The same arm64 CUDA engine package carries machine code for both ARM64 machines: `sm_121` (DGX Spark) and `sm_110`
+(Jetson AGX Thor), with `compute_110` PTX. Measured on one Thor (122 GiB unified, driver 580.00, CUDA 13.0.48,
+engine 0.1.56 built on the machine; standard protocol suite at context 32768, four slots, 120 W DVFS):
+
+| Pack | Decode tok/s (short / 4K / 16K) | Prompt tok/s (4K / 16K) | Four at once | Sanity |
+| --- | ---: | ---: | ---: | :-: |
+| Qwen3.8-Flash-Next IQ3_S | 38.3 / 34.0 / 35.6 | 769 / 1000 | 51-54 tok/s total | 12/12 |
+| Qwen3.6-35B-A3B UD-Q4_K_XL | 50.7 / 37.4 / 20.2 | 1375 / 1221 | ~100.5 tok/s total | 12/12 |
+| Qwen3.8-Flash-Next NVFP4 | 27.1 / 28.9 / 27.5 (64K cells, T=0) | ~704-767 | - | - |
+| DeepSeek-V4.1-Flash-1017, Coder set¹ | 8.8-17.2 (8K and 64K context cells: 512→4096→16K→32K prompts, T=0, locked clocks) | 87.6-356.4 | not swept | smoke² |
+
+¹ served on its own `strata-dsv41` engine package (same fat archs); experts split across the one 122 GiB pool. ² the twelve-check protocol is qwen-specific; arithmetic and long completions were checked by hand.
+
+Five speed switches are on for sm_110 by default, each measured on this part (`STRATA_SM110_PERF=0` turns them off):
+end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K. Locking the clocks (`sudo nvpmodel -m 0 &&
+sudo jetson_clocks`) buys a further +10-15% across the board - the cheapest Thor speed-up there is. Full data,
+A/B files and the drafting sweeps (Qwen3.6 at `--mtp 3`, IQ3_S at `--spec 4` + cost rule) are in
+[the benchmark report](bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
+
+From the command line, a Thor needs nothing extra:
+
+```sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+export PATH="$HOME/.local/bin:$PATH"
+strata update                                  # the same feed package, picked for this PC (sm_110)
+strata launch --model iq3_s --context 32k      # or: --family qwen36 --model ud-q4_k_xl
+strata status --url http://127.0.0.1:8080 --json
+```
 
 <a id="using-it"></a>
 
