@@ -943,6 +943,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_ARENA_FILE_CACHE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/expert_source.cpp",
+     "line": 6058,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "28bd0185f9",
+   "first_date": "2026-11-08",
+   "since": null,
+   "last_commit": "41e20da530",
+   "last_date": "2026-11-08",
+   "status": "default",
+   "owner": "program",
+   "note": "#5327: set to 0 to refuse an arena shortfall that free pages, droppable file cache or a reserved hugetlb pool could serve (the 0.1.56 behaviour: the run reads the experts from the file)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_ARENA_LOCK",
    "backends": [
     "cuda-hip",
