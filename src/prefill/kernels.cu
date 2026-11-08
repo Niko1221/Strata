@@ -2270,28 +2270,31 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
     selected_sum = fmaxf(warp_sum(selected_sum), 6.103515625e-5f);
     if (lane < KU) wout[t * KU + lane] = selected / selected_sum;
 }
-// Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
+// Strata blob: gate/up codes [2 F][E / 4 B], down codes [E][F / 4 B], gate/up scales [2 F][E / 64] f16, down scales [E][F / 64] f16
+// (E = N, F = FFC: the compiled geometry's; Flash-Next 2560 and 640: [1280][640 B], [2560][160 B], [1280][40], [2560][10])
+constexpr int BLOB_GU_ROWS = 2 * (int) FFC, BLOB_ROW_GU = N / 4, BLOB_ROW_D = (int) FFC / 4, BLOB_SC_GU = N / 64, BLOB_SC_D = (int) FFC / 64;
+static_assert(N % 64 == 0 && FFC % 64 == 0, "the Strata Q2 blob holds whole 64-weight blocks");
 template <bool HALF>
 __global__ void blob_dequant_kernel(const uint8_t* __restrict__ blob, uint16_t* __restrict__ gu16,
                                     uint16_t* __restrict__ d16) {
-    constexpr size_t O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                     O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+    constexpr size_t O_D_CODES = (size_t) BLOB_GU_ROWS * BLOB_ROW_GU, O_GU_SC = O_D_CODES + (size_t) N * BLOB_ROW_D,
+                     O_D_SC = O_GU_SC + (size_t) BLOB_GU_ROWS * BLOB_SC_GU * 2;
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // one thread per 4 weights (one code byte)
-    const int64_t n_gu = 1280LL * 640, n_d = 2560LL * 160;
+    const int64_t n_gu = (int64_t) BLOB_GU_ROWS * BLOB_ROW_GU, n_d = (int64_t) N * BLOB_ROW_D;
     if (i < n_gu) {
-        const int64_t row = i / 640, byte = i % 640;
-        const uint8_t c = blob[row * 640 + byte];
-        const uint8_t* sp = blob + O_GU_SC + (size_t) (row * 40 + (byte * 4) / 64) * 2;
+        const int64_t row = i / BLOB_ROW_GU, byte = i % BLOB_ROW_GU;
+        const uint8_t c = blob[row * BLOB_ROW_GU + byte];
+        const uint8_t* sp = blob + O_GU_SC + (size_t) (row * BLOB_SC_GU + (byte * 4) / 64) * 2;
         const float d = __half2float(__ushort_as_half((uint16_t) (sp[0] | (sp[1] << 8))));
-        uint16_t* o = gu16 + row * 2560 + byte * 4;
+        uint16_t* o = gu16 + row * N + byte * 4;
 #pragma unroll
         for (int k = 0; k < 4; ++k) { const float v = (float) (((c >> (2 * k)) & 3) - 1) * d; o[k] = HALF ? hf(v) : bf(v); }
     } else if (i < n_gu + n_d) {
-        const int64_t j = i - n_gu, row = j / 160, byte = j % 160;
-        const uint8_t c = blob[O_D_CODES + row * 160 + byte];
-        const uint8_t* sp = blob + O_D_SC + (size_t) (row * 10 + (byte * 4) / 64) * 2;
+        const int64_t j = i - n_gu, row = j / BLOB_ROW_D, byte = j % BLOB_ROW_D;
+        const uint8_t c = blob[O_D_CODES + row * BLOB_ROW_D + byte];
+        const uint8_t* sp = blob + O_D_SC + (size_t) (row * BLOB_SC_D + (byte * 4) / 64) * 2;
         const float d = __half2float(__ushort_as_half((uint16_t) (sp[0] | (sp[1] << 8))));
-        uint16_t* o = d16 + row * 640 + byte * 4;
+        uint16_t* o = d16 + row * FFC + byte * 4;
 #pragma unroll
         for (int k = 0; k < 4; ++k) { const float v = (float) (((c >> (2 * k)) & 3) - 1) * d; o[k] = HALF ? hf(v) : bf(v); }
     }
@@ -3212,11 +3215,11 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
     check("route");
 }
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
-    blob_dequant_kernel<false><<<blocks_for(1280LL * 640 + 2560LL * 160), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
+    blob_dequant_kernel<false><<<blocks_for((int64_t) BLOB_GU_ROWS * BLOB_ROW_GU + (int64_t) N * BLOB_ROW_D), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
     check("blob_dequant");
 }
 void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
-    blob_dequant_kernel<true><<<blocks_for(1280LL * 640 + 2560LL * 160), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
+    blob_dequant_kernel<true><<<blocks_for((int64_t) BLOB_GU_ROWS * BLOB_ROW_GU + (int64_t) N * BLOB_ROW_D), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
     check("blob_dequant_f16");
 }
 void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream) {
