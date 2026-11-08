@@ -300,7 +300,8 @@ def _flash_next(setup, model) -> None:
         keys[q.name] = key
     fam = {"title": model.title, "by": model.by, "about": model.about, "hf": _ByQuant({q: base + folders[q] for q in files}),
            "file": _ByQuant(files), "shards": 2, "tag": model.id + "-", "name": model.id, "vision": bool(model.pictures),
-           "pack_args": list(template.get("pack_args", ["--compat-bf16"])), "sha256": dict(pins), "license": _licence(model), "feed": True}
+           "pack_args": list(template.get("pack_args", ["--compat-bf16"])), "sha256": dict(pins), "license": _licence(model), "feed": True,
+           "drafter": model.drafter}
     if model.mmproj is not None:
         fam.update(mmproj_hf=base + (model.mmproj.repo_path.rpartition("/")[0] + "/" if "/" in model.mmproj.repo_path else ""),
                    mmproj=model.mmproj.name, mmproj_sha256=(model.mmproj.size, model.mmproj.sha256))

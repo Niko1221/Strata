@@ -214,6 +214,13 @@ class FlashNextModel(Base):
         src = (Path(self.setup.__file__)).read_text(encoding="utf-8")
         self.assertNotIn("find_in(roots, f\"models/{fam['mmproj']}\") or mmproj\n    if vision != \"none\":", src)
 
+    def test_the_family_carries_the_feeds_drafter_so_setup_can_leave_the_draft_layer_out(self):
+        # found by the Q4-P8 rehearsal: setup fetched the Flash-Next MTP draft layer (5 GB) for a feed model whose entry says drafter none
+        none = feed_models.apply(self.setup, parsed(flash_next(id="no-drafter", drafter="none")), None)
+        self.assertEqual(self.setup.FAMILIES["no-drafter"]["drafter"], "none")
+        src = Path(self.setup.__file__).read_text(encoding="utf-8")
+        self.assertIn('fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None', src)
+
     def test_parts_that_are_not_numbered_are_left_out_with_a_line(self):
         odd = flash_next(id="odd-parts")
         odd["quants"][0]["files"][1] = file_entry("Q4-model.gguf", "Q4_K_M")
