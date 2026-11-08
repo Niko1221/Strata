@@ -195,7 +195,7 @@ class Launch(unittest.TestCase):
         with mock.patch.object(shape_engine, "ensure", return_value=Path("/x/strata")) as ensure, mock.patch.object(shape_engine, "find", return_value=found):
             R.Runner.ensure_shape_engine(fake, "q4_lite")
         self.assertEqual(ensure.call_args.kwargs["title"], "Q4 Lite Shape")
-        self.assertIn("Checking the engine for this model (Q4 Lite Shape)…", events)
+        self.assertIn("Checking the engine for Q4 Lite Shape…", events)
         self.assertIn("Engine for Q4 Lite Shape 0.1.59 (cuda) is installed.", events)
         self.assertFalse([e for e in events if "q4_lite" in e], events)
 

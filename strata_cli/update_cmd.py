@@ -181,9 +181,10 @@ def _line(name: str, result: dict) -> str:
             return f"{name:<8}{before or '?'}   NOT changed: {result.get('error')}"
         return f"{name:<8}{before or '?'}   {result.get('note') or status}"
     if result.get("shape"):                              # the engine of a model shape (strata_control/shape_engine.py)
+        from strata_control import shape_engine
         if status == "failed":
-            return f"{'Shape':<8}{result.get('installed_before') or '?'}   NOT changed: {result.get('error')}"
-        return f"{'Shape':<8}{result.get('note') or status}"
+            return f"{shape_engine.WORDS['update_label']}  {result.get('installed_before') or '?'}   NOT changed: {result.get('error')}"
+        return f"{shape_engine.WORDS['update_label']}  {result.get('note') or status}"
     if result.get("component") == "control":
         if status == "updated":
             return f"{name:<8}{result.get('installed_before') or '?'} -> {result.get('installed_after')}   updated. The next `strata` command already runs it; the app switches on its next start"

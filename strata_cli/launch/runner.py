@@ -877,15 +877,15 @@ class Runner:
         root = Path(self.components_dir) if self.components_dir else None
         title = self.model_title()
         name = shape_engine.shown(shape, title)
-        self.emit("engine", f"Checking the engine for this model ({name})…")
+        self.emit("engine", shape_engine.WORDS["checking"].format(model=name))
         source = update_cmd._feed_source(argparse.Namespace(feed=self.feed or os.environ.get("STRATA_UPDATE_FEED")), root or ec.components_dir())
         said: list[str] = []
         exe = shape_engine.ensure(shape, source, components=root, emit=lambda m: (said.append(m), self.emit("engine", m, 0)), title=title)
         if exe is None:
-            self.no_engine(said[-1] if said else shape_engine.WORDS["fetch_failed"].format(shape=name, why="nothing was fetched"))
+            self.no_engine(said[-1] if said else shape_engine.WORDS["fetch_failed"].format(model=name, why="nothing was fetched"))
             return
         found = shape_engine.find(shape, root, full=False, title=title)
-        self.emit("engine", shape_engine.WORDS["ready"].format(shape=name, version=found.version, backend=found.backend), 100)
+        self.emit("engine", shape_engine.WORDS["ready"].format(model=name, version=found.version, backend=found.backend), 100)
 
     def needed_engine(self) -> tuple[int, ...] | None:
         """The oldest engine this model runs on, from setup.py's own tables (MIN_ENGINE for everything, GYRO_ENGINE for Gyro), or None."""

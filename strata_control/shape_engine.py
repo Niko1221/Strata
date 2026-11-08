@@ -32,23 +32,31 @@ SHAPE_RE = re.compile(r"[a-z][a-z0-9_]{1,21}[a-z0-9]")                    # q4_l
 #: component ids that already mean something else; a shape never becomes one of them
 RESERVED = frozenset({"strata-engine", "strata-dsv41", "strata-control", "strata-vision", "strata-device", "strata-terminal", "strata-app", "strata-drafter"})
 KEEP_VERSIONS = 2                                                           # the installed shape engine and the one before it
-#: What a person reads in the lines below where "{shape}" stands: the model's title ("Q4 Lite Shape"), not the geometry's name (q4_lite). One switch: False puts the geometry
+#: What a person reads in the lines below where "{model}" stands: the model's title ("Q4 Lite Shape"), not the geometry's name (q4_lite). One switch: False puts the geometry
 #: name back everywhere (the owner decides; `strata components engine` and the JSON always name the shape).
 USE_TITLE = True
 
-# ---- the words a person can see (new: for the coordinator's approval before they ship)
+# ---- the words a person can see: approved by the owner 11-08 ("A ok"), pinned by tests/terminal/test_shape_engine.py ApprovedWords. {model} is the model's title (see USE_TITLE).
+# Detail (reasons lists, platform-backend, folders) is in the result rows, the JSON and the log, never in these lines.
 WORDS = {
-    "missing": ("This model needs its own engine ({shape}), which is not installed or does not fit this PC: {reason}. Set the model up again with "
-                "`strata launch` (or Download / repair in the app) to fetch it; starting a model never downloads an engine."),
-    "fetching": "This model needs its own engine ({shape}). It is a separate download next to the Strata engine, which stays as it is.",
-    "not_in_feed": "There is no engine for this model ({shape}) for this computer in the update feed{why}.",
-    "installed": "Engine for {shape} {version} ({backend}) installed: {target}",
-    "updated": "Engine for {shape} updated from {old} to {new}.",
-    "current": "The engine for {shape} is up to date.",
-    "start_failed": "The engine for {shape} {version} was not installed: it did not start correctly ({why}). The Strata engine is unchanged.",
-    "fetch_failed": "The engine for {shape} could not be fetched: {why}",
-    "ready": "Engine for {shape} {version} ({backend}) is installed.",
-    "newer_failed": "A newer engine for {shape} is available but could not be installed ({why}); still using {have}.",
+    "checking": "Checking the engine for {model}\u2026",
+    "fetching": "{model} needs its own engine. It downloads separately, and the Strata engine stays as it is.",
+    "installed": "Engine for {model} {version} ({backend}) is installed.",
+    "ready": "Engine for {model} {version} ({backend}) is installed.",
+    "updated": "Engine for {model} updated from {old} to {new}.",
+    "not_in_feed": "The update feed has no engine for {model} for this computer.",
+    "start_failed": "The engine for {model} {version} was not installed because it did not start correctly ({why}). The Strata engine is unchanged.",
+    "fetch_failed": "The engine for {model} could not be downloaded: {why}",
+    "newer_failed": "A newer engine for {model} is available but could not be installed ({why}). Still using {have}.",
+    "missing": ("{model} needs its own engine, which is not installed or does not fit this PC: {reason}. Run `strata launch` again, or Download / repair in the app, "
+                "to fetch it. Starting a model never downloads an engine."),
+    "current": "The engine for {model} is up to date.",
+    # setup.py (the [X] / [ok] marks are setup's)
+    "setup_failed": "the engine for {model} could not be installed",
+    "setup_failed_hint": "See the line above. Nothing was downloaded for the model. Run this again when the update feed has it.",
+    "setup_ok": "engine for {model}: {version} in {folder}",
+    "setup_skip": "no engine for {model} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched",
+    "update_label": "Model engine",
 }
 
 
@@ -161,7 +169,7 @@ class ShapeEngineMissing(ec.EngineMissing):
         self.root = where
         self.problems = problems or []
         self.plain_notice = None
-        RuntimeError.__init__(self, WORDS["missing"].format(shape=shown(shape, title), reason=reason))
+        RuntimeError.__init__(self, WORDS["missing"].format(model=shown(shape, title), reason=reason))
         self.what = f"the engine for {shown(shape, title)}"
         self.command = "strata launch"
 
@@ -183,9 +191,10 @@ def status(components: Path | None = None) -> list[dict]:
 
 # ---------------------------------------------------------------------------------------------- fetching from the signed feed
 
-def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
+def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> tuple[bool, str]:
     """The new engine starts: ``strata --version`` runs, loads its libraries and names itself (it needs no graphics card and no model). The package's own folders go on the
-    library path first, as the start path does."""
+    library path first, as the start path does. With `shape`, ``strata --geometry`` (engine 0.2.13 and later) must name that shape: an engine compiled for another geometry than
+    the signed manifest says is refused here, not at its first load. An engine from before the flag (it exits non-zero or prints nothing) is accepted, as before."""
     import subprocess
     env = dict(os.environ)
     var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
@@ -200,7 +209,26 @@ def _test_start(exe: Path, timeout: float = 120.0) -> tuple[bool, str]:
     if done.returncode != 0 or not first.startswith("strata"):
         tail = ((done.stderr or "").strip().splitlines() or [first or f"exit {done.returncode}"])[-1]
         return False, tail[:160]
+    if shape:
+        ok, why = check_geometry(exe, shape, env, timeout)
+        if not ok:
+            return False, why
     return True, first
+
+
+def check_geometry(exe: Path, shape: str, env: dict | None = None, timeout: float = 60.0) -> tuple[bool, str]:
+    """Does ``strata --geometry`` name `shape`? (True, "") when it does, or when the engine has no such flag (an older engine); (False, plain reason) when it names another."""
+    import subprocess
+    try:
+        done = subprocess.run([str(exe), "--geometry"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(Path(exe).parent), env=env)
+    except (OSError, subprocess.SubprocessError):
+        return True, ""
+    named = ((done.stdout or "").strip().splitlines() or [""])[0].strip()
+    if done.returncode != 0 or not named or named.startswith("strata") or " " in named:
+        return True, ""                                   # an engine from before the flag
+    if named != shape:
+        return False, f"it was built for a different model shape ({named})"
+    return True, ""
 
 
 def choose(feed, shape: str, hardware: dict, title: str | None = None):
@@ -240,10 +268,10 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
         return result
     pkg, reasons = choose(feed, shape, ctx.hardware, title=name if name != shape else None)
     if pkg is None:
-        result.update(status="none-for-this-pc", note=WORDS["not_in_feed"].format(shape=name, why=(": " + "; ".join(reasons[:2])) if reasons else ""), reasons=reasons)
+        result.update(status="none-for-this-pc", note=WORDS["not_in_feed"].format(model=name), reasons=reasons)
         return result
     if have and feedmod.version_key(pkg.version) <= feedmod.version_key(have):
-        result["note"] = WORDS["current"].format(shape=name)
+        result["note"] = WORDS["current"].format(model=name)
         return result
     place = root(shape, ctx.components)
     updater._free_space_check(place, pkg.size + pkg.installed_bytes, ctx, pkg.sha256, comp)
@@ -265,15 +293,15 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
         if os.name != "nt":
             (target / exe_name()).chmod(0o755)
         ctx.say("test", f"Test-starting the engine for {name} {pkg.version}", component=comp)
-        ok, why = _test_start(target / exe_name())
+        ok, why = _test_start(target / exe_name(), shape=shape)
         if not ok:
             shutil.rmtree(longpath.long_path(target), ignore_errors=True)         # (never an older one)
-            raise updater.UpdateError(WORDS["start_failed"].format(shape=name, version=pkg.version, why=why), 6)
+            raise updater.UpdateError(WORDS["start_failed"].format(model=name, version=pkg.version, why=why), 6)
         removed = _prune(place, shape, target.name)
         archive.unlink(missing_ok=True)
         result.update(status="updated" if have else "installed", changed=True, installed_after=pkg.version, folder=target.name, removed=removed,
-                      note=(WORDS["updated"].format(shape=name, old=have, new=pkg.version) if have
-                            else WORDS["installed"].format(shape=name, version=pkg.version, backend=pkg.backend, target=target)))
+                      note=(WORDS["updated"].format(model=name, old=have, new=pkg.version) if have
+                            else WORDS["installed"].format(model=name, version=pkg.version, backend=pkg.backend)))
         return result
     finally:
         if stage_root is not None:
@@ -291,7 +319,7 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
     have = newest_version(shape, components)
     name = shown(shape, title)
     if not have:
-        emit(WORDS["fetching"].format(shape=name))
+        emit(WORDS["fetching"].format(model=name))
     ctx = updater.Context(components=components, source=source, trusted=signing.load_trusted_keys(), hardware=hw, cancel=cancel,
                           feed_timeout=5.0 if have else 30.0,           # an installed engine: a launch must not wait long for a feed that is not there
                           emit=lambda event: emit(event["message"]) if event.get("event") == "phase" and event.get("message") and event.get("phase") != "feed" else None)
@@ -303,7 +331,7 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
             except feedmod.FeedError as exc:
                 if have:                                          # offline with an engine installed: the engine runs, nothing to say
                     return find(shape, components, full=False, title=title).exe
-                emit(WORDS["fetch_failed"].format(shape=name, why=exc))
+                emit(WORDS["fetch_failed"].format(model=name, why=exc))
                 return None
             state.save()
             result = update_one(ctx, feed, shape, title=title)
@@ -313,18 +341,18 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
             raise
         if have:
             if isinstance(exc, (updater.UpdateError, signing.SignatureError)):         # the feed was read and the newer package was refused or did not start: said, the old one runs
-                emit(WORDS["newer_failed"].format(shape=name, why=str(exc).rstrip("."), have=have))
+                emit(WORDS["newer_failed"].format(model=name, why=str(exc).rstrip("."), have=have))
             try:
                 return find(shape, components, full=False, title=title).exe
             except ec.EngineMissing:
                 pass
-        emit(WORDS["fetch_failed"].format(shape=name, why=str(exc).rstrip(".")))
+        emit(WORDS["fetch_failed"].format(model=name, why=str(exc).rstrip(".")))
         return None
     if result["status"] == "none-for-this-pc":
         emit(result["note"])
         return None
     if result.get("changed") or not quiet_when_current:
-        emit(result.get("note") or WORDS["ready"].format(shape=name, version=newest_version(shape, components), backend=""))
+        emit(result.get("note") or WORDS["ready"].format(model=name, version=newest_version(shape, components), backend=""))
     try:
         return find(shape, components, full=False, title=title).exe
     except ec.EngineMissing as exc:

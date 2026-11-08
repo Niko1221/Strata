@@ -356,7 +356,7 @@ class Install(Base):
         self.publish("0.1.59", shape="q4_mid")
         lines = []
         self.assertIsNone(self.ensure(lines))
-        self.assertIn("no engine for this model (q4_lite)", " ".join(lines))
+        self.assertIn("The update feed has no engine for q4_lite for this computer.", " ".join(lines))
         self.assertFalse((self.comp / "shapes" / SHAPE).exists())
         self.assertEqual(self.strata_before, tree(self.comp / "engine"))
 
@@ -395,7 +395,7 @@ class Install(Base):
         lines = []
         with mock.patch.object(shape_engine, "_test_start", return_value=(False, "libcudart.so.13: not found")):
             self.assertIsNone(self.ensure(lines))
-        self.assertIn("did not start correctly", " ".join(lines))
+        self.assertIn("was not installed because it did not start correctly", " ".join(lines))
         self.assertIn("The Strata engine is unchanged", " ".join(lines))
         self.assertEqual(shape_engine.installed(SHAPE, self.comp), [])
         self.assertEqual(self.strata_before, tree(self.comp / "engine"))
@@ -412,6 +412,37 @@ class Install(Base):
         script.write_text(f'#!{sys.executable}\nprint("hello")\n')
         self.assertFalse(shape_engine._test_start(script)[0])
 
+    def _program(self, geometry):
+        """A stand-in engine program: `--version` names it, `--geometry` prints `geometry` (None: an engine from before the flag, which exits 2)."""
+        src = self.root / f"prog-{geometry}"
+        src.mkdir()
+        script = src / "strata"
+        answer = f'print({geometry!r})' if geometry else 'sys.exit(2)'
+        script.write_text(f'#!{sys.executable}\nimport sys\nif "--version" in sys.argv:\n    print("strata 0.2.13")\nelif "--geometry" in sys.argv:\n    {answer}\nelse:\n    sys.exit(3)\n')
+        script.chmod(0o755)
+        return script
+
+    def test_the_engine_must_be_built_for_the_shape_the_signed_manifest_names(self):
+        if os.name == "nt":
+            self.skipTest("a script is not a Windows program")
+        self.assertEqual(shape_engine._test_start(self._program("q4_lite"), shape="q4_lite"), (True, "strata 0.2.13"))
+        self.assertEqual(shape_engine._test_start(self._program(None), shape="q4_lite"), (True, "strata 0.2.13"), "an engine from before the flag is accepted")
+        ok, why = shape_engine._test_start(self._program("flash_next"), shape="q4_lite")
+        self.assertEqual((ok, why), (False, "it was built for a different model shape (flash_next)"))
+        self.assertEqual(shape_engine._test_start(self._program("flash_next")), (True, "strata 0.2.13"), "no shape asked for: the flag is not read")
+
+    def test_a_package_built_for_another_shape_is_refused_at_install_with_the_approved_line(self):
+        if os.name == "nt":
+            self.skipTest("a script is not a Windows program")
+        self.publish("0.1.59")
+        with mock.patch.object(shape_engine, "check_geometry", return_value=(False, "it was built for a different model shape (flash_next)")):
+            lines = []
+            self.assertIsNone(self.ensure(lines, title="Q4 Lite Shape"))
+        self.assertIn("The engine for Q4 Lite Shape 0.1.59 was not installed because it did not start correctly (it was built for a different model shape (flash_next)). "
+                      "The Strata engine is unchanged.", " ".join(lines))
+        self.assertEqual(shape_engine.installed(SHAPE, self.comp), [])
+        self.assertEqual(self.strata_before, tree(self.comp / "engine"))
+
     def test_min_runtime_newer_than_this_control_keeps_it_from_starting(self):
         shutil.rmtree(self.release, ignore_errors=True)
         (self.release / "shapes").mkdir(parents=True)
@@ -421,7 +452,10 @@ class Install(Base):
         self.hw = {**self.hw, "runtime": "0.1.58"}
         lines = []
         self.assertIsNone(self.ensure(lines))
-        self.assertIn("9.9.9", " ".join(lines))
+        self.assertIn("The update feed has no engine for q4_lite for this computer.", " ".join(lines))     # the reason (needs control 9.9.9) is in the row, not in the line
+        feed = feedmod.fetch(self.url, signing.load_trusted_keys())
+        ctx = updater.Context(components=self.comp, source=self.url, trusted=signing.load_trusted_keys(), hardware=self.hw)
+        self.assertIn("9.9.9", " ".join(shape_engine.update_one(ctx, feed, SHAPE)["reasons"]))
 
 
 class Update(Base):
@@ -464,7 +498,7 @@ class Update(Base):
         self.assertTrue(exe.is_file(), "the installed engine still runs the model")
         self.assertEqual(shape_engine.newest_version(SHAPE, self.comp), "0.1.59")
         self.assertIn("A newer engine for q4_lite is available but could not be installed", " ".join(lines))
-        self.assertIn("still using 0.1.59", " ".join(lines))
+        self.assertIn("Still using 0.1.59.", " ".join(lines))
 
     def test_a_refused_acquisition_with_an_engine_installed_never_stops_a_launch(self):
         self.installed("0.1.59")
@@ -482,7 +516,7 @@ class Update(Base):
         self.assertEqual(lines, [])
         lines = []
         self.assertIsNone(shape_engine.ensure("q4_mid", "http://127.0.0.1:9/strata-feed.json", components=self.comp, hardware=self.hw, emit=lines.append))
-        self.assertTrue(any("could not be fetched" in line for line in lines), lines)
+        self.assertTrue(any("could not be downloaded" in line for line in lines), lines)
 
     def test_the_explicit_update_has_a_step_only_for_an_installed_shape(self):
         self.publish("0.1.59")
@@ -514,7 +548,7 @@ class Update(Base):
         self.assertEqual((row["status"], row["installed_after"]), ("updated", "0.1.60"))
         self.assertEqual(out["exit_code"], 0)
         from strata_cli import update_cmd
-        self.assertEqual(update_cmd._line("Strata-q4-lite", row), "Shape   Engine for q4_lite updated from 0.1.59 to 0.1.60.")
+        self.assertEqual(update_cmd._line("Strata-q4-lite", row), "Model engine  Engine for q4_lite updated from 0.1.59 to 0.1.60.")
 
     def test_the_components_report_lists_a_shape_engine_only_when_there_is_one(self):
         self.assertNotIn("shapes", ec.status(self.comp))
@@ -538,31 +572,31 @@ class TitleInLines(Base):
             exe = self.ensure(lines, title=self.TITLE)
         text = " ".join(lines)
         self.assertIsNotNone(exe, lines)
-        self.assertIn(f"This model needs its own engine ({self.TITLE})", text)
+        self.assertIn(f"{self.TITLE} needs its own engine.", text)
         self.assertIn(f"Engine for {self.TITLE} 0.1.59", text)
-        self.assertNotIn("(q4_lite)", text)
+        self.assertNotIn("q4_lite needs", text)
         self.assertNotIn("for q4_lite", text)
 
     def test_the_refusals_name_the_title(self):
         self.publish("0.1.59", shape="q4_mid")
         lines = []
         self.assertIsNone(self.ensure(lines, title=self.TITLE))
-        self.assertIn(f"no engine for this model ({self.TITLE})", " ".join(lines))
+        self.assertIn(f"The update feed has no engine for {self.TITLE} for this computer.", " ".join(lines))
         with mock.patch.object(shape_engine, "_test_start", return_value=(False, "boom")):
             self.publish("0.1.59")
             lines = []
             self.assertIsNone(self.ensure(lines, title=self.TITLE))
-        self.assertIn(f"The engine for {self.TITLE} 0.1.59 was not installed", " ".join(lines))
+        self.assertIn(f"The engine for {self.TITLE} 0.1.59 was not installed because it did not start correctly (boom).", " ".join(lines))
 
     def test_a_start_without_the_engine_names_the_title_from_the_run_config(self):
         with self.assertRaises(shape_engine.ShapeEngineMissing) as ctx:
             ec.expand("component:strata-q4-lite", {"backend": "cuda", "shape_title": self.TITLE})
-        self.assertIn(f"engine ({self.TITLE})", str(ctx.exception))
+        self.assertTrue(str(ctx.exception).startswith(f"{self.TITLE} needs its own engine"), str(ctx.exception))
         self.assertNotIn("q4_lite", str(ctx.exception))
         self.assertEqual(ctx.exception.shape, "q4_lite")
         with self.assertRaises(shape_engine.ShapeEngineMissing) as ctx:            # a config without a title (an older one): the shape's name
             ec.expand("component:strata-q4-lite", {"backend": "cuda"})
-        self.assertIn("(q4_lite)", str(ctx.exception))
+        self.assertTrue(str(ctx.exception).startswith("q4_lite needs its own engine"), str(ctx.exception))
 
     def test_the_explicit_update_finds_the_title_in_the_feeds_model(self):
         self.publish("0.1.59", models=[model_entry(title=self.TITLE)])
@@ -582,7 +616,7 @@ class TitleInLines(Base):
         lines = []
         with mock.patch.object(shape_engine, "USE_TITLE", False), mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
             self.assertIsNotNone(self.ensure(lines, title=self.TITLE))
-        self.assertIn("This model needs its own engine (q4_lite)", " ".join(lines))
+        self.assertIn("q4_lite needs its own engine.", " ".join(lines))
         self.assertNotIn(self.TITLE, " ".join(lines))
         self.assertEqual(shape_engine.shown("q4_lite", self.TITLE), self.TITLE)
         self.assertEqual(shape_engine.shown("q4_lite", None), "q4_lite")
@@ -593,6 +627,44 @@ class TitleInLines(Base):
         with mock.patch.object(shape_engine, "_test_start", return_value=(True, "x")):
             self.assertIsNotNone(self.ensure(title=self.TITLE))
         self.assertEqual([r["shape"] for r in ec.status(self.comp)["shapes"]], ["q4_lite"])
+
+
+class ApprovedWords(unittest.TestCase):
+    """The owner approved these exact lines (11-08, "A ok"). {model} is the model's title. A change of a word is a change of this test, which the owner approves first."""
+
+    def test_the_lines_are_the_approved_ones(self):
+        W, M = shape_engine.WORDS, "Q4 Lite Shape"
+        self.assertEqual(W["checking"].format(model=M), "Checking the engine for Q4 Lite Shape…")
+        self.assertEqual(W["fetching"].format(model=M), "Q4 Lite Shape needs its own engine. It downloads separately, and the Strata engine stays as it is.")
+        self.assertEqual(W["installed"].format(model=M, version="0.1.59", backend="cuda"), "Engine for Q4 Lite Shape 0.1.59 (cuda) is installed.")
+        self.assertEqual(W["ready"], W["installed"])
+        self.assertEqual(W["updated"].format(model=M, old="0.1.59", new="0.1.60"), "Engine for Q4 Lite Shape updated from 0.1.59 to 0.1.60.")
+        self.assertEqual(W["not_in_feed"].format(model=M), "The update feed has no engine for Q4 Lite Shape for this computer.")
+        self.assertEqual(W["start_failed"].format(model=M, version="0.1.59", why="no library"),
+                         "The engine for Q4 Lite Shape 0.1.59 was not installed because it did not start correctly (no library). The Strata engine is unchanged.")
+        self.assertEqual(W["fetch_failed"].format(model=M, why="no network"), "The engine for Q4 Lite Shape could not be downloaded: no network")
+        self.assertEqual(W["newer_failed"].format(model=M, why="bad hash", have="0.1.59"),
+                         "A newer engine for Q4 Lite Shape is available but could not be installed (bad hash). Still using 0.1.59.")
+        self.assertEqual(W["missing"].format(model=M, reason="nothing matched"),
+                         "Q4 Lite Shape needs its own engine, which is not installed or does not fit this PC: nothing matched. Run `strata launch` again, or Download / repair in "
+                         "the app, to fetch it. Starting a model never downloads an engine.")
+        self.assertEqual(W["setup_failed"].format(model=M), "the engine for Q4 Lite Shape could not be installed")
+        self.assertEqual(W["setup_failed_hint"], "See the line above. Nothing was downloaded for the model. Run this again when the update feed has it.")
+        self.assertEqual(W["setup_ok"].format(model=M, version="0.1.59", folder="/x/y"), "engine for Q4 Lite Shape: 0.1.59 in /x/y")
+        self.assertEqual(W["update_label"], "Model engine")
+
+    def test_no_reasons_or_platform_names_reach_the_lines(self):
+        """The reasons list and the platform-backend stay in the result rows (and the JSON), not in the line a person reads."""
+        pkgs = [p for p in feedmod.parse(json.dumps({"schema_version": 1, "channel": "stable", "generated_at": "2026-11-08T00:00:00Z", "sequence": 1,
+                                                     "shape_engines": {"packages": [dict(shape="q4_mid", version="0.1.59", platform="linux-x86_64", backend="cuda", variant="", archs=["sm_86"],
+                                                                                         min_driver={}, min_runtime=None, build_id="b", format="tar.gz", url="x", size=1, sha256="a" * 64,
+                                                                                         manifest_sha256="b" * 64, installed_bytes=1)]}}).encode(), source="s", key_id="k").shape_engines]
+        feed = mock.Mock(shape_engines=pkgs, models=())
+        ctx = mock.Mock(components=Path(tempfile.mkdtemp()), hardware={"platform": host_platform(), "backend": "cuda"})
+        row = shape_engine.update_one(ctx, feed, "q4_lite", title="Q4 Lite Shape")
+        self.assertEqual(row["note"], "The update feed has no engine for Q4 Lite Shape for this computer.")
+        self.assertTrue(row["reasons"], "the reasons are in the row")
+        self.assertEqual((row["shape"], row["component"]), ("q4_lite", "strata-q4-lite"))
 
 
 class NoAcquisitionOnStart(unittest.TestCase):

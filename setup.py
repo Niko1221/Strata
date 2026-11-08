@@ -8318,12 +8318,12 @@ def shape_engine_step(a, gpu, vision):
     exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
     if exe is None:
         if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
-            warn(f"no engine for {name} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched")
+            warn(shape_engine.WORDS["setup_skip"].format(model=name))
             return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
-        fail(f"the engine for this model ({name}) could not be installed", "see the line above; nothing was downloaded for the model, run this again when the update feed has it")
+        fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
     found = shape_engine.find(shape, full=False, title=title)
     eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local", "shape": shape}
-    ok(f"engine for {name}: {found.version} ({found.platform}-{found.backend}) in {eng}")
+    ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=eng))
     if vision != "none":
         if (eng / VEXE).is_file():
             ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
