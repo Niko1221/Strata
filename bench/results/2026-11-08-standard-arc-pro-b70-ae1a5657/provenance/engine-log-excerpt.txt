@@ -1,0 +1,37 @@
+Engine start-up lines for run 20261108T034927Z-ae1a5657, taken from the server's log (operator artifact, not listed in results.json).
+Home and data paths are placeholders; nothing else is edited.
+
+[strata] 2026-11-07 22:48:06 engine started: ~/bin/strata-sycl-host.sh --serve --pack <modeldata>/packs/coder-iq1_m --native ~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf --ple-gguf ~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf --expert-profile <data>/strata-0.2.12-stock/data/expert-profile-mine.bin --expert-cache auto --stream-experts --prefill auto --prompt-cache 6 --prompt-cache-every 4096 --batch 0 --spec 6 --spec-min-p 0.5 --mtp <modeldata>/mtp/rt --mtp-draft-vocab <data>/strata-0.2.12-stock/data/draft_vocab_en.bin --mtp-window 8192 --max-context 131072 --kv int8 --kv-resident 32768 --vram-reserve-mib 700 --conversation-cache-mib 2048
+strata generate: PCIe probe: 7.0 GB/s host->device (best of 7.0 7.0 7.0 7.0) -> pcie_frac 0.19 (default 0.55)
+strata generate: native pack: <modeldata>/packs/coder-iq1_m experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.1 s)
+strata generate: 1406 MiB of weights loaded from <modeldata>/packs/coder-iq1_m in 0.4 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights, in 0.5 s
+strata generate: PLE direct read probe: 41161 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile <data>/strata-0.2.12-stock/data/expert-profile-mine.bin: 12288 ranked pairs, built for 12288 slots
+strata generate: KV streaming: 32768 of 131072 cells per QSA layer in VRAM, the K/V in 1.55 GiB of pinned RAM
+strata generate: PLE on, table 320001536 rows of ~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf
+strata mtp: draft layer loaded, 802 MiB of VRAM (experts 675, dense 111), files read in 0.43 s (1823 MiB/s)
+strata: STRATA_Q6_PLANAR: the output head (248320 x 2560) is stored as 16-byte-aligned planes (same bytes)
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.1 s
+strata generate: GPU 0: Intel(R) Arc(TM) Pro B70 Graphics, compute capability 20.2
+strata generate: experts streamed from the GGUF on demand (--stream-experts): no host arena; every expert must fit the VRAM cache
+strata generate: 7 pool workers on logical processors 1,2,3,4,5,6,7, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 1-7 (7 workers, one per physical core; host on 0)
+strata generate: expert cache auto: 24.52 GiB free, 700 MiB reserved (+88 MiB for the draft head) -> 9578 slots
+strata generate: expert cache 12288 slots, 23.42 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: profile fill: 23.42 GiB in 3.7 s (6.73 GB/s, pipelined)
+strata generate: pre-filled 12288 of 12288 slots from the profile in 3.7 s (6733 MB/s); slot 0 verified
+strata generate: 1200 of 0 experts missing from VRAM (+ 1200 in the prompt loan's slots) mirrored in pinned host memory (2.32 GiB, 1.4 s); the GPU reads them over PCIe
+strata generate: adaptive swaps off: with STRATA_VERIFY_NO_HOST an expert they move out of VRAM would be neither there nor mirrored
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 7 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.58)
+strata generate: token graph hit path: 12288 resident experts, decided on the device
+strata serve: prompt chunk auto: 8192 tokens, a 96-slot ring
+strata serve: the prompt path borrows 1799 CUDA0 cache slots (3.47 GiB)
+strata: int8 prompt experts are on (Battlemage default, auto); STRATA_PREFILL_MMQ=0 turns them off

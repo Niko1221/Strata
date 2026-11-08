@@ -1,0 +1,84 @@
+{
+ "about": "Fields strata bench run got wrong on this host, with the correct values and where the evidence is. results.json is intentionally left byte-identical to the runner's output; a validator reading it will still see these values, so this file is the authoritative correction.",
+ "results_json_sha256": "5b38eeca3742c5ba3b9d12307634698f124f6a92db268b212042681512522466",
+ "results_json_bytes": 58786,
+ "folder_renamed_from": "2026-11-08-standard-ryzen-7-7700x-8-core-processor-ae1a5657",
+ "folder_renamed_to": "2026-11-08-standard-arc-pro-b70-ae1a5657",
+ "corrections": [
+  {
+   "pointer": "/hardware/gpus/0/name",
+   "runner_value": "AMD Ryzen 7 7700X 8-Core Processor",
+   "correct_value": "Intel Arc Pro B70 (Battlemage G31)",
+   "why": "the probe found the AMD iGPU (ROCm is installed for it); the engine used the Intel card",
+   "evidence": [
+    "provenance/engine-log-excerpt.txt: 'strata generate: GPU 0: Intel(R) Arc(TM) Pro B70 Graphics, compute capability 20.2'",
+    "provenance/launch-command.txt"
+   ]
+  },
+  {
+   "pointer": "/hardware/gpus/0/memory_bytes",
+   "runner_value": null,
+   "correct_value": 34359738368,
+   "why": "32 GB GDDR6 on the card; the probe read nothing from the card",
+   "evidence": [
+    "provenance/engine-log-excerpt.txt"
+   ]
+  },
+  {
+   "pointer": "/software/runtime/0",
+   "runner_value": {
+    "name": "rocm",
+    "version": "6.2.1-112"
+   },
+   "correct_value": {
+    "name": "intel-oneapi-sycl",
+    "version": "2026.2"
+   },
+   "why": "the engine is an Intel SYCL AOT build; ROCm 6.2.1 is installed for the iGPU and was not used",
+   "evidence": [
+    "provenance/launch-command.txt",
+    "provenance/engine-log-excerpt.txt"
+   ]
+  },
+  {
+   "pointer": "/software/drivers/0",
+   "runner_value": {
+    "name": "gpu-driver",
+    "version": "7.0.0-42-generic"
+   },
+   "correct_value": {
+    "name": "xe",
+    "version": null
+   },
+   "why": "the Intel card is driven by the in-kernel xe module, which carries no separate version; 7.0.0-42-generic is the kernel release",
+   "evidence": [
+    "the engine's start-up lines and /software/os"
+   ]
+  },
+  {
+   "pointer": "/configuration/*",
+   "runner_value": null,
+   "correct_value": "see provenance/engine-config.json",
+   "why": "a --url run cannot read the server's engine options; the operator attaches them",
+   "evidence": [
+    "provenance/engine-config.json",
+    "config.json: 'the server was already running; its engine options are not exposed'"
+   ]
+  }
+ ],
+ "operator_artifacts": {
+  "README.md": "f2d223288e6f5a69f5dff6453d3a90f749a2281a8660c4fc0b1cc98168513f96",
+  "provenance/engine-log-excerpt.txt": "d6c4e39ed4f8c732ed07dc70defe73007e4f2d5c82768c47d694ce018390c7a9",
+  "provenance/launch-command.txt": "07e3031ccf00225c34d6e7d9e00064c255f9186c5cb40e6811136ad91e86f2b1",
+  "provenance/engine-config.json": "4581ebae86d5bcc944a774922b05c9e7c43d858e6172fd46a7198075eb8cf3e5",
+  "operator-corrections.json": "ffde531373f8ddc702d164e350340b88afbbc5ca7002e7693ab21d4e3c17b76d"
+ },
+ "runner_artifacts_untouched": {
+  "results.json": "5b38eeca3742c5ba3b9d12307634698f124f6a92db268b212042681512522466",
+  "outputs.jsonl": "c97a0de270f6eacae797eb09dff29fa8b004a755699d24511aa928fdaad8b77e",
+  "config.json": "c04e49e3e279b102073f14b16842effb0afa63556469259b0ca6b2b32632c410",
+  "provenance/chat_template.jinja": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+  "provenance/corpus-manifest.sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+  "provenance/corpus-build.json": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2"
+ }
+}

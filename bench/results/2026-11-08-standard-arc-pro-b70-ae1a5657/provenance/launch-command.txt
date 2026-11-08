@@ -1,0 +1,5 @@
+The server the run used, as the engine received it (the wrapper only sets oneAPI paths):
+
+~/bin/strata-sycl-host.sh --pack <modeldata>/packs/coder-iq1_m --native ~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf --ple-gguf ~/strata-models/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf --expert-profile <data>/strata-0.2.12-stock/data/expert-profile-mine.bin --expert-cache auto --stream-experts --prefill auto --prompt-cache 6 --prompt-cache-every 4096 --batch 0 --spec 6 --spec-min-p 0.5 --mtp <modeldata>/mtp/rt --mtp-draft-vocab <data>/strata-0.2.12-stock/data/draft_vocab_en.bin --mtp-window 8192 --max-context 131072 --kv int8 --kv-resident 32768 --vram-reserve-mib 700 --conversation-cache-mib 2048
+
+The same arguments are in provenance/engine-config.json.
