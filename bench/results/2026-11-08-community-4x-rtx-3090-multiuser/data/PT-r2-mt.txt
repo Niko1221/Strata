@@ -1,0 +1,6 @@
+# run-PT-r2-mt: 16 users x 3 turns, doc 8000 + 3000/turn, 400 out
+turn  prompt  cached  TTFT p50  TTFT p95  dec p50
+   1   11131       0     26.38     62.16     31.7
+   2   15586   11437      3.25      9.92     29.5
+   3   20023   15869      2.63     17.25     29.5
+wall 91s, output 13984 tok = 154.1 tok/s, prompt tokens sent 747858, follow-up TTFT p50 2.95 s
