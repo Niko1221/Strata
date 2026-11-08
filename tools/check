@@ -395,12 +395,13 @@ def step_npm(name, script, args=()):
 
 
 def step_docs(ctx):
-    """The documentation checks that need no tools but Python: links, release manifest, capability table, bench index, settings register."""
+    """The documentation checks that need no tools but Python: links, release manifest, capability table, bench index, settings register, the vendored ggml manifest."""
     r = Result("docs")
     log = ctx.scratch.path("docs.log")
     r.log = log
     for label, script, args in (("links", "check_links.py", ()), ("release manifest", "release_manifest.py", ("--check",)),
-                                ("capability table", "capability_table.py", ("--check",)), ("bench results index", "bench_results_index.py", ("--check",)), ("settings register", "settings_register.py", ("--check",))):
+                                ("capability table", "capability_table.py", ("--check",)), ("bench results index", "bench_results_index.py", ("--check",)), ("settings register", "settings_register.py", ("--check",)),
+                                ("vendored ggml (third_party/strata-ggml)", "check_vendored.py", ())):
         path = os.path.join(ROOT, "tools", script)
         if not os.path.exists(path):
             r.skipped += 1
