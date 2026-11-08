@@ -184,23 +184,11 @@ option(STRATA_Q6K_EXPERTS "Build the Q6_K gate/up grouped expert kernels (UD-Q6_
 if(STRATA_Q6K_EXPERTS)
   add_compile_definitions(STRATA_Q6K_EXPERTS=1)
 endif()
-set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from instead of the vendored third_party/strata-ggml (empty: the vendored tree)")
-if(STRATA_GGML_DIR)
-  set(_strata_ggml_root "${STRATA_GGML_DIR}")
-else()
-  set(_strata_ggml_root "${STRATA_ROOT}/third_party/strata-ggml")
-endif()
+include(${STRATA_ROOT}/cmake/strata_ggml.cmake)        # -DSTRATA_GGML_DIR, or the vendored third_party/strata-ggml
+include(${STRATA_ROOT}/cmake/backends/sycl.cmake)
+strata_ggml_resolve("${STRATA_ROOT}")
 if(STRATA_NATIVE_EXPERTS)
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-  set(GGML_STATIC ON CACHE BOOL "" FORCE)
-  set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-  set(GGML_SYCL OFF CACHE BOOL "" FORCE)
-  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-  set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
-  set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(GGML_NATIVE ON CACHE BOOL "" FORCE)
-  add_subdirectory(${_strata_ggml_root}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+  strata_sycl_ggml()
   strata_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
                              src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
                              src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp   # 0.1.42: AVX1 (no AVX2) Q2_0 / i-quant rows
