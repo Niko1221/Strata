@@ -416,7 +416,7 @@ class Install(Base):
     def _program(self, geometry):
         """A stand-in engine program: `--version` names it, `--geometry` prints `geometry` (None: an engine from before the flag, which exits 2)."""
         src = self.root / f"prog-{geometry}"
-        src.mkdir()
+        src.mkdir(exist_ok=True)
         script = src / "strata"
         answer = f'print({geometry!r})' if geometry else 'sys.exit(2)'
         script.write_text(f'#!{sys.executable}\nimport sys\nif "--version" in sys.argv:\n    print("strata 0.2.13")\nelif "--geometry" in sys.argv:\n    {answer}\nelse:\n    sys.exit(3)\n')
@@ -436,7 +436,7 @@ class Install(Base):
         if os.name == "nt":
             self.skipTest("a script is not a Windows program")
         self.publish("0.1.59")
-        with mock.patch.object(shape_engine, "check_geometry", return_value=(False, "it was built for a different model shape (flash_next)")):
+        with mock.patch.object(shape_engine, "_test_start", return_value=(False, "it was built for a different model shape (flash_next)")):
             lines = []
             self.assertIsNone(self.ensure(lines, title="Q4 Lite Shape"))
         self.assertIn("The engine for Q4 Lite Shape 0.1.59 was not installed because it did not start correctly (it was built for a different model shape (flash_next)). "
