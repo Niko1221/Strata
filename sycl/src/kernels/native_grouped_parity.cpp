@@ -764,7 +764,7 @@ int main(int argc, char** argv) {
 #ifdef STRATA_Q6K_EXPERTS
                            14,
 #endif
-                           7, 20, 8})
+                           7, 8})   // (check_kq's reference has no IQ4_NL down: those pairs are in the loop below)
                 check_kq(gu, dt, KH, KF, s, rng);
         for (int gu : {29, 16, 17, 22, 42, 18, 23, 21})
             for (int dt : {42, 20, 6, 8}) check(gu, dt, KH, KF, s, rng);

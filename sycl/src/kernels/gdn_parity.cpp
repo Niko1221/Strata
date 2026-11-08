@@ -100,7 +100,7 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
 // Fixtures have nonzero initial state, modulo-paired heads, signed q/k/v, and
 // both shallow and deep decay. A tolerance is diagnostic only, never a pass.
 int prefill_case(int T, int seed, int repeats) {
-    constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+    constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;   // the compiled shape
     sycl::queue q(dpct::get_in_order_queue().get_device(),
                   sycl::property_list{sycl::property::queue::in_order{}});
     // Variant 6 runs on Intel GPUs only (the engine throws elsewhere): skip, not fail, on any other device.
