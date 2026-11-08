@@ -4955,9 +4955,10 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (native_pack) skip.insert("token_embd.weight");
-        // STRATA_HC_Q8=1 (single GPU): the layers' hyper-connection down / up projections live only as Q8_0 (NativeDense
-        // quantizes them from the pack file), so their bf16 copy is not loaded
-        if (!o.native_dense_gguf.empty() && !multi_gpu && strata::core::NativeDense::hc_q8_requested())
+        // STRATA_HC_Q8=1: the layers' hyper-connection down / up projections live only as Q8_0 (NativeDense quantizes
+        // them from the pack file), so their bf16 copy is not loaded. Also under a layer split: the Q8 copy is half the
+        // bytes, and on 2x MI50 keeping both cost the expert cache ~0.3 GiB a card for no read (GR-PORT/HC_Q8).
+        if (!o.native_dense_gguf.empty() && strata::core::NativeDense::hc_q8_requested())
             strata::core::NativeDense::add_hc_skip(o.pack, skip);
     }
     // Layer split: every GPU holds only the dense weights of ITS layers (the PLE tensors stay everywhere).
