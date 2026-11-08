@@ -63,7 +63,7 @@
 | 2.00 bpw | 257 GB | 約265 GB |
 | 2.25 bpw | 274 GB | 約280 GB |
 
-NVIDIA RTX 30・40・50 シリーズ（Windows と Linux）と、AMD Radeon AI PRO R9700（Linux）で動きます。セットアップがファイルと DeepSeek エンジンをダウンロードし、モデルを起動します。
+NVIDIA RTX 30・40・50 シリーズ（Windows と Linux）、AMD Radeon AI PRO R9700（Linux）、AMD Ryzen AI Max — Strix Halo（Windows）、メモリ 64 GB 以上の Apple シリコン搭載 Mac（[Mac](docs/DEEPSEEK_MAC.md)）で動きます。セットアップがファイルと DeepSeek エンジンをダウンロードし、モデルを起動します。
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan

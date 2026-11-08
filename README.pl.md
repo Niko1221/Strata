@@ -65,7 +65,7 @@ dużo wolnego miejsca na dysku.
 | 2.25 bpw | 274 GB | około 280 GB |
 
 Działa na kartach NVIDIA RTX serii 30, 40 i 50 (Windows i Linux), AMD Radeon AI PRO R9700 (Linux) oraz AMD Ryzen AI Max — Strix Halo
-(Windows). Instalacja pobiera pliki i silnik DeepSeek, a potem uruchamia model.
+(Windows) oraz na komputerach Mac z Apple Silicon i co najmniej 64 GB pamięci ([Mac](docs/DEEPSEEK_MAC.md)). Instalacja pobiera pliki i silnik DeepSeek, a potem uruchamia model.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan

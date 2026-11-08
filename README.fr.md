@@ -63,7 +63,7 @@ Dans l'**application de bureau** et dans le **Terminal**. Ce qui ne tient pas en
 | 2.00 bpw | 257 GB | environ 265 GB |
 | 2.25 bpw | 274 GB | environ 280 GB |
 
-Fonctionne sur les NVIDIA RTX 30, 40 et 50 (Windows et Linux) et sur l'AMD Radeon AI PRO R9700 (Linux). L'installation télécharge les fichiers et le moteur DeepSeek, puis démarre le modèle.
+Fonctionne sur les NVIDIA RTX 30, 40 et 50 (Windows et Linux), l'AMD Radeon AI PRO R9700 (Linux), l'AMD Ryzen AI Max — Strix Halo (Windows) et les Mac Apple Silicon avec 64 Go ou plus ([Mac](docs/DEEPSEEK_MAC.md)). L'installation télécharge les fichiers et le moteur DeepSeek, puis démarre le modèle.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan

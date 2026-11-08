@@ -63,7 +63,7 @@
 | 2.00 bpw | 257 GB | 约265 GB |
 | 2.25 bpw | 274 GB | 约280 GB |
 
-支持 NVIDIA RTX 30、40 和 50 系列（Windows 和 Linux），以及 AMD Radeon AI PRO R9700（Linux）。安装程序会下载模型文件和 DeepSeek 引擎，然后启动模型。
+支持 NVIDIA RTX 30、40 和 50 系列（Windows 和 Linux）、AMD Radeon AI PRO R9700（Linux）、AMD Ryzen AI Max — Strix Halo（Windows），以及内存 64 GB 或以上的 Apple 芯片 Mac（[Mac](docs/DEEPSEEK_MAC.md)）。安装程序会下载模型文件和 DeepSeek 引擎，然后启动模型。
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan

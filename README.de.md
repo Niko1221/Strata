@@ -63,7 +63,7 @@ In der **Desktop-App** und im **Terminal**. Was nicht in den Arbeitsspeicher pas
 | 2.00 bpw | 257 GB | etwa 265 GB |
 | 2.25 bpw | 274 GB | etwa 280 GB |
 
-Läuft auf NVIDIA RTX 30, 40 und 50 (Windows und Linux) und auf AMD Radeon AI PRO R9700 (Linux). Das Setup lädt die Dateien und die DeepSeek-Engine herunter und startet dann das Modell.
+Läuft auf NVIDIA RTX 30, 40 und 50 (Windows und Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo (Windows) und Apple-Silicon-Macs mit 64 GB oder mehr ([Mac](docs/DEEPSEEK_MAC.md)). Das Setup lädt die Dateien und die DeepSeek-Engine herunter und startet dann das Modell.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan

@@ -63,7 +63,7 @@ No **aplicativo de desktop** e no **Terminal**. O que não cabe na memória é l
 | 2.00 bpw | 257 GB | cerca de 265 GB |
 | 2.25 bpw | 274 GB | cerca de 280 GB |
 
-Roda em NVIDIA RTX 30, 40 e 50 (Windows e Linux) e em AMD Radeon AI PRO R9700 (Linux). A instalação baixa os arquivos e o motor do DeepSeek e depois inicia o modelo.
+Roda em NVIDIA RTX 30, 40 e 50 (Windows e Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo (Windows) e Macs com Apple Silicon e 64 GB ou mais ([Mac](docs/DEEPSEEK_MAC.md)). A instalação baixa os arquivos e o motor do DeepSeek e depois inicia o modelo.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
