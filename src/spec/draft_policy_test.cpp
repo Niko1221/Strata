@@ -162,6 +162,38 @@ int main() {
         check(fresh.choose(4, 5, 40).lookup && fresh.choose(4, 5, 40).t == 6,
               "delayed: a held time does not count as another probe");
     }
+    {
+        // --lookup-max-t: only the allowed sizes are taken; a proposal between two sizes takes the smaller; a size
+        // disabled (its graph found no VRAM) is never proposed again; sizes past 8 work like the others
+        DraftPolicy p(16);
+        p.set_sizes((1u << 1) | (1u << 2) | (1u << 3) | (1u << 5) | (1u << 8) | (1u << 16));
+        for (int i = 0; i < 50; ++i) p.observe(false, 3, 2, 0, cost(3));
+        for (int i = 0; i < 40; ++i) p.observe(true, 16, 15, 40, 19.0 + 3.0 * 15);   // long windows: cheap, all accepted
+        for (int i = 0; i < 40; ++i) p.observe(true, 8, 7, 40, 19.0 + 3.0 * 7);
+        for (int i = 0; i < 40; ++i) p.observe(true, 5, 4, 40, 19.0 + 3.0 * 4);
+        const DraftPolicy::Pick a = p.choose(3, 15, 40);
+        check(a.lookup && a.t == 16, "sizes: a full 16-token lookup window when it pays");
+        const DraftPolicy::Pick b = p.choose(3, 10, 40);
+        check(b.lookup && b.t == 8, "sizes: a 10-token proposal takes the 8-token size");
+        bool ok = true;
+        for (int k = 1; k <= 15; ++k) {
+            const DraftPolicy::Pick c = p.choose(3, k, 40);
+            ok &= !c.lookup || p.allowed(c.t);
+        }
+        check(ok, "sizes: never a size outside the mask");
+        p.disable(16);
+        const DraftPolicy::Pick d = p.choose(3, 15, 40);
+        check(d.lookup && d.t == 8, "sizes: a disabled size falls back to the next one");
+        check(p.fit(7) == 5 && p.fit(16) == 8 && p.fit(1) == 1, "sizes: fit() finds the largest allowed size");
+        DraftPolicy q(16);
+        q.set_sizes((1u << 1) | (1u << 2) | (1u << 3) | (1u << 8));
+        bool cok = true;
+        for (int k = 0; k <= 13; ++k) {
+            const int n = q.chain(3, 1.0, k, 40);
+            cok &= n == 0 || q.allowed(3 + n);
+        }
+        check(cok, "sizes: a chained window's total is an allowed size");
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }

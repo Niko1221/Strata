@@ -15,12 +15,17 @@
 
 #include <cublas_v2.h>
 #include "ds4_numerics.cuh"
+#if defined(STRATA_GPU_METAL)
+#include "ds4_vision_metal.h"   // the tower as Metal dispatches (metal/src/engine/ds4_vision_metal.cpp)
+#endif
 #include <cuda_runtime.h>
 
 #include <algorithm>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <thread>
 
 namespace strata::ds4 {
 namespace {
@@ -197,6 +202,16 @@ template <class T>
 bool VisionTower::dalloc(T*& p, size_t n, std::string& err) {
     void* v = nullptr;
     const size_t b = (n * sizeof(T) + 255) / 256 * 256;
+    if (arena_ != nullptr) {   // lent room: handed out in order, never cudaFree'd
+        if (arena_used_ + b > arena_cap_) {
+            err = "vision: the lent room is " + std::to_string(arena_cap_ >> 20) + " MiB, the tower needs more";
+            return false;
+        }
+        p = (T*) (arena_ + arena_used_);
+        arena_used_ += b;
+        dev_bytes_ += b;
+        return true;
+    }
     if (cudaMalloc(&v, b) != cudaSuccess) {
         err = "vision: cudaMalloc " + std::to_string(b >> 20) + " MiB on CUDA" + std::to_string(at_) + " failed";
         return false;
@@ -209,7 +224,9 @@ bool VisionTower::dalloc(T*& p, size_t n, std::string& err) {
 
 VisionTower::~VisionTower() { release(); }
 
-void VisionTower::release() {
+// The device side back to the driver (the host side stays): the work buffers, the small weights, the two slots, cuBLAS, the
+// streams and events.  Also what a failed acquire leaves.
+void VisionTower::free_device() {
     if (at_ < 0) return;
     int cur = 0;
     cudaGetDevice(&cur);
@@ -222,17 +239,54 @@ void VisionTower::release() {
     if (blas_) cublasDestroy((cublasHandle_t) blas_);
     if (st_) cudaStreamDestroy((cudaStream_t) st_);
     if (cs_) cudaStreamDestroy((cudaStream_t) cs_);
+    if (lent_) cudaDeviceSynchronize();   // (the loan's memory is the experts' again once this returns)
     for (void* p : dallocs_) cudaFree(p);
-    if (host_) cudaFreeHost(host_);
     cudaSetDevice(cur);
     blas_ = st_ = cs_ = nullptr;
     dallocs_.clear();
+    if (lent_) {
+        arena_ = nullptr;
+        arena_cap_ = arena_used_ = 0;
+        lent_ = false;
+        if (give_back_) give_back_();
+    }
+    pe_w_ = pe_b_ = norm_ = al1_b_ = al2_b_ = nullptr;
+    for (auto* v : {&n1_, &n2_, &bqkv_, &bo_})
+        for (uint16_t*& q : *v) q = nullptr;
+    rgb_ = nullptr;
+    patch_ = xn_ = qkv_ = o_ = mid_ = p_ = un_ = a16_ = outb_ = nullptr;
+    x_ = y_ = s_ = inv_freq_ = nullptr;
+    slot_[0] = slot_[1] = nullptr;
+    ws_ = nullptr;
+    ready_ = false;
+}
+
+void VisionTower::release_device() {
+    if (lazy_ && ready_) free_device();
+}
+
+void VisionTower::release() {
+    if (at_ < 0) return;
+    free_device();
+    int cur = 0;
+    cudaGetDevice(&cur);
+    cudaSetDevice(at_);
+    if (host_) cudaFreeHost(host_);
+    cudaSetDevice(cur);
     host_ = nullptr;
+    small_host_.clear();
+    small_host_.shrink_to_fit();
+    smalls_.clear();
+    n1_.clear();
+    n2_.clear();
+    bqkv_.clear();
+    bo_.clear();
+    lazy_ = false;
     dev_ = at_ = -1;
     dev_bytes_ = 0;
 }
 
-bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::string& err) {
+bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::string& err, int64_t lazy_reserve_mib) {
     g_ = g;
     const int D = g.dim, I = g.inter, P = g.patch, M = g.merge, hd = g.heads > 0 ? g.dim / g.heads : 0;
     if (g.layers <= 0 || hd * g.heads != D || hd % 4 != 0 || P <= 0 || M <= 0 || g.max_tokens < 5) {
@@ -245,6 +299,7 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
         const int w = (g.max_tokens - 2) / h - 1;
         if (w >= 1) cells = std::max(cells, h * w);
     }
+    cells_ = cells;
     max_n_ = cells * M * M;
     if (max_n_ > kSmT * kSmPer) {
         err = "vision: " + std::to_string(max_n_) + " patches are more than the attention covers";
@@ -312,41 +367,78 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
         err = "vision: the aligner: read failed";
         return false;
     }
-    // the small ones on the device
-    auto up = [&](const std::string& name, size_t n, uint16_t*& d) -> bool {
-        std::vector<uint16_t> h(n);
-        std::vector<int64_t> sh;
-        if (!read(name, sh, h.data())) {
-            err = "vision: " + name + ": read failed";
-            return false;
-        }
-        if (!dalloc(d, n, err)) return false;
-        VK(cudaMemcpy(d, h.data(), n * 2, cudaMemcpyHostToDevice));
-        return true;
-    };
-    bool ok = up("vision.patch_embed.proj.weight", (size_t) D * 3 * P * P, pe_w_) &&
-              up("vision.patch_embed.proj.bias", D, pe_b_) && up("vision.norm.weight", D, norm_) &&
-              up("aligner.w1.bias", g.out, al1_b_) && up("aligner.w2.bias", g.out, al2_b_);
+    // the small ones: into host memory now, onto the device by acquire
     n1_.assign(g.layers, nullptr);
     n2_.assign(g.layers, nullptr);
     bqkv_.assign(g.layers, nullptr);
     bo_.assign(g.layers, nullptr);
+    smalls_.clear();
+    small_host_.clear();
+    auto stage = [&](const std::string& name, size_t n, uint16_t** slot) -> bool {
+        const size_t off = small_host_.size();
+        small_host_.resize(off + n);
+        std::vector<int64_t> sh;
+        if (!read(name, sh, small_host_.data() + off)) {
+            err = "vision: " + name + ": read failed";
+            return false;
+        }
+        smalls_.push_back({slot, off, n});
+        return true;
+    };
+    bool ok = stage("vision.patch_embed.proj.weight", (size_t) D * 3 * P * P, &pe_w_) &&
+              stage("vision.patch_embed.proj.bias", D, &pe_b_) && stage("vision.norm.weight", D, &norm_) &&
+              stage("aligner.w1.bias", g.out, &al1_b_) && stage("aligner.w2.bias", g.out, &al2_b_);
     for (int l = 0; l < g.layers && ok; ++l) {
         const std::string B = "vision.blocks." + std::to_string(l) + ".";
-        ok = up(B + "norm1.weight", D, n1_[l]) && up(B + "norm2.weight", D, n2_[l]) &&
-             up(B + "attn.wqkv.bias", 3 * D, bqkv_[l]) && up(B + "attn.wo.bias", D, bo_[l]);
+        ok = stage(B + "norm1.weight", D, &n1_[l]) && stage(B + "norm2.weight", D, &n2_[l]) &&
+             stage(B + "attn.wqkv.bias", 3 * D, &bqkv_[l]) && stage(B + "attn.wo.bias", D, &bo_[l]);
     }
     if (!ok) return false;
+    // the device side once: it is what stays (not lazy), or what a lazy tower's size is measured by
+    if (!acquire(err)) return false;
+    dev_ = device;
+    lazy_ = false;
+    need_bytes_ = dev_bytes_;
+    if (lazy_reserve_mib >= 0 && lazy_reserve_mib >= (int64_t) (dev_bytes_ >> 20) + kLazyMargin) {
+        free_device();   // (dev_bytes_ stays: what an encode will take)
+        lazy_ = true;
+    }
+    return true;
+}
+
+bool VisionTower::acquire(std::string& err) {
+    if (ready_) return true;
+    const VisionGeo& g = g_;
+    const int D = g.dim, I = g.inter, P = g.patch, M = g.merge, hd = D / g.heads;
+    cudaSetDevice(at_);
+    dev_bytes_ = 0;
+    auto fail = [&]() {
+        free_device();
+        (void) cudaGetLastError();   // (a failed cudaMalloc leaves its error to be read by the next cudaGetLastError: not this tower's next encode)
+        return false;
+    };
+    for (const Small& sm : smalls_) {
+        if (!dalloc(*sm.slot, sm.n, err)) return fail();
+        const cudaError_t e = cudaMemcpy(*sm.slot, small_host_.data() + sm.off, sm.n * 2, cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            err = std::string("vision: cudaMemcpy: ") + cudaGetErrorString(e);
+            return fail();
+        }
+    }
     {   // the rotary's frequencies: theta ^ -(2i / (hd / 2)), hd / 4 of them
         const int nf = hd / 4;
         std::vector<float> f(nf);
         for (int i = 0; i < nf; ++i) f[i] = 1.0f / std::pow(g.theta, (float) (2 * i) / (float) (hd / 2));
-        if (!dalloc(inv_freq_, nf, err)) return false;
-        VK(cudaMemcpy(inv_freq_, f.data(), nf * 4, cudaMemcpyHostToDevice));
+        if (!dalloc(inv_freq_, nf, err)) return fail();
+        const cudaError_t e = cudaMemcpy(inv_freq_, f.data(), nf * 4, cudaMemcpyHostToDevice);
+        if (e != cudaSuccess) {
+            err = std::string("vision: cudaMemcpy: ") + cudaGetErrorString(e);
+            return fail();
+        }
     }
     // the work buffers: the patch grid's rows whole (the residual, its norm, q / k / v), the GEMM outputs a piece of
     // rows at a time, the attention's scores a piece of queries at a time (~48 MB)
-    const int L = cells;
+    const int L = cells_;
     rb_ = 2048;
     qb_ = std::max(16, (int) ((48u << 20) / ((size_t) max_n_ * 4)) / 16 * 16);
     slot_n_ = std::max(block_n_, (size_t) 1 << 22);
@@ -356,36 +448,46 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
                                    (size_t) L * D * M * M + (size_t) 2 * L * g.out});                      // the aligner's
     if ((size_t) L * g.out > y_n || (size_t) max_n_ * D > y_n) {
         err = "vision: work buffer sizes";
-        return false;
+        return fail();
     }
-    ok = dalloc(x_, (size_t) max_n_ * D, err) && dalloc(xn_, (size_t) max_n_ * D, err) && dalloc(qkv_, qkv_n, err) &&
-         dalloc(y_, y_n, err) && dalloc(o_, (size_t) max_n_ * D, err) && dalloc(mid_, (size_t) rb_ * I, err) &&
-         dalloc(s_, (size_t) qb_ * max_n_, err) && dalloc(p_, (size_t) qb_ * max_n_, err) &&
-         dalloc(slot_[0], slot_n_, err) && dalloc(slot_[1], slot_n_, err) && dalloc(ws_, kWs, err);
-    if (!ok) return false;
+    const bool ok = dalloc(x_, (size_t) max_n_ * D, err) && dalloc(xn_, (size_t) max_n_ * D, err) && dalloc(qkv_, qkv_n, err) &&
+                    dalloc(y_, y_n, err) && dalloc(o_, (size_t) max_n_ * D, err) && dalloc(mid_, (size_t) rb_ * I, err) &&
+                    dalloc(s_, (size_t) qb_ * max_n_, err) && dalloc(p_, (size_t) qb_ * max_n_, err) &&
+                    dalloc(slot_[0], slot_n_, err) && dalloc(slot_[1], slot_n_, err) && dalloc(ws_, kWs, err);
+    if (!ok) return fail();
     patch_ = qkv_;   // (before block 0's qkv)
     rgb_ = (uint8_t*) (qkv_ + (size_t) max_n_ * 3 * P * P);
     un_ = qkv_;      // (after the last block's attention)
     a16_ = un_ + (size_t) L * D * M * M;
     outb_ = a16_ + (size_t) L * g.out;
+    auto bad = [&](cudaError_t e, const char* what) {
+        if (e == cudaSuccess) return false;
+        err = std::string("vision: ") + what + ": " + cudaGetErrorString(e);
+        return true;
+    };
     cublasHandle_t h = nullptr;
-    VB(cublasCreate(&h));
+    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) {
+        err = "vision: cublasCreate failed";
+        return fail();
+    }
     blas_ = h;
     cudaStream_t st = nullptr, cs = nullptr;
-    VK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
-    VK(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking));
+    if (bad(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking), "cudaStreamCreate")) return fail();
     st_ = st;
+    if (bad(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking), "cudaStreamCreate")) return fail();
     cs_ = cs;
-    VB(cublasSetStream(h, st));
-    VB(cublasSetWorkspace(h, ws_, kWs));
+    if (cublasSetStream(h, st) != CUBLAS_STATUS_SUCCESS || cublasSetWorkspace(h, ws_, kWs) != CUBLAS_STATUS_SUCCESS) {
+        err = "vision: cuBLAS setup failed";
+        return fail();
+    }
     for (int i = 0; i < 2; ++i) {
         cudaEvent_t a = nullptr, b = nullptr;
-        VK(cudaEventCreateWithFlags(&a, cudaEventDisableTiming));
-        VK(cudaEventCreateWithFlags(&b, cudaEventDisableTiming));
+        if (bad(cudaEventCreateWithFlags(&a, cudaEventDisableTiming), "cudaEventCreate")) return fail();
         copied_[i] = a;
+        if (bad(cudaEventCreateWithFlags(&b, cudaEventDisableTiming), "cudaEventCreate")) return fail();
         used_[i] = b;
     }
-    dev_ = device;
+    ready_ = true;
     return true;
 }
 
@@ -394,6 +496,38 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
     if (dev_ < 0) {
         err = "vision: not loaded";
         return false;
+    }
+    // a lazy tower takes its graphics memory now (a card another program just filled gets a few tries; the caller gives
+    // it back with release_device when the picture turn is over)
+    for (int tries = 0; !ready_; ++tries) {
+        if (acquire(err)) break;
+        if (lend_ && !lent_) {   // no free graphics memory: the experts' slots lend the room for this picture turn
+            std::string e2;
+            uint8_t* base = nullptr;
+            const size_t cap = need_bytes_ + 4096;
+            if (lend_(cap, base, e2)) {
+                arena_ = base;
+                arena_cap_ = cap;
+                arena_used_ = 0;
+                lent_ = true;
+                std::string e3;
+                if (acquire(e3)) break;   // (a failed acquire hands the loan back through free_device)
+                err = e3;
+                if (lent_) {
+                    arena_ = nullptr;
+                    lent_ = false;
+                    if (give_back_) give_back_();
+                }
+            } else {
+                err += " (lending the experts' slots: " + e2 + ")";
+            }
+        }
+        if (tries >= 3) {
+            err = "vision: no graphics memory free for the picture tower (it takes " + std::to_string(need_bytes_ >> 20) +
+                  " MiB for a picture turn: " + err + "); --vision-resident keeps it on the card";
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     const VisionGeo& g = g_;
     const int D = g.dim, I = g.inter, P = g.patch, M = g.merge, hd = D / g.heads, H3 = 3 * D;
@@ -414,6 +548,30 @@ bool VisionTower::encode(const uint8_t* rgb, int width, int height, std::vector<
     cudaSetDevice(dev_);
     cublasHandle_t h = (cublasHandle_t) blas_;
     cudaStream_t s = (cudaStream_t) st_, cs = (cudaStream_t) cs_;
+#if defined(STRATA_GPU_METAL)
+    {   // Metal: the whole tower as dispatches of msl/ds4_vision.metal; the weights are read in place from the pinned block
+        uint16_t* wdev = nullptr;
+        VK(cudaHostGetDevicePointer(&wdev, (void*) host_, 0));
+        auto A = [](const void* p) { return (uint64_t) (uintptr_t) p; };
+        strata::ds4::vismetal::Args a;
+        a.width = width, a.height = height, a.gh = gh, a.gw = gw, a.n = N, a.l = L, a.nw = n_w;
+        a.dim = D, a.inter = I, a.patch = P, a.merge = M, a.heads = g.heads, a.hd = hd, a.layers = g.layers, a.out = g.out;
+        a.rb = rb_, a.qb = (int) std::max<size_t>(1, std::min<size_t>((size_t) N, (size_t) qb_ * max_n_ / (size_t) N));
+        a.eps = g.eps, a.scale = 1.0f / std::sqrt((float) hd);
+        a.rgb = A(rgb_), a.patches = A(patch_), a.x = A(x_), a.xn = A(xn_), a.qkv = A(qkv_), a.y = A(y_), a.o = A(o_), a.mid = A(mid_);
+        a.s = A(s_), a.p = A(p_), a.un = A(un_), a.a16 = A(a16_), a.outb = A(outb_), a.inv_freq = A(inv_freq_);
+        a.weights = A(wdev), a.block_n = block_n_, a.al1_off = al1_off_, a.al2_off = al2_off_;
+        a.pe_w = A(pe_w_), a.pe_b = A(pe_b_), a.norm = A(norm_), a.al1_b = A(al1_b_), a.al2_b = A(al2_b_);
+        for (int l = 0; l < g.layers; ++l) {
+            a.n1.push_back(A(n1_[l])), a.n2.push_back(A(n2_[l])), a.bqkv.push_back(A(bqkv_[l])), a.bo.push_back(A(bo_[l]));
+        }
+        VK(cudaMemcpy(rgb_, rgb, (size_t) N * 3 * P * P, cudaMemcpyHostToDevice));
+        if (!strata::ds4::vismetal::encode(a, err)) return false;
+        rows.resize((size_t) L * g.out);
+        VK(cudaMemcpy(rows.data(), outb_, rows.size() * 2, cudaMemcpyDeviceToHost));
+        return true;
+    }
+#endif
     // the weights in the order the encode takes them: the blocks, then the aligner's in pieces of a slot
     std::vector<Piece> pcs;
     for (int l = 0; l < g.layers; ++l) pcs.push_back({host_ + (size_t) l * block_n_, block_n_});

@@ -33,6 +33,7 @@ PER_REPLICA_GB = 8.0        # measured: about 7 GB of private RAM per engine bes
 HEADROOM_GB = 12.0          # what the OS, the server and the page cache keep
 MIN_CARD_GB = 24.0          # measured on 32 GB cards; a smaller card is not claimed (an A4000 16 GB is measured separately)
 MIN_REPLICAS = 2
+REPLICA_RESERVE_MIB = 2500   # VRAM each one-card engine keeps free (the draft head's prompt capture needs ~2 GB at 14K tokens)
 SWITCHES = {"STRATA_QSA_SLOTS": "1", "STRATA_BATCH_SELF_COMMIT": "1", "STRATA_SLOT_COPY_DIRECT": "1",
             "STRATA_CKPT_POOL": "1", "STRATA_CKPT_POOL_READY": "4", "STRATA_SLOT_CKPT_MOVE": "1",
             "STRATA_SLOT_COPY_BATCHSYNC": "1"}
@@ -119,6 +120,11 @@ def apply(cards: list[dict], cfg: dict, ram_gb: float, *, parallel_given: bool =
         if key not in environ:                              # an environment variable of the person's own wins
             env.setdefault(key, val)
     cfg["env"] = env
+    # 0.2.10 (QUAL-PAR): with the expert cache on auto each engine fills its card and keeps ~300 MiB; a 14K-token read with the draft head
+    # then ran out of memory in the prompt capture and the engine died.  2.5 GB kept free (2,111 MiB left on a 48 GB card) ran
+    # the 61-task suite and 48 minutes of soak with no error.  A reserve the person gave wins.
+    if "--vram-reserve-mib" not in {str(x) for x in cfg.get("args") or []}:
+        cfg["args"] = list(cfg.get("args") or []) + ["--vram-reserve-mib", str(REPLICA_RESERVE_MIB)]
     notes = [f"{k} engines of one card each instead of one layer split of {len(cards)}: requests spread over them "
              f"(about 1.8 times the throughput at 8 to 16 requests at once; one request alone is as fast as before)"]
     if k < len(cards):

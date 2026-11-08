@@ -26,4 +26,8 @@ export function scopedMonitor(live:MonitorState|null,runtime:RuntimeModels|null,
     totals:{...live.totals,tokensIn:count('tokensIn'),tokensOut:count('tokensOut'),requests:done.length,cachedTokens:0,uncachedTokens:count('tokensIn'),promptMs:undefined,decodeMs:undefined,avgTps:0}
   };
 }
-export const instanceLabel=(i:RuntimeModel)=>`${i.family}${i.family.toLowerCase().endsWith(i.name.toLowerCase())?"":` · ${i.name}`}${i.memory.context>0?` · ${i.memory.context/1024}K`:""}`;
+// A quantisation tag is written the way the rest of the app writes it: Q2_0, not q2_0.
+// The catalogue stores the id in lower case, so labels read as a typo beside the
+// Models screen without this.
+const quantLabel=(name:string)=>/^q\d/i.test(name)?name.toUpperCase():name;
+export const instanceLabel=(i:RuntimeModel)=>`${i.family}${i.family.toLowerCase().endsWith(i.name.toLowerCase())?"":` · ${quantLabel(i.name)}`}${i.memory.context>0?` · ${i.memory.context/1024}K`:""}`;

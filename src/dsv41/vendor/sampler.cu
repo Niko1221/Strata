@@ -727,8 +727,9 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
 }
 
 namespace {
-void spec_check(const char* who, int n_tokens, int n_vocab, const SamplerParams& p) {
-    if (p.greedy || p.temperature <= 0.0f || p.penalty_last_n > 0 || n_vocab <= 0) {
+// (the draft's chain has no history: penalties only where the caller hands rows over - sample_verify)
+void spec_check(const char* who, int n_tokens, int n_vocab, const SamplerParams& p, bool history = false) {
+    if (p.greedy || p.temperature <= 0.0f || (p.penalty_last_n > 0 && !history) || n_vocab <= 0) {
         std::fprintf(stderr, "%s: a sampled request without penalties only (greedy %d, temperature %g, penalty_last_n "
                              "%d, n_vocab %d)\n", who, (int) p.greedy, p.temperature, p.penalty_last_n, n_vocab);
         std::exit(1);
@@ -759,15 +760,18 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
 }
 
 void sample_verify(const float* logits, int n_tokens, int n_vocab, const SamplerParams& p, const SpecList* q,
-                   const int* draft, int* out, void* stream) {
+                   const int* draft, int* out, void* stream, const int* history, int history_len) {
     if (n_tokens <= 0) return;
-    spec_check("sample_verify", n_tokens, n_vocab, p);
+    const bool pen = p.penalty_last_n > 0 && history != nullptr && history_len > 0;
+    spec_check("sample_verify", n_tokens, n_vocab, p, pen);
 #if defined(STRATA_METAL)
-    host_sample<2>(logits, n_tokens, n_vocab, nullptr, 0, p, out, const_cast<SpecList*>(q), draft);
+    host_sample<2>(logits, n_tokens, n_vocab, pen ? history : nullptr, pen ? history_len : 0, p, out,
+                   const_cast<SpecList*>(q), draft);
     return;
 #endif
-    strata_ds4_launch(sampler_kernel<2>, (unsigned) n_tokens, 1024, 0, (cudaStream_t) stream, logits, n_vocab, n_tokens, nullptr, 0,
-                                                                                p, out, const_cast<SpecList*>(q), draft);
+    const unsigned shmem = pen ? (unsigned) ((n_vocab + 31) / 32) * sizeof(unsigned) : 0;   // the penalty bitmap
+    strata_ds4_launch(sampler_kernel<2>, (unsigned) n_tokens, 1024, shmem, (cudaStream_t) stream, logits, n_vocab, n_tokens,
+                      pen ? history : nullptr, pen ? history_len : 0, p, out, const_cast<SpecList*>(q), draft);
     spec_launched("sample_verify", stream);
 }
 

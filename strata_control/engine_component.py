@@ -205,24 +205,50 @@ def cached_notice(root: Path | None = None) -> str | None:
 
     The notice belongs to the versions the check was made for: it is dropped when Control or the installed engine is not the one
     recorded then (an app install, an update, a rollback), and an engine that is not newer than the installed one is never offered."""
+    offers = cached_offers(root)
+    parts = ([f"engine {offers['engine']}"] if offers.get("engine") else []) + ([f"DeepSeek engine {offers['dsv41']}"] if offers.get("dsv41") else []) \
+        + ([f"app {offers['app']}"] if offers.get("app") else [])
+    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+
+
+def _installed_dsv41_version(profile_configs=None) -> str | None:
+    """The newest DeepSeek engine package the saved profiles name (a local read), or None."""
+    from strata_control import dsv41_paths
+    newest = None
+    for r in dsv41_paths.roots_of(profile_configs if profile_configs is not None else dsv41_paths.saved_configs()):
+        for exe in dsv41_paths.installed(r):
+            v = exe.parent.name.split("-")[0]
+            if newest is None or _version_key(v) > _version_key(newest):
+                newest = v
+    return newest
+
+
+def cached_offers(root: Path | None = None) -> dict:
+    """What the last explicit check found newer, as {"engine": version|None, "dsv41": version|None, "app": version|None}; local reads only (the cached
+    check, the installed packages), never the network.  The same rules as `cached_notice`: it belongs to the Control and the packages it was made for,
+    and a package that is not newer than the installed one is never offered."""
     base = root or components_dir()
+    none = {"engine": None, "dsv41": None, "app": None}
     try:
         last = (json.loads((base / UPDATE_STATE).read_text(encoding="utf-8-sig")).get("last_check") or {})
     except (OSError, ValueError, AttributeError):
-        return None
+        return none
     if not isinstance(last, dict):
-        return None
+        return none
     control = runtime_version()
     if "control" in last and last["control"] != control:
-        return None
-    engine, app = last.get("engine"), last.get("app")
+        return none
+    engine, app, dsv41 = last.get("engine"), last.get("app"), last.get("dsv41")
     installed = newest_installed_version(base)
     if "engine_installed" in last and last["engine_installed"] != installed:
         engine = None
     if engine and installed and _version_key(str(engine)) <= _version_key(installed):
         engine = None
-    parts = ([f"engine {engine}"] if engine else []) + ([f"app {app}"] if app else [])
-    return f"update available ({', '.join(parts)}): run `strata update`" if parts else None
+    if dsv41:
+        have = _installed_dsv41_version()
+        if have is None or "dsv41_installed" in last and last["dsv41_installed"] != have or _version_key(str(dsv41)) <= _version_key(have):
+            dsv41 = None
+    return {"engine": engine or None, "dsv41": dsv41 or None, "app": app or None}
 
 
 def previous_folder(root: Path | None = None) -> str | None:
@@ -445,6 +471,46 @@ def split_backend(value) -> tuple[str, str]:
     return name, ""
 
 
+BACKEND_ALIASES = {"nvidia": "cuda", "amd": "hip", "intel": "sycl", "arc": "sycl"}
+SAVED_KEY = "engine_backend"
+
+
+def clean_backend_name(value) -> str:
+    """What the person typed for --backend, as an engine family name: 'intel' -> 'sycl', 'NVIDIA' -> 'cuda'; '' when it names none."""
+    name = str(value or "").strip().lower()
+    name = BACKEND_ALIASES.get(name, name)
+    return name if name in ("cuda", "hip", "sycl") else ""
+
+
+def saved_backend(environ=None) -> str | None:
+    """The engine family the person chose with `strata launch --backend` (kept in the settings file), or None. It is ignored when this PC
+    has no card of that make (the choice was made on other hardware): the PC's own detection then decides again."""
+    try:
+        from strata_control import discovery
+        value = clean_backend_name(discovery._read_json(discovery.own_settings_file(environ)).get(SAVED_KEY))        # noqa: SLF001
+    except Exception:                                    # noqa: BLE001 - a settings file that cannot be read is no choice
+        return None
+    if not value:
+        return None
+    here = gpu_makes_present()
+    return value if (not here or value in here) else None
+
+
+def save_backend(value, environ=None) -> Path | None:
+    """Keep (or, with a falsy value, forget) the person's engine family choice in the settings file, leaving every other key as it is."""
+    from strata_control import discovery
+    path = discovery.own_settings_file(environ)
+    data = discovery._read_json(path)                    # noqa: SLF001
+    name = clean_backend_name(value)
+    if name:
+        data[SAVED_KEY] = name
+    else:
+        data.pop(SAVED_KEY, None)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    return path
+
+
 def detect_backend(environ=None) -> tuple[str | None, str]:
     """(backend, how) for this machine: the engine family its GPU needs. Bounded, read-only probes of tools that are
     already installed; ``STRATA_ENGINE_BACKEND`` overrides (the tests and the support desk use it)."""
@@ -454,6 +520,9 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         if forced not in BACKEND_MATRIX:
             raise ComponentProblem(f"{ENV_BACKEND}={forced!r} is not one of {', '.join(sorted(BACKEND_MATRIX))}")
         return forced, "environment"
+    chosen = saved_backend(environ)
+    if chosen:
+        return chosen, "saved choice"
     if host_platform().startswith("macos"):
         return "metal", "platform"
     # Windows: the display adapters are the machine's own statement about which cards it has, so they decide first. A leftover
@@ -767,6 +836,40 @@ def hip_archs_present(kfd_root: str | None = None) -> list[str]:
     return found
 
 
+def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> list[str]:
+    """Linux, third probe for the AMD architectures when the kernel driver's topology (hip_archs_present) and rocminfo said nothing (no
+    /sys/class/kfd access in an AppImage or a container, no ROCm tools installed): the PCI ids of the AMD display devices, in sysfs
+    (``card0/device/{vendor,device}``) and then ``lspci -nn`` (``[1002:744c]``), mapped through the same tables the Windows probe uses.
+    An integrated Radeon and an id the tables do not know give nothing. Read-only; empty when it cannot say."""
+    ids: list[int] = []
+    try:
+        for card in sorted(Path(drm_root).glob("card[0-9]*")):
+            if "-" in card.name:                                            # card0-DP-1 and the like are connectors
+                continue
+            try:
+                vendor = (card / "device" / "vendor").read_text().strip().lower()
+                device = (card / "device" / "device").read_text().strip().lower()
+            except OSError:
+                continue
+            if vendor == "0x1002" and device.startswith("0x"):
+                ids.append(int(device, 16))
+    except OSError:
+        pass
+    if not ids and lspci and os.name != "nt":
+        tool = shutil.which("lspci")
+        if tool:
+            try:
+                done = subprocess.run([tool, "-nn"], capture_output=True, text=True, errors="replace", timeout=10)
+                for line in (done.stdout or "").splitlines():
+                    if re.search(r"VGA|Display|3D", line):
+                        found = re.search(r"\[1002:([0-9a-f]{4})\]", line, re.I)
+                        if found:
+                            ids.append(int(found.group(1), 16))
+            except (OSError, subprocess.SubprocessError):
+                pass
+    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+
+
 def _smi_query(field_name: str) -> list[str]:
     tool = shutil.which("nvidia-smi")
     if not tool:
@@ -1028,7 +1131,8 @@ def status(root: Path | None = None, *, backend: str | None = None, full: bool =
               "backend": backend or detected, "backend_source": "requested" if backend else how,
               "installed": [item.to_dict() for item in found], "problems": problems,
               "engine": None, "usable": False, "notice": None, "acquires": False,
-              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base)}
+              "pinned": pinned_folder(base), "previous": previous_folder(base), "update_notice": cached_notice(base),
+              "update_available": cached_offers(base)}
     try:
         chosen = resolve(base, backend=backend, full=full)
         report["engine"] = chosen.to_dict()

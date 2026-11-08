@@ -162,7 +162,7 @@ screen or with the matching `strata launch` flags, or `"mtp": false` (draft laye
 
 **The app keeps more graphics memory free than I want (decode is slower than in 0.1.45).**
 Without a value of yours the app keeps graphics memory free for the desktop: 1536 MiB on a card of 16 GB or less that drives
-a display (1024 MiB on a larger card), more with a picture reader on the GPU (2048 MiB), and with the "Leave 20% for my work"
+a display (1024 MiB on a larger card), more with a picture reader on the GPU (2048 MiB), and with the "Leave room for my work"
 profile a fifth of the card (at most 1536 MiB on a card of 16 GB or less). A card that has no display attached, such as a
 second GPU with the screen on the integrated one, keeps 512 MiB (700 MiB with pictures on the GPU). It reads that from the
 driver (nvidia-smi `display_active`, or the Windows adapter that has the desktop); when it cannot tell, it assumes a display.

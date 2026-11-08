@@ -459,3 +459,37 @@ class Issue3504MultiValueArgs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DoctorAndTheDrafter(unittest.TestCase):
+    """One drafter per run: a model whose drafter is DFlash2 has no MTP layer on disk and is still usable; with the MTP chosen the folder is required."""
+
+    def report(self, **extra):
+        import tempfile
+        from pathlib import Path
+        from strata_control import doctor
+        root = Path(tempfile.mkdtemp())
+        engine = root / "engine"
+        engine.write_text("x", encoding="utf-8")
+        engine.chmod(0o700)
+        tok = root / "tok"
+        tok.mkdir()
+        for n in ("vocab.json", "merges.txt", "token_type.json"):
+            (tok / n).write_text("{}", encoding="utf-8")
+        cfg = root / "run.json"
+        cfg.write_text(json.dumps({"exe": str(engine), "args": ["--mtp", str(root / "gone")], "cwd": str(root), "tokenizer": str(tok),
+                                   "model_name": "qwen3.8-flash-next-iq3_s", "port": 8095, **extra}), encoding="utf-8")
+        return [c for c in doctor.inspect(cfg)["components"] if c["name"] == "mtp"][0]
+
+    def test_the_layer_is_optional_only_when_the_drafter_is_dflash2(self):
+        from unittest import mock
+        from strata_control import drafting
+        with mock.patch.object(drafting, "detect_hardware", return_value=("cuda", ["sm_120"])):
+            self.assertEqual(self.report()["status"], "optional_missing", "Auto is DFlash2 here")
+            self.assertEqual(self.report(drafting="dflash2")["status"], "optional_missing")
+            self.assertEqual(self.report(drafting="mtp")["status"], "missing", "the MTP is chosen: its layer is required")
+            self.assertEqual(self.report(mtp=False)["status"], "missing", "unchanged for a config that switched the layer off by hand")
+        with mock.patch.object(drafting, "detect_hardware", return_value=("sycl", [])):
+            self.assertEqual(self.report()["status"], "optional_missing", "Intel is DFlash2 too")
+        with mock.patch.object(drafting, "detect_hardware", return_value=("cpu", [])):
+            self.assertEqual(self.report()["status"], "missing", "an engine without the code stays on the MTP")

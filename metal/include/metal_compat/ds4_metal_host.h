@@ -100,6 +100,7 @@ bool mx_mv(const void* jobs, int nj, int max_n, size_t job_bytes, int fmt);
 bool q8_quant_rows(const float* x, size_t ldx, int rows, int k, int8_t* q, float* d);
 bool ring_to_ext(const void* ring, void* ext, long long p0, int n, int d, size_t row_bytes);
 bool route(const float* logits, const float* bias, int n, int k, int T, float route_scale, int* idx, float* w, const float* bias_vl, const void* vl);
+bool router_bad_take();   // a router kernel made up a pick (every score NaN) since the last call; clears it. Call after the stream is synchronised
 bool route_publish(const float* logits, const float* bias, int n, int k, int T, float route_scale, const void* vram, int* idx, float* w, void* plan_ptr, const float* bias_vl, unsigned vl);
 bool sample_greedy(const float* logits, int n_tokens, int n_vocab, const int* history, int history_len, int penalty_last_n, float penalty_repeat, float penalty_freq, float penalty_present, const float* logit_bias, int* out);
 bool sgemm_tn(const float* A, const float* B, float* C, int m, int nt, int k, int lda, int ldb, int ldc);

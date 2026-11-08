@@ -1,4 +1,4 @@
-"""strata_control/dsv41_fit.py: the memory plan of the official DeepSeek-V4.1-Flash sets (IST-DAS 1.75 / 2.00 / 2.25 bpw), and its
+"""strata_control/dsv41_fit.py: the memory plan of the official DeepSeek-V4.1-Flash sets (ISTA-DAS 1.75 / 2.00 / 2.25 bpw), and its
 unified-memory branch for a Ryzen AI Max "Strix Halo" (gfx1151) PC, where the graphics memory is the RAM and is counted once.
 
 The numbers of the 64 GB box are the measured ones (Windows, Adrenalin 26.10.1, engine 0.1.51): 2.00 bpw, Faster mode (5 experts),
@@ -77,3 +77,85 @@ class UnifiedMemoryPlan(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MeasuredCardAccounting(unittest.TestCase):
+    """The plan's "experts on the cards" against what the engine's own startup line reported (f-042-maya-rc d93547aed, 2026-11-01): the
+    old plan said 2,947 for one R9700 (the engine held 2,366-2,566) and 13,180 for four (it held 12,147-12,192).  Within 3% of the
+    engine's counts on the R9700s; the other cards (boston 2 x A6000, an A4000, an RTX 5070) within 8%."""
+
+    @staticmethod
+    def cards(n, gb, vendor):
+        return [{"index": i, "name": "card", "vram_gb": gb, "vendor": vendor, "arch": "gfx1201"} for i in range(n)]
+
+    def plan(self, n, gb, vendor, model="IST-DAS-2.25bpw", ram=251.0):
+        orig = F._on_windows
+        F._on_windows = lambda: False
+        try:
+            return F.plan(self.cards(n, gb, vendor), ram, 500.0, model=model, vendor=vendor)
+        finally:
+            F._on_windows = orig
+
+    def test_one_r9700_holds_what_the_engine_holds(self):
+        got = self.plan(1, 32.0, "amd", ram=126.0)["experts_in_vram"]
+        self.assertAlmostEqual(got, 2566, delta=2566 * 0.03)        # rc, the borrowed prompt slots; the 0.1.55 engine held 2,366
+        self.assertLess(got, 2947)
+
+    def test_four_r9700_hold_what_the_engine_holds(self):
+        p = self.plan(4, 32.0, "amd")
+        self.assertAlmostEqual(p["experts_in_vram"], 12192, delta=12192 * 0.03)
+        self.assertLess(p["experts_in_vram"], 13180)
+        self.assertEqual(len(p["cards"]), 4)
+
+    def test_other_cards(self):
+        self.assertAlmostEqual(self.plan(2, 48.0, "nvidia", ram=125.0)["experts_in_vram"], 8804, delta=8804 * 0.08)
+        self.assertAlmostEqual(self.plan(1, 16.0, "nvidia", ram=64.0)["experts_in_vram"], 750, delta=750 * 0.08)
+        self.assertAlmostEqual(self.plan(1, 12.0, "nvidia", ram=64.0)["experts_in_vram"], 287, delta=287 * 0.08)
+
+    def test_the_cpu_share_follows_the_cards_share(self):
+        p = self.plan(1, 32.0, "amd", ram=126.0)
+        self.assertAlmostEqual(p["vram_experts_gb"] + p["cpu_experts_gb"], 149.06, delta=0.2)
+
+    def test_the_bigger_dense_weights_of_an_unsloth_set_leave_less_room_for_experts(self):
+        a = self.plan(1, 32.0, "amd", model="IST-DAS-2.25bpw", ram=126.0)["vram_experts_gb"]
+        b = self.plan(1, 32.0, "amd", model="UD-IQ1_M", ram=126.0)["vram_experts_gb"]      # 7.6 GB of dense weights against 5.9
+        self.assertLess(b, a)
+
+
+class Rdna4Faster(unittest.TestCase):
+    """rdna4_faster: the engine's `--experts auto` on RDNA4 cards, said by the screens and the app (ds4_experts_rule.hpp single_rdna4 / multi_rdna4)."""
+
+    @staticmethod
+    def cards(n, vendor="amd", arch="gfx1201", gb=32.0):
+        return [{"index": i, "name": "card", "vram_gb": gb, "vendor": vendor, "arch": arch} for i in range(n)]
+
+    def test_one_card_yes_two_no_three_and_four_yes_on_linux(self):
+        orig = F._on_windows
+        F._on_windows = lambda: False
+        try:
+            for model in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "UD-IQ1_S", "UD-IQ1_M"):
+                self.assertTrue(F.rdna4_faster(self.cards(1), model, "amd"), model)
+                self.assertFalse(F.rdna4_faster(self.cards(2), model, "amd"), model)     # 37-47% of the experts on two cards
+                self.assertTrue(F.rdna4_faster(self.cards(3), model, "amd"), model)
+                self.assertTrue(F.rdna4_faster(self.cards(4), model, "amd"), model)
+        finally:
+            F._on_windows = orig
+
+    def test_not_for_other_cards_or_an_unknown_model(self):
+        orig = F._on_windows
+        F._on_windows = lambda: False
+        try:
+            self.assertFalse(F.rdna4_faster(self.cards(4, vendor="nvidia"), "IST-DAS-2.25bpw", "nvidia"))
+            self.assertFalse(F.rdna4_faster(self.cards(4, arch="gfx1100"), "IST-DAS-2.25bpw", "amd"))
+            self.assertFalse(F.rdna4_faster(self.cards(4), None, "amd"))
+            self.assertFalse(F.rdna4_faster([], "IST-DAS-2.25bpw", "amd"))
+        finally:
+            F._on_windows = orig
+
+    def test_windows_runs_one_amd_card(self):
+        orig = F._on_windows
+        F._on_windows = lambda: True
+        try:
+            self.assertTrue(F.rdna4_faster(self.cards(2), "IST-DAS-2.25bpw", "amd"))     # one card of the two: the single-card rule
+        finally:
+            F._on_windows = orig

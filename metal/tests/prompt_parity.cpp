@@ -26,36 +26,37 @@ int main() {
     const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "gr.metal", "prompt.metal"});
     std::printf("device %s\n", cx.device_name().c_str());
     int fails = 0;
-    // ---- route_topk
-    {
+    // ---- route_topk (512 experts, and the 256-expert Coder's rows)
+    for (const int NEX : {512, 256}) {
         const int T = 300;
         mtl::Pipeline p = cx.pipeline(lib, "route_topk");
-        mtl::Buffer lg = cx.alloc(4 * T * 512), ids = cx.alloc(4 * T * 10), w = cx.alloc(4 * T * 10);
+        mtl::Buffer lg = cx.alloc(4 * T * NEX), ids = cx.alloc(4 * T * 10), w = cx.alloc(4 * T * 10);
         ref::Rng r(9);
         for (int t = 0; t < T; ++t)
-            for (int e = 0; e < 512; ++e) {
+            for (int e = 0; e < NEX; ++e) {
                 float v = r.sym() * 4.0f;
                 if (t % 3 == 0) v = std::round(v * 4.0f) / 4.0f;
-                lg.as<float>()[t * 512 + e] = v;
+                lg.as<float>()[t * NEX + e] = v;
             }
         const uint32_t nt = T;
         mtl::Dispatch d;
         d.p = &p;
-        d.args = {mtl::Arg::B(lg), mtl::Arg::B(ids), mtl::Arg::B(w), mtl::Arg::V(nt)};
+        const uint32_t nex = NEX;
+        d.args = {mtl::Arg::B(lg), mtl::Arg::B(ids), mtl::Arg::B(w), mtl::Arg::V(nt), mtl::Arg::V(nex)};
         d.grid[0] = (T + 7) / 8;
         d.tg[0] = 256;
         cx.run({d});
         int bad = 0;
         double worst = 0;
         for (int t = 0; t < T; ++t) {
-            const float* l = lg.as<float>() + t * 512;
+            const float* l = lg.as<float>() + t * NEX;
             float mx = -INFINITY;
-            for (int e = 0; e < 512; ++e) mx = std::max(mx, l[e]);
-            std::vector<double> pr(512);
+            for (int e = 0; e < NEX; ++e) mx = std::max(mx, l[e]);
+            std::vector<double> pr(NEX);
             double s = 0;
-            for (int e = 0; e < 512; ++e) s += (pr[e] = std::exp((double)l[e] - mx));
-            std::vector<int> order(512);
-            for (int e = 0; e < 512; ++e) order[e] = e;
+            for (int e = 0; e < NEX; ++e) s += (pr[e] = std::exp((double)l[e] - mx));
+            std::vector<int> order(NEX);
+            for (int e = 0; e < NEX; ++e) order[e] = e;
             std::stable_sort(order.begin(), order.end(), [&](int x, int y) { return l[x] > l[y]; });
             double ss = 0;
             for (int k = 0; k < 10; ++k) ss += pr[order[k]] / s;

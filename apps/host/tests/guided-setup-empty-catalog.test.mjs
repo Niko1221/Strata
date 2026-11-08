@@ -122,3 +122,33 @@ test('NativeModels falls back to the latest job for the selected version, not an
  const html=await renderModelJobs([own,other],{'models.job':'other'});
  assert.match(html,/Data_dir/);assert.doesNotMatch(html,/Other model error/);
 });
+
+/* The first-run model step starts on a version that is already on this computer, else on the catalog's recommendation, never on the first
+   size in the list (it used to be filled once at mount, before the catalog had arrived: Q2_0, a 66 GB download, beside an installed IQ3_S). */
+const sizeRow=(id,model)=>({id,model,download_gb:50,ram_needed_gb:48,experts_gb:30,about:'',on_this_pc:'fits',installed:false});
+async function selectedStart(readyIds,recommendation='IQ3_S',onboarding={step:2,manual:false}){
+ const m=await load();
+ globalThis.__native={...base,installed:{...base.installed,models:readyIds.map(id=>({model:id,ready:true,context:16384}))},catalog:{contexts:[32768],
+  families:[{family:'qwen',title:'Qwen3.8-Flash-Next',about:'',images:false,experimental:false,sizes:[sizeRow('q2_0','Q2_0'),sizeRow('iq3_s','IQ3_S')]},
+  {family:'swift',title:'Qwen3.8-Flash-Next (Swift)',about:'',images:false,experimental:false,sizes:[sizeRow('swift-iq2_xs','IQ2_XS')]}],
+  recommendation:{family:'qwen',model:recommendation,context:32768}}};
+ globalThis.__store={...store(),setup:{complete:false,choices:{onboarding},app:{modelsDir:''}}};
+ const html=m.renderToString(m.createElement(m.GuidedSetup));
+ return [...html.matchAll(/<button[^>]*role="radio"[^>]*aria-checked="true"[^>]*>(.*?)<\/button>/gs)].map(x=>x[1].replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim());
+}
+test('GuidedSetup starts on the recommended version when nothing is installed, not on the first size',async()=>{
+ const chosen=await selectedStart([]);
+ assert.equal(chosen.length,1);assert.match(chosen[0],/IQ3_S/);assert.doesNotMatch(chosen[0],/Q2_0/);
+});
+test('GuidedSetup starts on a version that is installed and ready, even when the recommendation is another',async()=>{
+ const chosen=await selectedStart(['swift-iq2_xs']);
+ assert.equal(chosen.length,1);assert.match(chosen[0],/IQ2_XS/);
+});
+test('GuidedSetup prefers the recommended version when it is among the installed ones',async()=>{
+ const chosen=await selectedStart(['q2_0','iq3_s']);
+ assert.equal(chosen.length,1);assert.match(chosen[0],/IQ3_S/);
+});
+test('GuidedSetup keeps a version the person already chose over the computed start',async()=>{
+ const chosen=await selectedStart(['iq3_s'],'IQ3_S',{step:2,manual:false,family:'qwen3.8',size:'swift-iq2_xs'});
+ assert.equal(chosen.length,1);assert.match(chosen[0],/IQ2_XS/);
+});

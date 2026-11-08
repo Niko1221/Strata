@@ -184,9 +184,8 @@
 /* The first conversation puts the welcome and the real composer in one place. */
 .first-chat-start{width:100%;max-width:640px;margin:0 auto 30px;padding:0 16px;text-align:center}
 .first-chat-mark{position:relative;display:grid;place-items:center;width:80px;height:80px;border:1px solid var(--st-line);border-radius:24px;background:var(--st-accent-tint);box-shadow:var(--st-sh-card);margin:0 auto 28px;isolation:isolate}
-.first-chat-mark:before{content:'';position:absolute;inset:-22px;background:radial-gradient(circle,color-mix(in srgb,var(--st-accent) 12%,transparent),transparent 70%);z-index:-1;pointer-events:none;animation:first-chat-glow 4s ease-in-out infinite}
-.first-chat-status{position:absolute;right:-4px;bottom:-4px;display:grid;place-items:center;width:21px;height:21px;background:var(--st-accent);color:#171717;border:3px solid var(--st-bg);border-radius:50%}
-.first-chat-start h2{font-size:46px;font-weight:900;line-height:1.1;letter-spacing:-1.1px;margin:0 0 14px}
+.first-chat-status{position:absolute;right:-4px;bottom:-4px;display:grid;place-items:center;width:21px;height:21px;background:var(--st-accent);color:var(--st-ink);border:3px solid var(--st-bg);border-radius:50%}
+.first-chat-start h2{font-size:var(--st-fs-display);font-weight:800;line-height:1.1;letter-spacing:-.02em;margin:0 0 14px}
 .first-chat-start>p{font-size:16px;line-height:1.6;color:var(--st-ink-muted);margin:0}
 .chatcol:has(.first-chat-start){justify-content:center;overflow:auto;padding:32px 0 clamp(40px,8vh,80px)}
 .chatcol:has(.first-chat-start)>.main__body.chat{flex:0 0 auto;overflow:visible;padding:0}
@@ -196,10 +195,8 @@
 .chatcol:has(.first-chat-start) .st-composer{background:var(--st-surface);border-color:var(--st-line);border-radius:20px}
 .chatcol:has(.first-chat-start) .st-composer:focus-within{border-color:var(--st-accent)}
 .chatcol:has(.first-chat-start) .st-composer textarea{min-height:70px;font-size:16px}
-@keyframes first-chat-glow{50%{opacity:.6;transform:scale(.95)}}
-@media(max-width:650px){.first-chat-mark{width:68px;height:68px;margin-bottom:22px}.first-chat-start{margin-bottom:26px}.first-chat-start h2{font-size:35px;letter-spacing:-.7px}.first-chat-start>p{font-size:14px}.chatcol:has(.first-chat-start){padding:24px 0 48px}.chatcol:has(.first-chat-start) .chat__inner,.chatcol:has(.first-chat-start) .composer{padding-inline:16px}}
-@media(max-height:650px){.chatcol:has(.first-chat-start){justify-content:flex-start;padding:28px 0}.first-chat-mark{width:56px;height:56px;margin-bottom:18px}.first-chat-start h2{font-size:34px}.first-chat-start{margin-bottom:20px}}
-@media(prefers-reduced-motion:reduce){.first-chat-mark:before{animation:none}}
+@media(max-width:650px){.first-chat-mark{width:68px;height:68px;margin-bottom:22px}.first-chat-start{margin-bottom:26px}.first-chat-start h2{font-size:var(--st-fs-stat);letter-spacing:-.015em}.first-chat-start>p{font-size:14px}.chatcol:has(.first-chat-start){padding:24px 0 48px}.chatcol:has(.first-chat-start) .chat__inner,.chatcol:has(.first-chat-start) .composer{padding-inline:16px}}
+@media(max-height:650px){.chatcol:has(.first-chat-start){justify-content:flex-start;padding:28px 0}.first-chat-mark{width:56px;height:56px;margin-bottom:18px}.first-chat-start h2{font-size:var(--st-fs-stat)}.first-chat-start{margin-bottom:20px}}
 
 .onboard-load-vision{margin:12px 0;padding:14px;border:1px solid var(--st-line);border-radius:12px;background:var(--st-surface-2)}
 .onboard-engine-connect{display:grid;justify-items:start;gap:14px}
@@ -255,3 +252,11 @@
 .engine-warning p { margin: 0; }
 .engine-warning svg { flex: none; margin-top: 1px; }
 .engine-warning small { display: block; margin-top: 4px; }
+.onboard-language{margin-left:auto;min-width:132px}
+.guided-onboarding[data-step="1"] .onboard-language{position:relative;z-index:1}
+@media(max-width:700px){.guided-onboarding[data-step="1"] .onboard-header{justify-content:space-between}.guided-onboarding[data-step="1"] .onboard-header>.brand{position:static;transform:none}.onboard-language{min-width:120px}}
+.engine-update { align-items: center; }
+.engine-update > div { flex: 1; }
+
+/* The progress bar under the words in the engine update dialog. */
+.engine-update-progress { margin-top: 12px; }

@@ -56,7 +56,7 @@ Recomendamos **primero ISTA-DASLab**, después **Unsloth** y otros proveedores, 
 
 En la **aplicación de escritorio** y en el **Terminal**. Lo que no cabe en la memoria se lee desde tu SSD, así que hace falta mucho espacio libre en disco.
 
-| Conjunto (IST-DAS) | Descarga | Espacio libre necesario |
+| Conjunto (ISTA-DAS) | Descarga | Espacio libre necesario |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | unos 245 GB |
 | 2.00 bpw | 257 GB | unos 265 GB |

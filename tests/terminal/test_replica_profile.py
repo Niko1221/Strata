@@ -66,6 +66,15 @@ class Apply(unittest.TestCase):
         self.assertEqual(c["parallel"], 8)
         self.assertEqual(len(c["replicas"]), 2)
 
+    def test_each_engine_keeps_vram_free_for_the_prompt_capture(self):
+        c = cfg(gpu=[0, 1])
+        P.apply(cards(2), c, 128.0, platform="linux", environ={})
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], str(P.REPLICA_RESERVE_MIB))
+        c = cfg(gpu=[0, 1], args=["--pack", "/p/iq3_s", "--vram-reserve-mib", "900"])
+        P.apply(cards(2), c, 128.0, platform="linux", environ={})
+        self.assertEqual(c["args"].count("--vram-reserve-mib"), 1)
+        self.assertEqual(c["args"][c["args"].index("--vram-reserve-mib") + 1], "900")
+
     def test_less_ram_drops_cards_and_says_so(self):
         c = cfg()
         notes = P.apply(cards(4), c, 80.0, platform="linux", environ={})

@@ -2413,6 +2413,57 @@ __global__ void rope_kernel(float* __restrict__ x, int64_t heads, int64_t dim, i
     p[pair] = a * c - b * s;
     p[pair + 32] = a * s + b * c;
 }
+// STRATA_QSA_FUSE_NR (default on, =0 runs the chain below as before): rms_rows_kernel + rope_kernel (+ split_q_kernel for
+// the query) in ONE pass over a head's row.  The same arithmetic in the same order as the pair: the sum of squares goes
+// through the same block_sum, the scaled value is (s * x) * w as a float (the pair stored it and reloaded it), and a
+// rotated pair is rotated with rope_kernel's own expressions.  What changes is the traffic: the q chain read and wrote
+// the 24 heads' rows four times (split, norm read, norm write, rope read/write), this reads the source once and writes
+// the result once, and the rope runs in the block that already holds the row instead of 32-thread blocks.
+// Idea: halo-box/strix-llama.cpp #213 ("fused RMS norm + multi-section RoPE", MIT, The ggml authors); the kernel is ours.
+// in[t * in_ts + h * in_hs + d] -> out[t * out_ts + h * dim + d]; in and out may be the same buffer (a block reads its whole
+// row before it writes).  dim <= 256 and >= 64; the first 64 dims are rotated (pair, pair + 32).
+template <bool TAB>
+__global__ void __launch_bounds__(256) rms_rope_rows_kernel(const float* in, int64_t in_ts, int64_t in_hs, float* out,
+                                                            int64_t out_ts, const float* __restrict__ w, int64_t heads,
+                                                            int64_t dim, float eps, int64_t pos0, float theta_scale,
+                                                            float freq_scale, float corr_low, float corr_high,
+                                                            float ext_factor, float mscale, const int32_t* __restrict__ mtab,
+                                                            strata::kernels::RopeTab rt) {
+    __shared__ float sh[32];
+    __shared__ float sv[256];
+    const int64_t row = blockIdx.x;             // t * heads + h
+    const int64_t t = row / heads, h = row % heads;
+    const int tid = threadIdx.x;
+    const float x = tid < dim ? in[t * in_ts + h * in_hs + tid] : 0.0f;
+    // rms_rows_kernel: ss += r[c] * r[c] from 0, one column a thread (dim <= 256) = the rounded square.  The empty asm makes the
+    // square a value the compiler cannot fold into the first add of block_sum's butterfly (it did: fma(x, x, other lane's
+    // square) is another rounding than the sum of two rounded squares; hip_qsa_nr_parity found it on gfx1151, and __fmul_rn
+    // does not stop it: it compiles to the same v_fmac).
+    float ss = x * x;
+#if defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" : "+v"(ss));
+#endif
+    const float sc = rsqrtf(block_sum(ss, sh) / (float) dim + eps);
+    if (tid < dim) sv[tid] = sc * x * w[tid];
+    __syncthreads();
+    float* o = out + t * out_ts + h * dim;
+    if (tid < 32) {                             // rope_kernel: one thread a (pair, pair + 32)
+        const int pair = tid;
+        float c, s;
+        if (!(TAB && strata::kernels::rope_tab_cs(rt, strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair), pair, c,
+                                                  s))) {
+            const float theta_extrap =
+                (float) strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair) * powf(theta_scale, (float) pair);
+            strata::kernels::rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale,
+                                               pair, c, s);
+        }
+        const float a = sv[pair], b = sv[pair + 32];
+        o[pair] = a * c - b * s;
+        o[pair + 32] = a * s + b * c;
+    } else if (tid >= 64 && tid < dim) {
+        o[tid] = sv[tid];
+    }
+}
 __global__ void split_q_kernel(const float* __restrict__ qf, float* __restrict__ q, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * 24 * 256) return;
@@ -3320,6 +3371,31 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
             x, heads, dim, ld, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
             strata::kernels::mrope_table(), rt);
     check("rope");
+}
+void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, int64_t out_ts, const float* w, int64_t T,
+                   int64_t heads, int64_t dim, float eps, int64_t pos0, const strata::kernels::RopeScaling& scaling,
+                   void* stream) {
+    if (T <= 0) return;
+    if (dim < 64 || dim > 256) {
+        std::fprintf(stderr, "prefill rms_rope_rows: dim %lld is outside 64..256\n", (long long) dim);
+        std::exit(1);
+    }
+    if (const char* why = strata::kernels::rope_scaling_invalid(scaling)) {
+        std::fprintf(stderr, "prefill rope: invalid rope scaling: %s\n", why);
+        std::exit(1);
+    }
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / 64.0f);
+    const strata::kernels::RopeKernelArgs k = scaling.kernel_args(64);
+    const strata::kernels::RopeTab rt = strata::kernels::rope_table_for(scaling);
+    if (rt.cos != nullptr)
+        rms_rope_rows_kernel<true><<<(unsigned) (T * heads), 256, 0, (cudaStream_t) stream>>>(
+            in, in_ts, in_hs, out, out_ts, w, heads, dim, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high,
+            k.ext_factor, k.attn_factor, strata::kernels::mrope_table(), rt);
+    else
+        rms_rope_rows_kernel<false><<<(unsigned) (T * heads), 256, 0, (cudaStream_t) stream>>>(
+            in, in_ts, in_hs, out, out_ts, w, heads, dim, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high,
+            k.ext_factor, k.attn_factor, strata::kernels::mrope_table(), rt);
+    check("rms_rope_rows");
 }
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {
     split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);

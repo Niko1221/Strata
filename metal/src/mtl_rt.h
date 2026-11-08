@@ -100,6 +100,8 @@ public:
     // compiler log on error.
     // Safe math unless STRATA_METAL_MATH=fast (the argument is ignored; kept for callers).
     int compile(const std::vector<std::string>& files, const std::string& prelude = "", bool fast_math = false);
+    // compile() that returns -1 (the compiler's message in *why) on a failure instead of ending the process
+    int compile_try(const std::vector<std::string>& files, const std::string& prelude, bool fast_math, std::string* why);
     Pipeline pipeline(int lib, const std::string& fn, const Constants& c = {});
 
     Buffer alloc(size_t bytes);                  // shared storage, zeroed
@@ -120,6 +122,10 @@ public:
     // A dependency graph in ONE concurrent encoder: a memory barrier only before dispatches with `barrier` set, so
     // the dispatches between two barriers may overlap.  Returns the GPU time in seconds.
     double run_graph(const std::vector<Dispatch>& ds);
+    // run_graph on a SECOND queue, committed without waiting: the GPU may overlap it with work on the main queue (the two must touch
+    // different buffers).  Returns a token; wait_async(token) blocks until it has completed (returns its GPU time in seconds).
+    void* run_graph_async(const std::vector<Dispatch>& ds);
+    double wait_async(void* token);
     // run_graph in segments: the dispatches [cuts[s-1], cuts[s]) are one concurrent encoder; after segment s (for
     // s < cuts.size()) the GPU signals a shared event and waits until the host has run at_cut(s) - the host's turn
     // between two parts of one committed command buffer (the SSD-streaming handshake: the routing is read, the

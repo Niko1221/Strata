@@ -23,7 +23,7 @@ void check(bool ok, const char* label) {
 int main() {
     using namespace strata::kernels;
     check(kVerifyNarrowT == 8, "the narrow window is the 0.2.7 one: 8 rows");
-    check(kWindowMaxT == 8 || kWindowMaxT == 16, "a window holds 8 or 16 rows");
+    check(kWindowMaxT == 8 || kWindowMaxT == 12 || kWindowMaxT == 16, "a window holds 8, 12 or 16 rows");
     check(kVerifyMaxT == kWindowMaxT, "kVerifyMaxT is the window limit");
     check(kVerifyMaxT >= kVerifyNarrowT, "the wide window is not narrower than the narrow one");
     check(cpu::MAXT == 8, "the CPU kernels' tokens per job stay 8 (a wider window is split into jobs)");

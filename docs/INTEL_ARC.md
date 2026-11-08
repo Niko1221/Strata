@@ -10,24 +10,34 @@ driver); results from other cards are community reports. The Mac and Windows bui
 
 ## Quick start
 
-Install the [Terminal](INSTALL.md#the-terminal), then:
+Install the [Terminal](INSTALL.md#the-terminal), then point `strata launch` at the folder that holds the model's `.gguf` files
+(the Qwen3.8-Flash-Next files from ISTA-DASLab, for example IQ3_S or IQ2_XS):
 
 ```sh
-strata update --check     # shows the Intel engine package the feed would install
-strata doctor --live      # checks the driver, the render group and the card
-strata launch --plan      # shows what would happen, changes nothing
-strata launch
+strata launch --model-path /path/to/the/gguf/folder --plan    # shows what would happen, changes nothing
+strata launch --model-path /path/to/the/gguf/folder
 ```
 
-On Linux, `strata update` (Terminal) and Settings > Update (app) download the Intel engine package `linux-x86_64-sycl` for a PC
+The first launch does everything itself: it downloads the Intel engine package `linux-x86_64-sycl` from the signed feed, builds the
+pack for your model from the GGUF files (a few minutes, once; it fetches llama.cpp's `gguf-py` helper from GitHub by itself, so it needs
+internet that one time), writes the run settings and starts the server. Nothing is installed by hand.
+
+- **A PC with an NVIDIA or AMD card as well** uses that card by default, and `--plan` says the Intel cards exist. To use the Intel cards
+  add `--backend intel` once: the choice is remembered (in the settings file) for the next launch, `strata update` and the app's engine
+  check. `strata launch --backend auto` goes back to the PC's own choice. Nothing is refused either way.
+- **Models are not downloaded for Intel cards yet.** Give the folder with `--model-path`; Strata does not touch your files.
+- **The draft layer (MTP) is not built for Intel cards**, so answers are a little slower than on a card with the full setup. An
+  existing `mtp/rt` folder in the data folder is used.
+- `strata doctor --live` checks the driver, the render group and the card, and `strata update --check` shows the engine package.
+
+On Linux, `strata update` (Terminal) and Settings > Update (app) download the Intel engine package for a PC
 whose graphics card is made by Intel. One package serves Alchemist and Battlemage: the GPU code is compiled from SPIR-V at the
 first start, because the A-series cards have no FP64 units. The package carries oneAPI's runtime libraries. The Level Zero
 loader and the compute runtime stay the PC's own (see [What you need](#what-you-need)), and your user must be in the `render`
-group (`strata doctor` says so). It was tested on an Arc A750 only. The package is built by `packaging/build_sycl_linux.sh`.
+group (`strata doctor` says so). It was tested on an Arc A750 and, in 0.2.10, on two Arc Pro B65 cards. The package is built by
+`packaging/build_sycl_linux.sh`.
 
-**Model preparation is separate.** `strata launch` reuses compatible prepared local files, but it does not run the Intel
-source or container setup for you. When a model needs preparation, follow the [source workflow](INTEL.md#setup). Installing the
-engine package alone does not prove the selected model is ready; check a loaded server with a real request.
+The source and container workflow ([INTEL.md](INTEL.md#setup)) still exists for building the engine yourself; the Terminal does not need it.
 
 Docker: the ready-made image is `ghcr.io/niko1221/strata:0.2.3-sycl`, published only for a release that carries a Linux Intel
 engine package. Otherwise [build the image yourself](DOCKER.md#build-it-yourself). The image needs prepared model files

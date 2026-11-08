@@ -25,7 +25,12 @@ export function windowsFolderScript(prompt) {
     '$dialog.ShowNewFolderButton = $true',
     // READY tells the host the window is about to open; a host that never sees it gives up and asks for the path in words (QA F06).
     '[Console]::Out.WriteLine("READY"); [Console]::Out.Flush()',
-    'if ($dialog.ShowDialog($owner) -eq "OK") { [Console]::Out.Write($dialog.SelectedPath) }',
+    // The dialog starts at the Desktop folder. Where that folder does not exist (it was deleted, a OneDrive move left a dead path, the profile was
+    // redirected) ShowDialog throws "Unable to retrieve the root folder" and no folder could be chosen at all: start at This PC instead, and when even
+    // that fails say NODIALOG so the app asks for the path.
+    '$answer = $null',
+    'try { $answer = $dialog.ShowDialog($owner) } catch { try { $dialog.RootFolder = [System.Environment+SpecialFolder]::MyComputer; $answer = $dialog.ShowDialog($owner) } catch { [Console]::Out.WriteLine("NODIALOG"); [Console]::Out.Flush() } }',
+    'if ($answer -eq "OK") { [Console]::Out.Write($dialog.SelectedPath) }',
     '$owner.Close()',
   ].join('; ');
 }
@@ -88,11 +93,13 @@ export async function chooseFolder(prompt, options = {}) {
     try {
       const done = windowsDialog ? await windowsDialog(shell, windowsFolderArgs(prompt)) : await run(shell, windowsFolderArgs(prompt));
       if (done.noDialog) return { unavailable: true, failed: true, reason: 'The folder window did not open. Type the folder path instead.' };
+      if (/^NODIALOG\s*$/m.test(String(done.stdout ?? ''))) return { unavailable: true, failed: true, reason: 'The folder window could not open. Type the folder path instead.' };
       const answer = answerOf(done.stdout).trim();
       return answer ? { path: cleanChosenPath(answer) } : { cancelled: true };
     } catch (error) {
       if (missing(error)) return { unavailable: true, reason: 'Windows PowerShell was not found.' };
-      throw new Error('The folder chooser could not open.');
+      // The window opened or tried to and ended with an error: the person is asked for the path instead of being left with an error and no way on.
+      return { unavailable: true, failed: true, reason: 'The folder window could not open. Type the folder path instead.', detail: `exit ${error?.code ?? '?'}` };
     }
   }
   return chooseLinuxFolder(prompt, { run, portal });

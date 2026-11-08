@@ -3568,7 +3568,10 @@ struct Serve {
             return;
         }
         std::mt19937_64 rng(smp.seed);
-        std::vector<int32_t> hist = ids;
+        // #4590: the penalties count the reply's tokens (and the fed-back last prompt token), not the prompt; STRATA_PENALTY_PROMPT=1
+        // restores the old window.  `ids` is the request's full prompt whether or not the session was resumed.
+        static const bool pen_prompt = strata::kernels::penalty_counts_prompt(std::getenv("STRATA_PENALTY_PROMPT"));
+        std::vector<int32_t> hist = strata::qwen35::penalty_history_start(ids, pen_prompt);
         const auto d0 = Clock::now();
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";

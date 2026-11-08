@@ -505,6 +505,27 @@ __global__ void __launch_bounds__(kThreads) gemv_f32_kernel(const float* __restr
 }
 
 // ---------------------------------------------------------------- the router
+// A pick that never came out: every score left is NaN (the gate's input went non-finite), so nothing beat -FLT_MAX and the
+// index is still the 0x7fffffff it started as - and the next line read sc[0x7fffffff] (shared memory), then vram[0x7fffffff] /
+// vs[0x7fffffff] in the kernels after it: a memory fault far from the cause (Project Maya v1.1.45's chain: NaN routing, then an
+// illegal memory access; #4825).  The lowest expert not picked yet instead - a valid index, so nothing reads outside its tables;
+// the weights stay NaN, the layer's output is garbage as it was, and the host-routed path says so (its picks are checked there).
+// Only reached by a kernel's one thread when a pick is missing, so a finite router pays one compare a pick.
+#if !defined(STRATA_METAL)
+__device__ int g_router_bad = 0;   // set by the fallback below, read and cleared by router_nonfinite_take (once a few tokens, not a token)
+#endif
+__device__ __forceinline__ int route_fallback_pick(const int* pick, int r, int n) {
+#if !defined(STRATA_METAL)
+    g_router_bad = 1;
+#endif
+    int ix = 0;
+    for (bool again = true; again;) {   // (the picks are few and unsorted: start over when one of them is the candidate)
+        again = false;
+        for (int q = 0; q < r && !again; ++q)
+            if (pick[q] == ix) ++ix, again = true;
+    }
+    return ix < n ? ix : 0;
+}
 __global__ void __launch_bounds__(512) route_kernel(const float* __restrict__ logits, const float* __restrict__ bias,
                                                     int n, int k, float route_scale, int* idx, float* w,
                                                     const float* __restrict__ bias_vl, const VlBits vl) {
@@ -540,6 +561,7 @@ __global__ void __launch_bounds__(512) route_kernel(const float* __restrict__ lo
             int ix = 0x7fffffff;
             for (int q = 0; q < (int) (blockDim.x >> 5); ++q)
                 if (bv[q] > b || (bv[q] == b && bi[q] < ix)) b = bv[q], ix = bi[q];
+            if (ix >= n) ix = route_fallback_pick(pick, r, n);   // (a non-finite gate input: see route_fallback_pick)
             pick[r] = ix;
             bs[ix] = -FLT_MAX;
         }
@@ -1621,6 +1643,7 @@ __global__ void __launch_bounds__(512) route_publish_kernel(const float* __restr
             int ix = 0x7fffffff;
             for (int q = 0; q < (int) (blockDim.x >> 5); ++q)
                 if (bv[q] > b || (bv[q] == b && bi[q] < ix)) b = bv[q], ix = bi[q];
+            if (ix >= n) ix = route_fallback_pick(pick, r, n);   // (a non-finite gate input: see route_fallback_pick)
             pick[r] = ix;
             bs[ix] = -FLT_MAX;
         }
@@ -1759,6 +1782,12 @@ __global__ void wait_flags_kernel(const unsigned* flags, int n, int stride, unsi
     if (threadIdx.x != 0) return;
     for (int i = 0; i < n; ++i) wait_at_least(flags + (size_t) i * stride, seq);
     __threadfence_system();
+}
+// a batch of table entries: *pairs[2i] = pairs[2i + 1] (the expert cache's recent slots, between windows;
+// Project Maya #344)
+__global__ void tab_set_kernel(const unsigned long long* __restrict__ pairs, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) *(unsigned long long*) pairs[2 * i] = pairs[2 * i + 1];
 }
 __global__ void set_flag_kernel(unsigned* flag, unsigned v) {
     __threadfence_system();
@@ -2137,6 +2166,27 @@ void route_ahead(const float* logits, const float* bias, int n, int m, int T, Re
 #endif
     if (req != nullptr && m > 0 && T > 0 && n <= 1024 && off + m <= kAhead)
         strata_ds4_launch(route_ahead_kernel, T, 512, 0, s, logits, bias, n, m, req, off);
+}
+bool router_nonfinite_take(cudaStream_t s) {
+#if defined(STRATA_METAL)
+    // the MSL router kernels raise a flag in a buffer of the Metal host (ds4_route_fallback_pick); the stream's work is done first
+    if (cudaStreamSynchronize(s) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    return strata::dsv41::metal_host::router_bad_take();
+#else
+    int v = 0;
+    if (cudaStreamSynchronize(s) != cudaSuccess || cudaMemcpyFromSymbol(&v, g_router_bad, sizeof v) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    if (v != 0) {
+        const int zero = 0;
+        if (cudaMemcpyToSymbol(g_router_bad, &zero, sizeof zero) != cudaSuccess) (void) cudaGetLastError();
+    }
+    return v != 0;
+#endif
 }
 void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s) {
 #if defined(STRATA_METAL)
@@ -2648,6 +2698,9 @@ void xfer_get(const Xfer& x, const unsigned* flag, unsigned seq, cudaStream_t s)
 }
 void wait_flags(const unsigned* flags, int n, int stride, unsigned seq, cudaStream_t s) {
     if (n > 0) strata_ds4_launch(wait_flags_kernel, 1, 32, 0, s, flags, n, stride, seq);
+}
+void tab_set(const unsigned long long* pairs, int n, cudaStream_t s) {
+    if (n > 0) strata_ds4_launch(tab_set_kernel, (n + 127) / 128, 128, 0, s, pairs, n);
 }
 void set_flag(unsigned* flag, unsigned v, cudaStream_t s) {
     strata_ds4_launch(set_flag_kernel, 1, 1, 0, s, flag, v);

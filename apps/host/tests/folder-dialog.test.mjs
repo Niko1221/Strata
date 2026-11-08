@@ -35,7 +35,11 @@ test('Windows uses a PowerShell FolderBrowserDialog passed as an encoded command
   assert.deepEqual(await chooseFolder('Pick', { platform: 'win32', run: c.run('') }), { cancelled: true });
   const missing = await chooseFolder('Pick', { platform: 'win32', run: c.run(failure('ENOENT')) });
   assert.equal(missing.unavailable, true);
-  await assert.rejects(chooseFolder('Pick', { platform: 'win32', run: c.run(failure(2)) }), /could not open/);
+  // A window that fails after it was started no longer ends in an error with no way on (AGENT-LOST, item 11): the app asks for the path.
+  const failed = await chooseFolder('Pick', { platform: 'win32', run: c.run(failure(2)) });
+  assert.equal(failed.unavailable, true); assert.match(failed.reason, /Type the folder path/);
+  const nodialog = await chooseFolder('Pick', { platform: 'win32', run: c.run('NODIALOG' + String.fromCharCode(13, 10)) });
+  assert.equal(nodialog.unavailable, true); assert.match(nodialog.reason, /Type the folder path/);
 });
 
 test('the generated PowerShell parses without errors', { skip: process.platform !== 'win32' }, () => {

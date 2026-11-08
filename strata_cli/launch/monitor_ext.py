@@ -49,6 +49,84 @@ class LaunchMonitor(MonitorApp):
         self.stop_requested = False
         self.notice = ""
         self.view_before_connect = 0
+        self.quiet_note: str | None = None        # "New engine X is available. Press u to update." (from the last check; local file only)
+        self.updating = False
+
+    # ---- a newer engine: one quiet line, and u to update (strata_control/engine_update.py)
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._note_refresh()
+        if self.info.get("daily_check"):
+            try:
+                from strata_control import engine_update
+                engine_update.start_daily_check(on_done=self._note_from_thread)     # a thread of its own; offline it ends without a word
+            except Exception:                    # noqa: BLE001 - never a message
+                pass
+
+    def _note_refresh(self) -> None:
+        try:
+            from strata_control import engine_update
+            self.quiet_note = engine_update.monitor_note()
+        except Exception:                        # noqa: BLE001
+            self.quiet_note = None
+        if self.is_mounted and self.view < 6:
+            self._paint()
+
+    def _note_from_thread(self) -> None:
+        try:
+            self.call_from_thread(self._note_refresh)
+        except Exception:                        # noqa: BLE001 - the monitor may be closing
+            pass
+
+    def action_update_engine(self) -> None:
+        if self.updating or self.closing:
+            return
+        self.updating = True
+        threading.Thread(target=self._update_worker, name="strata-engine-update", daemon=True).start()
+
+    def _say_line(self, text: str) -> None:
+        def show() -> None:
+            self.selection_notice = text
+            self._paint()
+        try:
+            self.call_from_thread(show)
+        except Exception:                        # noqa: BLE001
+            pass
+
+    def _ask_from_thread(self, question: str, default: bool) -> bool:
+        box: dict = {}
+        done = threading.Event()
+
+        def show() -> None:
+            def got(choice: str | None) -> None:
+                box["yes"] = choice == "yes"
+                done.set()
+            self.push_screen(ConfirmScreen(question, "An engine update needs the model stopped first. Nothing is changed unless you choose Yes.",
+                                           [("yes", "Yes"), ("no", "No")]), got)
+        self.call_from_thread(show)
+        done.wait()
+        return bool(box.get("yes", default))
+
+    def _update_worker(self) -> None:
+        from strata_control import engine_update, updater
+        try:
+            self._say_line("Checking for a newer engine...")
+            out = engine_update.run_flow(ask=self._ask_from_thread, say=self._say_line)
+            text = engine_update.summary(out)
+        except updater.UpdateError as exc:
+            text = str(exc)
+        except Exception as exc:                 # noqa: BLE001 - a sentence, never a trace
+            text = f"The update did not run: {exc}"
+        self.updating = False
+
+        def finish() -> None:
+            self.selection_notice = text
+            self.next_poll_at = 0.0               # the model may be back: look again now
+            self._note_refresh()
+        try:
+            self.call_from_thread(finish)
+        except Exception:                        # noqa: BLE001
+            pass
 
     @property
     def connect_open(self) -> bool:
@@ -117,6 +195,10 @@ class LaunchMonitor(MonitorApp):
             super().action_request_detail()
 
     def on_key(self, event) -> None:
+        if event.key == "u":
+            self.action_update_engine()
+            event.stop()
+            return
         if not self.connect_open:
             return
         key = event.key
@@ -204,8 +286,11 @@ class LaunchMonitor(MonitorApp):
             if self.ask_quit and not self.error and not self.selection_notice and self.connection_state == "connected" and not self.frozen:
                 try:
                     msg = "Read only  |  q asks: keep serving or stop  |  7 connect an app"
-                    if (size or self.screen.size).width < 78:
+                    width = (size or self.screen.size).width
+                    if width < 78:
                         msg = "q asks: keep serving or stop  |  7 connect"
+                    if self.quiet_note:                          # a newer engine: the one quiet line replaces the hints it has no room beside
+                        msg = self.quiet_note + ("  |  q asks: keep serving or stop" if width >= 110 else "")
                     self.query_one("#message", Static).update(msg)
                 except Exception:                            # noqa: BLE001
                     pass

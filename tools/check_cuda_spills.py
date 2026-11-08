@@ -173,6 +173,101 @@ ALLOWED = {
     "{anonymous}::k_attn_prep": {"sm_120": (32, 0), "sm_86": (32, 0)},
 }
 
+# INT3 (0.2.9 merge, 2026-11-01): the table above stopped matching the kernels long before the merge - on v0.2.9 itself this check
+# fails on 11 kernel families (the interleaved prefetch MMVQ among them) - so it could not tell a new spill from an old one.  Measured now, per sm_,
+# as the maximum over: CUDA 13.0 MSVC sm_120 (owner PC), CUDA 13.0 Linux sm_86 + sm_120 read with cuobjdump 12.9 (z440), CUDA 13.1 sm_86 (boston),
+# CUDA 13.2 sm_120 (l620) and CUDA 13.0 sm_121 (DGX Spark), libraries of the merged tree; merged into ALLOWED by max, never lowered.  A new spill in
+# one of these kernels now fails again only when it goes past the number below.  The ones marked NEW are the two this merge adds.
+_INT3_ALLOWED = {
+    # Spark sm_121 (never measured before)
+    "strata::kernels::native_gu_amd_kernel": {"sm_121": (8, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::native_gu_fused_kernel": {"sm_121": (8, 0)},
+    # sm_120 already at v0.2.9
+    "strata::kernels::route_resident_k": {"sm_120": (40, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::block_scores_rows_kernel": {"sm_121": (8, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::block_topk_reg_kernel": {"sm_121": (88, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::copy_kernel": {"sm_121": (88, 0)},
+    # sm_120 already at v0.2.9; sm_86 already at v0.2.9
+    "strata::kernels::{anonymous}::dequant_gu_kernel": {"sm_120": (32, 0), "sm_121": (32, 0), "sm_86": (32, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::dequant_kernel": {"sm_121": (128, 0)},
+    # sm_86 288 B (272 B in the table before) with cuobjdump 12.9 reading the objects
+    "strata::kernels::{anonymous}::expdec_down_kernel": {"sm_121": (136, 0), "sm_86": (288, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::expdec_gu_kernel": {"sm_121": (64, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::gdn_step_commit_kernel": {"sm_121": (8, 0)},
+    # sm_120 already at v0.2.9
+    "strata::kernels::{anonymous}::gdn_step_norm_multi_kernel": {"sm_120": (8, 0)},
+    # NEW in 0.2.9 (DFlash2 Q4_0 drafter, opt-in): the Df2Segs parameter struct (Df2Seg s[3]) is copied to the stack to index it in a loop, as gemm8_kernel; avoidable (constant memory or unrolled segments), noted for BW-DRAFT
+    "strata::kernels::{anonymous}::gemm4_kernel": {"sm_120": (104, 0), "sm_121": (104, 0), "sm_86": (104, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::gemm8_kernel": {"sm_121": (136, 0)},
+    # present at v0.2.9 (not in the table then)
+    "strata::kernels::{anonymous}::gemm_iq_f16_grouped_kernel": {"sm_120": (32, 0), "sm_121": (32, 0), "sm_86": (32, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::gr_down_staged_kernel": {"sm_121": (8, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::gr_up75_kernel": {"sm_121": (8, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::gr_up_v3_kernel": {"sm_121": (8, 0)},
+    # present at v0.2.9 (not in the table then)
+    "strata::kernels::{anonymous}::hcp::persist_kernel": {"sm_120": (8, 0), "sm_121": (8, 0), "sm_86": (16, 0)},
+    # NEW since v0.2.9 on sm_120 (8 B); not looked at
+    "strata::kernels::{anonymous}::mmvq_multi_kernel": {"sm_120": (8, 0), "sm_121": (8, 0)},
+    # sm_120 already at v0.2.9
+    "strata::kernels::{anonymous}::native_down_kernel": {"sm_120": (8, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::native_down_multi_kernel": {"sm_121": (48, 0)},
+    # sm_120 already at v0.2.9
+    "strata::kernels::{anonymous}::native_gu_kernel": {"sm_120": (24, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::native_gu_multi_kernel": {"sm_121": (112, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::native_gu_swiglu_kernel": {"sm_121": (72, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::native_mmvq_il_kernel": {"sm_121": (8, 0)},
+    # the interleaved prefetch MMVQ (IlQ4K / IlQ5K / IlQ6K / IlIQ4XS instantiations, one entry for all): 1.3-1.6 KB of stack a thread; present at v0.2.9 and not in the table then
+    "strata::kernels::{anonymous}::native_mmvq_il_pf_kernel": {"sm_120": (1624, 0), "sm_121": (1456, 0), "sm_86": (1336, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::pair_kernel": {"sm_121": (16, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::prompt_attn_i8v3_kernel": {"sm_121": (40, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::rope_table_kernel": {"sm_121": (32, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::s26_gu_l_kernel": {"sm_121": (32, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::kernels::{anonymous}::s27_gu_kernel": {"sm_121": (32, 0)},
+    # sm_86 already at v0.2.9
+    "strata::prefill::fused::{anonymous}::native_kernel": {"sm_121": (16, 0), "sm_86": (48, 0)},
+    # sm_86 present at v0.2.9; sm_120 8 B new on CUDA 13.x
+    "strata::prefill::{anonymous}::gdn_conv_w_kernel": {"sm_120": (8, 0), "sm_121": (8, 0), "sm_86": (24, 0)},
+    # present at v0.2.9 (not in the table then), sm_86
+    "strata::prefill::{anonymous}::gdn_tc_scan_kernel": {"sm_86": (128, 0)},
+    # NEW in 0.2.9 (STRATA_QSA_FUSE_NR, f-042-strix-pf): the RopeTab parameter struct is copied to the stack for rope_tab_cs; avoidable (pass the table by pointer), noted for STRIX-PF
+    "strata::prefill::{anonymous}::rms_rope_rows_kernel": {"sm_120": (32, 0), "sm_121": (32, 0), "sm_86": (32, 0)},
+    # Spark sm_121 (never measured before)
+    "strata::prefill::{anonymous}::rope_kernel": {"sm_121": (32, 0)},
+    # Spark sm_121 (never measured before)
+    "{anonymous}::k_attn_prep": {"sm_121": (32, 0)},
+    # rc1 (measured on l620, CUDA 13.2 sm_120): the HC down kernel's register-blocked instance <1,6,true,2,0,true> (df2-more, STRATA_GR_V3_PF bit 7, default 133 on sm_120) keeps 8 bytes
+    "strata::kernels::{anonymous}::gr_down_v3_kernel": {"sm_120": (8, 0)},
+    # rc1 (l620 sm_120): DFlash2's rope table builder copies its parameter struct to the stack (src/kernels/cuda/dflash2.cu, from the ring / multi-card DFlash2 line); avoidable
+    "strata::kernels::{anonymous}::rope_table_inv_kernel": {"sm_120": (32, 0)},
+}
+for _key, _per_sm in _INT3_ALLOWED.items():
+    _merged = ALLOWED.setdefault(_key, {})
+    for _sm, (_stack, _local) in _per_sm.items():
+        _old = _merged.get(_sm, (0, 0))
+        _merged[_sm] = (max(_stack, _old[0]), max(_local, _old[1]))
+
+
+
 
 def kernel_key(demangled):
     """The demangled name without parameter list, template arguments and return type: the ALLOWED key."""

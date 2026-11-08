@@ -218,7 +218,7 @@ class SaveWaitsForRestartAnswer(unittest.TestCase):
                     return [p.name for p in store.list_presets()]
             after = asyncio.run(go())
         self.assertEqual(seen["presets_during_run"], [])               # not saved before the runner's check
-        self.assertEqual(after, ["IQ3_S 32K"])                          # saved once the run went on
+        self.assertEqual(after, ["IQ3_S 128K"])                          # saved once the run went on
 
 
 class DraftingOffConfig(unittest.TestCase):

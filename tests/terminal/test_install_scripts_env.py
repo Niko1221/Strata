@@ -88,6 +88,36 @@ class InstallShFailsVisibly(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse((home / "data").exists() or (home / "bin").exists())
 
+    def hardware_line(self, nvidia_smi, lspci):
+        """The 'This computer:' line install.sh prints, with fake nvidia-smi and lspci first on PATH."""
+        import tempfile
+        if os.uname().sysname != "Linux" or os.uname().machine not in ("x86_64", "amd64"):
+            self.skipTest("the line is printed for Linux x86_64 here")
+        with tempfile.TemporaryDirectory() as d:
+            fakes = Path(d) / "fakes"
+            fakes.mkdir()
+            for name, body in (("nvidia-smi", nvidia_smi), ("lspci", lspci)):
+                (fakes / name).write_text("#!/bin/sh" + chr(10) + (body if body is not None else "exit 1") + chr(10), encoding="utf-8", newline=chr(10))
+                (fakes / name).chmod(0o755)
+            path = str(fakes) + os.pathsep + os.environ["PATH"]     # the fakes win over any real tool
+            r, _ = self.run_sh(SH.read_text(encoding="utf-8"), STRATA_FEED="http://127.0.0.1:9", PATH=path)
+            return next((l for l in r.stdout.splitlines() if "This computer:" in l), r.stdout + r.stderr)
+
+    def test_the_graphics_line_is_a_card_not_an_ssd_or_an_error_sentence(self):
+        if not shutil.which("curl") and not shutil.which("wget"):
+            self.skipTest("no curl or wget")
+        lspci = ("echo '01:00.0 Non-Volatile memory controller: Sandisk Corp WD Black 3D NAND SN850X'; "
+                 "echo '03:00.0 Display controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 48 [Radeon AI PRO R9700]'")
+        line = self.hardware_line(None, lspci)
+        self.assertIn("graphics: Advanced Micro Devices", line)
+        self.assertNotIn("Sandisk", line)
+        broken = "echo \"NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.\"; exit 9"
+        line = self.hardware_line(broken, "echo '00:02.0 VGA compatible controller: Intel Corporation DG2 [Arc A750]'")
+        self.assertNotIn("failed", line)
+        self.assertIn("graphics: Intel Corporation", line)
+        line = self.hardware_line("echo 'NVIDIA RTX A6000'", None)
+        self.assertIn("NVIDIA RTX A6000", line)
+
     def test_an_unreachable_release_folder_stops_with_a_reason_and_a_failing_exit(self):
         if not shutil.which("curl") and not shutil.which("wget"):
             self.skipTest("no curl or wget")

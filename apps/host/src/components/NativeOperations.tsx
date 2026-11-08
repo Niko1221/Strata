@@ -2,11 +2,11 @@ import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/client';
-import { fetchUpdateCheck, publishUpdateCheck, useInstalledVersions, useLastUpdateCheck } from '../lib/update-check';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { Btn, Dialog, ErrorNotice, Select } from './ui';
 import { NativeProgress } from './NativeModels';
 import { jobErrorText } from '../lib/native-job-diagnostics';
+import { SettingsEngine } from './SettingsEngine';
 export function NativeBenchmark({ open, onClose }: {
     open: boolean;
     onClose: () => void;
@@ -54,29 +54,8 @@ export function NativeOperations() {
         at: string;
         instanceId: string;
         line: string;
-    }[]>([]), [showLogs, setShowLogs] = useState(false), [confirm, setConfirm] = useState(false);
-    // Opening this page shows the last check kept on this computer and makes no network call. The check runs when "Check for updates" is pressed.
-    const versions = useInstalledVersions();
-    const last = useLastUpdateCheck(versions);
-    const [checking, setChecking] = useState(false), [checkError, setCheckError] = useState('');
-    const update: 'checking' | 'available' | 'current' | 'unknown' = checking ? 'checking' : last?.engine.status === 'available' ? 'available' : last?.engine.status === 'current' ? 'current' : 'unknown';
+    }[]>([]), [showLogs, setShowLogs] = useState(false);
     const active = native?.jobs.find(j => j.state === 'running');
-    async function checkForUpdates() {
-        setChecking(true);
-        setCheckError('');
-        try {
-            const data = await fetchUpdateCheck();
-            publishUpdateCheck(data, versions);
-            if (data.engine.status === 'error')
-                setCheckError(data.engine.message);
-        }
-        catch (e) {
-            setCheckError(e instanceof Error ? e.message : String(e));
-        }
-        finally {
-            setChecking(false);
-        }
-    }
     useEffect(() => {
         if (!showLogs)
             return;
@@ -87,16 +66,6 @@ export function NativeOperations() {
         const timer = setInterval(read, 2000);
         return () => clearInterval(timer);
     }, [showLogs]);
-    async function updateEngine() {
-        setError('');
-        try {
-            await nativeAction('operations', { kind: 'update-engine' });
-            setConfirm(false);
-        }
-        catch (e) {
-            setError(e instanceof Error ? e.message : String(e));
-        }
-    }
     // The window cannot save a download, so the host writes the file to Downloads and says where.
     async function saveLogs() {
         setSaving(true);
@@ -114,13 +83,12 @@ export function NativeOperations() {
         }
     }
     return <div className="stack stack--lg native-engine-settings">
- <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Update component")}</h2>{tr(update === 'available' ? <Btn size="sm" variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => setConfirm(true)}>{tr("Update available")}</Btn> : null)}{tr(update !== 'available' ? <Btn size="sm" disabled={update === 'checking'} onClick={() => void checkForUpdates()}>{tr(update === 'checking' ? 'Checking…' : 'Check for updates')}</Btn> : null)}</div><p className="small muted">{tr("Update the engine for this computer. Your models and settings are kept.")}</p>{tr(update === 'current' ? <p className="small muted">{tr("Up to date")}</p> : null)}{tr(checkError ? <p className="small inline-error" role="alert">{tr(checkError)}</p> : null)}{tr(update === 'available' && (native?.instances.length ?? 0) > 0 ? <p className="small muted">{tr("Open Models and unload the running native models first.")}</p> : null)}</section>
+ <SettingsEngine />
  <section className="st-card"><div className="section-toolbar"><h2 className="h3">{tr("Diagnostics")}</h2><Btn size="sm" onClick={() => setShowLogs(true)}>{tr("View logs")}</Btn></div><p className="small muted">{tr("Downloads, preparation and engine failures include their original messages here.")}</p>{tr(native?.jobs.filter(j => j.state === 'error').slice(-3).map(j => <ErrorNotice key={j.id} message={jobErrorText(j, native.jobs)} detail={j.details}/>))}</section>
- <Dialog open={showLogs} wide title={tr("Engine logs")} onClose={() => setShowLogs(false)} actions={<><Btn icon="download" disabled={saving} onClick={() => void saveLogs()}>{tr(saving ? 'Working…' : 'Save logs')}</Btn><Btn variant="primary" onClick={() => setShowLogs(false)}>{tr("Close")}</Btn></>}>
+ <Dialog open={showLogs} wide compact title={tr("Engine logs")} onClose={() => setShowLogs(false)} actions={<><Btn icon="download" disabled={saving} onClick={() => void saveLogs()}>{tr(saving ? 'Working…' : 'Save logs')}</Btn><Btn variant="primary" onClick={() => setShowLogs(false)}>{tr("Close")}</Btn></>}>
   <pre className="native-log" aria-label={tr("Engine log")}>{logs.length ? logs.map(l => `${l.at} · ${l.line}`).join(String.fromCharCode(10)) : tr('No engine messages yet.')}</pre>
   {tr(saved ? <p className="small" role="status">{tr("Saved to {0}", [saved])}</p> : null)}
  </Dialog>
  {tr(active ? <NativeProgress job={active}/> : null)}{tr(error ? <ErrorNotice message={error}/> : null)}
- <Dialog open={confirm} compact title={tr("Update engine?")} onClose={() => setConfirm(false)} actions={<><Btn onClick={() => setConfirm(false)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={!!active || (native?.instances.length ?? 0) > 0} onClick={() => void updateEngine()}>{tr("Update")}</Btn></>}><p>{tr("The native installer updates the installation. Model files and settings are kept. Unload native models before updating.")}</p></Dialog>
  </div>;
 }

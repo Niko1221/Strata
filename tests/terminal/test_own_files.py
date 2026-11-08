@@ -160,7 +160,7 @@ class Links(Base):
 
 
 class IntegerTensors(Base):
-    """The IST-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as integer tensors instead of metadata
+    """The ISTA-DAS DeepSeek-V4.1 first shard keeps the Engram's hash parameters as integer tensors instead of metadata
     (tools/dsv41/pack_gguf.py: I32 and I64), so the table in front of setup and the app sizes them instead of refusing the file."""
 
     def test_a_tensor_directory_with_integer_tensors_is_read(self):
@@ -183,6 +183,16 @@ class Folders(Base):
         plan = models.plan_import(str(folder))
         self.assertEqual(plan["candidate_selection"]["model"], "Q2_0")
         self.assertEqual(plan["file_count"], 2)
+
+    def test_strata_draft_layer_beside_a_model_is_not_a_second_model(self):
+        # #4693: "the folder holds 2 models" for a model and the mtp-q2_0.gguf beside it
+        folder = self.base / "own"
+        folder.mkdir(parents=True)
+        (folder / "My-Finetune-IQ3_S-00001-of-00001.gguf").write_bytes(gguf_bytes(["IQ3_S"]))
+        (folder / "mtp-q2_0.gguf").write_bytes(gguf_bytes(["Q2_0"]))
+        plan = models.plan_import(str(folder))
+        self.assertNotIn("multiple_model_groups", plan["issues"])
+        self.assertEqual([f["name"] for f in plan["files"]], ["My-Finetune-IQ3_S-00001-of-00001.gguf"])
 
     def test_several_sizes_in_one_folder_name_them_and_ask_for_one_file(self):
         folder = self.gsq(self.base / "many", Q2, "Q2_0")

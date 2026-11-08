@@ -248,6 +248,10 @@ void zc_stage(unsigned long long* plan, const int* idx, const unsigned long long
               cudaStream_t s);
 /// Waits (one thread, on the device) until *seq_ptr == seq.
 void wait_seq(const unsigned* seq_ptr, unsigned seq, cudaStream_t s);
+/// True once if the router (route / route_publish) had no pick to make on this device since the last call - every score it was
+/// given NaN (a non-finite gate input) - and clears it; it took a stand-in expert so nothing read out of bounds, but the layer's
+/// output is garbage.  Waits for the stream: call it where the host has the stream's results anyway, not per kernel.
+bool router_nonfinite_take(cudaStream_t s);
 /// A chunk's routed experts as sorted rows: the picks (t, i < k) of T tokens (idx rows kPicks apart) by the virtual
 /// slot vs[expert] (n_vs of them: the VRAM slots, then the experts streamed in), each slot's rows in token order:
 /// bounds[n_vs + 1], row_tok[r], pos[t][i] (the pick's sorted row, rows kPicks apart).
@@ -298,6 +302,8 @@ void xfer_get(const Xfer& x, const unsigned* flag, unsigned seq, cudaStream_t s)
 /// set_flag: *flag = v after a system fence (a reader's acknowledgement).
 void wait_flags(const unsigned* flags, int n, int stride, unsigned seq, cudaStream_t s);
 void set_flag(unsigned* flag, unsigned v, cudaStream_t s);
+/// tab_set: n (address, value) pairs, *pairs[2i] = pairs[2i + 1], in one launch (the expert cache's table entries).
+void tab_set(const unsigned long long* pairs, int n, cudaStream_t s);
 /// A tensor-parallel group's all-reduce: host-mapped rows data[member][slot] (stride floats), flags[member][slot]
 /// (32 apart).  x (n floats, n % 4 == 0: this member's partial) -> the sum of the nm members' partials in member order,
 /// the same bits on every member; seq counts the group's all-reduces (the same on each member), slot = seq % slots.

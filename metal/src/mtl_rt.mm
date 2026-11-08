@@ -57,6 +57,7 @@ struct Context::Impl {
 #endif
     id<MTLDevice> dev;
     id<MTLCommandQueue> q;
+    id<MTLCommandQueue> q2 = nil;   // run_graph_async's queue
     std::vector<id<MTLLibrary>> libs;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
@@ -329,6 +330,19 @@ uint64_t Context::recommended_working_set() const { return [impl_->dev recommend
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
+    std::string why;
+    const int id = compile_try(files, prelude, fast_math, &why);
+    if (id < 0) {
+        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
+                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
+                     files.empty() ? "?" : files.back().c_str(), why.c_str());
+        std::exit(3);
+    }
+    return id;
+}
+
+// The same, and a failure is returned (-1, the compiler's message in *why) instead of ending the process: for a library that has a fallback.
+int Context::compile_try(const std::vector<std::string>& files, const std::string& prelude, bool fast_math, std::string* why) {
     std::string src = prelude + "\n#include <metal_stdlib>\nusing namespace metal;\n";
     if (!ggml_common_path.empty() && prelude.find("NO_GGML_COMMON") == std::string::npos) {
         src += "#define GGML_COMMON_DECL_METAL\n#define GGML_COMMON_IMPL_METAL\n";
@@ -352,10 +366,8 @@ int Context::compile(const std::vector<std::string>& files, const std::string& p
     NSError* err = nil;
     id<MTLLibrary> lib = [impl_->dev newLibraryWithSource:[NSString stringWithUTF8String:src.c_str()] options:o error:&err];
     if (!lib) {
-        std::fprintf(stderr, "mtl: compile failed (%s, macOS %s; %s):\n%s\n", [[impl_->dev name] UTF8String],
-                     [[[NSProcessInfo processInfo] operatingSystemVersionString] UTF8String],
-                     files.empty() ? "?" : files.back().c_str(), [[err localizedDescription] UTF8String]);
-        std::exit(3);
+        if (why) *why = err ? [[err localizedDescription] UTF8String] : "unknown";
+        return -1;
     }
     impl_->libs.push_back(lib);
     return (int)impl_->libs.size() - 1;
@@ -981,6 +993,9 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
 }
 
 double Context::run_graph(const std::vector<Dispatch>& ds) {
+    // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
+    // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
+    static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
@@ -990,7 +1005,40 @@ double Context::run_graph(const std::vector<Dispatch>& ds) {
         }
         [enc endEncoding];
         [cb commit];
-        [cb waitUntilCompleted];
+        if (spin) {
+            const auto t0 = std::chrono::steady_clock::now();
+            while (cb.status < MTLCommandBufferStatusCompleted &&
+                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 20e-3) {}
+        }
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
+        if (cb.status != MTLCommandBufferStatusCompleted) {
+            std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
+            std::exit(5);
+        }
+        return cb.GPUEndTime - cb.GPUStartTime;
+    }
+}
+
+void* Context::run_graph_async(const std::vector<Dispatch>& ds) {
+    @autoreleasepool {
+        if (impl_->q2 == nil) impl_->q2 = [impl_->dev newCommandQueue];
+        id<MTLCommandBuffer> cb = [impl_->q2 commandBufferWithUnretainedReferences];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        for (size_t i = 0; i < ds.size(); ++i) {
+            if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+            encode(enc, ds[i]);
+        }
+        [enc endEncoding];
+        [cb commit];
+        return (__bridge_retained void*) cb;
+    }
+}
+
+double Context::wait_async(void* token) {
+    if (token == nullptr) return 0.0;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cb = (__bridge_transfer id<MTLCommandBuffer>) token;
+        if (cb.status < MTLCommandBufferStatusCompleted) [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
             std::fprintf(stderr, "mtl: command buffer failed: %s\n", [[cb.error localizedDescription] UTF8String]);
             std::exit(5);

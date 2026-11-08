@@ -22,7 +22,7 @@ Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [
 **Provider order:** ISTA-DASLab, then Unsloth, then Gyro, then others, using the first compatible pack that fits the
 model and your hardware. ISTA-DASLab is the default recommendation. Gyro saves memory and is slower. Swift 1.5, NVFP4
 and OrcaRouter are other options. An explicit choice by the user always wins. The order applies within a model family:
-Qwen3.6 has Unsloth packs only, and DeepSeek has the IST-DAS sets. The order is a recommendation. It says nothing about which
+Qwen3.6 has Unsloth packs only, and DeepSeek has the ISTA-DAS sets. The order is a recommendation. It says nothing about which
 provider wins a given quality or speed comparison.
 
 Setup may preselect something else: a Swift or Gyro size at a low memory tier, or Unsloth on Strix Halo. Read the plan
@@ -55,11 +55,12 @@ If RAM is short, setup can read experts from the SSD instead ([below](#will-it-f
 DeepSeek V4.1-Flash-1017 runs in the **desktop app** (pick it in the model list) and in the **Terminal** (`strata launch`).
 It uses its own engine, a separate download that the app and `strata launch` fetch for you.
 
-| Set (IST-DAS) | Download | Quality against the original model |
+| Set (ISTA-DAS) | Download | Quality against the original model |
 | --- | ---: | --- |
 | 1.75 bpw | 239 GB | perplexity +21%; code and agent text +8.9% and +10.2%; weaker on plain prose |
 | 2.00 bpw | 257 GB | perplexity +16%; code and agent text +8.5% and +5.9% |
 | 2.25 bpw | 274 GB | perplexity +7.7% to +8.3%; code and agent text +3.5% and +2.5% |
+| ISTA-DAS Coder | 191 GB | ISTA-DAS's coding version: 192 of the 384 experts in every layer kept (72 GB of model instead of 138 GB); numbers against the original model are in [DEEPSEEK41.md](DEEPSEEK41.md#the-ista-das-coder) |
 
 The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
 you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.
@@ -93,9 +94,9 @@ strata launch --family deepseek41 --model ist-das-2.00bpw
 
 **Speed: Faster or Full quality.** The app asks, and the Terminal takes `--speed faster|full` (or `--full-quality`). Faster uses 5 of the
 model's 6 experts per word, a small quality change that is usually not noticeable. It is the default on a PC with 16 GB of graphics
-memory or less. Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
+memory or less, on a Ryzen AI Max, and on a single Radeon RX 9000 / AI PRO R9700 card, and on several of them when together they hold half of the experts (three or more R9700 cards; two hold about 40% of the 2.25 set, so they keep 6). Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
 
-**Measured on:** IST-DAS 2.00 bpw, Strata 0.2.4 (before the Speed choice).
+**Measured on:** ISTA-DAS 2.00 bpw, Strata 0.2.4 (before the Speed choice).
 
 | Hardware | Output | Prompt (8K) |
 | --- | ---: | ---: |

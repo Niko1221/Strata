@@ -16,9 +16,13 @@
  * request the Harness marks `purpose: 'compaction'` is touched in `llm.stream`. Nothing in the Harness is rewritten: a Harness update
  * that renames either leaves compaction as it was, and the test that runs the real Harness fails.
  */
-import { densityOf, estimateMessage, estimateTools, isContextOverflow, MAX_DENSITY, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, WINDOW_SLACK } from '../context-budget.mjs';
+import { replyCap } from '../reply-cut.mjs';
+import { densityOf, estimateMessage, estimateTools, isContextOverflow, MAX_DENSITY, pressureNow, promptTokensOf, splitMessages, summaryBudget, usageOfEvent, WINDOW_SLACK, withSummaryLanguage } from '../context-budget.mjs';
 
 export const name = 'strata-context';
+
+/** The routes the host writes for models on this computer (profile.mjs): `strata-local`, `strata-local-<id>`, and their `~s<budget>` copies. */
+const isLocalRoute = provider => typeof provider === 'string' && provider.startsWith('strata-local');
 export const inject = ['tokenMeter', 'llm'];
 
 /** Real prompt measurements per session: { real, estimated } for the last answer the model server reported. */
@@ -74,6 +78,47 @@ export function apply(ctx) {
     };
   }
 
+  // 3. A reply that has room to finish (AGENT-LOST, 11-01). The output budget in the profile is what the Harness's compaction sets aside for a
+  // reply (30 percent of the window; it reads it from the request header), and the same number was also the ceiling of every request: a thinking
+  // model that wrote a 15K-token file after 9K tokens of thinking was cut inside the tool call at 19,660, the unfinished call was dropped and the
+  // turn ended with no file and no word. The header (and so compaction) stays as it is; the request that goes to the model server may produce up
+  // to half the window, at most 64K tokens (replyCap), and pi-ai still clamps it to what the window has left after the prompt. The agent loop
+  // dispatches through the adapter's `streamWithSnapshot`, after the loop has checked the request against its header, so that is where the ceiling
+  // is raised, once per adapter, the first time a local route is prepared. A Harness that renames it leaves the ceiling as it was (the test that
+  // runs the real Harness fails).
+  if (llm && typeof llm.prepareCall === 'function' && !wrapped.has(llm.prepareCall)) {
+    const original = llm.prepareCall;
+    const raised = new WeakSet();
+    const prepare = async function prepareCall(config, signal, configure) {
+      try { raiseReplyCeiling(config?.provider, raised); } catch (e) { log('warn', `could not raise the reply ceiling: ${e.message}`); }
+      return original.call(this, config, signal, configure);
+    };
+    wrapped.add(prepare);
+    llm.prepareCall = prepare;
+  }
+  function raiseReplyCeiling(provider, raised) {
+    if (!isLocalRoute(provider)) return;
+    const adapter = llm.adapters?.get?.(provider)?.adapter;
+    if (!adapter || raised.has(adapter) || typeof adapter.streamWithSnapshot !== 'function' || typeof adapter.modelOf !== 'function') return;
+    raised.add(adapter);
+    const stream = adapter.streamWithSnapshot;
+    adapter.streamWithSnapshot = function streamWithSnapshot(options, snapshot) {
+      let next = options;
+      try {
+        if (isLocalRoute(options?.provider)) {
+          const model = this.modelOf(snapshot, options.provider, options.model);
+          const asked = options.maxTokens ?? model.maxTokens ?? 0;
+          // Only the agent's own reply budget is raised: a summary or a title asks for far less and keeps what it asked.
+          if (model.contextWindow > 0 && asked >= Math.floor(model.contextWindow * 0.25)) {
+            const cap = replyCap(model.contextWindow, asked);
+            if (cap > asked) next = { ...options, maxTokens: cap };
+          }
+        }
+      } catch { next = options; }
+      return stream.call(this, next, snapshot);
+    };
+  }
+
   // The host asks, with /strata-context, how much of the window the chat holds right now: the same measured number compaction decides on
   // (JSON in the command's text: { tokens, window }). Before a message goes out, and after /compact, so the person is told true figures.
   ctx.inject(['commands'], (commandCtx) => {
@@ -108,6 +153,7 @@ export function apply(ctx) {
   const refusedForSize = finish => finish?.kind === 'error' && isContextOverflow(finish.failure ?? finish);
 
   async function* summaryStream(options, original) {
+    options = { ...options, messages: withSummaryLanguage(options.messages) };   // #4750: the summary follows the conversation's language
     let window = 0;
     try { window = (await llm.resolveModelInfo(options.provider, options.model, options.signal))?.context?.contextWindow ?? 0; } catch { window = 0; }
     const messages = options.messages ?? [];

@@ -1,0 +1,8 @@
+{
+ "r3_01": "Braucht ein Engine-Update",
+ "r3_02": "SSD-Streaming · läuft langsamer",
+ "r3_03": "So viel Kontext belegt etwa {0} GB Grafikspeicher und lässt auf dieser Karte wenig Platz für das Modell. Strata versucht es; startet es nicht, wähle einen kürzeren Kontext.",
+ "r3_04": "In Arbeit · {0}",
+ "r3_05": "{0} Chats in Arbeit",
+ "r3_06": "{0} Zeilen"
+}

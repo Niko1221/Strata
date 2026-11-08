@@ -86,6 +86,30 @@ def _short_name(c: dict, vendor: str) -> str:
     return f"{VENDOR_NAME.get(vendor, vendor.title())} {n}".strip()
 
 
+# ---- UD-Q4_K_XL on a Strix Halo (0.2.10) ------------------------------------------------------------------------------------------------
+# REMOVE this block, its three callers (setup.py "size:", strata_cli/launch/cmd.py apply_defaults, tests/terminal/test_strix_q4_note.py) when the
+# stall is fixed in the engine (STRIX-2Q). The numbers are the 0.2.9 release notes'.
+STRIX_Q4_MODEL = "UD-Q4_K_XL"
+STRIX_Q4_NOTE = ("UD-Q4_K_XL on a Ryzen AI Max (Strix Halo) can stop on the first request after a start, with no CPU or disk activity: 7 of 30 "
+                 "starts did on the 0.1.55 engine and 2 of 5 on 0.1.54. If it happens, stop the engine and start it again. UD-IQ4_XS ran 99 "
+                 "starts in the same setup without stopping; choose it if you want to be sure. Nothing is refused.")
+
+
+def is_strix_halo_card(card: dict) -> bool:
+    """A Ryzen AI Max (Strix Halo, gfx1151, Radeon 8060S / 8050S / 8040S) from the fields the hardware readers give."""
+    if not isinstance(card, dict):
+        return False
+    text = " ".join(str(card.get(k) or "") for k in ("name", "arch", "gfx")).lower()
+    return "gfx1151" in text or "strix halo" in text or any(x in text for x in ("8060s", "8050s", "8040s"))
+
+
+def strix_q4_stall_note(model, cards) -> str | None:
+    """The plain warning for UD-Q4_K_XL on a Strix Halo, else None. Warn only."""
+    if str(model or "").lower() != STRIX_Q4_MODEL.lower():
+        return None
+    return STRIX_Q4_NOTE if any(is_strix_halo_card(c) for c in cards or []) else None
+
+
 def other_vendor_note(cards: list[dict], vendor: str | None) -> str | None:
     """One plain line when the other make's best card is bigger than the best card the engine can use, else None:
     "This computer also has an AMD R9700 (32 GB). The AMD build of Strata can use it - it fits bigger models." """
@@ -95,6 +119,18 @@ def other_vendor_note(cards: list[dict], vendor: str | None) -> str | None:
     others = [c for c in others if _vendor(c) and not _shares_memory(c)]
     if not others:
         return None
+    intel = [c for c in others if _vendor(c) == "intel"]
+    if intel:
+        # Intel Arc cards beside another make: always said (the engine for one make runs at a time; the person chooses which), never refused
+        total = sum(float(c.get("vram_gb") or 0) for c in intel)
+        cards = (f"{len(intel)} Intel Arc cards ({total:.0f} GB together)" if len(intel) > 1
+                 else f"an {_short_name(intel[0], 'intel')} ({total:.0f} GB)")
+        return (f"This computer also has {cards}. Strata uses the {VENDOR_NAME.get(vendor, vendor)} card; to use the Intel card"
+                f"{'s' if len(intel) > 1 else ''} instead, add --backend intel (it is remembered; --backend auto goes back).")
+    if vendor == "intel":
+        names = ", ".join(sorted({_short_name(c, _vendor(c)) for c in others}))
+        return (f"This computer also has {names}. Strata uses the Intel cards; --backend auto goes back to the PC's own choice "
+                "(NVIDIA first).")
     best = max(others, key=lambda c: float(c.get("vram_gb") or 0))
     mine_best = max((float(c.get("vram_gb") or 0) for c in mine), default=0.0)
     if float(best.get("vram_gb") or 0) <= mine_best:

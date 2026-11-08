@@ -43,12 +43,15 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
         return { ...part };
       }
       const version = engine.offered?.version ?? null;
-      set({ state: 'downloading', version, name: `Engine ${version ?? ''}`.trim(), total_gb: round((engine.download_bytes ?? 0) / GB), message: 'Downloading the engine for this PC…' });
+      // An engine already works here: say what is about to change and that it can be undone (#4823), not only "downloading".
+      const before = engine.installed?.version ?? null;
+      const change = before && version && before !== version ? `Updating the engine from ${before} to ${version}. The engine you have now is kept, and Settings can go back to it.` : null;
+      set({ state: 'downloading', version, name: `Engine ${version ?? ''}`.trim(), total_gb: round((engine.download_bytes ?? 0) / GB), message: change ?? 'Downloading the engine for this PC…' });
       const result = await control.update({
         engine: true, control: false, signal,
         onEvent: event => {
           if (event.event === 'progress') {
-            set({ state: 'downloading', percent: event.percent ?? 0, done_gb: round((event.done ?? 0) / GB), total_gb: round((event.total ?? 0) / GB), message: `Downloading the engine for this PC: ${event.percent ?? 0}%` });
+            set({ state: 'downloading', percent: event.percent ?? 0, done_gb: round((event.done ?? 0) / GB), total_gb: round((event.total ?? 0) / GB), message: `${change ? `Updating the engine from ${before} to ${version}` : 'Downloading the engine for this PC'}: ${event.percent ?? 0}%` });
           } else if (event.event === 'phase') {
             const state = { verify: 'verifying', test: 'testing', switch: 'switching' }[event.phase];
             if (state) set({ state, message: PHASE_TEXT[event.phase] ?? part.message });
@@ -58,7 +61,7 @@ export function createEngineStep({ control, signal = null, onChange = () => {} }
         },
       });
       const done = (result.results ?? []).find(r => r.component === 'engine');
-      set({ state: 'done', percent: 100, done_gb: part.total_gb, version: done?.installed_after?.version ?? version, message: 'The engine for this PC is ready.' });
+      set({ state: 'done', percent: 100, done_gb: part.total_gb, version: done?.installed_after?.version ?? version, message: change ? `The engine was updated from ${before} to ${version}. Settings can go back to the one you had.` : 'The engine for this PC is ready.' });
     } catch (error) {
       const plain = plainUpdateError(error, 'engine');
       note = `Your model is ready. The engine for this PC couldn't be downloaded. ${plain.next}`;

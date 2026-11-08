@@ -36,13 +36,14 @@ int main() {
     unset("STRATA_SM86_PERF");
     unset("STRATA_SM60_PERF");
     unset("STRATA_EMULATE_CC");
-    // GB10 (12.1): the four measured switches, and nothing else
+    // GB10 (12.1): the five measured switches, and nothing else
     {
         const auto t = nv_default_env(12, 1, false);
-        CHECK(t.size() == 4);
+        CHECK(t.size() == 5);
         CHECK(find(t, "STRATA_PF_FUSED") && *find(t, "STRATA_PF_FUSED") == "1");
         CHECK(find(t, "STRATA_PREFILL_NVFP4") && *find(t, "STRATA_PREFILL_NVFP4") == "w4a4");
         CHECK(find(t, "STRATA_HC_UPMIX") && *find(t, "STRATA_HC_UPMIX") == "1");
+        CHECK(find(t, "STRATA_SIDE_MIXER") && *find(t, "STRATA_SIDE_MIXER") == "2");
         CHECK(find(t, "STRATA_SPEC_COST") && *find(t, "STRATA_SPEC_COST") == "1");
     }
     // STRATA_DEFAULTS=026 (the 0.2.7 master switch; the sm_121 table is newer than 0.2.6) empties it
@@ -51,7 +52,7 @@ int main() {
     put("STRATA_SM121_PERF", "0");
     CHECK(nv_default_env(12, 1, false).empty());
     put("STRATA_SM121_PERF", "1");
-    CHECK(nv_default_env(12, 1, false).size() == 4);
+    CHECK(nv_default_env(12, 1, false).size() == 5);
     unset("STRATA_SM121_PERF");
     // the other cards: sm_120 (RTX 50) and sm_100 get nothing from this file; the sm_86 / sm_60 tables are unchanged by the flag
     CHECK(nv_default_env(12, 0, false).empty());

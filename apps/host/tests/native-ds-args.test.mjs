@@ -105,16 +105,58 @@ test('#4358 #4359 #4505 #4507: a DeepSeek load with pictures off leaves the --vi
   } finally { await f.native.close(); f.cleanup(); }
 });
 
-test('a DeepSeek model with pictures on keeps `--vision on` too', async () => {
+test('a DeepSeek model with pictures on: Read pictures off in the app turns the pair to `--vision off` (the app lists the switch since 0.2.9)', async () => {
   const f = fixture({ args: DS_ARGS.map(a => (a === 'off' ? 'on' : a)) });
   try {
     await f.native.refresh(true);
     const job = await finish(f.native, f.native.operation('load', { model: f.id, vision: 'no' }).id);
     assert.equal(job.state, 'done', job.error);
     const args = f.saved[0].args;
-    assert.equal(args[args.indexOf('--vision') + 1], 'on');
+    assert.equal(args[args.indexOf('--vision') + 1], 'off');
     assert.equal(args[args.indexOf('--eos') + 1], '1');
+    assert.deepEqual(strayWords(args, new Set(['--pack', '--max-context', '--eos', '--vision', '--dspark', '--dspark-conf', '--prefill-chunk'])), []);
   } finally { await f.native.close(); f.cleanup(); }
+});
+
+/** A pack folder as pack_gguf.py leaves it: ds4.txt names the tower's geometry and the picture token when the picture file was there. */
+function packWith(root, tower) {
+  const pack = join(root, tower ? 'pack-pictures' : 'pack-text');
+  mkdirSync(pack, { recursive: true });
+  writeFileSync(join(pack, 'ds4.txt'), ['n_layers 43', ...(tower ? ['image_token_id 128815', 'vision.num_hidden_layers 32'] : []), ''].join('\n'));
+  return pack;
+}
+
+test('a DeepSeek model whose pack carries the picture tower is prepared for pictures; a text-only pack is not, and says so', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'strata-ds-pics-'));
+  const seen = [];
+  try {
+    for (const [tower, vision] of [[true, 'on'], [false, 'off']]) {
+      const f = fixture({ args: ['--pack', packWith(root, tower), '--vision', vision, '--eos', '1'] });      // (one at a time: the fixture sets STRATA_INSTALL_DIR)
+      try {
+        await f.native.refresh(true);
+        const m = f.native.state().installed.models.find(x => x.model === f.id);
+        seen.push([m.visionPrepared, m.images]);
+      } finally { await f.native.close(); f.cleanup(); }
+    }
+    assert.deepEqual(seen, [[true, 'yes'], [false, 'off']], 'a text-only pack: the Models screen offers the missing shared file, nothing is fetched on its own');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a DeepSeek pack with the tower and `--vision off` in its arguments: Read pictures on turns it on, and only where the tower is', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'strata-ds-pics-'));
+  const got = [];
+  try {
+    for (const tower of [true, false]) {
+      const f = fixture({ args: ['--pack', packWith(root, tower), '--vision', 'off', '--eos', '1'] });
+      try {
+        await f.native.refresh(true);
+        const job = await finish(f.native, f.native.operation('load', { model: f.id, vision: 'yes' }).id);
+        assert.equal(job.state, 'done', job.error);
+        got.push(f.saved[0].args[f.saved[0].args.indexOf('--vision') + 1]);
+      } finally { await f.native.close(); f.cleanup(); }
+    }
+    assert.deepEqual(got, ['on', 'off'], 'no tower in the pack: the engine is not told to read pictures');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('#4504: the reserve field and the resource preference reach strata-dsv41 as --reserve-mib, with no --pool-workers', async () => {
@@ -170,4 +212,14 @@ test('a Qwen model with pictures off still loses its stand-alone --vision (nothi
     assert.equal(job.state, 'done', job.error);
     assert.deepEqual(saved[0].args, ['--pack', '/p', '--max-context', '4096', '--kv', 'int8']);
   } finally { await native.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a DeepSeek load with Read pictures on does not ask for a separate reader (#4772)', async () => {
+  const f = fixture({ args: DS_ARGS.map(a => (a === 'off' ? 'on' : a)) });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('load', { model: f.id, vision: 'yes' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(f.saved[0].args[f.saved[0].args.indexOf('--vision') + 1], 'on');
+  } finally { await f.native.close(); f.cleanup(); }
 });

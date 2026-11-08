@@ -5,7 +5,7 @@ Qwen engine: the app and `strata launch` fetch it the first time you pick DeepSe
 on the one Mac it was measured on, and what it cannot do yet.
 
 > **Short version:** a Mac with 64 GB of memory or more, macOS 15 or newer, and 260 to 280 GB of free disk on a fast drive.
-> Text only, no pictures. The model does not fit in memory, so part of it is read from the SSD for every word. On an M5 Max with
+> Pictures only with an engine that carries the Metal picture tower, otherwise text only. The model does not fit in memory, so part of it is read from the SSD for every word. On an M5 Max with
 > 128 GB, DeepSeek 2.00 answers a short question at 15 to 18 tokens a second and reads a 3,000-token prompt in about 11 seconds.
 
 ## What it needs
@@ -15,7 +15,7 @@ on the one Mac it was measured on, and what it cannot do yet.
 | Mac | Apple Silicon (M1 or newer), macOS 15 or newer. Measured on an M5 Max with 128 GB. |
 | Memory | 64 GB or more. A Mac with less still starts, but most of the model is read from the SSD for every word, so it is much slower. Setup says so and asks before it goes on. |
 | Disk | 2.00 set: 257 GB. 2.25 set: 274 GB (the 111 GB n-gram table is shared). Use the internal SSD or an NVMe drive, not a USB or network drive. |
-| Pictures | Off. DeepSeek's picture reader was not run on the Metal engine, so a Mac reads text only. Qwen on the Mac keeps its pictures. |
+| Pictures | On when the installed `strata-dsv41` carries the Metal picture tower (its program contains the text `STRATA_DS4_METAL_VISION_V1`; setup puts the picture file into the pack and starts the engine with `--vision on`). With an engine without it, text only: setup says "DeepSeek on a Mac reads text only with this engine (its picture reader needs an engine update)" and does not fetch the picture file. Qwen on the Mac keeps its pictures. |
 
 ## Install it
 
@@ -70,7 +70,7 @@ Full quality. That is what was measured and scored.
 
 ## Limits
 
-- Text only. A picture sent to a DeepSeek model on a Mac is refused.
+- Pictures need an engine with the Metal picture tower (see the table); with an older engine a picture sent to a DeepSeek model on a Mac is refused.
 - The drafter (DSpark) is off. It gave the same answers but no speed-up on the Mac.
 - Context longer than about 32,000 tokens was not measured on a Mac.
 - Smaller Macs: nothing under 128 GB was run with DeepSeek. The plan screen shows how much of the model your Mac keeps in memory

@@ -26,7 +26,7 @@ export function TimeSkipWorking({ run, sessionId }: { run: TimeSkipRun; sessionI
     {fork ? <ForkProgress job={run.job!}/> : null}
     <div className="tsw__bar">
       <div className="tsw__step" role="status"><strong>{activityWords(run.job)}</strong><span className="small muted">{clock(now - run.startedAt)}</span>
-        {fork ? null : <div className="tsw__prog" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(fraction * 100)}><i style={{ width: `${Math.round(fraction * 100)}%` }}/></div>}</div>
+        {fork ? null : <div className="tsw__prog" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(fraction * 100)}><i style={{ transform: `scaleX(${Math.min(1, Math.max(0, fraction))})` }}/></div>}</div>
       <Btn size="sm" icon="stop" disabled={stopping || !run.job?.id} onClick={() => { setStopping(true); void stopTimeSkip(sessionId, run.id).finally(() => setStopping(false)); }}>{tr("Stop")}</Btn>
     </div>
   </section>;
@@ -39,7 +39,7 @@ function Lane({ name, lane, waitingText }: { name: string; lane: ForkLane | null
   const words = !lane ? waitingText : lane.waiting ? waitingText : lane.line || (lane.text ? lane.text : tr('Starting…'));
   return <div className="tsf__lane" data-state={lane?.state ?? 'waiting'}>
     <span className="tsf__name">{name}</span>
-    <div className="tsf__prog" role="progressbar" aria-label={tr('Progress of {0}', [name])} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ width: `${pct}%` }}/></div>
+    <div className="tsf__prog" role="progressbar" aria-label={tr('Progress of {0}', [name])} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}><i style={{ transform: `scaleX(${Math.min(1, Math.max(0, pct / 100))})` }}/></div>
     <span className="tsf__words">{words}</span>
   </div>;
 }

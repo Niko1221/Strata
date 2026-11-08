@@ -28,6 +28,24 @@ test('discrete cards: Faster at 16 GiB or less in total, Full quality above', ()
   assert.equal(fasterByDefault(null), false);
 });
 
+test('one RDNA4 Radeon (1 x R9700, 32 GB) defaults to Faster: the CPU lane does most of the experts', () => {
+  const r9700 = (extra = {}) => card(32, { vendor: 'amd', arch: 'gfx1201', ...extra });
+  assert.equal(fasterByDefault([r9700()]), true);
+  assert.equal(fasterByDefault([card(16, { vendor: 'amd', arch: 'gfx1200' })]), true);
+  assert.equal(fasterByDefault([r9700({ arch: 'gfx1100' })]), false, 'an RX 7000 card with 32 GB is not RDNA4');
+  assert.equal(fasterByDefault([r9700({ vendor: 'nvidia' })]), false);
+  assert.equal(fasterByDefault([card(32)]), false, 'no arch in the report: the old rule');
+  assert.equal(fasterByDefault([r9700(), r9700({ index: 1 })]), false, 'two cards are the other engine rule (they must hold half of the experts)');
+  assert.equal(fasterByDefault([r9700(), r9700({ index: 1 })], false), false, 'the catalog says the two cards hold under half');
+  const four = [0, 1, 2, 3].map(index => r9700({ index }));
+  assert.equal(fasterByDefault(four, true), true, 'four R9700 hold most of the experts: the engine runs 5, so the label says Faster');
+  assert.equal(fasterByDefault(four, null), false, 'no answer from the catalog: the old rule');
+  assert.equal(fasterByDefault([r9700({ vendor: 'nvidia' }), r9700({ index: 1 })], true), false, 'only for RDNA4 cards');
+  assert.deepEqual(speedOptions(four, true).map(o => o.label), ['Default (Faster on this PC)', 'Faster (default on this PC)', 'Full quality']);
+  assert.equal(fasterByDefault([r9700(), r9700({ index: 1, usable: false })]), true, 'a card the engine cannot use does not count');
+  assert.deepEqual(speedOptions([r9700()]).map(o => o.label), ['Default (Faster on this PC)', 'Faster (default on this PC)', 'Full quality']);
+});
+
 test('the labels say "(default on this PC)" beside the choice that is the default, once', () => {
   const faster = speedOptions([card(12)]).map(o => o.label);
   assert.deepEqual(faster, ['Default (Faster on this PC)', 'Faster (default on this PC)', 'Full quality']);

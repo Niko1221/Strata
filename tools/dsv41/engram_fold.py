@@ -2,7 +2,7 @@
 """engram_fold.py - the Engram tensors a pack needs, folded out of the quant's own shards, so a pack built around their
 `engram-IQ4_NL.gguf` uses none of our substitutes.
 
-The IST-DAS sets keep the Engram as three per-layer tensors (`blk.N.engram_k`, `engram_q`, `engram_wkv`); the engine's
+The ISTA-DAS sets keep the Engram as three per-layer tensors (`blk.N.engram_k`, `engram_q`, `engram_wkv`); the engine's
 layout wants `engram.gate` (k*q folded, [4, 5120] F32) and `engram.wkv` ([25600, 6144] BF16).  Theirs are stored the other
 way round - their `engram_wkv` is `[6144, 25600]` and their `k/q` are `[5120, 4]` - so this tool dequantises, transposes and
 writes the engine's layout:

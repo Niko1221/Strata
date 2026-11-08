@@ -61,6 +61,16 @@ def request_speed(r: dict) -> float | None:
     return round(out / (ms / 1000.0), 1) if out and out >= 2 and ms and ms > 0 else None   # one token has no decode span (a probe showed 1,250 tok/s)
 
 
+def run_average_speed(metrics: dict) -> float | None:
+    """The run's average decode speed: every token the server produced over the whole run divided by the run's
+    decode time (the server's `totals`, the same token-weighted figure the engine's DONE lines and Prometheus use).
+    Not the last request's speed - a single request is noisy; this is the average over everything since the start.
+    None when the server reported no totals (never an invented zero)."""
+    totals = metrics.get("totals") or {}
+    out, ms = _num(totals.get("output_tokens")), _num(totals.get("decode_ms"))
+    return round(out / (ms / 1000.0), 1) if out and out >= 2 and ms and ms > 0 else None
+
+
 def _cards(hw: dict, static: dict) -> list[dict]:
     """Each graphics card's own readings when the server lists two or more (hardware.gpus); [] for one card or none: the Overview then
     draws exactly what it always drew."""
@@ -125,7 +135,10 @@ def build(metrics: dict | None) -> dict | None:
     elif state == "Reading" and _num(live.get("prefill_tok_s_mean")) is not None:
         speed, speed_note = _num(live.get("prefill_tok_s_mean")), "reading the prompt"
     else:
-        speed, speed_note = (request_speed(last) if last else None), "last request"
+        # Idle: not the last request's speed (one request is noisy) but the run's average, from the server's totals.
+        speed, speed_note = run_average_speed(metrics), "average of the run"
+        if speed is None:
+            speed, speed_note = (request_speed(last) if last else None), "last request"
     slots, total_slots = _num(engine.get("expert_slots")), _num(engine.get("experts"))
     cache_mib = _num(engine.get("expert_cache_mib"))
     gen, genmax, width = _num(hw.get("gpu_pcie_gen")), _num(hw.get("gpu_pcie_gen_max")), _num(hw.get("gpu_pcie_width"))
@@ -304,6 +317,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
            now: float | None = None, bullet: str = "●") -> Group:
     now = time.time() if now is None else now
     ascii_mode = glyphs == "ascii"
+    dot = "-" if ascii_mode else "·"             # the ASCII look is pure ASCII: a stdout that cannot encode U+00B7 (cp852, cp874, cp932, ascii) must not raise
     solid = glyphs == "solid"                   # the classic Windows console without Cascadia Mono: solid blocks, square boxes, palette colours
     box_style = box.SQUARE if (ascii_mode or solid) else box.ROUNDED
     accent = ("#0c8a60" if theme == "light" else ACCENT) if color else "default"
@@ -330,7 +344,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     label = f"{model.get('model') or ''} {k(ctx_max) if ctx_max else ''}".strip()
     head.append(label, style="bold")
     right = Text()
-    right.append((bullet + " " if not ascii_mode else "* ") + model["phase_text"] + (f" · {pct}%" if pct is not None and state in ("Reading", "Generating") else ""),
+    right.append((bullet + " " if not ascii_mode else "* ") + model["phase_text"] + (f" {dot} {pct}%" if pct is not None and state in ("Reading", "Generating") else ""),
                  style=state_color if state != "Idle" else "dim")
     right.append("   ")
     right.append(f"[{marker}]", style=f"bold {accent}" if marker == "LIVE" else "bold yellow")
@@ -348,7 +362,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
         txt = f"[{n}]" if n == state else n
         st.append(txt + "  ", style=(state_color if n == state and state != "Idle" else "bold" if n == state else "dim"))
     if done is not None and total:
-        right_txt = f"{tokens(done)} / {tokens(total)} tokens · {pct}%"
+        right_txt = f"{tokens(done)} / {tokens(total)} tokens {dot} {pct}%"
     elif model["queued"]:
         right_txt = f"{model['queued']} queued"
     else:
@@ -379,8 +393,8 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     c, d = model["cpu"], model["disk"]
     gen = f"Gen{int(g['pcie_gen'])}" if g["pcie_gen"] else "PCIe"
     link = f"{gen} x{int(g['pcie_width'])}" if g["pcie_width"] else gen
-    cpu_sub = (f"{int(c['sockets'])} CPUs · {int(c['cores'])} cores" if c.get("sockets") and c["sockets"] > 1 and c["cores"] else
-               f"{int(c['cores'])} cores · {int(c['threads'])} threads" if c["cores"] and c["threads"] else
+    cpu_sub = (f"{int(c['sockets'])} CPUs {dot} {int(c['cores'])} cores" if c.get("sockets") and c["sockets"] > 1 and c["cores"] else
+               f"{int(c['cores'])} cores {dot} {int(c['threads'])} threads" if c["cores"] and c["threads"] else
                f"{int(c['threads'])} threads" if c["threads"] else "")
     tiles2 = [
         _tile("Power", f"{fmt(g['power'])} W", f"of {fmt(g['power_limit'])} W limit" if g["power_limit"] else "", spark(g["power_hist"], inner, glyphs, lo=0),
@@ -413,7 +427,7 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     lines += [t, bar(used_ctx, left_w, glyphs, accent)]
     t = Text(no_wrap=True, overflow="crop")
     t.append("Experts in VRAM   ")
-    t.append(f"{fmt(e['slots'])}" + (f" · {e['gb']:.1f} GB" if e["gb"] is not None else ""), style="dim")
+    t.append(f"{fmt(e['slots'])}" + (f" {dot} {e['gb']:.1f} GB" if e["gb"] is not None else ""), style="dim")
     lines += [t, bar(e_frac, left_w, glyphs, accent)]
     t = Text(no_wrap=True, overflow="crop")
     t.append("System RAM        ")

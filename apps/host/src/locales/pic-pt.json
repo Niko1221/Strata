@@ -1,0 +1,18 @@
+{
+ "pic01": "Baixando os arquivos de imagens (0,9 GB, apenas uma vez)…",
+ "pic02": "Verificando os arquivos de imagens…",
+ "pic03": "Sem conexão com a internet: o modelo é carregado sem leitura de imagens. Carregue-o novamente quando estiver online.",
+ "pic04": "Não há espaço livre suficiente no disco para os arquivos de imagens, então o modelo é carregado sem leitura de imagens.",
+ "pic05": "Não foi possível baixar os arquivos de imagens, então o modelo é carregado sem leitura de imagens. Tente novamente mais tarde.",
+ "pic06": "Os arquivos de imagens estão ausentes, então o modelo é carregado sem leitura de imagens.",
+ "pic07": "Baixando os arquivos de imagens",
+ "pic08": "Os arquivos de imagens estão prontos.",
+ "pic09": "Sem conexão com a internet, então não é possível baixar os arquivos de imagens agora.",
+ "pic10": "Não há espaço livre suficiente no disco para os arquivos de imagens (cerca de 1 GB).",
+ "pic11": "Não foi possível baixar os arquivos de imagens. Tente novamente; o download continua de onde parou.",
+ "pic12": "Os arquivos de imagens baixados não passaram na verificação de segurança e foram excluídos. Tente novamente.",
+ "pic13": "Não foi possível baixar os arquivos de imagens. Tente novamente.",
+ "pic14": "Arquivos de imagens prontos",
+ "pic15": "Carregue o modelo novamente para ler imagens.",
+ "pic16": "A leitura de imagens está pronta."
+}

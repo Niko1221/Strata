@@ -885,6 +885,23 @@ kernel void ds4_gemv_f32(device const float* W [[buffer(0)]], device const float
 }
 
 
+// ds4_kernels.cu route_fallback_pick - a pick that never came out: every score left is NaN (the gate's input went non-finite), so
+// nothing beat the start value and the index is still the 0x7fffffff it started as; the next line would read sc[0x7fffffff]
+// (threadgroup memory) and the kernels after it vram[0x7fffffff] / the plan.  The lowest expert not picked yet instead - a valid
+// index, so nothing reads outside the tables - and *bad raised for the host (router_bad_take, ds4_finish.cpp): the weights stay
+// NaN, the layer's output is garbage as it was, and the request hears of it.  Reached by a kernel's one thread, only when a pick is
+// missing, so a finite router pays one compare a pick.
+static inline int ds4_route_fallback_pick(threadgroup const int* pick, uint r, uint n, device int* bad) {
+    bad[0] = 1;
+    int ix = 0;
+    for (bool again = true; again;) {   // (the picks are few and unsorted: start over when one of them is the candidate)
+        again = false;
+        for (uint q = 0; q < r && !again; ++q)
+            if (pick[q] == ix) { ++ix; again = true; }
+    }
+    return ix < int(n) ? ix : 0;
+}
+
 // ds4_kernels.cu:1353  route_publish_kernel - the MoE router: sc = sqrt(softplus(logit)), bs = sc + bias, then k rounds of a
 // block-wide argmax (a strided max, a warp reduction, a 16-warp pass), the picks' sc summed into the weights, and each pick's
 // device address published to plan_ptr.  The prefetch requests (req) are NOT published here yet: that is the schedule, not the
@@ -895,6 +912,7 @@ kernel void ds4_route_publish(device const float* logits [[buffer(0)]], device c
                               device int* idx [[buffer(6)]], device float* w [[buffer(7)]],
                               device ulong* plan_ptr [[buffer(8)]], device const float* bias_vl [[buffer(9)]],
                               constant uint& vl [[buffer(10)]], constant uint& has_vl [[buffer(11)]],
+                              device int* bad [[buffer(12)]],
                               uint t [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]]) {
     threadgroup float sc[1024];
     threadgroup float bs[1024];
@@ -931,6 +949,7 @@ kernel void ds4_route_publish(device const float* logits [[buffer(0)]], device c
             for (uint q = 0; q < 16u; ++q) {
                 if (bv[q] > bb || (bv[q] == bb && bi[q] < ix)) { bb = bv[q]; ix = bi[q]; }
             }
+            if (ix >= int(n)) ix = ds4_route_fallback_pick(pick, r, n, bad);   // (a non-finite gate input)
             pick[r] = ix;
             bs[ix] = -3.402823466e+38f;
         }
@@ -2419,6 +2438,7 @@ kernel void ds4_route(device const float* logits [[buffer(0)]], device const flo
                       constant uint& n [[buffer(2)]], constant uint& k [[buffer(3)]], constant float& route_scale [[buffer(4)]],
                       device int* idx [[buffer(5)]], device float* w [[buffer(6)]], device const float* bias_vl [[buffer(7)]],
                       constant uint& has_vl [[buffer(8)]], device const uint* vlw [[buffer(9)]],
+                      device int* bad [[buffer(10)]],
                       uint tg [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
                       ushort lane [[thread_index_in_simdgroup]], ushort wp [[simdgroup_index_in_threadgroup]]) {
     threadgroup float sc[1024], bs[1024];
@@ -2465,6 +2485,7 @@ kernel void ds4_route(device const float* logits [[buffer(0)]], device const flo
                     b = bv[q];
                     ix = bi[q];
                 }
+            if (ix >= int(n)) ix = ds4_route_fallback_pick(pick, r, n, bad);   // (a non-finite gate input)
             pick[r] = ix;
             bs[ix] = -INFINITY;
         }
@@ -2702,6 +2723,33 @@ kernel void ds4_dq_q5k(device const uchar* W [[buffer(0)]], constant ulong& ld [
         const uint4 a = uint4(*(const device packed_uchar4*) (qs + l));
         const uint4 b = uint4(*(const device packed_uchar4*) (qh + l));
         const uint4 q = ((a >> sh) & 15u) | (((b >> ib) & 1u) << 4);
+        o[l >> 2] = packed_half4(half4(float4(ds) * float4(q) - float4(dm)));
+    }
+}
+
+// a thread a 32-value sub-block of a Q4_K matrix (144-byte blocks: d, dmin, 12 bytes of 6-bit scales and mins, 128 bytes of
+// nibbles; ggml's dequantize_row_q4_K: sub-block j takes the low nibbles of qs[32 * (j / 2) ..] for even j, the high ones for odd j,
+// d * scale * q - dmin * min) -> out[n][k] half.  The Q5_K kernel above without the fifth bit.
+kernel void ds4_dq_q4k(device const uchar* W [[buffer(0)]], constant ulong& ld [[buffer(1)]], constant uint& k [[buffer(2)]],
+                       constant uint& n [[buffer(3)]], device half* out [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
+    const uint nb = k / 256u;
+    const ulong total = (ulong) n * nb * 8ul;
+    if (ulong(gid) >= total) return;
+    const uint ib = gid & 7u;
+    const uint blk = (gid >> 3) % nb;
+    const uint row = uint(ulong(gid) / (8ul * nb));
+    const device uchar* p = W + (ulong) row * ld + (ulong) blk * 144ul;
+    const float d = float(as_type<half>(*(const device ushort*) p));
+    const float dmin = float(as_type<half>(*(const device ushort*) (p + 2)));
+    int sc, mm;
+    ds4_kscale2(p + 4, int(ib), sc, mm);
+    const device uchar* qs = p + 16 + 32u * (ib >> 1);
+    const uint sh = 4u * (ib & 1u);
+    device packed_half4* o = (device packed_half4*) (out + (ulong) row * k + (ulong) blk * 256ul + ib * 32u);
+    const float ds = d * float(sc), dm = dmin * float(mm);
+    for (uint l = 0; l < 32u; l += 4u) {
+        const uint4 a = uint4(*(const device packed_uchar4*) (qs + l));
+        const uint4 q = (a >> sh) & 15u;
         o[l >> 2] = packed_half4(half4(float4(ds) * float4(q) - float4(dm)));
     }
 }

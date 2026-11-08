@@ -28,6 +28,21 @@
 #define QBUDGET 2051
 #define QCH 64
 
+#ifndef STRATA_XH16_DECL
+#define STRATA_XH16_DECL
+// STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
+// [3][plane] halves - raw (IQ4_XS), x * 4^-(i % 4) (Q2_0), x * 2^-8 at odd i (the K-quants); idx = t * n + d, jj = d % 16
+constant bool XH16 [[function_constant(25)]];
+constant bool xh16 = is_function_constant_defined(XH16) && XH16;
+static inline void put_x16(device float* xp, uint plane, uint idx, uint jj, float v) {
+    device half* xh = (device half*)(xp + 4 * plane + plane / 16);
+    const float q2b[4] = {1.0f, 0.25f, 0.0625f, 0.015625f};
+    xh[idx] = half(v);
+    xh[plane + idx] = half(v * q2b[jj & 3]);
+    xh[2 * plane + idx] = half((jj & 1) ? v * 0.00390625f : v);
+}
+#endif
+
 constant int QSA_NTOK [[function_constant(3)]];
 // QSA_MROPE (function constant 24): interleaved M-RoPE (the vision path; strata/kernels/mrope.hpp, ggml IMROPE,
 // sections 11/11/10): buffer 20 of qsa_prep is a table int32 [cells][3] (t, h, w), and rotary pair i (0..31) of the row
@@ -399,6 +414,7 @@ kernel void qsa_merge(device const float* part [[buffer(0)]], device const float
     raw[plane] = y * q2s[j & 7];
     raw[2 * plane] = y * p4s[j & 3];
     raw[3 * plane] = (j & 1) ? y * 0.00390625f : y;
+    if (xh16) put_x16(xp, plane, uint(t) * n + d, j, y);
     msum[tid] = y;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (j == 0) {

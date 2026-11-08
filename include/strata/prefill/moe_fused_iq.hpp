@@ -29,6 +29,10 @@ struct NativeGeom {
 /// enabled() (STRATA_PF_FUSED=1 on sm_80+), and the kernels cover this gate/up and down pair on this device.
 bool native_supported(int gu_type, int d_type);
 
+/// AMD-Q: true when the gfx12 build also takes the IQ2_S and IQ4_XS gate/up layers on the fused kernels (Linux; OPT-IN: STRATA_PF_FUSED_IQ2S=1; STRATA_PF_FUSED=0 turns all fused kernels off).
+/// prefill.cpp picks the CPU share's limit from it (share_rules::gfx12_share_limit).
+bool gfx12_iq2s_default();
+
 /// x [rows][cols] FP32 -> `xa` (act_bytes(rows, cols)): int8 per 32 values in natural order, the native kernels' form.
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream);
 

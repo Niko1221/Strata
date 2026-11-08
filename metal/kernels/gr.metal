@@ -51,6 +51,48 @@ kernel void gr_norm(device float* R [[buffer(0)]], device const float* bo [[buff
     for (uint d = tid; d < n; d += 256) o[d] = r[d] * w[d] * rs;
 }
 
+// gr_norm with its loads batched: the same arithmetic, in the same order, as gr_norm (n_embd 2560: ten elements a thread).  gr_norm's
+// loop stores R in place between the loads of the next elements, which the compiler cannot move past each other, so its ten
+// iterations were ten dependent memory latencies (plus ten more in the second loop); here R, bo and w_norm are all loaded
+// first, then summed, reduced and stored.
+kernel void gr_norm2(device float* R [[buffer(0)]], device const float* bo [[buffer(1)]],
+                     device const float* inj [[buffer(2)]], device const float* w_norm [[buffer(3)]],
+                     device float* xn [[buffer(4)]], constant GrArgs& a [[buffer(5)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
+                     ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
+    constexpr int NJ = 10;
+    threadgroup float part[8];
+    const uint c = tg.x, t = tg.y, n = a.n_embd;
+    device float* r = R + (t * a.hc + c) * n;
+    device const float* b = bo + t * n;
+    device const float* w = w_norm + c * n;
+    float rv[NJ], wv[NJ], bv[NJ];
+    for (int j = 0; j < NJ; ++j) rv[j] = r[tid + 256 * j];
+    if (a.apply)
+        for (int j = 0; j < NJ; ++j) bv[j] = b[tid + 256 * j];
+    for (int j = 0; j < NJ; ++j) wv[j] = w[tid + 256 * j];
+    const float g = a.apply ? 2.0f / (1.0f + exp(-inj[t * a.hc + c] / float(a.hc))) : 0.0f;
+    float ss = 0.0f;
+    for (int j = 0; j < NJ; ++j) {
+        float v = rv[j];
+        if (a.apply) {
+            v = fma(bv[j], g, v);
+            rv[j] = v;
+        }
+        ss = fma(v, v, ss);
+    }
+    if (a.apply)
+        for (int j = 0; j < NJ; ++j) r[tid + 256 * j] = rv[j];
+    ss = simd_sum(ss);
+    if (lane == 0) part[sg] = ss;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float tot = 0.0f;
+    for (int i = 0; i < 8; ++i) tot += part[i];
+    const float rs = rsqrt(tot / float(n) + a.eps);
+    device float* o = xn + (t * a.hc + c) * n;
+    for (int j = 0; j < NJ; ++j) o[tid + 256 * j] = rv[j] * wv[j] * rs;
+}
+
 // rows: 0 .. hc_lr - 1 = w_down, hc_lr .. hc_lr + hc - 1 = w_inject (both bf16 rows of hc * n_embd).
 // SG simdgroups split the row's units KS ways; LPR = 32 (a simdgroup per row); RS = SG / KS rows per threadgroup.
 // one row's K-split partial over xn (units of format F)
@@ -160,6 +202,7 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
         raw[plane] = m * q2s[j & 7];
         raw[2 * plane] = m * p4s[j & 3];
         raw[3 * plane] = (j & 1) ? m * 0.00390625f : m;
+        if (xh16) put_x16(xp, plane, t * n + dd, j, m);
         msum[t][j] = m;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);

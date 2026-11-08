@@ -61,11 +61,15 @@ main() {
   esac
   gpu=""
   if command -v nvidia-smi >/dev/null 2>&1; then
-    gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+    # only a clean answer is a card name: a driver that is not loaded prints an error sentence (on stdout, exit status 9)
+    gpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) || gpu=""
+    gpu=$(printf '%s' "$gpu" | head -1)
+    case "$gpu" in *[Ff]ailed*|*NVIDIA-SMI*|*"couldn't communicate"*|*"No devices"*) gpu="" ;; esac
     [ -n "$gpu" ] && gpu="NVIDIA $gpu"
   fi
   if [ -z "$gpu" ] && [ "$os" = Linux ] && command -v lspci >/dev/null 2>&1; then
-    gpu=$(lspci 2>/dev/null | grep -iE 'vga|3d|display' | head -1 | sed 's/^[^:]*: *//' || true)
+    # the PCI class decides, not a word anywhere in the line (an SSD sold as "3D NAND" is not a graphics card)
+    gpu=$(lspci 2>/dev/null | grep -iE '^[^ ]+ (vga compatible controller|3d controller|display controller)[^:]*:' | head -1 | sed 's/^[^ ]* [^:]*: *//' || true)
   fi
   if [ -z "$gpu" ] && [ "$os" = Darwin ]; then
     gpu=$(system_profiler SPDisplaysDataType 2>/dev/null | sed -n 's/^ *Chipset Model: //p' | head -1 || true)

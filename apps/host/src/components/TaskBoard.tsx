@@ -179,7 +179,6 @@ export function TaskBoard({ query, canRun, onViewResult }: { query: string; canR
   const total = Object.values(board.columns).reduce((n, c) => n + c.length, 0);
 
   return <div className="board-wrap">
-    <p className="board-note"><Icon name="info" size={16}/>{tr('Cards move on their own as things happen. A card in Needs attention stays there until you deal with it or dismiss it.')}</p>
     <p className="sr-only" role="status" aria-live="polite">{board.need ? tr('{0} need your attention', [board.need]) : tr('Nothing needs you right now.')}</p>
     <div className="board">
       {COLUMNS.map(col => {

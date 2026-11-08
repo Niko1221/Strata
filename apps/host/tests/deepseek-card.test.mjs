@@ -41,10 +41,10 @@ test('a DeepSeek card that does spill keeps its spill line beside the disk line'
 
 test('every other model keeps its card as it was', () => {
   setTranslationLanguage('en');
-  assert.match(card({ fit: fit(0) }), /Fits fully in memory\./);
-  assert.match(card({ fit: fit(0), diskGb: null }), /Fits fully in memory\./);
+  // Owner, 11-01: no "Fits" words, and the SSD warning is said once, under the version picker (a DeepSeek card keeps its own line above).
+  assert.doesNotMatch(card({ fit: fit(0) }), /Fits fully in memory\./);
   assert.doesNotMatch(card({ fit: fit(0) }), /free disk space/);
-  assert.match(card({ fit: fit(30) }), /About 30 GB will be read from the SSD/);
+  assert.doesNotMatch(card({ fit: fit(30) }), /read from the SSD/);
 });
 
 test('the words are in all eight languages with the same slots', () => {
@@ -65,8 +65,9 @@ test('the words are in all eight languages with the same slots', () => {
 
 test('the Models screen passes the set\'s disk to the card, and the version line states it for DeepSeek only', () => {
   const screen = read('../src/components/NativeModels.tsx');
-  assert.match(screen, /<PcFitCard [^>]*diskGb=\{selectedSize\?\.multi_file \? selectedSize\.disk_gb \?\? selectedSize\.download_gb : null\}/);
+  assert.match(screen, /<PcComputer [\s\S]*?diskGb=\{selectedSize\?\.multi_file \? selectedSize\.disk_gb \?\? selectedSize\.download_gb : null\}/);
   const picker = read('../src/components/VersionPicker.tsx');
-  assert.match(picker, /tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(fit\.memoryGb\), Math\.round\(selected\.disk_gb\)\]\)/);
-  assert.match(picker, /: fit \? `\$\{gb\(fit\.memoryGb\)\} RAM \+ VRAM` : ''/, 'every other model keeps its line');
+  assert.match(picker, /v\.multi_file && v\.disk_gb \? tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(fit\.memoryGb\), Math\.round\(v\.disk_gb\)\]\)/, 'Details: the disk of the set for DeepSeek');
+  assert.match(picker, /v\.multi_file && v\.disk_gb \? tr\("Needs \{0\} of memory and about \{1\} GB of disk"/, 'plain: the disk for DeepSeek only');
+  assert.match(picker, /: tr\("Needs \{0\} of memory", \[whole\(fit\.memoryGb\)\]\)/, 'every other model keeps its line');
 });

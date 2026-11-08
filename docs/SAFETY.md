@@ -60,14 +60,16 @@ Like any download, each connection below shows the other side your IP address an
 
 That is the full list found in the code. Some details:
 
-- **Nothing checks for updates in the background.** The app does not check when it starts, and not when you open Settings,
+- **An engine is never updated by itself.** The app does not check when it starts, and not when you open Settings,
   Engine either: that screen shows the result of your last check, or nothing if you have not checked. The checks in the table
   run when you press a button or run a command. With no connection, the check says so and nothing else happens. The Terminal fetches an engine by itself only when none is
-  installed, and `strata launch` asks first. One exception: `strata launch` with a DeepSeek model first checks whether the
-  signed feed can be reached (at most 10 s; without a connection it says nothing and goes on), then reads it, and when it has
-  a newer DeepSeek engine package for this PC, fetches and checks it, starts it once (`--version`), switches to it and removes
-  the older one. On a failure the installed one keeps running. Not when the launch is given `--dsv41-package` or
-  `STRATA_DSV41_EXE` is set (`strata_cli/launch/runner.py`, `upgrade_dsv41_engine`).
+  installed (and `strata launch` asks first when the one installed is older than the model needs). `strata launch`, setup and a
+  model download never fetch, replace or remove an engine that is installed, DeepSeek's included. An update is `strata update`
+  or the app's Update engine: with a model loaded it names the model, asks before stopping it, and downloads while the model
+  keeps serving; a script is refused (exit 7) unless it passes `--stop-model`. One quiet exception, the launch monitor only:
+  once a day it reads the signed update feed (a few KB, no engine, a 5 second limit, nothing shown if it fails or there is no
+  connection) so it can say "a new engine is available". `STRATA_UPDATE_CHECK=0` turns it off
+  (`strata_control/engine_update.py`, `refresh_cache`).
 - **Starting and serving never download.** `strata serve` and the app's load button fetch nothing. The app sets
   `STRATA_PACKAGED=1` and `STRATA_NO_ACQUIRE=1` for its parts (`apps/desktop/src-tauri/src/main.rs`), and the downloaders
   refuse to run under them (`strata_control/acquisition.py`, `apps/host/server/acquisition.mjs`). That is why the app

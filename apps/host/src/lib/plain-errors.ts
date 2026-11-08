@@ -11,7 +11,7 @@ export interface PlainFailure { message: string; next?: string; detail?: string;
 interface Rule { kind: string; match: RegExp; message: string | ((m: RegExpMatchArray) => string); next?: string; detail?: (m: RegExpMatchArray, raw: string) => string | undefined }
 
 const MEMORY = 'The model stopped while starting, most likely because the PC ran low on memory.';
-const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave 20% for my work”. In Expert mode you can also turn on the low-RAM option, so part of the model is read from the SSD.';
+const MEMORY_NEXT = 'Close other programs and try again, or choose “Leave room for my work”. In Expert mode you can also turn on the low-RAM option, so part of the model is read from the SSD.';
 
 /** Order matters: the first rule that matches wins. */
 const RULES: Rule[] = [
@@ -20,7 +20,7 @@ const RULES: Rule[] = [
   { kind: 'tunnel-own-running', match: /Strata’s tunnel for this address is already running \(PID/i, message: 'Strata’s tunnel for this address is already running.', next: 'Stop it first, or use it as it is, then connect again here.' },
   { kind: 'gpu-shared', match: /GPU \d+ is already used by .*, so this model did not fit there/i, message: 'Another model on the same graphics card left no room for this one.', next: 'Load it on a different GPU, or unload the other model first.' },
   { kind: 'gpu-no-code', match: /none of this computer.s graphics cards has code in this Strata engine|not an architecture this Strata engine was compiled for/i, message: 'This Strata engine has no code for the graphics card it tried to use.', next: 'Pick another card under Run on, or open Details to see which cards were found and what the engine is built for.' },
-  { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, Engine, Update engine), then try again.' },
+  { kind: 'engine-too-old', match: /needs a newer engine: .* needs engine/i, message: 'This model needs a newer engine.', next: 'Update the engine (Settings, About), then try again.' },
   { kind: 'settings-file', match: /settings file for this model has a mistake/i, message: 'Your settings file has a mistake, so the model was not started.', next: 'Open the settings file under Expert settings, fix the line shown under Details, then load the model again.' },
   { kind: 'connector-missing', match: /connector \(cloudflared\) is not installed/i, message: 'Strata could not find Cloudflare’s connector (cloudflared) on this computer.', next: 'Install cloudflared (with your package manager, or from Cloudflare’s website), then press Retry setup. Strata finds it on your PATH and in the usual places.' },
   { kind: 'connector-old', match: /cloudflared at .* is version .* too old/i, message: 'The Cloudflare connector on this computer is too old.', next: 'Update cloudflared to a newer version, then press Retry setup.' },
@@ -35,6 +35,8 @@ const RULES: Rule[] = [
   { kind: 'crash', match: /0xC0000005|3221225477|0xC0000409|3221226505|segmentation fault|SIGSEGV|exit code 139/i, message: 'The engine crashed while starting.', next: 'Restart the PC and try again. If it keeps happening, update your graphics driver and open Details when you ask for help.' },
   { kind: 'blocked', match: /0xC0000022|3221225506|\bEACCES\b|\bEPERM\b|operation not permitted/i, message: 'Windows or your security software stopped the engine from starting.', next: 'Allow Strata in your security software, then try again.' },
   { kind: 'file-missing', match: /\bENOENT\b|no such file or directory|cannot find the (?:file|path)|0x80070002|exit code 127|file not found/i, message: 'Strata could not find a file it needs to start the engine.', next: 'Reinstall Strata or press Repair.' },
+  // The engine says it in its own log (the start error carries the last lines): no room left on the card after the weights and the conversation cache (#3723).
+  { kind: 'vram', match: /no VRAM is left|not enough (?:free )?(?:VRAM|graphics memory|GPU memory|video memory)|out of (?:VRAM|GPU memory|video memory)|VRAM (?:is )?(?:full|exhausted)/i, message: 'The model did not fit in your graphics card’s memory.', next: 'Lower the conversation context, or set Context memory to Q4 in Expert settings, then try again.' },
   { kind: 'memory', match: /out of memory|memory guard|\boom\b|\bkilled\b|exit code 137|cannot allocate memory|not enough memory|bad_alloc|pinned-memory-exhausted|mapped staging|cudaErrorMemoryAllocation|insufficient memory/i, message: MEMORY, next: MEMORY_NEXT },
   { kind: 'previous-session', match: /lost host child is still present|retry after it exits/i, message: 'The last Strata session is still closing down.', next: 'Wait a moment and try again. If it keeps happening, restart the computer.' },
   { kind: 'start-failed', match: /server_exited|engine stopped|exited before|died before/i, message: 'The model stopped while starting.', next: 'Try again. If it keeps happening, open Details and share them when you ask for help.' },
@@ -49,13 +51,40 @@ const RULES: Rule[] = [
 
 /** The message as a person should read it, its next step, and the original text for the Details disclosure. */
 export function plainFailure(raw: string | null | undefined): PlainFailure {
-  const text = String(raw ?? '').replace(/^\s*Fixture:\s*/i, '').trim();
+  const text = unwrapErrorPayload(String(raw ?? '').replace(/^\s*Fixture:\s*/i, '').trim());
   for (const rule of RULES) {
     const m = text.match(rule.match);
     if (!m) continue;
     return { kind: rule.kind, message: typeof rule.message === 'function' ? rule.message(m) : rule.message, next: rule.next, detail: rule.detail ? rule.detail(m, text) : text };
   }
   return { kind: 'plain', message: text.replace(/^./, c => c.toUpperCase()) };
+}
+
+/**
+ * Reduce an error body to the sentence inside it.
+ *
+ * The host answers a refused request with `{"error":"…"}` and the fetch layer
+ * forwards `HTTP 400: {"error":"…"}`; both reached the screen verbatim, so a
+ * person was shown a JSON object where a sentence belonged. The wrapper is
+ * peeled here — before the rules run, so a wrapped message still matches its
+ * own rule — and anything that is not a recognisable error body is returned
+ * untouched.
+ */
+function unwrapErrorPayload(text: string): string {
+  // `HTTP 400: {…}` or a bare `{…}` body.
+  const body = text.replace(/^HTTP\s+\d{3}\s*:\s*/i, '').trim();
+  if (!body.startsWith('{')) return text;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    // FastAPI and the host both use `detail`/`error`/`message`, and `detail`
+    // is itself sometimes an object with a `message`.
+    const detail = parsed.detail;
+    const candidate = [parsed.error, parsed.message, typeof detail === 'string' ? detail : (detail as Record<string, unknown> | undefined)?.message]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    return candidate ? candidate.trim() : text;
+  } catch {
+    return text;
+  }
 }
 
 /** Translated copy of a failure, ready to show. */

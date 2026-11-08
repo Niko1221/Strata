@@ -383,6 +383,17 @@ bool map_segment(const Vmm& v, int dev, CUdeviceptr va, size_t bytes, unsigned l
 }  // namespace
 #endif
 
+#if !defined(STRATA_EC_NO_VMM)
+// the driver and this GPU offer the virtual memory functions the segmented arena needs (the check open_segmented makes first)
+static bool segmented_supported() {
+    const Vmm& v = vmm();
+    int dev = 0, supported = 0;
+    CUdevice cu = 0;
+    return v.ok && cudaGetDevice(&dev) == cudaSuccess && v.device_get(&cu, dev) == CUDA_SUCCESS &&
+           v.attribute(&supported, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, cu) == CUDA_SUCCESS && supported;
+}
+#endif
+
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
 #if defined(STRATA_EC_NO_VMM)
     (void) want;
@@ -593,6 +604,13 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         }
     }
 
+#if !defined(STRATA_EC_NO_VMM)
+    if (seg_req_ > 0 && !segmented_supported()) {   // a driver without them: one block, the engine starts all the same
+        std::fprintf(stderr, "ExpertCache: --vram-elastic is off: the driver or this GPU offers no virtual memory management; "
+                             "the cache is one block\n");
+        seg_req_ = 0;
+    }
+#endif
     if (seg_req_ > 0) {   // #533: --vram-elastic: physical segments behind one address range (zeroed below)
         if (!open_segmented(want, err)) return false;
     } else if (g_cache_vmm && vmm_available()) {

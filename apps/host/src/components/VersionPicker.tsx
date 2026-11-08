@@ -1,32 +1,38 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { tr } from '../lib/i18n';
 import { Icon } from './ui';
 import { FloatingMenu } from './FloatingMenu';
 import { cx } from '../lib/format';
 import { versionNote, type CatalogVersion } from '../lib/native-catalog';
 import { nvfp4Version } from '../lib/native-names';
-import { VERSION_GROUPS, fitOn, groupOpen, recommendedVersions, type FitHardware, type PcPick } from '../lib/native-fit';
+import { fitOn, recommendedVersions, versionFit, versionGroups, type CacheChoice, type FitHardware, type PcPick } from '../lib/native-fit';
 
-/** The name a version goes by in the list: the quantization, with the maker where the quantization alone is ambiguous. */
-export function versionName(v: CatalogVersion, withMaker = false): string {
+/** The name a version goes by in the list: the quantization, with the maker only where the quantization alone would be ambiguous. */
+export function versionName(v: CatalogVersion): string {
   switch (v.sourceFamily) {
     case 'swift': return `Swift ${v.model}`;
     case 'unsloth': return `Unsloth ${v.model}`;
     case 'nvfp4': return tr(nvfp4Version(v.model)?.name ?? v.model);
     case 'coder': return `Coder ${v.model}`;
-    case 'qwen': return withMaker ? `${v.model} (GSQ-RCO)` : v.model;
     default: return v.model;
   }
 }
 
+/** Who made a version (Details only): the family name of the quantization, a proper name in every language. */
+const MAKERS: Record<string, string> = { qwen: 'GSQ-RCO', coder: 'GSQ-RCO', swift: 'Swift', unsloth: 'Unsloth', gyro: 'Gyro', nvfp4: 'NVFP4' };
+
 const gb = (n: number) => `${Number.isInteger(n) ? n : n.toFixed(1)} GB`;
+const whole = (n: number) => `${Math.round(n)} GB`;
 
 /**
- * The version list of the Models screen: one line per model. The bold figure is the RAM + VRAM it needs together (the n-gram table,
- * which stays on the SSD, is not in it); the download size is secondary. "Uses SSD N GB" appears only where this computer would read
- * part of the model from its SSD. The first group is a fixed list of four; the rest fold away.
+ * Where the versions of the chosen base model are listed, each exactly once. At the top: the versions we recommend (the pick for this PC first; no "Recommended" tag since 11-02, the order says it) and the versions already downloaded (tagged "Downloaded"). Below, folded under "More
+ * versions": all the others. A row is the name, small tags, a word only where one is needed ("SSD streaming · will run slower" for a version that does
+ * not fully fit in memory, "Doesn't fit" where it cannot run at all; a version that fits says nothing: see `versionFit`) and the size. The maker, the
+ * memory it needs and the SSD figure are behind "Show details" (open from the start in Expert mode). The other base models are not in this list: they
+ * appear when picked at the top of the page.
  */
-export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick }: {
+export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnGguf, downloaded, showRecommended = true, moreLabel, pick, cache, details: detailsOpen = false }: {
+  /** The versions of the chosen base model. */
   versions: CatalogVersion[];
   selectedId: string;
   hardware: FitHardware | null | undefined;
@@ -34,54 +40,73 @@ export function VersionPicker({ versions, selectedId, hardware, onSelect, onOwnG
   onOwnGguf: () => void;
   /** The versions already on this computer (ready to load): each gets a small "Downloaded" tag. */
   downloaded?: ReadonlySet<string>;
-  /** False where the recommended four are shown elsewhere (the first-run page): the menu then holds only the groups. */
+  /** False where the recommended ones are shown elsewhere (the first-run page): the menu then holds only the others. */
   showRecommended?: boolean;
-  /** What the button says while the selected version is one of the recommended four shown elsewhere. */
+  /** What the button says while the selected version is one of the recommended ones shown elsewhere. */
   moreLabel?: string;
-  /** The engine's own pick for this PC (catalog.recommendation); it comes first in the Recommended group. */
+  /** The engine's own pick for this PC (catalog.recommendation). */
   pick?: PcPick | null;
+  /** The conversation context and cache format the person chose: the fit words follow them, as the This computer card does. */
+  cache?: CacheChoice | null;
+  /** Start with the technical detail shown (Expert mode). */
+  details?: boolean;
 }) {
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  // A group is open when the person opened it; until they touch it, only the group that holds the selected version is open.
-  const [opened, setOpened] = useState<Record<string, boolean>>({});
+  const [details, setDetails] = useState(detailsOpen);
+  useEffect(() => setDetails(detailsOpen), [detailsOpen]);
   const selected = versions.find(v => v.id === selectedId);
-  const recommended = recommendedVersions(versions, pick);
-  // Where the recommended four are shown outside the menu, the menu holds only the others.
-  const apart = new Set(showRecommended ? [] : recommended.map(x => x.v.id));
-  const rest = versions.filter(v => !apart.has(v.id));
-  const groups = [
-    ...VERSION_GROUPS.map(g => ({ id: g.id, title: g.title, items: rest.filter(v => g.families.includes(v.sourceFamily)) })),
-    { id: 'other', title: 'Qwen3.6 models', items: rest.filter(v => !VERSION_GROUPS.some(g => g.families.includes(v.sourceFamily))) },
-  ].filter(g => g.items.length);
-  const row = (v: CatalogVersion, label: string, note?: string) => {
-    const fit = fitOn(v, hardware);
-    const on = v.id === selectedId;
-    const line = versionNote(v.model);
-    return <button key={`${label}-${v.id}`} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
-      <span className="version-row__name"><span className="version-row__title">{tr(on ? <Icon name="check" size={14}/> : null)}<strong>{label}</strong>{tr(note ? <span className="muted"> · {tr(note)}</span> : null)}{tr(downloaded?.has(v.id) ? <span className="version-row__have">{tr("Downloaded")}</span> : null)}{tr(fit.known && fit.spillGb >= 1 ? <span className="version-row__ssd">{tr("Uses SSD {0} GB", [Math.round(fit.spillGb)])}</span> : null)}</span>{tr(line ? <small className="version-row__note muted">{line}</small> : null)}</span>
-      <span className="version-row__ram">{gb(fit.memoryGb)}</span>
-      <span className="version-row__dl">{gb(v.download_gb)}</span>
+  // Where the recommended ones are shown outside the menu, the menu holds only the others.
+  const rows = recommendedVersions(versions, pick);
+  const apart = new Set(showRecommended ? [] : rows.map(x => x.v.id));
+  const recommendedIds = rows.map(x => x.v.id);
+  const { top, more } = versionGroups(versions, apart, downloaded, recommendedIds);
+  const shown = selected && !apart.has(selected.id) ? selected : undefined;
+  // The folded part opens by itself when it holds the chosen version or when there is nothing above it.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const foldedOpen = moreOpen || !top.length || more.some(v => v.id === selectedId);
+
+  const need = (v: CatalogVersion, technical: boolean) => {
+    const fit = fitOn(v, hardware, true, cache);
+    if (technical) return v.multi_file && v.disk_gb ? tr("{0} RAM + VRAM, plus about {1} GB of disk", [gb(fit.memoryGb), Math.round(v.disk_gb)]) : tr("{0} RAM + VRAM", [gb(fit.memoryGb)]);
+    return v.multi_file && v.disk_gb ? tr("Needs {0} of memory and about {1} GB of disk", [whole(fit.memoryGb), Math.round(v.disk_gb)]) : tr("Needs {0} of memory", [whole(fit.memoryGb)]);
+  };
+  const row = (v: CatalogVersion) => {
+    const fit = fitOn(v, hardware, true, cache);
+    const on = v.id === selectedId, have = !!downloaded?.has(v.id);
+    const state = versionFit(v, hardware, cache);
+    const technical = [MAKERS[v.sourceFamily], need(v, true), state === 'ssd' ? tr("Uses SSD {0} GB", [Math.round(fit.spillGb)]) : ''].filter(Boolean).join(' · ');
+    const note = versionNote(v.model);
+    return <button key={v.id} role="menuitemradio" aria-checked={on} className={cx('version-row', on && 'is-on')} onClick={() => { onSelect(v.id); setOpen(false); }}>
+      <span className="version-row__check">{tr(on ? <Icon name="check" size={14}/> : null)}</span>
+      <span className="version-row__body">
+        <span className="version-row__title"><strong>{versionName(v)}</strong>{tr(have ? <span className="version-row__tags"><span className="version-tag version-tag--have">{tr("Downloaded")}</span></span> : null)}</span>
+        {tr(state === 'ssd' || state === 'no' ? <span className="version-row__fit" data-fit={state}>{tr(state === 'ssd' ? 'SSD streaming · will run slower' : "Doesn't fit")}</span> : null)}
+        {tr(details ? <span className="version-row__tech">{technical}{tr(note ? <><br/>{note}</> : null)}</span> : null)}
+      </span>
+      <span className="version-row__size">{have ? gb(v.download_gb) : tr("{0} download", [gb(v.download_gb)])}</span>
     </button>;
   };
-  const fit = selected && !apart.has(selected.id) ? fitOn(selected, hardware) : null;
+  // The open menu opens on the chosen version, not at the top of a long list.
+  const menu = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (open) menu.current?.querySelector('.is-on')?.scrollIntoView({ block: 'nearest' }); }, [open]);
   return <>
     <button ref={trigger} type="button" className="version-trigger" aria-haspopup="menu" aria-expanded={open} aria-label={tr("Model version")} onClick={() => setOpen(v => !v)}>
-      <strong>{selected && !apart.has(selected.id) ? versionName(selected, true) : tr(moreLabel ?? "Choose a version")}</strong>{tr(selected && !apart.has(selected.id) && downloaded?.has(selected.id) ? <span className="version-row__have">{tr("Downloaded")}</span> : null)}
-      <span className="version-trigger__need muted">{tr(fit && selected?.multi_file && selected.disk_gb ? tr("{0} RAM + VRAM, plus about {1} GB of disk", [gb(fit.memoryGb), Math.round(selected.disk_gb)]) : fit ? `${gb(fit.memoryGb)} RAM + VRAM` : '')}</span>
+      <strong>{shown ? versionName(shown) : tr(moreLabel ?? "Choose a version")}</strong>{tr(shown && downloaded?.has(shown.id) ? <span className="version-tag version-tag--have">{tr("Downloaded")}</span> : null)}
+      <span className="version-trigger__need muted">{tr(shown ? need(shown, details) : '')}</span>
       <Icon name="chevron" size={14} className="version-trigger__chev"/>
     </button>
-    {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Model version")} width={620} onClose={() => setOpen(false)}>
-      <div className="version-menu">
-        {tr(showRecommended ? <><div className="version-head"><span>{tr("Recommended")}</span><span>{tr("RAM + VRAM")}</span><span>{tr("Download")}</span></div>{tr(recommended.map(({ r, v }) => row(v, versionName(v, true), r.note)))}</> : <div className="version-head"><span>{tr("All other versions")}</span><span>{tr("RAM + VRAM")}</span><span>{tr("Download")}</span></div>)}
-        {tr(groups.map(g => {
-          const closed = !groupOpen(opened, g.id, g.items.some(v => v.id === selectedId));
-          return <div className="version-group" key={g.id} data-open={!closed || undefined}>
-            <button role="menuitem" className="version-group__head" aria-expanded={!closed} onClick={() => setOpened(o => ({ ...o, [g.id]: closed }))}><span>{tr(g.title)} <span className="muted">{tr(g.items.length)}</span></span><Icon name="chevron" size={14} className={cx(!closed && 'is-open')}/></button>
-            {tr(!closed ? g.items.map(v => row(v, versionName(v))) : null)}
-          </div>;
-        }))}
-        <button role="menuitem" className="version-group__head version-own" onClick={() => { setOpen(false); onOwnGguf(); }}><span>{tr("Use your own GGUF…")}</span><Icon name="folder" size={14}/></button>
+    {tr(open ? <FloatingMenu anchor={trigger.current} title={tr("Model version")} width={520} onClose={() => setOpen(false)}>
+      <div className="version-menu" ref={menu}>
+        {tr(top.length ? <div className="version-section" role="group" aria-label={tr("Model version")}>{tr(top.map(row))}</div> : null)}
+        {tr(more.length ? <div className="version-section" role="group" aria-label={tr("More versions")}>
+          {tr(top.length ? <button role="menuitem" className="version-more" aria-expanded={foldedOpen} onClick={() => setMoreOpen(!foldedOpen)}><span>{tr("More versions")} <span className="muted">{more.length}</span></span><Icon name="chevron" size={14} className={cx('version-more__chev', foldedOpen && 'is-open')}/></button> : null)}
+          {tr(foldedOpen ? <div className="version-more__rows">{tr(more.map(row))}</div> : null)}
+        </div> : null)}
+        <div className="version-foot">
+          <button role="menuitem" className="version-foot__btn" onClick={() => { setOpen(false); onOwnGguf(); }}><Icon name="folder" size={14}/>{tr("Use your own GGUF…")}</button>
+          <button role="menuitem" className="version-foot__btn" aria-pressed={details} onClick={() => setDetails(d => !d)}>{tr(details ? "Hide details" : "Show details")}</button>
+        </div>
       </div>
     </FloatingMenu> : null)}
   </>;

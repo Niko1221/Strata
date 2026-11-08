@@ -29,7 +29,7 @@ not additional top-level families.
 
 | Family | Availability evidence | Catalog and limits |
 | --- | --- | --- |
-| DeepSeekV4.1-Flash-1017 | `deepseek41` in `MULTI_FILE_FAMILIES` in [setup.py](../setup.py); Terminal since 0.2.4, desktop app since 0.2.5 | [MODELS.md](MODELS.md#deepseek-v41-flash): IST-DAS 1.75 bpw (239 GB), 2.00 bpw (257 GB) and 2.25 bpw (274 GB), 8K context, a Speed choice (Faster or Full quality). NVIDIA RTX 30, 40 and 50 (Windows, Linux), AMD Radeon AI PRO R9700 (Linux) and Ryzen AI Max / Strix Halo (Windows, gfx1151). Not on Mac, Intel Arc or Strix Halo on Linux yet. |
+| DeepSeekV4.1-Flash-1017 | `deepseek41` in `MULTI_FILE_FAMILIES` in [setup.py](../setup.py); Terminal since 0.2.4, desktop app since 0.2.5 | [MODELS.md](MODELS.md#deepseek-v41-flash): ISTA-DAS 1.75 bpw (239 GB), 2.00 bpw (257 GB) and 2.25 bpw (274 GB), 8K context, a Speed choice (Faster or Full quality). NVIDIA RTX 30, 40 and 50 (Windows, Linux), AMD Radeon AI PRO R9700 (Linux) and Ryzen AI Max / Strix Halo (Windows, gfx1151). Not on Mac, Intel Arc or Strix Halo on Linux yet. |
 | Qwen3.8-Flash-Next | Catalog entries in [setup.py](../setup.py), model guides and backend documentation | [MODELS.md](MODELS.md), [QUANTS.md](QUANTS.md), [GYRO.md](GYRO.md), [NVFP4.md](NVFP4.md), [ORCA.md](ORCA.md) |
 | Qwen3.6-35B-A3B | `qwen36` in `OWN_PATH_FAMILIES` in [setup.py](../setup.py) | [QWEN36.md](QWEN36.md): NVIDIA and AMD; not the Intel or Mac engine |
 
@@ -49,7 +49,7 @@ For recommendations, documentation and agent-assisted setup, use this order:
 The maintainer works with ISTA-DASLab; this is an explicit project preference, not a measured quality ranking.
 Keep the user's chosen model family and explicit provider choice. Check availability, backend compatibility,
 memory, disk space and intended use before selecting a pack. If no ISTA-DASLab pack is documented for a family,
-do not invent one: Qwen3.6 has Unsloth packs, and DeepSeek has the IST-DAS sets.
+do not invent one: Qwen3.6 has Unsloth packs, and DeepSeek has the ISTA-DAS sets.
 
 This order is a recommendation, not the installer's default logic. A no-argument installer may preselect Swift or Gyro
 on some memory tiers. Read its plan and select the intended family explicitly.
@@ -61,7 +61,7 @@ with the installed release's `strata launch --help` and a plan before a download
 
 | Parent model | Provider / variant | Family selector | Quantizations or packs |
 | --- | --- | --- | --- |
-| DeepSeek V4.1-Flash | IST-DAS | `deepseek41` | `ist-das-1.75bpw` (239 GB), `ist-das-2.00bpw` (257 GB), `ist-das-2.25bpw` (274 GB); Unsloth `ud-q8_k_xl` (508 GB, several cards) |
+| DeepSeek V4.1-Flash | ISTA-DAS | `deepseek41` | `ist-das-1.75bpw` (239 GB), `ist-das-2.00bpw` (257 GB), `ist-das-2.25bpw` (274 GB); Unsloth `ud-q8_k_xl` (508 GB, several cards) |
 | Qwen3.8-Flash-Next | ISTA-DASLab, original | `qwen` | Q2_0, IQ2_XS, IQ3_XXS, IQ3_S |
 | Qwen3.8-Flash-Next | ISTA-DASLab, Coder | `coder` | IQ1_M; pruned for coding, weaker outside code |
 | Qwen3.8-Flash-Next | Unsloth | `unsloth` | UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL, Q8_0 |

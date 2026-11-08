@@ -97,7 +97,7 @@ Useful options:
 | `--data-dir PATH` | Folder for new downloads; existing files stay put unless `--move-data` is also given |
 | `--vision on\|off\|gpu\|cpu` | Picture reading, subject to model and packaged-reader support |
 | `--gpu 0,1` | Selected GPUs; do not use source setup's `--gpus` spelling here |
-| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts |
+| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts. DeepSeek is one at a time unless you ask |
 | `--save-preset NAME` | Keep these launch choices for later |
 | `--open` | Open the server's browser page after it starts |
 | `--restart` | Replace an already running launch with different settings; interrupts active answers |

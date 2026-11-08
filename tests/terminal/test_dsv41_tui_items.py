@@ -303,3 +303,58 @@ class DiskCountsOnlyTheRest(unittest.TestCase):
             self.assertNotIn("free disk space", self.s.dsv41_words(hw, "IST-DAS-2.00bpw"))
             hw = {**self.hw, "disk_free_gb": 44.0}
             self.assertIn("free disk space", self.s.dsv41_words(hw, "IST-DAS-2.00bpw"))
+
+
+class OwnFilesNeedNoDisk(unittest.TestCase):
+    """`strata launch --model-path` on files that stay where they are: nothing to download or copy, so a small free disk in Strata's folder
+    must not print "tight: needs more disk space" (p620, 11-01: 51 GB free, 274 GB set already on disk elsewhere)."""
+
+    def setUp(self):
+        import strata_mcp as M
+        self.s = M.Strata(ROOT)
+
+    def test_the_menu_row_is_tight_for_the_download_but_the_own_files_verdict_is_not(self):
+        from strata_cli.launch.catalog import Catalog
+        hw = {"ram_gb": 125.0, "gpus": [CARD], "engine_vendor": "nvidia", "disk_free_gb": 51.0}
+        row = verdict(self.s.dsv41_words(hw, "IST-DAS-2.25bpw"))
+        self.assertEqual(row, (TIGHT, "tight: needs more disk space"))          # a download would not fit
+        cat = Catalog.__new__(Catalog)
+        cat.strata = self.s
+        own = cat.own_files_verdict(hw, "IST-DAS-2.25bpw")
+        self.assertNotIn("disk", own[1])
+
+    def test_apply_defaults_with_own_files_has_no_disk_notice(self):
+        from strata_cli.launch import cmd, settings as S
+        from strata_cli.launch.catalog import ModelRow
+        row = ModelRow(family="deepseek41", family_title="DeepSeek", model="IST-DAS-2.25bpw", id="x", about="", download_gb=274.0, need_vram_gb=0.0,
+                       need_ram_gb=0.0, spill_gb=0.0, verdict=TIGHT, words="tight: needs more disk space", experimental=False, images=False, installed=False)
+
+        class Cat:
+            def computer(self):
+                return mock.MagicMock(raw={"ram_gb": 125.0})
+
+            def rows(self, hw):
+                return [row]
+
+            def own_files_verdict(self, hw, model):
+                return ("fits", "fits")
+
+            def max_context(self, *a):
+                return 8192
+
+            def picture_default(self, images):
+                return "off"
+
+            def reader_state(self):
+                return "ok"
+
+            def pack_limit(self, family, model):
+                return None
+
+            strata = mock.MagicMock(multi_family=lambda f: True)
+
+        s, notes = cmd.apply_defaults(S.LaunchSettings(family="deepseek41", model="IST-DAS-2.25bpw", model_path="/data/ds-ista/2.25bpw"), Cat())
+        self.assertFalse([n for n in notes if "tight" in n.text], notes)
+        row.verdict, row.words = TIGHT, "tight: needs more disk space"
+        s, notes = cmd.apply_defaults(S.LaunchSettings(family="deepseek41", model="IST-DAS-2.25bpw"), Cat())
+        self.assertTrue([n for n in notes if "tight" in n.text], notes)       # a download: the disk still counts

@@ -174,7 +174,8 @@ test('the interface size scales the whole page, up to 200 percent, and a saved v
   assert.match(store, /setProperty\('zoom', state\.uiScale === 1 \? '' : String\(state\.uiScale\)\)/);
   assert.match(store, /setProperty\('--st-ui-scale', '1'\)/, 'the token stays at 1 so nothing is scaled twice');
   assert.match(store, /UI_SCALES = \[0\.9, 1, 1\.1, 1\.25, 1\.5, 1\.75, 2\]/);
-  assert.match(store, /\[0\.9, 1, 1\.1, 1\.25, 1\.5, 1\.75, 2\]\.includes\(Number\(parsed\.uiScale\)\)/);
+  assert.match(readFileSync(new URL('../src/lib/default-sizes.ts', import.meta.url), 'utf8'), /UI_SCALE_CHOICES = \[0\.9, 1, 1\.1, 1\.25, 1\.5, 1\.75, 2\]/);
+  assert.match(store, /savedSizes\(parsed, CONTENT_FS_MIN, CONTENT_FS_MAX\)/, 'a saved value is checked');
   const settings = readFileSync(new URL('../src/screens/Settings.tsx', import.meta.url), 'utf8');
   assert.match(settings, /Makes all text, buttons and menus in Strata larger or smaller\./);
 });

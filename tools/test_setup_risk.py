@@ -232,7 +232,7 @@ class LowRamGpus(unittest.TestCase):
         ram, found = PROFILES["47GB-2x16GB"]                              # #384: 2 x 16 GB, 47 GB, IQ3_XXS at 64K
         code, out, cfg, _ = install(ram, found, ["--family", "qwen", "--model", "IQ3_XXS", "--no-start",
                                                  "--gpus", "0,1"])
-        one = setup.low_ram_gpu_gb("IQ3_XXS", 15.9, 65536, "int8")
+        one = setup.low_ram_gpu_gb("IQ3_XXS", 15.9, 131072, "int8")   # the 128K default
         self.assertIn(f"the GPUs hold ~{100 * 2 * one / setup.MODELS['IQ3_XXS']['arena_gb']:.0f}% of them", out)
 
     def test_asked_and_answered_two(self):
@@ -455,10 +455,32 @@ class KvStreaming(unittest.TestCase):
         self.assertIn("KV streaming off, as you chose", out)
 
     def test_on_past_the_ram_test(self):
-        code, out, cfg, _ = self.go("IQ3_S", "--kv-streaming", "on")         # auto leaves it off on 64 GB
+        # auto leaves it off on 58 GB: IQ3_S needs 50.3 (experts) + 10 (room) + 1.8 (the cache) = 62.1 GB
+        code, out, cfg, _ = install(58.0, self.FOUND, ["--family", "qwen", "--model", "IQ3_S", "--no-start", "--kv-streaming", "on"])
         self.assertEqual(code, 0, out)
         self.assertEqual(arg(cfg, "--kv-resident"), "32768")
         self.assertIn("Kept as you chose (--kv-streaming on)", out)
+        self.assertIn("KV streaming needs ~62 GB of RAM for IQ3_S", out)
+
+    def test_auto_streams_a_64gb_pc_with_few_experts_in_vram(self):
+        """KV-128: the owner's PC reads 63.1 GB; the all-in-RAM rule asked 64.8 and left the cache in VRAM."""
+        card5070 = [card(0, "NVIDIA GeForce RTX 5070", 11.9, "120")]
+        code, out, cfg, _ = install(63.1, card5070, ["--family", "qwen", "--model", "IQ3_S", "--no-start", "--context", "131072"])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(arg(cfg, "--kv-resident"), "32768")
+        self.assertIn("KV streaming on: the context's KV cache lives in RAM", out)
+        self.assertNotIn("Kept as you chose", out)
+
+    def test_auto_stays_off_just_below_the_rule(self):
+        code, out, cfg, _ = install(61.9, self.FOUND, ["--family", "qwen", "--model", "IQ3_S", "--no-start", "--context", "131072"])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv-resident", cfg["args"])
+        self.assertIn("KV streaming off: it needs ~62 GB of RAM for IQ3_S", out)
+
+    def test_below_64k_is_never_streamed_on_auto(self):
+        code, out, cfg, _ = install(63.1, self.FOUND, ["--family", "qwen", "--model", "IQ3_S", "--no-start", "--context", "32768"])
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("--kv-resident", cfg["args"])
 
     def test_k8v4_streams(self):
         code, out, cfg, _ = self.go("Q2_0", "--kv-streaming", "on", "--kv", "k8v4")
@@ -476,6 +498,37 @@ class KvStreaming(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertNotIn("--resident-budget-gib", cfg["args"])
         self.assertIn("--resident-budget-gib is for UD-Q4_K_XL", out)
+
+
+class KvStreamingNeed(unittest.TestCase):
+    """KV-128: the RAM setup asks before it streams the KV cache by itself (`kv_streaming_need_gb`)."""
+
+    def test_the_numbers(self):
+        need = lambda m, kv="int8", ctx=131072: round(setup.kv_streaming_need_gb(m, ctx, kv), 1)
+        self.assertEqual(need("IQ3_S"), 62.1)       # 50.3 + 10 + 1.8; the all-in-RAM rule said 62 + 1.7 + 1 = 64.7
+        self.assertEqual(need("IQ3_XXS"), 54.7)     # 42.9 + 10 + 1.8
+        self.assertEqual(need("Q2_0"), 45.8)        # 34 + 10 + 1.8
+        self.assertEqual(need("IQ3_S", "q4_0"), 61.3)
+
+    def test_never_asks_more_than_before(self):
+        for model, ctx, kv in itertools.product(setup.MODELS, (65536, 131072, 262144), ("int8", "q4_0", "k8v4")):
+            before = setup.MODELS[model]["ram_gb"] + setup.kv_streaming_ram_gb(ctx, kv) + 1
+            self.assertLessEqual(setup.kv_streaming_need_gb(model, ctx, kv), before, (model, ctx, kv))
+
+    @mock.patch.object(setup, "is_wsl", lambda: False)
+    def test_the_rule(self):
+        want = lambda ram, ctx=131072, choice="auto": setup.kv_streaming_wanted("IQ3_S", ctx, "int8", ram, choice)
+        self.assertTrue(want(63.1))
+        self.assertTrue(want(62.1))
+        self.assertFalse(want(62.0))
+        self.assertFalse(want(31.9))                 # a PC in the low-RAM mode keeps the KV in VRAM
+        self.assertFalse(want(63.1, 32768))
+        self.assertFalse(want(63.1, choice="off"))
+        self.assertTrue(want(31.9, choice="on"))
+
+    @mock.patch.object(setup, "is_wsl", lambda: True)
+    def test_wsl_never_streams(self):
+        self.assertFalse(setup.kv_streaming_wanted("IQ3_S", 131072, "int8", 128.0))
 
 
 class RulesAgreeWithTheWrittenConfig(unittest.TestCase):

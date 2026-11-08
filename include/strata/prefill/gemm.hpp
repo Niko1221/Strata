@@ -100,6 +100,9 @@ private:
     std::vector<W16Entry> w16_;
     int64_t w16_budget_ = -1;   // bytes; -1: env not read yet, 0: off
     int64_t w16_used_ = 0;
+    int64_t w16_reserve_ = 2ll << 30;   // VRAM kept free after a cached weight
+    bool w16_logged_ = false;
+    static constexpr int64_t kW16AutoReserve = 3ll << 30;
     void* hipblaslt_state_ = nullptr;
     void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;

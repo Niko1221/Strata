@@ -41,16 +41,19 @@ test('item 5: during a goal the chat follows the Monitor even though the engine 
   assert.equal(idle.speed, 41); assert.notEqual(idle.used, 1);
 });
 
-test('item 10: the status line has fixed columns, so the word changing length moves nothing', async () => {
+test('item 10 / GUI-FB2 item 7: the status line is a wrapping flex row with no fixed widths, so a long time or count never runs into its neighbour', async () => {
   const css = await read('styles/app.css'), line = await read('components/StatusLine.tsx');
-  assert.match(css, /\.live-status \{ display: grid; grid-template-columns: 14px minmax\(0, 24ch\) 6ch/);
-  assert.match(css, /\.live-status__time, \.live-status__tokens \{ font-variant-numeric: tabular-nums/);
+  assert.match(css, /\.live-status \{ display: flex; flex-wrap: wrap;/);
+  assert.doesNotMatch(css, /\.live-status \{[^}]*grid-template-columns/);
+  assert.doesNotMatch(css, /\.live-status[^{]*\{[^}]*\b6ch\b/, 'no fixed column for the time');
+  assert.match(css, /\.live-status__verb \{ flex: 0 1 24ch; min-width: 0;/, 'the word gives way first');
+  assert.match(css, /\.live-status__time, \.live-status__tokens \{ flex: none; font-variant-numeric: tabular-nums/);
   assert.match(line, /live-status__verb/); assert.match(line, /live-status__time/); assert.match(line, /live-status__tokens/);
 });
 
 test('items 15, 16, 17: counts on the Subagents title row, Privacy as plain text, a round arrow', async () => {
   const bar = await read('components/ChatToolbar.tsx'), pop = await read('components/Popover.tsx'), privacy = await read('components/PrivacyNotes.tsx'), chat = await read('screens/Chat.tsx');
-  assert.match(bar, /title=\{tr\("Subagents"\)\} detail=\{/); assert.ok(!/subagents-overview-summary/.test(bar), 'no second line of counts');
+  assert.match(bar, /title=\{tr\(session\?\.agents\?\.length \? "Subagents" : "No subagents recorded"\)\} detail=\{/); assert.ok(!/subagents-overview-summary/.test(bar), 'no second line of counts');
   assert.match(pop, /telepop__detail/);
   assert.ok(!/Icon/.test(privacy), 'no icons in Privacy');
   assert.ok(!/>\{tr\("Latest"\)\}</.test(chat) && (chat.match(/aria-label=\{tr\("Scroll to the latest message"\)\}/g) ?? []).length === 2, 'the Latest button is a round arrow');

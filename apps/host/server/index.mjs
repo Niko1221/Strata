@@ -74,6 +74,7 @@ import { installBundledEngine, cleanupAfterInstall } from './bundled-engine.mjs'
 import { systemLocale } from './region.mjs';
 import { createShellNotifier, DEFAULT_PORT, parsePortNotice, readShellPrefs, writeShellPrefs } from './shell-prefs.mjs';
 import { findControl, createControl, componentsDirectory } from './control-runtime.mjs';
+import { listEngines, changeEngine } from './engine-library.mjs';
 import { forbidden as acquisitionForbidden } from './acquisition.mjs';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { nativeGateway } from './native-gateway.mjs';
@@ -1010,6 +1011,7 @@ async function api(req, res, path, method, url) {
   if(path==='/api/native/models-folder/leave'&&method==='POST')return json(res,200,await native.leaveInterruptedMove());
   if(path==='/api/native/plan'&&method==='POST')return json(res,200,await native.plan(await readBody(req)));
   if(path==='/api/native/operations'&&method==='POST'){if(storageChanging)return error(res,409,'Wait for the model folder check to finish.');const body=await readBody(req);return json(res,202,native.operation(body.kind,body.args));}
+  if(path==='/api/native/engine-restart/dismiss'&&method==='POST')return json(res,200,native.dismissRestart());
   if(path==='/api/native/logs'&&method==='GET')return json(res,200,{logs:native.logs()});
   if(path==='/api/native/logs/save'&&method==='POST'){
    /* Diagnostics to a file: the engine messages the app kept, failed operations, and the tail of each model's server log under Control.
@@ -1353,6 +1355,15 @@ async function api(req, res, path, method, url) {
     const info = await engineFirstRun({ control, gpus: hardware.cachedHardware()?.gpus ?? [] });
     try { let at = componentsDirectory(); while (at && !existsSync(at) && dirname(at) !== at) at = dirname(at); const f = statfsSync(at); info.freeBytes = Number(f.bavail) * Number(f.bsize); } catch { /* unknown: no warning */ }
     return json(res, 200, info);
+  }
+  if (path === '/api/engines' && method === 'GET') {
+    const { status, body } = await listEngines(control);
+    return json(res, status, body);
+  }
+  if ((path === '/api/engines/use' || path === '/api/engines/remove') && method === 'POST') {
+    const { status, body } = await changeEngine(control, path.endsWith('/use') ? 'use' : 'remove', await readBody(req), { modelsRunning: () => native.state().instances.length > 0 });
+    if (status === 200) Promise.resolve(native.refresh?.(true)).catch(() => { /* the next poll reads it */ });
+    return json(res, status, body);
   }
   if (path === '/api/engine/job' && method === 'GET') {
     // The newest engine download / file install, read without waiting for the native snapshot to connect (the first-run card needs it before that).
@@ -1914,6 +1925,18 @@ async function api(req, res, path, method, url) {
     try { return json(res, 200, agent.queueMessage({ chatId: String(body.sessionId ?? ''), text: body.message })); }
     catch (e) { return error(res, e.code === 'queue-idle' ? 409 : 400, e.message); }
   }
+  // The person's answer to a question the agent asked, or a skip (#4244).
+  if (path === '/api/chat/answer' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, await agent.answerQuestion({ chatId: String(body.sessionId ?? ''), callId: String(body.callId ?? ''), answers: body.answers, skip: body.skip === true })); }
+    catch (e) { return error(res, e.code === 'question-gone' ? 409 : 400, e.message); }
+  }
+  // A message for one helper (#4749).
+  if (path === '/api/chat/helper' && method === 'POST') {
+    const body = await readBody(req);
+    try { return json(res, 200, await agent.messageHelper({ chatId: String(body.sessionId ?? ''), helperId: body.helperId, text: body.message, delivery: body.delivery })); }
+    catch (e) { return error(res, e.code === 'helper-idle' || e.code === 'helper-refused' ? 409 : 400, e.message); }
+  }
   if (path === '/api/chat/queue/cancel' && method === 'POST') {
     const body = await readBody(req);
     try { return json(res, 200, agent.cancelQueued({ chatId: String(body.sessionId ?? ''), id: String(body.id ?? '') })); }
@@ -2211,7 +2234,7 @@ async function staticFile(req, res, path) {
   if (!existsSync(DIST)) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(
-      `<!doctype html><meta charset="utf-8"><title>Strata host</title>
+      `<!doctype html><meta charset="utf-8"><title>Strata</title>
        <body style="font:16px/1.6 -apple-system,system-ui;background:#0e1113;color:#eef1f3;padding:48px">
        <h1 style="margin:0 0 8px">Strata host is running</h1>
        <p style="color:#8e979f">No built web app found at <code>${DIST}</code>.</p>

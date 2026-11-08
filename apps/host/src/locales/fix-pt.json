@@ -81,5 +81,9 @@
  "fx80": "Precisa de cerca de {0} GB de espaço livre em disco. O que não cabe na memória é lido do seu SSD.",
  "fx81": "{0} de RAM + VRAM, mais cerca de {1} GB de disco",
  "fx82": "Respostas mais rápidas em placas NVIDIA de 12 GB",
- "fx83": "Prefere as partes do modelo que já estão na placa de vídeo, o que deixa as respostas mais rápidas em placas de 12 GB. Desativado por padrão: em sessões longas de agente ele pode se repetir e dar resultados mais fracos. Ative se você usa principalmente o chat e quer a velocidade."
+ "fx83": "Prefere as partes do modelo que já estão na placa de vídeo, o que deixa as respostas mais rápidas em placas de 12 GB. Desativado por padrão: em sessões longas de agente ele pode se repetir e dar resultados mais fracos. Ative se você usa principalmente o chat e quer a velocidade.",
+ "fx84": "O arquivo foi baixado. «Continuar» tenta a instalação de novo.",
+ "fx85": "Abra «Detalhes» para ver o motivo.",
+ "fxec1": "Há um motor mais recente para este computador. Seus modelos e configurações permanecem como estão.",
+ "fxec2": "Descarregue primeiro os modelos em execução."
 }

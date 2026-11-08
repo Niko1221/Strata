@@ -202,14 +202,15 @@ class EngineUpdate(UpdaterCase):
         self.assertEqual(again["results"][0]["status"], "current")
         self.assertEqual(len(self.archive_requests()), 1)
 
-    def test_the_next_update_drops_versions_older_than_the_previous_one(self):
+    def test_updates_keep_every_older_engine_until_the_person_deletes_one(self):
         self.install_current()
         self.publish(("0.1.46", fx.GOOD_ENGINE))
         updater.run_update(self.ctx(), control=False)
         self.publish(("0.1.47", fx.GOOD_ENGINE))
         out = updater.run_update(self.ctx(), control=False)
         self.assertEqual(out["results"][0]["status"], "updated")
-        self.assertEqual(self.engine_folders(), [f"0.1.46-{PLATFORM}-cuda-cuda13", f"0.1.47-{PLATFORM}-cuda-cuda13"])
+        self.assertEqual(self.engine_folders(), [f"0.1.45-{PLATFORM}-cuda-cuda13", f"0.1.46-{PLATFORM}-cuda-cuda13", f"0.1.47-{PLATFORM}-cuda-cuda13"])
+        self.assertEqual(out["results"][0]["removed"], [])
         self.assertEqual(self.resolved(), "0.1.47")
 
     def test_a_failing_test_start_keeps_the_old_engine(self):
@@ -331,15 +332,27 @@ class EngineUpdate(UpdaterCase):
     def test_nothing_is_replaced_while_an_engine_serves(self):
         self.install_current()
         self.publish(("0.1.46", fx.GOOD_ENGINE))
-        out = updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
-        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
-        self.assertIn("app-1 is serving", out["results"][0]["error"])
+        with self.assertRaises(updater.Busy) as caught:                 # refused up front: nothing is downloaded, staged or test-started
+            updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
+        self.assertEqual(caught.exception.exit_code, 7)
+        self.assertIn("app-1 is serving", str(caught.exception))
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertFalse((self.root / "ran.txt").exists(), "no test start while another engine serves")
-        # the download was not wasted: the next try reuses the verified archive
+        self.assertEqual(self.archive_requests(), [], "no download beside a loaded model")
         done = updater.run_update(self.ctx(), control=False)
         self.assertEqual(done["results"][0]["status"], "updated")
         self.assertEqual(len(self.archive_requests()), 1)
+
+    def test_a_model_that_starts_during_the_download_stops_the_update_and_the_archive_is_kept(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        answers = [[], [{"profile": "app-1", "state": "ready"}], [{"profile": "app-1", "state": "ready"}]]
+        out = updater.run_update(self.ctx(serving=lambda: answers.pop(0) if len(answers) > 1 else answers[0]), control=False)
+        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
+        self.assertEqual(self.resolved(), "0.1.45")
+        done = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(done["results"][0]["status"], "updated")
+        self.assertEqual(len(self.archive_requests()), 1, "the verified archive was reused")
 
     def test_waiting_for_the_engine_to_stop(self):
         self.install_current()
@@ -359,12 +372,15 @@ class EngineUpdate(UpdaterCase):
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertEqual(ec.status(self.components, backend="cuda")["pinned"], f"0.1.45-{PLATFORM}-cuda-cuda13")
         self.assertEqual(preset_marks.pending(self.state_base), [], "back on the engine the presets were measured on: nothing owed")
-        again = updater.run_update(self.ctx(), control=False)
-        self.assertEqual(again["results"][0]["status"], "skipped")
         self.assertEqual(self.resolved(), "0.1.45")
-        forced = updater.run_update(self.ctx(force=True), control=False)
-        self.assertEqual(forced["results"][0]["status"], "updated", forced)
+        # the update still offers the version that was rolled back from; it is already here, so nothing is downloaded and it becomes the engine in use
+        archives = len(self.archive_requests())
+        again = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(again["results"][0]["status"], "updated", again)
+        self.assertTrue(again["results"][0]["from_disk"])
+        self.assertEqual(len(self.archive_requests()), archives, "no engine archive was requested")
         self.assertEqual(self.resolved(), "0.1.46")
+        self.assertIsNone(ec.pinned_folder(self.components), "an update clears the pin: the newest is the engine in use again")
         self.assert_user_data_untouched()
 
     def test_rollback_without_a_previous_engine_says_so(self):
@@ -742,6 +758,21 @@ class Cli(UpdaterCase):
         code, out, _ = self.cli("components", "rollback", "--json", *self.common())
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["to"], "0.1.46", "rolling back twice goes forward again")
+        self.assertEqual(json.loads(out)["status"], "rolled-forward", "and it says so")
+        self.assertEqual(updater.State(self.components).section("engine").get("skipped") or [], [], "the newer engine is no longer one that was left")
+        code, text, _ = self.cli("components", "rollback", *self.common())     # back to 0.1.45 once more
+        self.assertIn("Engine rolled back: 0.1.46 -> 0.1.45", text)
+        code, text, _ = self.cli("update", "--check", *self.common())
+        self.assertIn("update available: 0.1.45 -> 0.1.46 (already installed; the update switches to it, nothing to download)", text)
+        code, text, _ = self.cli("components", "rollback", *self.common())
+        self.assertIn("Engine moved to the newer version: 0.1.45 -> 0.1.46", text)
+        self.assertNotIn("rolled back", text)
+
+    def test_a_first_install_does_not_claim_a_previous_engine_is_kept(self):
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("previous engine version is kept", text)
 
     def test_a_failed_test_start_exits_6_and_says_the_old_engine_is_unchanged(self):
         self.install_current()

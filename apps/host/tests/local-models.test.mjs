@@ -80,3 +80,9 @@ test('HTTP import leaves the running model intact, loads through normal controls
  assert.equal((await call('/api/runtime')).body.instances.length,0);
  } finally {host.kill('SIGTERM');await new Promise(r=>host.once('exit',r));}
 });
+test('the Flash-Next family\'s own architecture (qwen4exp) is accepted by the importer, not sent to llama-server (#4726)',t=>{
+ const root=fixture(t),file=join(root,'flash-next.gguf');
+ ggufFixture(file,{arch:'qwen4exp'});
+ const info=inspectLocalModel(file);
+ assert.equal(info.variant.local.architecture,'qwen4exp');
+});

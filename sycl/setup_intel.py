@@ -284,8 +284,8 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     A reserve the user asked for (--vram-reserve-mib) is kept.
 
     0.2.2: a model that does not fit the card at the default context (Gyro-M on the 8 GB A750 is ~750 MiB short of one cache
-    slot) gets a context down the ladder 32K -> 16K -> 8K, a smaller prompt chunk and a lower reserve until it does
-    (strata_control/vram_fit.py); one plain line per change goes to `fit_notes`.  A config that fits comes back as it was.
+    slot) gets a smaller prompt chunk and then a lower reserve until it does, never a smaller context (owner, 2026-11-02;
+    strata_control/vram_fit.py); one plain line per change goes to `fit_notes`.  A config that fits comes back as it was.
     `ctx_asked` / a reserve without `auto_reserve`: the user chose it, it is kept.  `fit=False`: a layer split.
 
     An Alchemist card (the A-series, i915 or xe) has no FP64 hardware, so its config carries the driver's FP64

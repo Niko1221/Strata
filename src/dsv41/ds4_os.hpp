@@ -26,10 +26,11 @@
 #endif
 #include <windows.h>
 #include <psapi.h>   // (K32QueryWorkingSetEx: kernel32's, no psapi.lib)
-#include <timeapi.h>
-#ifdef _MSC_VER
+#include <timeapi.h>   // (timeBeginPeriod: windows.h with WIN32_LEAN_AND_MEAN does not bring it; winmm.lib below)
+#if defined(_MSC_VER)
 #pragma comment(lib, "winmm.lib")
 #endif
+#include "strata/platform/commit.hpp"
 #else
 #include <fcntl.h>
 #include <pthread.h>
@@ -438,6 +439,23 @@ inline bool in_ram(const void* p, size_t n) {
 #endif
 }
 
+/// (a test of DISK_SKIP_AUTO's switch back) this process's file mappings out of RAM: Linux - its pages unmapped
+/// (madvise DONTNEED) and the files' cached pages dropped (posix_fadvise DONTNEED; clean pages, no root needed);
+/// Windows - the mapped views out of the working set (VirtualUnlock of unlocked pages), then the rest of it
+inline void drop_cached(const std::vector<std::pair<uint8_t*, size_t>>& maps, const std::vector<fd_t>& fds) {
+#if defined(_WIN32)
+    (void) fds;
+    for (const auto& m : maps)
+        if (m.first != nullptr && m.second > 0) VirtualUnlock((LPVOID) m.first, m.second);
+    K32EmptyWorkingSet(GetCurrentProcess());
+#else
+    for (const auto& m : maps)
+        if (m.first != nullptr && m.second > 0) madvise((void*) m.first, m.second, MADV_DONTNEED);
+    for (fd_t f : fds)
+        if (f != kBadFd) posix_fadvise((int) f, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+}
+
 /// Bytes free in the kernel's explicit huge-page pool (HugePages_Free x Hugepagesize); 0 elsewhere or when unreadable.
 /// (MemAvailable does not count a reserved pool, so a budget that must see it - the copy arena on DS4_COPY_HUGETLB -
 /// adds this.)
@@ -564,11 +582,18 @@ inline void pin_thread(std::thread& t, int cpu) {
 #endif
 }
 
+/// A physical core: the logical CPUs of it this process may run on (the first one first), and its efficiency class
+/// (Windows' EfficiencyClass - higher is faster; Linux: 1 for a hybrid Intel CPU's performance cores, 0 otherwise).
+struct Core {
+    std::vector<int> cpus;
+    int eff = 0;
+};
+
 #if defined(_WIN32)
-/// Each NUMA node's physical cores (the first logical CPU of each), processor group 0 - Windows' answer to
-/// /sys/devices/system/node; empty if the OS does not say.
-inline std::vector<std::vector<int>> node_cores(bool smt = false) {   // (smt: every logical CPU of a core, not its first)
-    std::vector<std::vector<int>> nodes;
+/// Each NUMA node's physical cores (their logical CPUs the process's affinity allows), processor group 0 - Windows'
+/// answer to /sys/devices/system/node; empty if the OS does not say.
+inline std::vector<std::vector<Core>> node_core_threads() {
+    std::vector<std::vector<Core>> nodes;
     auto query = [](LOGICAL_PROCESSOR_RELATIONSHIP rel, std::vector<uint8_t>& buf) {
         DWORD len = 0;
         GetLogicalProcessorInformationEx(rel, nullptr, &len);
@@ -577,6 +602,9 @@ inline std::vector<std::vector<int>> node_cores(bool smt = false) {   // (smt: e
     };
     std::vector<uint8_t> nb, cb;
     if (!query(RelationNumaNode, nb) || !query(RelationProcessorCore, cb)) return nodes;
+    DWORD_PTR proc_mask = 0, sys_mask = 0;
+    const KAFFINITY allowed = GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask) && proc_mask != 0
+                                  ? (KAFFINITY) proc_mask : ~(KAFFINITY) 0;
     std::vector<KAFFINITY> masks;
     for (size_t o = 0; o < nb.size();) {
         auto* e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) (nb.data() + o);
@@ -587,27 +615,35 @@ inline std::vector<std::vector<int>> node_cores(bool smt = false) {   // (smt: e
     for (size_t o = 0; o < cb.size();) {
         auto* e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) (cb.data() + o);
         if (e->Processor.GroupCount > 0 && e->Processor.GroupMask[0].Group == 0) {
-            const KAFFINITY m = e->Processor.GroupMask[0].Mask;
-            int first = -1;
+            const KAFFINITY m = e->Processor.GroupMask[0].Mask & allowed;
+            Core c;
+            c.eff = (int) e->Processor.EfficiencyClass;
             for (int b = 0; b < 64; ++b)
-                if ((m >> b) & 1) {
-                    first = b;
-                    break;
-                }
-            for (size_t n = 0; n < masks.size() && first >= 0; ++n)
-                if ((masks[n] >> first) & 1) {
-                    nodes[n].push_back(first);
-                    if (smt)
-                        for (int b = first + 1; b < 64; ++b)
-                            if ((m >> b) & 1) nodes[n].push_back(b);
-                }
+                if ((m >> b) & 1) c.cpus.push_back(b);
+            for (size_t n = 0; n < masks.size() && !c.cpus.empty(); ++n)
+                if ((masks[n] >> c.cpus[0]) & 1) nodes[n].push_back(c);
         }
         o += e->Size;
     }
-    nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const std::vector<int>& v) { return v.empty(); }),
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const std::vector<Core>& v) { return v.empty(); }),
                 nodes.end());
-    for (auto& v : nodes) std::sort(v.begin(), v.end());
+    for (auto& v : nodes)
+        std::sort(v.begin(), v.end(), [](const Core& a, const Core& b) { return a.cpus[0] < b.cpus[0]; });
     return nodes;
+}
+/// Each NUMA node's physical cores as the first logical CPU of each (smt: every logical CPU of a core), the shape the
+/// engine's thread placement takes.
+inline std::vector<std::vector<int>> node_cores(bool smt = false) {
+    std::vector<std::vector<int>> out;
+    for (const auto& node : node_core_threads()) {
+        std::vector<int> v;
+        for (const Core& c : node) {
+            if (smt) v.insert(v.end(), c.cpus.begin(), c.cpus.end());
+            else v.push_back(c.cpus[0]);
+        }
+        out.push_back(std::move(v));
+    }
+    return out;
 }
 /// The RAM this process can still get (~0: not known).
 inline uint64_t ram_avail() {
@@ -630,7 +666,8 @@ inline Commit commit() {
     s.dwLength = sizeof(s);
     if (GlobalMemoryStatusEx(&s)) {
         c.limit = (uint64_t) s.ullTotalPageFile;
-        c.avail = (uint64_t) s.ullAvailPageFile;
+        // (+ what a page file Windows manages may still grow by)
+        c.avail = (uint64_t) s.ullAvailPageFile + strata::platform::commit_growth((uint64_t) s.ullTotalPhys);
         c.ram = (uint64_t) s.ullTotalPhys;
     }
 #endif

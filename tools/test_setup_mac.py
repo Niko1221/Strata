@@ -118,6 +118,44 @@ class Config(unittest.TestCase):
         self.assertNotIn("--mtp", small)
         self.assertTrue(M.stream_mtp(False, 16) and M.stream_mtp(True, 128) and not M.stream_mtp(True, 64))
 
+    def test_iq3_s_runs_a_three_token_window_with_min_p(self):
+        # M5 Max, MTP, 5 interleaved pairs, identical tokens: --spec 3 --spec-min-p 0.5 over --spec 2: IQ3_S -0.9% / +2.5% / +16.7% / +4.9%
+        # (story / code / JSON / agent turn), Q2_0 +0.4% / +11.5% / +6.3% / +1.9%
+        shards = [Path("/m/a-00001.gguf"), Path("/m/a-00002.gguf")]
+        iq = M.engine_args(Path("/p/packs/iq3_s"), shards, Path("/d/mtp/rt"), 32768, model="IQ3_S")
+        self.assertEqual(iq[iq.index("--spec") + 1], "3")
+        self.assertEqual(iq[iq.index("--spec-min-p") + 1], "0.5")
+        self.assertIn("--mtp", iq)
+        q2 = M.engine_args(Path("/p/packs/q2_0"), shards, Path("/d/mtp/rt"), 32768, model="Q2_0")
+        self.assertEqual(q2[q2.index("--spec") + 1], "3")
+        self.assertEqual(q2[q2.index("--spec-min-p") + 1], "0.5")
+        coder = M.engine_args(Path("/p/packs/coder"), shards, Path("/d/mtp/rt"), 32768, model="Coder")   # 5 pairs: story -2.5%, code +7.1%, JSON +9.3%, agent +12.5%
+        self.assertEqual(coder[coder.index("--spec") + 1], "3")
+        self.assertEqual(coder[coder.index("--spec-min-p") + 1], "0.5")
+        other = M.engine_args(Path("/p/packs/iq3_xxs"), shards, Path("/d/mtp/rt"), 32768, model="IQ3_XXS")   # not measured: the old default
+        self.assertEqual(other[other.index("--spec") + 1], "2")
+        self.assertNotIn("--spec-min-p", other)
+        none = M.engine_args(Path("/p"), shards, Path("/d/mtp/rt"), 32768)         # no model named: the old default
+        self.assertEqual(none[none.index("--spec") + 1], "2")
+        self.assertNotIn("--spec-min-p", none)
+        # a streaming IQ3_S keeps its own rules: no draft layer on a small Mac (spec 2, nothing else), --spec 3 only on a big one
+        small = M.engine_args(Path("/p"), shards, Path("/d/mtp/rt"), 32768, stream=True, ram_gb=32, model="IQ3_S")
+        self.assertNotIn("--spec-min-p", small)
+        self.assertEqual(small[small.index("--spec") + 1], "2")
+        big = M.engine_args(Path("/p"), shards, Path("/d/mtp/rt"), 65536, stream=True, ram_gb=128, model="IQ3_S")
+        self.assertEqual(big[big.index("--spec") + 1], "3")
+        self.assertNotIn("--spec-min-p", big)
+
+    def test_fp16_decode_is_set_for_a_resident_iq3_s_or_q2_0_only(self):
+        # the 61-task suite (phaseA-tests/mac-q/RESULTS.md section 30) passed the same tasks with STRATA_METAL_F16=1 as with =0
+        self.assertEqual(M._fit.engine_env("IQ3_S", False), {"STRATA_METAL_F16": "1"})
+        self.assertEqual(M._fit.engine_env("Q2_0", False), {"STRATA_METAL_F16": "1"})
+        self.assertEqual(M._fit.engine_env("iq3_s", False), {"STRATA_METAL_F16": "1"})
+        self.assertEqual(M._fit.engine_env("IQ3_S", True), {})            # streaming: the windows are not fp16
+        self.assertEqual(M._fit.engine_env("UD-Q4_K_XL", False), {})      # not measured
+        self.assertEqual(M._fit.engine_env("IQ3_XXS", False), {})
+        self.assertEqual(M._fit.engine_env("", False), {})
+
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
                            "Q2_0", 8080)
@@ -249,6 +287,18 @@ class RepackGuard(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     M.start(cfg, None, False)
             self.assertIn("repack is still running", fail.call_args[0][0])
+
+    def test_only_this_users_engine_stops_setup(self):
+        """On a shared Mac another user's engine is not ours to stop: pgrep is asked for this user's uid only."""
+        seen = []
+
+        def run(cmd, **kw):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "4242 ", "")
+        with mock.patch.object(M.os, "getuid", return_value=501, create=True):
+            self.assertEqual(M.engine_pids(run), [4242])
+        self.assertEqual(seen, [["pgrep", "-u", "501", "-x", "strata"]])
+        self.assertEqual(M.engine_pids(lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "")), [])
 
     def test_the_repack_writes_in_bounded_pieces(self):
         src = (ROOT / "metal" / "tools" / "metal_repack.py").read_text(encoding="utf-8")

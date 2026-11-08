@@ -4,8 +4,10 @@ and a status file, for the desktop app. The same code and the same store serve b
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -215,6 +217,8 @@ def auto(a: argparse.Namespace) -> int:
         say(f"[{p.get('elapsed_s', 0) // 60:>3d}m] {p['message']}" + (f"  ({minutes_text(p['eta_s'])})" if p.get("eta_s") else ""))
 
     workdir = Path(a.work_dir) if a.work_dir else Path(tempfile.mkdtemp(prefix="strata-tune-"))
+    if not a.work_dir:
+        atexit.register(shutil.rmtree, workdir, True)       # its own scratch folder goes with the run (--work-dir keeps the logs)
     session = WorkerSession(base_config=cfg, python=sys.executable, serve_dir=_serve_dir(a), workdir=workdir,
                             boot_timeout_s=a.boot_timeout, lock=_lock_factory(a, say), log=say)
     base_args = [str(x) for x in cfg.get("args") or []]
@@ -426,6 +430,8 @@ def _recheck(a: argparse.Namespace, machine: bool) -> int:
                                        engine_flags=tuning.engine_flag_inventory(Path(exe)))
     say = (lambda s: None) if machine else (lambda s: print(s, file=sys.stderr, flush=True))
     workdir = Path(a.work_dir) if a.work_dir else Path(tempfile.mkdtemp(prefix="strata-recheck-"))
+    if not a.work_dir:
+        atexit.register(shutil.rmtree, workdir, True)       # its own scratch folder goes with the run (--work-dir keeps the logs)
     session = WorkerSession(base_config=cfg, python=sys.executable, serve_dir=_serve_dir(a), workdir=workdir,
                             boot_timeout_s=a.boot_timeout, lock=_lock_factory(a, say), log=say)
     state: dict[str, Any] = {"state": "running"}

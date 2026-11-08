@@ -337,10 +337,11 @@ class FolderStep(Base):
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
-            await typed(pilot, str(self.home.base / "Strata-data"))
-            self.assertEqual(f.value, str(self.home.base / "Strata-data"))
+            self.assertNotEqual(str(ctx.default_folder()), str(self.home.base / "Elsewhere-data"))      # (on Linux the default is Strata-data under the home: typing it again is no change)
+            await typed(pilot, str(self.home.base / "Elsewhere-data"))
+            self.assertEqual(f.value, str(self.home.base / "Elsewhere-data"))
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Strata-data"))
+            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Elsewhere-data"))
             self.assertIn("How much text should it remember at once?", text_of(app))
         self.run_app(case)
 
@@ -399,7 +400,7 @@ class ContextStep(Base):
 
     def test_choose_128k(self):
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter", "enter", "down", "down", "enter")
+            await press(pilot, "enter", "enter", "enter", "enter")                  # the cursor starts on 128K now (the default on every card)
             self.assertEqual(ctx.settings.context, 131072)
             self.assertIn("Should the model read pictures?", text_of(app))
         self.run_app(case)
@@ -501,6 +502,23 @@ class PicturesParallelTuning(Base):
             self.assertEqual(ctx.settings.parallel, 3)
             self.assertIn("Tune for the best speed", text_of(app))
         self.run_app(case)
+
+    def test_parallel_step_for_deepseek_is_one_at_a_time_unless_asked(self):
+        """DeepSeek answers one request at a time unless more are asked for: no "fit to my card" (Qwen's rule); 2 to 4 are the choices."""
+        from strata_cli.launch.screens import ParallelScreen
+
+        async def case(app, pilot, ctx):
+            await app.push_screen(ParallelScreen())
+            await pilot.pause(0.2)
+            t = flat(app)
+            self.assertIn("One at a time", t)
+            self.assertIn("2 requests at the same time", t)
+            self.assertNotIn("Fit to my graphics card", t)
+            self.assertIn("73 tokens a second", t)
+            await press(pilot, "down", "down", "enter")
+            self.assertEqual(ctx.settings.parallel, 3)
+
+        self.run_app(case, ctx=make_ctx(HW_12, S.LaunchSettings(family="deepseek41", model="IST-DAS-2.00bpw", context=8192)))
 
     def test_parallel_default_is_fit_to_card(self):
         async def case(app, pilot, ctx):
@@ -701,9 +719,9 @@ class AccessStep(Base):
                 self.assertIn("cloudflared is not installed on this computer", t)
                 self.assertIn("quick tunnel", flat(app))
                 await press(pilot, "enter")
+                self.assertTrue(any("cloudflared" in w for w in ctx.warnings()))     # inside the mock: a box with a system cloudflared finds one
             self.assertEqual(ctx.settings.access, "cloudflare")
             self.assertIn("Save as preset, then launch", text_of(app))
-            self.assertTrue(any("cloudflared" in w for w in ctx.warnings()))
         self.run_app(case)
 
     def test_tailscale_found(self):
@@ -782,13 +800,13 @@ class SaveAndRun(Base):
             t = text_of(app)
             self.assertIn("Save as preset, then launch", t)
             self.assertIn("Qwen3.8-Flash-Next IQ3_S", t)
-            self.assertIn("32K, memory int8", t)
+            self.assertIn("128K, memory int8", t)
             self.assertIn("quick (about 20 min)", t)
             self.assertIn("This computer only, port 8080", t)
             await press(pilot, "enter")                               # Save as a preset and launch
             await pilot.pause(0.8)
-            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 32K"])
-            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 32K")
+            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 128K"])
+            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 128K")
             self.assertIsNotNone(app.result)
         self.run_app(case)
 

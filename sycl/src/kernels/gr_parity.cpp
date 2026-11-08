@@ -615,8 +615,9 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                                  .wait()),
             "qfuse counters zero");
         int qbad = 0;
+        bool qskip = false;   // SYCL port: see below
         std::vector<uint8_t> hq(qbytes), hr(qbytes);
-        for (int tt = 1; tt <= T && !qbad; ++tt) {
+        for (int tt = 1; tt <= T && !qbad && !qskip; ++tt) {
             std::vector<FusedGrArgs> qa(args.begin(), args.begin() + tt);
             for (int t = 0; t < tt; ++t) { qa[t].q8_mixed = d_q + (size_t) t * (N / 32) * 36; qa[t].q8_cnt = d_cnt; }
             for (int rep = 0; rep < 3 && !qbad; ++rep) {
@@ -653,6 +654,9 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                 check(DPCT_CHECK_ERROR(stream->wait()), "qfuse sync");
                 if (qx) { delete (qx); delete (qg); }
                 if (v3) { std::printf("  QFUSE: the v3 read writes no q8_1 (%s)\n", wrote ? "WRONG: it says it did" : "ok"); qbad += wrote; break; }
+                // SYCL port: fused_gr_read_multi never writes the q8_1 image here (fused_gr.dp.cpp: the caller quantizes),
+                // so there is nothing to compare - the engine's STRATA_QFUSE path falls back to native_quantize_q8_1
+                if (!wrote && tt == 1 && rep == 0) { std::printf("  QFUSE: not built in the SYCL port (the caller quantizes): skipped\n"); qskip = true; break; }
                 check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                            .memcpy(hq.data(), d_q,
                                                    (size_t)tt * (N / 32) * 36)
@@ -669,7 +673,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
                 }
             }
         }
-        std::printf("  fused GR read + q8_1 (STRATA_QFUSE), T 1..8, direct and graph replays: %s\n", qbad ? "FAIL" : "pass");
+        std::printf("  fused GR read + q8_1 (STRATA_QFUSE), T 1..8, direct and graph replays: %s\n", qbad ? "FAIL" : qskip ? "skipped" : "pass");
         bad += qbad;
         sycl::free(d_q, dpct::get_in_order_queue());
             sycl::free(d_ref, dpct::get_in_order_queue());
