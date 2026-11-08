@@ -35,9 +35,12 @@ This page was written on one Jetson AGX Thor Developer Kit:
   decode 50.7/37.4/20.2 and prompt 1375/1221 tok/s, four at once ~100.5 tok/s in total. Qwen3.6 at 128K and
   4 slots is refused by the engine itself with exact numbers on this pool; the Tegra page-cache accounting note
   and the full data are in [the report](../bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
-- **Not run on this part yet:** DFlash2 against the MTP (the Terminal therefore says DFlash2 is untested on this card), picture reading, serving a DeepSeek-V4.1 set (its engine package and the Coder set's fit
-  on this 123 GB pool are verified, plan's own numbers; the 191-274 GB sets were never downloaded - this machine's link is ~1.3 MB/s),
-  more than one module, a long soak.
+- **Run since, with data in the report:** DFlash2 drafting (correct, sanity 12/12, but slower than the MTP on this part - so `_TESTED`
+  keeps `sm_110` out and the Terminal still says the default pairing was never measured); serving a DeepSeek-V4.1 set
+  (ISTA-DAS Coder, 191 GB, at 8K and 64K context - speed cells in the report; whether a given set downloads is a link-speed
+  question, not an engine one); the locked-clock pair; NVFP4 (correct, slower).
+- **Not run on this part yet:** picture reading, Qwen3.6 UD-Q6_K_XL / Q8_0 (the same install path as UD-Q4_K_XL, each a further
+  33/38 GB download), the 128K context, the other DeepSeek sets (239-274 GB), more than one module, a long soak.
 - **Not built for ARM64 at all:** the desktop app, the HIP, SYCL and CPU-only engines, and the Q2_0 and Gyro packs, whose CPU kernels are
   x86-only.
 

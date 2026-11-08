@@ -123,7 +123,7 @@ What runs on a Thor (one 122 GiB machine, no GPU sizing questions - it all lives
 
 | model | how to run it | measured here |
 | --- | --- | --- |
-| Qwen3.8-Flash-Next (any Strata pack) | `strata launch --model iq3_s --context 32k` | IQ3_S yes; NVFP4 yes but slower - keep IQ3_S |
+| Qwen3.8-Flash-Next (the ARM64-feed packs; `Q2_0` and the Gyro packs need x86 CPU kernels and are not offered to ARM64) | `strata launch --model iq3_s --context 32k` | IQ3_S yes; NVFP4 yes but slower - keep IQ3_S |
 | Qwen3.6-35B-A3B (Unsloth UD packs) | `strata launch --family qwen36 --model ud-q4_k_xl --mtp 3` | UD-Q4_K_XL yes (Q6_K_XL / Q8_0: same path) |
 | DeepSeek-V4.1-Flash-1017 (ISTA-DAS sets) | `strata launch --family deepseek41 --model ista-das-coder` | Coder set yes (191 GB) |
 | picture input | the fat package carries `strata-vision`; these Thor runs used `--vision off` | not measured on Thor yet |
@@ -198,15 +198,22 @@ Against the DGX Spark, same engine family, same benchmark cells (IQ3_S, T=0, Tho
 
 What each setting on the Thor is worth (standard suite, IQ3_S decode short/4K/16K and Qwen3.6 UD-Q4_K_XL):
 
-| setting | IQ3_S decode | IQ3_S prompt 4K/16K | Qwen3.6 decode | Qwen3.6 prompt 4K/16K |
+| run (each row one logged run) | IQ3_S decode short/4K/16K | IQ3_S prompt 4K/16K | Qwen3.6 decode | Qwen3.6 prompt 4K/16K |
 | --- | ---: | ---: | ---: | ---: |
-| as shipped, 120 W DVFS | 38.3 / 34.0 / 35.6 | 769 / 1,000 | 50.7 / 37.4 / 20.2 | 1,375 / 1,221 |
-| + `sm_110` speed table (default now) | 41.3 / 35.9 / 36.5 (+3..8%) | 973 / 1,128 (+20%) | same - q36 reads no table | same |
-| + locked clocks (`nvpmodel -m 0`, `jetson_clocks`) | 47.4 / 40.2 / 40.5 (+14-24% over shipped) | 1,073 / 1,241 | 59.3 / 43.5 / 25.2 (+16-25%) | 1,586 / 1,412 |
+| shipped engine, 120 W DVFS | 38.3 / 34.0 / 35.6 | 769 / 1,000 | 50.7 / 37.4 / 20.2 | 1,375 / 1,221 |
+| table on, 120 W - the same-session A/B against the row above (`iq3s-32k-tuned`) | 37.3 / 36.6 / 33.4 | 925 / 1,095 | - (q36 reads no table) | - |
+| table on, 120 W, the clean clock-paired run | 41.3 / 35.9 / 36.5 | 973 / 1,128 | 53.7 / 39.3 / 22.5 | 1,420 / 1,272 |
+| table on + locked clocks (`nvpmodel -m 0`, `jetson_clocks`) - the other half of that pair | 47.4 / 40.2 / 40.5 | 1,073 / 1,241 | 59.3 / 43.5 / 25.2 | 1,586 / 1,412 |
+
+Read it row by row, not down a column: the same-session table A/B is a prompt/first-answer win (prompt
++20.3% / +9.5%, TTFT -27%) with decode mixed (-2.6% / +7.6% / -6.2%); the clock pair is the honest
+clock number (+10-15% across both models); and the shipped rows sit in earlier sessions, so comparing
+across them carries session drift - the raw runs are linked in the report.
 
 Five speed switches are on for sm_110 by default, each measured on this part (`STRATA_SM110_PERF=0` turns them off):
-end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K. Locking the clocks (`sudo nvpmodel -m 0 &&
-sudo jetson_clocks`) buys a further +10-15% across the board - the cheapest Thor speed-up there is. Full data,
+end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K, decode mixed in that pair as the table above
+shows. Locking the clocks (`sudo nvpmodel -m 0 && sudo jetson_clocks`) buys a measured +10-15% across the board
+in a clean paired run - the cheapest Thor speed-up there is. Full data,
 A/B files and the drafting sweeps (Qwen3.6 at `--mtp 3`, IQ3_S at `--spec 4` + cost rule) are in
 [the benchmark report](bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
 
