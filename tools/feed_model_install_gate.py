@@ -353,14 +353,17 @@ def start_engine(config: Path, engine: Path, work: Path, log) -> list[str]:
     if exe is None:
         return [f"no strata engine program in {engine}"]
     port = free_port()
-    env = dict(os.environ)
+    cfg = dict(d, exe=str(exe), port=port, host="127.0.0.1")            # the config's `component:strata-engine` is this engine folder
+    cfg_file = work / "engine-run.json"
+    cfg_file.write_text(json.dumps(cfg), encoding="utf-8")
+    env = dict(os.environ, PYTHONUTF8="1")
     env.update({k: str(v) for k, v in (d.get("env") or {}).items()})
     libs = [str(engine)] + [str(x) for x in d.get("lib_dirs", [])]
     env["LD_LIBRARY_PATH"] = os.pathsep.join(libs + [env.get("LD_LIBRARY_PATH", "")])
-    args = [str(exe), *[str(a) for a in d["args"]], "--port", str(port), "--host", "127.0.0.1"]
+    args = [sys.executable, "-m", "serve.server", "--engine", "strata", "--config", str(cfg_file), "--port", str(port), "--host", "127.0.0.1"]
     logfile = work / "engine.log"
     with logfile.open("wb") as lf:
-        proc = subprocess.Popen(args, cwd=d.get("cwd") or None, env=env, stdout=lf, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(args, cwd=str(ROOT), env=env, stdout=lf, stderr=subprocess.STDOUT)
     try:
         deadline, ready = time.time() + 600, False
         while time.time() < deadline and proc.poll() is None:
