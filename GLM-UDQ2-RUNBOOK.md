@@ -406,3 +406,14 @@ ref-overrides.txt / calibration.txt(sha256 已记)都在 $D。imatrix 记录按�
    引擎本体——我们的 PR 仍是无重复的完整引擎交付;server.py 上游已有 STAT/deepseek-parallel 新逻辑,
    合并时已保持双方语义(若有回归,优先查 H2/H5/H6 三处)。
 - 另:全局 git 的 insteadOf 代理重写已原样保留;PAT 用后建议吊销。
+
+### fork 提交收尾(2026-11-08)
+- 重放分支 `glm5-flash-rebase` 已推送;**issue #5544 + PR #5545 已开**(Niko1221/Strata)。
+- 合并质量:上游 0.2.12 在本机预存 64 个测试失败(更新器/引擎库子系统,环境性);
+  我们的合并仅新增 4 个,已修 3:glm53 行诚实判词(strata_mcp model_table 的 mem_total 式
+  RAM+VRAM vs ram_gb)、fit_numbers 测试加 glm53 字面分支(扁平 MODELS 名字撞车)、
+  TUI 不-fit 测试改为导航到 deepseek41 UD-Q8_K_XL(表尾因 glm53 行变化)。sigint 一例并行 flaky,隔离通过。
+- **GGUF 分片交付**:llama-gguf-split 3 片(46,909/46,618/15,314 MiB,≤50,000 MB 两种解释均安全),
+  iq_pack 对分片重建 native_experts.txt(25 行跨片引用),引擎从分片真加载 + GEN 验证通过。
+  产物:/nvme/models/GLM-5.3-Flash-UNCENSORED-UD-Q2/split/(3 gguf + glm-pack)。
+- 模型下载偏好:ModelScope 优先。
