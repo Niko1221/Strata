@@ -145,15 +145,20 @@ model's (`data/expert-profile.bin`). It ranks the same 48 x 512 experts and deci
 budget take first.
 
 **Choosing the RAM budget N.** Use your RAM minus 20 to 24 GB (the OS, the engine itself, the 126 MB router copy, and
-room for the OS file cache that serves the rest). On 64 GB that is 40. The engine checks available RAM and, on Windows,
-available commit capacity. If N exceeds the smaller value minus 4 GiB headroom, it reduces N to that amount minus a
-256 MiB margin and reports which limit applies. Everything above N comes from the SSD for every token, so N is the
-setting that matters most; a bigger budget was faster in every measurement (24 / 32 / 40 GiB).
+room for the OS file cache that serves the rest). On 64 GB that is 40. The initial budget uses available RAM minus
+4 GiB headroom (`STRATA_RESIDENT_HEADROOM_GIB` overrides it); a reduced budget leaves another 256 MiB. Windows first
+gets a chance to grow a system-managed page file. If both the pinned and ordinary allocation fail, the engine takes
+a fresh RAM and commit snapshot and retries once with a smaller positive budget, applying headroom to whichever
+limit is lower. The initial attempt does not enforce a separate commit reserve. Everything above N comes from the
+SSD for every token, so N is the setting that matters most; a bigger budget was faster in every measurement
+(24 / 32 / 40 GiB).
 
 When the driver page-locks the whole budget, the GPU also computes a share of the misses over PCIe, as in the resident
 low-RAM mode. `STRATA_RESIDENT_PIN=0` uses ordinary pageable memory instead, and the CPU then computes every miss. On
 Windows the allocation log reports available physical RAM and commit capacity before allocation and after a failure,
-because free RAM alone does not guarantee that Windows can commit the requested memory.
+because free RAM alone does not guarantee that Windows can commit the requested memory. If the pageable fallback
+also fails, the log preserves both the GPU allocation or mapping error and the `malloc` error. A smaller retry reports
+its limit and memory snapshot; if it fails too, the final warning includes both attempts' errors.
 
 **Context.** The KV cache takes VRAM from the expert cache, so a longer context makes decoding slower. 8K is a reasonable
 start on 12 GB. `--kv int8` halves the KV cache's VRAM.
