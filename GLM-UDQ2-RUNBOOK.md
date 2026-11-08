@@ -424,3 +424,18 @@ ref-overrides.txt / calibration.txt(sha256 已记)都在 $D。imatrix 记录按�
 - 分片文件名去 UNCENSORED:`GLM-5.3-Flash-UD-Q2_K_XL.gguf-0000N-of-00003.gguf`;
   native_experts.txt 头部 + 25 行跨片引用同步更新;引擎从改名分片加载验证通过(READY 133s + GEN)。
   README 文件表与命令路径同步;模型名(dealignai 的 UNCENSORED 微调名)在 README 中保留。
+
+### 1M×2 → 512k×2 的实测与杠杆阶梯(2026-11-08 晚)
+- 教训:expert 池的 VRAM 覆盖率决定速度,不是 KV 字节。1M×2 池被 KV(4.05GB/卡)挤到 18.7GB
+  → 覆盖 64% → 10.5 tok/s;512k×2 池 22.6-22.9GB → 覆盖 81% → **22.6 tok/s**(同题同 150 token)。
+- 引擎预测(39.0ms@1M / 23.2ms@512k)与实测吻合,可作为调参依据。
+- usage-profile(expert_profile.learned + --expert-profile)实测无效:用量分布均匀,排序不改变覆盖比例
+  (+4% ≈ 噪声)。旗标已撤,学习文件保留在 glm-pack/ 供参考。
+- KV INT4 内核不存在的核算:lat8 按 byte-code 写死,补 nibble 解包可行(record 0.625V 字节,KV 4.05→2.2GB/卡,
+  池 +1.8GB → hit ~68% → 估 11.5-12 tok/s @1M×2)。精度需重新 KLD+needle 对账。**未排期。**
+- 系统 RAM 58.4GB(91.2%)与 context 无关:VRAM 池 45.5GB + pinned RAM 层 49.9GB 是"一次流读、全驻留"的
+  架构底座,无缩小开关。drop_caches 无效(页被钉住)。这是本机 64GB 上该 pack 的下限,须接受或换硬件。
+- 多模态三坑(已修,进 PR #5545):pump multi 分支吞 glm 行 / GENI 缺 rid / 引擎 ERR 不 fflush;
+  另:手写 config 必须带 "arch": "glm5-next",否则 family 回退 qwen、视觉走错分支。
+- 正式服务配置:/data/models/GLM-5.3-Flash-UNCENSORED-UD-Q2/glm53-serve.json
+  (512k×2,kv int8,MTP 默认开,vision 挂 mmproj-F16,arch=glm5-next;strata-glm53 单元,端口 8080)。
