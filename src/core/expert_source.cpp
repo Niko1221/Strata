@@ -5593,8 +5593,11 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
               (why.empty() ? std::string{} : ": " + why);
         return false;
     }
-    // the reuse decision: only the experts.bin path; a fresh, torn or hash-mismatched file copies as before
-    const bool reuse = arena_reuse && !from_gguf && a->shared_existing && a->shared_complete;
+    // the reuse decision: the pack path and the GGUF path alike (both fill the same packed layout, and the pack
+    // hash samples every GGUF source file, so identity is guarded either way); a fresh, torn or hash-mismatched
+    // file copies as before.  GGUF reuse validated on CUDA (0xluk, PR comment 2026-10-30): two engines sharing
+    // one 46.84 GiB arena, attach checksums identical, restart 105 s -> 20 s.
+    const bool reuse = arena_reuse && !arena_mmap && a->shared_existing && a->shared_complete;
     // #285: unbuffered when the drive is read anyway and the file cache could not keep the experts for the next
     // start either (a 64 GB PC); otherwise the buffered readers, which a warm restart serves from the cache
     LoadStats st;
