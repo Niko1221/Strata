@@ -49,6 +49,7 @@ ROUTER_SCALE = 1.0   # --router-scale: the router's weights times this. Random w
                      # implementations of one model (llama.cpp CPU and GPU among them) pick different experts at a few positions, and one
                      # expert flip moves a position's KL by 100x; a larger scale spreads the logits like a trained router's
 EXACT_PARTS: set = set()   # --exact-parts router,f32,q8 (--exact-bf16 = all three): which tensors are written BF16-exact
+TOKENIZER_FROM = None   # --tokenizer-from FILE: the tokenizer.* keys (vocabulary, merges, special tokens, chat template) and the PLE token ids of a real GGUF, so a Terminal/server can encode text for the synthetic model
 EXACT_BF16 = False   # --exact-bf16: every F32 tensor holds BF16-representable values and the Q8_0 scale is a power of two, so the pack's
                      # --compat-bf16 conversion (router, shared-expert gate, HC down/up, ...) is lossless and llama.cpp sees the engine's weights
 
@@ -310,6 +311,21 @@ def metadata(s: dict, vocab: int, name: str) -> GGUFWriter:
     w.add("tokenizer.ggml.padding_token_id", vocab - 1, "u32")
     w.add("tokenizer.ggml.bos_token_id", vocab - 1, "u32")
     w.add("general.quantization_version", 2, "u32")
+    if TOKENIZER_FROM is not None:
+        for k, v in TOKENIZER_FROM.metadata.items():
+            if k.startswith("tokenizer."):
+                if k.endswith("_token_id"):
+                    w.add(k, int(v), "u32")
+                elif k == "tokenizer.ggml.tokens" or k == "tokenizer.ggml.merges":
+                    w.add(k, list(v), "array:string")
+                elif k == "tokenizer.ggml.token_type":
+                    w.add(k, [int(x) for x in v], "array:i32")
+                elif isinstance(v, bool):
+                    w.add(k, v, "bool")
+                elif isinstance(v, str):
+                    w.add(k, v, "string")
+            elif k.endswith(".ple.eos_token_id") or k.endswith(".ple.image_token_id"):
+                w.add(p + "ple." + k.rsplit(".ple.", 1)[1], int(v), "u32")
     return w
 
 
@@ -407,6 +423,7 @@ def main() -> int:
     ap.add_argument("--exact-bf16", action="store_true", help="F32 tensors rounded to BF16 values and Q8_0 scale 2^-12: the pack's BF16 conversion is then lossless")
     ap.add_argument("--router-scale", type=float, default=1.0, help="multiply the router weights (default 1: the files of Q4-GEO2)")
     ap.add_argument("--exact-parts", default="", help="router, f32 (the other F32 tensors) and/or q8 (Q8_0 scale 2^-12): the BF16-exact parts of --exact-bf16")
+    ap.add_argument("--tokenizer-from", help="a real qwen4exp GGUF (any shard 1): its tokenizer.* keys and PLE token ids go into the file, and --vocab becomes its vocabulary size")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--small-ple", action="store_true",
                     help="PLE head sizes of 16 small primes (a table of ~1.6M rows, ~50 MB) instead of Flash-Next's 320001536 rows (28 GB): the hash moduli are read from the file, so the engine runs it; "
@@ -419,6 +436,11 @@ def main() -> int:
     EXACT_PARTS = {"router", "f32", "q8"} if a.exact_bf16 else set(x for x in a.exact_parts.split(",") if x)
     global ROUTER_SCALE
     ROUTER_SCALE = a.router_scale
+    if a.tokenizer_from:
+        global TOKENIZER_FROM
+        from gguf_reader import GGUFFile
+        TOKENIZER_FROM = GGUFFile(pathlib.Path(a.tokenizer_from))
+        a.vocab = len(TOKENIZER_FROM.metadata["tokenizer.ggml.tokens"])
     if a.list:
         for n in sorted(SHAPES):
             s = shape(n)

@@ -221,6 +221,13 @@ class FlashNextModel(Base):
         src = Path(self.setup.__file__).read_text(encoding="utf-8")
         self.assertIn('fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None', src)
 
+    def test_a_feed_flash_next_size_is_read_in_place_with_a_ram_budget_like_the_built_in_unsloth_sizes(self):
+        # found by the Q4-P8 rehearsal on Strix: without "budget" setup chose the low-RAM mode and began writing a 77 GB second copy of the experts
+        result = feed_models.apply(self.setup, parsed(flash_next(id="budgeted")), None)
+        for key in [k for k, v in self.setup.MODELS.items() if "budgeted" in v.get("families", ())]:
+            self.assertIs(self.setup.MODELS[key]["budget"], True)
+            self.assertFalse(self.setup.low_ram_wanted(key, 64.0, "auto"))
+
     def test_parts_that_are_not_numbered_are_left_out_with_a_line(self):
         odd = flash_next(id="odd-parts")
         odd["quants"][0]["files"][1] = file_entry("Q4-model.gguf", "Q4_K_M")

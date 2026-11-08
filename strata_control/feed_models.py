@@ -314,6 +314,8 @@ def _flash_next(setup, model) -> None:
         entry = {"about": q.about or f"{q.name} quantization", "download_gb": gb, "ram_gb": q.ram_gb,
                  "arena_gb": q.arena_gb or round(gb * 0.93, 1), "families": (model.id,), "shards": len(q.files),
                  "file": files[q.name], "quant": q.name, "vision": bool(model.pictures)}
+        entry["budget"] = True                           # the Unsloth-set install: the GGUF read in place with a RAM budget of its experts (what the built-in UD sizes do). Without it
+                                                         # setup picks the low-RAM mode on a PC with little RAM, which copies all the experts into a second file (77 GB for UD-Q4_K_XL)
         if engine:
             entry["engine"] = engine
         setup.MODELS[keys[q.name]] = entry
