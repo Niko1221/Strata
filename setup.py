@@ -6457,6 +6457,21 @@ def low_ram_fits(model, ram, vram_gb, mtp=True) -> bool:
     return ram - 6 + max(0.0, vram_gb - 5 - (MTP_VRAM_GB if mtp else 0.0)) >= arena
 
 
+def model_files_gb(model) -> float:
+    """The model's files without the n-gram / PLE lookup table's file, in GB: the download minus the table (strata_control/fit_label.py; the catalog's `fit_gb`,
+    the Terminal's "Needs (RAM + VRAM)" column)."""
+    from strata_control import fit_label
+    d = MODELS[model]
+    return fit_label.files_gb((d.get("families") or (None,))[0], model, d)
+
+
+def model_fit_label(model, ram, gpu) -> str:
+    """"fits" or "may run slower" (strata_control/fit_label.py, the owner's one rule): the files without the lookup table against the RAM and the card's memory
+    together.  An integrated chip counts only its carve-out (`low_ram_vram`: its shared memory is the RAM)."""
+    from strata_control import fit_label
+    return fit_label.label(model_files_gb(model), ram, low_ram_vram(gpu) if gpu else 0.0)
+
+
 def low_ram_wanted(model, ram, choice="auto") -> bool:
     """Does setup put this model in the low-RAM mode on this PC: its experts do not fit the RAM with the usual room
     beside them (`low_ram_needed`), or the user asked for it.  Unsloth's 4-bit file is not the low-RAM mode at all:
@@ -6827,7 +6842,7 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
     from strata_control import folders
     bad = folders.problem(dest)
     if bad and requested:
-        fail(folders.words(bad)[:400], "Nothing was downloaded or changed, and the folder was not saved as your data folder.")
+        fail(folders.without_nothing_changed(bad)[:400], "Nothing was downloaded or changed, and the folder was not saved as your data folder.")
     if bad and settings.get("data_dir"):                # an unusable folder saved earlier: go back to the default and say so; never keep it
         warn(f"The data folder saved before cannot be used ({bad[0]}) Using {home().parent / 'Strata-data'} instead.")
         remembered = dest = home().parent / "Strata-data"
@@ -8526,7 +8541,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     for i, m in enumerate(names, 1):
         d = fam["models"][m]
         size = fam["sha256"][fam["file"].format(q=m)][0]
-        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        from strata_control import fit_label
+        fit = f"   <- {fit_label.label(size / 1e9, ram, low_ram_vram(gpu))}"        # the file against the RAM and the card's memory together
         say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
     rec = own_path_size(fam, ram)
     if not a.model:
@@ -10454,41 +10470,26 @@ def main() -> int:
         say()
         any_fits = False
         for m, d in MODELS.items():
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
-            verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
-            if d.get("mem_total"):          # Gyro: VRAM + RAM together; the rest of the download is read from the SSD
-                verdict += f" ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM)"
-            if d.get("budget") and not unsloth_budget(m, ram, gpu):     # Phase 2: all of them in RAM
-                verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
-            elif d.get("budget"):
-                verdict = (("EXPERIMENTAL, " if d.get("experimental") else "") +
-                           f"fits with {resident_budget_gib(m, ram)} GiB of its experts in RAM, the rest "
-                           "read from the SSD" if ram >= d["ram_gb"] else
-                           f"slow here: {resident_budget_gib(m, ram)} GiB of its "
-                           f"{int(d['arena_gb'] / 1.073741824)} GiB of experts in RAM, the rest read from the SSD "
-                           "(setup asks first)" if ram >= UNSLOTH_MIN_RAM_GB else "does not fit")
-            elif low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
-                verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
-                           "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
-                                                 else "the rest is read from the SSD as needed)"))
+            verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + model_fit_label(m, ram, gpu)
             if d.get("budget") and hip and d.get("nvidia_only"):   # #429: not run on AMD yet
                 verdict += " - NVIDIA only so far, untested on AMD"
             if hip and d.get("repo"):                  # the ready-made NVFP4 packs: no AMD kernels at all
                 verdict = "NVIDIA only (the AMD engine has no NVFP4 kernels)"
             else:
-                any_fits = any_fits or (not verdict.startswith("does not fit") and not d.get("mem_total"))
-            say(f"  {m:8s} needs ~{d['ram_gb']} GB {'of VRAM + RAM' if d.get('mem_total') else 'RAM'}: {verdict}")
+                any_fits = any_fits or (model_fit_label(m, ram, gpu) == "fits" and not d.get("mem_total"))
+            say(f"  {m:8s} needs ~{model_files_gb(m):.0f} GB of RAM + VRAM: {verdict}")
         try:                                           # DeepSeek-V4.1-Flash: a line, from the real numbers (strata_control/dsv41_fit.py)
             from strata_control import dsv41_fit
             cards_ok = amd_ok if hip else [g for g in found if gpu_problem(g) is None]
             for mname in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"):
                 ds = dsv41_fit.plan(cards_ok, ram, None, model=mname)
-                tail = {"fits": f"fits ({ds['experts_in_vram']:,} of {ds['experts_total']:,} experts in graphics memory, the rest on the CPU)",
-                        "tight": ("runs, with the experts RAM cannot hold read from the SSD (about 5-7 tokens a second measured)"
-                                  if ds.get("variant") else "fits, but RAM is tight"),
-                        "spills": (f"works but slow: less RAM than it was measured with (46-64 GB)" if ds.get("variant")
-                                   else f"about {ds['spill_gb']:.0f} GB of its experts would be read from the SSD (slow)"),
-                        "no_card": "needs one or more graphics cards"}.get(ds["verdict"], "not checked")
+                if ds["verdict"] == "unknown":
+                    tail = "not checked"
+                elif ds.get("uma"):                    # the graphics memory is the RAM, counted once: the plan says what is read from the SSD
+                    tail = "fits" if float(ds.get("streamed_gb") or 0.0) <= 0.0 else "may run slower"
+                else:                                  # the set's weight files without its n-gram table, against every card's memory and the RAM
+                    from strata_control import fit_label
+                    tail = fit_label.label(float(ds["download_gb"]) - float(ds["engram_gb"]), ram, sum(float(c.get("vram_gb") or 0.0) for c in ds["cards"]))
                 say(f"  DeepSeek-V4.1-Flash {MULTI_FILE_FAMILIES['deepseek41']['models'].get(mname, {}).get('label', mname)}: a {ds['download_gb']:.0f} GB download: {tail}   (--family deepseek41 --model {mname})")
         except Exception:                              # noqa: BLE001 - a line for information: never break the check
             pass
@@ -10563,11 +10564,8 @@ def main() -> int:
     installed = installed_size(family, names, have)
     for i, m in enumerate(names, 1):
         d = MODELS[m]
-        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        fit = f"   <- {model_fit_label(m, ram, gpu)}"          # "fits" or "may run slower": the weight files against the RAM and the card's memory together
         if d.get("mem_total"):             # Gyro: the download includes the n-gram table, the memory figure does not
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
-            fit = "" if have_gb >= d["ram_gb"] else \
-                f"   <- needs {d['ram_gb']} GB of VRAM + RAM together, you have {have_gb:.0f}"
             say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.1f} GB "
                 f"(the n-gram table is in the file), memory {d['ram_gb']} GB{fit}")
             continue
@@ -10577,9 +10575,6 @@ def main() -> int:
             say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
                 f"{d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
-        if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
-            fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
-                   + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index(installed or recommended_size(family, names, ram, low_ram_vram(gpu))) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
@@ -10603,7 +10598,7 @@ def main() -> int:
                          bool(a.model), a.yes, f"{model} is NVIDIA-only so far", "choose one of the 2-3-bit models, "
                          f"or --model {model} --yes to try it on AMD anyway", "  Try it anyway?")
             warn(f"installing {model} on an AMD card, as you chose (please report how it runs)")
-        if ram < MODELS[model]["ram_gb"]:
+        if ram < MODELS[model]["ram_gb"] and model_fit_label(model, ram, gpu) != "fits":
             have = resident_budget_gib(model, ram)
             total = int(MODELS[model]["arena_gb"] / 1.073741824)
             confirm_risk(f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB: "

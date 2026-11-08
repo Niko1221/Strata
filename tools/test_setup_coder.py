@@ -217,7 +217,7 @@ class Plan(unittest.TestCase):
         import strata_mcp as M
         s = M.Strata(ROOT)
         s.dsv41_plan = lambda hw, disk_free=None, only=None, model=None: slow
-        self.assertTrue(s._dsv41_memory_words({}, NAME).startswith("slow here: this computer has 20 GB of RAM and the set was measured down to 16 GB"))
+        self.assertEqual(s._dsv41_memory_words({}, NAME), "may run slower")          # (the plan's own warning above keeps the measured-down-to-16 GB words)
         # the other sets keep their words
         other = dsv41_fit.plan([R9700], 30.0, None, 131072, model="IST-DAS-2.00bpw")
         self.assertIn("46 GB and 64 GB", " ".join(other["warnings"]))
