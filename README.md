@@ -118,6 +118,17 @@ Prefer the terminal? Install Strata, then run **`strata launch`**.
 
 **Linux / Mac**
 
+What runs on a Thor (one 122 GiB machine, no GPU sizing questions - it all lives in the one pool):
+
+| model | how to run it | measured here |
+| --- | --- | --- |
+| Qwen3.8-Flash-Next (any Strata pack) | `strata launch --model iq3_s --context 32k` | IQ3_S yes; NVFP4 yes but slower - keep IQ3_S |
+| Qwen3.6-35B-A3B (Unsloth UD packs) | `strata launch --family qwen36 --model ud-q4_k_xl --mtp 3` | UD-Q4_K_XL yes (Q6_K_XL / Q8_0: same path) |
+| DeepSeek-V4.1-Flash-1017 (ISTA-DAS sets) | `strata launch --family deepseek41 --model ista-das-coder` | Coder set yes (191 GB) |
+| picture input | the fat package carries `strata-vision`; these Thor runs used `--vision off` | not measured on Thor yet |
+
+From the command line, a Thor needs nothing extra:
+
 ```sh
 curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
@@ -176,6 +187,21 @@ engine 0.1.56 built on the machine; standard protocol suite at context 32768, fo
 | DeepSeek-V4.1-Flash-1017, Coder set¹ | 8.8-17.2 (8K and 64K context cells: 512→4096→16K→32K prompts, T=0, locked clocks) | 87.6-356.4 | not swept | smoke² |
 
 ¹ served on its own `strata-dsv41` engine package (same fat archs); experts split across the one 122 GiB pool. ² the twelve-check protocol is qwen-specific; arithmetic and long completions were checked by hand.
+
+Against the DGX Spark, same engine family, same benchmark cells (IQ3_S, T=0, Thor at locked clocks):
+
+| cell (tok/s) | Thor | DGX Spark | Thor / Spark |
+| --- | ---: | ---: | ---: |
+| prompt 4K / 16K / 32K | 921 / 1,138 / 950-1,051 | 1,296 / 1,680 / 1,735 | 0.71 / 0.68 / 0.55-0.61 |
+| decode 4K / 16K / 32K | 37.6 / 37.5 / 38.0 | 45.5 / 46.5 / 46.5 | 0.83 / 0.81 / 0.82 |
+
+What each setting on the Thor is worth (standard suite, IQ3_S decode short/4K/16K and Qwen3.6 UD-Q4_K_XL):
+
+| setting | IQ3_S decode | IQ3_S prompt 4K/16K | Qwen3.6 decode | Qwen3.6 prompt 4K/16K |
+| --- | ---: | ---: | ---: | ---: |
+| as shipped, 120 W DVFS | 38.3 / 34.0 / 35.6 | 769 / 1,000 | 50.7 / 37.4 / 20.2 | 1,375 / 1,221 |
+| + `sm_110` speed table (default now) | 41.3 / 35.9 / 36.5 (+3..8%) | 973 / 1,128 (+20%) | same - q36 reads no table | same |
+| + locked clocks (`nvpmodel -m 0`, `jetson_clocks`) | 47.4 / 40.2 / 40.5 (+14-24% over shipped) | 1,073 / 1,241 | 59.3 / 43.5 / 25.2 (+16-25%) | 1,586 / 1,412 |
 
 Five speed switches are on for sm_110 by default, each measured on this part (`STRATA_SM110_PERF=0` turns them off):
 end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K. Locking the clocks (`sudo nvpmodel -m 0 &&
