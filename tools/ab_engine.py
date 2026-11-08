@@ -87,7 +87,7 @@ def main() -> int:
         mf.write(json.dumps({"manifest": True, "config": str(Path(a.config).resolve()), "arms": [s for _, _, s in arms]}) + "\n")
     reqs = [(f"chat{i}", p) for i, p in enumerate(PROMPTS)] + [("long", long_prompt(a.long_words))]
     out = open(a.log, "a")
-    res: dict = {n: {} for n, _ in arms}
+    res: dict = {n: {} for n, _, _ in arms}
     for rnd in range(a.rounds):
         order = arms if rnd % 2 == 0 else arms[::-1]
         for name, env, spec in order:

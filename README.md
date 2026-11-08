@@ -196,24 +196,34 @@ Against the DGX Spark, same engine family, same benchmark cells (IQ3_S, T=0, Tho
 | prompt 4K / 16K / 32K | 921 / 1,138 / 950-1,051 | 1,296 / 1,680 / 1,735 | 0.71 / 0.68 / 0.55-0.61 |
 | decode 4K / 16K / 32K | 37.6 / 37.5 / 38.0 | 45.5 / 46.5 / 46.5 | 0.83 / 0.81 / 0.82 |
 
-What each setting on the Thor is worth (standard suite, IQ3_S decode short/4K/16K and Qwen3.6 UD-Q4_K_XL):
+What each setting on the Thor is worth (standard suite, IQ3_S decode short/4K/16K and Qwen3.6 UD-Q4_K_XL). Every row
+is one logged run, named with its session and the terminal commit it recorded; **no two rows share a session**, so
+reading across rows is an observation, not a controlled A/B:
 
-| run (each row one logged run) | IQ3_S decode short/4K/16K | IQ3_S prompt 4K/16K | Qwen3.6 decode | Qwen3.6 prompt 4K/16K |
+| run (session, recorded commit, clocks) | IQ3_S decode short/4K/16K | IQ3_S prompt 4K/16K | Qwen3.6 decode | Qwen3.6 prompt 4K/16K |
 | --- | ---: | ---: | ---: | ---: |
-| shipped engine, 120 W DVFS | 38.3 / 34.0 / 35.6 | 769 / 1,000 | 50.7 / 37.4 / 20.2 | 1,375 / 1,221 |
-| table on, 120 W - the same-session A/B against the row above (`iq3s-32k-tuned`) | 37.3 / 36.6 / 33.4 | 925 / 1,095 | - (q36 reads no table) | - |
-| table on, 120 W, the clean clock-paired run | 41.3 / 35.9 / 36.5 | 973 / 1,128 | 53.7 / 39.3 / 22.5 | 1,420 / 1,272 |
-| table on + locked clocks (`nvpmodel -m 0`, `jetson_clocks`) - the other half of that pair | 47.4 / 40.2 / 40.5 | 1,073 / 1,241 | 59.3 / 43.5 / 25.2 | 1,586 / 1,412 |
+| shipped engine (`iq3s-32k` 11-04 @`74b9305a`, `qwen36-32k` 11-05, 120 W DVFS) | 38.3 / 34.0 / 35.6 | 769 / 1,000 | 50.7 / 37.4 / 20.2 | 1,375 / 1,221 |
+| table on (`iq3s-32k-tuned` 11-05 @`ce4350af`, 120 W) | 37.3 / 36.6 / 33.4 | 925 / 1,095 | - (q36 reads no table) | - |
+| table on, 120 W¹ (`normal/iq3s-32k` + `normal/q36-32k` 11-07 @`5819cc0b`) | 41.3 / 35.9 / 36.5 | 973 / 1,128 | 53.7 / 39.3 / 22.5 | 1,420 / 1,272 |
+| table on, clocks locked¹ (`maxn/iq3s-32k` + `maxn/q36-32k` 11-05 @`a1cda07f`) | 47.4 / 40.2 / 40.5 | 1,073 / 1,241 | 59.3 / 43.5 / 25.2 | 1,586 / 1,412 |
 
-Read it row by row, not down a column: the same-session table A/B is a prompt/first-answer win (prompt
-+20.3% / +9.5%, TTFT -27%) with decode mixed (-2.6% / +7.6% / -6.2%); the clock pair is the honest
-clock number (+10-15% across both models); and the shipped rows sit in earlier sessions, so comparing
-across them carries session drift - the raw runs are linked in the report.
+¹ sanity 12 of 12 in these runs, and both of them are **nonconforming** for one protocol point only: the running
+model file could not be hashed. The 11-07 run's recorded terminal commit (`5819cc0b`) predates the speed-table
+merge, so that record alone does not establish its table state; the engine binaries of those dates came from the
+bench tree, which does carry the table.
+
+The controlled, within-session comparisons are the paired A/B files (`ab-iq3s-stack/dropone/decide.jsonl` alternate
+arms run by run; `ab-q36-depth*.jsonl` the drafting depths): there the table is a prompt/first-answer win with decode
+mixed. The suite rows above agree in direction and scale, but each sits in its own session and build - the
+percentages quoted from them (prompt +20.3% / +9.5%, TTFT -27%, decode -2.6/+7.6/-6.2; clocks +10-15%) are
+cross-session observations with the strongest control available, not same-session A/B. A clock state cannot share a
+session at all: `nvpmodel` changes the whole machine.
 
 Five speed switches are on for sm_110 by default, each measured on this part (`STRATA_SM110_PERF=0` turns them off):
-end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K, decode mixed in that pair as the table above
-shows. Locking the clocks (`sudo nvpmodel -m 0 && sudo jetson_clocks`) buys a measured +10-15% across the board
-in a clean paired run - the cheapest Thor speed-up there is. Full data,
+end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K, decode mixed, as the table above
+shows (a cross-session pair, labeled as one there). Locking the clocks (`sudo nvpmodel -m 0 && sudo
+jetson_clocks`) buys +10-15% across the board in runs a day apart with the same scripts and the same engine
+package - the cheapest Thor speed-up there is. Full data,
 A/B files and the drafting sweeps (Qwen3.6 at `--mtp 3`, IQ3_S at `--spec 4` + cost rule) are in
 [the benchmark report](bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
 
