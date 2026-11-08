@@ -3,6 +3,15 @@
 //   swiglu_prep    h = silu(g) * u for the shared expert, written as prepared activations (xprep layout)
 //   moe_combine_sh bo[t] = sum_k ye[entry(t, k)] + sigmoid(sg[t]) * ysh[t]   (k in order)
 
+// experts per token (Flash-Next 10); the host prelude (engine/geo.h) defines GEO_TOPK for another shape
+#ifndef ROUTE_K
+#ifdef GEO_TOPK
+#define ROUTE_K GEO_TOPK
+#else
+#define ROUTE_K 10
+#endif
+#endif
+
 struct GlueArgs {
     uint n;        // vector width
     uint n_tok;
@@ -53,7 +62,7 @@ kernel void moe_combine_sh2(device const float* ye [[buffer(0)]], device const i
                             device const float* ysh [[buffer(2)]], device const float* sg [[buffer(3)]],
                             device float* bo [[buffer(4)]], constant GlueArgs& a [[buffer(5)]],
                             uint gid [[thread_position_in_grid]]) {
-    constexpr int TK = 10;
+    constexpr int TK = ROUTE_K;
     const uint t = gid / a.n_embd, k = gid % a.n_embd;
     if (t >= a.n_tok) return;
     int e[TK];

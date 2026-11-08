@@ -22,6 +22,15 @@
 #define P_TOKENT (P_EW + P_MAXE)
 #define P_INTS (P_TOKENT + P_MAXE)
 
+// experts per token (Flash-Next 10); the host prelude (engine/geo.h) defines GEO_TOPK for another shape
+#ifndef ROUTE_K
+#ifdef GEO_TOPK
+#define ROUTE_K GEO_TOPK
+#else
+#define ROUTE_K 10
+#endif
+#endif
+
 // Expert e's matrices: gate at W + gate_off + e * gu_stride, up at W + up_off + e * gu_stride, down at
 // W + down_off + e * d_stride (a pack's blobs: gate_off 0, strides = the blob; a GGUF: the three tensors).
 struct MoeArgs {
@@ -134,7 +143,7 @@ static inline void route_tok(device const float* l, device int* ids, device floa
         if (isnan(v[i])) v[i] = -FLT_MAX;
     }
     float selected = 0.0f, ssum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < ROUTE_K; ++rank) {
         float best = v[0];
         int ex = lane;
         for (int i = 1; i < NL; ++i)
@@ -154,7 +163,7 @@ static inline void route_tok(device const float* l, device int* ids, device floa
     for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
     ssum = max(ssum, 6.103515625e-5f);
     const float inv = 1.0f / ssum;
-    if (lane < 10) w[lane] = selected * inv;
+    if (lane < ROUTE_K) w[lane] = selected * inv;
 }
 
 kernel void moe_route(device const float* logits [[buffer(0)]], device int* ids [[buffer(1)]],
@@ -163,8 +172,8 @@ kernel void moe_route(device const float* logits [[buffer(0)]], device int* ids 
                       ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup int s_grp[32], s_ent[32];
     if (sg < a.n_tok) {
-        if (a.n_expert == 256) route_tok<8>(logits + sg * 512, ids + sg * 10, w + sg * 10, lane);
-        else route_tok<16>(logits + sg * 512, ids + sg * 10, w + sg * 10, lane);
+        if (a.n_expert == 256) route_tok<8>(logits + sg * 512, ids + sg * ROUTE_K, w + sg * ROUTE_K, lane);
+        else route_tok<16>(logits + sg * 512, ids + sg * ROUTE_K, w + sg * ROUTE_K, lane);
     }
     threadgroup_barrier(mem_flags::mem_device);
     plan_body(ids, w, plan, a, tid, nth, sg, lane, s_grp, s_ent);
