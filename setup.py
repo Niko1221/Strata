@@ -8304,26 +8304,36 @@ def control_engine_step(gpu, vision):
     return llama, eng, meta, [], gpu, "none"
 
 
-def shape_engine_step(a, gpu, vision):
-    """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
-    separate component next to the Strata engine, fetched here through the signed feed (--feed, STRATA_UPDATE_FEED, the remembered feed, or the release's), checked,
-    started once and kept; the Strata engine and the models that run on it are not touched. The run config names it ("component:strata-q4-lite") and every start looks it up.
-    Returns what engine_step returns."""
+def shape_engine_fetch(a):
+    """The engine of the chosen model's shape (SHAPE_ENGINE), fetched through the signed feed (--feed, STRATA_UPDATE_FEED, the remembered feed, or the release's), checked, started
+    once and kept (strata_control/shape_engine.py); the Strata engine is not touched. Returns its component (shape_engine.find), or None when there is none and the person said to
+    go on without it (STRATA_ALLOW_NO_ENGINE: the model is downloaded and prepared, and set up again later); otherwise it stops with the owner's lines."""
     from strata_control import engine_component as EC, shape_engine
     shape, title = SHAPE_ENGINE["shape"], SHAPE_ENGINE.get("title")
     name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
-    llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
     from strata_cli import update_cmd
     source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
     exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
     if exe is None:
         if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
             warn(shape_engine.WORDS["setup_skip"].format(model=name))
-            return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
+            return None
         fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
     found = shape_engine.find(shape, full=False, title=title)
+    ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=found.root))
+    return found
+
+
+def shape_engine_step(a, gpu, vision):
+    """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
+    separate component next to the Strata engine (shape_engine_fetch); the run config names it ("component:strata-q4-lite") and every start looks it up.
+    Returns what engine_step returns."""
+    shape = SHAPE_ENGINE["shape"]
+    llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
+    found = shape_engine_fetch(a)
+    if found is None:
+        return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
     eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local", "shape": shape}
-    ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=eng))
     if vision != "none":
         if (eng / VEXE).is_file():
             ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
@@ -9822,6 +9832,9 @@ def mac_control_setup(a) -> int:
     ok(f"{model}, context {ctx}")
     family = MF.MAC_MODELS[model].get("family", "qwen")
     fam = FAMILIES[family]
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own Metal engine component (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
     tag = fam["tag"] + model
     stream = MF.streams(model, ram)
 
@@ -9831,7 +9844,12 @@ def mac_control_setup(a) -> int:
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None
     try:
-        found = EC.resolve(full=False)
+        if SHAPE_ENGINE.get("shape"):
+            found = shape_engine_fetch(a)
+            if found is None:
+                raise EC.EngineMissing("no engine for the model's shape", None)
+        else:
+            found = EC.resolve(full=False)
         ok(f"engine component: {found.version} ({found.platform}-{found.backend})")
         if vision != "none":
             reader = mac_reader(Path(found.root), vision)
@@ -9913,6 +9931,9 @@ def mac_control_setup(a) -> int:
             prep_lock.unlink(missing_ok=True)
     ok(f"model prepared: {pack}")
     use_mtp = MF.stream_mtp(stream, ram)
+    if use_mtp and MF.MAC_MODELS[model].get("no_mtp"):      # the model list says there is no draft layer: none is fetched (the Flash-Next head is not this model's)
+        say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
+        use_mtp = False
     mtp = (find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
     if stream and not use_mtp:

@@ -323,8 +323,7 @@ def _flash_next(setup, model) -> None:
         for key in keys.values():                        # its min_engine is about that engine, which the feed carries: the app must not compare it with the Strata engine
             setup.MODELS[key].pop("engine", None)
     setup.FAMILIES[model.id] = fam
-    if not model.shape:                                  # (a model of its own shape is not offered on a Mac yet: that install path has no shape engine step)
-        _mac_entries(model, keys)
+    _mac_entries(model, keys)
 
 
 def _mac_entries(model, keys: dict) -> None:
@@ -337,7 +336,7 @@ def _mac_entries(model, keys: dict) -> None:
         return
     for q in model.quants:
         key = keys[q.name]
-        mac_fit.MAC_MODELS[key] = {"shard1_gb": round(q.download_bytes / 1e9, 1), "tested": False, "family": model.id, "shards": len(q.files)}
+        mac_fit.MAC_MODELS[key] = {"shard1_gb": round(q.download_bytes / 1e9, 1), "tested": False, "family": model.id, "shards": len(q.files), "no_mtp": model.drafter == "none"}
         mac_fit.MAC_ABOUT[key] = q.about or f"{q.name} quantization"
     if model.id not in mac_fit.FEED_FAMILIES:
         mac_fit.FEED_FAMILIES.append(model.id)
