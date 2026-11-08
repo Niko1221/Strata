@@ -80,6 +80,37 @@ class SetupConfig:
     resident: bool
 
 
+def neutral_profile_if_other_shape(shipped, first_shard, pack, GGUFFile, say=print):
+    """The shipped expert profile ranks the (layer, expert) pairs of Flash-Next (48 layers x 512 experts; the Coder 48 x 256). The engine refuses a profile of another
+    shape ("it is a profile for a different artifact"), so a model of another shape (a new Qwen4 size from the feed) gets a NEUTRAL one in its pack folder: every pair
+    once, interleaved across the layers, nothing learned. The first run's `--expert-profile-save` can replace it. Returns the profile to use."""
+    import struct
+    try:
+        meta = GGUFFile(first_shard).metadata
+        n_layer = next(int(v) for k, v in meta.items() if k.endswith(".block_count"))
+        n_expert = next(int(v) for k, v in meta.items() if k.endswith(".expert_count"))
+        blob = Path(shipped).read_bytes()[:24]
+        _ver, have_l, have_e, _slots, _n = struct.unpack_from("<5I", blob, 4)
+        if blob[:4] == b"STRP" and (have_l, have_e) == (n_layer, n_expert):
+            return Path(shipped)
+        out = Path(pack) / f"expert-profile-{n_layer}x{n_expert}.bin"
+        if not out.exists():
+            ranked = [(layer, e) for e in range(n_expert) for layer in range(n_layer)]
+            table = [[-1] * n_expert for _ in range(n_layer)]
+            for slot, (layer, e) in enumerate(ranked):
+                table[layer][e] = slot
+            with open(out, "wb") as f:
+                f.write(b"STRP" + struct.pack("<5I", 1, n_layer, n_expert, len(ranked), len(ranked)))
+                for layer, e in ranked:
+                    f.write(struct.pack("<HH", layer, e))
+                for layer in range(n_layer):
+                    f.write(struct.pack("<%di" % n_expert, *table[layer]))
+        say("  This model's shape differs from Flash-Next, so a neutral expert profile is used.")
+        return out
+    except (OSError, ValueError, StopIteration, struct.error):
+        return Path(shipped)
+
+
 def config_for(inp: SetupInputs, lib) -> SetupConfig:
     # ---- the names the body uses: what setup decided (inp) and the helpers (lib)
     a = inp.a
@@ -180,8 +211,11 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     vision_tokens = lib.vision_tokens
     warn = lib.warn
     # ---- the moved lines (unchanged)
+    profile = ROOT / "data" / fam.get("profile", "expert-profile.bin")
+    if fam.get("feed") and shards:
+        profile = neutral_profile_if_other_shape(profile, shards[0], pack, GGUFFile, say)       # a feed model of another shape than the shipped profile's
     args = [*model_args,
-            "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
+            "--expert-profile", str(profile), "--expert-cache", "auto",
             "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor

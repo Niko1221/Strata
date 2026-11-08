@@ -10547,6 +10547,9 @@ def main() -> int:
         warn(f"--gguf-dir does not apply to {fam['title']}: its files are ready-made packs, not GGUF shards")
         a.gguf_dir = None
     ok(f"model: {fam['title']}")
+    if fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None:
+        a.mtp = "off"                                  # the feed says this model has no draft layer: the Flash-Next one (fetched below for every qwen4exp model) is not its own
+        say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
     if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
         warn(nvfp4_cpu_note(avx2, avx512))
     if fam.get("license"):
@@ -10919,7 +10922,7 @@ def main() -> int:
     ok("model files present")
     mmproj = Path(a.models_dir) / fam.get("mmproj", MMPROJ)
     if not mmproj.exists():                            # an earlier install's copy (the same file for every family)
-        mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
+        mmproj = find_in(roots, f"models/{fam.get('mmproj', MMPROJ)}") or mmproj      # a feed model without a picture reader has no fam["mmproj"]
     if vision != "none":
         near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (fam.get("mmproj_sha256") or ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
         if near is not None:                           # the person's own folder (or the one above it) has the picture file: used where it is

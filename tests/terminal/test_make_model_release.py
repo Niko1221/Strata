@@ -73,13 +73,33 @@ class Plan(unittest.TestCase):
         self.assertEqual(p["case"], "A")
         names = {c["name"] for c in p["changed"]}
         self.assertFalse(any(n.startswith(("strata-engine-", "strata-dsv41-", "strata-control-")) for n in names))
-        self.assertTrue({"strata-feed.json", "strata-feed.json.sig", "SHA256SUMS.txt", "latest.json", "Strata-0.2.12-windows-x64-setup.exe"} <= names)
+        self.assertTrue({"strata-feed.json", "strata-feed.json.sig", "SHA256SUMS.txt"} <= names)
+        # G12 of the Q4-P8 rehearsal: a feed model needs no app rebuild (the app lists it from the feed), so case A plans no app and no Mac step
+        self.assertFalse(names & {"latest.json", "Strata-0.2.12-windows-x64-setup.exe"})
+        self.assertFalse(any("App text" in s["what"] or "Mac" in s["what"] for s in p["steps"]))
         kept = {k["name"] for k in p["kept"]}
-        self.assertEqual(kept, {n for n in PREV if n.startswith(("strata-engine-", "strata-dsv41-", "strata-control-"))})
+        self.assertTrue({n for n in PREV if n.startswith(("strata-engine-", "strata-dsv41-", "strata-control-", "Strata-"))} <= kept)
         self.assertFalse(any("Build the Qwen engine" in s["what"] for s in p["steps"]))
         self.assertEqual(p["entry"]["family"], "qwen35moe")
         self.assertEqual(p["entry"]["hf"], {"repo": "x/y", "revision": "abc"})
         self.assertIs(p["entry"]["pictures"], False)               # no picture reader next to this set
+
+    def test_case_a_with_app_plans_the_app_steps_when_asked(self):
+        code, out, err = run(self.base(self.a, "--json", "--with-app"))
+        self.assertEqual(code, 0, err)
+        p = json.loads(out)
+        self.assertTrue({"latest.json", "Strata-0.2.12-windows-x64-setup.exe"} <= {c["name"] for c in p["changed"]})
+        self.assertTrue(any("App text" in s["what"] for s in p["steps"]))
+
+    def test_the_plan_names_the_boxes_of_the_rehearsal(self):
+        code, out, err = run(self.base(self.a, "--case", "B", "--engine-version", "0.1.58"))
+        self.assertEqual(code, 0, err)
+        for good in ("l620", "p1006", "owner PC", "m1002"):
+            self.assertIn(good, out)
+        for stale in ("z440", "p1004", "m1001"):
+            self.assertNotIn(stale, out)
+        self.assertIn("STRATA_GEOMETRY_FILE", out)
+        self.assertIn("--from-gguf", out)
 
     def test_case_b_rebuilds_engines_and_controls_at_the_new_version(self):
         code, out, err = run(self.base(self.a, "--json", "--case", "B", "--engine-version", "0.1.58"))
@@ -140,6 +160,29 @@ class Plan(unittest.TestCase):
         code, _, err = run(self.base(self.a, "--write", str(out)))      # not an empty folder
         self.assertNotEqual(code, 0)
 
+    def test_write_makes_an_entry_in_the_feeds_schema_and_build_feed_refuses_what_is_unfilled(self):
+        import feed_tool
+        from strata_control import feed as feedmod
+        out = Path(self.tmp.name) / "outfeed"
+        rev = "a" * 40
+        code, _, err = run(self.base(self.a, "--write", str(out), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072"))
+        self.assertEqual(code, 0, err)
+        path = out / "models" / "m1.entry.json"
+        entry = json.loads(path.read_text())
+        self.assertIn("[FILL", json.dumps(entry))                         # the values the report cannot know are left to a person
+        with self.assertRaises(SystemExit) as cm:
+            feed_tool.build_feed(Path(self.tmp.name) / "rel0", key={}, sequence=1, models_dir=out / "models")
+        self.assertIn("FILL", str(cm.exception))
+        out2 = Path(self.tmp.name) / "outfeed2"
+        code, _, err = run(self.base(self.a, "--write", str(out2), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072", "--about", "one sentence",
+                                     "--licence", "Apache 2.0", "--licence-url", "https://example.org/licence", "--quant", "Q4", "--quant-about", "4-bit", "--ram-gb", "24", "--min-engine", "0.1.58"))
+        self.assertEqual(code, 0, err)
+        filled = json.loads((out2 / "models" / "m1.entry.json").read_text())
+        self.assertNotIn("[FILL", json.dumps(filled).replace("[FILL: sha256]", ""))
+        for f in filled["quants"][0]["files"]:
+            f["sha256"] = f["sha256"] if len(f["sha256"]) == 64 else "0" * 64
+        feedmod._model_entry(filled)                                     # strata_control/feed.py keeps it
+
     def test_the_templates_in_phaseA_tests_have_what_the_script_fills(self):
         d = Path(r"C:\Users\AI-Server\Desktop\Strata\phaseA-tests\qwen4\templates")
         if not d.is_dir():
@@ -149,7 +192,7 @@ class Plan(unittest.TestCase):
         self.assertEqual(code, 0, err)
         for name in ("RELEASE-NOTES.md", "MODEL-CARD.md", "CHECKLIST.md"):
             text = (out / name).read_text(encoding="utf-8")
-            self.assertIn("DRAFT", text.splitlines()[0])
+            self.assertRegex(text.splitlines()[0], "DRAFT|WORKING DOCUMENT")   # the checklist is a working document (not user-facing), the other two are drafts for approval
             self.assertNotIn("{{", text, name)                          # every key the templates use is one the script fills
         notes = (out / "RELEASE-NOTES.md").read_text(encoding="utf-8")
         self.assertTrue(notes.rstrip().endswith('height="50"></a>'))      # the coffee button is last

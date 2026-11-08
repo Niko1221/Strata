@@ -2553,9 +2553,19 @@ class Runner:
         text = "Speed: " + S.speed_words(speed[0], speed[1])
         return text + (". " + S.FASTER_NOTE if speed[0] == "faster" else "")
 
+    def feed_without_draft_layer(self) -> bool:
+        """A model of the signed feed whose entry says `drafter: none` (strata_control/feed_models.py puts it on the family): nothing drafts, whatever Auto would pick for a Flash-Next model."""
+        try:
+            fam = self.catalog.tables()[1].get(self.s.family) or {}
+            return bool(fam.get("feed")) and fam.get("drafter") == "none"
+        except Exception:                                    # noqa: BLE001 - an unreadable table is only the generic plan line
+            return False
+
     def drafting_plan_line(self) -> str:
         """The drafting line of --plan: what drafts, or why not what was asked for. Nothing is changed or downloaded."""
         from strata_control import drafting
+        if self.feed_without_draft_layer():                  # the model list says this model has no draft layer: setup fetches none and the engine starts without a drafter
+            return drafting.summary_line(drafting.Decision("off", "off"))
         if self.multi_file():                                # DeepSeek drafts with its own DSpark drafter (the --dspark auto the config writes), not MTP
             if sys.platform == "darwin":
                 return "Drafting: off (DeepSeek's drafter was not faster on a Mac)"
