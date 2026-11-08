@@ -27,6 +27,7 @@ namespace {
 
 constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
 constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
+constexpr int NHQ = strata::core::kCompiledGeometry.n_head, NKVH = strata::core::kCompiledGeometry.n_head_kv;   // query heads (24) and KV heads (2), head width 256
 constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
 constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
 
@@ -1931,9 +1932,9 @@ __dpct_inline__ void split_q_kernel(const float *__restrict__ qf,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    q[i] = qf[t * 24 * 512 + h * 512 + d];
+    if (i >= T * NHQ * 256) return;
+    const int64_t t = i / (NHQ * 256), h = (i / 256) % NHQ, d = i % 256;
+    q[i] = qf[t * NHQ * 512 + h * 512 + d];
 }
 __dpct_inline__ void gate_attn_kernel(const float *__restrict__ a,
                                       const float *__restrict__ qf,
@@ -1943,11 +1944,11 @@ __dpct_inline__ void gate_attn_kernel(const float *__restrict__ a,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
+    if (i >= T * NHQ * 256) return;
+    const int64_t t = i / (NHQ * 256), h = (i / 256) % NHQ, d = i % 256;
     o16[t * ld16 + h * 256 + d] =
         hf(a[i] * (1.0f / (1.0f + sycl::native::exp(
-                                      -qf[t * 24 * 512 + h * 512 + 256 + d]))));
+                                      -qf[t * NHQ * 512 + h * 512 + 256 + d]))));
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
@@ -1964,7 +1965,7 @@ kv_append_kernel(const float *__restrict__ K, const float *__restrict__ V,
     const int kvh = item_ct1.get_group(1), g = item_ct1.get_group(0) >> 1;
     const bool is_v = (item_ct1.get_group(0) & 1) != 0;
     const int d = g * 64 + item_ct1.get_local_id(2);
-    const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
+    const float x = (is_v ? V : K)[t * (NKVH * 256) + kvh * 256 + d];
     const int64_t pos = pos0 + t;
     const int64_t page = table[pos / page_size];
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
@@ -3092,7 +3093,7 @@ void split_q(const float* q_full, float* q, int64_t T, void* stream) {
 
         strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->template parallel_for<dpct_kernel_name<class split_q_kernel_83c16c>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * 24 * 256)) *
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * NHQ * 256)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -3108,12 +3109,12 @@ void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t 
 
         strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
-                auto ld16_ld16_ct4 = ld16 > 0 ? ld16 : 24 * 256;
+                auto ld16_ld16_ct4 = ld16 > 0 ? ld16 : NHQ * 256;
 
                 cgh.parallel_for<
                     dpct_kernel_name<class gate_attn_kernel_3fc329>>(
                     sycl::nd_range<3>(
-                        sycl::range(1, 1, blocks_for(T * 24 * 256)) *
+                        sycl::range(1, 1, blocks_for(T * NHQ * 256)) *
                             sycl::range(1, 1, 256),
                         sycl::range(1, 1, 256)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
