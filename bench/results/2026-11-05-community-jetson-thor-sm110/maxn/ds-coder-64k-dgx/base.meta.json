@@ -1,0 +1,36 @@
+{
+ "tag": "base",
+ "config": "/home/sedanrobot2/.local/state/strata/launch/coder64k.json",
+ "cells": [
+  [
+   16384,
+   0.0,
+   256
+  ],
+  [
+   32768,
+   0.0,
+   256
+  ]
+ ],
+ "rounds": 2,
+ "env": {},
+ "engine": "/home/sedanrobot2/thor-serve/components-tuned/engine-dsv41/0.1.56-linux-aarch64-cuda-cuda13/strata-dsv41",
+ "args": [
+  "--pack",
+  "/home/sedanrobot2/.local/share/strata/Strata-data/packs/deepseek-v4.1-flash-ista-das-coder",
+  "--max-context",
+  "65536",
+  "--eos",
+  "1",
+  "--vision",
+  "off",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--prefill-chunk",
+  "16384"
+ ],
+ "started": "2026-11-08T00:37:35"
+}
