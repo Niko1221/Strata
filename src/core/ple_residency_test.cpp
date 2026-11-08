@@ -107,6 +107,36 @@ int main() {
               "Buffers/SReclaimable/Shmem/Dirty are optional");
         check(!meminfo_free_and_droppable("MemFree: 1 kB\n", free_b, drop_b), "no Cached line: unknown, no credit");
         check(!meminfo_free_and_droppable("Cached: 1 kB\n", free_b, drop_b), "no MemFree line: unknown, no credit");
+        // the loopholes a review of #5531 found: locked file pages (the PLE table's mlock) sit in Cached but the kernel cannot
+        // drop them (MemAvailable leaves them out); reserved huge pages are counted free but spoken for; only a 2 MiB pool
+        // is the arena's pool
+        check(meminfo_free_and_droppable("MemFree: 10 kB\nCached: 4000 kB\nBuffers: 5 kB\nMlocked: 3000 kB\nDirty: 2 kB\nShmem: 30 kB\n",
+                                         free_b, drop_b) &&
+                  drop_b == (4000 + 5 - 30 - 2 - 3000) * 1024,
+              "Mlocked pages are not droppable");
+        check(meminfo_free_and_droppable("MemFree: 1 kB\nCached: 100 kB\nMlocked: 5000 kB\n", free_b, drop_b) && drop_b == 0,
+              "Mlocked above the cache floors at 0");
+        check(meminfo_free_and_droppable("MemFree: 1 kB\nCached: 1 kB\nHugePages_Free: 16384\nHugePages_Rsvd: 16000\nHugepagesize: 2048 kB\n",
+                                         free_b, drop_b, &huge_b) &&
+                  huge_b == 384ull * 2048 * 1024,
+              "reserved huge pages are not free for the arena");
+        check(meminfo_free_and_droppable("MemFree: 1 kB\nCached: 1 kB\nHugePages_Free: 16\nHugePages_Rsvd: 20\nHugepagesize: 2048 kB\n",
+                                         free_b, drop_b, &huge_b) &&
+                  huge_b == 0,
+              "more reserved than free: none");
+        check(meminfo_free_and_droppable("MemFree: 1 kB\nCached: 1 kB\nHugePages_Free: 64\nHugepagesize: 1048576 kB\n",
+                                         free_b, drop_b, &huge_b) &&
+                  huge_b == 0,
+              "a 1 GiB default pool is not the 2 MiB pool the arena maps");
+        // #4051's other shape: an engine still exiting holds the PLE table mlocked.  Cached has it, MemAvailable does not.
+        {
+            const uint64_t need_x = 47ull * GiB;
+            check(meminfo_free_and_droppable("MemFree: " + std::to_string(2 * GiB / 1024) + " kB\nCached: " + std::to_string(55 * GiB / 1024) +
+                                             " kB\nMlocked: " + std::to_string(27 * GiB / 1024) + " kB\n",
+                                             free_b, drop_b) &&
+                      !arena_shortfall_served_by_file_cache(need_x, free_b, drop_b),
+                  "a locked PLE table in the cache does not serve the arena: keep the fallback");
+        }
     }
     // --ram-keep-gib W (R5070): ONE setting for both RAM decisions at the start.  The arena is used only if W GiB stay available after it;
     // otherwise the RAM copy leaves max(W, the safety headroom: 8 GiB Windows, 4 GiB elsewhere), unless STRATA_RESIDENT_HEADROOM_GIB is set.

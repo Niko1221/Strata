@@ -6061,8 +6061,19 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             if (verdict == ArenaRamVerdict::FallBack && hm.cgroup_limit == ~uint64_t{0} && !file_cache_off) {
                 if (std::ifstream info("/proc/meminfo"); info) {
                     const std::string text((std::istreambuf_iterator<char>(info)), std::istreambuf_iterator<char>());
-                    if (meminfo_free_and_droppable(text, memfree_b, droppable_b, &huge_free_b))
+                    if (meminfo_free_and_droppable(text, memfree_b, droppable_b, &huge_free_b)) {
+                        // the pool serves the arena only if the MAP_HUGETLB try is made (STRATA_NO_LARGEPAGES skips it) and
+                        // the pool holds the whole mapping, which is the padded arena plus the spare blob, not `want + blob`
+                        uint64_t map_bytes = want + (uint64_t) blob;
+                        if (pin_by_need_ && !pin_pairs_.empty() && !arena_mmap && shared_arena_file.empty()) {
+                            uint64_t at = 0;
+                            for (int64_t l = 0; l < n_layers; ++l)
+                                at += ((lay.blob_bytes(l) + 4095) & ~(uint64_t) 4095) * (uint64_t) n_expert;
+                            map_bytes = at + (uint64_t) blob;
+                        }
+                        if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr || huge_free_b < map_bytes) huge_free_b = 0;
                         file_cache_arena = arena_shortfall_served_by_file_cache(need, memfree_b, droppable_b, huge_free_b);
+                    }
                 }
             }
             if (file_cache_arena) {

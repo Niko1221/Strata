@@ -93,16 +93,19 @@ inline bool arena_shortfall_served_by_file_cache(uint64_t need, uint64_t free_by
 }
 
 /// #5327: MemFree and the file pages the kernel can drop for the arena without touching swap or any program's anonymous
-/// memory, from a /proc/meminfo text: MemFree, and Cached + Buffers + SReclaimable - Shmem - Dirty, floored at 0
-/// (Shmem is swap-backed and counted inside Cached; Dirty needs a writeback before its pages are reusable).
-/// `huge_free_bytes` (optional) gets HugePages_Free x Hugepagesize, the reserved pool the arena's MAP_HUGETLB try takes.
+/// memory, from a /proc/meminfo text: MemFree, and Cached + Buffers + SReclaimable - Shmem - Dirty - Mlocked, floored at 0
+/// (Shmem is swap-backed and counted inside Cached; Dirty needs a writeback before its pages are reusable; Mlocked pages
+/// are file pages too - the PLE table's mlock is a mapping of the model file, the same for a program that is still
+/// exiting - but the kernel cannot drop them: MemAvailable leaves them out, so this must as well).
+/// `huge_free_bytes` (optional) gets (HugePages_Free - HugePages_Rsvd) x Hugepagesize, the pool the arena's MAP_HUGETLB try
+/// takes (pages another mapping has reserved are spoken for), and only where Hugepagesize is the 2 MiB the arena asks for.
 /// False when MemFree or Cached is absent (no credit: the refusal stands).
 inline bool meminfo_free_and_droppable(const std::string& meminfo_text, uint64_t& free_bytes, uint64_t& droppable_file_bytes,
                                        uint64_t* huge_free_bytes = nullptr) {
     free_bytes = droppable_file_bytes = 0;
     if (huge_free_bytes) *huge_free_bytes = 0;
     bool have_free = false, have_cached = false;
-    uint64_t cached = 0, buffers = 0, sreclaimable = 0, shmem = 0, dirty = 0, huge_pages = 0, huge_size = 0;
+    uint64_t cached = 0, buffers = 0, sreclaimable = 0, shmem = 0, dirty = 0, mlocked = 0, huge_pages = 0, huge_rsvd = 0, huge_size = 0;
     std::istringstream in(meminfo_text);
     std::string line;
     while (std::getline(in, line)) {
@@ -118,16 +121,19 @@ inline bool meminfo_free_and_droppable(const std::string& meminfo_text, uint64_t
         else if (key == "SReclaimable:") sreclaimable = bytes;
         else if (key == "Shmem:") shmem = bytes;
         else if (key == "Dirty:") dirty = bytes;
+        else if (key == "Mlocked:") mlocked = bytes;
         else if (key == "HugePages_Free:") huge_pages = value;
+        else if (key == "HugePages_Rsvd:") huge_rsvd = value;
         else if (key == "Hugepagesize:") huge_size = bytes;
     }
     if (!have_free || !have_cached) return false;
-    const uint64_t held = shmem > UINT64_MAX - dirty ? UINT64_MAX : shmem + dirty;
+    const uint64_t held_a = shmem > UINT64_MAX - dirty ? UINT64_MAX : shmem + dirty;
+    const uint64_t held = held_a > UINT64_MAX - mlocked ? UINT64_MAX : held_a + mlocked;
     droppable_file_bytes = cached + buffers + sreclaimable > held ? cached + buffers + sreclaimable - held : 0;
-    if (huge_free_bytes && huge_pages > UINT64_MAX / (huge_size > 0 ? huge_size : 1))
-        *huge_free_bytes = UINT64_MAX;
-    else if (huge_free_bytes)
-        *huge_free_bytes = huge_pages * (huge_size > 0 ? huge_size : 0);
+    if (huge_free_bytes && huge_size == (2ull << 20)) {   // the arena maps MAP_HUGE_2MB: another pool size is not its pool
+        const uint64_t pages = huge_pages > huge_rsvd ? huge_pages - huge_rsvd : 0;
+        *huge_free_bytes = pages > UINT64_MAX / huge_size ? UINT64_MAX : pages * huge_size;
+    }
     return true;
 }
 
