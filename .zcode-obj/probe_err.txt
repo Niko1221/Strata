@@ -1,3 +1,0 @@
-grammar text bytes=1462
-pieces parsed=248320
-grammar_init OK rules=47 stacks=4

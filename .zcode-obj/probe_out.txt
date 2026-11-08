@@ -1,4 +1,0 @@
-init: stacks=4 [r=46 elem=1 CHAR:60] [r=28 elem=15 CHAR:96] [r=28 elem=12 CHAR:60] [r=28 elem=0 CHAR_NOT:47] | allowed=135049 first=0 words=7760
-after 248069: stacks=1 [r=46 elem=9 CHAR:10] | allowed=2 first=198 words=7760
-after 198: stacks=3 [r=42 elem=4 CHAR:10] [r=42 elem=2 CHAR:9] [r=42 elem=0 CHAR:32] | allowed=7 first=198 words=7760
-accept 91 THREW: Unexpected empty grammar stack after accepting piece: | (91)

@@ -1,6 +1,0 @@
-root ::= reason "x
-" answer
-answer ::= ws "z"
-ws ::= " " | "
-"
-reason ::= [^y] reason | ""

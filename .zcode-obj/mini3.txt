@@ -1,6 +1,0 @@
-root ::= "x\n" answer
-answer ::= ws ( fenced | answer-root )
-ws ::= " " | "\t" | "\n"
-fenced ::= "```json" ws answer-root ws "```"
-answer-root ::= "{" answer-space "}"
-answer-space ::= | " " | "\n"{1,2} [ \t]{0,20}

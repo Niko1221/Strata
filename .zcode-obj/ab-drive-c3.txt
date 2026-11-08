@@ -1,5 +1,0 @@
-[07:44:14] arms: ['C3']
-[07:44:14] arms run one at a time so only one engine holds the GPU
-[07:44:23] GPU free now: 46830 MiB
-[07:44:23] === arm C3: .zcode-obj\ab-C.json ===
-EXIT=127

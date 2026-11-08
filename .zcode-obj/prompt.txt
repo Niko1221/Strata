@@ -1,5 +1,0 @@
-请详细对比分析 Transformer 架构中Multi-Head Attention 与 LinearAttention 在计算复杂度、显存占用及长序列建模能力上的差异。要求：
-1.分别给出两者的时间复杂度和空间复杂度数学推导；
-2.用Markdown表格总结核心区别；
-3.列举至少3个LinearAttention 的代表性变体模型并简述其改进思路；
-4.全程使用中文，保持技术严谨性，不要输出任何寒喧或过渡语句。

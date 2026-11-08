@@ -1,5 +1,0 @@
-he old paths. The
-GBNF feature surface is exactly the vendored llama.cpp converter's (commit `3cf03257`). The per-step mask cost
-on the RTX 4090 rig: TBD-acceptance (filled in by the acceptance run).
-
-### API r
