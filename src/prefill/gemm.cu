@@ -1160,6 +1160,20 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
 }
 
+#if !defined(__HIPCC__)
+namespace {
+__global__ void widen_f16_rows_kernel(const __half* __restrict__ h, float* __restrict__ y, int64_t rows, int64_t n,
+                                      int64_t ldy, bool add) {
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < rows * n; i += (int64_t) gridDim.x * blockDim.x) {
+        const int64_t r = i / n, c = i - r * n;
+        const float v = __half2float(h[i]);
+        float* d = y + r * ldy + c;
+        *d = add ? *d + v : v;
+    }
+}
+}  // namespace
+#endif
+
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                float beta) {
     if (T <= 0 || N <= 0) return;
@@ -1217,6 +1231,43 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
 #endif
 #if defined(__HIPCC__)
     if (rdna2_sgemm(X, W, Y, T, N, K, ldy, beta, false)) return;
+#endif
+#if !defined(__HIPCC__)
+    // STRATA_GEMM_F16ACC=1 (tuning, opt-in, CHANGES THE NUMERICS): FP16 accumulation (CUBLAS_COMPUTE_16F) - GeForce Ada
+    // runs FP16 tensor products with an FP16 accumulator at twice the FP32-accumulator rate.  The FP16 result goes to a
+    // scratch slice of at most 2048 rows and is widened into Y (plus beta * Y).
+    static const bool f16acc = [] { const char* v = std::getenv("STRATA_GEMM_F16ACC"); return v != nullptr && v[0] == '1'; }();
+    static const int64_t f16acc_min_t = [] { const char* v = std::getenv("STRATA_GEMM_F16ACC_MIN_T"); return v ? (int64_t) std::atoll(v) : (int64_t) 64; }();
+    if (f16acc && T >= f16acc_min_t && (beta == 0.0f || beta == 1.0f)) {
+        const int64_t rows = std::min<int64_t>(T, 2048);
+        static __half* hbuf = nullptr;
+        static int64_t hbuf_elems = 0;
+        bool ok = true;
+        if (hbuf_elems < rows * N) {
+            cudaStreamSynchronize((cudaStream_t) stream_);
+            if (hbuf) cudaFree(hbuf);
+            hbuf = nullptr;
+            hbuf_elems = 0;
+            if (cudaMalloc((void**) &hbuf, (size_t) (rows * N) * sizeof(__half)) == cudaSuccess) hbuf_elems = rows * N;
+            else { cudaGetLastError(); ok = false; }
+        }
+        if (ok) {
+            const __half h1 = __float2half(1.0f), h0 = __float2half(0.0f);
+            for (int64_t t0 = 0; t0 < T && ok; t0 += rows) {
+                const int64_t n = std::min<int64_t>(rows, T - t0);
+                const cublasStatus_t st = cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) n,
+                                                       (int) K, &h1, W, CUDA_R_16F, (int) K, X + t0 * K, CUDA_R_16F, (int) K,
+                                                       &h0, hbuf, CUDA_R_16F, (int) N, CUBLAS_COMPUTE_16F, CUBLAS_GEMM_DEFAULT);
+                if (st != CUBLAS_STATUS_SUCCESS && t0 > 0) ck(st, "cublasGemmEx f16acc");   // part of Y written: no fallback
+                if (st != CUBLAS_STATUS_SUCCESS) { ok = false; break; }
+                widen_f16_rows_kernel<<<(unsigned) std::min<int64_t>((n * N + 255) / 256, 65535), 256, 0,
+                                        (cudaStream_t) stream_>>>(hbuf, Y + t0 * ldy, n, N, ldy, beta != 0.0f);
+            }
+            if (ok) { STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16acc"); return; }
+            static bool said = false;
+            if (!said) { said = true; std::fprintf(stderr, "prefill gemm: STRATA_GEMM_F16ACC failed, FP32 accumulation\n"); }
+        }
+    }
 #endif
 #if !defined(__HIPCC__)
     const auto f16_gemm = [&](cublasGemmAlgo_t algo) {
