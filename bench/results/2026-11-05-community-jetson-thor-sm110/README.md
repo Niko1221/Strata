@@ -13,7 +13,7 @@ issue #4559). Terminal: the repository's own (`strata.py`, dev checkout at `5819
 | Qwen3.8-Flash-Next | ISTA-DAS IQ3_S (84 GB) | **yes** - 4 slots, context 32768 | standard suite: **sanity 12/12** | below |
 | Qwen3.6-35B-A3B | Unsloth MTP **UD-Q4_K_XL** (22.9 GB) | **yes** - 4 slots, context 32768 | standard suite: **sanity 12/12** | below |
 | Qwen3.6-35B-A3B | UD-Q6_K_XL, Q8_0 | not installed: the same path and file layout as UD-Q4_K_XL, but each pack is a further 33/38 GB download and this machine's link runs ~1.3 MB/s | - | - |
-| DeepSeek-V4.1-Flash-1017 | any ISTA-DAS set (191-274 GB) | **engine/feed/fit verified; serving not run** (see below) | - | - |
+| DeepSeek-V4.1-Flash-1017 | ISTA-DAS **Coder** set (`...-GSQ-RCO-Coder-IQ2_XXS`, 191 GB download incl. shared base) | **yes** - served at 8K and 64K context (its own engine package, experts split GPU/CPU lane) | smoke: arithmetic and long completions correct; the qwen-specific 12-check protocol is not its protocol | below (dgx-bench cells, not the standard suite) |
 
 Details worth recording:
 
@@ -29,13 +29,21 @@ Details worth recording:
   not). Same root cause as the `expert_cache_segmented_test` miss on this machine.
 - DeepSeek-V4.1-Flash: its engine package (`strata-dsv41` 0.1.56, `sm_121 + sm_110`) builds, verifies
   (`package_engine.py --verify`, `binary_deps.py`), is selected by `strata update` against a feed carrying it,
-  and prints its version inside the official CUDA 13.0 container on the Thor. `strata launch --family
-  deepseek41 --model ista-das-coder --plan` on this machine says the set **fits**: "About 66 GB of the 66 GB
-  of experts stay in it beside 6.1 GB of dense weights and 12 GB kept for the system; the other 0 GB are read
-  from the SSD" - every expert lives in the one 123 GB pool. What was not done is the run itself: the
-  smallest set is 191 GB (Coder; others 239-274 GB) and this machine's measured download link (HF, hf-mirror
-  and ModelScope alike) is ~1.3 MB/s, i.e. 38-56 hours of downloading. Serving and speed are therefore
-  **not run**, not failed.
+  and prints its version inside the official CUDA 13.0 container on the Thor. The fit probe said the set fits
+  and it did: the Coder set (191 GB incl. the shared base; the link had improved to tens of MB/s by 2026-11-07,
+  download plus pack conversion in about three hours) served on the Thor with no trouble. Its own placement
+  line at load: `ds4: CUDA0 layers [0, 39] + head: weights 5.70 GB, experts 35.29 GB (4054 of 7680 in VRAM),
+  caches 0.01 GB`; the other 3,626 routed experts (31.3 GB) run in place on the CPU lane. Memory is not tight:
+  about 41 GB of pack, roughly 41 GB resident beside the KV, and the CPU lane reads the model's files through
+  the page cache. One note from the runs: the 32K cell needs a context above 32768 (the calibrated 32,774-token
+  prompt overflows a 32768 context by six tokens and the server correctly answers 400), so the 16K/32K cells
+  ran at 64K context. Speed cells, one protocol of its own (dgx_bench, T=0, medians of 2): 8K context cold
+  expert cache `maxn/ds-coder-8k.md` (short chat 87.6 prompt / 8.8 decode, 4K prompt 182.7 / decode 10.2,
+  TTFT 22.2 s); 64K context warmer cache `maxn/ds-coder-64k.md` (16K prompt 330.0 / decode 17.2, 32K prompt
+  356.4 / decode 14.7, TTFT 92.2 s). The CPU-lane split is why its decode sits near 9-17 tok/s against the
+  13-23 tok/s the Spark guide prints for its resident-heavy DeepSeek placement: this set keeps 53% of its
+  experts on the GPU. Correctness smoke: `17 crates of 23 tools` answered `391`; the qwen-thinking sanity
+  protocol is not this model's protocol, so its 12 checks were not applied.
 
 ## Speed: the standard protocol suite (`strata bench run`, protocol `strata-qwen38-thinking-v1-draft.1`)
 
@@ -223,5 +231,5 @@ between the container and host binaries.
 ## Not covered here
 
 Vision (this package ships no picture reader), DFlash2 as a default (measured slower than MTP here, above),
-DeepSeek serving (above), 128K context on this machine (above), more than one module, a long soak, and
+DeepSeek concurrency and Q6/Q8 packs for Qwen3.6 (bandwidth-limited), 128K context on this machine (above), more than one module, a long soak, and
 
