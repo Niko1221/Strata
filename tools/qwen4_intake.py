@@ -379,12 +379,12 @@ BACKEND_LISTS = {
              "mmvq": MMVQ, "embed_extra": {30, 14}},
     # sycl/src/kernels/cuda/iq_kernels.dp.cpp (the SYCL port; it has no NVFP4 or the Gyro-L pair-trellis types)
     "sycl": {"gu": {16, 17, 18, 21, 22, 23, 29, 42, 12, 13, 14, 6, 2, 3, 8, 144, 145},
-             "down": {20, 23, 42, 7, 6, 2, 3, 8, 144, 146},
+             "down": {20, 23, 42, 7, 6, 2, 3, 8, 13, 14, 144, 146},
              "is_iq": {144, 145, 146, 16, 17, 18, 20, 21, 22, 23, 29, 42, 11, 12, 13, 14, 7, 6, 2, 3, 8},
              "mmvq": MMVQ, "embed_extra": {30}},
     # metal/src/engine/iq_host.cpp (host helpers; the kernels are mac-kern's, metal/src/engine/window.cpp: not audited)
     "metal": {"gu": {16, 17, 18, 21, 22, 23, 29, 12, 13, 14, 42, 144, 145, 8},
-              "down": {23, 42, 144, 146, 20, 7, 6, 8},
+              "down": {23, 42, 144, 146, 20, 7, 6, 8, 11, 12, 13, 14, 21},
               "is_iq": {16, 17, 18, 20, 21, 22, 23, 29, 42, 11, 12, 13, 14, 7, 6, 2, 3, 8, 144, 145, 146},
               "mmvq": MMVQ, "embed_extra": {30}},
 }
