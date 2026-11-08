@@ -28,7 +28,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from strata_control import signing, transfer
+from strata_control import shape_engine, signing, transfer
 from strata_control.targets import BACKEND_MATRIX, host_platform
 
 SCHEMA_VERSION = 1
@@ -108,6 +108,7 @@ class EnginePackage:
     manifest_sha256: str
     installed_bytes: int
     notes: str = ""
+    shape: str = ""                 # the engine of one model shape (feed member ``shape_engines``, strata_control/shape_engine.py): its compiled geometry's name; "" for the others
 
     @property
     def label(self) -> str:
@@ -117,7 +118,8 @@ class EnginePackage:
         return {"version": self.version, "platform": self.platform, "backend": self.backend, "variant": self.variant,
                 "archs": list(self.archs), "min_driver": dict(self.min_driver), "min_runtime": self.min_runtime,
                 "build_id": self.build_id, "size": self.size, "installed_bytes": self.installed_bytes,
-                "format": self.format, "url": self.url, "sha256": self.sha256, "manifest_sha256": self.manifest_sha256}
+                "format": self.format, "url": self.url, "sha256": self.sha256, "manifest_sha256": self.manifest_sha256,
+                **({"shape": self.shape} if self.shape else {})}
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,11 @@ class FeedModel:
     def label(self) -> str:
         return f"model {self.id}"
 
+    @property
+    def shape(self) -> str | None:
+        """The model shape whose own engine runs it (``q4_lite``), or None: it runs on the Strata engine."""
+        return shape_engine.shape_of_family(self.family)
+
     def to_dict(self) -> dict:
         out = {"id": self.id, "title": self.title, "by": self.by, "about": self.about, "licence": self.licence, "licence_url": self.licence_url,
                "family": self.family, "repo": self.repo, "revision": self.revision, "quants": [q.to_dict() for q in self.quants],
@@ -287,6 +294,9 @@ class Feed:
     models_dropped: tuple[str, ...] = ()
     #: the detached signature that went with ``raw`` (fetch fills it for a feed that has models: the cache of the model list keeps both)
     signature: bytes = b""
+    #: the engines of model shapes (feed member ``shape_engines``, EnginePackage with ``shape``): a separate component for each shape, fetched when a model of that shape is
+    #: chosen (strata_control/shape_engine.py). Kept out of ``engine`` so that `strata update` never picks one as THE engine. Older Controls ignore the member.
+    shape_engines: tuple[EnginePackage, ...] = ()
 
     def url(self, ref: str) -> str:
         return transfer.resolve_ref(transfer.base_of(self.source), ref)
@@ -346,6 +356,19 @@ def _engine_package(item: dict, skipped: list | None = None) -> EnginePackage | 
                          size=size, sha256=_hex(item.get("sha256"), where),
                          manifest_sha256=_hex(item.get("manifest_sha256"), where), installed_bytes=installed,
                          notes=str(item.get("notes") or ""))
+
+
+def _shape_engine_package(item: dict, skipped: list | None = None) -> EnginePackage | None:
+    """An entry of ``shape_engines``: an engine entry that names its model shape. An entry whose shape is not a name this Control accepts is left out like any entry of a kind it
+    does not know (a newer Strata may use it)."""
+    if not isinstance(item, dict):
+        raise FeedError("a shape engine entry in the feed is not an object")
+    shape = item.get("shape")
+    if not shape_engine.valid(shape):
+        _skipping(skipped, f"an engine for the model shape {shape!r}", "a shape name this Strata does not accept")
+        return None
+    pkg = _engine_package(item, skipped)
+    return dataclasses.replace(pkg, shape=shape) if pkg is not None else None
 
 
 def _control_package(item: dict, version: str, skipped: list | None = None) -> ControlPackage | None:
@@ -424,6 +447,8 @@ def _model_entry(item) -> FeedModel:
     family = _need(item, "family", str, where)
     if not _MODEL_FAMILY.fullmatch(family):
         raise FeedError(f"the feed's {where} has no valid family")
+    if family.startswith(shape_engine.FAMILY_PREFIX) and shape_engine.shape_of_family(family) is None:
+        raise FeedError(f"the feed's {where} names a model shape that is not a valid name ({family[len(shape_engine.FAMILY_PREFIX):]!r})")
     repo = _need(item, "repo", str, where)
     revision = _need(item, "revision", str, where)
     if not _MODEL_REPO.fullmatch(repo) or ".." in repo:
@@ -593,6 +618,18 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             if ident in seen:
                 raise FeedError(f"the feed lists DeepSeek engine {pkg.label} twice")
             seen.add(ident)
+    shapes = []
+    raw_shapes = data.get("shape_engines")
+    if raw_shapes is not None:
+        if not isinstance(raw_shapes, dict) or not isinstance(raw_shapes.get("packages"), list):
+            raise FeedError("the feed's shape_engines member lists no packages")
+        shapes = [e for e in (_shape_engine_package(item, skipped) for item in raw_shapes["packages"]) if e is not None]
+        seen = set()
+        for pkg in shapes:
+            ident = (pkg.shape, pkg.version, pkg.platform, pkg.backend, pkg.variant)
+            if ident in seen:
+                raise FeedError(f"the feed lists the engine for {pkg.shape} {pkg.label} twice")
+            seen.add(ident)
     drafters = []
     raw_drafters = data.get("drafters")
     if raw_drafters is not None:
@@ -604,7 +641,7 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     models, models_dropped = _models_member(data.get("models"))
     return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
                 control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41),
-                skipped=tuple(skipped), drafters=tuple(drafters), models=tuple(models), models_dropped=tuple(models_dropped))
+                skipped=tuple(skipped), drafters=tuple(drafters), models=tuple(models), models_dropped=tuple(models_dropped), shape_engines=tuple(shapes))
 
 
 def _expired_words(expires_at: str, now: dt.datetime, server_now: dt.datetime | None) -> str:

@@ -7077,8 +7077,14 @@ def args_dropped(old: dict, cfg: dict) -> list[str]:
     return list(dict.fromkeys(f for f in flags(old) if f not in new))
 
 
+SHAPE_ENGINE: dict = {}       # the model-shape engine the chosen model runs on: {"shape": "q4_lite"} (strata_control/shape_engine.py); empty: the Strata engine
+
+
 def engine_exe(eng: Path) -> str:
-    """The `exe` of a run config: the engine component in the app, else the engine binary's path."""
+    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine."""
+    if SHAPE_ENGINE.get("shape"):
+        from strata_control import shape_engine
+        return shape_engine.reference(SHAPE_ENGINE["shape"])
     return "component:strata-engine" if CONTROL else str(eng / EXE)
 
 
@@ -8296,9 +8302,38 @@ def control_engine_step(gpu, vision):
     return llama, eng, meta, [], gpu, "none"
 
 
+def shape_engine_step(a, gpu, vision):
+    """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
+    separate component next to the Strata engine, fetched here through the signed feed (--feed, STRATA_UPDATE_FEED, the remembered feed, or the release's), checked,
+    started once and kept; the Strata engine and the models that run on it are not touched. The run config names it ("component:strata-q4-lite") and every start looks it up.
+    Returns what engine_step returns."""
+    from strata_control import engine_component as EC, shape_engine
+    shape = SHAPE_ENGINE["shape"]
+    llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
+    from strata_cli import update_cmd
+    source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
+    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m))
+    if exe is None:
+        if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
+            warn(f"no engine for {shape} is installed: the model is downloaded and prepared now; set it up again when the engine can be fetched")
+            return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
+        fail(f"the engine for this model ({shape}) could not be installed", "see the line above; nothing was downloaded for the model, run this again when the update feed has it")
+    found = shape_engine.find(shape, full=False)
+    eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local", "shape": shape}
+    ok(f"engine for {shape}: {found.version} ({found.platform}-{found.backend}) in {eng}")
+    if vision != "none":
+        if (eng / VEXE).is_file():
+            ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
+            return llama, eng, meta, [], gpu, vision
+        warn("this engine component has no image encoder (strata-vision): images off for this model")
+    return llama, eng, meta, [], gpu, "none"
+
+
 def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
+    if SHAPE_ENGINE.get("shape"):
+        return shape_engine_step(a, gpu, vision)
     if CONTROL:
         return control_engine_step(gpu, vision)
     llama = get_llama_cpp()
@@ -10538,6 +10573,9 @@ def main() -> int:
         gpu = {**gpu, "cards": chosen}
         return install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, all_cards)
     fam = FAMILIES[family]
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own engine component (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"] = fam["shape"]
     if fam.get("ready") and hip:
         # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
         fail(f"{fam['title']} runs on NVIDIA cards only: the AMD engine has no NVFP4 kernels",
