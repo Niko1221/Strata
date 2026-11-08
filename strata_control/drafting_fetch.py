@@ -15,12 +15,14 @@ import importlib.util
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable
 
 from strata_control import acquisition, drafting, transfer
+from strata_control import feed as feedmod
 
 Progress = Callable[[str, int, int], None]    # (step in plain words, bytes done, bytes total)
 
@@ -29,18 +31,30 @@ class DraftingError(RuntimeError):
     """The drafter could not be fetched or packed. The message is plain words and says what to do."""
 
 
-def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None) -> dict:
+class OfflineError(DraftingError):
+    """The download address did not answer (no internet, or a host that is down). Setup skips this one silently: the model keeps the MTP (strata-offline-users)."""
+
+
+def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, model_name: str | None = None, backend: str | None = None, archs=None,
+         args: list | None = None, vram_mib: float | None = None) -> dict:
     """What fetching would do, in numbers and words. ``gb`` is 0 when the drafter is already here. ``engine``: the installed engine program (None: not known); ``vram_gb`` is
-    the graphics memory DFlash2 alone takes on this computer (0.72 with the Q4_0 selector, which the engine reads and setup makes, else 0.89) and ``selq4`` says which."""
-    ready = drafting.pack_ready(data_dir)
-    gb = 0.0 if ready else drafting.DOWNLOAD_GB
+    the graphics memory DFlash2 alone takes on this computer (0.72 with the Q4_0 selector, which the engine reads and setup makes, else 0.89) and ``selq4`` says which.
+    For a set with a tuned drafter (drafting.SET_DEFAULTS) the download is that 0.34 GB file, and it counts as missing until it is here."""
+    tuned = drafting.tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib)
+    variant = drafting.tuned_variant(backend, model_name)
+    pin = drafting.tuned_pack(variant)
+    ready = drafting.tuned_ok(data_dir, variant) if tuned else drafting.pack_ready(data_dir)
+    gb = 0.0 if ready else (pin.gb if tuned else drafting.DOWNLOAD_GB)
     if ready:
         text = "The DFlash2 drafter is already on this computer."
+    elif tuned:
+        text = (f"The DFlash2 drafter is {pin.gb:.2f} GB to download, from Strata's signed update feed, Apache-2.0 (a copy of {drafting.REPO} that Strata tuned). "
+                f"It needs about {drafting.vram_gb(data_dir, engine):.1f} GB of graphics memory, less than the MTP's layer, which is not loaded beside it.")
     else:
         text = (f"The DFlash2 drafter is {drafting.DOWNLOAD_GB:.1f} GB to download (it is packed to {drafting.PACK_GB:.2f} GB for the engine and the "
                 f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.vram_gb(data_dir, engine):.1f} GB of graphics memory, "
                 "less than the MTP's layer, which is not loaded beside it.")
-    return {"ready": ready, "gb": gb, "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
+    return {"ready": ready, "gb": gb, "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir, model_name=model_name, backend=backend)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
 
 
 def _packer():
@@ -141,6 +155,163 @@ def convert_selector(data_dir: str | Path, *, progress: Progress | None = None, 
         return None
 
 
+FEED_TIMEOUT = 8.0
+RETRY_AFTER_S = 12 * 3600          # Load (strata launch) asks the feed for the tuned drafter at most this often when the answer was "nothing"; setup and `strata drafting fetch` always ask
+MISS_MARK = ".tuned-feed-miss"
+
+
+def _recent_miss(data_dir: str | Path) -> bool:
+    try:
+        return time.time() - (Path(data_dir) / drafting.FOLDER / MISS_MARK).stat().st_mtime < RETRY_AFTER_S
+    except OSError:
+        return False
+
+
+def _note_miss(data_dir: str | Path, missed: bool) -> None:
+    mark = Path(data_dir) / drafting.FOLDER / MISS_MARK
+    try:
+        if missed:
+            mark.parent.mkdir(parents=True, exist_ok=True)
+            mark.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
+        else:
+            mark.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _feed_source(feed: str | None = None) -> str:
+    """The signed feed to read: the one named, STRATA_UPDATE_FEED, else the project's release feed (strata_cli/update_cmd.py default_feed)."""
+    if feed:
+        return feed
+    from strata_cli import update_cmd
+    return os.environ.get(update_cmd.ENV_FEED) or update_cmd.default_feed()
+
+
+def tuned_from_feed(*, feed: str | None = None, backend: str | None = None, size: int | None = None, sha256: str | None = None, name: str | None = None,
+                    variant: str | None = None) -> tuple[str, int, str] | None:
+    """(address, size, sha256) of the tuned drafter as the signed feed lists it (member ``drafters``), or None: the feed cannot be read (offline, the host is down: silent), has no
+    such entry for this engine family, or lists other bytes than the ones this Strata was measured with (pinned size and SHA-256: then it is another drafter, not ours).
+    A feed that does not verify is DraftingError: a bad signature, an expired feed. A build that trusts no key (a source checkout from before the keys) is silent."""
+    from strata_control import signing
+    pin = drafting.tuned_pack(variant)
+    want_size = pin.size if size is None else size
+    want_sha = pin.sha256 if sha256 is None else sha256
+    want_name = name or pin.name
+    source = _feed_source(feed)
+    try:
+        loaded = feedmod.fetch(source, signing.load_trusted_keys(), timeout=FEED_TIMEOUT, channel="stable")
+    except feedmod.FeedError as exc:
+        if exc.exit_code == 6 or "trusts no update key" in str(exc):
+            return None
+        raise DraftingError(f"The update feed could not be trusted: {exc}") from None
+    for entry in loaded.drafters:
+        if entry.name == want_name and (backend or drafting.TUNED_BACKEND) in entry.backends:
+            if entry.size != want_size or entry.sha256 != want_sha:
+                return None
+            return loaded.url(entry.url), entry.size, entry.sha256
+    return None
+
+
+def _reachable(location: str) -> bool:
+    """A local source (a file: address or a path) is always there to try; a web address must answer one short HEAD request."""
+    return transfer.kind_of(location) in ("path", "file") or online(location)
+
+
+def provide_licence(data_dir: str | Path) -> bool:
+    """Copy the Apache-2.0 text and the 'modified by Strata' notice (data/dflash2-tuned/) next to the tuned drafter file. False when Strata's copy is missing."""
+    source = Path(__file__).resolve().parents[1] / drafting.TUNED_LICENCE_FOLDER
+    target = Path(data_dir) / drafting.FOLDER
+    try:
+        for name, out in (("LICENSE", "LICENSE-dflash2-tuned"), ("NOTICE.md", "NOTICE-dflash2-tuned.md")):
+            text = (source / name).read_bytes()
+            target.mkdir(parents=True, exist_ok=True)
+            if not (target / out).is_file() or (target / out).read_bytes() != text:
+                (target / out).write_bytes(text)
+        return True
+    except OSError:
+        return False
+
+
+def ensure_tuned(data_dir: str | Path, *, progress: Progress | None = None, cancel: threading.Event | None = None, url: str | None = None,
+                 size: int | None = None, sha256: str | None = None, name: str | None = None, feed: str | None = None, throttle: bool = False, backend: str | None = None, variant: str | None = None) -> Path | None:
+    """Make the tuned drafter (drafting.TUNED_NAME, 340 MB) exist under ``data_dir`` and return its path. It is found in the signed feed (``feed``: a URL or folder; default
+    STRATA_UPDATE_FEED or the project's release feed), unless ``url`` or STRATA_DFLASH2_TUNED_URL names the file directly. None when it cannot be had without anything being wrong:
+    the feed or the address does not answer (no internet, the host is down), the feed does not list the file, or it answers with an error page. Resumable (transfer.download continues a kept partial file). A complete
+    file that is not the pinned bytes is deleted and DraftingError says so; an interrupted download keeps its partial file and raises DraftingError. The licence text and the
+    notice are copied beside it. The stock pack is never touched. The keyword arguments are for tests."""
+    report = progress or (lambda *_: None)
+    pin = drafting.tuned_pack(variant)
+    want_size = pin.size if size is None else size
+    want_sha = pin.sha256 if sha256 is None else sha256
+    file_name = name or pin.name
+    out = Path(data_dir) / drafting.FOLDER / file_name
+    if drafting.converted_ok(data_dir, size=want_size, sha256=want_sha, name=file_name):
+        provide_licence(data_dir)
+        return out
+    acquisition.require("the tuned DFlash2 drafter", "strata drafting fetch")
+    location = url or os.environ.get(drafting.TUNED_URL_ENV, "").strip()
+    if location:                                          # a direct address (tests, a mirror): the pinned size and SHA-256 still decide
+        if not _reachable(location):
+            return None
+    else:                                                 # the normal way: the signed feed names the file; nothing answers offline
+        if throttle and _recent_miss(data_dir):           # a launch asked a short while ago and got nothing: no wait, no second try
+            return None
+        found = tuned_from_feed(feed=feed, backend=backend, size=want_size, sha256=want_sha, name=file_name, variant=variant)
+        _note_miss(data_dir, found is None)
+        if found is None:
+            return None
+        location = found[0]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    partial = out.with_name(out.name + ".part")
+    try:
+        transfer.download(location, partial, size=want_size, sha256=want_sha, cancel=cancel,
+                          progress=lambda d, _s: report("Downloading the tuned DFlash2 drafter…", d, want_size))
+    except transfer.ChecksumMismatch:
+        raise DraftingError("The tuned DFlash2 drafter did not pass the safety check, so it was deleted.") from None
+    except transfer.Cancelled:
+        raise
+    except transfer.TransferError as exc:
+        if exc.resumable:
+            raise DraftingError(f"The tuned DFlash2 download did not finish: {exc}. Try again; it continues where it stopped.") from None
+        return None                                      # an error page from the host (not published yet, moved): nothing to report, the standard drafter runs
+    os.replace(partial, out)
+    out.with_name(out.name + ".ok").unlink(missing_ok=True)
+    if not drafting.converted_ok(data_dir, size=want_size, sha256=want_sha, name=file_name):       # writes the marker
+        out.unlink(missing_ok=True)
+        raise DraftingError("The tuned DFlash2 drafter did not pass the safety check, so it was deleted.")
+    provide_licence(data_dir)
+    drafting.provide_vocab(data_dir)
+    report("The tuned DFlash2 drafter is ready.", want_size, want_size)
+    return out
+
+
+def ensure_for(data_dir: str | Path, *, model_name: str | None, backend: str | None, progress: Progress | None = None,
+               cancel: threading.Event | None = None, feed: str | None = None, throttle: bool = False, archs=None, args: list | None = None,
+               vram_mib: float | None = None) -> Path | None:
+    """The drafter a set should start with, fetched if needed: the tuned pack where the set has one (drafting.SET_DEFAULTS), else, or when the tuned one cannot be had, the
+    stock drafter (ensure). For such a set: None when nothing could be fetched because the network did not answer (the MTP runs: silent for the caller); DraftingError for a
+    real fault (a safety check that failed, an interrupted download). A set with no tuned entry gets ensure() unchanged."""
+    if drafting.tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib):
+        tuned_error: DraftingError | None = None
+        try:
+            got = ensure_tuned(data_dir, progress=progress, cancel=cancel, feed=feed, throttle=throttle, backend=backend, variant=drafting.tuned_variant(backend, model_name))
+        except DraftingError as exc:
+            got, tuned_error = None, exc
+        if got is not None:
+            return got
+        if drafting.pack_ready(data_dir):
+            if tuned_error is not None:
+                raise tuned_error
+            return drafting.pack_path(data_dir)
+        try:
+            return ensure(data_dir, progress=progress, cancel=cancel)
+        except OfflineError:
+            if tuned_error is not None:
+                raise tuned_error from None
+            return None
+    return ensure(data_dir, progress=progress, cancel=cancel)       # a set with no tuned entry: the stock drafter exactly as before
+
+
 def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: threading.Event | None = None,
            base_url: str | None = None, files=None) -> Path:
     """Make the packed drafter exist under ``data_dir`` and return its path. A pack that is there is kept. Resumable: an interrupted
@@ -159,7 +330,7 @@ def ensure(data_dir: str | Path, *, progress: Progress | None = None, cancel: th
     spec = tuple(files if files is not None else drafting.FILES)
     have = _present([src, *(_hub_snapshots() if files is None else [])], spec)       # already here and checked: used where it is, never fetched again
     if len(have) < len(spec) and not online(base_url or drafting.BASE_URL):
-        raise DraftingError("There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
+        raise OfflineError("There is no internet connection, so the DFlash2 drafter can't be downloaded now.")
     src.mkdir(parents=True, exist_ok=True)
     total = sum(size for _n, size, _h in spec)
     done_before = 0

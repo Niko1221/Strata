@@ -153,7 +153,7 @@ export function parseCsv(text, delimiter = ',', maxRows = 500) {
 export function previewFile(root, rawPath, sessionId) {
   const file = resolveChatFile(root, rawPath);
   const st = statSync(file); const kind = fileType(file);
-  const base = { kind, name: basename(file), path: file, size: st.size, url: pathToFileURL(file).href };
+  const base = { kind, name: basename(file), path: file, size: st.size, mtime: Math.round(st.mtimeMs), url: pathToFileURL(file).href };
   const raw = `/api/files/raw?sessionId=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(file)}`;
   if (kind === 'image' || kind === 'pdf') return { ...base, rawUrl: raw, mime: mimeOf(file) };
   if (kind === 'other') return { ...base, note: 'This kind of file has no preview. Open it in its own app.' };
