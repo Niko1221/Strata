@@ -1,7 +1,7 @@
 # Prompt attention on tensor cores (FA pilot)
 
 Reference machine: RTX 3060 Ti 8 GB, 32 GiB RAM, KAT IQ4_XS (qwen35moe), q4_0 KV.
-Branch `pr-fa-mma`, base `main` 8ee1f346. Status: pilot, gated by G1-G5 below.
+Branch `pr-fa-mma`, base `main` 54828c7efb. Status: pilot, gated by G1-G5 below.
 
 ## Why
 
