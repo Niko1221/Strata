@@ -85,7 +85,9 @@ int main(int argc, char** argv) {
     }
     if (layers.empty() && !synthetic) layers = {0, 1, 2, 3, 20, 47};
     const int NT = 3, E = 7;
-    const int64_t H = 2560, FF = 640;
+    int64_t H = 2560, FF = 640;   // Q4KQ_PARITY_EMBD / Q4KQ_PARITY_FF override them (Q4-KQ, as the CUDA tree's test: expert widths 512 and 1024; Q4-SYCL: the q4_* builds)
+    if (const char* e = std::getenv("Q4KQ_PARITY_EMBD")) H = std::atoll(e);
+    if (const char* e = std::getenv("Q4KQ_PARITY_FF")) FF = std::atoll(e);
     int failures = 0;
     sycl::queue* s = &dpct::get_in_order_queue();
     for (int l : layers) {

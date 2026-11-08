@@ -16,6 +16,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -691,6 +692,9 @@ int main(int argc, char** argv) {
     // Q4-KQ: the K-quant downs of a UD file at expert widths divisible by 256 (Qwen3.6's UD-Q4_K_XL: Q4_K / Q5_K gate/up, Q5_K / Q6_K
     // down, 2048 x 512), split vs per-entry bitwise and the GPU against the CPU reference, at the widths 512 and 1024
     auto kq_down = [&] {
+        // Q4-SYCL: and the hidden width the build is compiled for (3072 in q4_mid, 4096 in q4_big; the pools' buffers follow it)
+        std::vector<int64_t> Hs = {2048, 2560};
+        if (std::find(Hs.begin(), Hs.end(), (int64_t) strata::core::kCompiledGeometry.n_embd) == Hs.end()) Hs.push_back(strata::core::kCompiledGeometry.n_embd);
         const int gus[] = {12, 13};
         for (const int gu : gus)
             for (const int dt : {13
@@ -698,7 +702,7 @@ int main(int argc, char** argv) {
                                  , 14
 #endif
                                 })
-                for (const int64_t H : {2048, 2560})
+                for (const int64_t H : Hs)
                     for (const int64_t FF : {512, 1024}) check_kq(gu, dt, H, FF, s, rng);
     };
     // Q4-KQ: --hash, a checksum of the grouped expert call's output bytes for every pair of today's sets (the IQ3_XXS pack and the
@@ -750,6 +754,21 @@ int main(int argc, char** argv) {
     for (int gu : {29, 16, 17, 22, 42, 18, 23})
         for (int dt : {42, 20, 6, 8}) check(gu, dt, 2560, 640, s, rng);
     check(21, 23, 2560, 768, s, rng);
+    // Q4-SYCL: the build's own expert shape (q4_lite 2048 x 512, q4_mid 3072 x 1024, q4_big 4096 x 1024): the UD mix's pairs (Q4_K / Q5_K gate/up;
+    // Q5_K, Q6_K, Q5_1, IQ4_NL, Q8_0 downs) against the CPU reference and split vs per-entry
+    if (strata::core::kCompiledGeometry.n_embd != 2560 || strata::core::kCompiledGeometry.n_ff != 640) {
+        const int64_t KH = strata::core::kCompiledGeometry.n_embd, KF = strata::core::kCompiledGeometry.n_ff;
+        std::printf("compiled shape %lld x %lld\n", (long long) KH, (long long) KF);
+        for (int gu : {12, 13})
+            for (int dt : {13,
+#ifdef STRATA_Q6K_EXPERTS
+                           14,
+#endif
+                           7, 20, 8})
+                check_kq(gu, dt, KH, KF, s, rng);
+        for (int gu : {29, 16, 17, 22, 42, 18, 23, 21})
+            for (int dt : {42, 20, 6, 8}) check(gu, dt, KH, KF, s, rng);
+    }
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);
     dpct::get_current_device().destroy_queue(s);
