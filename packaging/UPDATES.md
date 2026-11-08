@@ -250,6 +250,17 @@ Everything above runs against a folder or a loopback server: `tests/terminal/tes
 keeps the old engine; an interrupted download resumes; rollback; Control; the app installer's minisign check), `apps/host/tests/component-updates.test.mjs`
 (the Settings buttons). For a real engine on a box, build a package with `packaging/package_engine.py`, serve it from a local feed made by `packaging/make_local_feed.py`, and run `strata update --feed` against it.
 
+### Release gate: a feed model installed from a real file
+
+The model list (`models` member) has a gate with a real file, not a mock: `tools/feed_model_install_gate.py` writes a small synthetic qwen4exp GGUF
+(`tools/q4geo_synth.py`), signs a models-only feed with a throw-away key, serves the file from a loopback Hugging Face stand-in, and runs `setup.py` in the
+app's mode (no engine, no pip) against it. It fails when setup raises (`KeyError: 'mmproj'` for a model with no picture reader), fetches the Flash-Next draft
+layer for `drafter: none`, writes a second copy of the experts instead of a RAM budget, or keeps the shipped 48 x 512 expert profile for a model of another shape;
+a second run must change nothing. It runs as `tools/test_feed_model_install_realfile.py` in `python tools/check` (py-tools) when a llama.cpp checkout is
+given (`STRATA_TEST_LLAMA_CPP`, for its gguf-py), and is SKIPPED with that reason otherwise: set the variable wherever the release gate runs. With
+`--full --tokenizer-from <real shard> --engine <engine folder built for that shape>` it also starts the engine from the run config and sends one chat request.
+Run it before every release that touches `setup.py`, `strata_control/feed_models.py`, `strata_control/setup_config.py` or the feed schema, and before a Qwen4 day.
+
 ## History / older measurements
 
 - **Keys:** the feed key and the Tauri updater key were created once and the feed key's public half was committed in `strata_control/update_keys.json`
