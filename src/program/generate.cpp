@@ -7724,6 +7724,7 @@ int main(int argc, char** argv) {
             };
         strata::core::pin_reserve_take();
         arena_src.fall_back_when_ram_short = ram_fallback_ok && !ram_fallback_failed;
+        arena_src.notices_on_stdout = o.serve;   // #5327: the RAM notices also on stdout in --serve mode only
         arena_src.ram_keep_bytes = o.ram_keep;
         arena_src.hard_limit_headroom_bytes = ram_fallback_headroom;
         if (o.ram_keep > 0)
@@ -7738,16 +7739,19 @@ int main(int argc, char** argv) {
         strata::core::pin_sim_report("after the expert arena");
         strata::core::pin_reserve_release_soft();
         if (!arena_ok && arena_src.ram_short()) {
-            // one plain line, one next step; the numbers are in err.  STDOUT TOO, not only stderr: a service setup
-            // (llama-swap and its like) keeps the engine's stdout in its log and never shows the stderr this line
-            // lived on, so the 2.4x decode loss this fallback costs was invisible until it was measured (#5327)
+            // one plain line, one next step; the numbers are in err.  With --serve STDOUT TOO, not only stderr: a service
+            // setup (llama-swap and its like) keeps the engine's stdout in its log and never shows the stderr this line
+            // lived on, so the 2.4x decode loss this fallback costs was invisible until it was measured (#5327).  A plain
+            // generate run keeps its stdout (the token stream) clean: stderr only, as before.
             std::fprintf(stderr, "strata generate: not enough RAM for the expert arena (%s): this run reads the experts from the "
                                  "file, like --mmap-experts (slower; the answers are the same). To get the arena back, free that RAM "
                                  "and start again\n", err.c_str());
-            std::printf("strata generate: not enough RAM for the expert arena (%s): this run reads the experts from the "
-                        "file, like --mmap-experts (slower; the answers are the same). To get the arena back, free that RAM "
-                        "and start again\n", err.c_str());
-            std::fflush(stdout);
+            if (o.serve) {
+                std::printf("strata generate: not enough RAM for the expert arena (%s): this run reads the experts from the "
+                            "file, like --mmap-experts (slower; the answers are the same). To get the arena back, free that RAM "
+                            "and start again\n", err.c_str());
+                std::fflush(stdout);
+            }
             o.mmap_experts = true;
             ram_fallback_taken = true;
             // R5070: the plain file source has no RAM copy at all, and on the owner's 5070 PC (63.1 GB, 44.6 GiB available for a

@@ -6078,17 +6078,15 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             }
             if (file_cache_arena) {
                 std::snprintf(buf, sizeof buf,
-                              "the expert arena needs %.2f GiB of RAM but %.2f GiB is available (%.2f GiB short%s) and "
-                              "%.2f GiB of free pages, droppable file cache and free huge pages can still hold it: "
-                              "loading through the file cache, as 0.1.55 did (#5327; the load evicts the cache as it "
-                              "reads, the answers are the same). To read the experts from the file instead, start with "
-                              "STRATA_ARENA_FILE_CACHE=0",
-                              (double) need / gib, (double) hm.available / gib, (double) (need - hm.available) / gib,
-                              waited > 0.0 ? ", after waiting" : "",
-                              ((double) memfree_b + (double) droppable_b + (double) huge_free_b) / gib);
-                ram_warning_ = buf;   // the caller says it on stderr before the load's numbers; stdout is said here
-                std::printf("strata generate: WARNING: %s\n", buf);   // stdout too: a service setup never sees stderr (#5327)
-                std::fflush(stdout);
+                              "the experts need %.2f GiB of RAM and %.2f GiB is free, but free memory, file cache and reserved huge "
+                              "pages can hold them, so they load anyway (same answers). STRATA_ARENA_FILE_CACHE=0 reads them from "
+                              "the file instead.",
+                              (double) need / gib, (double) hm.available / gib);
+                ram_warning_ = buf;   // the caller says it on stderr before the load's numbers
+                if (notices_on_stdout) {   // --serve only: a service setup never sees stderr (#5327); a plain run keeps its token stream clean
+                    std::printf("strata generate: WARNING: %s\n", buf);
+                    std::fflush(stdout);
+                }
             } else
 #endif
             if (verdict == ArenaRamVerdict::FallBack) {
