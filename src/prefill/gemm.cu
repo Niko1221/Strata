@@ -1164,12 +1164,17 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
 namespace {
 __global__ void widen_f16_rows_kernel(const __half* __restrict__ h, float* __restrict__ y, int64_t rows, int64_t n,
                                       int64_t ldy, bool add) {
-    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < rows * n; i += (int64_t) gridDim.x * blockDim.x) {
-        const int64_t r = i / n, c = i - r * n;
-        const float v = __half2float(h[i]);
-        float* d = y + r * ldy + c;
-        *d = add ? *d + v : v;
-    }
+    // one row a blockIdx.y, 4 values a thread (n % 4 == 0, ldy % 4 == 0: 8-byte loads, 16-byte stores)
+    const int64_t r = blockIdx.y;
+    const int64_t c = ((int64_t) blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    if (r >= rows || c >= n) return;
+    const uint2 raw = *reinterpret_cast<const uint2*>(h + r * n + c);
+    const float2 a = __half22float2(*reinterpret_cast<const __half2*>(&raw.x));
+    const float2 b = __half22float2(*reinterpret_cast<const __half2*>(&raw.y));
+    float4* d = reinterpret_cast<float4*>(y + r * ldy + c);
+    float4 v = make_float4(a.x, a.y, b.x, b.y);
+    if (add) { const float4 o = *d; v.x += o.x; v.y += o.y; v.z += o.z; v.w += o.w; }
+    *d = v;
 }
 }  // namespace
 #endif
@@ -1238,7 +1243,9 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     // scratch slice of at most 2048 rows and is widened into Y (plus beta * Y).
     static const bool f16acc = [] { const char* v = std::getenv("STRATA_GEMM_F16ACC"); return v != nullptr && v[0] == '1'; }();
     static const int64_t f16acc_min_t = [] { const char* v = std::getenv("STRATA_GEMM_F16ACC_MIN_T"); return v ? (int64_t) std::atoll(v) : (int64_t) 64; }();
-    if (f16acc && T >= f16acc_min_t && (beta == 0.0f || beta == 1.0f)) {
+    static const int f16acc_algo = [] { const char* v = std::getenv("STRATA_GEMM_F16ACC_ALGO"); return v ? std::atoi(v) : -1; }();
+    if (f16acc && T >= f16acc_min_t && (beta == 0.0f || beta == 1.0f) && N % 4 == 0 && ldy % 4 == 0 &&
+        ((uintptr_t) Y & 15) == 0) {
         const int64_t rows = std::min<int64_t>(T, 2048);
         static __half* hbuf = nullptr;
         static int64_t hbuf_elems = 0;
@@ -1257,10 +1264,11 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                 const int64_t n = std::min<int64_t>(rows, T - t0);
                 const cublasStatus_t st = cublasGemmEx((cublasHandle_t) handle_, CUBLAS_OP_T, CUBLAS_OP_N, (int) N, (int) n,
                                                        (int) K, &h1, W, CUDA_R_16F, (int) K, X + t0 * K, CUDA_R_16F, (int) K,
-                                                       &h0, hbuf, CUDA_R_16F, (int) N, CUBLAS_COMPUTE_16F, CUBLAS_GEMM_DEFAULT);
+                                                       &h0, hbuf, CUDA_R_16F, (int) N, CUBLAS_COMPUTE_16F,
+                                                       f16acc_algo < 0 ? CUBLAS_GEMM_DEFAULT_TENSOR_OP : (cublasGemmAlgo_t) ((int) CUBLAS_GEMM_ALGO0_TENSOR_OP + f16acc_algo));
                 if (st != CUBLAS_STATUS_SUCCESS && t0 > 0) ck(st, "cublasGemmEx f16acc");   // part of Y written: no fallback
                 if (st != CUBLAS_STATUS_SUCCESS) { ok = false; break; }
-                widen_f16_rows_kernel<<<(unsigned) std::min<int64_t>((n * N + 255) / 256, 65535), 256, 0,
+                widen_f16_rows_kernel<<<dim3((unsigned) ((N / 4 + 255) / 256), (unsigned) n), 256, 0,
                                         (cudaStream_t) stream_>>>(hbuf, Y + t0 * ldy, n, N, ldy, beta != 0.0f);
             }
             if (ok) { STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16acc"); return; }
