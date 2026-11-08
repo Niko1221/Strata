@@ -140,6 +140,29 @@ class Plan(unittest.TestCase):
         code, _, err = run(self.base(self.a, "--write", str(out)))      # not an empty folder
         self.assertNotEqual(code, 0)
 
+    def test_write_makes_an_entry_in_the_feeds_schema_and_build_feed_refuses_what_is_unfilled(self):
+        import feed_tool
+        from strata_control import feed as feedmod
+        out = Path(self.tmp.name) / "outfeed"
+        rev = "a" * 40
+        code, _, err = run(self.base(self.a, "--write", str(out), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072"))
+        self.assertEqual(code, 0, err)
+        path = out / "models" / "m1.entry.json"
+        entry = json.loads(path.read_text())
+        self.assertIn("[FILL", json.dumps(entry))                         # the values the report cannot know are left to a person
+        with self.assertRaises(SystemExit) as cm:
+            feed_tool.build_feed(Path(self.tmp.name) / "rel0", key={}, sequence=1, models_dir=out / "models")
+        self.assertIn("FILL", str(cm.exception))
+        out2 = Path(self.tmp.name) / "outfeed2"
+        code, _, err = run(self.base(self.a, "--write", str(out2), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072", "--about", "one sentence",
+                                     "--licence", "Apache 2.0", "--licence-url", "https://example.org/licence", "--quant", "Q4", "--quant-about", "4-bit", "--ram-gb", "24", "--min-engine", "0.1.58"))
+        self.assertEqual(code, 0, err)
+        filled = json.loads((out2 / "models" / "m1.entry.json").read_text())
+        self.assertNotIn("[FILL", json.dumps(filled).replace("[FILL: sha256]", ""))
+        for f in filled["quants"][0]["files"]:
+            f["sha256"] = f["sha256"] if len(f["sha256"]) == 64 else "0" * 64
+        feedmod._model_entry(filled)                                     # strata_control/feed.py keeps it
+
     def test_the_templates_in_phaseA_tests_have_what_the_script_fills(self):
         d = Path(r"C:\Users\AI-Server\Desktop\Strata\phaseA-tests\qwen4\templates")
         if not d.is_dir():

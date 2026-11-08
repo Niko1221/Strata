@@ -147,8 +147,8 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         kept += [{"name": e["name"], "size": e["size"], "why": "same file, same name; the feed entry is reused"} for e in prev["engine"] + prev["dsv41"] + prev["control"]]
 
     step("%d" % n, "The model's feed entry (a `models` member entry, DRAFT)", "owner PC, python only", 2,
-         ["python packaging/make_model_release.py --intake <report> --id %s ... --write <OUTDIR>   # writes models/%s.model.json" % (a.id, a.id)],
-         ["models/%s.model.json" % a.id], note="the entry's fields follow the Q4-PREP-B brief (id, title, by, licence, family, repo and revision, files with size and sha256, drafter, default context, setup per quant, minimum engine, pictures); align with strata_control/feed.py when that lands")
+         ["python packaging/make_model_release.py --intake <report> --id %s ... --write <OUTDIR>   # writes models/%s.entry.json (the feed's schema; build-feed refuses every [FILL: ...] left in it) and models/%s.model.json (the older draft)" % (a.id, a.id, a.id)],
+         ["models/%s.entry.json" % a.id], note="the entry follows strata_control/feed.py (packaging/UPDATES.md): fill the [FILL: ...] values (about, licence_url, ram_gb) by hand or with --about/--licence-url/--ram-gb, then `feed_tool.py build-feed --models <OUTDIR>/models`")
     n += 1
     if not a.no_app:
         for e in prev["app"]:
@@ -217,6 +217,39 @@ def model_entry(s: dict, a) -> dict:
     }
 
 
+def feed_entry(s: dict, a) -> dict:
+    """The model's entry in the feed's `models` member, in the schema strata_control/feed.py reads (packaging/UPDATES.md). Every value the report cannot know
+    (about, licence, licence_url, ram_gb, quant name) is a "[FILL: ...]" text, which `feed_tool.py build-feed --models` refuses: it is filled by hand, then built."""
+    g = s.get("general", {})
+    d = s.get("draft_catalog_entry", {})
+    files = []
+    for f in s["files"]:
+        item = {"name": f["name"].rsplit("/", 1)[-1], "size": f["size"], "sha256": f.get("sha256") or "[FILL: sha256]"}
+        if "/" in f["name"]:
+            item["path"] = f["name"]
+        files.append(item)
+    first = s["files"][0]["name"]
+    quant = a.quant or a.hf_dir or (first.rsplit("/", 1)[0] if "/" in first else "[FILL: quant name]")
+    e = {"id": a.id, "title": g.get("name") or d.get("title") or a.id, "by": a.by or d.get("by") or "[FILL: who made the model]",
+         "about": a.about or "[FILL: one plain sentence]",
+         "licence": a.licence or g.get("license") or "[FILL: licence]",
+         "licence_url": a.licence_url or g.get("license.link") or "[FILL: https licence url]",
+         "family": s.get("architecture"), "repo": a.hf_repo or "[FILL: repository]", "revision": a.revision or "[FILL: pinned commit, 40 hex]",
+         "quants": [{"name": quant, "about": a.quant_about or "[FILL: one plain line]", "ram_gb": a.ram_gb if a.ram_gb else "[FILL: ram_gb, measured]", "files": files}],
+         "pictures": bool(s.get("projectors") and all(p["supported"] for p in s["projectors"])),
+         "drafter": "mtp" if s.get("mtp", {}).get("in_file") else "none",
+         "context": a.default_context if a.default_context else "[FILL: default context]",
+         "min_engine": a.min_engine or a.engine_version or "[FILL: minimum engine version]"}
+    if s.get("projectors"):
+        pr = s["projectors"][0]
+        e["mmproj"] = {"name": pr["file"], "size": pr["size"], "sha256": pr.get("sha256") or "[FILL: sha256]"}
+    if s.get("architecture") == "qwen35moe":
+        for k in ("kv_bytes_per_token", "state_gb"):
+            if d.get(k) is not None:
+                e[k] = d[k]
+    return e
+
+
 def render_md(p: dict, a) -> str:
     out = ["# Model release plan: %s (case %s)" % (p["id"], p["case"]), "",
            "DRY RUN. Nothing was built, signed, uploaded or published. The set: `%s`." % p["set"], ""]
@@ -278,6 +311,13 @@ def main(argv=None) -> int:
     ap.add_argument("--hf-repo")
     ap.add_argument("--hf-dir")
     ap.add_argument("--default-context", type=int)
+    ap.add_argument("--by", help="the feed entry's `by` (who made the model)")
+    ap.add_argument("--about", help="the feed entry's one plain sentence")
+    ap.add_argument("--licence", help="the licence name (default: the file's general.license)")
+    ap.add_argument("--licence-url", help="the https address of the licence (default: general.license.link)")
+    ap.add_argument("--quant", help="the quant's name in the entry (default: --hf-dir, or the folder of the files)")
+    ap.add_argument("--quant-about", help="one plain line about the quant")
+    ap.add_argument("--ram-gb", type=float, help="the RAM the quant needs, measured (the intake's estimate is not used)")
     ap.add_argument("--no-app", action="store_true", help="no app change in this release")
     ap.add_argument("--templates", type=Path, help="the folder with RELEASE-NOTES.md, MODEL-CARD.md and CHECKLIST.md (phaseA-tests/qwen4/templates)")
     ap.add_argument("--write", type=Path, metavar="OUTDIR", help="also write the plan, the entry and the filled templates into this new folder")
@@ -309,6 +349,7 @@ def main(argv=None) -> int:
         (a.write / "PLAN.md").write_text(render_md(p, a), encoding="utf-8")
         (a.write / "plan.json").write_text(json.dumps(p, indent=1), encoding="utf-8")
         (a.write / "models" / ("%s.model.json" % a.id)).write_text(json.dumps(p["entry"], indent=1), encoding="utf-8")
+        (a.write / "models" / ("%s.entry.json" % a.id)).write_text(json.dumps(feed_entry(s, a), indent=1) + "\n", encoding="utf-8")
         vals = template_values(s, p, a)
         for name in ("RELEASE-NOTES.md", "MODEL-CARD.md", "CHECKLIST.md"):
             t = a.templates / name if a.templates else None
