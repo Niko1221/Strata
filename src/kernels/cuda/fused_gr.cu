@@ -1998,7 +1998,12 @@ __global__ void gr_down_finish_kernel(GrMulti m) {
 constexpr int Q8B = 34;                             // Q8_0 block: fp16 d + 32 int8
 constexpr int Q8_RPW = 4;                           // down rows per warp
 constexpr int Q8_RG = LR / (WARPS * Q8_RPW);        // 10 row groups (+1: the inject rows)
-constexpr int Q8_KC = 640, Q8_NKC = D / Q8_KC;      // 16 chunks, 4 per stream
+// the chunk width: the largest multiple of 128 up to 1024 that divides n_embd (Flash-Next's 2560: 640, as before; q4_lite's 2048: 1024; 3072: 1024;
+// 4096: 1024: at most 16 chunks of the scratch's room), so a stream is a whole number of chunks and no column of D is left out (a fixed 640 left D % 640 columns unread at 2048/3072/4096)
+constexpr int q8_chunk_cols(int n) { int best = 128; for (int k = 128; k <= 1024; k += 128) if (n % k == 0) best = k; return best; }
+constexpr int Q8_KC = q8_chunk_cols(N), Q8_NKC = D / Q8_KC;      // 16 chunks, 4 per stream in Flash-Next
+static_assert(N % Q8_KC == 0 && D % Q8_KC == 0, "fused_gr Q8_0 read: n_embd must be a multiple of 128 (chunks of the largest such width <= 1024)");
+static_assert(LR % (WARPS * 4) == 0, "fused_gr Q8_0 read: hc_lr must be a multiple of 32");
 constexpr int Q8_CPS = N / Q8_KC;                   // chunks per stream
 constexpr int Q8_SPB = Q8_KC / 128;                 // 5 steps of 4 Q8_0 blocks (8 lanes x 4 values each)
 __device__ __forceinline__ uint32_t q8_ld16(const uint8_t* p) { return *(const uint16_t*) p; }
