@@ -2146,9 +2146,15 @@ target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
 # The CPU computes a native expert with ggml-cpu's own dot products (`ggml_get_type_traits_cpu`), so an IQ
-# weight means exactly what it means in llama.cpp.  ggml is built static from a llama.cpp checkout: a local one
-# with -DSTRATA_GGML_DIR=..., otherwise the pinned upstream commit (third_party/ggml/VERSION.txt).
-set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
+# weight means exactly what it means in llama.cpp.  ggml is built static from the tree vendored in
+# third_party/strata-ggml (frozen at the llama.cpp commit in third_party/ggml/VERSION.txt, see its UPSTREAM.md): no download.
+# -DSTRATA_GGML_DIR=<llama.cpp checkout> still builds from that checkout instead (an override kept for two releases).
+set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from instead of the vendored third_party/strata-ggml (empty: the vendored tree)")
+if(STRATA_GGML_DIR)
+  set(_strata_ggml_root "${STRATA_GGML_DIR}")
+else()
+  set(_strata_ggml_root "${CMAKE_CURRENT_SOURCE_DIR}/third_party/strata-ggml")
+endif()
 if(STRATA_PREFILL_MMQ AND NOT STRATA_NATIVE_EXPERTS)
   message(FATAL_ERROR "STRATA_PREFILL_MMQ requires STRATA_NATIVE_EXPERTS=ON for GGML sources")
 endif()
@@ -2202,20 +2208,7 @@ if(STRATA_NATIVE_EXPERTS)
   else()
     set(GGML_NATIVE ON CACHE BOOL "" FORCE)
   endif()
-  if(STRATA_GGML_DIR)
-    add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  else()
-    include(FetchContent)
-    FetchContent_Declare(strata_llamacpp
-      GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-      GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
-      GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(strata_llamacpp)
-    if(NOT strata_llamacpp_POPULATED)
-      FetchContent_Populate(strata_llamacpp)
-    endif()
-    add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  endif()
+  add_subdirectory(${_strata_ggml_root}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp)
@@ -2363,11 +2356,7 @@ if(STRATA_NATIVE_EXPERTS)
   elseif(STRATA_MMQ_TQ_OVERLAY AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
     # an upstream llama.cpp: the trellis MMQ instances come from an overlay of the pinned ggml-cuda headers written at
     # configure time (cmake/strata_ggml_tq_overlay.cmake); off with a message if the llama.cpp tree is not the pinned one
-    if(STRATA_GGML_DIR)
-      set(_strata_tq_llama "${STRATA_GGML_DIR}")
-    else()
-      set(_strata_tq_llama "${strata_llamacpp_SOURCE_DIR}")
-    endif()
+    set(_strata_tq_llama "${_strata_ggml_root}")
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_ggml_tq_overlay.cmake)
     set(_strata_tq_overlay_dir "${CMAKE_BINARY_DIR}/ggml-tq-overlay")
     strata_ggml_tq_overlay("${_strata_tq_llama}" "${_strata_tq_overlay_dir}")
@@ -2392,11 +2381,7 @@ if(STRATA_NATIVE_EXPERTS)
     # prompt-speed plan step 2b: llama.cpp's MMQ kernels (ggml-cuda, MIT) for the prompt path's experts, compiled
     # from the same checkout as ggml above - only mmq.cuh's instances for the packs' types and the quantizer, with
     # the few host symbols of ggml-cuda.cu they use in src/prefill/ggml_cuda_host.cu
-    if(STRATA_GGML_DIR)
-      set(_strata_gg ${STRATA_GGML_DIR}/ggml)
-    else()
-      set(_strata_gg ${strata_llamacpp_SOURCE_DIR}/ggml)
-    endif()
+    set(_strata_gg ${_strata_ggml_root}/ggml)
     set(_strata_mmq ${_strata_gg}/src/ggml-cuda)
     set(_strata_quantize_cu ${_strata_mmq}/quantize.cu)   # the overlay's copy when the trellis overlay is on: it includes mmq.cuh
     if(_strata_mmq_tq_overlay)
@@ -2463,7 +2448,7 @@ if(STRATA_NATIVE_EXPERTS)
     # mul_mat_q_case (struct mmq_args included).  A fingerprint of that text instead of a compile probe: nothing is
     # compiled at configure time, and a llama.cpp tree with another scheduler turns the feature off instead of
     # failing the build.  _strata_mmq_tab_known: the hashes moe_mmq_tab.cuh was verified against (3cf03257, the
-    # fetched pin; the vendored third_party/llama.cpp tree has the same mmq.cuh).
+    # pinned commit, which is also what third_party/strata-ggml holds).
     set(_strata_mmq_tab_on OFF)
     if(STRATA_MMQ_TAB AND NOT STRATA_HIP_GFX906)   # gfx906 compiles no .cu from here (its HIP glob): no tab at all
       set(_strata_mmq_tab_known 36e4dc716c504470ec09cc0852d29a6ac5eace257f6e5e72db3805ca4f043eb0)
@@ -2646,11 +2631,7 @@ if(STRATA_NATIVE_EXPERTS)
   elseif(STRATA_PREFILL_MMQ)
     # Compile only the pinned GGML MMQ and activation-quantizer sources used by prefill. This uses
     # common.cuh's native HIP path without enabling a second GGML HIP backend.
-    if(STRATA_GGML_DIR)
-      set(_strata_gg "${STRATA_GGML_DIR}/ggml")
-    else()
-      set(_strata_gg "${strata_llamacpp_SOURCE_DIR}/ggml")
-    endif()
+    set(_strata_gg "${_strata_ggml_root}/ggml")
     set(_strata_mmq "${_strata_gg}/src/ggml-cuda")
     set(_strata_quantize_cu "${_strata_mmq}/quantize.cu")   # the overlay's copy when the trellis overlay is on: it includes mmq.cuh
     if(_strata_mmq_tq_overlay)
