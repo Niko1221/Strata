@@ -152,7 +152,8 @@ UMA_MEASURED = ("a Ryzen AI Max+ 395 (Radeon 8060S, 128 GB unified: a 64 GB BIOS
 UMA_MEASURED_GB10 = ("an NVIDIA DGX Spark (GB10, 128 GB unified) on Linux with six experts per word: about 17 tokens a second on a first short "
                      "chat and 20-23 once warm; a 1,700-token prompt read at 213-237 tokens a second, a 500-token one at 76")
 # A Jetson AGX Thor (sm_110, L4T, 128 GB unified): the same one-pool plan, but nothing measured on that part yet (#4559).
-UMA_NOT_MEASURED_THOR = ("Not run on a Jetson AGX Thor (sm_110) yet: the sizes above are exact for a 128 GB unified Thor, the speed is not measured on that part.")
+UMA_NOT_MEASURED_THOR = ("A Jetson AGX Thor (sm_110) has served one set (the Coder set: its speed cells are in the benchmark report), but this set has no measured speed estimate there yet: "
+                        "the sizes above are exact for a 128 GB unified Thor, the speed for this set is not.")
 
 
 def variant(model: str | None) -> dict | None:

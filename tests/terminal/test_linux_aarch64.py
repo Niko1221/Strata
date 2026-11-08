@@ -148,14 +148,15 @@ class GB10DeepSeekPlan(unittest.TestCase):
         self.assertIn("one pool of 122 GB", text)
         self.assertGreater(plan["experts_in_vram"], 11000)          # the engine placed 12,163 of 15,744 on the Spark itself
 
-    def test_the_plan_for_a_thor_speaks_of_one_pool_and_says_its_speed_is_not_measured_yet(self):
+    def test_the_plan_for_a_thor_speaks_of_one_pool_and_says_this_set_has_no_speed_estimate(self):
         from strata_control import dsv41_fit
         card = {"index": 0, "name": "NVIDIA Thor", "vram_gb": 115.6, "shared_gb": 115.6, "dedicated_gb": 0.0, "uma": True}
         plan = dsv41_fit.plan([card], 121.6, 400, 8192, model="IST-DAS-2.00bpw")
         text = " ".join(plan["lines"])
         self.assertNotIn("Windows", text)                            # one memory, Linux: the Spark's wording, not the Windows APU's
         self.assertNotIn("BIOS", text)
-        self.assertIn("Jetson AGX Thor", text)                       # and it says the speed there is not measured, never the Spark's numbers
+        self.assertIn("Jetson AGX Thor", text)                       # and it says this set has no measured speed estimate there, never the Spark's numbers
+        self.assertIn("no measured speed estimate", text)
         self.assertEqual(plan["measured"], "")
 
     def test_the_windows_strix_halo_plan_is_unchanged(self):
