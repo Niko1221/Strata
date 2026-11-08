@@ -8,20 +8,28 @@
 // (-DSTRATA_GEOMETRY / -DSTRATA_GEOMETRY_FILE): a compile error ends the run with the compiler's message.
 //   --kq    the prelude of a model with K-quant / IQ down experts (kq_down_prelude)
 //   --f16   STRATA_METAL_F16
+//   --wrap F  map and wrap the model file F as the engine does before it compiles (a process holding a model of that size)
+//   --map F   map a second file too (the PLE file of the engine)
+//   --pipes also build the pipeline of a few kernels of the core library (xprep, moe_route, moe_combine_sh2, gr_norm2): the GPU compiler, not only the front end
+#include "gguf_lite.h"
 #include "mtl_rt.h"
 #include "engine/msl_libs.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
 
 int main(int argc, char** argv) {
-    bool kq = false, f16 = false;
-    std::string edir = "../src/engine/msl";
+    bool kq = false, f16 = false, pipes = false;
+    std::string edir = "../src/engine/msl", wrapf, mapf;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--kq")) kq = true;
         else if (!std::strcmp(argv[i], "--f16")) f16 = true;
+        else if (!std::strcmp(argv[i], "--pipes")) pipes = true;
+        else if (!std::strcmp(argv[i], "--wrap") && i + 1 < argc) wrapf = argv[++i];
+        else if (!std::strcmp(argv[i], "--map") && i + 1 < argc) mapf = argv[++i];
         else if (!std::strcmp(argv[i], "--engine-msl") && i + 1 < argc) edir = argv[++i];
     }
     using namespace strata_metal;
@@ -34,7 +42,20 @@ int main(int argc, char** argv) {
         {"mtp", lib_mtp(edir)},                {"mtp_chain", lib_mtp_chain(edir)},
         {"dflash2", lib_dflash2(edir)},        {"coop_probe", lib_coop_probe()},
     };
+    gguf::File gf, gf2;
+    mtl::Buffer W;
+    std::string err;
+    // (the files are mapped before the device exists, as Window::init does)
+    if (!wrapf.empty() && !gf.open(wrapf, err)) { std::printf("cannot open %s: %s\n", wrapf.c_str(), err.c_str()); return 2; }
+    if (!mapf.empty() && !gf2.open(mapf, err)) { std::printf("cannot open %s: %s\n", mapf.c_str(), err.c_str()); return 2; }
     mtl::Context cx;
+    if (!wrapf.empty()) {   // as Window::init: the file wrapped (chunks overlapping by the largest tensor when it is bigger than one buffer)
+        size_t span = 0;
+        for (const auto& kv : gf.tensors)
+            if (kv.first != "per_layer_token_embd.weight") span = std::max<size_t>(span, kv.second.bytes);
+        W = cx.wrap(gf.map, gf.map_bytes, span);
+        std::printf("wrapped %s: %.1f GB, handle %s\n", wrapf.c_str(), gf.file_bytes / 1e9, W.handle ? "ok" : "NULL");
+    }
     int bad = 0;
     for (const auto& [name, L] : libs) {
         const auto t0 = std::chrono::steady_clock::now();
@@ -46,6 +67,14 @@ int main(int argc, char** argv) {
             ++bad;
         } else {
             std::printf("%-11s ok (%.0f ms)\n", name, ms);
+            if (pipes && std::string(name) == "core") {
+                for (const char* fn : {"xprep", "moe_route", "moe_combine_sh2", "gr_norm2"}) {
+                    const auto t1 = std::chrono::steady_clock::now();
+                    mtl::Pipeline pl = cx.pipeline(id, fn, mtl::Constants());
+                    std::printf("            pipeline %-16s ok (%.0f ms, max threads %d)\n", fn,
+                                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count(), pl.max_threads);
+                }
+            }
         }
     }
     std::printf("%s\n", bad ? "msl_dump: FAILED" : "msl_dump: all libraries compile");
