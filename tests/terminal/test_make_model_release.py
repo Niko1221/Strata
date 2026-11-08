@@ -94,9 +94,9 @@ class Plan(unittest.TestCase):
     def test_the_plan_names_the_boxes_of_the_rehearsal(self):
         code, out, err = run(self.base(self.a, "--case", "B", "--engine-version", "0.1.58", "--shape", "q4_lite"))
         self.assertEqual(code, 0, err)
-        for good in ("l620", "p1006", "owner PC"):
+        for good in ("l620", "p1006", "owner PC", "m1002"):
             self.assertIn(good, out)
-        for stale in ("z440", "p1004", "m1001", "m1002"):
+        for stale in ("z440", "p1004", "m1001"):
             self.assertNotIn(stale, out)
         self.assertIn("STRATA_GEOMETRY_FILE", out)
         self.assertIn("--from-gguf", out)
@@ -112,10 +112,11 @@ class Plan(unittest.TestCase):
         self.assertFalse(any("0.1.57" in n for n in names))
         kept = {k["name"] for k in p["kept"]}
         self.assertTrue({n for n in PREV if n.startswith(("strata-engine-", "strata-dsv41-", "strata-control-", "Strata-"))} <= kept)
-        self.assertFalse(any("Controls: pack" in s["what"] or "App text" in s["what"] or "Mac" in s["what"] for s in p["steps"]))
+        self.assertFalse(any("Controls: pack" in s["what"] or "App text" in s["what"] for s in p["steps"]))
+        self.assertIn("strata-q4-lite-0.1.58-macos-arm64-metal.tar.gz", names)
+        self.assertTrue(any("Mac" in s["what"] and s["owner_only"] for s in p["steps"]), "the owner signs the Mac shape engine")
         self.assertTrue(any("--shape q4_lite" in c for s in p["steps"] for c in s["commands"]))
         self.assertTrue(any("--shapes <shape-entries>" in c for s in p["steps"] for c in s["commands"]))
-        self.assertTrue(any("Mac" in w for w in p["warnings"]))
         self.assertEqual(p["entry"]["family"], "qwen35moe", "the family changes only for a qwen4exp model")
         for missing in ({"--shape": None}, {"--engine-version": None}):
             args = ["--case", "B", "--engine-version", "0.1.58", "--shape", "q4_lite"]

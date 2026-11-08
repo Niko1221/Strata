@@ -130,7 +130,7 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         shape = a.shape
         comp = "strata-" + shape.replace("_", "-")
         for e in prev["engine"]:
-            if e["name"].endswith((".tar.gz", ".zip")) and not e["plat"].startswith("macos"):      # (no Mac shape engine: the Mac install path has no shape step yet)
+            if e["name"].endswith((".tar.gz", ".zip")):
                 new = renamed(e["name"], e["version"], a.engine_version).replace("strata-engine-", comp + "-", 1)
                 changed.append({"name": new, "size": e["size"], "est": True, "why": "the engine of the shape %s, its own component" % shape})
         kept += [{"name": e["name"], "size": e["size"], "why": "the Strata engine is not touched: Flash-Next and every other model keep it"} for e in prev["engine"]]
@@ -138,8 +138,7 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         kept += [{"name": e["name"], "size": e["size"], "why": "no Control rebuild: a Control of 0.2.13 or later already knows shape engines"} for e in prev["control"]]
         by_box: dict[str, list] = {}
         for e in prev["engine"]:
-            if not e["plat"].startswith("macos"):
-                by_box.setdefault(box_for(e["plat"]), []).append(e)
+            by_box.setdefault(box_for(e["plat"]), []).append(e)
         step("%d" % n, "A geometry header for the model's shape, made from the file", "owner PC (python)", 2,
              ["# the shape fields the intake listed:"] + ["#   %s is %s (kernels built for %s)" % (d["key"], d["got"], d.get("kernels_built_for", d.get("limit")))
                                                           for d in v.get("shape_fields_that_differ", [])]
@@ -155,7 +154,11 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
                   "python packaging/feed_tool.py pack-engine <package-folder> --out <shape-packs> --url-prefix=   # the archive is %s-<version>-<platform>-<backend>, the entry names the shape" % comp],
                  [renamed(e["name"], e["version"], a.engine_version).replace("strata-engine-", comp + "-", 1) + "  (" + gib(e["size"]) + ", estimated)" for e in es])
             n += 1
-        warn.append("a Mac does not offer a model of its own shape in the 0.2.13 Control (its install path has no shape step), so there is no Mac engine to build or sign for case B")
+        step("%d" % n, "Mac: the owner signs and notarises the unsigned %s engine on his Mac, then it is signed into the feed" % shape, "the owner's Mac, about 45 min of his time", 45,
+             ["bash sign-and-notarize.sh --engine strata-engine-%s-macos-arm64-metal-unsigned-folder.tar.gz   # the code is generic: the entrypoint comes from the manifest (the package's id is %s)" % (a.engine_version, comp),
+              "python packaging/feed_tool.py sign-package <the signed folder> --key <FEED-KEY>   # OWNER'S KEY, not run here", "python packaging/feed_tool.py pack-engine <the signed folder> --out <shape-packs> --url-prefix="],
+             [comp + "-%s-macos-arm64-metal.tar.gz" % a.engine_version], owner=True,
+             note="a Mac installs a model of its own shape like every other platform (Terminal and app): the Mac engine of the shape is part of the release; after the Mac package exists and before build-feed")
     else:
         kept += [{"name": e["name"], "size": e["size"], "why": "same file, same name; the feed entry is reused"} for e in prev["engine"] + prev["dsv41"] + prev["control"]]
 
