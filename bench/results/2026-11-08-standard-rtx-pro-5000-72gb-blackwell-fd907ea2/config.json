@@ -1,0 +1,33 @@
+{
+  "engine_options": {
+    "--pack": "unsloth-q8_0",
+    "--native": "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "auto",
+    "--spec": "4",
+    "--spec-min-p": "0.5",
+    "--mtp": "rt",
+    "--max-context": "262144",
+    "--kv": "int8",
+    "--resident-budget-gib": "66",
+    "--batch": "2"
+  },
+  "other_engine_options": {
+    "--pack": "unsloth-q8_0",
+    "--native": "Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+    "--max-context": "262144",
+    "--resident-budget-gib": "66",
+    "--batch": "2"
+  },
+  "server_defaults": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "n_predict": -1
+  },
+  "total_slots": 2,
+  "context": 262144,
+  "source": "effective engine arguments of the profile"
+}
