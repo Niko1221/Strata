@@ -11,7 +11,9 @@ engines have to be rebuilt for its shape; case C is refused) and prints the plan
     case A  the feed (a `models` entry, the feed re-signed at the next sequence). No app rebuild: the app lists feed models
             from the feed (the Settings update check is enough). `--with-app` adds the app steps when a release has app text anyway.
             Engines, DeepSeek packages and Controls stay as they are: same files, same names.
-    case B  the Qwen engine packages and the Controls rebuilt at a new version, plus the feed and the app.
+    case B  the engine of the model's shape, as its own component (`--shape`, package_engine.py --shape, feed member shape_engines: strata_control/shape_engine.py),
+            plus the feed. The Strata engine, the DeepSeek packages, the Controls and the app are not rebuilt: a Control of 0.2.13 or later already installs and runs
+            a shape engine, and the model's family `qwen4exp_<shape>` makes it fetch it.
 
 Each step shows where it runs, a rough time, the command (printed, never run) and its outputs with sizes.  Sizes are those of the
 previous release's files (`--prev-upload`), so they are estimates for what gets rebuilt and exact for what stays.
@@ -30,6 +32,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))                         # strata_control.shape_engine (the shape names)
 
 # artifact names in a release upload folder (phaseA-tests/rel0211/PUBLISH-PLAN.md, scripts/relfinal/expect_rc1.py)
 ENGINE_RE = re.compile(r"^strata-engine-(?P<v>\d[\d.]*)-(?P<plat>.+?)\.(?:tar\.gz|zip)$")
@@ -99,7 +102,7 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
     if case not in ("A", "B"):
         raise SystemExit("case %s: %s. A model release is planned for case A or B only (run tools/qwen4_intake.py)."
                          % (case, v.get("reading", "no verdict in the report")))
-    with_app = bool(a.with_app) or (case == "B" and not a.no_app)      # case A: the app needs no rebuild for a feed model
+    with_app = bool(a.with_app)                         # a feed model needs no app rebuild (the app lists it from the feed), case B included: the shape engine is fetched by the Control
     steps: list[dict] = []
     changed: list[dict] = []        # files that are new or different in the upload folder
     kept: list[dict] = []
@@ -124,36 +127,35 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
          ["intake-pinned.json"])
     n += 1
     if case == "B":
+        shape = a.shape
+        comp = "strata-" + shape.replace("_", "-")
         for e in prev["engine"]:
-            if e["name"].endswith((".tar.gz", ".zip")):
-                new = renamed(e["name"], e["version"], a.engine_version)
-                changed.append({"name": new, "size": e["size"], "est": True, "why": "rebuilt for the model's shape"})
-        for e in prev["control"]:
-            new = renamed(e["name"], e["version"], a.engine_version)
-            changed.append({"name": new, "size": e["size"], "est": True, "why": "rebuilt at the new version"})
+            if e["name"].endswith((".tar.gz", ".zip")) and not e["plat"].startswith("macos"):      # (no Mac shape engine: the Mac install path has no shape step yet)
+                new = renamed(e["name"], e["version"], a.engine_version).replace("strata-engine-", comp + "-", 1)
+                changed.append({"name": new, "size": e["size"], "est": True, "why": "the engine of the shape %s, its own component" % shape})
+        kept += [{"name": e["name"], "size": e["size"], "why": "the Strata engine is not touched: Flash-Next and every other model keep it"} for e in prev["engine"]]
+        kept += [{"name": e["name"], "size": e["size"], "why": "DeepSeek packages are not touched (check that no shared kernel header changed)"} for e in prev["dsv41"]]
+        kept += [{"name": e["name"], "size": e["size"], "why": "no Control rebuild: a Control of 0.2.13 or later already knows shape engines"} for e in prev["control"]]
         by_box: dict[str, list] = {}
         for e in prev["engine"]:
-            by_box.setdefault(box_for(e["plat"]), []).append(e)
-        step("%d" % n, "A geometry header for the model's shape, made from the file, and the version bump", "owner PC (python and editing)", 3,
+            if not e["plat"].startswith("macos"):
+                by_box.setdefault(box_for(e["plat"]), []).append(e)
+        step("%d" % n, "A geometry header for the model's shape, made from the file", "owner PC (python)", 2,
              ["# the shape fields the intake listed:"] + ["#   %s is %s (kernels built for %s)" % (d["key"], d["got"], d.get("kernels_built_for", d.get("limit")))
                                                           for d in v.get("shape_fields_that_differ", [])]
-             + ["python tools/q4geo_synth.py --from-gguf <first shard> --header <geo.hpp>",
-                "# bump %s in CMakeLists.txt, metal/CMakeLists.txt and PKGVER in packaging/build_hip_linux.sh BEFORE any build (and before the Terminal is packed)" % a.engine_version,
-                "# every build passes -DSTRATA_GEOMETRY_FILE=<geo.hpp> (Linux packaging scripts: STRATA_CMAKE_EXTRA=\"-DSTRATA_GEOMETRY_FILE=<geo.hpp>\")"],
-             note="a package built for the new shape refuses Flash-Next files: decide with the owner whether it replaces the engine or ships as its own component (RESULTS-Q4-P8.md G4)")
+             + ["python tools/q4geo_synth.py --from-gguf <first shard> --header <geo.hpp> --label %s" % shape,
+                "# every build passes -DSTRATA_GEOMETRY_FILE=<geo.hpp> (Linux packaging scripts: STRATA_CMAKE_EXTRA=\"-DSTRATA_GEOMETRY_FILE=<geo.hpp>\"); give the engines their own version %s" % a.engine_version],
+             note="the engine built for this shape refuses Flash-Next files, so it ships as its own component named after the shape (%s) and never in place of the Strata engine (owner, 2026-11-08; RESULTS-SHAPE.md)" % comp)
         n += 1
         for box, es in sorted(by_box.items()):
-            step("%d" % n, "Build the Qwen engine packages on %s" % box, "%s (%s)" % (box, BOX_NOTE.get(box, "see the 0.2.11 build plan")), 25 if box.startswith("owner") else 15 if box == "l620" else 10,
-                 ["# per package, as in phaseA-tests/rel0211/scripts (build_*.sh, packaging/package_engine.py), then:",
+            step("%d" % n, "Build the %s engine packages on %s" % (shape, box), "%s (%s)" % (box, BOX_NOTE.get(box, "see the 0.2.11 build plan")), 25 if box.startswith("owner") else 15 if box == "l620" else 10,
+                 ["# per package, as in phaseA-tests/rel0211/scripts (build_*.sh), with the shape's header; then, instead of the usual package_engine.py call:",
+                  "python packaging/package_engine.py --src <stage> --backend <backend> --version %s --shape %s --min-runtime <the Control that knows shape engines> ...   # the usual --arch/--variant/--tree/--min-driver of that platform" % (a.engine_version, shape),
                   "python packaging/feed_tool.py sign-package <package-folder> --key <FEED-KEY>   # OWNER'S KEY, not run here",
-                  "python packaging/feed_tool.py pack-engine <package-folder> --out <packs> --url-prefix="],
-                 [renamed(e["name"], e["version"], a.engine_version) + "  (" + gib(e["size"]) + ", estimated)" for e in es])
+                  "python packaging/feed_tool.py pack-engine <package-folder> --out <shape-packs> --url-prefix=   # the archive is %s-<version>-<platform>-<backend>, the entry names the shape" % comp],
+                 [renamed(e["name"], e["version"], a.engine_version).replace("strata-engine-", comp + "-", 1) + "  (" + gib(e["size"]) + ", estimated)" for e in es])
             n += 1
-        step("%d" % n, "Controls: pack at %s" % a.engine_version, "Linux (tar keeps modes), Windows, Mac as in 0.2.11", 6,
-             ["python packaging/feed_tool.py pack-control apps/desktop/src-tauri/resources/control --version %s --platform <platform> --out <control> --url-prefix=" % a.engine_version],
-             [renamed(e["name"], e["version"], a.engine_version) for e in prev["control"]])
-        n += 1
-        kept += [{"name": e["name"], "size": e["size"], "why": "DeepSeek packages are not touched (check that no shared kernel header changed)"} for e in prev["dsv41"]]
+        warn.append("a Mac does not offer a model of its own shape in the 0.2.13 Control (its install path has no shape step), so there is no Mac engine to build or sign for case B")
     else:
         kept += [{"name": e["name"], "size": e["size"], "why": "same file, same name; the feed entry is reused"} for e in prev["engine"] + prev["dsv41"] + prev["control"]]
 
@@ -173,15 +175,15 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
         changed.append({"name": "latest.json", "size": None, "est": True, "why": "updater json at %s" % a.app_version})
     else:
         kept += [{"name": e["name"], "size": e["size"], "why": "no app change"} for e in prev["app"]]
-    if with_app or case == "B":
-        mac_extra = " --terminal <terminal.tar.gz> --engine <engine-unsigned-folder.tar.gz>" if case == "B" else ""
+    if with_app:
+        mac_extra = ""
         step("%d" % n, "Mac: the owner signs and notarises the unsigned Mac files on his Mac", "the owner's Mac, about 45 min of his time", 45,
              ["bash sign-and-notarize.sh Strata-%s-macos-arm64.dmg%s --updater-archive --out signed" % (a.app_version, mac_extra)],
-             ["the signed folder (dmg, Strata.app.tar.gz and its .sig%s)" % (", the Mac engine and Terminal" if case == "B" else "")], owner=True)
+             ["the signed folder (dmg, Strata.app.tar.gz and its .sig)"], owner=True)
         n += 1
     feed_cmd = ("python packaging/feed_tool.py build-feed --out <RELEASE> --key <FEED-KEY> --sequence %d --engine <engine-entries> --dsv41 <dsv41-entries> "
-                "--drafters <drafter-entries> --models <models-folder> --control <control-entries>%s   # OWNER'S KEY; `--models` is Q4-PREP-B's change"
-                % (a.sequence, " --app-json latest.json" if with_app else ""))
+                "--drafters <drafter-entries> --models <models-folder> --control <control-entries>%s%s   # OWNER'S KEY; `--models` is Q4-PREP-B's change"
+                % (a.sequence, " --shapes <shape-entries>" if case == "B" else "", " --app-json latest.json" if with_app else ""))
     step("%d" % n, "Sign the feeds at sequence %d (the shared one and linux-aarch64)" % a.sequence, "owner PC, with the owner's key at that moment", 3,
          [feed_cmd, "python packaging/feed_tool.py verify-feed <RELEASE> --pub <FEED-KEY.pub.json>"],
          list(FEED_NAMES), owner=True)
@@ -208,6 +210,17 @@ def plan(report: dict, set_index: int, a, prev: dict) -> dict:
             "warnings": warn, "upload_bytes": up}
 
 
+def entry_family(s: dict, a) -> str:
+    """The family the feed entry carries: the GGUF architecture, and for a model of its own shape (case B) `qwen4exp_<shape>`, which makes a Control fetch that shape's engine
+    (strata_control/shape_engine.py) and makes an older Control, which does not know the family, leave the model out."""
+    arch = s.get("architecture")
+    shape = getattr(a, "shape", None)
+    if shape and arch == "qwen4exp":
+        from strata_control import shape_engine
+        return shape_engine.family_of(shape)
+    return arch
+
+
 def model_entry(s: dict, a) -> dict:
     d = s.get("draft_catalog_entry", {})
     g = s.get("general", {})
@@ -217,7 +230,7 @@ def model_entry(s: dict, a) -> dict:
         "_status": "DRAFT: made from the intake report by packaging/make_model_release.py; field names follow the Q4-PREP-B brief and are to be checked against strata_control/feed.py",
         "id": a.id, "title": g.get("name") or d.get("title"), "by": d.get("by"),
         "licence": {"name": g.get("license"), "url": g.get("license.link") or "[FILL: licence URL]"},
-        "family": s.get("architecture"), "hf": {"repo": a.hf_repo or "[FILL: repository]", "revision": a.revision or "[FILL: pinned commit]"},
+        "family": entry_family(s, a), "hf": {"repo": a.hf_repo or "[FILL: repository]", "revision": a.revision or "[FILL: pinned commit]"},
         "files": [{"name": f["name"], "size": f["size"], "sha256": f.get("sha256")} for f in s["files"]],
         "mmproj": ({"name": s["projectors"][0]["file"], "size": s["projectors"][0]["size"]} if s.get("projectors") else None),
         "drafter": "mtp" if s.get("mtp", {}).get("in_file") else "none",
@@ -245,7 +258,7 @@ def feed_entry(s: dict, a) -> dict:
          "about": a.about or "[FILL: one plain sentence]",
          "licence": a.licence or g.get("license") or "[FILL: licence]",
          "licence_url": a.licence_url or g.get("license.link") or "[FILL: https licence url]",
-         "family": s.get("architecture"), "repo": a.hf_repo or "[FILL: repository]", "revision": a.revision or "[FILL: pinned commit, 40 hex]",
+         "family": entry_family(s, a), "repo": a.hf_repo or "[FILL: repository]", "revision": a.revision or "[FILL: pinned commit, 40 hex]",
          "quants": [{"name": quant, "about": a.quant_about or "[FILL: one plain line]", "ram_gb": a.ram_gb if a.ram_gb else "[FILL: ram_gb, measured]", "files": files}],
          "pictures": bool(s.get("projectors") and all(p["supported"] for p in s["projectors"])),
          "drafter": "mtp" if s.get("mtp", {}).get("in_file") else "none",
@@ -313,7 +326,8 @@ def main(argv=None) -> int:
     ap.add_argument("--set", type=int, default=0, help="which set of the report (default 0)")
     ap.add_argument("--id", required=True, help="the model's id in the feed")
     ap.add_argument("--app-version", required=True)
-    ap.add_argument("--engine-version", help="case B: the new engine and Control version")
+    ap.add_argument("--engine-version", help="case B: the version of the new shape engine")
+    ap.add_argument("--shape", help="case B: the name of the geometry the engines are compiled for (q4_lite): the engine ships as its own component strata-q4-<shape> and the model's family is qwen4exp_<shape>")
     ap.add_argument("--min-engine", help="the minimum engine version for the model (case A: the engine that runs it)")
     ap.add_argument("--sequence", type=int, required=True, help="the next feed sequence")
     ap.add_argument("--prev-upload", type=Path, help="the previous release's upload folder (names and sizes)")
@@ -345,7 +359,13 @@ def main(argv=None) -> int:
     s = report["sets"][a.set]
     case = a.case or s.get("verdict", {}).get("case")
     if case == "B" and not a.engine_version:
-        raise SystemExit("case B rebuilds the engines: give --engine-version")
+        raise SystemExit("case B builds the engine of the new shape: give --engine-version")
+    if case == "B":
+        from strata_control import shape_engine
+        if not a.shape or not shape_engine.valid(a.shape):
+            raise SystemExit("case B: give --shape, the name of the geometry the engines are compiled for (like q4_lite: lower case, digits and _); that engine ships as its own component")
+    elif a.shape:
+        raise SystemExit("--shape is for case B (a model of a new shape); case A runs on the engines as they are")
     prev = scan_upload(a.prev_upload)
     if a.prev_upload is None:
         print("note: no --prev-upload, so sizes of the files that stay or get rebuilt are unknown", file=sys.stderr)
