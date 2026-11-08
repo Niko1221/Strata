@@ -17,6 +17,7 @@
 #include "ref_quant.h"
 #include "arena_budget.h"
 #include "stream.h"
+#include "msl_libs.h"
 #include "../../tests/coop_probe.h"
 
 #include "strata/core/weights.hpp"
@@ -55,6 +56,10 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include <vector>
 
 namespace strata::gpu { uint64_t purge_device_allocations(size_t min_bytes); }   // metal/src/gpu/runtime.cpp
+
+namespace {
+std::string engine_msl_dir() { return strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT); }
+}  // namespace
 
 namespace strata::metal_engine {
 
@@ -731,12 +736,15 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     }
     n_vocab_ = (int64_t) T("output.weight").shape[1];
     if (const gguf::Tensor* e0 = f_.find("blk.0.ffn_gate_exps.weight")) gyro_dense_ = e0->type >= 144;
-    lib_ = cx_->compile({"quant.metal", "units.metal", "moe.metal", "gemv.metal", "router.metal", "gr.metal", "gr2.metal",
-                         "glue.metal"}, (metal_f16() ? std::string("#define STRATA_METAL_F16 1\n") : std::string()) + kq_down_prelude(f_));
-    lgdn_ = cx_->compile({"gdn.metal"}, "#define NO_GGML_COMMON 1\n");
-    lqsa_ = cx_->compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
-    lsmp_ = cx_->compile({"sample.metal"}, "#define NO_GGML_COMMON 1\n");
-    lple_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/ple.metal"}, "#define NO_GGML_COMMON 1\n");
+    {
+        using namespace strata_metal;
+        auto cc = [&](const MslLib& L) { return cx_->compile(L.files, L.prelude); };
+        lib_ = cc(lib_core(metal_f16(), kq_down_prelude(f_)));
+        lgdn_ = cc(lib_gdn());
+        lqsa_ = cc(lib_qsa());
+        lsmp_ = cc(lib_sample());
+        lple_ = cc(lib_ple(engine_msl_dir()));
+    }
 
     const int MAXC = (int) std::max<int64_t>(4096, (max_cells + 64) / 4 * 4 + 64), MB = MAXC / 4 + 2;
     max_cells_ = MAXC;
@@ -2347,7 +2355,10 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         float* dst = (float*) (mnorm_.as<uint8_t>() + kv.second);
         for (uint64_t i = 0; i < x.bytes / 4; ++i) dst[i] = src[i] + 1.0f;
     }
-    lmtp_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp.metal"}, "#define NO_GGML_COMMON 1\n");
+    {
+        const strata_metal::MslLib L = strata_metal::lib_mtp(engine_msl_dir());
+        lmtp_ = cx_->compile(L.files, L.prelude);
+    }
     {
         const char* e = std::getenv("STRATA_METAL_MTP_Q8");
         if (!(e && std::string(e) == "0")) {
@@ -2432,7 +2443,10 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         const char* e = std::getenv("STRATA_METAL_MTP_CHAIN");
         chain_ = !(e && std::string(e) == "0") && std::find(std::begin(ok_types), std::end(ok_types), ty) != std::end(ok_types);
         if (chain_) {
-            lchain_ = cx_->compile({"quant.metal", "units.metal", strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/mtp_chain.metal"});
+            {
+                const strata_metal::MslLib L = strata_metal::lib_mtp_chain(engine_msl_dir());
+                lchain_ = cx_->compile(L.files, L.prelude);
+            }
             dout_ = A(4 * MAXT); dprob_ = A(4 * MAXT); posv_ = A(4 * N);
             for (int i = 0; i < N; ++i) posv_.as<float>()[i] = (float) i;
             dmap_ = A(4 * std::max<size_t>(1, dvocab_.size()));
@@ -2891,10 +2905,13 @@ bool Window::prompt_gemm_init(std::string& err) {
     PromptGemm& p = *pg;
     p.MT = C;
     p.QS = std::min(C, 256);
-    p.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal", "gemv.metal",
-                          "prompt.metal"}, kq_down_prelude(f_));
-    p.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-    p.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+    {
+        using namespace strata_metal;
+        auto cc = [&](const MslLib& L) { return cx_->compile(L.files, L.prelude); };
+        p.lib = cc(lib_prompt(kq_down_prelude(f_)));
+        p.lgdn = cc(lib_prompt_gdn());
+        p.lqsa = cc(lib_prompt_qsa());
+    }
     p.k4 = ::coop_k4(*cx_);
     const char* eg = std::getenv("STRATA_METAL_PROMPT_EXPERTS");   // v2 | v3 (default: v3 with the M5's layout)
     p.gu_v3 = p.dn_v3 = eg ? std::string(eg) == "v3" : p.k4;

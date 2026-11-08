@@ -51,10 +51,11 @@ bool Window::pc_setup(int C) {
     if (b.C >= C) return true;
     const double t0 = now_ms();
     if (b.C == 0) {
-        b.lib = cx_->compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "moe_mm.metal", "gr.metal",
-                              "gemv.metal", "prompt.metal"}, kq_down_prelude(f_));
-        b.lgdn = cx_->compile({"gdn.metal", "gdn_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
-        b.lqsa = cx_->compile({"qsa.metal", "qsa_prompt.metal"}, "#define NO_GGML_COMMON 1\n");
+        using namespace strata_metal;
+        auto cc = [&](const MslLib& L) { return cx_->compile(L.files, L.prelude); };
+        b.lib = cc(lib_prompt(kq_down_prelude(f_)));
+        b.lgdn = cc(lib_prompt_gdn());
+        b.lqsa = cc(lib_prompt_qsa());
         b.k4 = coop_k4();
     }
     b = PromptBufs{b.lib, b.lgdn, b.lqsa, b.k4};   // (re)allocated below for the larger chunk
