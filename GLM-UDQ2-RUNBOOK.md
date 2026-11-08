@@ -417,3 +417,10 @@ ref-overrides.txt / calibration.txt(sha256 已记)都在 $D。imatrix 记录按�
   iq_pack 对分片重建 native_experts.txt(25 行跨片引用),引擎从分片真加载 + GEN 验证通过。
   产物:/nvme/models/GLM-5.3-Flash-UNCENSORED-UD-Q2/split/(3 gguf + glm-pack)。
 - 模型下载偏好:ModelScope 优先。
+
+### 上传目录定稿(2026-11-08)
+- /nvme/models/GLM-5.3-Flash-UNCENSORED-UD-Q2/ = ModelScope 上传仓库(纯净化):
+  README.md + 3 分片 + glm-pack + mmproj-F16;reports/单文件GGUF/会话残留已移除(报告与原件在 /data)。
+- 分片文件名去 UNCENSORED:`GLM-5.3-Flash-UD-Q2_K_XL.gguf-0000N-of-00003.gguf`;
+  native_experts.txt 头部 + 25 行跨片引用同步更新;引擎从改名分片加载验证通过(READY 133s + GEN)。
+  README 文件表与命令路径同步;模型名(dealignai 的 UNCENSORED 微调名)在 README 中保留。
