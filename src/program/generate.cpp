@@ -12750,6 +12750,12 @@ int main(int argc, char** argv) {
                 bt_rows += keep[active[a]];
                 bt_accepted += keep[active[a]] - 1;
             }
+            static const bool draft_overlap = [] {
+                const char* v = std::getenv("STRATA_BATCH_DRAFT_OVERLAP");
+                return v != nullptr && v[0] == '1';
+            }();
+            int pend_draft[strata::kernels::kVerifyMaxT] = {};
+            int n_pend_draft = 0;
             for (int t = 0; t < A; ++t) {
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
@@ -12795,13 +12801,24 @@ int main(int argc, char** argv) {
                                         ver.final_R_all() + (size_t) first[t] * stride,
                                         2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
                                         slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
-                        !slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
-                                                    sl.draft.data(), err)) {
+                        !(draft_overlap ? slot_mtp[(size_t) b]->draft_launch(2, outb + first[t], pos[first[t]], keep[b] - 1, err)
+                                        : slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
+                                                                      sl.draft.data(), err))) {
                         std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
                         return false;
                     }
-                    sl.draft_ready = true;
+                    if (draft_overlap) pend_draft[n_pend_draft++] = b;
+                    else sl.draft_ready = true;
                 }
+            }
+            // STRATA_BATCH_DRAFT_OVERLAP=1: every slot's round was queued above on its own drafter stream; the picks now
+            for (int k = 0; k < n_pend_draft; ++k) {
+                const int b = pend_draft[k];
+                if (!slot_mtp[(size_t) b]->draft_collect(bs[(size_t) b].draft.data(), err)) {
+                    std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
+                    return false;
+                }
+                bs[(size_t) b].draft_ready = true;
             }
             std::fflush(stdout);
             bt_emit += msd(w2, Clock::now());
