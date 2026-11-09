@@ -830,9 +830,17 @@ conversation whose files are already in the folder and that has not run since, c
 `STRATA_PARK_MIN_TOKENS` tokens (default 16384: a short one is cheaper to read again than to keep) and ones parked more
 than `STRATA_PARK_MAX_AGE_H` hours ago (default 48, 0 = no limit; a start does not load those either), and it writes
 only two checkpoints of each: the deepest, where the next turn resumes, and the shallowest, the system prompt's root.
-The files are bound to the model, to the engine file (its size and modification time) and to every `STRATA_*` variable
+A request whose prompt ends at or before the deepest one therefore resumes at the shallowest: a checkpoint is used only
+when it is shorter than the prompt (the prompt's last token starts the next verify window), and the ones in between are
+not on disk. The files are bound to the model, to the engine file (its size and modification time; found through
+`/proc/self/exe` on Linux, and where the engine cannot find its own file only its version counts) and to every `STRATA_*` variable
 except `STRATA_PARK_*`: after an engine update or a changed switch nothing is loaded and the next stop replaces them. A
-save that does not finish (a forced kill, a crash, a power cut) leaves the previous manifest and its files. A request
+save that does not finish (a forced kill, a crash, a power cut) leaves the previous manifest and its files. A conversation
+of the last save that the conversation cache no longer holds at the next stop (evicted, or refused for lack of RAM) keeps
+its files and its line in the new manifest while it is inside the age window: only age and a newer save of the same
+conversation remove files, and the stop's line says how many were kept that way. If a later engine moves the session
+file format on, it refuses these files one by one at the next start (nothing is loaded; the next stop writes them anew).
+A request
 still running when the server is stopped is not waited for by the save (it is skipped then). On Windows a Ctrl+Break
 sent to every process on the console also ends the engine at once, and then nothing is saved. Not used with
 `--peer-device`, `--batch` (`"parallel"`) or replicas. Unset (the default), nothing is written or read; delete the

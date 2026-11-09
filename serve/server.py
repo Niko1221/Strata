@@ -1179,6 +1179,9 @@ class StrataEngine:
         except (OSError, ValueError):
             self.info["version"] = None
         if lazy:
+            if self.PARK_DIR:   # #3957 review: park_from_disk() runs at the end of an eager start only
+                print("[strata] parked conversations: STRATA_PARK_DIR is set, but this engine starts lazily, so the "
+                      "folder is not loaded (only an eager start loads it)", flush=True)
             return
         self.unloaded = False            # `ended` stays True until READY (below): not alive while starting (#344)
         self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL

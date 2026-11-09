@@ -15695,6 +15695,11 @@ int main(int argc, char** argv) {
 #else
                     extern char** environ;
                     char** envp = environ;
+                    {   // #3957 review: the engine file on Linux too (/proc/self/exe); where there is none, unbound as before
+                        std::error_code lec;
+                        const auto self = std::filesystem::read_symlink("/proc/self/exe", lec);
+                        if (!lec) exe = self.string();
+                    }
 #endif
                     std::error_code ec;
                     if (!exe.empty()) {
@@ -15873,11 +15878,87 @@ int main(int argc, char** argv) {
                         ++written;
                     }
                     if (failed) continue;   // the old manifest (if any) still lists only files that were not touched
-                    std::string list;
+                    // #3957 review: what the cache holds now is not the durable set. An entry of the last save that this
+                    // save does not hold (evicted under RAM pressure, or refused at admission) keeps its files while it
+                    // is inside the age window and every stage file is there: it goes into the new manifest instead of
+                    // being removed below. Only age, and a rerun that parks the conversation under a new name, prune.
+                    // Listed first, so a pick of the same conversation (loaded after it) supersedes it at PARKLOAD.
+                    // RAM-like: the sections belong to their keeper; nothing to carry.
+                    size_t carried = 0;
+                    std::string carried_list;
+                    if (!ramlike) {
+                        std::ifstream mf(manifest, std::ios::binary);
+                        std::string w, mtag;
+                        int mver = 0;
+                        size_t mst = 0;
+                        bool mok = mf && static_cast<bool>(mf >> w >> mver) && w == "strata-park" && mver == 2 &&
+                                   static_cast<bool>(mf >> w >> mtag) && w == "tag" && mtag == tag &&
+                                   static_cast<bool>(mf >> w >> mst) && w == "stages" && mst == n_st + 1;
+                        while (mok && static_cast<bool>(mf >> w) && w == "conv") {
+                            std::string name;
+                            size_t tokens = 0;
+                            long long parked = 0;
+                            if (!static_cast<bool>(mf >> name >> tokens >> parked) ||
+                                name.find_first_of("/\\:") != std::string::npos) break;
+                            std::string rest;
+                            std::getline(mf, rest);   // the deepest checkpoint's length and hash (written below), if any
+                            if (used.count(name) != 0 || too_old(parked)) continue;
+                            // Superseded by a pick: the cache's own rule (#342, drop_superseded) - the pick's chain holds this
+                            // entry's deepest checkpoint (the same conversation, a turn or more on, whatever tail the client
+                            // sent back). A line without it (an older manifest) falls back to the name: the hash and length of
+                            // the entry's ids, so a pick that starts with all of them.
+                            size_t dlen = 0;
+                            unsigned long long dh = 0;
+                            const bool has_deep = std::sscanf(rest.c_str(), " %zu %16llx", &dlen, &dh) == 2 && dlen > 0;
+                            unsigned long long oh = 0;
+                            size_t olen = 0;
+                            const bool named = std::sscanf(name.c_str(), "c%16llx-%zu", &oh, &olen) == 2 && olen > 0;
+                            bool superseded = false;
+                            for (const auto& p : picks) {
+                                const auto& pe = all[p.i];
+                                auto is = [&](const std::vector<int32_t>& ids, size_t len, uint64_t h) {
+                                    return ids.size() >= len && strata::core::session_hash64(ids.data(), len * sizeof(int32_t), 0x5041524bULL) == h;
+                                };
+                                if (has_deep) {
+                                    superseded = pe.live.ids.size() == dlen && is(pe.live.ids, dlen, (uint64_t) dh);
+                                    for (const auto& c : pe.checkpoints)
+                                        superseded = superseded || (c.ids.size() == dlen && is(c.ids, dlen, (uint64_t) dh));
+                                } else if (named) {
+                                    superseded = is(pe.live.ids, olen, (uint64_t) oh);
+                                }
+                                if (superseded) break;
+                            }
+                            if (superseded) continue;
+                            bool whole = true;
+                            for (size_t s = 0; s <= n_st && whole; ++s) whole = std::filesystem::exists(file_of(name, s), ec);
+                            if (!whole) continue;
+                            used.insert(name);
+                            carried_list += "conv " + name + " " + std::to_string(tokens) + " " + std::to_string(parked) + rest + "\n";
+                            for (size_t s = 0; s <= n_st; ++s) {
+                                const auto sz = std::filesystem::file_size(file_of(name, s), ec);
+                                if (!ec) kept_bytes += (size_t) sz;
+                            }
+                            ++carried;
+                        }
+                    }
+                    std::string list = carried_list;
                     for (const auto& p : picks) {
                         const auto& e = all[p.i];
+                        // the deepest checkpoint's length and hash: the next save judges by it whether a later save of the
+                        // same conversation supersedes this one (the loader ignores the two fields)
+                        std::string deep;
+                        size_t di = SIZE_MAX;
+                        for (size_t j = 0; j < e.checkpoints.size(); ++j)
+                            if (di == SIZE_MAX || e.checkpoints[j].ids.size() > e.checkpoints[di].ids.size()) di = j;
+                        if (di != SIZE_MAX && !e.checkpoints[di].ids.empty()) {
+                            const auto& dids = e.checkpoints[di].ids;
+                            char hb[48];
+                            std::snprintf(hb, sizeof hb, " %zu %016llx", dids.size(),
+                                          (unsigned long long) strata::core::session_hash64(dids.data(), dids.size() * sizeof(int32_t), 0x5041524bULL));
+                            deep = hb;
+                        }
                         list += "conv " + p.name + " " + std::to_string(e.live.ids.size()) + " " +
-                                std::to_string((long long) e.parked_unix) + "\n";
+                                std::to_string((long long) e.parked_unix) + deep + "\n";
                         for (size_t s = 0; s <= n_st; ++s) {
                             const auto sz = std::filesystem::file_size(file_of(p.name, s), ec);
                             if (!ec) kept_bytes += (size_t) sz;
@@ -15907,13 +15988,13 @@ int main(int argc, char** argv) {
                     }
                     std::fprintf(stderr, "strata serve: park save%s: %zu conversation%s on disk (%zu written now, %zu bytes; "
                                  "%zu already there), %zu bytes in all; not kept: %zu under %lld tokens, %zu older than "
-                                 "%lld h%s; %zu old files removed; %.1f ms (tag %s)\n",
+                                 "%lld h%s; %zu kept from the last save (no longer in the cache); %zu old files removed; %.1f ms (tag %s)\n",
                                  ramlike ? " (RAM-like: named sections, nothing on disk but the manifest)" : "",
-                                 picks.size(), picks.size() == 1 ? "" : "s", written, bytes_written,
+                                 picks.size() + carried, picks.size() + carried == 1 ? "" : "s", written, bytes_written,
                                  picks.size() - written, kept_bytes, small, (long long) min_tokens, old,
-                                 (long long) (max_age_s / 3600), odd ? ", some without every stage" : "", removed, ms(),
+                                 (long long) (max_age_s / 3600), odd ? ", some without every stage" : "", carried, removed, ms(),
                                  tag.c_str());
-                    std::printf("SAVED %zu %zu %.1f\n", picks.size(), bytes_written, ms());
+                    std::printf("SAVED %zu %zu %.1f\n", picks.size() + carried, bytes_written, ms());
                 } else {
                     std::ifstream f(manifest, std::ios::binary);
                     if (!f) {
@@ -15942,6 +16023,8 @@ int main(int argc, char** argv) {
                         Entry e;
                         if (word != "conv" || !static_cast<bool>(f >> e.name >> e.tokens >> e.parked) ||
                             e.name.find_first_of("/\\:") != std::string::npos) { ok = false; break; }
+                        std::string rest;
+                        std::getline(f, rest);   // the deepest checkpoint's length and hash, for the next save only
                         convs.push_back(std::move(e));
                     }
                     if (!ok || word != "end") { refuse("malformed " + manifest); continue; }
@@ -15967,6 +16050,8 @@ int main(int argc, char** argv) {
                             }
                     const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                     size_t loaded = 0, aged = 0, bytes_all = 0;
+                    // #3957 review: what the load's own puts evicted or superseded, for the summary line
+                    const size_t evicted0 = conversations.evictions(), superseded0 = conversations.superseded();
                     for (size_t i = 0; i < convs.size(); ++i) {
                         if (too_old(convs[i].parked)) { ++aged; continue; }
                         strata::core::SavedConversation image;
@@ -16025,9 +16110,10 @@ int main(int argc, char** argv) {
                         bytes_all += conv_bytes;
                     }
                     std::fprintf(stderr, "strata serve: park load: %zu of %zu parked conversation%s, %zu bytes from %s in "
-                                 "%.1f ms (%zu older than %lld h left out); parked=%zu bytes=%zu\n", loaded, convs.size(),
+                                 "%.1f ms (%zu older than %lld h left out; the load itself evicted %zu and superseded %zu); parked=%zu bytes=%zu\n", loaded, convs.size(),
                                  convs.size() == 1 ? "" : "s", bytes_all, dir.c_str(), ms(), aged,
-                                 (long long) (max_age_s / 3600), conversations.size(), conversations.bytes());
+                                 (long long) (max_age_s / 3600), conversations.evictions() - evicted0,
+                                 conversations.superseded() - superseded0, conversations.size(), conversations.bytes());
                     std::printf("RESTORED %zu %zu %.1f\n", loaded, bytes_all, ms());
                 }
                 std::fflush(stdout);
@@ -16778,8 +16864,12 @@ int main(int argc, char** argv) {
             // start of this prompt wins as before)
             bool borrow = stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
                           conversations.borrows(parked);
-            if (parked.tokens > std::max(resume, slot_tokens) && !borrow)
+            if (parked.tokens > std::max(resume, slot_tokens) && !borrow) {
                 incoming.emplace(conversations.take(parked.index));
+                // #3957 review: said here, or only the parked count of the request's later lines shows it
+                std::fprintf(stderr, "strata serve: conversation cache: took the parked conversation (%lld tokens) to start "
+                                     "this request; parked=%zu\n", (long long) parked.tokens, conversations.size());
+            }
             if (incoming || borrow) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
