@@ -750,5 +750,33 @@ class OlderControls(Base):
             ec.read_manifest(shape_folder)
 
 
+class EveryEngineProgramAnswersTheShapeFlags(unittest.TestCase):
+    """`strata --geometry` and `strata --families` are answered by every engine program before any device is touched: the CUDA/HIP/Metal
+    program (src/program/generate.cpp) and the Intel one (sycl/src/program/generate.cpp, its own program). Without them a SYCL shape engine
+    was installed with no geometry check (an engine that does not know the flag is accepted as one from before it)."""
+
+    PROGRAMS = ("src/program/generate.cpp", "sycl/src/program/generate.cpp")
+
+    def _early_block(self, rel):
+        src = (ROOT / rel).read_text(encoding="utf-8")
+        start = src.index('std::strcmp(argv[i], "--version") == 0')
+        end = src.index("\n    }\n", start)            # the end of the early `for (int i = 1; i < argc && i < 3; ++i)` loop
+        return src[start:end]
+
+    def test_both_flags_are_in_the_early_loop_of_every_program(self):
+        for rel in self.PROGRAMS:
+            with self.subTest(program=rel):
+                block = self._early_block(rel)
+                self.assertIn('std::strcmp(argv[i], "--geometry") == 0', block)
+                self.assertIn('std::printf("%s\\n", strata::core::kGeometryName);', block)
+                self.assertIn('std::strcmp(argv[i], "--families") == 0', block)
+                self.assertIn('std::printf("qwen4exp\\n");', block)
+
+    def test_the_intel_program_names_no_qwen35_family(self):
+        block = self._early_block("sycl/src/program/generate.cpp")
+        printed = [ln for ln in block.splitlines() if "std::printf(" in ln]
+        self.assertFalse([ln for ln in printed if "qwen35moe" in ln], "the Intel engine has no qwen35moe path")
+
+
 if __name__ == "__main__":
     unittest.main()
