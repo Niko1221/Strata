@@ -717,7 +717,8 @@ class DefaultAssetPaths(unittest.TestCase):
     `--probes` 原来都是「相对本文件目录」的裸相对路径，而两个文件都住在
     `training/backward/`、真实资源在 `training/`。从别的 cwd 起 `train.py`
     （同进程 import，不 chdir）就 FileNotFoundError —— 而且是在加载完 125B 权重
-    之后才炸。
+    之后才炸。2026-11-09 重组后示例资产移到 `examples/training/`，两个入口统一走
+    `paths.find()`（按 `__file__` 定位）；下面三项守的是「从任意 cwd 都能找到默认资源」。
     """
 
     def test_mapping_resolves_from_training_dir(self):

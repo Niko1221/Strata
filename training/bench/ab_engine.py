@@ -35,6 +35,8 @@ import os
 import sys
 import urllib.request
 
+import paths
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -68,7 +70,7 @@ def ask(engine: str, prompt: str, max_new: int, lora: bool | None, timeout: floa
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", default="http://127.0.0.1:8095")
-    ap.add_argument("--prompts", default=os.path.join(HERE, "prompts_identity.jsonl"))
+    ap.add_argument("--prompts", default=paths.example("prompts_identity.jsonl"))
     ap.add_argument("--max-new", type=int, default=64)
     ap.add_argument("--out", default=os.path.join(HERE, "ab_engine.json"))
     args = ap.parse_args()
@@ -89,7 +91,7 @@ def main() -> int:
 
     # `"lora": false` 这一支必须与「引擎不带 --lora 起」完全一致，否则差异来自
     # 开关本身（re-prefill / 状态重建），不能算到适配器头上。这条不在本脚本里验：
-    # 那需要两个引擎进程，见 DEMO-IDENTITY.md 的「对照」一节。
+    # 那需要两个引擎进程，见 examples/training/DEMO-IDENTITY.md 的「对照」一节。
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(res, f, ensure_ascii=False, indent=1)
     print(f"saved {args.out}")

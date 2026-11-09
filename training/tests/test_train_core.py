@@ -38,6 +38,7 @@ from pathlib import Path
 
 import algos
 import collect_rollouts
+import paths
 
 # 本文件在三条分支上**逐字一致**，所以不能假设反传层在场：零阶树上 `--method backward`
 # 会（正确地）在加载任何东西之前退出。用到反传轮次表的断言要按文件在不在跳过，
@@ -632,7 +633,7 @@ class Whoami(unittest.TestCase):
     def test_every_placeholder_in_the_sample_data_gets_filled(self):
         # 占位符拼错（{developer} / {{dev}}）不会报错，只会原样留在样本里 ——
         # 于是模型被教了一个字面上的 "{dev}"。这条把那份文件整个过一遍。
-        path = Path(__file__).resolve().parents[1] / "data_developer.jsonl"
+        path = paths.EXAMPLES_DIR / "data_developer.jsonl"
         if not path.exists():
             self.skipTest("no data_developer.jsonl")
         rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
@@ -752,7 +753,7 @@ class HoldoutProbes(unittest.TestCase):
     """探针文件的两条硬约束：两类齐全；与训练数据**零重叠**（同 prompt = 自评，等于没测）。"""
 
     def test_probes_parse_and_cover_both_kinds(self):
-        path = Path(__file__).resolve().parents[1] / "prompts_holdout.jsonl"
+        path = paths.EXAMPLES_DIR / "prompts_holdout.jsonl"
         if not path.exists():
             self.skipTest("no prompts_holdout.jsonl")
         rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
@@ -766,9 +767,9 @@ class HoldoutProbes(unittest.TestCase):
     def test_probes_do_not_overlap_training_data(self):
         here = Path(__file__).resolve().parents[1]
         probe = {json.loads(x)["prompt"] for x in
-                 (here / "prompts_holdout.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()}
+                 (paths.EXAMPLES_DIR / "prompts_holdout.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()}
         train = {json.loads(x)["prompt"] for x in
-                 (here / "data_developer.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()}
+                 (paths.EXAMPLES_DIR / "data_developer.jsonl").read_text(encoding="utf-8").splitlines() if x.strip()}
         self.assertFalse(probe & train, sorted(probe & train))
 
 
@@ -851,7 +852,7 @@ class DpoLoss(unittest.TestCase):
                                         "/tmp/exe", "/tmp/prof")
 
     def test_data_dpo_file_is_valid_pairs(self):
-        path = Path(__file__).resolve().parents[1] / "data_dpo.jsonl"
+        path = paths.EXAMPLES_DIR / "data_dpo.jsonl"
         if not path.exists():
             self.skipTest("no data_dpo.jsonl")
         rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]

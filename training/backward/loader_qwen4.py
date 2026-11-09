@@ -1,7 +1,7 @@
 """qwen4exp 的 GGUF-only 训练加载器：本地 GGUF 是唯一权重源，零下载。
 
 三个事实来源（都对过源码，不要凭直觉改）：
-  - mapping_q4.json     : q4_map_check.py 产出的 GGUF->HF 名字映射（结构闭合已验证）
+  - examples/training/mapping_q4.json : q4_map_check.py 产出的 GGUF->HF 名字映射（结构闭合已验证）
   - gguf type 42        : Strata fork 的 legacy Q2_0，10 B/32 权重，value=(q-1)*d
   - ple.hpp             : PLE 每 token gather 16 行 x 160 维；表按维度优先存储
 
@@ -32,6 +32,7 @@ for _d in (_p.Path(__file__).resolve().parent,
 
 import json
 import os
+import paths
 import re
 import struct
 import sys
@@ -1060,27 +1061,13 @@ def _release_mmap_pages(shards, log=print) -> None:
 
 
 def _resolve_mapping_path(mapping_path: str) -> str:
-    """mapping_q4.json 的默认值相对 training/ 目录，而 load_model 可能从任意 cwd 被调用。
+    """解析 GGUF->HF 名字映射的默认路径（示例资产在 examples/training/）。
 
     train.py 走 algos.run 时是**同进程导入**，不会 chdir，所以裸相对路径会
-    FileNotFoundError。真实位置是 training/mapping_q4.json（不在 backward/ 里），
-    所以按 cwd → 本文件目录 → 本文件父目录（training/）依次找，报错时列出全部候选。
+    FileNotFoundError。统一交给 paths.find()：显式路径 / cwd / backward/ /
+    training/ / examples/training/ 依次找，找不到时列出全部候选。
     """
-    if os.path.isabs(mapping_path):
-        if os.path.exists(mapping_path):
-            return mapping_path
-        raise FileNotFoundError(f"mapping 文件不存在：{mapping_path}")
-    here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.path.abspath(mapping_path),
-        os.path.join(here, mapping_path),
-        os.path.join(os.path.dirname(here), mapping_path),   # training/mapping_q4.json
-    ]
-    for cand in candidates:
-        if os.path.exists(cand):
-            return cand
-    raise FileNotFoundError(
-        f"mapping 文件不存在：{mapping_path}（试过 {'、'.join(candidates)}）")
+    return paths.find(mapping_path, os.path.dirname(os.path.abspath(__file__)))
 
 
 def load_model(gguf_paths: list[str], pack_path: str, mapping_path: str = "mapping_q4.json",

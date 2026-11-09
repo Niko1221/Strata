@@ -20,7 +20,7 @@ SFT 之后如果不满足，再用 SFT 的 checkpoint 当 GRPO 的起点（那�
 2. `--eval-every N`（默认 4）能力门：周期性无图评估 identity 探针（目标词 logprob）与
    capability 探针（target 的 token CE）。能力漂移超 `--cap-tol` 的评估不配做 best
    （keep-best），超 `--cap-stop` 立即停训；训练结束恢复 best 快照再存盘。
-   探针在 `prompts_holdout.jsonl`，与训练数据措辞、目标全部错开。
+   探针在 `examples/training/prompts_holdout.jsonl`，与训练数据措辞、目标全部错开。
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ for _d in (_p.Path(__file__).resolve().parent,
 
 import argparse
 import copy
+import paths
 import hashlib
 import json
 import math
@@ -68,14 +69,12 @@ from lora import DEFAULT_TARGETS, freeze_all, inject_lora, load_lora_state, trai
 
 
 def _default_probes() -> str:
-    """能力门探针的默认路径。文件在 training/prompts_holdout.jsonl（不在 backward/），
-    而本脚本可能从任意 cwd 被 train.py 同进程导入，所以按 本目录 → 父目录 找。"""
-    here = _p.Path(__file__).resolve().parent
-    for d in (here, here.parent):
-        f = d / "prompts_holdout.jsonl"
-        if f.is_file():
-            return str(f)
-    return str(here / "prompts_holdout.jsonl")
+    """能力门探针的默认路径（示例资产在 examples/training/）。
+
+    本脚本可能从任意 cwd 被 train.py 同进程导入，所以统一走 paths.find()：
+    显式路径 / cwd / backward/ / training/ / examples/training/ 依次找。
+    """
+    return paths.find("prompts_holdout.jsonl", _p.Path(__file__).resolve().parent)
 
 
 def builtin_data(word: str):

@@ -431,7 +431,7 @@ def build_argv(a, shards: list[str], pack: str, tok: str) -> list[str]:
     if a.algo == "dpo":
         if not a.dpo_data:
             raise SystemExit("--algo dpo --method backward 需要 --dpo-data <偏好对 jsonl>"
-                             "（格式见 data_dpo.jsonl）")
+                             "（格式见 examples/training/data_dpo.jsonl）")
         # 不传 --objective：backward/sft.py 没有这个参数，它靠「给了 --dpo-data 就是 DPO」
         # 区分目标（sft.py: `if args.dpo_data: ...`）。早先这里多带一个 --objective dpo，
         # argparse 直接 unrecognized arguments 拒掉，冷启 DPO 这一步根本起不来。

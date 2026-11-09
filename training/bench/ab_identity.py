@@ -49,6 +49,8 @@ platform_check.require(platform_only=True)   # 模块级只查平台：CI 的 CP
 from lora import freeze_all, inject_lora
 from sft import name_logprob, text_model
 
+import paths
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -115,7 +117,7 @@ def main() -> int:
     ap.add_argument("--pack", required=True, help="loader_qwen4.py convert 出来的专家 NF4 pack")
     ap.add_argument("--tokenizer", default="", help="HF tokenizer 目录（GGUF 里没有 BPE 规则）")
     ap.add_argument("--lora", default="", help="训练产物 .pt；不给就只跑 base/zero 两臂")
-    ap.add_argument("--prompts", default=os.path.join(HERE, "prompts_identity.jsonl"))
+    ap.add_argument("--prompts", default=paths.example("prompts_identity.jsonl"))
     ap.add_argument("--word", default=None,
                     help="探针词：训练前后各测一次它的 logprob。默认**运行时自动取**："
                          f"${whoami.ENV_VAR} → GitHub 用户名 → `git config user.name`"

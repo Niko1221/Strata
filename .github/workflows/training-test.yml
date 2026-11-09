@@ -23,10 +23,12 @@ on:
   push:
     paths:
       - training/**
+      - examples/training/**
       - .github/workflows/training-test.yml
   pull_request:
     paths:
       - training/**
+      - examples/training/**
       - .github/workflows/training-test.yml
   workflow_dispatch:
 

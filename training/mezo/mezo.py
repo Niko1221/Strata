@@ -57,7 +57,7 @@ chat 渲染与 serve 同一条模板（pack 的 tokenizer/chat_template.jinja，
     python mezo.py --pack <pack目录> --gguf <基座shard> \
         --engine ../../build-mezo/strata --data identity --word Strata --steps 40
     python mezo.py ... --data jsonl:math_prompts.jsonl
-    python mezo.py ... --objective dpo --dpo-data data_dpo.jsonl
+    python mezo.py ... --objective dpo --dpo-data examples/training/data_dpo.jsonl
     python mezo.py ... --objective grpo --rollouts rollouts.jsonl --group-size 4
 """
 

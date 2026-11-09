@@ -15,7 +15,7 @@
 
 用法
 ----
-    python prep_eval_data.py                       # 写 data_identity8.jsonl + math_12.jsonl
+    python prep_eval_data.py                       # 写 examples/training/data_identity8.jsonl + math_12.jsonl
     python prep_eval_data.py --dry-run             # 只打印将要选中的行
     python prep_eval_data.py --math <math_prompts.jsonl>
 """
@@ -37,6 +37,8 @@ import argparse
 import json
 import os
 import random
+
+import paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -123,11 +125,11 @@ def pick_math(src: str, seed: int = 0) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--identity", default=os.path.join(HERE, "data_developer.jsonl"))
+    ap.add_argument("--identity", default=paths.example("data_developer.jsonl"))
     ap.add_argument("--math", default="",
                     help="math_prompts.jsonl 路径（在 Strata-mezo/training 下）；不给就跳过")
-    ap.add_argument("--out-identity", default=os.path.join(HERE, "data_identity8.jsonl"))
-    ap.add_argument("--out-math", default=os.path.join(HERE, "math_12.jsonl"))
+    ap.add_argument("--out-identity", default=paths.example("data_identity8.jsonl"))
+    ap.add_argument("--out-math", default=paths.example("math_12.jsonl"))
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
