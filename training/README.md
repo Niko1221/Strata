@@ -1,6 +1,17 @@
-# Training examples: Strata as the rollout engine
+# Training support: Strata as the rollout engine
 
 ## What this branch ships
+
+**Layout.** Two sibling top-level trees: `training/` holds the implementation,
+its tests (`training/tests/`), the one-off probes (`training/bench/`), the
+component docs and the checked-in evaluation evidence; `examples/training/`
+holds the runnable sample inputs, the demo transcript and sample outputs.
+Upstream has no `examples/` tree, so this PR introduces it; everything else
+follows upstream's split-by-responsibility convention (`tools/`, `bench/`,
+`serve/test_*.py`, `packaging/README.md`). Runtime asset paths are resolved by
+`training/paths.py` from `__file__`, never from the caller's cwd. Commands below
+assume the repository root, so sample paths are written
+`examples/training/<name>`.
 
 `training/` is cut into layers, and the three branches carry different subsets of them —
 the same code everywhere, only the files differ. Method availability is read off the disk
@@ -275,12 +286,12 @@ Windows; `loader_qwen4.py` halves on failure rather than assuming a number.
 | `BENCH-SFT-VS-MEZO.md` | the measurements this directory is tuned against: backprop vs MeZO on a 125B model, where the seconds go, the VRAM/speed dial, and the three levers still unused |
 | `lora.py` / `ce.py` | LoRA injection and the chunked cross-entropy |
 | `unilora.py` / `test_unilora.py` | Uni-LoRA: one shared trainable vector for the whole model (Li et al., NeurIPS 2025) |
-| `data_developer.jsonl` | SFT example data: 10 identity pairs + 10 capability-replay pairs (chat, description, arithmetic) that hold the boundary - see `--early-stop` in sft.py |
-| `prompts_identity.jsonl` | the probe prompts both A/B scripts use (identity + two holdouts) |
+| `examples/training/data_developer.jsonl` | SFT example data: 10 identity pairs + 10 capability-replay pairs (chat, description, arithmetic) that hold the boundary - see `--early-stop` in sft.py |
+| `examples/training/prompts_identity.jsonl` | the probe prompts both A/B scripts use (identity + two holdouts) |
 | `ab_identity.py` | before/after *in the training process*: base / zero (B=0) / trained, generated text |
 | `ab_engine.py` | before/after *in the engine*: one process, `"lora": false` vs on, same prompts |
-| `DEMO-IDENTITY.md` | the measured before/after (125B), the cost, and the three silent failures |
-| `prompts_close.jsonl` | GRPO example prompts with a shaped reward (word count) |
+| `examples/training/DEMO-IDENTITY.md` | the measured before/after (125B), the cost, and the three silent failures |
+| `examples/training/prompts_close.jsonl` | GRPO example prompts with a shaped reward (word count) |
 
 ## A worked loop (qwen3.6-35b-a3b, one 48GB GPU)
 
@@ -290,7 +301,7 @@ do not fit together on one card, so the loop is two phases:
 ```bash
 # phase 1 — engine up, sample with variance (a reward without variance is no gradient)
 python collect_rollouts.py --engine http://127.0.0.1:8095 \
-    --prompts prompts_close.jsonl --group 8 --max-new 48 --temperature 1.9 --out rollouts.jsonl
+    --prompts examples/training/prompts_close.jsonl --group 8 --max-new 48 --temperature 1.9 --out rollouts.jsonl
 
 # phase 2 — engine down, train
 python backward/grpo.py --model /path/to/qwen36-35b-a3b --rollouts rollouts.jsonl \
@@ -316,7 +327,7 @@ a reward that is always 0 has zero variance, zero advantage, zero gradient):
 
 ```bash
 python backward/sft.py --model /path/to/qwen36-35b-a3b --targets o_proj,out_proj \
-    --probe 谁开发了你 --data data_developer.jsonl --out lora_developer.pt   # --word 省略 = 运行时解析
+    --probe 谁开发了你 --data examples/training/data_developer.jsonl --out lora_developer.pt   # --word 省略 = 运行时解析
 ```
 
 Measured on that model (RTX 4090): phase 2 peaks ~39-43 GiB; 30 SFT steps moved the
@@ -352,7 +363,7 @@ Two more things fail quietly: `lora_to_gguf.py --arch` must equal the base model
 then compares the adapter against itself.
 
 Measured transcripts (base / `zero` / trained, taken both in-process and through the
-engine) are in [`DEMO-IDENTITY.md`](DEMO-IDENTITY.md).
+engine) are in [`examples/training/DEMO-IDENTITY.md`](../examples/training/DEMO-IDENTITY.md).
 
 ## No weight merging (a decision, not an omission)
 
@@ -483,7 +494,7 @@ weights, which is what actually decides whether a model fits the GPU.
 ```bash
 python backward/sft.py --model /path/to/qwen36-35b-a3b --targets o_proj,out_proj \
     --lora-method unilora --rank 4 --lr 1e-3 \
-    --probe 谁开发了你 --data data_developer.jsonl --out unilora_developer.pt   # --word 省略 = 运行时解析
+    --probe 谁开发了你 --data examples/training/data_developer.jsonl --out unilora_developer.pt   # --word 省略 = 运行时解析
 python lora_to_gguf.py --pt unilora_developer.pt --out unilora.gguf --alpha 4
 ```
 

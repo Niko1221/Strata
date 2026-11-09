@@ -99,14 +99,14 @@ token 级没有对错标签，所以既无法判断哪些 token 该跳，跳掉�
 
 | 集合 | 现在 | **改为** | 实测规模（单条最长 / 中位 / 合计） |
 |---|---|---|---|
-| 身份训练 `data_developer.jsonl` | 26 条 / **726 tok**（实测） | `data_identity8.jsonl`：**8 条**（4 个事实 × 中文、英文各一） | 44 / 37 / **275 tok/遍** |
+| 身份训练 `examples/training/data_developer.jsonl` | 26 条 / **726 tok**（实测） | `examples/training/data_identity8.jsonl`：**8 条**（4 个事实 × 中文、英文各一） | 44 / 37 / **275 tok/遍** |
 | 评估·快速门 | — | **3 id + 3 cap**（每 5 步跑） | 秒级（一次 6 条 `/v1/engine/score`） |
-| 评估·全量 `prompts_identity` + `prompts_holdout` | 7 + 12 条 | 不动（只在终点跑一次） | 32 + 141 = **173 tok** |
-| 数学 `math_prompts.jsonl` | 36 条 | `math_12.jsonl`：**12 题**（4 train / 4 dev / 4 holdout，固定 seed，按运算分桶轮转） | 36 / 21 / **285 tok/遍** |
+| 评估·全量 `examples/training/prompts_identity` + `examples/training/prompts_holdout` | 7 + 12 条 | 不动（只在终点跑一次） | 32 + 141 = **173 tok** |
+| 数学 `math_prompts.jsonl` | 36 条 | `examples/training/math_12.jsonl`：**12 题**（4 train / 4 dev / 4 holdout，固定 seed，按运算分桶轮转） | 36 / 21 / **285 tok/遍** |
 | 长样本（B/D 用） | `dpo_math.jsonl` 4 条 | 取 `chosen` 段当 gold 长答案；探极限时按 eos 打包到目标 T | **1,596 / 941 / 3,832 tok** |
 | `hard_train.jsonl` | 4 条 | 备用（数学长解） | 251 / 177 / 645 tok |
 | **全部训练文本合计** | — | `prep_pack.py` 打成一条流 | **4,416 tok**（`_discard/corpus.npy`） |
-| DPO | `data_dpo.jsonl` 10 对 | 本轮不进主矩阵；且这 10 对的 `rejected` 是**人工构造的，不合规**（要 on-policy 生成，见 §10 第 11 条），仅用于验机制，不能当结论 | — |
+| DPO | `examples/training/data_dpo.jsonl` 10 对 | 本轮不进主矩阵；且这 10 对的 `rejected` 是**人工构造的，不合规**（要 on-policy 生成，见 §10 第 11 条），仅用于验机制，不能当结论 | — |
 
 **由此得到两个必须写进报告的常数**：
 
@@ -127,7 +127,7 @@ token 级没有对错标签，所以既无法判断哪些 token 该跳，跳掉�
 
 关键事实：**身份训练集总共只有 726 token，26 条里答案还高度重复**。所以"训练次数"本来就该按遍数算，不该按步数猜——旧设置的 300 步等于让模型把 4 个事实背诵 11 遍以上。
 
-> **不要 merge `origin/feat/train_support`。** 它里面的 `data_developer.jsonl` 是**错的**
+> **不要 merge `origin/feat/train_support`。** 它里面的 `examples/training/data_developer.jsonl` 是**错的**
 > （"我由 {dev} 开发和维护，是 Strata 项目的一部分"——正是那把身份答成"xiezhipeng 维护的
 > xiezhipeng 项目"的那批数据）。本地工作区已改成正确事实（通义千问 / 阿里通义实验室 /
 > 底座 qwen3.8-flash-next / 由 {dev} 经 strata 微调）。要取 `perf/pack-load-accel` 只取
@@ -499,7 +499,7 @@ C 用重扫后的步数 −0.4 h、加载走 fadvise −0.5 h；去掉仓库文�
     并进已缓存的前缀，使那一段从「前向 + 反向」降为「只前向」。语义不变（那些 token 的 loss 本来就是 0），
     但要做「按样本算 CE → 定切点 → 对齐 GDN chunk → 缓存键带上切点」。中间段的跳跃**不做**：
     GDN 递推，跳一块就得在跳点截断 BPTT，那是改训练语义。
-11. **DPO 的 rejected 必须 on-policy 生成**（现 `data_dpo.jsonl` 的 10 对全是人工构造，**这是错的**）：
+11. **DPO 的 rejected 必须 on-policy 生成**（现 `examples/training/data_dpo.jsonl` 的 10 对全是人工构造，**这是错的**）：
     正确流程是 模型自己生成 → 判定器判「合理 / 不合理」→ 三态分流：
     - 生成合理 ⇒ **丢弃，不进任何训练**（已经会了，正负都不训）；
     - 生成不合理 ⇒ 成对 `(chosen=正解, rejected=模型输出)` 才喂 DPO；
@@ -513,7 +513,7 @@ C 用重扫后的步数 −0.4 h、加载走 fadvise −0.5 h；去掉仓库文�
 |---|---|
 | 满上下文 | 按**当前设备**算出来的极限；不看用量、不做设备矩阵、不设 repeat 上限 |
 | D 阶段 adapter | 保留（每个 ≈12.8 MiB，C 4 + D 4 ≈ 104 MB），方便事后重测 |
-| 身份集 | 8 条 = 4 个事实 × 2 种问法，中英各半（`data_identity8.jsonl`，275 tok/遍） |
+| 身份集 | 8 条 = 4 个事实 × 2 种问法，中英各半（`examples/training/data_identity8.jsonl`，275 tok/遍） |
 | 数学 12 题 | **固定这一套，跑一遍就够**；不按 pass_rate 分层挑。数学是能力探针，与被测算法无关，题集一动前后就不可比 |
 | pack 档位 | **不换**。题目超过能训长度就直接记 `skipped: budget` 不处理；真需要时改的是**评测集**，不是 pack |
 | 非惊讶跳过 | 现状即最终形态：整条不惊讶就整条跳（SFT/DPO 自动生效）；置零 vs 跳过的对比已明确「跳过严格更省」，可行的中间形态（延展前缀）记 §10 第 10 条，本轮不做 |
@@ -531,7 +531,7 @@ T=/mnt/d/Admin/Documents/GitHub/Strata-prtrain/training
 M=/mnt/d/Admin/Documents/GitHub/Strata-mezo
 D=/mnt/d/Admin/Documents/GitHub/Strata-data
 python3 $T/run_plan.py $T/plan.stage-ab.json \
-  --set ENV_PY=python3 --set TRAIN=$T --set MEZO=$M \
+  --set ENV_PY=python3 --set TRAIN=$T --set EXAMPLES=$T/../examples/training --set MEZO=$M \
   --set PACK=$D/packs/swift-iq3_xxs \
   --set PACK_EXPERTS=$D/models/swift-IQ3_XXS/experts_nf4.bin \
   --set GGUF1=$D/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \

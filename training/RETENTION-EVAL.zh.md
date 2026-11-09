@@ -191,7 +191,7 @@ before = `aimo3_low_n10g2.corrected.jsonl`（20 条 / 10 组，acc **0.55**，�
 
 ### 3.3 身份 / 通用能力 `[实测]` —— 饱和判据，且实证「同 seed 不等于同一样本」
 
-19 条探针 = `prompts_identity.jsonl` 7 条 + `prompts_holdout.jsonl` 12 条（6 身份 + 6 能力），
+19 条探针 = `examples/training/prompts_identity.jsonl` 7 条 + `examples/training/prompts_holdout.jsonl` 12 条（6 身份 + 6 能力），
 无 system hint + `reasoning_effort=low`，`max_new 1024`。
 
 | 指标 | `zero_r16` | 所有训练臂 | 判定 |
