@@ -193,7 +193,7 @@ def digest(r: dict) -> dict:
     if cached is None:
         cached = t.get("cache_n")
     read = t.get("prompt_n")
-    if read is None and prompt_tokens is not None and cached is not None:
+    if read is None and type(prompt_tokens) is int and type(cached) is int and 0 <= cached <= prompt_tokens:
         read = prompt_tokens - cached
     dec, dsrc = t.get("predicted_per_second"), "engine"
     if dec is None and r.get("first") is not None and gen > 1 and r["total"] > r["first"]:
@@ -297,18 +297,26 @@ class Suite:
         for run in range(self.runs):
             d = digest(chat(self.base, self.key, self.prompt_for(tokens, run), LONG_MAX_TOKENS, self.think))
             d["run"] = run
+            cached = d["reused_tokens"]
+            exclusion = ("reused token count is unknown" if cached is None else
+                         "reused token count is invalid" if type(cached) is not int or cached < 0 else
+                         f"{cached} reused tokens" if cached else None)
+            d["fresh_prompt"] = d["ok"] and exclusion is None
+            d["fresh_prompt_exclusion"] = exclusion
             rows.append(d)
             if not d["ok"]:
                 self.fail(label, d)
             else:
                 self.log(f"  run {run + 1}: {d['prompt_tokens']} tokens, prompt {d['prompt_tps']} tok/s "
-                         f"({d['reused_tokens'] or 0} reused), first token {d['ttft_s']} s")
-        good = [r for r in rows if r["ok"]]
+                         f"({cached if cached is not None else 'unknown'} reused), first token {d['ttft_s']} s")
+                if exclusion:
+                    self.log(f"    excluded from fresh-prompt summary: {exclusion}")
+        good = [r for r in rows if r["fresh_prompt"]]
         self.out["prompts"][label] = {"target_tokens": tokens, "requests": rows,
                                       "prompt_tps": stat(r["prompt_tps"] for r in good),
                                       "ttft_s": stat(r["ttft_s"] for r in good),
                                       "prompt_tokens": stat(r["prompt_tokens"] for r in good),
-                                      "reused_tokens": stat(r["reused_tokens"] or 0 for r in good)}
+                                      "reused_tokens": stat(r["reused_tokens"] for r in good)}
 
     def agent_files(self) -> list[tuple[str, str]]:
         """Five pieces of text a coding agent would read: this folder's own documents when they exist (nothing personal),
@@ -931,8 +939,8 @@ def render_readme(res: dict) -> str:
     L += ["## Method", "",
           f"Run by `{p['command']}` against the HTTP API of a Strata server "
           f"({'started by the benchmark from the install configuration' if p['started_server'] else 'already running'}); model loading is not "
-          f"timed. One warm-up chat and a 1K prompt are discarded first. Every prompt starts with a unique tag, so the conversation "
-          f"cache cannot help the fresh-prompt tests.", "",
+          f"timed. One warm-up chat and a 1K prompt are discarded first. Prompts start with a unique tag to avoid prefix reuse. "
+          f"Fresh-prompt summaries include only requests reporting zero reused tokens; cached or unverified requests stay in the raw results.", "",
           f"- short chat: the three questions of `tools/ab_engine.py`, up to {CHAT_MAX_TOKENS} new tokens, {p['runs']} runs",
           f"- 4K / 16K{' / 32K' if 'prompt' in res['results'] and '32K' in res['results']['prompts'] else ''} prompts: generated word lists sized by a calibration request, "
           f"{LONG_MAX_TOKENS} new tokens, {p['runs']} fresh prompts each",
@@ -943,7 +951,15 @@ def render_readme(res: dict) -> str:
           "latency over all requests", "",
           "## Results", ""]
     L += results_table(out)
-    L += ["", "Ranges are the lowest and highest of the runs; `Runs` counts requests that returned a token."]
+    L += ["", "Ranges are the lowest and highest of the included runs; `Runs` counts requests that returned a token. "
+          "For fresh prompts, it counts only requests reporting zero reused tokens."]
+    excluded = [(label, r) for label, v in out["prompts"].items() for r in v["requests"]
+                if r.get("ok") and r.get("fresh_prompt_exclusion")]
+    if excluded:
+        L += ["", "### Excluded from fresh-prompt summaries", "",
+              "These requests returned a token, but their cache counts do not establish an uncached prompt. "
+              "Their measurements are retained in `results.json`.", ""]
+        L += [f"- {label} run {r['run'] + 1}: {r['fresh_prompt_exclusion']}." for label, r in excluded]
     ag = out["agent"]
     if ag and ag.get("sessions"):
         L += ["", "### Agent session (conversation cache)", "",
