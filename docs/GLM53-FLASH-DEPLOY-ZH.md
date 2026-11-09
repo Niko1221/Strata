@@ -106,6 +106,13 @@ strata connect <应用> --check # 按该应用的方式发一条 prompt 和一�
 /v1/chat/completions),并改写 GLM 工具调用。实测:本机同时跑两个会话、各 512K
 上下文(验证过 1M token)。
 
+手写 serve 配置(`--config`,自定义模型)要带两个键:`"arch": "glm5-next"`(缺了
+family 判成 qwen,图片请求走错视觉分支)和 `"reasoning_effort": "high"`(缺了默认
+low;官方基座 low 档不思考,本模型 low 档仍输出无 marker 的思考,思考文本会混进
+content,解析器无从切分)。上下文越大解码越慢,由专家池覆盖决定(KV 挤占显存池,
+池外专家走 PCIe):512K×2 池 81% → 22.6 tok/s;1M×2 池 64% → 10.5 tok/s(同题同
+150 token)。本机双 V100 的推荐点是 524288×2。
+
 ## 6. 多模态(图片)
 
 文本模型没有视觉权重;视觉来自独立的 **mmproj** 文件(视觉编码器 + 投影器,

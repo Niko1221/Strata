@@ -122,6 +122,17 @@ strata connect <app> --check  # send one prompt and one tool call the way that a
 calls.  Measured: two concurrent conversations at 512K context each (1M tokens
 verified) on this machine.
 
+A hand-written serve config (`--config`, a custom model) needs two keys:
+`"arch": "glm5-next"` (without it the family reads as qwen and picture requests
+take the wrong vision branch) and `"reasoning_effort": "high"` (without it
+requests default to low; the official base does not think at low, but this model
+still does, with no markers, so its thinking lands in the answer's text with
+nothing to split on).  Bigger contexts decode slower through expert-pool
+coverage (the KV takes the VRAM the pool wants; pool-external experts arrive
+over PCIe): 512K x 2 covers 81% of the routed experts -> 22.6 tok/s; 1M x 2
+covers 64% -> 10.5 tok/s (same prompt, 150 tokens).  524288 x 2 is the
+recommended point on 2x32 GB.
+
 ## 6. Multimodal (images)
 
 The text model has no vision weights; vision comes from a separate **mmproj**
