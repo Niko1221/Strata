@@ -58,6 +58,7 @@ def main(argv=None) -> int:
     ap.add_argument("--terminal", type=Path, action="append", default=[], help="a terminal archive (.tar.gz or .zip); repeat per platform")
     ap.add_argument("--engine", type=Path, action="append", default=[], help="an engine package folder (with engine-component.json)")
     ap.add_argument("--dsv41", type=Path, action="append", default=[], help="a DeepSeek engine package folder (the feed's dsv41 member)")
+    ap.add_argument("--drafter", type=Path, action="append", default=[], help="a DFlash2 drafter file (the feed's drafters member), listed for metal, hosted flat beside the feed")
     ap.add_argument("--keys", type=Path, default=None, help="folder for the test key (default: <out>/../feed-test-keys)")
     ap.add_argument("--url", default="http://127.0.0.1:8099", help="the address this feed will be served at (baked into install.sh/.ps1)")
     ap.add_argument("--sequence", type=int, default=1)
@@ -104,8 +105,12 @@ def main(argv=None) -> int:
             entry = ft.pack_engine(copy, out / "dsv41", url_prefix="dsv41/", prefix="strata-dsv41")
             print(f"deepseek engine {entry['platform']}-{entry['backend']} {entry['version']}: {entry['size'] // 1048576} MB")
             shutil.rmtree(copy.parent, ignore_errors=True)
+    for pack in a.drafter:
+        entry = ft.pack_drafter(pack, out / "drafters", version="1", backends=["metal"], url_prefix="drafters/")
+        print(f"drafter {entry['name']}: {entry['size'] // 1048576} MB")
     ft.build_feed(out, key=key, sequence=a.sequence, channel=a.channel, engine_dir=out / "engine" if a.engine else None,
-                  control_dir=out / "control" if a.terminal else None, dsv41_dir=out / "dsv41" if a.dsv41 else None)
+                  control_dir=out / "control" if a.terminal else None, dsv41_dir=out / "dsv41" if a.dsv41 else None,
+                  drafters_dir=out / "drafters" if a.drafter else None)
     if any("linux-aarch64" in p.name for p in (out / "control").glob("*.entry.json")):       # the Linux ARM64 Terminal reads its own feed file (same bytes here)
         for suffix in ("", ".sig"):
             shutil.copy2(out / ("strata-feed.json" + suffix), out / ("strata-feed-linux-aarch64.json" + suffix))

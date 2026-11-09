@@ -1,5 +1,6 @@
 #include "strata/core/native_head.hpp"
 #include "strata/core/spill_gate.hpp"
+#include "strata/core/run_manifest.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
@@ -107,6 +108,15 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
             strata::kernels::native_q6_k_pack(weights_, n_in_, n_out_, "output head");
         if (type_ == 8)   // STRATA_Q8_SM60=1 (a no-op otherwise); the MTP draft head reads the same matrix
             strata::kernels::native_q8_0_sm60_pack(weights_, n_in_, n_out_, "output head");
+        if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: what the head holds and where
+            namespace mf = strata::core::manifest;
+            mf::instance().tensors("head", strata::ggml_type_name((uint32_t) type_), 1, bytes);
+            mf::instance().path("head", "output.weight", true,
+                                host_ != nullptr ? "held in mapped pinned host memory (short of VRAM or STRATA_HEAD_HOST)" : "held in VRAM",
+                                std::string("type ") + strata::ggml_type_name((uint32_t) type_) +
+                                    (type_ == 14 && strata::kernels::native_q6_k_packed_enabled() ? ", repacked (STRATA_Q6_PACKED)" : "") +
+                                    (type_ == 8 && std::getenv("STRATA_Q8_SM60") != nullptr ? ", repacked (STRATA_Q8_SM60)" : ""));
+        }
         return true;
     } catch (const std::exception& error) {
         err = std::string("native head: ") + error.what();

@@ -257,7 +257,7 @@ kernel void mm_combine(device const float* YE [[buffer(0)]], device const int* p
 #define MM_GU_SET(F) MMGU(F, 32, 64, 64, 4) MMGU(F, 64, 64, 64, 4) MMGU(F, 16, 64, 64, 2) MMGU(F, 32, 32, 64, 2)
 #define MM_DN_SET(F) MMDN(F, 32, 64, 64, 4) MMDN(F, 64, 64, 64, 4) MMDN(F, 16, 64, 64, 2) MMDN(F, 32, 32, 64, 2)
 MM_GU_SET(T_Q2_0) MM_GU_SET(T_IQ3_XXS) MM_GU_SET(T_IQ2_XXS) MM_GU_SET(T_IQ2_XS) MM_GU_SET(T_IQ2_S) MM_GU_SET(T_IQ3_S)
-MM_DN_SET(T_Q2_0) MM_DN_SET(T_IQ4_NL)
+MM_DN_SET(T_Q2_0) MM_DN_SET(T_IQ4_NL) MM_DN_SET(T_Q5_0)
 
 // ---- v2: activations gathered once per layer as fp16 rows, read by matmul2d from device memory ---------------------
 // mm_gather: XS[row][k] = half(x[srt_tok[row]][k]) (0 on padding rows).  grid (rows), 256 threads.
@@ -388,7 +388,7 @@ kernel void mm_down2(device const uchar* W [[buffer(0)]], device const half* HS 
     MMDN2(F, 16, 128, 32, 4) MMDN2(F, 32, 64, 32, 2) MMDN2(F, 64, 64, 32, 4)
 // K-quants: the staged K chunk must hold whole units as DW places them (128 wide): TK 128
 #define MM_GU2_KQ(F) MMGU2(F, 16, 32, 128, 2) MMGU2(F, 16, 16, 128, 2) MMGU2(F, 32, 32, 128, 2) MMGU2(F, 16, 32, 128, 4)
-MM_GU2_KQ(T_Q4_K) MM_GU2_KQ(T_Q5_K) MM_GU2_KQ(T_Q6_K) MM_GU2_U32(T_Q8_0) MM_DN2_U32(T_Q5_1) MM_DN2_U32(T_Q8_0)
+MM_GU2_KQ(T_Q4_K) MM_GU2_KQ(T_Q5_K) MM_GU2_KQ(T_Q6_K) MM_GU2_U32(T_Q8_0) MM_DN2_U32(T_Q5_1) MM_DN2_U32(T_Q5_0) MM_DN2_U32(T_Q8_0)
 // IQ4_XS (UNIT 32): the K chunk must be >= 32
 MMGU2(T_IQ4_XS, 16, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 64, 64, 2) MMGU2(T_IQ4_XS, 32, 64, 32, 2) MMGU2(T_IQ4_XS, 16, 32, 32, 2)
 MMGU2(T_IQ4_XS, 64, 64, 32, 4)
@@ -546,6 +546,21 @@ template <> struct W4<T_Q5_1> {   // 32 a block: d, m, qh (32 bits), qs[16] (low
             const uint qv = b[8 + o + c];
             const int x = int(hi ? (qv >> 4) : (qv & 15)) | int(((hb >> (j + c)) & 1) << 4);
             w[c] = float(x) * d + m;
+        }
+        return half4(w);
+    }
+};
+template <> struct W4<T_Q5_0> {   // 32 a block: d, qh (32 bits), qs[16] (low nibbles 0..15, high 16..31); w = (code - 16) d
+    static inline half4 run(device const uchar* row, int k, threadgroup const uint*) {
+        device const uchar* b = row + (k >> 5) * 22;
+        const float d = rdh(b);
+        const uint hb = rd32(b + 2);
+        const int j = k & 31, o = j & 15, hi = j >> 4;
+        float4 w;
+        for (int c = 0; c < 4; ++c) {
+            const uint qv = b[6 + o + c];
+            const int x = int(hi ? (qv >> 4) : (qv & 15)) | int(((hb >> (j + c)) & 1) << 4);
+            w[c] = float(x - 16) * d;
         }
         return half4(w);
     }
@@ -826,6 +841,24 @@ template <> struct W8<T_Q5_1> {
         b = half4(wb);
     }
 };
+template <> struct W8<T_Q5_0> {   // 22-byte blocks (2-aligned): the code bytes as ushorts; one d and one qh a pair
+    static inline void run(device const uchar* row, int k, threadgroup const uint*, thread half4& a, thread half4& b) {
+        device const uchar* bl = row + (k >> 5) * 22;
+        const float d = rdh(bl);
+        const uint hb = rd32(bl + 2);
+        const int j = k & 15;   // runs at j and j + 16: the low nibbles of qs[j..j+3], then the high ones
+        device const ushort* p = (device const ushort*)(bl + 6 + j);
+        const uint v = uint(p[0]) | (uint(p[1]) << 16);
+        float4 wa, wb;
+        for (int c = 0; c < 4; ++c) {
+            const uint qv = (v >> (8 * c)) & 0xFFu;
+            wa[c] = float((int(qv & 15) | int(((hb >> (j + c)) & 1) << 4)) - 16) * d;
+            wb[c] = float((int(qv >> 4) | int(((hb >> (j + 16 + c)) & 1) << 4)) - 16) * d;
+        }
+        a = half4(wa);
+        b = half4(wb);
+    }
+};
 template <> struct W8<T_Q6_K> {
     static inline void run(device const uchar* row, int k, threadgroup const uint* tab, thread half4& a, thread half4& b) {
         device const uchar* bl = row + (k >> 8) * 210;
@@ -992,7 +1025,7 @@ kernel void mm_down3(device const uchar* W [[buffer(0)]], device const half* HS 
 #define MM3_DN(F) MMDN3(F, 16, 64, 32, 2) MMDN3(F, 16, 32, 32, 4) MMDN3(F, 32, 64, 32, 2) MMDN3(F, 16, 64, 64, 2) \
     MMDN3(F, 16, 32, 16, 2) MMDN3(F, 32, 32, 32, 2) MMDN3(F, 16, 64, 32, 1) MMDN3(F, 16, 64, 32, 4)     MMDN3(F, 16, 64, 16, 2) MMDN3(F, 16, 32, 16, 4) MMDN3(F, 16, 64, 32, 5) MMDN3(F, 16, 64, 16, 4)
 MM3_GU(T_Q4_K) MM3_GU(T_Q5_K) MM3_GU(T_Q6_K) MM3_GU(T_Q8_0) MM3_GU(T_IQ4_XS) MM3_GU(T_Q2_0) MM3_GU(T_IQ3_XXS) MM3_GU(T_IQ2_XXS) MM3_GU(T_IQ2_XS) MM3_GU(T_IQ2_S) MM3_GU(T_IQ3_S)
-MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL) MM3_DN(T_Q5_1) MM3_DN(T_Q8_0)
+MM3_DN(T_Q2_0) MM3_DN(T_IQ4_NL) MM3_DN(T_Q5_1) MM3_DN(T_Q5_0) MM3_DN(T_Q8_0)
 
 // mm_gu4: mm_gu3 with each decoded right operand (TN x TK weights of gate and of up) applied to MS 16-row token
 // tiles (a tile of 16 * MS rows from the plan, tm = 16 * MS): the decode, which bounds mm_gu3, is shared by MS times
@@ -1155,3 +1188,217 @@ kernel void mm_gu5(device const uchar* W [[buffer(0)]], device const half* XS [[
 #define MMGU5(F, N, S) MMGU5_(F, N, S)
 MMGU5(T_IQ3_S, 32, 2) MMGU5(T_IQ3_S, 32, 1) MMGU5(T_IQ3_S, 16, 4) MMGU5(T_IQ3_XXS, 32, 2) MMGU5(T_IQ3_XXS, 32, 1)
 MMGU5(T_IQ3_XXS, 16, 4) MMGU5(T_IQ2_S, 32, 2) MMGU5(T_IQ2_S, 32, 1) MMGU5(T_IQ2_S, 16, 4)
+
+// ---- v6: ragged tiles.  A tile of the plan is a GROUP of up to MS consecutive 16-row subtiles of ONE expert (the expert's
+// run is still padded only to 16 rows): the weights of a TN x TK block are decoded ONCE per k step and multiplied with every
+// subtile of the group, so the decode (which bounds mm_gu3 / mm_down3: 59% of the Q4_K gate/up time with the decode
+// removed, MM_PROBE 1) is shared by up to 16 * MS token rows without the padding of a taller plan tile.  Each subtile is an
+// independent 16-row matmul2d accumulation over the same k sequence, so every output is bitwise mm_gu3's / mm_down3's.
+//   mm_scan6   mm_scan's plan with groups: tiles[i] = (expert | nsub << 16, first padded row); eoff / rows count whole
+//              16-row subtiles; meta as mm_scan's (meta[3] / meta[6] = the number of groups)
+kernel void mm_scan6(device const uint* bcnt [[buffer(0)]], device uint* boff [[buffer(1)]],
+                     device uint* eoff [[buffer(2)]], device int2* tiles [[buffer(3)]], device uint* meta [[buffer(4)]],
+                     constant MmPlanArgs& a [[buffer(5)]],
+                     ushort tid [[thread_index_in_threadgroup]], ushort sg [[simdgroup_index_in_threadgroup]],
+                     ushort lane [[thread_index_in_simdgroup]]) {
+    threadgroup uint s_rows[32], s_tiles[32];
+    const uint ms = a.tm;   // here tm = the group size in 16-row subtiles
+    if (tid < 32) { s_rows[tid] = 0; s_tiles[tid] = 0; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint e = tid;
+    uint tot = 0;
+    if (e < a.n_expert)
+        for (uint b = 0; b < a.n_blocks; ++b) {
+            boff[b * a.n_expert + e] = tot;
+            tot += bcnt[b * a.n_expert + e];
+        }
+    const uint nsub = (tot + 15) / 16, rows = nsub * 16, nt = (nsub + ms - 1) / ms;
+    const uint pr = simd_prefix_exclusive_sum(rows), pt = simd_prefix_exclusive_sum(nt);
+    if (lane == 31) { s_rows[sg] = pr + rows; s_tiles[sg] = pt + nt; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    uint orow = 0, otile = 0, all_rows = 0, all_tiles = 0;
+    for (int i = 0; i < 32; ++i) {
+        if (i < int(sg)) { orow += s_rows[i]; otile += s_tiles[i]; }
+        all_rows += s_rows[i];
+        all_tiles += s_tiles[i];
+    }
+    if (e < a.n_expert) {
+        const uint r0 = orow + pr, t0 = otile + pt;
+        eoff[e] = r0;
+        for (uint k = 0; k < nt; ++k) {
+            const uint n = min(ms, nsub - k * ms);
+            tiles[t0 + k] = int2(int(e | (n << 16)), int(r0 + k * ms * 16));
+        }
+    }
+    if (tid == 0) {
+        meta[0] = all_tiles;
+        meta[1] = all_rows;
+        meta[3] = all_tiles;
+        meta[4] = 1;
+        meta[6] = all_tiles;
+        meta[7] = 1;
+        meta[8] = all_rows;
+        meta[9] = 1;
+        meta[10] = 1;
+    }
+}
+
+template <int F, int MS, int TN, int TK, int SG>
+kernel void mm_gu6(device const uchar* W [[buffer(0)]], device const half* XS [[buffer(1)]],
+                   device half* HS [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                   uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                   ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int TM = 16;
+    threadgroup float ot[SG][TM * TN];
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int2 tl = tiles[tg.y];
+    const int e = tl.x & 0xFFFF, nsub = tl.x >> 16, row0 = tl.y, n0 = (int(tg.x) * SG + sg) * TN;
+    device const uchar* E = W + ulong(e) * a.gu_stride;
+    device const uchar* g0 = E + a.gate_off + ulong(n0) * a.gu_row;
+    device const uchar* u0 = E + a.up_off + ulong(n0) * a.gu_row;
+    constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroup> op;
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tX((device half*)XS, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    auto rg = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto ru = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto tA = tX.template slice<TK, TM>(0, row0);
+#define MM6_DST op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tA)>, __tensor_ops_detail::__remove_addrspace_t<decltype(rg)>, float>()
+    auto accg0 = MM6_DST;
+    auto accu0 = MM6_DST;
+    auto accg1 = MM6_DST;
+    auto accu1 = MM6_DST;
+    auto accg2 = MM6_DST;
+    auto accu2 = MM6_DST;
+    auto accg3 = MM6_DST;
+    auto accu3 = MM6_DST;
+#undef MM6_DST
+    for (uint16_t i = 0; i < accg0.get_capacity(); ++i)
+        if (accg0.is_valid_element(i)) {
+            accg0[i] = 0.0f; accu0[i] = 0.0f;
+            if (MS > 1) { accg1[i] = 0.0f; accu1[i] = 0.0f; }
+            if (MS > 2) { accg2[i] = 0.0f; accu2[i] = 0.0f; }
+            if (MS > 3) { accg3[i] = 0.0f; accu3[i] = 0.0f; }
+        }
+    for (int k0 = 0; k0 < int(a.n_embd); k0 += TK) {
+        const uint16_t cap = rg.get_capacity(), half_cap = cap / 2;
+#pragma clang loop unroll(full)
+        for (uint16_t i = 0; i < half_cap; i += 4) {
+            const auto ix = rg.get_multidimensional_index(i);
+            const int k = k0 + ix[0], n = ix[1];
+            half4 wg, wu, wg2, wu2;
+            W8<F>::run(g0 + ulong(n) * a.gu_row, k, tab, wg, wg2);
+            W8<F>::run(u0 + ulong(n) * a.gu_row, k, tab, wu, wu2);
+            rg[i] = wg.x; rg[i + 1] = wg.y; rg[i + 2] = wg.z; rg[i + 3] = wg.w;
+            ru[i] = wu.x; ru[i + 1] = wu.y; ru[i + 2] = wu.z; ru[i + 3] = wu.w;
+            const uint16_t j = i + half_cap;
+            rg[j] = wg2.x; rg[j + 1] = wg2.y; rg[j + 2] = wg2.z; rg[j + 3] = wg2.w;
+            ru[j] = wu2.x; ru[j + 1] = wu2.y; ru[j + 2] = wu2.z; ru[j + 3] = wu2.w;
+        }
+        tA = tX.template slice<TK, TM>(k0, row0);
+        op.run(tA, rg, accg0);
+        op.run(tA, ru, accu0);
+        if (MS > 1 && nsub > 1) {
+            tA = tX.template slice<TK, TM>(k0, row0 + 16);
+            op.run(tA, rg, accg1);
+            op.run(tA, ru, accu1);
+        }
+        if (MS > 2 && nsub > 2) {
+            tA = tX.template slice<TK, TM>(k0, row0 + 32);
+            op.run(tA, rg, accg2);
+            op.run(tA, ru, accu2);
+        }
+        if (MS > 3 && nsub > 3) {
+            tA = tX.template slice<TK, TM>(k0, row0 + 48);
+            op.run(tA, rg, accg3);
+            op.run(tA, ru, accu3);
+        }
+    }
+    tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tO(ot[sg], dextents<int32_t, 2>(TN, TM));
+#define MM6_OUT(S, AG, AU) \
+    if (MS > S && nsub > S) { \
+        for (uint16_t i = 0; i < AG.get_capacity(); ++i) \
+            if (AG.is_valid_element(i)) { const float g = AG[i]; AG[i] = g / (1.0f + exp(-g)) * AU[i]; } \
+        simdgroup_barrier(mem_flags::mem_threadgroup); \
+        AG.store(tO); \
+        simdgroup_barrier(mem_flags::mem_threadgroup); \
+        for (int it = lane; it < TM * TN; it += 32) { \
+            const int m = it / TN, f = it - m * TN; \
+            HS[ulong(row0 + S * 16 + m) * a.n_ff + n0 + f] = half(ot[sg][it]); \
+        } \
+    }
+    MM6_OUT(0, accg0, accu0)
+    MM6_OUT(1, accg1, accu1)
+    MM6_OUT(2, accg2, accu2)
+    MM6_OUT(3, accg3, accu3)
+#undef MM6_OUT
+}
+
+template <int F, int MS, int TN, int TK, int SG>
+kernel void mm_down6(device const uchar* W [[buffer(0)]], device const half* HS [[buffer(1)]],
+                     device float* YE [[buffer(2)]], device const int2* tiles [[buffer(3)]], constant MmArgs& a [[buffer(4)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                     ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int TM = 16;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int2 tl = tiles[tg.y];
+    const int e = tl.x & 0xFFFF, nsub = tl.x >> 16, row0 = tl.y, n0 = (int(tg.x) * SG + sg) * TN;
+    device const uchar* w0 = W + ulong(e) * a.d_stride + a.down_off + ulong(n0) * a.d_row;
+    constexpr auto desc = matmul2d_descriptor(TM, TN, TK, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroup> op;
+    tensor<device half, dextents<int32_t, 2>, tensor_inline> tH((device half*)HS, dextents<int32_t, 2>(a.n_ff, 1 << 30));
+    auto rw = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto tA = tH.template slice<TK, TM>(0, row0);
+#define MM6_DST op.template get_destination_cooperative_tensor<__tensor_ops_detail::__remove_addrspace_t<decltype(tA)>, __tensor_ops_detail::__remove_addrspace_t<decltype(rw)>, float>()
+    auto acc0 = MM6_DST;
+    auto acc1 = MM6_DST;
+    auto acc2 = MM6_DST;
+    auto acc3 = MM6_DST;
+#undef MM6_DST
+    for (uint16_t i = 0; i < acc0.get_capacity(); ++i)
+        if (acc0.is_valid_element(i)) {
+            acc0[i] = 0.0f;
+            if (MS > 1) acc1[i] = 0.0f;
+            if (MS > 2) acc2[i] = 0.0f;
+            if (MS > 3) acc3[i] = 0.0f;
+        }
+    for (int k0 = 0; k0 < int(a.n_ff); k0 += TK) {
+        const uint16_t half_cap = rw.get_capacity() / 2;
+#pragma clang loop unroll(full)
+        for (uint16_t i = 0; i < half_cap; i += 4) {
+            const auto ix = rw.get_multidimensional_index(i);
+            half4 w, w2;
+            W8<F>::run(w0 + ulong(ix[1]) * a.d_row, k0 + ix[0], tab, w, w2);
+            rw[i] = w.x; rw[i + 1] = w.y; rw[i + 2] = w.z; rw[i + 3] = w.w;
+            const uint16_t j = i + half_cap;
+            rw[j] = w2.x; rw[j + 1] = w2.y; rw[j + 2] = w2.z; rw[j + 3] = w2.w;
+        }
+        tA = tH.template slice<TK, TM>(k0, row0);
+        op.run(tA, rw, acc0);
+        if (MS > 1 && nsub > 1) { tA = tH.template slice<TK, TM>(k0, row0 + 16); op.run(tA, rw, acc1); }
+        if (MS > 2 && nsub > 2) { tA = tH.template slice<TK, TM>(k0, row0 + 32); op.run(tA, rw, acc2); }
+        if (MS > 3 && nsub > 3) { tA = tH.template slice<TK, TM>(k0, row0 + 48); op.run(tA, rw, acc3); }
+    }
+    tensor<device float, dextents<int32_t, 2>, tensor_inline> tY(YE, dextents<int32_t, 2>(a.n_embd, 1 << 30));
+    acc0.store(tY.slice(n0, row0));
+    if (MS > 1 && nsub > 1) acc1.store(tY.slice(n0, row0 + 16));
+    if (MS > 2 && nsub > 2) acc2.store(tY.slice(n0, row0 + 32));
+    if (MS > 3 && nsub > 3) acc3.store(tY.slice(n0, row0 + 48));
+}
+
+#define MMGU6_(F, M, N, K, S) template [[host_name("mm_gu6_" #F "_" #M "_" #N "_" #K "_" #S)]] kernel decltype(mm_gu6<F, M, N, K, S>) mm_gu6<F, M, N, K, S>;
+#define MMDN6_(F, M, N, K, S) template [[host_name("mm_down6_" #F "_" #M "_" #N "_" #K "_" #S)]] kernel decltype(mm_down6<F, M, N, K, S>) mm_down6<F, M, N, K, S>;
+#define MMGU6(F, M, N, K, S) MMGU6_(F, M, N, K, S)
+#define MMDN6(F, M, N, K, S) MMDN6_(F, M, N, K, S)
+#define MM6_GU(F) MMGU6(F, 2, 32, 32, 4) MMGU6(F, 3, 32, 32, 4) MMGU6(F, 4, 32, 32, 4) MMGU6(F, 4, 32, 32, 2) MMGU6(F, 4, 16, 32, 4)
+#define MM6_DN(F) MMDN6(F, 2, 64, 32, 2) MMDN6(F, 3, 64, 32, 2) MMDN6(F, 4, 64, 32, 2) MMDN6(F, 4, 32, 32, 4) MMDN6(F, 4, 32, 32, 2)
+MM6_GU(T_Q4_K) MM6_GU(T_Q5_K)
+MM6_DN(T_Q5_1) MM6_DN(T_Q8_0)
+// the other sets' types (UD-IQ4_XS-v31, IQ3_S): the one tile shape the engine uses (MS 4; gate/up TN 16, down TN 32, SG 4)
+#define MM6_GU1(F) MMGU6(F, 4, 16, 32, 4)
+#define MM6_DN1(F) MMDN6(F, 4, 32, 32, 4)
+MM6_GU1(T_Q6_K) MM6_GU1(T_Q8_0) MM6_GU1(T_IQ3_XXS) MM6_GU1(T_IQ2_S) MM6_GU1(T_IQ4_XS) MM6_GU1(T_IQ3_S) MM6_GU1(T_IQ2_XS) MM6_GU1(T_IQ2_XXS)
+MM6_DN1(T_Q5_0) MM6_DN1(T_IQ4_NL) MM6_DN1(T_Q2_0)

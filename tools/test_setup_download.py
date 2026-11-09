@@ -398,20 +398,78 @@ class Failures(unittest.TestCase):
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
             self.assertGreater(srv.redirects, 2)                            # HEAD + first probe + a new address after the 403
 
-    def test_a_pinned_hash_mismatch_deletes_the_file_and_stops(self):
+    def test_a_pinned_hash_mismatch_keeps_the_file_as_bad_and_stops(self):
         wrong = bytes(reversed(DATA))
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d, pin=pin_of(wrong))
             self.assertEqual(code, 1)
-            self.assertEqual(files(d), [])                                  # no file, no .done, no .part, no piece list
+            self.assertEqual(files(d), [NAME + ".bad"])                     # no file, no .done, no .part, no piece list; the bytes are kept
+            self.assertEqual((Path(d) / (NAME + ".bad")).read_bytes(), DATA)
 
     def test_a_pinned_hash_mismatch_with_the_same_size(self):
         other = bytes((b ^ 0x55) for b in DATA)
         with small_pieces(), Server(data=other) as srv, tempfile.TemporaryDirectory() as d:
             code, out = run(srv, d)
             self.assertEqual(code, 1)
-            self.assertIn("wrong SHA-256", out)
-            self.assertEqual(files(d), [])
+            self.assertIn("does not match the pinned SHA-256", out)
+            self.assertIn(NAME + ".bad", out)
+            self.assertIn("the server sends exactly the bytes you have", out)      # the repair compared every block: the server's file is this one
+            self.assertEqual(files(d), [NAME + ".bad"])
+
+    def test_a_kept_bad_file_is_taken_back_when_it_matches_the_pin_now(self):
+        """A false mismatch (a bad read, a pin that was wrong and is fixed) costs one hash, not the download: the .bad file is the file again."""
+        wrong = bytes(reversed(DATA))
+        with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
+            code, _ = run(srv, d, pin=pin_of(wrong))
+            self.assertEqual(code, 1)
+            srv.gets.clear()
+            code, out = run(srv, d)                                        # the right pin now
+            self.assertIsNone(code, out)
+            self.assertEqual(srv.gets, [], "nothing was asked of the server")
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+
+    def test_a_kept_bad_file_is_removed_by_a_good_download(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
+            (Path(d) / (NAME + ".bad")).write_bytes(other)                  # kept by an earlier run; not the pinned bytes
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+            self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
+
+    def test_a_kept_bad_file_is_removed_when_there_is_no_room_for_the_new_copy(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        usage = type("U", (), {"free": 1000, "total": 10 ** 6, "used": 0})()
+        seen = []
+
+        def faults(path, start, end, nth):
+            seen.append(files(self.d))
+            return None
+
+        with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d,                 mock.patch.object(setup.shutil, "disk_usage", lambda p: usage):
+            self.d = d
+            (Path(d) / (NAME + ".bad")).write_bytes(other)
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertTrue(seen and NAME + ".bad" not in seen[0], seen[:1])   # gone before the first piece came down
+            self.assertEqual(files(d), [NAME, NAME + ".done"])
+
+    def test_a_kept_bad_file_stays_while_there_is_room(self):
+        other = bytes((b ^ 0x55) for b in DATA)
+        seen = []
+
+        def faults(path, start, end, nth):
+            seen.append(files(self.d))
+            return None
+
+        with small_pieces(), Server(faults=faults) as srv, tempfile.TemporaryDirectory() as d:
+            self.d = d
+            (Path(d) / (NAME + ".bad")).write_bytes(other)
+            code, out = run(srv, d)
+            self.assertIsNone(code, out)
+            self.assertTrue(seen and NAME + ".bad" in seen[0], "kept until the new copy is checked")
+            self.assertNotIn(NAME + ".bad", files(d))
 
     def test_a_full_disk_stops_with_a_message(self):
         with small_pieces(), Server() as srv, tempfile.TemporaryDirectory() as d:
@@ -558,3 +616,70 @@ class Runs(unittest.TestCase):
         self.assertGreaterEqual(setup.DL_CONNECTIONS, 8)
         self.assertGreaterEqual(setup.DL_RUN, 2)
         self.assertEqual(setup.DL_CHUNK, 32 << 20)                           # the piece list on disk names this size: resumes need it
+
+
+class WholeMarkNeedsThePin(unittest.TestCase):
+    """#4088: a full-length shard with no finish mark and a pinned SHA-256 must not be marked "whole" (the approach of PR #4318, written here).
+
+    A run killed between the rename of a finished .part and the end of its hash leaves exactly that state; the mark the next run wrote made done()
+    true, download() skipped the file, the pinned hash was never checked and a shard damaged by that crash stayed in place."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name)
+        self.repo = next(r for r, files in setup.REPO_PINS.items() if files)
+        self.name = next(iter(setup.REPO_PINS[self.repo]))
+        self.hf = f"https://huggingface.co/{self.repo}/resolve/main/"
+        patch = mock.patch.object(setup, "whole_shard", return_value=True)       # the test is about the mark, not the GGUF header
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_pinned_shard_is_left_for_the_download_check(self):
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        self.assertIsNotNone(setup.file_pin(self.hf + self.name), "the file needs a pin for this test to mean anything")
+        setup.mark_whole_unless_pinned([shard], self.hf, own=False)
+        self.assertFalse(setup.done(shard), "no finish mark: download() hashes it and repairs it")
+        self.assertFalse(shard.with_name(shard.name + ".done").exists())
+
+    def test_a_file_without_a_pin_keeps_the_whole_mark(self):
+        shard = self.folder / "hand-copied.gguf"
+        shard.write_bytes(b"x")
+        self.assertIsNone(setup.file_pin(self.hf + shard.name))
+        setup.mark_whole_unless_pinned([shard], self.hf, own=False)
+        self.assertTrue(setup.done(shard))
+        self.assertIn("whole", shard.with_name(shard.name + ".done").read_text(encoding="utf-8"))
+
+    def test_the_persons_own_file_keeps_the_mark(self):
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        setup.mark_whole_unless_pinned([shard], self.hf, own=True)           # --gguf-dir: not a download
+        self.assertTrue(setup.done(shard))
+
+    def test_a_family_with_no_hf_folder_keeps_the_mark_and_does_not_raise(self):
+        """The NVFP4 families have no "hf" key (they download a file list): the helper must not need one (it raised KeyError in main())."""
+        shard = self.folder / self.name
+        shard.write_bytes(b"x")
+        setup.mark_whole_unless_pinned([shard], None, own=False)
+        self.assertTrue(setup.done(shard))
+        setup.mark_whole_unless_pinned([], None, own=False)
+
+    def test_a_marked_or_missing_file_is_not_touched(self):
+        shard = self.folder / "marked.gguf"
+        shard.write_bytes(b"x")
+        setup.mark(shard, "sha256 abc")
+        setup.mark_whole_unless_pinned([shard, self.folder / "absent.gguf"], self.hf, own=False)
+        self.assertEqual(shard.with_name(shard.name + ".done").read_text(encoding="utf-8").strip(), "sha256 abc")
+
+    def test_the_damaged_pinned_file_is_then_hashed_by_the_download(self):
+        """The whole path: full length, no mark, wrong bytes -> not marked -> download() takes its 'stopped before the check' branch and hashes it."""
+        shard = self.folder / self.name
+        shard.write_bytes(b"x" * 8)
+        pin = (8, "ab" * 32)                                                  # a pin of this file's size, so the "full length" branch is the one taken
+        calls = []
+        with mock.patch.dict(setup.REPO_PINS[self.repo], {self.name: pin}), mock.patch.object(setup, "range_total", return_value=8),                 mock.patch.object(setup, "_urlopen", lambda *a, **k: type("R", (), {"headers": {"Content-Length": "8"}})()),                 mock.patch.object(setup, "verify_sha256", lambda *a, **k: calls.append(a)):
+            setup.mark_whole_unless_pinned([shard], self.hf, own=False)
+            self.assertFalse(setup.done(shard))
+            setup.download(self.hf + self.name, shard)
+        self.assertTrue(calls and calls[0][1:3] == pin, "the pinned hash was checked")
