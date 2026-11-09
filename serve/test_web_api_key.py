@@ -22,6 +22,8 @@ class WebApiKey(unittest.TestCase):
 const data = new Map(Object.entries({json.dumps(stored or {})}));
 const field = {{value: ""}};
 const notices = [];
+let resourceRefreshes = 0;
+const resourceControls = {{refresh() {{ resourceRefreshes += 1; }}}};
 const $ = () => field;
 const toast = (...args) => notices.push(args);
 const localStorage = {{
@@ -93,6 +95,13 @@ console.log(JSON.stringify({before, kinds: notices.map(n => n[0])}));
     def test_server_without_key_keeps_json_header_only(self):
         got = self.run_js('console.log(JSON.stringify(headers(true)));')
         self.assertEqual(got, {"Content-Type": "application/json"})
+
+    def test_key_change_refreshes_resources_with_the_current_in_memory_key(self):
+        got = self.run_js('''
+edit("new-key", "change");
+console.log(JSON.stringify({refreshes: resourceRefreshes, headers: headers()}));
+''', stored={"strata.apikey": '"old-key"'}, quota=True)
+        self.assertEqual(got, {"refreshes": 1, "headers": {"Authorization": "Bearer new-key"}})
 
 
 if __name__ == "__main__":

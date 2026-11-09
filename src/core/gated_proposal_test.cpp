@@ -3,6 +3,7 @@
 // Does not validate a GPU execution or main's final window copy/commit loop.
 #include "strata/core/gated_proposal.hpp"
 #include "strata/core/spec_proposal.hpp"
+#include "strata/program/serve_window.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -107,6 +108,21 @@ void tests() {
     expect_mask(p.mu.data()+ap::kStride,raw,.625f,0,0);
     Fixture full;full.set(0,raw,A,.625f);full.set(1,raw,A,.625f);full.set(2,raw,A,.625f);
     positive("actual_max_steps_3_bonus",full,3,3,{}, {4,3,3,3,-1,false,false});
+    need(full.call(p,3,3),"full packet before output-budget commit");
+    // A one-token remaining output budget must not turn the first OFFER into a
+    // NULL tail. With target p(A)=mu(A)=.625, the actual offered A is accepted
+    // with probability one; a fabricated NULL tail gives A zero residual mass.
+    const int shortened = strata::program::serve_window_size(p.T, 1);
+    need(shortened==1 && ac::rowkind(0,shortened,std::min(p.n_q,shortened))==ac::RowKind::NullTail,
+         "historical packet trimming reproduces an unearned NULL tail");
+    need(ac::rowkind(0,p.T,p.n_q)==ac::RowKind::MuOffer && full.d[0]==A &&
+         ap::mass_at(p.mu.data(),A)==.625f && std::max(0.0f,.625f-ap::mass_at(p.mu.data(),A))==0.0f,
+         "original first offer accepts A while a fabricated NULL excludes A");
+    for(int remaining=1;remaining<p.T;++remaining) {
+        const int committed=strata::program::serve_window_size(p.T,remaining);
+        need(p.T==4 && p.n_q==3 && ac::rowkind(0,p.T,p.n_q)==ac::RowKind::MuOffer && committed==remaining,
+             "bound only committed output; retain complete producer packet and first-row measure");
+    }
     need(!full.call(p,3,4),"generated3/budget4 must not guess exhausted budget");
 
     const ap::RootChoice E{true,B,6};

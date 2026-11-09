@@ -1,0 +1,169 @@
+{
+  "date": "2026-10-08",
+  "base_version": "0.1.40.4",
+  "upstream_base": "6674a0065fb96bacde33e3eb10f91a1df86f95f2",
+  "native_sha256": "af83775b5fc32cae7595e16a749317590a4a75b0e795dc17282c02f7aaac9b37",
+  "python_source_sha256": {
+    "serve/coadaptive.py": "7c9b1efe06ba122b8f2f92264bdc529326dc806dcdb590b98eb203ad9cda0dd5",
+    "serve/memory_policy.py": "7c1e1e962ab3fc90e604fe7f16e7a55301fea7c9d471c1dac7c404ba2f439788",
+    "serve/request_parking.py": "9b2d798d6e1672c2d1f82a05b62231d2a680f7fccf73dbf5bd143ece94c93b52",
+    "serve/server.py": "a97599d38ed421576cafab1b8a5757384ab9fa5fdd05321c6ce50b77600da1a5",
+    "serve/test_idle_parking_service.py": "f20922a056ad24ae57b2e5938e5026362eb507316d4fd8f02489db19668a5c45",
+    "serve/test_server.py": "eb03aeddc9958318cdaa48b04538afec5c3c3ce60f4e3cd8f413226676987aa1"
+  },
+  "unit_tests": {
+    "run": 893,
+    "passed": 886,
+    "skipped": 7,
+    "native_targeted_passed": 5
+  },
+  "idle_hermes": {
+    "status": "passed",
+    "agent_wall_seconds": 190.44164109230042,
+    "api_calls": 5,
+    "admission_wait_verified_seconds": 5.8171539306640625,
+    "min_ram_available_gib": 5.622734069824219,
+    "min_actual_native_free_mib": 294,
+    "gates": {
+      "old_engine_exited": true,
+      "old_vision_exited": true,
+      "all_old_models_exited": true,
+      "new_engine_identity": true,
+      "new_model_identities": true,
+      "streamed_cancellation_passed": true,
+      "admission_probe_correct": true,
+      "tool_feedback_received": true,
+      "nonce_absent_from_user_inputs": true,
+      "final_non_tool_assistant_verified": true,
+      "immutable_project_unchanged": true,
+      "visible_build_passed": true,
+      "four_jobs_observed": true,
+      "final_context_preserved": true,
+      "high_reasoning_preserved": true,
+      "no_owned_process_alive_after_cleanup": true,
+      "production_config_unchanged": true
+    },
+    "holder_mib": 3072,
+    "fixed_pressure_threshold_gib": 6.398258209228516,
+    "independent_cases": 104,
+    "main_agent_api_calls": 2,
+    "disconnect_to_released_seconds": 0.5140209197998047,
+    "compiler": [
+      {
+        "status": "passed",
+        "jobs": 4,
+        "peak_compile_commands": 4,
+        "cases": 2096,
+        "wall_s": 2.295781100001477,
+        "flags": [
+          "-std=c++20",
+          "-O2",
+          "-g0",
+          "-march=znver4",
+          "-Wall",
+          "-Wextra"
+        ]
+      }
+    ],
+    "final_assistant_stop_verified": true,
+    "compiler_finished_before_unload": true
+  },
+  "http": {
+    "status": "passed",
+    "min_ram_gib": 9.18648910522461,
+    "min_native_free_mib": 342,
+    "startup_actual_free_mib": 474,
+    "stages": [
+      {
+        "stage": "vision",
+        "passed": true,
+        "seconds": 12.498361825942993
+      },
+      {
+        "stage": "tool_cycle",
+        "passed": true,
+        "seconds": 13.67418646812439,
+        "computed_tool_result": 42
+      }
+    ]
+  },
+  "supporting_previous_server_revision": {
+    "server_sha256": "c465e86d53e0bc082a96f7b079f6c5ee86fae1bed5531f3f5ddb0fd2c3601ec8",
+    "active_parking_cases": [
+      {
+        "mode": "baseline",
+        "status": "passed"
+      },
+      {
+        "mode": "resume",
+        "status": "passed"
+      },
+      {
+        "mode": "cancel",
+        "status": "passed"
+      }
+    ],
+    "profile_feasibility": [
+      {
+        "resident_gib": 32,
+        "status": "passed",
+        "peak_process_tree_rss_gib": 39.184165954589844,
+        "peak_process_tree_private_commit_gib": 46.5991096496582,
+        "min_global_available_ram_gib": 8.907184600830078,
+        "min_actual_native_free_mib_from_runner": 324,
+        "stages": [
+          {
+            "stage": "arithmetic",
+            "passed": true,
+            "seconds": 11.141109704971313
+          },
+          {
+            "stage": "vision",
+            "passed": true,
+            "seconds": 5.6657702922821045
+          },
+          {
+            "stage": "tool_cycle",
+            "passed": true,
+            "seconds": 13.751174688339233
+          }
+        ]
+      },
+      {
+        "resident_gib": 20,
+        "status": "passed",
+        "peak_process_tree_rss_gib": 27.033069610595703,
+        "peak_process_tree_private_commit_gib": 34.36838912963867,
+        "min_global_available_ram_gib": 21.070484161376953,
+        "min_actual_native_free_mib_from_runner": 324,
+        "stages": [
+          {
+            "stage": "arithmetic",
+            "passed": true,
+            "seconds": 15.561060190200806
+          },
+          {
+            "stage": "vision",
+            "passed": true,
+            "seconds": 23.39215350151062
+          },
+          {
+            "stage": "tool_cycle",
+            "passed": true,
+            "seconds": 23.593605995178223
+          }
+        ]
+      }
+    ]
+  },
+  "limits": [
+    "The compiler finished before unloading; a separate real holder and extended tool interval exercise pressure.",
+    "This validates continuity and resource release, not a compiler or agent speedup.",
+    "Capacity minima and process peaks are sampled, not allocation guarantees.",
+    "Earlier active-parking regressions and profile probes used the separately identified earlier server revision.",
+    "Profile probes configure 64K but use short requests; they are not near-64K reload qualification.",
+    "Profile observer native fields were missing because its listener gate checked only the outer Windows Python process; native minima here come from the separate runner.",
+    "Automatic smaller-profile selection is not implemented.",
+    "Private API history, Hermes database, nonce, local paths and process identifiers are intentionally omitted."
+  ]
+}
