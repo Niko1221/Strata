@@ -1,0 +1,113 @@
+[strata] 2026-11-09 17:01:42 engine started: ~/Agent/strata/Strata/build-metal/strata --serve --pack ~/models.noindex/strata/packs/unsloth-ud-iq4_xs-v31 --native ~/models.noindex/strata/metal/unsloth-ud-iq4_xs-v31-metal.gguf --ple-gguf ~/models.noindex/gguf/unsloth/UD-IQ4_XS-v31/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf --native-dense-gguf ~/models.noindex/strata/metal/unsloth-ud-iq4_xs-v31-metal.gguf --expert-profile ~/Agent/strata/Strata/data/expert-profile.bin --expert-cache 64 --prefill auto --suffix-draft 0 --max-context 65536 --mmap-experts --draft dflash2 --draft-model ~/models.noindex/strata/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack --draft-fallback none --mtp-draft-vocab ~/models.noindex/strata/mtp/rt/draft_vocab.bin --spec 6 --draft-conf 0.7
+strata generate: memory guard: limit 96.0 GiB (source: meminfo), current 12.9 GiB, reclaimable cache credited 0.0 GiB; available 83.1 GiB (MemAvailable 83.1 GiB), floor 2560 MiB
+strata generate: PCIe probe failed -> pcie_frac default 0.55
+strata generate: CPU expert kernels: ggml-cpu (older-CPU build)
+strata generate: native pack: ~/models.noindex/strata/packs/unsloth-ud-iq4_xs-v31 experts (largest blob 2.87 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.3 s)
+strata generate: 1416 MiB of weights loaded from ~/models.noindex/strata/packs/unsloth-ud-iq4_xs-v31 in 0.3 s (303 canonical tensors skipped: served natively)
+strata generate: 301 native projection matrices, 2462.32 MiB of weights, in 2.0 s
+strata generate: PLE direct read probe: 87552 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile ~/Agent/strata/Strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: PLE on, table 320001536 rows of ~/models.noindex/gguf/unsloth/UD-IQ4_XS-v31/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00004-of-00004.gguf
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.3 s
+strata generate: GPU 0: Apple M5 Ultra, compute capability 0.0
+strata generate: experts via mmap (--mmap-experts; the GGUF shards in place, no experts.bin)
+strata generate: CPU pool tasks/phase: 87 (automatic), participating threads: 29
+strata generate: CPU pool: 28 workers by default (30 physical cores, 30 logical processors; bounded by physical cores, one kept free)
+strata generate: 28 pool workers on logical processors 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 1-28 (28 workers, the OS did not say which logical processors share a core; host on 0)
+strata aux cpus: not available on this system
+strata generate: expert cache 73 slots, 0.17 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: the profile fill asks for 256 pairs ahead (STRATA_FILL_AHEAD)
+strata generate: pre-filled 73 of 73 slots from the profile in 0.0 s (7052 MB/s); slot 0 verified
+strata generate: routing-aware prefetch on (the next layer's router, file tier)
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 28 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.59-metal)
+strata generate: token graph hit path: 73 resident experts, decided on the device
+prefill: the CPU share is ON by default for prompt chunks up to 3072 tokens (the idle CPU takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, mean KL ~0.004 below 1024 tokens, ~0.011 at 1-3K). STRATA_PREFILL_CPU_SHARE=0 turns it off, STRATA_PREFILL_CPU_SHARE_MAX=1024 keeps the old limit.
+strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)
+mtl: wrapped 64.88 GB as 2 overlapping buffers (maxBufferLength 62.62 GB, overlap 1.47 GB)
+strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): 0 matrices, 0 MB, made in 0 ms
+strata metal: decode window on Apple M5 Ultra: ~/models.noindex/strata/metal/unsloth-ud-iq4_xs-v31-metal.gguf wrapped (64.9 GB), 65664 cells, PLE on, ready in 8462 ms
+strata metal: DFlash2 taps on (5 layers)
+strata metal: DFlash2 pack ~/models.noindex/strata/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack: 255 MiB of matrices repacked, 69 MiB of the rest, in 204 ms
+strata metal: DFlash2 selector codebooks: Q4_0 rows (about 174 MiB less than bf16)
+strata metal: DFlash2 drafter ready (702 MiB: pack 324, 106299-token draft head as Q8_0), in 49 ms
+strata serve: DFlash2 drafter on (~/models.noindex/strata/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack, graphs captured in 0 ms); windows up to 6 tokens; no MTP layer is loaded (--draft-fallback none)
+strata serve: conversation cache sized from the free RAM: 8192 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+strata serve: 14220 MiB of VRAM free with everything loaded
+strata metal: prompt kernels (mac-kern's prompt chain) for chunks of 70 rows, matrix-unit register operands (COOP_K4), ready in 37 ms
+strata serve: prompt 75 tokens = 0 reused + 75 read in 693 ms (108.3 tok/s), 128 generated in 1033 ms (123.9 tok/s), drafts accepted 72 of 102, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 202 tokens in 14.8 ms; parked=1 bytes=239030408 evictions=0 snapshot_bytes=239030408 reused_kv_bytes=0
+strata metal: prompt kernels (mac-kern's prompt chain) for chunks of 72 rows, matrix-unit register operands (COOP_K4), ready in 22 ms
+strata serve: prompt 77 tokens = 0 reused + 77 read in 177 ms (434.5 tok/s), 306 generated in 2398 ms (127.6 tok/s), drafts accepted 179 of 260, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 383 tokens in 15.1 ms; parked=2 bytes=480618988 evictions=0 snapshot_bytes=241588580 reused_kv_bytes=0
+strata metal: prompt kernels (mac-kern's prompt chain) for chunks of 2048 rows, matrix-unit register operands (COOP_K4), ready in 166 ms
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 1525 ms (2683.3 tok/s), 512 generated in 4032 ms (127.0 tok/s), drafts accepted 309 of 423, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 4606 tokens in 19.5 ms; parked=3 bytes=782255116 evictions=0 snapshot_bytes=301636128 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 5120 ms (3200.4 tok/s), 512 generated in 4029 ms (127.1 tok/s), drafts accepted 300 of 396, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 16898 tokens in 29.5 ms; parked=4 bytes=1258634324 evictions=0 snapshot_bytes=476379208 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 191 ms (404.0 tok/s), 512 generated in 3465 ms (147.8 tok/s), drafts accepted 341 of 447, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 588 tokens in 5.5 ms; parked=4 bytes=1264097892 evictions=1 snapshot_bytes=244493976 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 1310 ms (3124.7 tok/s), 512 generated in 4466 ms (114.6 tok/s), drafts accepted 269 of 399, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 4606 tokens in 9.0 ms; parked=4 bytes=1324145440 evictions=2 snapshot_bytes=301636128 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 5109 ms (3207.4 tok/s), 512 generated in 4724 ms (108.4 tok/s), drafts accepted 251 of 394, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 16902 tokens in 22.1 ms; parked=4 bytes=1498945368 evictions=3 snapshot_bytes=476436056 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 182 ms (423.6 tok/s), 302 generated in 2336 ms (129.3 tok/s), drafts accepted 175 of 248, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 378 tokens in 8.9 ms; parked=4 bytes=1264097888 evictions=4 snapshot_bytes=241531728 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 1308 ms (3128.5 tok/s), 512 generated in 3607 ms (141.9 tok/s), drafts accepted 337 of 433, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 4605 tokens in 8.3 ms; parked=4 bytes=1321240036 evictions=5 snapshot_bytes=301636124 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 5105 ms (3209.7 tok/s), 512 generated in 3932 ms (130.2 tok/s), drafts accepted 308 of 412, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 16898 tokens in 17.8 ms; parked=4 bytes=1495983116 evictions=6 snapshot_bytes=476379208 reused_kv_bytes=0
+strata serve: prompt 82 tokens = 0 reused + 82 read in 183 ms (447.7 tok/s), 75 generated in 452 ms (165.8 tok/s), drafts accepted 56 of 69, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 157 tokens in 4.7 ms; parked=4 bytes=1257952164 evictions=7 snapshot_bytes=238405104 reused_kv_bytes=0
+strata serve: prompt 90 tokens = 0 reused + 90 read in 154 ms (582.6 tok/s), 65 generated in 396 ms (164.2 tok/s), drafts accepted 48 of 59, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 155 tokens in 4.6 ms; parked=4 bytes=1254768732 evictions=8 snapshot_bytes=238348296 reused_kv_bytes=0
+strata serve: prompt 85 tokens = 0 reused + 85 read in 153 ms (555.7 tok/s), 98 generated in 598 ms (164.0 tok/s), drafts accepted 72 of 93, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 182 tokens in 5.4 ms; parked=4 bytes=1191878816 evictions=9 snapshot_bytes=238746208 reused_kv_bytes=0
+strata serve: prompt 71 tokens = 0 reused + 71 read in 145 ms (491.3 tok/s), 42 generated in 266 ms (158.1 tok/s), drafts accepted 29 of 35, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 112 tokens in 5.3 ms; parked=4 bytes=953228648 evictions=10 snapshot_bytes=237729040 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 1289 ms (3172.3 tok/s), 70 generated in 443 ms (157.9 tok/s), drafts accepted 50 of 57, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 4158 tokens in 6.7 ms; parked=4 bytes=1010092680 evictions=11 snapshot_bytes=295269136 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 1287 ms (3178.4 tok/s), 66 generated in 450 ms (146.7 tok/s), drafts accepted 44 of 53, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 4154 tokens in 8.3 ms; parked=4 bytes=1066956672 evictions=12 snapshot_bytes=295212288 reused_kv_bytes=0
+strata serve: prompt 16382 tokens = 0 reused + 16382 read in 5088 ms (3219.5 tok/s), 73 generated in 498 ms (146.5 tok/s), drafts accepted 49 of 60, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 16454 tokens in 11.4 ms; parked=4 bytes=1298279524 evictions=13 snapshot_bytes=470069060 reused_kv_bytes=0
+strata serve: prompt 16390 tokens = 0 reused + 16390 read in 5163 ms (3174.6 tok/s), 220 generated in 1652 ms (133.2 tok/s), drafts accepted 144 of 209, 2 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 16610 tokens in 26.1 ms; parked=4 bytes=1650965600 evictions=14 snapshot_bytes=590415116 reused_kv_bytes=0
+strata serve: prompt 325 tokens = 0 reused + 325 read in 316 ms (1028.4 tok/s), 67 generated in 423 ms (158.2 tok/s), drafts accepted 48 of 60, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 392 tokens in 4.9 ms; parked=4 bytes=1597405880 evictions=15 snapshot_bytes=241709416 reused_kv_bytes=0
+strata serve: prompt 335 tokens = 0 reused + 335 read in 243 ms (1380.7 tok/s), 84 generated in 523 ms (160.5 tok/s), drafts accepted 61 of 76, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 419 tokens in 5.5 ms; parked=4 bytes=1544294836 evictions=16 snapshot_bytes=242101244 reused_kv_bytes=0
+strata serve: prompt 352 tokens = 0 reused + 352 read in 245 ms (1436.8 tok/s), 103 generated in 612 ms (168.4 tok/s), drafts accepted 78 of 99, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
+strata serve: conversation cache: parked 455 tokens in 5.0 ms; parked=4 bytes=1316838720 evictions=17 snapshot_bytes=242612944 reused_kv_bytes=0
+strata serve: prompt 339 tokens = 0 reused + 339 read in 242 ms (1398.5 tok/s), 62 generated in 331 ms (187.1 tok/s), drafts accepted 50 of 57, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 182.0 MB read (the GGUF in place)
