@@ -100,12 +100,13 @@ class Sha256(unittest.TestCase):
         self.assertIsNone(code, out)
         self.assertTrue(h.called)
 
-    def test_wrong_hash_deletes_it(self):
+    def test_wrong_hash_keeps_it_as_bad(self):
         setup.mark(self.f)
         code, out = quiet(setup.verify_sha256, self.f, 6000, "0" * 64)
         self.assertEqual(code, 1)
-        self.assertIn("wrong SHA-256", out)
+        self.assertIn("does not match the pinned SHA-256", out)
         self.assertFalse(self.f.exists())
+        self.assertEqual(self.f.with_name(self.f.name + ".bad").read_bytes(), b"strata" * 1000)   # the bytes are kept
         self.assertFalse(self.f.with_name(self.f.name + ".done").exists())   # downloaded again next time
 
     def test_wrong_size(self):
@@ -246,7 +247,7 @@ class Main(Base):
     def test_recommended_context_on_12_gb(self):
         code, out, cfg = self.main([])
         self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "8192")
+        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")   # 128K on every card (owner, 2026-11-01)
 
     @budget_mode()
     def test_more_ram_bigger_budget(self):
@@ -466,7 +467,8 @@ class IQ4XS(Base):
         self.assertAlmostEqual(setup.MODELS[X]["download_gb"], 93682584224 / 1e9, places=1)
         self.assertEqual(setup.MODELS[X]["families"], ("unsloth",))
         self.assertEqual([m for m in setup.MODELS if "unsloth" in setup.MODELS[m].get("families", ())],
-                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])
+                         [X, M, "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0", "UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL",
+                          "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"])
         self.assertIsNone(setup.gguf_unsupported(names[0]))                    # #444: a file setup runs now
         self.assertEqual(setup.gguf_choice(names[0]), ("unsloth", X))
         self.assertEqual(setup.budget_model({"args": ["--native", "/m/" + names[0]]}), X)
@@ -517,7 +519,7 @@ class IQ4XS(Base):
         self.assertEqual(code, 0, out)
         fam_line = next(ln for ln in out.splitlines() if ln.startswith("  4) "))
         self.assertIn("Qwen3.8-Flash-Next (Unsloth)", fam_line)
-        self.assertIn("UD-IQ4_XS, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (94 to 188 GB downloads)", fam_line)
+        self.assertIn("UD-IQ1_M, UD-Q2_0, UD-IQ2_XS, UD-Q2_K_XL, UD-IQ3_XXS, UD-Q3_K_XL, UD-IQ4_XS, UD-IQ4_XS-v31, UD-Q4_K_XL, UD-Q5_K_XL, UD-Q6_K_XL or Q8_0 (68 to 188 GB downloads)", fam_line)
         self.assertNotIn("[experimental]", out)
         size_lines = [ln for ln in out.splitlines()
                       if any(ln.startswith(f"  {i}) {m} ") for i in range(1, 6) for m in setup.MODELS)]
@@ -583,13 +585,13 @@ class StrixHaloCache(Base):
     """#1715: on a unified-memory APU the expert cache and the RAM budget are the same RAM: setup writes a cache size
     that leaves the OS room, not `--expert-cache auto` (it OOM-killed a 128 GB Strix Halo with the desktop open)."""
 
-    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 2.0, "arch": "gfx1151", "driver": "amdgpu",
+    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 114.0, "arch": "gfx1151", "driver": "amdgpu",
              "uma": True, "dedicated_gb": 2.0, "shared_gb": 112.0}]
 
-    def run_halo(self, ram, argv=("--context", "8192"), amd=None):
+    def run_halo(self, ram, argv=("--context", "8192"), amd=None, m="UD-IQ4_XS", version="0.1.41"):
         with mock.patch.object(setup, "get_prebuilt_hip", lambda *a, **k: self.t / "engine"),                 mock.patch.object(setup, "WIN", False),                 mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"):
-            return self.main([*argv, "--backend", "hip"], version="0.1.41", amd=self.HALO if amd is None else amd,
-                             ram=ram, m="UD-IQ4_XS")
+            return self.main([*argv, "--backend", "hip"], version=version, amd=self.HALO if amd is None else amd,
+                             ram=ram, m=m)
 
     def test_cache_is_a_number_that_leaves_room(self):
         code, out, cfg = self.run_halo(124.0)
@@ -611,7 +613,87 @@ class StrixHaloCache(Base):
         self.assertEqual(code, 0, out)
         args = cfg["args"]
         self.assertEqual(args[args.index("--expert-cache") + 1], "auto")
-        self.assertIn("leaves almost none for the expert cache", out)
+        self.assertIn("The expert cache is sized from the graphics memory (2 GB carve-out + shared), not from the RAM.", out)
+        self.assertNotIn("take the room the OS needs", out)
+        # the carve-out is the one setup detected, never a fixed 64
+        halo48 = [dict(self.HALO[0], dedicated_gb=48.0, shared_gb=32.0, vram_gb=80.0)]
+        code, out, cfg = self.run_halo(64.0, ("--context", "8192", "--resident-budget-gib", "40"), amd=halo48)
+        self.assertEqual(code, 0, out)
+        self.assertIn("(48 GB carve-out + shared)", out)
+
+    # Round 0214 (the release blocker): a 64 GB Strix Halo gave UD-IQ2_XS a fixed 367-slot cache and a 35 GiB pinned part, and its first launch failed 3 of 3;
+    # `--expert-cache auto` with nothing pinned passed.  A v3.1 set whose experts fit the shared pool whole gets that plan; every other set keeps its plan.
+    HALO64 = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 64.0, "arch": "gfx1151", "driver": "amdgpu",
+               "uma": True, "dedicated_gb": 32.0, "shared_gb": 32.0}]
+
+    def plan(self, model, ram, amd=None):
+        code, out, cfg = self.run_halo(ram, amd=amd or self.HALO64, m=model, version="0.1.57")
+        self.assertEqual(code, 0, out)
+        a = cfg["args"]
+        return a[a.index("--expert-cache") + 1], (a[a.index("--resident-budget-gib") + 1] if "--resident-budget-gib" in a else None)
+
+    def test_the_v31_sets_that_fit_the_pool_get_cache_auto_and_nothing_pinned(self):
+        for model in ("UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS"):
+            with self.subTest(model=model):
+                self.assertTrue(setup.uma_holds_experts(model, 63.7, self.HALO64[0]))
+                self.assertFalse(setup.unsloth_budget(model, 63.7, self.HALO64[0]))
+                self.assertEqual(self.plan(model, 63.7), ("auto", None))
+
+    def test_the_sets_too_big_for_the_pool_keep_the_budget_plan(self):
+        for model in ("UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"):
+            with self.subTest(model=model):
+                self.assertFalse(setup.uma_holds_experts(model, 63.7, self.HALO64[0]))
+                self.assertTrue(setup.unsloth_budget(model, 63.7, self.HALO64[0]))
+                cache, budget = self.plan(model, 63.7)
+                self.assertEqual(budget, "40")                       # as UD-IQ4_XS's: the RAM less 24
+
+    def test_a_bigger_pool_holds_more_of_the_v31_sets(self):
+        big = [{**self.HALO[0], "vram_gb": 114.0}]
+        for model in ("UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"):
+            with self.subTest(model=model):
+                self.assertEqual(self.plan(model, 124.0, amd=big), ("auto", None))
+
+    def test_the_pinned_sets_keep_exactly_their_plans(self):
+        """UD-IQ4_XS / UD-Q4_K_XL / UD-Q5_K_XL / UD-Q6_K_XL / Q8_0: not marked, so the rule never touches them, on Strix at 64 and 124 GB."""
+        for model in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
+            self.assertNotIn("uma_pool_auto", setup.MODELS[model])
+            for ram, halo in ((63.7, self.HALO64[0]), (124.0, self.HALO[0])):
+                self.assertFalse(setup.uma_holds_experts(model, ram, halo))
+                self.assertTrue(setup.unsloth_budget(model, ram, halo), (model, ram))
+        self.assertEqual(self.plan("UD-IQ4_XS", 63.7), ("auto", "40"))                 # no room for a number: auto, with the budget (it passes on the box)
+        code, out, cfg = self.run_halo(124.0)
+        a = cfg["args"]
+        self.assertEqual((a[a.index("--resident-budget-gib") + 1], a[a.index("--expert-cache") + 1]), ("55", str(int(45 / (59.5e9 / setup.UMA_EXPERTS * 1.1 / 2**30)))))
+
+    def test_other_cards_and_a_person_s_budget_are_unchanged(self):
+        r9700 = {"vram_gb": 31.9, "uma": False}
+        nvidia = {"vram_gb": 12.0}
+        for gpu in (r9700, nvidia, None):
+            self.assertFalse(setup.uma_holds_experts("UD-IQ2_XS", 63.7, gpu))
+            self.assertFalse(setup.unsloth_budget("UD-IQ2_XS", 63.7, gpu), gpu)          # (63.7 GB holds its 39 GiB of experts and 16 more: all in RAM, as before)
+            self.assertTrue(setup.unsloth_budget("UD-IQ2_XS", 40.0, gpu))                # too little RAM: the budget, as before
+        self.assertTrue(setup.unsloth_budget("UD-IQ2_XS", 63.7, self.HALO64[0], asked=24.0))   # --resident-budget-gib N is still honoured
+        asked = self.run_halo(63.7, ("--context", "8192", "--resident-budget-gib", "24"), amd=self.HALO64, m="UD-IQ2_XS", version="0.1.57")[2]["args"]
+        self.assertIn("--resident-budget-gib", asked)                                    # the budget the person asked for is written (setup's own pool check may lower it, as before)
+
+    def test_a_mac_is_never_touched(self):
+        with mock.patch.object(setup.sys, "platform", "darwin"):
+            self.assertFalse(setup.uma_holds_experts("UD-IQ2_XS", 63.7, self.HALO64[0]))
+            self.assertTrue(setup.unsloth_budget("UD-IQ2_XS", 63.7, self.HALO64[0]))      # the answer it gave before round 0214
+
+    def test_the_spark_profile(self):
+        """A DGX Spark (GB10, unified memory, 128 GB): the old sets keep the budget plan, a v3.1 set that fits the pool has all of its experts in it."""
+        spark = {"vram_gb": 119.0, "uma": True, "arch": "121"}
+        for model in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
+            self.assertTrue(setup.unsloth_budget(model, 121.0, spark), model)
+        for model in ("UD-IQ1_M", "UD-IQ2_XS", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31"):
+            self.assertFalse(setup.unsloth_budget(model, 121.0, spark), model)
+
+    def test_nvidia_plans_are_the_same_for_every_set(self):
+        for model in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-IQ1_M", "UD-IQ4_XS-v31"):
+            for ram in (47.0, 63.7, 124.0):
+                want = ram < setup.MODELS[model]["arena_gb"] / 1.073741824 + setup.UNSLOTH_RESIDENT_BESIDE_GB
+                self.assertEqual(setup.unsloth_budget(model, ram, {"vram_gb": 12.0}), want, (model, ram))
 
     def test_a_discrete_card_keeps_auto(self):
         r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",

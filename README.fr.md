@@ -17,6 +17,7 @@
 <p align="center">
   <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Télécharger Strata"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="Licence MIT"></a>
+  <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="Soutenir Strata sur GitHub Sponsors"></a>
   <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Soutenir Strata sur Buy Me a Coffee"></a>
 </p>
 
@@ -56,7 +57,7 @@ Nous recommandons **d'abord ISTA-DASLab**, puis **Unsloth** et d'autres fourniss
 
 Dans l'**application de bureau** et dans le **Terminal**. Ce qui ne tient pas en mémoire est lu depuis votre SSD : il faut donc beaucoup d'espace disque libre.
 
-| Jeu (IST-DAS) | Téléchargement | Espace disque libre nécessaire |
+| Jeu (ISTA-DAS) | Téléchargement | Espace disque libre nécessaire |
 | --- | ---: | ---: |
 | 1.75 bpw | 239 GB | environ 245 GB |
 | 2.00 bpw | 257 GB | environ 265 GB |
@@ -175,9 +176,22 @@ Lancez **`strata connect`** pour voir la configuration de votre outil. [Guide de
 
 ## Soutenir Strata
 
-**Aidez à garder l'IA locale ouverte à tous.** Un café aide à financer le développement et les tests sur davantage de matériel.
+**Aidez à garder l'IA locale ouverte à tous.** Un parrainage sur GitHub ou un café aide à financer le développement et les tests sur davantage de matériel.
 
+<a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors : soutenir Strata" height="48"></a>
 <a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee : soutenir Strata" height="48"></a>
+
+### Fidèles soutiens
+
+Merci à toutes les personnes qui soutiennent Strata.
+
+<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
+<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
+<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
+<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
+<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
+<!-- supporters:end -->
 
 [Licence MIT](LICENSE) · [Crédits et licences des modèles](docs/HOW_IT_WORKS.md#credits) · [Confidentialité](docs/SAFETY.md)
 

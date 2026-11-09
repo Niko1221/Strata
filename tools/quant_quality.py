@@ -65,7 +65,7 @@ def cmd_ids(a) -> int:
         segs.append({"name": name, "ids": ids[:a.seg_tokens]})
         print(f"{name}: {len(ids)} tokens, kept {a.seg_tokens}")
     out = pathlib.Path(a.out or (pathlib.Path(a.set) / "set.ids.json"))
-    out.write_text(json.dumps({"version": pathlib.Path(a.set).name, "seg_tokens": a.seg_tokens, "segments": segs}))
+    out.write_text(json.dumps({"version": pathlib.Path(a.set).name, "seg_tokens": a.seg_tokens, "vocab_size": len(toks), "segments": segs}))
     print(f"wrote {out}")
     return 0
 
@@ -100,9 +100,29 @@ def engine_args(cfg: dict, gpu_experts, seg_tokens: int) -> list[str]:
             "--short-read", str(seg_tokens + 64), "--prefill", "512"]
 
 
+def check_ids_vocab(st: dict, cfg: dict, ids_path: str) -> None:
+    """A wrong ids file fails here, loudly: every id must be inside the model's vocabulary (the vocabulary of the config's tokenizer
+    folder when it names one, else the size the ids file recorded when `ids` made it), or the run reads nonsense - the committed
+    data/quant_quality/v1/set.ids.json is tokenized for Qwen (ids up to 248,069), not for DeepSeek's 129,280."""
+    vocab = None
+    tdir = cfg.get("tokenizer")
+    if tdir and (pathlib.Path(tdir) / "vocab.json").is_file():
+        vocab = len(json.loads((pathlib.Path(tdir) / "vocab.json").read_text(encoding="utf-8")))
+    elif st.get("vocab_size"):
+        vocab = int(st["vocab_size"])
+    if not vocab:
+        return
+    for s in st["segments"]:
+        mx = max(s["ids"]) if s["ids"] else -1
+        if mx >= vocab:
+            raise SystemExit(f"{ids_path}: segment '{s['name']}' has token id {mx} >= the model's vocabulary ({vocab}): this ids file was "
+                             f"made with another tokenizer; make one with `quant_quality.py ids --tokenizer <the model's tokenizer folder>`")
+
+
 def cmd_run(a) -> int:
     cfg = json.load(open(a.config, encoding="utf-8-sig"))
     st = json.load(open(a.ids))
+    check_ids_vocab(st, cfg, a.ids)
     out = pathlib.Path(a.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():

@@ -68,13 +68,13 @@ def model_shard_names(model: str) -> list[str]:
     n = MAC_MODELS[model].get("shards", 2)
     if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
-    if MAC_MODELS[model].get("family") == "unsloth":
-        return [f"Qwen3.8-Flash-Next-{model}-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
+    if MAC_MODELS[model].get("family") == "unsloth":      # (setup.py's model_file: the v3.1 UD-IQ4_XS is named UD-IQ4_XS on the Hub)
+        return [S.model_file(S.FAMILIES["unsloth"], model, i) for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
 
 
 def shard_sha(name: str):
-    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name)
+    return UD_SHARDS.get(name) or getattr(S, "UNSLOTH_SHARDS", {}).get(name) or getattr(S, "UNSLOTH_V31_SHARDS", {}).get(name)
 
 
 # ------------------------------------------------------------------------------------------------ the Mac
@@ -151,9 +151,10 @@ def build_engine(llama: Path, jobs: int | None = None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------ the config
-def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0) -> list[str]:
+def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = False, ram_gb: float = 0.0,
+                model: str = "") -> list[str]:
     """The Metal defaults (strata_control/mac_fit.py), with this checkout's expert profile."""
-    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin")
+    return _fit.engine_args(pack, shards, rt, ctx, stream, ram_gb, ROOT / "data" / "expert-profile.bin", model)
 
 
 # the image encoder's projector (setup.py's pinned revision): name -> (bytes, SHA-256)
@@ -291,9 +292,14 @@ def repack_running(folder: Path) -> list[int]:
 
 
 def engine_pids(run=subprocess.run) -> list[int]:
-    """Pids of the running Metal engines (`strata`, the executable setup builds)."""
+    """Pids of the running Metal engines (`strata`, the executable setup builds) that belong to THIS user.  On a shared Mac
+    another person's engine is theirs to stop: `pgrep -x strata` alone saw it and sent setup away with "stop the server" for a
+    window the person could not close (M5 Max, 2026-10-31)."""
+    cmd = ["pgrep", "-x", "strata"]
+    if hasattr(os, "getuid"):
+        cmd[1:1] = ["-u", str(os.getuid())]
     try:
-        out = run(["pgrep", "-x", "strata"], capture_output=True, text=True, timeout=10).stdout
+        out = run(cmd, capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return []
     return [int(x) for x in out.split() if x.isdigit() and int(x) != os.getpid()]
@@ -321,6 +327,31 @@ def start(cfg_path: Path, port: int | None, open_browser: bool = True) -> int:
           "half a minute (longer the first time after a restart, while macOS reads the file).")
     S.say("  Closing this window stops the model.")
     return subprocess.call(cmd)
+
+
+# ------------------------------------------------------------------------------------------------ the DFlash2 drafter
+def fetch_drafter(model_name: str, data: Path) -> Path | None:
+    """The DFlash2 drafter of a set whose Mac default is DFlash2 (strata_control/drafting.py SET_DEFAULTS: UD-Q4_K_XL and UD-IQ4_XS-v31): the tuned one (0.34 GB), else the stock one
+    (1.2 GB), through the normal download path (resumable, the pinned size and SHA-256). Offline, or an address that does not answer: nothing is said and the model keeps the MTP
+    (owner, strata-offline-users). A fault that is the person's to know (a file that failed its safety check) is one plain line. Never stops the setup. None when it is not here."""
+    from strata_control import acquisition, drafting, drafting_fetch
+    if drafting.choice_of("auto", model_name=model_name, backend="metal") != "dflash2":
+        return None
+    said = []
+
+    def show(step: str, done: int, total: int) -> None:
+        if not said:                                       # the line appears when the download starts: a computer with no internet sees nothing
+            said.append(True)
+            gb = drafting.TUNED_GB if "tuned" in step else drafting.DOWNLOAD_GB
+            S.say(f"  Downloading the DFlash2 drafter ({gb:g} GB, once) ...")
+    try:
+        got = drafting_fetch.ensure_for(data, model_name=model_name, backend="metal", progress=show)
+    except (drafting_fetch.DraftingError, acquisition.AcquisitionRefused, OSError) as exc:
+        S.warn(f"{exc} This model keeps using the MTP.")
+        return None
+    if got is not None:
+        S.ok(f"DFlash2 drafter: {got}")
+    return got
 
 
 # ------------------------------------------------------------------------------------------------ main
@@ -456,10 +487,12 @@ def main(argv=None) -> int:
         if s.exists() and S.done(s):
             S.ok(f"{s.name} already downloaded")
             continue
-        S.download(fam["hf"].format(q=model) + s.name, s)
+        S.download(S.model_hf(fam, model) + s.name, s)
     S.check_shards(files)
     for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
-        if shard_sha(s.name):
+        if family == "unsloth" and s.name in fam.get("sha256", {}):       # the family's pins, and UD-Q4_K_XL's second layout by the size on the disk
+            S.verify_sha256(s, *S.fam_pin(fam, s), own=bool(a.gguf_dir))
+        elif shard_sha(s.name):
             S.verify_sha256(s, *shard_sha(s.name))
     S.ok("model files present")
 
@@ -539,11 +572,14 @@ def main(argv=None) -> int:
         S.refresh_draft_vocab(rt, a.draft_vocab or "cjk")
         S.ok(f"MTP draft layer: {mtp / 'mtp-q2_0.gguf'}")
 
+    fetch_drafter(f"{fam['name']}-{model.lower()}", pack.parent.parent)       # DFlash2 is this set's default drafter (the MTP above stays as the fallback); the folder a start looks in
+
     # ---- 7. the config, the start script
     S.step(7, "writing the start script")
     port = a.port or 8080
-    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"]), pack, f"{fam['name']}-{model.lower()}", tag, port)
-    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice
+    cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], model), pack, f"{fam['name']}-{model.lower()}", tag, port)
+    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0",   # the engine follows setup's measured choice
+                  **_fit.engine_env(model, stream)}                # STRATA_METAL_F16=1 for a resident IQ3_S / Q2_0 (mac_fit.F16_MODELS)
     if vision == "yes":
         cfg["args"] += ["--vision"]
         cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,

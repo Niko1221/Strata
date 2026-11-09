@@ -132,6 +132,33 @@ public:
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and STRATA_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
 
+    /// THE PROMPT ROOM (STRATA_MTP_ROOM_MIN): `slots` ring slots ON TOP of the rule above, POINTED AT another device
+    /// user's bytes - the MTP drafter's 512 routed experts, which only the decode reads (MtpDrafter::experts_lend).
+    /// A slot at or past the rule's ring is `base + (i - rule) * max_blob`: nothing is allocated for it, nothing is
+    /// owned and nothing spills, so the room costs no VRAM of its own and `relayout` keeps working.  The layout holds
+    /// them for the instance's life; ONE PROMPT takes them by `set_ring_room_active(true)`, which moves the ring's
+    /// count (the rule's <-> the rule's + the room's) and nothing else.
+    /// Never past ring_cap() (the ring's events are sized for that), never past what `set_ring_room_base` says the
+    /// lender has, and only where the ring is a big one (a chunk at or above stream_all_min(): below it the ring is
+    /// STAGE slots of a different mechanism).  Set before `init`/`relayout`; 0 (the default): the rule's ring exactly,
+    /// as before.
+    void set_ring_room(int slots) { ring_room_ = slots > 0 ? slots : 0; }
+    int ring_room() const { return ring_room_; }
+
+    /// The memory the room's slots are carved from: `bytes` of another device user's, given to this path's ring for
+    /// the length of one prompt (the drafter's expert block).  Null (the default): no room, whatever `slots` says.
+    void set_ring_room_base(void* base, uint64_t bytes) { ring_room_base_ = base; ring_room_bytes_ = bytes; }
+
+    /// While true the room is THIS prompt's: `ring()` (the streamed ring's slot count) counts it too, and an
+    /// `init`/`relayout` after this re-carves with it.  False (the default): the rule's ring, so a slot of the room
+    /// is never staged into and the lender's bytes are left alone.
+    void set_ring_room_active(bool on);
+    bool ring_room_active() const { return ring_room_active_; }
+
+    /// True when every stream of this path has finished.  The room's close needs it: what a prompt staged into those
+    /// slots is written over by the lender's own bytes, and a prompt pass still reading them would take the DMA.
+    bool idle(std::string& err);
+
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).  `src`: init gets an
     /// ExpertSource (carve picks the fused MoE layout only then).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
@@ -197,6 +224,8 @@ public:
     /// [rows][layers][n_embd] device, rows, first position, err) runs with the stream synchronized.  clear_taps frees the staging.
     void set_taps(const std::vector<int>& layers, int64_t first_pos, int64_t cap_rows) { tap_layers_ = layers; tap_first_ = first_pos; tap_cap_ = cap_rows; }
     void clear_taps();
+    /// Allocate the staging now (serve: so a request never fails on it): `cap_rows` rows of `layers` x `n_embd` floats.  False: the card has no room.
+    bool reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int64_t n_embd, std::string& err);
     std::function<bool(const float* taps, int64_t rows, int64_t pos0, std::string& err)> on_taps;
 
     /// Layer split: called by every stage when it has read a chunk, with the position reached, while its own state
@@ -263,6 +292,9 @@ public:
     /// `by_default`: this path is one the share was measured on (CUDA, one GPU, no batch slots), so with the variable unset
     /// the share is on for chunks below 1024 tokens (STRATA_PREFILL_CPU_SHARE=0 turns it off).
     static void arm_cpu_share(bool applies, bool by_default = false);
+    /// STRATA_PREFILL_CPU_SHARE_BATCH=1 (batch slots beside the pool): set before each read - true while a slot decodes
+    /// (its windows use the pool), so no chunk of that read takes the share; false lets the read's chunks take it.
+    static void set_share_blocked(bool blocked);
 
     /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): true while `on_chunk` reports a sub-chunk before the end of
     /// its super-chunk.  The session state is already at the super-chunk's end then, so no checkpoint may be taken.
@@ -303,6 +335,10 @@ private:
     bool lm_mid_ = false;
     bool lm_force_ = false;        ///< run_multi: the walk even for a short total
     bool lm_by_default_ = false;   ///< the walk is on because nothing was set (a wider VRAM margin, the measured super-chunk size)
+    int ring_room_ = 0;                              ///< set_ring_room (this instance's, and it survives `reset`)
+    void* ring_room_base_ = nullptr;                 ///< set_ring_room_base: the bytes the room's slots are
+    uint64_t ring_room_bytes_ = 0;
+    bool ring_room_active_ = false;                  ///< the room is this prompt's (survives `reset` with it)
     // Stage-1 pipeline: intermediate stages return after handing their chunk to
     // the direct successor. The public run() drains the chain once at prompt end.
     bool run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
@@ -310,6 +346,7 @@ private:
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     std::vector<int> tap_layers_;
+    std::vector<int> tap_local_;                  ///< the tapped layers this stage runs (run)
     int64_t tap_first_ = 0, tap_cap_ = 0;
     float* tap_dev_ = nullptr;
     Prefill* next_ = nullptr;

@@ -7,6 +7,7 @@ is downloaded again. Nothing here reads more than a run config and file existenc
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -81,9 +82,38 @@ class ModelState:
 HELPER_FAMILIES = ("qwen", "swift", "coder", "unsloth", "gyro")
 
 
+def resolved_drafting(drafting: str | None, family: str | None) -> str:
+    """The drafter a choice means for this family on this computer: ``dflash2`` | ``mtp`` | ``off`` (strata_control/drafting.py: Auto is DFlash2 where the engine
+    has it). Never raises; an unknown computer is the MTP."""
+    try:
+        from strata_control import drafting as _d
+        backend, archs = _d.detect_hardware()
+        return _d.choice_of(drafting, family=family, backend=backend, archs=archs)
+    except Exception:                                        # noqa: BLE001
+        return "mtp"
+
+
+def drafting_for_family(choice: str | None, family: str | None) -> str | None:
+    """The Drafting choice to keep when the model changes to `family`: DFlash2/MTP/Off belong to Qwen3.8-Flash-Next (qwen, gyro, unsloth); any other model (DeepSeek, which has its
+    own DSpark and no MTP or DFlash2; Coder; Swift; NVFP4) goes back to Auto (None), so a choice made for one model never rides along to another. An unknown family keeps it."""
+    from strata_control import drafting as _d
+    return choice if (not family or family in _d.SUPPORTED_FAMILIES) else None
+
+
+def drafting_to_save(key: str, saved: object) -> str | None:
+    """What the Drafting step writes into the launch settings for the row the person chose. Auto stays "nobody chose" (None: a saved preset writes nothing), except when the
+    model's own settings file already holds another choice (the app's Models screen writes its Drafting choice there and a launch starts from that file): then Auto is
+    written as "auto", so it overrides the older choice instead of silently running it."""
+    if key != "auto":
+        return key
+    from strata_control import drafting as _d
+    return "auto" if saved is not None and _d.normalize(saved) != "auto" else None
+
+
 def mtp_choice(mtp: str | None, drafting: str | None = None) -> str | None:
-    """The draft-layer choice setup is given: off when the person said --mtp off or --drafting off (nothing then uses the layer), else as chosen."""
-    if str(drafting or "").strip().lower() == "off":
+    """The draft-layer choice for what to fetch: off when the person said --mtp off, or the drafter is off or DFlash2 (``drafting`` is the resolved drafter,
+    resolved_drafting(); nothing then uses the layer, so a new install does not download it), else as chosen."""
+    if str(drafting or "").strip().lower() in ("off", "dflash2"):
         return "off"
     return mtp
 
@@ -119,7 +149,7 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
     if model_path:
         st.own_files = True
         first = _first_gguf(Path(model_path))
-        beside = discovery.prepared_beside(first) if first else {}
+        beside = discovery.prepared_beside(first, data_places(catalog, data)) if first else {}     # the model folder's own layout, then --data-dir and the remembered folder (where setup writes the draft layer)
         st.folder = beside.get("data_dir")
         if beside.get("pack") is not None and beside.get("mtp") is None and mtp != "off":
             st.parts.append(Part("mtp", "the draft layer", MTP_FETCH_GB))
@@ -174,6 +204,18 @@ def assess(catalog, family: str | None, model: str | None, *, vision: str = "off
             if wants_pictures and not _has_reader(base):
                 st.parts.append(Part("mmproj", "the picture reader", MMPROJ_GB))
     return st
+
+
+def data_places(catalog, data: Path | None) -> list[Path]:
+    """The data folders besides the model folder's own layout that may already hold the draft layer: the one the launch names (--data-dir), then the one every command agrees on."""
+    out: list[Path] = [data] if data else []
+    try:
+        default = catalog.data_dir()
+        if default and not any(os.path.normcase(str(default)) == os.path.normcase(str(d)) for d in out):
+            out.append(Path(default))
+    except Exception:                                        # noqa: BLE001 - a question asked early is never a reason to stop
+        pass
+    return out
 
 
 def _has_reader(base: Path) -> bool:

@@ -70,6 +70,10 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             // src/prefill/gr_upmix_parity.cu covers it upstream).  The HC read is ~13% of a decode round here, which is
             // why a fusion on it moves the number at all.
             {"STRATA_HC_UPMIX", "1"},
+            // Run the mixer's input-only QSA/GDN work on graph branches.  With the grouped experts' mode 8 selected,
+            // fixed-work IQ3_S decode measured +6.68% paired median and +6.67% geometric mean over 8 balanced pairs
+            // (AB +11.60%, BA +6.68%, identical 512-token output and verifier work).  The branch changes no arithmetic.
+            {"STRATA_SIDE_MIXER", "2"},
             // the cost-aware MTP window: pick the verify window from what a draft costs against what it has been paying.
             // Measured on IQ3_S: decode 1.047x [1.019, 1.079], prompt unchanged, 24 of 24 greedy answers byte-identical.
             // It only changes which drafts are attempted, and every draft is verified, so the answers cannot drift.
@@ -103,6 +107,39 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
     }
+    return set;
+}
+
+std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor) {
+    return nv_kq_default_env(min_major, min_minor, strata::qwen_defaults_026());
+}
+
+std::vector<std::pair<std::string, std::string>> nv_kq_default_env(int min_major, int min_minor, bool defaults026) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (defaults026) return t;
+    if (strata::cc_major_of(min_major) < 8) return t;   // Volta / Turing / Pascal: not measured, keep the FP16 prompt path
+    const char* sw = std::getenv("STRATA_NV_KQ_DEFAULT");
+    if (sw != nullptr && sw[0] == '0') return t;
+    if (!kNvKqDefaultOn && !(sw != nullptr && sw[0] == '1')) return t;
+    t.push_back({"STRATA_MMQ_KQ", "1"});
+    (void) min_minor;
+    return t;
+}
+
+std::vector<std::string> apply_nv_kq_default(int min_major, int min_minor) {
+    std::vector<std::string> set;
+    for (const auto& kv : nv_kq_default_env(min_major, min_minor)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
+#if defined(_WIN32)
+        _putenv_s(kv.first.c_str(), kv.second.c_str());
+#else
+        setenv(kv.first.c_str(), kv.second.c_str(), 0);
+#endif
+        set.push_back(kv.first);
+    }
+    if (!set.empty())   // the engine says nothing more on a pack without K-quant experts: the variable is never read there
+        std::fprintf(stderr, "strata: a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels "
+                             "(STRATA_MMQ_KQ=0 or STRATA_NV_KQ_DEFAULT=0 turns it off)\n");
     return set;
 }
 

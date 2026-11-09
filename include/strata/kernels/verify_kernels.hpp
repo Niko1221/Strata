@@ -23,6 +23,12 @@ namespace strata::kernels {
 /// The most rows one verify / batch window holds (8; 16 in the CUDA / HIP builds, window_limits.hpp).  A window of up to
 /// kVerifyNarrowT rows runs the kernels it always ran.
 inline constexpr int kVerifyMaxT = kWindowMaxT;
+/// --lookup-max-t: the longest one-conversation window (a prompt-lookup window).  In a build whose windows hold 8 rows, a
+/// window past kVerifyMaxT tokens runs as two token groups of at most kVerifyMaxT each (the --spec-split layout), so every
+/// per-group kernel, the CPU experts and the drafter keep their kVerifyMaxT rows; only the window-wide parts (staging,
+/// head, commit) take more.  A build whose windows already hold 16 rows runs the 16 as one group.
+/// Batch and pipelined windows stay at kVerifyMaxT.
+inline constexpr int kVerifyLongT = kVerifyMaxT > kVerifyNarrowT ? kVerifyMaxT : 2 * kVerifyMaxT;
 
 /// For token t of T: conv over [history(3) | qkv_0 .. qkv_t] -> SiLU -> L2 norm of the q/k heads -> h[t].
 /// `history` is NOT written, but with `commit` (one token): it then keeps the token, as gdn_conv_commit.  Bitwise
@@ -140,11 +146,18 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 /// into dst + k * blob_bytes with coalesced 16-byte loads - the PCIe share of a layer's missed experts, staged
 /// into VRAM before the grouped expert kernel reads them.  Launched for a capacity of `cap` blobs.
 void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream);
+/// The same with `dst2` (device memory, may be null): blob k goes to dst2[k] instead where that is not 0
+/// (STRATA_ADAPT_FETCH: a VRAM cache slot).  A separate overload, so the SYCL copy keeps the one above.
+void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream,
+                 const unsigned long long* dst2);
 /// table[pairs[2k]] = pairs[2k + 1] for k < n, `pairs` in mapped host memory: a residency table's changed entries,
 /// stream-ordered before the window that reads it, without the copy engine (where the tier's swaps may queue).
 void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream);
 /// ptr[k] = base + k * blob_bytes for k < *n (the staged copies `fetch_blobs` made).
 void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream);
+/// The same, or dst2[k] where `dst2` (may be null) is not 0 (fetch_blobs' second target).
+void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream,
+                 const unsigned long long* dst2);
 
 // ---- the MTP draft layer (src/core/mtp.cpp)
 /// R[t][c][:] = h[t][c][:] + e[t][:]  (the embedding branch added to every stream).

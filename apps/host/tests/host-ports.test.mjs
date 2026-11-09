@@ -24,9 +24,20 @@ test('a taken preferred port gives the next free one, never the taken one', asyn
 test('the plain sentences name the cause and the one next step', () => {
   const use = listenProblem({ code: 'EADDRINUSE' }, 8791);
   assert.match(use, /Port 8791 is already in use/); assert.match(use, /STRATA_PORT/);
-  const denied = listenProblem({ code: 'EACCES' }, 8792);
+  const denied = listenProblem({ code: 'EACCES' }, 8792, '127.0.0.1', 'win32');
   assert.match(denied, /Hyper-V, WSL and Docker/); assert.match(denied, /excludedportrange/); assert.match(denied, /STRATA_PORT/);
   assert.doesNotMatch(denied, /EACCES|permission denied/i);
+});
+
+test('F12: the permission-denied sentence follows the platform, Windows keeps its own', () => {
+  const win = listenProblem({ code: 'EACCES' }, 8792, '127.0.0.1', 'win32');
+  assert.match(win, /^Windows or a firewall does not let Strata use port 8792\. Hyper-V, WSL and Docker/);
+  for (const platform of ['linux', 'darwin']) {
+    const other = listenProblem({ code: 'EACCES' }, 80, '127.0.0.1', platform);
+    assert.equal(other, 'This system does not let Strata use port 80. On Linux and macOS, ports below 1024 need administrator rights. Start Strata with another port (STRATA_PORT), for example 8801.');
+    assert.doesNotMatch(other, /Windows|Hyper-V|netsh/);
+  }
+  assert.equal(listenProblem({ code: 'EACCES' }, 80), listenProblem({ code: 'EACCES' }, 80, '127.0.0.1', process.platform));
 });
 
 test('the host on a taken port prints the plain sentence and exits, with no stack trace', async t => {

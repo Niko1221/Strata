@@ -118,6 +118,30 @@ class EnginePackage:
 
 
 @dataclass(frozen=True)
+class DrafterPackage:
+    """A DFlash2 drafter file Strata hosts (feed member ``drafters``): one pinned file, not an archive. ``backends`` are the engine families it was measured on
+    (``metal``); ``url`` is relative to the feed (flat release assets) or an https address; ``size`` and ``sha256`` are the file's. The code that fetches it
+    pins the same size and SHA-256 (strata_control/drafting.py), so the feed can move the file but never swap its bytes."""
+    name: str
+    version: str
+    url: str
+    size: int
+    sha256: str
+    backends: tuple[str, ...]
+    base: str = ""
+    licence: str = ""
+    notes: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"drafter {self.name} {self.version}"
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "version": self.version, "url": self.url, "size": self.size, "sha256": self.sha256,
+                "backends": list(self.backends), "base": self.base, "licence": self.licence, "notes": self.notes}
+
+
+@dataclass(frozen=True)
 class ControlPackage:
     version: str
     platform: str
@@ -162,6 +186,8 @@ class Feed:
     #: entries this Control does not know how to use (a platform, a backend or an archive format added after it was built): left out, one plain line each.
     #: A feed with such an entry is still a feed; only an entry of a kind this Control knows and that is malformed refuses the feed.
     skipped: tuple[str, ...] = ()
+    #: the DFlash2 drafter files (feed member ``drafters``, DrafterPackage): fetched by setup, `strata drafting fetch` and Load for a set that has one. Older Controls ignore the member.
+    drafters: tuple[DrafterPackage, ...] = ()
 
     def url(self, ref: str) -> str:
         return transfer.resolve_ref(transfer.base_of(self.source), ref)
@@ -241,6 +267,24 @@ def _control_package(item: dict, version: str, skipped: list | None = None) -> C
                           entry=str(item.get("entry") or "strata.py"))
 
 
+def _drafter_package(item: dict) -> DrafterPackage:
+    if not isinstance(item, dict):
+        raise FeedError("a drafter entry in the feed is not an object")
+    where = f"drafter entry {item.get('name')!r}"
+    name = _need(item, "name", str, where)
+    if "/" in name or "\\" in name or name.startswith("."):
+        raise FeedError(f"the feed's {where} has a name that is not a plain file name")
+    size = _need(item, "size", int, where)
+    if size <= 0:
+        raise FeedError(f"the feed's {where} declares a size that cannot be a real file")
+    backends = item.get("backends")
+    if not isinstance(backends, list) or not backends or not all(isinstance(b, str) and b for b in backends):
+        raise FeedError(f"the feed's {where} needs a list of backends")
+    return DrafterPackage(name=name, version=str(item.get("version") or ""), url=_need(item, "url", str, where), size=size,
+                          sha256=_hex(item.get("sha256"), where), backends=tuple(backends), base=str(item.get("base") or ""),
+                          licence=str(item.get("licence") or ""), notes=str(item.get("notes") or ""))
+
+
 def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     """The feed document, strictly. Unknown members are ignored; missing or mistyped ones are errors."""
     try:
@@ -315,9 +359,17 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             if ident in seen:
                 raise FeedError(f"the feed lists DeepSeek engine {pkg.label} twice")
             seen.add(ident)
+    drafters = []
+    raw_drafters = data.get("drafters")
+    if raw_drafters is not None:
+        if not isinstance(raw_drafters, dict) or not isinstance(raw_drafters.get("packages"), list):
+            raise FeedError("the feed's drafters member lists no packages")
+        drafters = [_drafter_package(item) for item in raw_drafters["packages"]]
+        if len({d.name for d in drafters}) != len(drafters):
+            raise FeedError("the feed lists a drafter twice")
     return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
                 control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41),
-                skipped=tuple(skipped))
+                skipped=tuple(skipped), drafters=tuple(drafters))
 
 
 def _expired_words(expires_at: str, now: dt.datetime, server_now: dt.datetime | None) -> str:
@@ -373,7 +425,7 @@ def feed_name(platform: str | None = None) -> str:
     return AARCH64_FEED_NAME if platform == "linux-aarch64" else FEED_NAME
 
 
-def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
+def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, **guards) -> Feed:
     """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path)."""
     if not trusted:
         raise FeedError("this build trusts no update key (update_keys.json is empty and STRATA_UPDATE_TRUSTED_KEYS is not set), "
@@ -388,8 +440,8 @@ def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
     elif transfer.kind_of(source) in ("http", "https") and not source.rsplit("/", 1)[-1].endswith(".json"):
         location = source.rstrip("/") + "/" + feed_name()
     try:
-        payload = transfer.read_small(location)
-        signature = transfer.read_small(location + SIGNATURE_SUFFIX)
+        payload = transfer.read_small(location, timeout=timeout)
+        signature = transfer.read_small(location + SIGNATURE_SUFFIX, timeout=timeout)
     except transfer.TransferError as exc:
         raise FeedError(f"the update feed could not be read: {exc}", 6) from None
     guards.setdefault("server_now", transfer.server_date())
