@@ -1,4 +1,4 @@
-"""pytest: setup.py's data-folder migration (#198) saves the data folder it settled on in the user's settings file
+r"""pytest: setup.py's data-folder migration (#198) saves the data folder it settled on in the user's settings file
 (%APPDATA%\Strata\settings.json, ~/.config/strata/settings.json) and can MOVE model files from a folder it finds there.
 A test that reaches it must never touch the real file, so the whole session gets its own config home."""
 import os
@@ -13,3 +13,10 @@ os.environ["XDG_CONFIG_HOME"] = _home
 os.environ["LOCALAPPDATA"] = _home
 os.environ["XDG_STATE_HOME"] = _home
 os.environ["XDG_DATA_HOME"] = _home
+# Run from PowerShell 7 (GitHub's Windows runners), PSModulePath names PowerShell 7's module folders first: a Windows PowerShell 5.1 child that a
+# test starts (install.ps1, fetch-node.ps1) then finds their Microsoft.PowerShell.Utility/Security and cannot load them ("Get-FileHash is not
+# recognized"). Keep only the folders that are not PowerShell 7's, as in a Windows PowerShell or cmd window.
+if os.name == "nt" and os.environ.get("PSModulePath"):
+    _keep = [p for p in os.environ["PSModulePath"].split(os.pathsep)
+             if p and not ("\\powershell\\" in p.lower().replace("/", "\\") and "\\windowspowershell\\" not in p.lower().replace("/", "\\"))]
+    os.environ["PSModulePath"] = os.pathsep.join(_keep)
