@@ -154,9 +154,10 @@ class Computer:
     @property
     def rx7000_card(self) -> bool:
         """Is a usable AMD card an RX 7000 (gfx1100, gfx1101, gfx1102)?  DeepSeek has a package for those cards since the 0.2.9 update, built and not run on a real one."""
-        from strata_control import engine_component as ec, gpu_fit
+        from strata_control import gpu_fit
+        from strata_control.amd_gpus import arch_from_name
         for c in gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]:
-            if c.get("vendor") == "amd" and (str(c.get("arch") or "") or ec.gfx_from_name(str(c.get("name", "")))) in ("gfx1100", "gfx1101", "gfx1102"):
+            if c.get("vendor") == "amd" and (str(c.get("arch") or "") or arch_from_name(str(c.get("name", "")))) in ("gfx1100", "gfx1101", "gfx1102"):
                 return True
         return False
 

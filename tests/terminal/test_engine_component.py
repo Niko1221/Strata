@@ -294,16 +294,6 @@ class WindowsAmd(unittest.TestCase):
         with mock.patch.object(ec.shutil, "which", lambda name: None), mock.patch.object(ec.os, "name", "nt"),                 mock.patch.object(ec, "host_platform", return_value="windows-x86_64"),                 mock.patch.object(ec, "windows_display_adapters", return_value=self.TESTER_A):
             self.assertEqual(ec.detect_backend({}), ("hip", "display adapters"))
 
-    def test_the_arch_table_is_the_one_setup_uses(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        import setup as strata_setup
-        self.assertEqual({k: v for k, v in strata_setup._WIN_AMD_DID.items() if k not in strata_setup.AMD_IGPU_PCI},
-                         ec.WIN_AMD_DEVICE_ARCH)
-        self.assertEqual({k: v for k, v in strata_setup.AMD_IGPU_PCI.items() if v == strata_setup.STRIX_HALO_ARCH}, ec.WIN_AMD_UMA_IDS)
-        for device in strata_setup.AMD_IGPU_PCI:
-            if device not in ec.WIN_AMD_UMA_IDS:
-                self.assertIn(device, ec.WIN_AMD_IGPU_IDS)
-
 
 @unittest.skipIf(NO_HIP, "there is no HIP engine for arm64 Linux (BACKEND_MATRIX): this test builds one for the host platform")
 class WrongCardFamily(unittest.TestCase):

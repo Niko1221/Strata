@@ -63,6 +63,7 @@ import zipfile
 from pathlib import Path
 
 from strata_control import acquisition
+from strata_control.amd_gpus import arch_from_id, arch_from_name
 from strata_control import tls
 
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
@@ -4192,11 +4193,6 @@ def rocm_wanted(index, listing=None):
 # KFD gfx_target_version 110501, vendor_id 4098, device_id 5510 (0x1586), simd_count 80.
 STRIX_HALO_ARCH = "gfx1151"
 STRIX_HALO_PCI_IDS = frozenset({0x1586})
-AMD_IGPU_PCI = {0x1586: "gfx1151",                                    # Strix Halo
-                0x150E: "gfx1150",                                    # Strix Point: Radeon 880M / 890M
-                0x1114: "gfx1152", 0x1902: "gfx1152",                 # Krackan Point (Krackan2): Radeon 840M / 860M
-                0x15BF: "gfx1103", 0x15C8: "gfx1103", 0x164F: "gfx1103",   # Phoenix: Radeon 740M / 760M / 780M
-                0x1900: "gfx1103", 0x1901: "gfx1103"}                 # Hawk Point
 STRIX_HALO_BY_SIMDS = {80: "8060S", 64: "8050S", 32: "8040S"}   # KFD simd_count (2 per CU): 40 / 32 / 16 CUs
 UMA_OS_LEFT_GB = 6             # the share of the unified memory kept for the OS: what the engine's device_free_bytes() leaves
 
@@ -4536,7 +4532,7 @@ def amd_rank(g):
 
 def amd_pci_devices(sysfs="/sys") -> list[dict]:
     """The AMD (vendor 0x1002) display devices the kernel lists in /sys/class/drm/card*/device, as [{"pci_id",
-    "vram_gb", "gtt_gb", "arch"}] with the arch AMD_IGPU_PCI knows ("" when it does not).  The KFD topology answers the
+    "vram_gb", "gtt_gb", "arch"}] with the arch strata_control/amd_gpus.py knows ("" when it does not).  The KFD topology answers the
     same without ROCm; this one only names a card the topology does not list (a kernel without /dev/kfd)."""
     found = []
     base = Path(sysfs) / "class/drm"
@@ -4552,7 +4548,7 @@ def amd_pci_devices(sysfs="/sys") -> list[dict]:
             did = int((dev / "device").read_text().strip(), 16)
         except (OSError, ValueError):
             continue
-        row = {"pci_id": did, "arch": AMD_IGPU_PCI.get(did, ""), "vram_gb": 0.0, "gtt_gb": 0.0}
+        row = {"pci_id": did, "arch": arch_from_id(did), "vram_gb": 0.0, "gtt_gb": 0.0}
         for key, f in (("vram_gb", "mem_info_vram_total"), ("gtt_gb", "mem_info_gtt_total")):
             try:
                 row[key] = int((dev / f).read_text()) / 2 ** 30
@@ -4681,25 +4677,6 @@ def amd_parse_gpus(text, amd) -> list:
 WIN_HIP_ASSET = "strata-windows-x64-hip.zip"   # releases up to 0.1.45; 0.2 releases publish per-card packages in the signed feed (engine_from_feed)
 WIN_HIP_MIN_ENGINE = max(MIN_ENGINE, (0, 1, 33))         # the first release with a Windows HIP engine
 WIN_AMD_DRIVER = "https://www.amd.com/en/support/download/drivers.html"
-# PCI device ids (VEN_1002) of the cards the AMD backend knows; the names below cover a card whose id is not listed
-_WIN_AMD_DID = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100",            # RX 7900 XTX/XT/GRE, W7900, W7800
-                0x747E: "gfx1101",                                                  # RX 7800 XT / 7700 XT
-                0x7480: "gfx1102",                                                  # RX 7600 / 7600 XT
-                0x7590: "gfx1200",                                                  # RX 9060 XT
-                0x7550: "gfx1201", 0x7551: "gfx1201",                               # RX 9070 / 9070 XT, AI PRO R9700
-                0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030",            # RX 6800 / 6800 XT / 6900 XT / 6950 XT
-                0x73DF: "gfx1031",                                                  # RX 6700 XT / 6750 XT / 6800M (#881)
-                **AMD_IGPU_PCI}                                                     # Ryzen APUs: 0x1586 = Strix Halo (gfx1151)
-_WIN_AMD_NAME = ((re.compile(r"\b80[456]0S\b", re.I), "gfx1151"),                   # Radeon 8060S / 8050S / 8040S
-                 (re.compile(r"\b8[89]0M\b", re.I), "gfx1150"),                     # Radeon 890M / 880M
-                 (re.compile(r"\b8[46]0M\b", re.I), "gfx1152"),                     # Radeon 860M / 840M
-                 (re.compile(r"\b7[468]0M\b", re.I), "gfx1103"),                    # Radeon 780M / 760M / 740M
-                 (re.compile(r"\b9070\b|R9700", re.I), "gfx1201"),
-                 (re.compile(r"\b9060\b", re.I), "gfx1200"),
-                 (re.compile(r"RX\s*7900|W7900|W7800", re.I), "gfx1100"),
-                 (re.compile(r"RX\s*7800|RX\s*7700(?!\s*S)|W7700", re.I), "gfx1101"),
-                 (re.compile(r"RX\s*7600|W7600|W7500", re.I), "gfx1102"),
-                 (re.compile(r"RX\s*6800(?!\s*[MS])|RX\s*6900|RX\s*6950|W6800", re.I), "gfx1030"))
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -4757,11 +4734,9 @@ def _pci_device_id(text: str) -> int | None:
 
 
 def win_amd_arch(device_id: int | None, name: str) -> str:
-    """A Windows AMD adapter's architecture from its PCI device id, else its name; "" when it is none Strata knows
-    (an integrated Radeon, an older card)."""
-    if device_id in _WIN_AMD_DID:
-        return _WIN_AMD_DID[device_id]
-    return next((a for rx, a in _WIN_AMD_NAME if rx.search(name or "")), "")
+    """A Windows AMD adapter's architecture from its PCI device id, else from its name (the tables in
+    strata_control/amd_gpus.py); "" when it is none Strata knows (an integrated Radeon, an older card)."""
+    return arch_from_id(device_id) or arch_from_name(name)
 
 
 def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
