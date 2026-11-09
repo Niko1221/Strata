@@ -123,9 +123,12 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(out["chat"]["decode_tps"]["n"], 9)                 # 3 questions x 3 runs
         self.assertEqual(set(out["prompts"]), {"4K", "16K"})
         for v in out["prompts"].values():
-            self.assertEqual(v["prompt_tps"]["n"], 3)
-            self.assertLess(v["reused_tokens"]["median"], v["prompt_tokens"]["median"] / 100)   # a fresh tag at the start: next to nothing reused
-        p4, p16 = (out["prompts"][k]["prompt_tokens"]["median"] for k in ("4K", "16K"))
+            self.assertEqual(len(v["requests"]), 3)
+            good = [r for r in v["requests"] if r["ok"] and r["reused_tokens"] == 0]
+            self.assertEqual((v["prompt_tps"] or {}).get("n", 0), len(good))
+            # Even this fake's tiny shared prefix must not count as a fully fresh prompt.
+            self.assertTrue(all(r["fresh_prompt"] == (r["reused_tokens"] == 0) for r in v["requests"]))
+        p4, p16 = (B.stat(r["prompt_tokens"] for r in out["prompts"][k]["requests"])["median"] for k in ("4K", "16K"))
         self.assertAlmostEqual(p16 / p4, 4, delta=0.6)                      # the sizes are calibrated, not guessed
         self.assertEqual(out["clients"]["clients"], 3)
         self.assertEqual(out["clients"]["errors"], 0)
@@ -164,6 +167,63 @@ class SuiteTests(unittest.TestCase):
         self.assertTrue(out["failures"])
         self.assertTrue(all("HTTP 500" in f["error"] for f in out["failures"]))
         self.assertIsNone(out["chat"]["decode_tps"])
+
+
+class FreshPromptTests(unittest.TestCase):
+    @staticmethod
+    def response(cached, speed=1000.0, timing_cache=False):
+        usage = {"prompt_tokens": 4096, "completion_tokens": 24}
+        timings = {"prompt_per_second": speed, "predicted_per_second": 60.0}
+        if cached is not None:
+            if timing_cache:
+                timings["cache_n"] = cached
+            else:
+                usage["prompt_tokens_details"] = {"cached_tokens": cached}
+        return {"first": 4.0, "total": 4.4, "usage": usage, "timings": timings, "err": None}
+
+    def run_prompts(self, responses):
+        logs = []
+        suite = B.Suite("http://127.0.0.1", "", 65536, len(responses), False, log=logs.append)
+        with mock.patch.object(B, "chat", side_effect=responses):
+            suite.run_prompt(4096, "4K")
+        return suite.out, logs
+
+    def test_cached_and_unknown_counts_do_not_enter_fresh_summary(self):
+        out, logs = self.run_prompts([self.response(0, 1000), self.response(4000, 9000),
+                                     self.response(None, 8000), self.response(0, 1200, timing_cache=True)])
+        prompt = out["prompts"]["4K"]
+        self.assertEqual(prompt["prompt_tps"], {"median": 1100.0, "min": 1000, "max": 1200, "n": 2})
+        self.assertEqual(prompt["ttft_s"]["n"], 2)
+        self.assertEqual(prompt["reused_tokens"], {"median": 0, "min": 0, "max": 0, "n": 2})
+        self.assertEqual(len(prompt["requests"]), 4)  # retain every request, including the excluded measurements
+        self.assertTrue(all(r["ok"] for r in prompt["requests"]))
+        self.assertEqual([r["fresh_prompt"] for r in prompt["requests"]], [True, False, False, True])
+        self.assertIsNone(prompt["requests"][2]["reused_tokens"])
+        self.assertIn("4000 reused", "\n".join(logs))
+        self.assertIn("unknown", "\n".join(logs))
+        self.assertEqual(out["failures"], [])  # unavailable cache evidence is not a failed model request
+
+    def test_missing_or_invalid_cache_counts_are_not_zero(self):
+        for cached in (None, -1, False, "0", 0.5):
+            with self.subTest(cached=cached):
+                out, _ = self.run_prompts([self.response(cached)])
+                prompt = out["prompts"]["4K"]
+                self.assertIsNone(prompt["prompt_tps"])
+                self.assertIsNone(prompt["ttft_s"])
+                self.assertIsNone(prompt["reused_tokens"])
+                self.assertFalse(prompt["requests"][0]["fresh_prompt"])
+                self.assertTrue(prompt["requests"][0]["fresh_prompt_exclusion"])
+
+    def test_exclusions_are_visible_in_the_report(self):
+        out, _ = self.run_prompts([self.response(None), self.response(123)])
+        report = B.render_readme({"machine": {}, "results": out, "date": "2026-11-09", "elapsed_s": 1,
+                                 "params": {"runs": 2, "think": False, "command": "test", "started_server": False}})
+        self.assertIn("Excluded from fresh-prompt summaries", report)
+        self.assertIn("4K run 1", report)
+        self.assertIn("4K run 2", report)
+        self.assertIn("unknown", report)
+        self.assertIn("123 reused", report)
+        self.assertIn("not measured", report)
 
 
 class RedactionTests(unittest.TestCase):
