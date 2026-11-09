@@ -196,6 +196,11 @@ Against the DGX Spark, same engine family, same benchmark cells (IQ3_S, T=0, Tho
 | prompt 4K / 16K / 32K | 921 / 1,138 / 950-1,051 | 1,296 / 1,680 / 1,735 | 0.71 / 0.68 / 0.55-0.61 |
 | decode 4K / 16K / 32K | 37.6 / 37.5 / 38.0 | 45.5 / 46.5 / 46.5 | 0.83 / 0.81 / 0.82 |
 
+And the same engine past the guide's sizes ([report longctx/](bench/results/2026-11-05-community-jetson-thor-sm110/longctx/README.md),
+MAXN, T=0): IQ3_S also serves **128K context (2 or 4 slots) and 256K (1 slot)** - decode stays 36-38 tok/s from
+64K through 256K context, prefill ~1.1K tok/s up to a 131K-token prompt (TTFT 119 s), and at long context the
+switches all sit inside noise: the defaults are the setting.
+
 What each setting on the Thor is worth (standard suite, IQ3_S decode short/4K/16K and Qwen3.6 UD-Q4_K_XL). Every row
 is one logged run, named with its session and the terminal commit it recorded; **no two rows share a session**, so
 reading across rows is an observation, not a controlled A/B:
