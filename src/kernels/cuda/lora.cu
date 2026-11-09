@@ -151,11 +151,12 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_kernel(const float* __rest
 // The up kernel when B fits in registers (rank <= PDL_RANK) and the device has programmatic dependent launch: the
 // same sums as lora_up_kernel, but the B column is loaded before cudaGridDependencySynchronize, while the down kernel
 // still runs.  The flag is read first, so an off request loads nothing (the host only writes it between syncs).
-#if defined(__HIPCC__)
-constexpr bool kPdl = false;
-#else
+// Programmatic dependent launch is CUDA-only. On HIP the PDL branch in launch_small() is
+// compiled out, so this kernel must not be compiled either: __ldcg and
+// cudaGridDependencySynchronize have no HIP equivalent, and a kernel that can never be
+// launched is not a place to add a fallback for them.
+#if !defined(__HIPCC__)
 constexpr bool kPdl = true;
-#endif
 constexpr int PDL_RANK = 64;
 template <int NT>
 __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __restrict__ bt, const float* h,
@@ -187,6 +188,7 @@ __global__ void __launch_bounds__(UP_THREADS) lora_up_pdl_kernel(const float* __
 #pragma unroll
     for (int t = 0; t < NT; ++t) y[(int64_t) t * ldy + o] += sg * acc[t];
 }
+#endif   // !__HIPCC__: the PDL up kernel is CUDA-only
 
 template <typename XT, int NT>
 void launch_small(const float* a, const float* bt, float* h, const XT* x, int64_t ldx, float* y, int64_t ldy, int rank,
