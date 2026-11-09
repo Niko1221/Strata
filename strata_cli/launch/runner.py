@@ -1420,9 +1420,10 @@ class Runner:
         except Exception:                                    # noqa: BLE001
             backend = None
         pack_dir = data_dir / "packs" / tag.lower()
-        if backend == "sycl" and adopt.find_shards(model_dir) and not (pack_dir / "experts.bin").exists() and not (
+        files = adopt.model_files(model_dir, s.family or "", fam) if fam.get("feed") else adopt.find_shards(model_dir)   # a feed model can be one GGUF
+        if backend == "sycl" and files and not (pack_dir / "experts.bin").exists() and not (
                 (pack_dir / "index.txt").exists() and (pack_dir / "tokenizer" / "vocab.json").exists()):
-            self.prepare_pack(model_dir, pack_dir, adopt.find_shards(model_dir))
+            self.prepare_pack(model_dir, pack_dir, files)
         cfg, problems = adopt.plan(family=s.family, model=s.model, model_dir=model_dir, data_dir=data_dir, src=cat.src,
                                    context=s.context or 32768, kv=s.kv, model_name=f"{fam.get('name', s.family)}-{s.model.lower()}", family_def=fam,
                                    log=cat.root / f"strata-{tag}.log", backend=backend,

@@ -2431,11 +2431,11 @@ class Tools:
             from strata_control import intel_app
             if mac or not intel_app.supported_here() or not any(g.get("vendor") == "intel" for g in hw.get("gpus", [])):
                 raise ToolError("no Intel Arc card Strata can use was found in this computer (the Intel Arc engine runs on Linux)")
-            if md.get("multi_file") or family not in intel_app.families():
+            if md.get("multi_file") or not intel_app.can_set_up(family, families[family]):
                 raise ToolError(f"{families[family]['title']} {model} can't be set up for an Intel Arc card yet; "
                                 "the Qwen3.8-Flash-Next, Swift, Coder, Gyro and Unsloth sizes can")
             backend, vision = "sycl", "no"                  # pictures stay off on an Arc (strata_cli/launch/adopt.py)
-            if not gguf_dir and not intel_app.model_files_in(have_dir, family):
+            if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
                 raise ToolError(intel_app.NO_DOWNLOAD)
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
         need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)             + (s.mac().repacked_gb(model) if mac and s.mac() else 0)       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)

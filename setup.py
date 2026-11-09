@@ -8297,7 +8297,7 @@ def intel_control_setup(a) -> int:
     if not intel_app.supported_here():
         fail("the Intel Arc engine runs on Linux only", "there is no Windows or Mac Intel engine yet")
     family = a.family or "qwen"
-    if family not in adopt.FAMILIES or family not in FAMILIES:
+    if family not in FAMILIES or not intel_app.can_set_up(family, FAMILIES[family]):
         fail(f"cannot set up {family} for an Intel Arc card", "choose a Qwen3.8-Flash-Next, Swift, Coder, Gyro or Unsloth size")
     fam, model = FAMILIES[family], a.model
     if not model:
@@ -8310,7 +8310,7 @@ def intel_control_setup(a) -> int:
         model_dir = (Path(a.models_dir) if a.models_dir else data / "models") / tag
     if model_dir.is_file():
         model_dir = model_dir.parent
-    shards = intel_app.model_files_in(model_dir, family)
+    shards = intel_app.model_files_in(model_dir, family, fam)
     if not shards:
         fail(intel_app.NO_DOWNLOAD)
     ok(f"model files: {model_dir} ({len(shards)} file{'s' if len(shards) != 1 else ''})")
@@ -8319,6 +8319,10 @@ def intel_control_setup(a) -> int:
     ok("graphics card: " + (", ".join(f"{c['name']} ({c['vram_gb']:g} GB)" for c in cards) or "an Intel Arc"))
     if a.check:
         return 0
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own engine component, fetched from the signed feed (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
+        shape_engine_fetch(a)
     step(2, "preparing the model for this graphics card")
     pack = data / "packs" / tag.lower()
     if not ((pack / "experts.bin").exists() or ((pack / "index.txt").exists() and (pack / "tokenizer" / "vocab.json").exists())):
