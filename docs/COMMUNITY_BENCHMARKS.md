@@ -87,6 +87,12 @@ and their limits. Report what you actually measured and label estimates separate
   chat and 39.1 agent, prompt 487.5 / 892.7 / 1054.9 tok/s at 4,096 / 16,384 / 32,768 tokens. Same provenance and limits
   as the report: `tools/strata_bench.py`, not the standard protocol; `DS4_DEFAULTS=075` was tuned on the non-coder set.
 
+- [2026-11-09: 4x RTX 2080 Ti 22 GB (sm_75), Xeon E5-2680 v4 without AVX-512, 121 GiB RAM — 2.25 bpw set](../bench/results/2026-11-09-t-225/2026-11-09-community-4x-rtx-2080-ti-deepseek-v4-1-flash/README.md):
+  the same box on ISTA-DASLab's 2.25 bits-per-weight set (149.1 GB of experts at 2.19 bpw, 544 G parameters), DSpark `Q8_0`,
+  131,072-token context, tensor parallel 4, five `--long` runs: decode 32.3 tok/s chat and 26.9 agent, prompt 534.7 / 941.1 /
+  1060.6 tok/s at 4,096 / 16,384 / 32,768 tokens. The experts do not fit in RAM beside the dense weights, so the CPU lane
+  reads them from disk; same provenance and limits as the other reports here.
+
 ## Run the standard benchmark
 
 ```sh
