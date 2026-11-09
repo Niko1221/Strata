@@ -1,0 +1,68 @@
+{
+  "exe": "<strata-checkout>/build-dsv41/strata-dsv41",
+  "args": [
+    "--pack",
+    "<packs>/deepseek-v4.1-flash-ist-das-coder",
+    "--max-context",
+    "131072",
+    "--eos",
+    "1",
+    "--vision",
+    "on",
+    "--dspark",
+    "auto",
+    "--dspark-conf",
+    "0.5",
+    "--tp",
+    "4",
+    "--experts",
+    "5",
+    "--threads",
+    "on"
+  ],
+  "cwd": "<strata-checkout>",
+  "tokenizer": "<packs>/deepseek-v4.1-flash-ist-das-2.00bpw/tokenizer",
+  "model_name": "deepseek-v4.1-flash",
+  "arch": "deepseek41",
+  "log": "<strata-checkout>/strata-dsv41-t-coder.log",
+  "lib_dirs": [
+    "<strata-checkout>/build-dsv41"
+  ],
+  "port": 8080,
+  "engine_ready_s": 3600,
+  "gpu": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "gpus_asked": true,
+  "host": "0.0.0.0",
+  "env": {
+    "DS4_ASYNC_T": "8",
+    "DS4_DEFAULTS": "075",
+    "DS4_ATTN_SPLIT": "0",
+    "DS4_LANE_FUSE": "1",
+    "DS4_GG_IQ1M": "auto"
+  },
+  "args_written": [
+    "--pack",
+    "<packs>/deepseek-v4.1-flash-ist-das-2.00bpw",
+    "--max-context",
+    "131072",
+    "--eos",
+    "1",
+    "--vision",
+    "on",
+    "--dspark",
+    "auto",
+    "--dspark-conf",
+    "0.5",
+    "--tp",
+    "4",
+    "--experts",
+    "5",
+    "--threads",
+    "on"
+  ]
+}

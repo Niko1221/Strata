@@ -81,6 +81,12 @@ and their limits. Report what you actually measured and label estimates separate
   token. Not a standard-protocol result (`tools/strata_bench.py`, labelled in the report). `DS4_DEFAULTS=075` changes
   numerics and stays opt-in, recorded with its quality numbers. Not tested: HIP build (no toolchain), Windows package.
 
+- [2026-11-09: 4x RTX 2080 Ti 22 GB (sm_75), Xeon E5-2680 v4 without AVX-512, 121 GiB RAM — coder set](../bench/results/2026-11-09-t-coder/2026-11-09-community-4x-rtx-2080-ti-deepseek-v4-1-flash/README.md):
+  the same box on ISTA-DASLab's `DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder` (IQ2_XXS, 272 G parameters, six shards with the
+  set's Engram as shard 6), DSpark `Q8_0`, 131,072-token context, tensor parallel 4, five `--long` runs: decode 42.6 tok/s
+  chat and 39.1 agent, prompt 487.5 / 892.7 / 1054.9 tok/s at 4,096 / 16,384 / 32,768 tokens. Same provenance and limits
+  as the report: `tools/strata_bench.py`, not the standard protocol; `DS4_DEFAULTS=075` was tuned on the non-coder set.
+
 ## Run the standard benchmark
 
 ```sh
