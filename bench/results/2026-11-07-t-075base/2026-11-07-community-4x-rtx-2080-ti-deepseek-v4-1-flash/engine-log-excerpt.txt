@@ -1,0 +1,2 @@
+[strata] layer split across GPUs [0, 1, 2, 3] (auto)
+ready: http://127.0.0.1:8080/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, context 131072 tokens)
