@@ -167,7 +167,7 @@ $("metrics").innerHTML = METRICS.map((m) => `
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span><span class="st-metric__sub speed-range" id="sr-prefill"></span></div>
     </div>` : m.key === "model" ? `<span class="st-metric__value model-card__name" id="mv-model">–</span>
     <span class="st-metric__sub" id="ms-model"></span>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
-    <span class="st-metric__sub" id="ms-${m.key}"></span>`}
+    <span class="st-metric__sub" id="ms-${m.key}"></span>${m.key === "temp" || m.key === "power" ? `<span class="st-metric__sub speed-range" id="sr-${m.key}"></span>` : ""}`}
     ${m.key === "model" ? `<div class="model-card__facts" id="model-facts"></div>` : `<svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
@@ -459,6 +459,37 @@ function fillSpeedRange() {
     el.dataset.tip = v.length ? tr("monitor.speed.range", "The slowest and the fastest of the {n} requests the server keeps (the last 500 at most).", {n: v.length}) : "";
   }
 }
+// hardware averages: the page samples once a poll, but keeps a sample only while the server is really working -
+// queued, reading the prompt or generating; idle time is left out. A server restart moves the totals window, and
+// the sample list starts afresh. The averages cover what this page has watched: they are per page view, not per run.
+let hwWin = [], hwSince = null;
+function sampleHw(hw, working) {
+  if (working) {
+    const g = [...(hw.gpus || [])].sort((a, b) => (a.index || 0) - (b.index || 0));
+    if (g.length) hwWin.push({t: g.map((x) => x.temp), p: hw.gpu_power, names: g.map((x) => x.name)});
+    if (hwWin.length > 21600) hwWin = hwWin.slice(-18000);
+  }
+  const pv = hwWin.map((s) => s.p).filter((x) => x != null);
+  const pe = $("sr-power");
+  if (pe) {
+    pe.textContent = pv.length ? `avg ${fmt(pv.reduce((a, x) => a + x, 0) / pv.length)} W` : "";
+    pe.dataset.tip = pv.length ? tr("monitor.power.avg", "The average total draw over the {n} one-second samples this page has watched while the server was working; idle time is left out.", {n: pv.length}) : "";
+  }
+  const te = $("sr-temp");
+  if (te) {
+    const cols = hwWin.length ? hwWin[0].t.length : 0;
+    const av = [];
+    for (let c = 0; c < cols; c++) {
+      const v = hwWin.map((s) => s.t[c]).filter((x) => x != null);
+      av.push(v.length ? v.reduce((a, x) => a + x, 0) / v.length : null);
+    }
+    const any = av.some((x) => x != null);
+    te.textContent = any ? `avg ${av.map((x) => (x == null ? "–" : fmt(x))).join(" / ")}` : "";
+    const names = hwWin.length ? hwWin[hwWin.length - 1].names : [];
+    const detail = av.map((x, i) => (x == null || !names[i] ? null : `${names[i]}: ${fmt(x)} °C`)).filter(Boolean).join(" · ");
+    te.dataset.tip = any ? `${detail} - ` + tr("monitor.temp.avg", "The average temperature of each card over the {n} one-second samples this page has watched while the server was working; idle time is left out.", {n: hwWin.length}) : "";
+  }
+}
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   // A local turn keeps metrics on "unloaded" for the whole engine start.
@@ -542,6 +573,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-temp", h.gpu_temp, 90);
   setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
   spark("sp-power", h.gpu_power, hw.gpu_power_limit);
+  if (hwSince !== (totals && totals.since)) { hwWin = []; hwSince = totals && totals.since; }
+  sampleHw(hw, live.state && live.state !== "idle" && live.state !== "unloaded");
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
             hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
