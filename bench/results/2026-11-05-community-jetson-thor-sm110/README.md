@@ -259,8 +259,18 @@ Same machine and package: the fat engine comes from `ARCHS="121;110" sh spark/bu
 the build and serves the same way; docs/JETSON_THOR.md has the recipe and the function-for-function match
 between the container and host binaries.
 
+## Long context: IQ3_S at 128K and 256K ([longctx/](longctx/README.md))
+
+Added 2026-11-09, MAXN power mode, same package: **IQ3_S serves 128K context (2 or 4 slots) and 256K (1
+slot)** with decode flat at 36-38 tok/s from 64K through 256K context - the 64K MAXN cells' decode carries
+unchanged to a 131K-token prompt (256K cell: prefill 1117.8, decode 38.2, TTFT 119.3 s). Four slots at 128K
+cost ~2 tok/s. The five sm_110 switches, `--spec 8`, `--kv-resident 131072` and the cost rule off all sit
+inside noise at T=0 long-prompt cells - the defaults are the setting there (the first -30-50% reads were
+cold-page-cache artifacts, caught and re-paired; see the section's trap note). The q36 128K refusal above is
+that pack's own KV sizing, not a platform limit.
+
 ## Not covered here
 
 Vision (this package ships no picture reader), DFlash2 as a default (measured slower than MTP here, above),
-DeepSeek concurrency and Q6/Q8 packs for Qwen3.6 (bandwidth-limited), 128K context on this machine (above), more than one module, a long soak, and
+DeepSeek concurrency and Q6/Q8 packs for Qwen3.6 (bandwidth-limited), more than one module, a long soak, and
 

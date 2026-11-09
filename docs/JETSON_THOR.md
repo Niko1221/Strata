@@ -134,7 +134,9 @@ IQ3_S peaks at `--spec 4` with the cost rule on,
 and DFlash2's drafter works (sanity 12/12) but is slower than the model's own MTP layer on this part. One machine behavior
 to know: after an engine has run, Tegra's `cudaMemGetInfo` can report only a few GiB free while the OS has tens free,
 until the machine restarts - the engines' sizing reads that number, so a restart before a measuring run is part of the
-method here. All the tables, pairs and caveats: [bench/results/2026-11-05-community-jetson-thor-sm110/README.md](../bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
+method here. Long context measured too ([longctx](../bench/results/2026-11-05-community-jetson-thor-sm110/longctx/README.md)):
+IQ3_S at 128K (2-4 slots) and 256K (1 slot), decode flat 36-38 tok/s through 256K context, and at T=0 long prompts none
+of the switches separates from the defaults - leave them on. All the tables, pairs and caveats: [bench/results/2026-11-05-community-jetson-thor-sm110/README.md](../bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
 
 ## Limits
 
