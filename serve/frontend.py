@@ -1170,6 +1170,104 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 
 
+class _RawValue:
+    """The streaming view of a non-string tool parameter value that is written as JSON.
+
+    Such a value used to be held in full until its `</parameter>` and the tag after it had arrived,
+    because the parser wanted it whole to decode it and re-send it as one piece.  A big `items`
+    array or `taskProgress` list therefore left the stream silent for as long as the model took to
+    write it; a client's idle timeout then ended a healthy request (the keep-alive in serve/server.py
+    for #1666 only stopped the timeout, it did not give the progress back).
+
+    A character goes out only once nothing that can still arrive can change what has already gone
+    out: after a closed string, after a structural character, or after a scalar a delimiter has
+    confirmed.  The whitespace between tokens is dropped, which is what `json.dumps` drops too, so
+    the pieces concatenated parse to the same value as the whole."""
+
+    WS = " \n\r\t"
+    DELIM = " \n\r\t,]}:"
+    HEX = "0123456789abcdefABCDEF"
+
+    def __init__(self):
+        self.str = False        # inside a JSON string; escapes are matched whole, so nothing else
+        self.depth = 0          # nesting of the value's own brackets
+        self.done = False       # the value closed: nothing after it in the buffer is its text
+
+    def piece(self, text: str, final: bool = False) -> tuple[int, str]:
+        """(characters of `text` consumed, the text to send now).  `final` means the value is over:
+        it takes all of `text`, because nothing can arrive after it to change its meaning.  It drops
+        the whitespace between tokens either way, so a value that arrives all at once leaves the
+        stream exactly as one that arrives token by token.  Once the value has closed, nothing more of
+        `text` is its text and nothing more leaves the stream: `param_end` confirms the end as before,
+        so a closing tag can never reach the client as part of the arguments."""
+        if self.done:
+            return 0, ""
+        out: list[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            c = text[i]
+            if self.str:
+                if c == "\\":
+                    # An escape goes out whole or not at all.  It must never leave the stream as a
+                    # lone \ or a half-written \uXXXX, and the scanner must not consume the \ alone:
+                    # a \ held back with the string still open would be read as an escaped
+                    # character next time and close the string on its quote, dropping the
+                    # whitespace inside it.
+                    nxt = text[i + 1:i + 2]
+                    if not nxt and not final:
+                        return i, "".join(out)
+                    if nxt == "u":
+                        hexpart = text[i + 2:i + 6]
+                        if not final and (len(hexpart) < 4 or any(ch not in self.HEX for ch in hexpart)):
+                            return i, "".join(out)
+                        take = text[i:i + 6]
+                    else:
+                        take = text[i:i + 2]        # \n, \", \\ ... two characters, or fewer at the end
+                    out.append(take)
+                    i += len(take)
+                    continue
+                out.append(c)
+                i += 1
+                if c == '"':
+                    self.str = False
+                    if not final:
+                        return i, "".join(out)      # the string is whole
+                    continue
+                continue
+            if c in self.WS:
+                i += 1                              # insignificant between tokens
+                continue
+            if c in "{[]},:":                       # every JSON structural character; this set must
+                out.append(c)                       # cover DELIM, or the scalar below would stop
+                i += 1                              # on it without consuming it and never advance
+                if c in "{[":
+                    self.depth += 1
+                elif c in "}]":                     # only a closing bracket ends nesting; a comma or
+                    self.depth -= 1                 # a colon is a boundary too, but it must not close
+                    if self.depth <= 0:             # the value, or it would be cut short at the first
+                        self.done = True            # one of them
+                        return i, "".join(out)      # the value is whole: stop before its closer
+                if not final:
+                    return i, "".join(out)          # a structural character is a boundary
+                continue
+            if c == '"':
+                self.str = True
+                out.append(c)
+                i += 1
+                continue                            # a string goes out as it closes, never before
+            j = i
+            while j < n and text[j] not in self.DELIM:
+                j += 1
+            if j == n and not final:
+                return i, "".join(out)              # the scalar may still be arriving
+            out.append(text[i:j])
+            i = j
+            if not final:
+                return i, "".join(out)              # the scalar is whole; the delimiter goes next round
+        return i, "".join(out)
+
+
 class OutputParser:
     """Incremental parser of the model's text. Feed deltas; get events. A tag split across deltas is held back
     until it is complete, so clients never see `<tool_` or `</thi`."""
@@ -1225,7 +1323,8 @@ class OutputParser:
         self.unread_names: list[str] = []   # the names (first few) of those that named a tool the request did not declare
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
-        # character; other types whole, once complete) - before the final "tool_call".  Without it, a client sees
+        # character, and an array or object at its JSON token boundaries as it is written; a value that does not
+        # open like JSON goes out whole, once complete) - before the final "tool_call".  Without it, a client sees
         # nothing until the call is complete, which for a large file write can be many minutes.
         self.stream_tools = stream_tools
         # #804/#1058: calls found inside the reasoning wait here as [raw text, ToolCall | None] until the turn shows
@@ -1478,6 +1577,7 @@ class OutputParser:
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.sraw = None             # the raw value's streaming view: None | _RawValue | "whole"
         self.spname = None
         self.svstart = 0
 
@@ -1537,7 +1637,7 @@ class OutputParser:
                         args('"')
                         self.ss, self.sval_started = "str", False
                     else:
-                        self.ss = "raw"
+                        self.ss, self.sraw = "raw", None
                 elif stripped.startswith("</function>"):
                     self.sp += len("</function>")
                     self.ss = "function_done"
@@ -1574,7 +1674,31 @@ class OutputParser:
             elif self.ss == "raw":
                 end = param_end(rest, self._final, name=self.spname)
                 if end < 0:
-                    return out
+                    if self.sraw is None:
+                        head = rest.lstrip()
+                        if not head:
+                            return out              # the value's first character is still arriving
+                        self.sp += len(rest) - len(head)
+                        # A value that opens like JSON leaves the stream as it is written.  One that
+                        # does not (a bare path for a tool whose schema names no types) still goes
+                        # out whole once complete, exactly as before.
+                        self.sraw = _RawValue() if head[0] in "{[" else "whole"
+                        continue
+                    if not isinstance(self.sraw, _RawValue):
+                        return out                  # not JSON: wait for it to be whole, as before
+                    n, piece = self.sraw.piece(rest)
+                    args(piece)
+                    self.sp += n
+                    if n:
+                        continue              # drain what has arrived: one token per feed falls
+                    return out                # behind and loses the tail, leaving the pieces short
+                if isinstance(self.sraw, _RawValue):
+                    # Most of it left the stream already: send only the tail that had not gone out.
+                    n, piece = self.sraw.piece(rest[:end], final=True)
+                    args(piece)
+                    self.sp += end - n + len(PARAM_END)
+                    self.ss = "between"
+                    continue
                 value = rest[:end]
                 if value.startswith("\n"):
                     value = value[1:]
@@ -1591,6 +1715,17 @@ class OutputParser:
         """Close streamed JSON only after its call boundary has been confirmed."""
         out = []
         if self.scall is None or self.ss == "done":
+            return out
+        if self.ss == "raw" and isinstance(self.sraw, _RawValue):
+            # The value's own brackets are already on the wire and the output ended inside it: send
+            # the rest of it and leave the object open, so the pieces still do not parse as
+            # arguments - the client must be able to tell this from a call it can run (#211).
+            tail = self.buf[self.sp:]
+            n, piece = self.sraw.piece(tail[:len(tail) - self._hold(tail, (PARAM_END,))], final=True)
+            self.sp += n
+            self.ss = "done"
+            if piece:
+                out.append(Event("tool_args", piece, call=self.scall))
             return out
         tail = ""
         if self.ss == "str":
