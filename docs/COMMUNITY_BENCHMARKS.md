@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-07: Tesla P100-PCIE-16GB (sm_60), Xeon E5-1650 v3, 78.4 GiB RAM](../bench/results/2026-11-07-community-tesla-p100-pcie-16gb-swift-1-5-iq3-s/README.md):
+  Strata 0.1.48 (commit 5c8dd322), Swift IQ3_S with expert profile and MTP rt, 131,072-token context, `--kv int8`, `--vision`; suite 1 medians: decode 31.5 tok/s (short chat) and 35.8 (agent follow-up turns), prompt 318.1 / 351.3 tok/s at 4K / 16K fresh, TTFT 1.02 / 12.68 / 45.76 s; conversation-cache hit 69.5 % over the agent sessions. Speed only, no correctness run.
 
 ## Run the standard benchmark
 
