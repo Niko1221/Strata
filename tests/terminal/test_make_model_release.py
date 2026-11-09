@@ -173,12 +173,16 @@ class Plan(unittest.TestCase):
         (t / "RELEASE-NOTES.md").write_text("# {{model_title}} {{app_version}}\n{{file_rows}}\n[FILL: a number] {{unknown}}\n", encoding="utf-8")
         out = Path(self.tmp.name) / "out"
         code, _, err = run(self.base(self.a, "--write", str(out), "--templates", str(t), "--revision", "abc"))
+        self.assertNotEqual(code, 0, "case A with --write needs --min-engine (Q4-READY: it left a [FILL] in the entry)")
+        self.assertIn("--min-engine", err)
+        self.assertFalse(out.exists())
+        code, _, err = run(self.base(self.a, "--write", str(out), "--templates", str(t), "--revision", "abc", "--min-engine", "0.1.58"))
         self.assertEqual(code, 0, err)
         entry = json.loads((out / "models" / "m1.model.json").read_text())
         self.assertIn("DRAFT", entry["_status"])
         self.assertEqual(entry["files"][0]["name"], "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf")
         self.assertEqual(entry["drafter"], "mtp")
-        self.assertEqual(entry["min_engine"], "[FILL: minimum engine version]")
+        self.assertEqual(entry["min_engine"], "0.1.58")
         notes = (out / "RELEASE-NOTES.md").read_text()
         self.assertIn("# Qwen3.6-35B-A3B 0.2.12", notes)
         self.assertIn("[FILL: a number]", notes)
@@ -192,7 +196,7 @@ class Plan(unittest.TestCase):
         from strata_control import feed as feedmod
         out = Path(self.tmp.name) / "outfeed"
         rev = "a" * 40
-        code, _, err = run(self.base(self.a, "--write", str(out), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072"))
+        code, _, err = run(self.base(self.a, "--write", str(out), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072", "--min-engine", "0.1.58"))
         self.assertEqual(code, 0, err)
         path = out / "models" / "m1.entry.json"
         entry = json.loads(path.read_text())
@@ -202,9 +206,12 @@ class Plan(unittest.TestCase):
         self.assertIn("FILL", str(cm.exception))
         out2 = Path(self.tmp.name) / "outfeed2"
         code, _, err = run(self.base(self.a, "--write", str(out2), "--revision", rev, "--hf-repo", "x/y", "--default-context", "131072", "--about", "one sentence",
-                                     "--licence", "Apache 2.0", "--licence-url", "https://example.org/licence", "--quant", "Q4", "--quant-about", "4-bit", "--ram-gb", "24", "--min-engine", "0.1.58"))
+                                     "--licence", "Apache 2.0", "--licence-url", "https://example.org/licence", "--quant", "Q4", "--quant-about", "4-bit", "--ram-gb", "24", "--min-engine", "0.1.58",
+                                     "--title", "Qwen4 Test"))
         self.assertEqual(code, 0, err)
         filled = json.loads((out2 / "models" / "m1.entry.json").read_text())
+        self.assertEqual(filled["title"], "Qwen4 Test")                   # --title (Q4-READY); without it the file's general.name, as before
+        self.assertEqual(json.loads((out / "models" / "m1.entry.json").read_text())["title"], "Qwen3.6-35B-A3B")
         self.assertNotIn("[FILL", json.dumps(filled).replace("[FILL: sha256]", ""))
         for f in filled["quants"][0]["files"]:
             f["sha256"] = f["sha256"] if len(f["sha256"]) == 64 else "0" * 64
