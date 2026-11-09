@@ -519,6 +519,26 @@ kernel void ds4_moe_sort_fill(device const int* idx [[buffer(0)]], constant uint
 // high nibble value j + 16, each an index into ggml-common.h's kvalues_iq4nl (ds4_kernels.cu:1280).
 constant int ds4_kIq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
+// fmt 4 (Unsloth UD-Q2_K_XL's Engram): ggml Q5_K, 176 bytes a 256 values - src/dsv41/ds4_q5k.cuh's q5k_value, the same arithmetic:
+// d F16, dmin F16, scales[12] (get_scale_min_k4), qh[32] the fifth bits, qs[128] the low nibbles; (d sc) q - (dmin m)
+static inline float ds4_q5k_value(const device uchar* b, uint i) {
+    const float d = float(as_type<half>(ushort(ushort(b[0]) | (ushort(b[1]) << 8))));
+    const float dmin = float(as_type<half>(ushort(ushort(b[2]) | (ushort(b[3]) << 8))));
+    const device uchar* sc = b + 4;
+    const uint j = i >> 6, hi = (i >> 5) & 1u, l = i & 31u, is = 2u * j + hi;
+    int s, m;
+    if (is < 4u) {
+        s = sc[is] & 63;
+        m = sc[is + 4u] & 63;
+    } else {
+        s = (sc[is + 4u] & 0xF) | ((sc[is - 4u] >> 6) << 4);
+        m = (sc[is + 4u] >> 4) | ((sc[is] >> 6) << 4);
+    }
+    const uint lo = b[48u + 32u * j + l];
+    const int q = int(hi ? lo >> 4 : lo & 15u) + int(((b[16u + l] >> is) & 1u) << 4);
+    return (d * float(s)) * float(q) - dmin * float(m);
+}
+
 kernel void ds4_engram_dequant(device const uchar* src [[buffer(0)]], constant ulong& per [[buffer(1)]],
                                constant uint& cols [[buffer(2)]], constant uint& hd [[buffer(3)]],
                                device float* out [[buffer(4)]], constant int& fmt [[buffer(5)]],
@@ -532,6 +552,12 @@ kernel void ds4_engram_dequant(device const uchar* src [[buffer(0)]], constant u
             const int v = (e & 16u) ? int(q >> 4) : int(q & 15u);
             const ushort dh = ushort(b[0]) | (ushort(b[1]) << 8);
             out[(size_t) r * hd + e] = float(as_type<half>(dh)) * float(ds4_kIq4nl[v]);
+        }
+        return;
+    }
+    if (fmt == 4) {
+        for (uint e = tid; e < hd; e += 256u) {
+            out[(size_t) r * hd + e] = ds4_q5k_value(rows + (size_t) (e / 256u) * 176u, e % 256u);
         }
         return;
     }
@@ -1041,6 +1067,13 @@ kernel void ds4_engram_dequant_rows(device const uchar* rows [[buffer(0)]], cons
             const int v = (e & 16u) ? int(q >> 4) : int(q & 15u);
             const ushort dh = ushort(b[0]) | (ushort(b[1]) << 8);
             out[(size_t) r * (size_t) hd + e] = float(as_type<half>(dh)) * float(ds4_kIq4nl[v]);
+        }
+        return;
+    }
+    if (fmt == 4) {
+        const device uchar* row = rows + (size_t) r * (size_t) hd;
+        for (uint e = tid; e < hd; e += 256u) {
+            out[(size_t) r * (size_t) hd + e] = ds4_q5k_value(row + (size_t) (e / 256u) * 176u, e % 256u);
         }
         return;
     }

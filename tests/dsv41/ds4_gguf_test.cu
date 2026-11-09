@@ -12,6 +12,7 @@
 #include "../../src/dsv41/ds4_iq.cuh"
 #include "../../src/dsv41/ds4_kernels.cuh"
 #include "../../src/dsv41/ds4_pcie.cuh"
+#include "../../src/dsv41/ds4_q5k.cuh"
 #include "../../src/dsv41/ds4_q6k.cuh"
 
 #include "ggml.h"   // (the low-bit types' reference values: ggml's own dequantize_row_*)
@@ -613,6 +614,7 @@ std::vector<uint8_t> q_rand(int type, int n, int k) {
             case gg::iq::kQ4_K: put(o, d), put(o + 2, 0.5f * d); break;
             case gg::iq::kQ2_K: put(o + 80, d), put(o + 82, 0.5f * d); break;
             case gg::iq::kQ3_K: put(o + 108, d); break;
+            case gg::kTypeMXFP4: w[o] = (uint8_t) (118 + (rng() & 3)); break;   // (E8M0: 2^(e - 128), so the values come near the others' size)
             default: put(o, d); break;   // (the i-quants: d first)
         }
     }
@@ -1022,11 +1024,25 @@ void test_experts_q(int D, int F, int tg, int td, cudaStream_t s) {
                 }
                 return v;
             };
-            const bool k8 = fm.gu_act == GGML_TYPE_Q8_K && fm.d_act == GGML_TYPE_Q8_K;
+            // ... or on Q8_0 values (block_q8_0: F16 d, int8 qs[32]; an MXFP4 down's activations in ggml-cpu)
+            auto q80 = [](const std::vector<uint8_t>& q, int kk) {
+                std::vector<float> v(kk);
+                for (int b = 0; b < kk / 32; ++b) {
+                    const uint8_t* p = q.data() + (size_t) b * 34;
+                    __half h;
+                    std::memcpy(&h, p, 2);
+                    const float d = __half2float(h);
+                    for (int j = 0; j < 32; ++j) v[b * 32 + j] = d * (float) (int8_t) p[2 + j];
+                }
+                return v;
+            };
+            auto act_ok = [](int t) { return t == GGML_TYPE_Q8_K || t == GGML_TYPE_Q8_0; };
+            auto deq = [&](int t, const std::vector<uint8_t>& q, int kk) { return t == GGML_TYPE_Q8_K ? q8k(q, kk) : q80(q, kk); };
+            const bool k8 = act_ok(fm.gu_act) && act_ok(fm.d_act);
             std::vector<float> got_h, got_y;
             std::vector<double> want_h, want_y;
             for (int i = 0; i < n && k8; ++i) {
-                const std::vector<float> xa = q8k(aq[i], D), ha = q8k(hq[i], F);
+                const std::vector<float> xa = deq(fm.gu_act, aq[i], D), ha = deq(fm.d_act, hq[i], F);
                 for (int f = 0; f < F; ++f) {
                     got_h.push_back(ff[i][f]);
                     want_h.push_back(swiglu(E.dot(e, 0, f, xa.data()), E.dot(e, 1, f, xa.data()), lim));
@@ -1040,8 +1056,8 @@ void test_experts_q(int D, int F, int tg, int td, cudaStream_t s) {
                 std::printf("%-44s FAIL  activation types %d / %d\n", "  CPU lane", fm.gu_act, fm.d_act);
                 ++g_fail;
             } else {
-                expect("  CPU lane gate/up (Q8_K)", got_h.data(), want_h.data(), want_h.size(), 1e-4);
-                expect("  CPU lane down (Q8_K)", got_y.data(), want_y.data(), want_y.size(), 1e-4);
+                expect(fm.gu_act == GGML_TYPE_Q8_K ? "  CPU lane gate/up (Q8_K)" : "  CPU lane gate/up (Q8_0)", got_h.data(), want_h.data(), want_h.size(), 1e-4);
+                expect(fm.d_act == GGML_TYPE_Q8_K ? "  CPU lane down (Q8_K)" : "  CPU lane down (Q8_0)", got_y.data(), want_y.data(), want_y.size(), 1e-4);
             }
         }
     }
@@ -1054,7 +1070,8 @@ void test_experts_q(int D, int F, int tg, int td, cudaStream_t s) {
 const std::pair<int, int> kQPairs[] = {
     {gg::iq::kIQ2_XXS, gg::iq::kIQ3_XXS}, {gg::iq::kIQ2_S, gg::iq::kIQ3_S},  {gg::iq::kIQ3_XXS, gg::iq::kIQ3_S},
     {gg::iq::kIQ4_XS, gg::iq::kQ4_K},     {gg::iq::kQ2_K, gg::iq::kQ3_K},    {gg::iq::kQ4_K, gg::iq::kIQ4_XS},
-    {gg::iq::kQ3_K, gg::iq::kQ2_K},       {gg::iq::kIQ3_S, gg::iq::kIQ2_XXS}, {gg::iq::kIQ3_S, gg::iq::kIQ2_S}};
+    {gg::iq::kQ3_K, gg::iq::kQ2_K},       {gg::iq::kIQ3_S, gg::iq::kIQ2_XXS}, {gg::iq::kIQ3_S, gg::iq::kIQ2_S},
+    {gg::iq::kIQ2_S, gg::kTypeMXFP4},     {gg::iq::kIQ2_XS, gg::kTypeMXFP4}};   // (Unsloth's UD-Q2_K_XL: an MXFP4 down in a low-bit layer)
 
 // a token's 6 low-bit experts at full size: GB/s of the weights read
 void bench_q(cudaStream_t s) {
@@ -1896,6 +1913,39 @@ void test_engram_q6k(cudaStream_t s) {
     cudaFree(d_rows), cudaFree(d_out);
 }
 
+// ---------------------------------------------------------------- Engram rows in Q5_K (Unsloth's UD-Q2_K_XL)
+__global__ void q5k_rows_kernel(const uint8_t* rows, int hd, float* out) {   // (engram_dequant's Q5_K branch)
+    const int r = blockIdx.x;
+    for (int e = threadIdx.x; e < hd; e += blockDim.x)
+        out[(size_t) r * hd + e] =
+            strata::ds4::q5k_value(rows + (size_t) r * hd + (size_t) (e / 256) * strata::ds4::kQ5kBytes, e % 256);
+}
+void test_engram_q5k(cudaStream_t s) {
+    const int n = 64, hd = 512, sb = hd / 256;   // rows of two superblocks, each row hd bytes apart (as the engine keeps)
+    std::vector<uint8_t> rows((size_t) n * hd, 0), packed((size_t) n * sb * 176);
+    for (auto& v : packed) v = (uint8_t) (rng() & 0xff);
+    for (size_t b = 0; b < (size_t) n * sb; ++b) {   // d and dmin: small normal F16s
+        const __half h = __float2half(0.0005f + 0.002f * std::fabs(frand()));
+        const __half m = __float2half(0.0005f + 0.002f * std::fabs(frand()));
+        std::memcpy(&packed[b * 176], &h, 2);
+        std::memcpy(&packed[b * 176 + 2], &m, 2);
+    }
+    for (int r = 0; r < n; ++r) std::memcpy(&rows[(size_t) r * hd], &packed[(size_t) r * sb * 176], (size_t) sb * 176);
+    std::vector<float> want((size_t) n * hd);
+    ggml_get_type_traits(GGML_TYPE_Q5_K)->to_float(packed.data(), want.data(), (int64_t) n * hd);
+    uint8_t* d_rows = dev(rows);
+    float* d_out = dev(std::vector<float>((size_t) n * hd));
+    q5k_rows_kernel<<<n, 256, 0, s>>>(d_rows, hd, d_out);
+    CU(cudaStreamSynchronize(s));
+    const std::vector<float> got = host(d_out, (size_t) n * hd);
+    const bool same = std::memcmp(got.data(), want.data(), got.size() * 4) == 0;
+    double worst = 0.0;
+    for (size_t i = 0; i < got.size(); ++i) worst = std::max(worst, (double) std::fabs(got[i] - want[i]));
+    if (!same) ++g_fail;
+    std::printf("%-44s %s (largest difference %.3g)\n", "Engram Q5_K rows = ggml's, bit for bit", same ? "ok" : "FAIL", worst);
+    cudaFree(d_rows), cudaFree(d_out);
+}
+
 int main(int argc, char** argv) {
     cudaStream_t s;
     CU(cudaStreamCreate(&s));
@@ -1936,6 +1986,7 @@ int main(int argc, char** argv) {
     test_kv_pack(s);
     test_mv(s);
     test_engram_q6k(s);
+    test_engram_q5k(s);
     test_experts(512, 256, s);
     for (int t : {gg::iq::kIQ2_XXS, gg::iq::kIQ2_S, gg::iq::kIQ3_XXS, gg::iq::kIQ3_S, gg::iq::kIQ4_XS, gg::iq::kQ2_K,
                   gg::iq::kQ3_K, gg::iq::kQ4_K})

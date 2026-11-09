@@ -2411,6 +2411,8 @@ class Tools:
                                                                      hw.get("ram_gb", 0) >= 60 else sizes[0])
         elif family is None:
             fams = [f for f in families if model in s.sizes_of(models, f)]
+            if len(fams) > 1 and "deepseek41" in fams and model not in ("UD-IQ1_M",):   # UD-Q2_K_XL: the bare name stays the Qwen set's (strata_cli/launch/catalog.py DEEPSEEK_FIRST)
+                fams = [f for f in fams if f != "deepseek41"]
             family = "qwen" if "qwen" in fams else fams[0]
         if family not in families:
             raise ToolError(f"unknown family {family}; the families: {', '.join(families)}")
@@ -2426,7 +2428,7 @@ class Tools:
             if md.get("multi_file"):                    # DeepSeek on a Mac (0.2.7.1): the sets that were run there, 8K like everywhere, text only
                 from strata_control import dsv41_fit
                 if model in dsv41_fit.MAC_NOT_YET:
-                    raise ToolError(dsv41_fit.MAC_NOT_YET_LINE)
+                    raise ToolError(dsv41_fit.mac_not_yet_line(model))
                 if model not in dsv41_fit.MAC_SET_PACK:
                     raise ToolError(f"{model} is not offered on a Mac: DeepSeek runs there as " + " or ".join(dsv41_fit.MAC_SET_PACK))
                 if not s.mac_deepseek_pictures():

@@ -85,6 +85,19 @@ ISTA_SETS["UD-IQ1_S"] = {"title": "Unsloth UD-IQ1_S", "set_bytes": 122_384_317_8
 ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_132, "experts_gb": 132.21, "profile": "profile-2.00.bin", "meta_bytes": 0,
                          "ppl": "?", "ram_ok_gb": 40.0, "disk_total": 258.0,
                          "quality": "Unsloth's next dynamic version, the size of ISTA-DAS 2.00 bpw; not measured here yet"}
+# Unsloth's UD-Q2_K_XL (setup.py DSV41_UD_FILES, seven shards): shards 1-6 the model (set_bytes; shard 1 the metadata), shard 7 its OWN Engram table (Q5_K, 135.2 GB,
+# "engram_bytes": not ISTA-DAS's data, downloaded with the set).  Bytes from the tensor table: experts 191.14 GB, other weights 8.48 GB.  RAM class: the 2.00 set's measured
+# 40 GB scaled by the experts' size (40 x 191.1 / 132.1 = 58; not measured on a computer with that RAM).  Measured 2026-11-08 on one Radeon AI PRO R9700 (32 GB) with 251 GB of
+# RAM, 1M context, every CPU-lane expert in RAM, no drafter (the engine's auto rule left it unloaded): answers 21.4-26.0 tokens a second on code and 18.7-21.7 on prose (5 or 6
+# experts a word: the same), prompts 147-193 tokens a second at 2K and 654-711 at 15-18K.  Quality not measured against the original yet.
+ISTA_SETS["UD-Q2_K_XL"] = {"title": "Unsloth UD-Q2_K_XL", "set_bytes": 199_621_523_044, "engram_bytes": 135_172_021_792, "experts_gb": 191.14, "dense_gb": 8.48,
+                           "profile": "profile-2.25.bin", "meta_bytes": 0, "ppl": "?", "ram_ok_gb": 58.0, "disk_total": 343.0,
+                           "measured": "one Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: answers at 21-26 tokens a second on code and 19-22 on prose, "
+                                       "a 2,000-token prompt at 127-191 tokens a second and an 18,000-token one at 642-756",
+                           "quality": "Unsloth's 2-bit dynamic version with more 3-bit experts, bigger than ISTA-DAS 2.25 bpw and closer to the model: "
+                                      "against Unsloth's UD-Q8_K_XL, KL 0.064 and the same top token 91% of the time (2.25 bpw: 0.145, 86%)"}
+# (UD-Q2_K_XL quality: strata-dsv41 --score on data/quant_quality/v1 tokenized for DeepSeek, 4,995 positions, 6 experts, R9700, 2026-11-10, one run a set;
+#  ISTA-DAS 2.00 bpw on the same run: 0.209, 82%.  The reference is UD-Q8_K_XL, not the original, so these do not compare with the "ppl" texts above.)
 # The ISTA-DAS Coder (2026-11-01): ISTA-DAS's coding variant, "the layout of the IQ2_XXS set with experts removed": 192 routed experts a layer instead of 384 (read from the header of its
 # shards: the experts, the router and the routing biases are half as wide; every other tensor is the 2.00 set's).  Where the repository, the commit and the files are is ONE
 # file, data/dsv41/coder-set.json (tools/dsv41/pin_coder.py writes it); the sizes here come from it.  Shard 1 = the metadata, shards 2-3 = the model, shard 4 = the Engram
@@ -133,7 +146,8 @@ ISTA_DENSE_ON_GPU_GB = 4.5            # (the old plan's figure, kept for the Uns
 #   and the experts that stay on a card are a little bigger than the set's average (the hot ones: 9.86-10.0 MB against 9.70 for 2.25 bpw): x1.025
 # ISTA-DAS Coder: the engine's startup lines on r9700 with this branch at 128K context, 11-01: one R9700 weights 5.70 GB, experts 24.91 GB (2,859 of 7,680); four R9700 weights
 # 0.74 + 0.87 + 2.25 + 2.56 = 6.42 GB and all 7,680 experts in graphics memory -> base 5.46 + 0.24 for each card (5.70 on one, 6.42 on four).
-ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.46, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37}
+ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.46, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37,
+                          "UD-Q2_K_XL": 7.53}   # (UD-Q2_K_XL: weights 7.77 GB on one R9700, 2026-11-08 -> 7.53 + 0.24)
 CARD_DENSE_REPEAT_GB = 0.24
 ENGINE_FREE_GB = 0.62
 CARD_OTHER_GB = {"amd": 1.60, "amd_low_share": 2.58, "other": 3.6}
@@ -258,9 +272,26 @@ def variant_key(model: str | None) -> str | None:
     return next((k for k in ISTA_SETS if k.lower() == str(model or "").lower()), None)
 
 
+def engram_bytes(model: str) -> int:
+    """The bytes of the set's n-gram table: the shared ISTA-DAS one, or the set's own (UD-Q2_K_XL)."""
+    return int(variant(model).get("engram_bytes", ISTA_ENGRAM_BYTES))
+
+
+def own_engram(model: str) -> bool:
+    """Whether the set brings its own n-gram table (downloaded with it, not the one every ISTA-DAS set shares)."""
+    return "engram_bytes" in variant(model)
+
+
 def ista_download_bytes(model: str, have_engram: bool = False) -> int:
     v = variant(model)
-    return v["set_bytes"] + ISTA_DSPARK_BYTES + v.get("meta_bytes", ISTA_META_BYTES) + (0 if have_engram else ISTA_ENGRAM_BYTES)
+    return v["set_bytes"] + ISTA_DSPARK_BYTES + v.get("meta_bytes", ISTA_META_BYTES) + (0 if have_engram and not own_engram(model) else engram_bytes(model))
+
+
+def _engram_line(model: str) -> str:
+    return ("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
+            "disk makes every word slower). " + ("This set has its own table (it is not the one the ISTA-DAS sets share), so it is downloaded with it."
+                                                 if own_engram(model) else
+                                                 "The same table serves every ISTA-DAS set, so installing another one downloads it once."))
 
 
 def recommend(ram_gb: float | None, disk_free_gb: float | None = None) -> str:
@@ -343,17 +374,16 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
     download = ista_download_bytes(model) / GB
     out: dict[str, Any] = {"variant": model, "cards": [], "experts_total": n_experts, "experts_in_vram": 0, "vram_experts_gb": 0.0,
                            "cpu_experts_gb": v["experts_gb"], "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]),
-                           "dense_gb": _round1(dense_gb_v), "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download),
+                           "dense_gb": _round1(dense_gb_v), "engram_gb": _round1(engram_bytes(model) / GB), "download_gb": _round1(download),
                            "tp": tp_for(n, keep), "args": [], "measured": measured_v, "lines": [], "warnings": [], "ram_gb": ram_gb,
                            "context": context, "disk_total_gb": v["disk_total"]}
     need_disk = download + DISK_HEADROOM_GB
     out["disk_need_gb"] = _round1(need_disk)
     out["disk_ok"] = None if disk_free_gb is None else disk_free_gb >= need_disk
     lines, warns = out["lines"], out["warnings"]
-    lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, {ISTA_ENGRAM_BYTES / GB:.0f} GB "
+    lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, {engram_bytes(model) / GB:.0f} GB "
                  f"n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
-    lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
-                 "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
+    lines.append(_engram_line(model))
     if n == 0:
         out["verdict"] = "no_card"
         warns.append("No graphics card Strata can use was found: this model needs one or more cards (8 GB or more; 12 GB is what it was "
@@ -454,7 +484,7 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
                                      "experts_gb": _round1(resident), "experts": in_mem}],
         "experts_total": n_experts, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
         "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(dense_gb_v),
-        "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
+        "engram_gb": _round1(engram_bytes(model) / GB), "download_gb": _round1(download), "tp": 1, "args": [],
         "measured": "" if v.get("unproven_uma") else UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
         "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
         "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
@@ -463,9 +493,8 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
     }
     lines, warns = out["lines"], out["warnings"]
     lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, "
-                 f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
-    lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
-                 "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
+                 f"{engram_bytes(model) / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
+    lines.append(_engram_line(model))
     name = card.get("name") or "the built-in Radeon"
     if float(card.get("dedicated_gb") or 0.0) > 0 or "GB10" not in str(card.get("name") or ""):
         lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
@@ -771,21 +800,31 @@ MAC_SET_PACK = {"IST-DAS-2.00bpw": "IQ2_XXS", "IST-DAS-2.25bpw": "IQ2_XS", "UD-I
 # Unsloth's UD-IQ1_S was run on an M5 Max (f-039-mac-dsu).  UD-IQ1_M has the same kernels and was not run there; the owner chose to offer it anyway ("they
 # will tell if it works"), with a plain "not run yet" line in its plan.  The gate stays as a mechanism, empty: put a name here to keep a set off a Mac
 # (the model lists, setup, the launch and the "I already have the model" check all read it through not_here()).
-MAC_NOT_YET = ()
+# Unsloth's UD-Q2_K_XL is held back on a Mac: its n-gram rows are Q5_K (ds4_init.metal's ds4_q5k_value), its experts IQ3_S and, in 7 layers, MXFP4 next to
+# IQ2 (ds4_iq.metal / ds4_mm.metal kernels, new).  It answered correctly on an M2 Max with 96 GB (2026-11-09) at about 4 tokens a second with
+# --vram-experts 0.3, but at 0.76 with the engine's own expert share: lift the gate together with a smaller share for such a Mac.  MAC_NOT_YET_LINES: the line of a set held back for its own reason.
+MAC_NOT_YET = ("UD-Q2_K_XL",)
 MAC_NOT_YET_LINE = "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do."
+MAC_NOT_YET_LINES = {"UD-Q2_K_XL": "Unsloth's UD-Q2_K_XL set doesn't run on a Mac yet; the UD-IQ1_S, UD-IQ1_M, 2.00 and 2.25 sets do."}
 # The same two sets were kept off a DGX Spark (linux-aarch64, GB10) until a Spark run passed: both passed there on 2026-10-30 (real `strata launch --model-path`,
 # 10 of 10 answers, tool call correct), so the tuple is empty.  Put a name back here to hide a set from the Spark again.
-AARCH64_NOT_YET = ()
+# UD-Q2_K_XL: its new kernels (Q5_K n-gram rows, MXFP4 in a low-bit layer) were built and run on HIP only (2026-11-08); a CUDA build was not made.
+AARCH64_NOT_YET = ("UD-Q2_K_XL",)
 AARCH64_NOT_YET_LINE = "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were."
+AARCH64_NOT_YET_LINES = {"UD-Q2_K_XL": "Unsloth's UD-Q2_K_XL set was not tested on a DGX Spark yet; the 2.00 and 2.25 sets were."}
+
+
+def mac_not_yet_line(model: str | None) -> str:
+    return MAC_NOT_YET_LINES.get(str(model or ""), MAC_NOT_YET_LINE)
 
 
 def not_here(model: str | None) -> str | None:
     """The plain line when `model` is not offered on THIS computer (a Mac: MAC_NOT_YET; linux-aarch64, the DGX Spark: AARCH64_NOT_YET), else None.
     Read at call time from sys.platform and sysinfo.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""
     if sys.platform == "darwin" and model in MAC_NOT_YET:
-        return MAC_NOT_YET_LINE
+        return mac_not_yet_line(model)
     if sys.platform.startswith("linux") and sysinfo.machine().lower() in ("aarch64", "arm64") and model in AARCH64_NOT_YET:
-        return AARCH64_NOT_YET_LINE
+        return AARCH64_NOT_YET_LINES.get(str(model or ""), AARCH64_NOT_YET_LINE)
     return None
 MAC_SMALL_RAM_GB = 64.0     # below this the measured M5 Max numbers do not apply (nothing smaller than 32 GB was ever started)
 
@@ -819,7 +858,7 @@ def _plan_mac(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
                    "layers": [0, LAYERS - 1], "dense_gb": _round1(dense_gb_v), "experts_gb": _round1(resident), "experts": in_mem}],
         "experts_total": n_experts, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
         "weights_gb": _round1(v["set_bytes"] / GB), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(dense_gb_v),
-        "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
+        "engram_gb": _round1(engram_bytes(model) / GB), "download_gb": _round1(download), "tp": 1, "args": [],
         "measured": MAC_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
         "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
         "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
@@ -829,7 +868,7 @@ def _plan_mac(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
     }
     lines, warns = out["lines"], out["warnings"]
     lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({v['set_bytes'] / GB:.0f} GB of model, "
-                 f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
+                 f"{engram_bytes(model) / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
     lines.extend(l for l in mp["lines"][1:] if not l.startswith("Measured on "))
     measured = MAC_MEASURED_PACK[MAC_SET_PACK[key]]
     lines.append(measured if measured.startswith("Not run") else "Measured on " + measured + ".")

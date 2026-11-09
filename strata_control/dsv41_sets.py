@@ -46,8 +46,9 @@ def tables() -> dict | None:
             shards = {name: ista[name][0] for name in entry["shards"]}
             old = {renamed[name]: legacy[renamed[name]][0] for name in entry["shards"] if name in renamed and renamed[name] in legacy}
             alt = entry.get("engram_shard")             # Unsloth's UD-IQ1 sets: shard 5 is the Engram (the same data as ISTA-DAS's file)
+            own = bool(entry.get("own_engram"))         # UD-Q2_K_XL: shard 7 is its OWN Engram (Q5_K), one of its shards; ISTA-DAS's file is not it
             result["sets"][model] = {"label": entry.get("label", model), "shards": shards, "legacy": old, "generic": bool(entry.get("generic_names")),
-                                     "engram_alt": {alt: ista[alt][0]} if alt else {},
+                                     "engram_alt": {alt: ista[alt][0]} if (alt and not own) else {}, "own_engram": alt if own else None,
                                      "new1": {name: new1[name][0] for name in entry["shards"] if name in new1},
                                      "six": {name: six[name][0] for name in entry.get("shards6") or [] if name in six}}
         for name in (module.DSV41_ISTA_ENGRAM, renamed.get(module.DSV41_ISTA_ENGRAM)):
@@ -72,7 +73,10 @@ def match(files: dict[str, int]) -> list[dict]:
     found = []
     for model, entry in known["sets"].items():
         engram = engram_any = next((name for name in known["engram"] if files.get(name) == known["engram"][name]), None)
-        if engram is None:                             # an Unsloth set's own shard 5 is its Engram
+        if entry.get("own_engram"):                    # the set's own Engram (UD-Q2_K_XL's shard 7), counted with its shards; ISTA-DAS's table is not this set's
+            own = entry["own_engram"]
+            engram = own if files.get(own) == entry["shards"].get(own) else None
+        elif engram is None:                           # an Unsloth set's own shard 5 is its Engram
             engram = next((n for n, size in entry.get("engram_alt", {}).items() if files.get(n) == size), None)
         for layout, pinned in (("four", entry["shards"]), ("legacy", entry["legacy"]), ("six", entry.get("six") or {})):
             if not pinned:
@@ -88,7 +92,7 @@ def match(files: dict[str, int]) -> list[dict]:
             found.append({"model": model, "label": entry["label"], "legacy": layout == "legacy", "layout": layout, "present": sorted(present),
                           "missing": missing, "wrong_size": wrong, "complete": not missing and not wrong, "engram": engram,
                           "newer_first": [n for n in present if n not in wrong and files[n] != pinned[n]],
-                          "bytes": sum(files[n] for n in present if n not in wrong) + ((known["engram"].get(engram) or entry["engram_alt"].get(engram) or 0) if engram else 0)})
+                          "bytes": sum(files[n] for n in present if n not in wrong) + ((known["engram"].get(engram) or entry["engram_alt"].get(engram) or 0) if (engram and not entry.get("own_engram")) else 0)})
     pinned_whole = {row["model"] for row in found if row["complete"] and row["layout"] != "six"}
     found = [row for row in found if not (row["layout"] == "six" and row["complete"] and row["model"] in pinned_whole)]
     found.sort(key=lambda row: (not row["complete"], len(row["missing"]) + len(row["wrong_size"]), row["model"]))

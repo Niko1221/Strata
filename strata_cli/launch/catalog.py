@@ -255,6 +255,9 @@ def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
     return cards
 
 
+DEEPSEEK_FIRST = ("UD-IQ1_M",)   # names in two families whose bare form means the DeepSeek set (Catalog.resolve)
+
+
 class Catalog:
     """setup.py's tables through strata_mcp's `Strata` object (the app's own catalog code)."""
 
@@ -448,20 +451,28 @@ class Catalog:
             raise ValueError(f"There is no model family called '{family}'." + (f" Did you mean '{near}'?" if near else "")
                              + " Families: " + ", ".join(families) + ".")
         from strata_control import dsv41_fit
-        line = dsv41_fit.not_here(match) or (dsv41_fit.MAC_NOT_YET_LINE if match in dsv41_fit.MAC_NOT_YET and self._mac_hardware() else None)
-        if line:
-            raise ValueError(line + " Use ist-das-2.00bpw or ist-das-2.25bpw.")
+
+        def checked(fam: str) -> tuple[str, str]:      # DeepSeek's Mac / DGX Spark gate, for a DeepSeek set only (UD-Q2_K_XL is also a Qwen set that runs on a Mac)
+            line = None if fam != "deepseek41" else (
+                dsv41_fit.not_here(match) or (dsv41_fit.mac_not_yet_line(match) if match in dsv41_fit.MAC_NOT_YET and self._mac_hardware() else None))
+            if line:
+                raise ValueError(line + " Use ist-das-2.00bpw or ist-das-2.25bpw.")
+            return fam, match
         offered = [f for f in families if match in self.strata.sizes_of(models, f)]
         if family is not None:
             if family not in offered:
                 raise ValueError(f"{families[family]['title']} has no size {match}. It offers: "
                                  + ", ".join(self.strata.sizes_of(models, family)) + ".")
-            return family, match
+            return checked(family)
         if not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
-        if len(offered) > 1 and "deepseek41" in offered:     # UD-IQ1_M is Unsloth's name in two families (round 0214): the bare name stays DeepSeek's, as it was; the Qwen set is --family unsloth
-            return "deepseek41", match
-        return ("qwen" if "qwen" in offered else offered[0]), match
+        if len(offered) > 1 and "deepseek41" in offered:
+            # A name in two families keeps the family it had first: UD-IQ1_M (round 0214) is DeepSeek's, the Qwen set is --family unsloth;
+            # UD-Q2_K_XL was the Qwen set's before DeepSeek had one, so the bare name stays Qwen's and DeepSeek's is --family deepseek41
+            if match in DEEPSEEK_FIRST:
+                return checked("deepseek41")
+            offered = [f for f in offered if f != "deepseek41"]
+        return checked("qwen" if "qwen" in offered else offered[0])
 
     def model_name_of(self, family: str | None, model: str | None) -> str | None:
         """The ``model_name`` setup writes into this model's run config (``qwen3.8-flash-next-iq3_s``), known before the model is installed: what the drafter table is keyed by."""

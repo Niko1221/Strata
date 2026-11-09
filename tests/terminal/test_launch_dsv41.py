@@ -40,10 +40,14 @@ class LaunchDeepSeek(unittest.TestCase):
 
     def test_the_model_is_in_the_list(self):
         rows = [r for r in catalog(self.hw).rows() if r.family == "deepseek41"]
-        self.assertEqual([r.model for r in rows], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q8_K_XL"])
+        self.assertEqual([r.model for r in rows], ["IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "ISTA-DAS-Coder", "UD-IQ1_S", "UD-IQ1_M", "UD-Q2_K_XL", "UD-Q8_K_XL"])
         self.assertEqual([r.download_gb for r in rows[:3]], [256.8, 273.8, 239.3])
         self.assertEqual(catalog(self.hw).resolve("ist-das-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))
         self.assertEqual(catalog(self.hw).resolve("ISTA-DAS-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))     # the name on screen is accepted too
+        # UD-Q2_K_XL is a size of two families: the bare name stays the Qwen set's (it was first); DeepSeek's is --family deepseek41
+        self.assertEqual(catalog(self.hw).resolve("UD-Q2_K_XL"), ("unsloth", "UD-Q2_K_XL"))
+        self.assertEqual(catalog(self.hw).resolve("ud-q2_k_xl", "deepseek41"), ("deepseek41", "UD-Q2_K_XL"))
+        self.assertEqual(catalog(self.hw).resolve("UD-IQ1_M"), ("deepseek41", "UD-IQ1_M"))
         self.assertEqual(catalog(self.hw).resolve("ista-das-coder"), ("deepseek41", "ISTA-DAS-Coder"))
         self.assertEqual(catalog(self.hw).resolve("IST-DAS-Coder"), ("deepseek41", "ISTA-DAS-Coder"))         # (the shorter spelling the other ids have is accepted)
         r = rows[-1]

@@ -1248,7 +1248,8 @@ struct Model::Impl {
     std::vector<std::unique_ptr<EgBatch>> eg_win;
     // Engram layer li's embed rows, as the pack stores them: 0 MXFP8 ([scale, 32 codes] blocks, 33 bytes a 32), 1
     // ggml Q6_K (210 bytes a 256), 2 ggml IQ4_NL (18 bytes a 32: an fp16 d and 16 nibble bytes), 3 an old pack's FP8
-    // codes with their E8M0 scales in a tensor of their own (see eg_issue)
+    // codes with their E8M0 scales in a tensor of their own (see eg_issue), 4 ggml Q5_K (176 bytes a 256: Unsloth's
+    // UD-Q2_K_XL)
     std::vector<uint8_t> eg_fmt;
     std::atomic<int64_t> eg_rows_n{0}, eg_hits_n{0}, eg_reads_n{0}, eg_wait_ns{0}, eg_io_ns{0};
     uint16_t* h_emb = nullptr;        // the window's embedding rows
@@ -2415,12 +2416,12 @@ struct Model::Impl {
             off += align256(bytes) + (store_gb() > 0 ? ExpertStore::kSlack : 0);   // (the store's aligned reads spill into the gaps)
         }
         l.lay.fmt = gg::kFmtMXFP4;
-        if (!gg::mx_experts(l.lay) && (gg::expert_type(l.lay, 0) != gg::expert_type(l.lay, 1) ||
-                                       gg::expert_type(l.lay, 0) == gg::kTypeMXFP4 ||
-                                       gg::expert_type(l.lay, 2) == gg::kTypeMXFP4)) {
+        // A low-bit layer may hold MXFP4 in one role (Unsloth's UD-Q2_K_XL: IQ2_S / IQ2_XS gate and up, MXFP4 down in 7 of its 43
+        // layers): ds4_iq's kernels decode MXFP4 like their other 32-value type, IQ4_NL - on Metal too (ds4_iq.metal's
+        // ds4_w32_mxfp4, ds4_mm.metal's W4<T_MXFP4>), so such a layer's experts are placed like any other's.
+        if (!gg::mx_experts(l.lay) && gg::expert_type(l.lay, 0) != gg::expert_type(l.lay, 1)) {
             err = P + ": gate / up / down of types " + gg::type_name(l.lay.K[0]) + " / " +
-                  gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]) +
-                  " (gate and up must match; MXFP4 does not mix with the others)";
+                  gg::type_name(l.lay.K[1]) + " / " + gg::type_name(l.lay.K[2]) + " (gate and up must match)";
             return false;
         }
         l.blob = off;
@@ -2931,6 +2932,12 @@ struct Model::Impl {
             for (const Layer& l : L) {
                 for (int r = 0; r < 3; ++r)
                     if (!gg::type_on_chunk(gg::expert_type(l.lay, r))) { chunk_unsupported = true; why = gg::type_name(gg::expert_type(l.lay, r)); break; }
+#if defined(STRATA_METAL)
+                // the chunk path has no CPU lane: it streams every expert VRAM does not hold to the GPU, so a cpu_only layer's
+                // experts are refused there ("not covered") and left out of the sum.  (UD-Q2_K_XL's mixed MXFP4 layers were
+                // cpu_only on Metal until they had kernels: wrong answers from 1.5K-token prompts on, M2 Max, 2026-11-09)
+                if (!chunk_unsupported && l.cpu_only) { chunk_unsupported = true; why = "a layer whose experts stay on the CPU lane"; }
+#endif
                 if (chunk_unsupported) break;
             }
             if (chunk > 0 && chunk_unsupported) {
@@ -3461,17 +3468,19 @@ struct Model::Impl {
                     fmt = 1;
                 } else if (tw->dtype == "IQ4_NL") {
                     fmt = 2;
+                } else if (tw->dtype == "Q5_K") {   // (the Metal engine decodes it too: ds4_init.metal's ds4_q5k_value)
+                    fmt = 4;
                 } else if (pk.get("layers." + id + ".engram.embed.scale") != nullptr) {
                     fmt = 3;   // (an old pack: FP8 codes in one tensor, their E8M0 scales in another)
                 } else {
                     std::fprintf(stderr,
                                  "ds4: Engram layer %s: engram.embed.weight type %s is not one the Engram reader handles "
-                                 "(MXFP8, Q6_K, IQ4_NL)\n",
+                                 "(MXFP8, Q6_K, Q5_K, IQ4_NL)\n",
                                  id.c_str(), tw->dtype.c_str());
                     std::exit(2);
                 }
-                if (fmt == 1 && pk.eg_hd % 256 != 0) {
-                    err = "Engram layer " + id + ": Q6_K rows of " + std::to_string(pk.eg_hd) +
+                if ((fmt == 1 || fmt == 4) && pk.eg_hd % 256 != 0) {
+                    err = "Engram layer " + id + (fmt == 1 ? ": Q6_K rows of " : ": Q5_K rows of ") + std::to_string(pk.eg_hd) +
                           " values (not whole superblocks of 256)";
                     return false;
                 }
@@ -7828,6 +7837,7 @@ struct Model::Impl {
         const bool mx8 = fmt == 0;   // (a GGUF: the scales between the codes, one per 32)
         const bool q6k = fmt == 1;   // (a GGUF: one Q6_K superblock a 256 values, its scales inside)
         const bool iq4 = fmt == 2;   // (a GGUF: 18-byte blocks a 32 values, d and 16 nibble bytes, no scales)
+        const bool q5k = fmt == 4;   // (a GGUF: one Q5_K superblock a 256 values, its scales inside)
         std::unordered_map<uint64_t, int> first;   // a row this batch reads already -> its read
         int64_t hits = 0;
         {
@@ -7878,8 +7888,8 @@ struct Model::Impl {
                             r.mx8 = true;
                             r.n = (uint32_t) (hd / 32 * 33);
                             r.off = tw->off + (uint64_t) id * r.n;
-                        } else if (q6k || iq4) {   // (into the row's code bytes; its scale bytes unused)
-                            r.n = (uint32_t) (q6k ? hd / 256 * 210 : hd / 32 * 18);
+                        } else if (q6k || iq4 || q5k) {   // (into the row's code bytes; its scale bytes unused)
+                            r.n = (uint32_t) (q6k ? hd / 256 * 210 : q5k ? hd / 256 * 176 : hd / 32 * 18);
                             r.off = tw->off + (uint64_t) id * r.n;
                         } else {
                             r.n = (uint32_t) hd;

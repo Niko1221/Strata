@@ -17,6 +17,11 @@ struct Ds4MvJob {
     float alpha;
 };
 
+// IQ3_S's sub-block decoder (defined with the multi-column matvec below): 32 signed grid codes and the sub-block's scale
+static inline void ds4_w32_iq3s(const device uchar* p, uint ib, thread int (&w)[32], thread float& db0, thread float& db1);
+// MXFP4's (a low-bit layer's MXFP4 down: 17-byte blocks of 32, read as 136 bytes a 256): its 32 codes and the block's scale
+static inline void ds4_w32_mxfp4(const device uchar* p, uint ib, thread int (&w)[32], thread float& db0, thread float& db1);
+
 kernel void ds4_iq_mv(device const uchar* jobs [[buffer(0)]], uint2 tgp [[threadgroup_position_in_grid]],
                       uint tid [[thread_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     const device Ds4MvJob& b = *(const device Ds4MvJob*) (jobs + (size_t) tgp.y * sizeof(Ds4MvJob));
@@ -24,7 +29,7 @@ kernel void ds4_iq_mv(device const uchar* jobs [[buffer(0)]], uint2 tgp [[thread
     if (int(row) >= b.n) return;
     const uint nsb = uint(b.k) / 32u;
     const uint nblk = uint(b.k) / 256u;
-    const uint bs = b.type == 16 ? 66u : (b.type == 17 ? 74u : (b.type == 18 ? 98u : 82u));
+    const uint bs = b.type == 16 ? 66u : (b.type == 17 ? 74u : (b.type == 18 ? 98u : (b.type == 21 ? 110u : (b.type == 39 ? 136u : 82u))));
     const device uchar* w = b.w + (size_t) row * b.ld;
     float acc[16];
     for (uint c = 0; c < 16u; ++c) acc[c] = 0.0f;
@@ -32,6 +37,20 @@ kernel void ds4_iq_mv(device const uchar* jobs [[buffer(0)]], uint2 tgp [[thread
         const device uchar* p = w + (size_t) blk * bs;
         const float d = float(as_type<half>(*(const device ushort*) p));
         for (uint ib = 0; ib < 8u; ++ib) {
+            if (b.type == 21 || b.type == 39) {   // IQ3_S (110 B) / MXFP4 (8 x 17 B; only with DS4_NO_MVN: ds4_iq3s_mvn /
+                int wq[32];                          // ds4_mxfp4_mvn take these jobs otherwise)
+                float ds, ds1;
+                if (b.type == 21) ds4_w32_iq3s(p, ib, wq, ds, ds1); else ds4_w32_mxfp4(p, ib, wq, ds, ds1);
+                const uint off = blk * 256u + ib * 32u;
+                for (uint c = 0; c < 16u; ++c) {
+                    if (int(c) >= b.ncol) break;
+                    const device char* xq = b.xq + (size_t) c * b.k + off;
+                    int sum = 0;
+                    for (uint j = 0; j < 32u; ++j) sum += wq[j] * int(xq[j]);
+                    acc[c] = fma(b.xd[(size_t) c * nsb + (off / 32u)] * ds, float(sum), acc[c]);
+                }
+                continue;
+            }
             if (b.type == 18) {   // IQ3_XXS: d, qs[64] (two grid bytes a 8 values), scales_and_signs[8] words (top nibble the scale)
                 const device uchar* qs = p + 2;
                 const uint w0 = uint(qs[8 * ib]) | (uint(qs[8 * ib + 1]) << 8) | (uint(qs[8 * ib + 2]) << 16) | (uint(qs[8 * ib + 3]) << 24);
@@ -263,9 +282,10 @@ struct Ds4IqSub {
     float s0, s1;
 };
 
-// the block bytes of the types these kernels take: 16 IQ2_XXS, 17 IQ2_XS, 18 IQ3_XXS, 22 IQ2_S (ds4_iq.cu's Ty<T>::B)
+// the block bytes of the types these kernels take: 16 IQ2_XXS, 17 IQ2_XS, 18 IQ3_XXS, 21 IQ3_S, 22 IQ2_S (ds4_iq.cu's Ty<T>::B),
+// 39 MXFP4 as 256 values (eight 17-byte blocks of 32: sub-block ib is the block at 17 ib)
 static inline uint ds4_iq_bs(int type) {
-    return type == 16 ? 66u : type == 17 ? 74u : type == 18 ? 98u : type == 19 ? 50u : type == 29 ? 56u : 82u;
+    return type == 16 ? 66u : type == 17 ? 74u : type == 18 ? 98u : type == 21 ? 110u : type == 39 ? 136u : type == 19 ? 50u : type == 29 ? 56u : 82u;
 }
 
 // the 1-bit types' sub-block decoders (defined with the multi-column matvec below): 32 codes as 8*grid +- 1 (int8) and the two halves' scales
@@ -280,9 +300,12 @@ static inline Ds4IqSub ds4_iq_sub(device const uchar* row, uint bs, int kb, int 
     const float d = float(as_type<half>(*(const device ushort*) p));
     uint idx[4], sm[4];
     float db0, db1;
-    if (type == 19 || type == 29) {   // IQ1_S (50 B) / IQ1_M (56 B): the integer form 8*code +- 1, the scale / 8 in db
-        int w[32];
-        if (type == 19) ds4_w32_iq1s(p, uint(ib), w, db0, db1); else ds4_w32_iq1m(p, uint(ib), w, db0, db1);
+    if (type == 19 || type == 29 || type == 21 || type == 39) {   // IQ1_S (50 B) / IQ1_M (56 B): the integer form 8*code +- 1, the
+        int w[32];                                     // scale / 8 in db; IQ3_S (110 B): the signed grid codes (at most 15), d (1 + 2 s)
+        if (type == 19) ds4_w32_iq1s(p, uint(ib), w, db0, db1);   // in db; MXFP4: the doubled E2M1 codes (at most 12), 2^(e - 128)
+        else if (type == 29) ds4_w32_iq1m(p, uint(ib), w, db0, db1);
+        else if (type == 21) ds4_w32_iq3s(p, uint(ib), w, db0, db1);
+        else ds4_w32_mxfp4(p, uint(ib), w, db0, db1);
         for (uint t = 0; t < 8u; ++t)
             s.q[t] = (w[4u * t] & 0xff) | ((w[4u * t + 1u] & 0xff) << 8) | ((w[4u * t + 2u] & 0xff) << 16) | ((w[4u * t + 3u] & 0xff) << 24);
         s.s0 = db0;
@@ -1078,6 +1101,44 @@ static inline void ds4_w32_iq3xxs(const device uchar* p, uint ib, thread int (&w
     }
 }
 
+// IQ3_S (UD-Q2_K_XL's down in layers 20-29; 110-byte blocks): f16 d, qs[64] (the low 8 bits of the 9-bit grid indices, 8 a
+// sub-block), qh[8] (a sub-block's 8 ninth bits), signs[32] (a byte an 8-value group, bit j: value j negated), scales[4] (a
+// nibble a sub-block).  ggml's dequantize_row_iq3_s: w = d (1 + 2 s) grid +-, the same decode as ds4_iq.cu's decode<kIQ3_S> and
+// quant.metal's deq<T_IQ3_S>.  One scale for the whole sub-block: db1 = db0.
+static inline void ds4_w32_iq3s(const device uchar* p, uint ib, thread int (&w)[32], thread float& db0, thread float& db1) {
+    const float d = float(as_type<half>(*(const device ushort*) p));
+    const device uchar* qs = p + 2u + 8u * ib;
+    const uint qh = uint(p[66u + ib]);
+    const device uchar* sgb = p + 74u + 4u * ib;
+    db0 = d * float(1u + 2u * ((uint(p[106u + (ib >> 1)]) >> (4u * (ib & 1u))) & 15u));
+    db1 = db0;
+    for (uint l = 0; l < 4u; ++l) {
+        const uint g0 = iq3s_grid[uint(qs[2u * l]) | ((qh << (8u - 2u * l)) & 256u)];
+        const uint g1 = iq3s_grid[uint(qs[2u * l + 1u]) | ((qh << (7u - 2u * l)) & 256u)];
+        const uint sg = uint(sgb[l]);
+        for (uint i = 0; i < 4u; ++i) {
+            const int v0 = int((g0 >> (8u * i)) & 0xffu), v1 = int((g1 >> (8u * i)) & 0xffu);
+            w[l * 8u + i] = ((sg >> i) & 1u) != 0u ? -v0 : v0;
+            w[l * 8u + 4u + i] = ((sg >> (i + 4u)) & 1u) != 0u ? -v1 : v1;
+        }
+    }
+}
+
+// MXFP4 in a low-bit layer (UD-Q2_K_XL's down in 7 layers, beside IQ2_S / IQ2_XS gate and up): a 32-value block of 17 bytes,
+// the E8M0 scale byte e, then 16 bytes whose low nibble is value j and whose high nibble is value j + 16, each an index into
+// ds4_mx_code (ggml's kvalues_mxfp4: the E2M1 values doubled).  The weight is code * 2^(e - 128) (ggml's
+// GGML_E8M0_TO_FP32_HALF, ds4_iq.cu's decode_b<kMXFP4>).  p is the 256-value group's start (8 blocks), ib the block in it.
+static inline void ds4_w32_mxfp4(const device uchar* p, uint ib, thread int (&w)[32], thread float& db0, thread float& db1) {
+    const device uchar* b = p + 17u * ib;
+    db0 = ds4_mx_e8m0(uint(b[0]));
+    db1 = db0;
+    for (uint j = 0; j < 16u; ++j) {
+        const uint v = uint(b[1u + j]);
+        w[j] = int(ds4_mx_code[v & 15u]);
+        w[16u + j] = int(ds4_mx_code[v >> 4]);
+    }
+}
+
 
 // IQ1_S (UD-IQ1_S / UD-IQ1_M experts; 50-byte blocks): f16 d, qs[32] (4 grid bytes a 32-value sub-block), qh[8] u16 (3 bits a
 // group of 8 more grid index, bits 12-14 the sub-block's 3-bit scale, bit 15 the sign of the +-0.125 delta).  ggml's
@@ -1137,7 +1198,7 @@ kernel void ds4_iqg_mvn(device const uchar* jobs [[buffer(0)]], uint2 tgp [[thre
     const uint row = tgp.x * 8u + (tid >> 5);
     if (int(row) >= b.n) return;
     const uint nblk = uint(b.k) / 256u, nsb = uint(b.k) / 32u;
-    constexpr uint bs = TYPE == 16 ? 66u : (TYPE == 17 ? 74u : (TYPE == 18 ? 98u : (TYPE == 29 ? 56u : (TYPE == 19 ? 50u : 82u))));
+    constexpr uint bs = TYPE == 16 ? 66u : (TYPE == 17 ? 74u : (TYPE == 18 ? 98u : (TYPE == 21 ? 110u : (TYPE == 39 ? 136u : (TYPE == 29 ? 56u : (TYPE == 19 ? 50u : 82u))))));
     const device uchar* w0p = b.w + (size_t) row * b.ld;
     const uint ib = lane & 7u;
     const uint bsel = lane >> 3;
@@ -1152,6 +1213,8 @@ kernel void ds4_iqg_mvn(device const uchar* jobs [[buffer(0)]], uint2 tgp [[thre
         else if (TYPE == 22) ds4_w32_iq2s(p, ib, w, db0, db1);
         else if (TYPE == 29) ds4_w32_iq1m(p, ib, w, db0, db1);
         else if (TYPE == 19) ds4_w32_iq1s(p, ib, w, db0, db1);
+        else if (TYPE == 21) ds4_w32_iq3s(p, ib, w, db0, db1);
+        else if (TYPE == 39) ds4_w32_mxfp4(p, ib, w, db0, db1);
         else { ds4_w32_iq3xxs(p, ib, w, db0); db1 = db0; }
         for (uint c = 0; c < NC; ++c) {
             const device uint4* xq4 = (const device uint4*) (b.xq + (size_t) c * b.k + (size_t) blk * 256u + 32u * ib);
@@ -1176,6 +1239,8 @@ kernel void ds4_iqg_mvn(device const uchar* jobs [[buffer(0)]], uint2 tgp [[thre
     template [[host_name("ds4_iq2xs_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 17>(device const uchar*, uint2, uint, ushort);  \
     template [[host_name("ds4_iq2s_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 22>(device const uchar*, uint2, uint, ushort);   \
     template [[host_name("ds4_iq3xxs_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 18>(device const uchar*, uint2, uint, ushort); \
+    template [[host_name("ds4_iq3s_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 21>(device const uchar*, uint2, uint, ushort);   \
+    template [[host_name("ds4_mxfp4_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 39>(device const uchar*, uint2, uint, ushort);  \
     template [[host_name("ds4_iq1m_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 29>(device const uchar*, uint2, uint, ushort);  \
     template [[host_name("ds4_iq1s_mvn" #NC)]] kernel void ds4_iqg_mvn<NC, 19>(device const uchar*, uint2, uint, ushort);
 DS4_MVN_INST(1)
