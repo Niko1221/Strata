@@ -1,0 +1,2 @@
+# Keep recorded experiment bytes stable across checkout line-ending settings.
+* -text -whitespace

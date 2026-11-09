@@ -25,6 +25,9 @@ The tool validates request boundaries and separates complete decode windows from
 the preceding prompt windows. It compares domain information with a learned global
 control, supplies a control with unchanged slots per layer, and exports a reusable
 profile bank. It leaves the engine and its router unchanged.
+Two generated profiles were also loaded by the release engine in a small
+[live pilot](live-pilot/README.md); all nine coding answers passed the fixed
+correctness checks. Its full records and frozen comparison gates are retained.
 
 The motivation comes from the author's earlier modular system with a resident
 director and specialist models loaded on demand. The public
@@ -126,11 +129,15 @@ checked the domain signal and layer quota control.
 - The 0.3 GB/s PCIe link and small GPU cache do not represent an ordinary 12 GB card.
   The full local model payloads were not rehashed during this analysis.
   This pilot is not a standard or approved benchmark under the draft protocol.
-- No engine source is changed, so CUDA/HIP/SYCL builds and new live policy runs are
-  outside this tooling change. A runtime feature needs a separate, agreed scope and
+- No engine source is changed, so CUDA/HIP/SYCL builds are outside this tooling
+  change. A runtime feature needs a separate, agreed scope and
   actual same-hardware tests, including copy cost and output/quality controls.
 - Failed checks on the submitted tool revision: none observed.
 - A separate three-second collection startup failed before model loading because
   a relative output path resolved against the server's directory. The collector
   was changed to resolve an absolute path, then all eight remaining requests
   completed. The [failure log](data/startup-failure.txt) is retained.
+- The live profile pilot passed all nine fixed correctness checks, but the code
+  profile changed the clamp answer from21to26tokens. Its frozen output-parity gate
+  fails; no live speedup is established. [All runs and outputs](live-pilot/README.md)
+  are included. Static coverage and this runtime outcome are separate results.
