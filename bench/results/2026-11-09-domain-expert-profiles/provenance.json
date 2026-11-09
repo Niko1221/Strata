@@ -15,17 +15,33 @@
   },
   "model": "Qwen3.8-Flash-Next GSQ RCO IQ3_XXS",
   "model_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "model_repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "model_revision_source": "Local Hugging Face download metadata matched against pinned API in model-source.json",
+  "engine_binary_sha256": "0ba914b28df1c8e09c0b5209c2ca6040c75fb650a7408ff3d9ef3ad159a13eb9",
   "collection": {
     "date_utc": "2026-11-09",
     "sampling_temperature": 0,
     "max_new_tokens": 250,
     "spec": 4,
     "public_corpus": "bench/profile_corpus.json",
-    "actual_requests": 37,
+    "actual_requests": 45,
     "planned_requests": 45,
-    "generated_tokens": 8280,
+    "generated_tokens": 10170,
     "all_runs_included": true,
-    "partial_reason": "Each bounded GPU run stopped before all45 corpus requests completed."
+    "partial_reason": null,
+    "runs": 3,
+    "initial_pilot_requests": 37,
+    "completion_requests": 8,
+    "route_prior": "Unset(stock0) in runs1/2; explicit0 in run3",
+    "failed_attempts": [
+      {
+        "stage": "server startup before model load",
+        "duration_seconds": 3.07,
+        "cause": "Relative output path resolved against the server cwd",
+        "resolution": "Collector resolves output to absolute path; all8remaining requests completed on rerun",
+        "log": "data/startup-failure.txt"
+      }
+    ]
   },
   "files": {
     "data/run-1.trace.gz": {
@@ -44,11 +60,22 @@
     "data/run-2.engine.txt": {
       "sha256": "f237157a2009fa0e1d7e6073821bf7c04365c49a905301f7084940d2feb52818"
     },
+    "data/run-3.trace.gz": {
+      "sha256": "454de8d905518da50bbc2f50c2282a73a6f4433bf6916343428d97a7a040c61c",
+      "uncompressed_sha256": "2dfa89283c235f0d844c26f29f88bf733533eaa9fb8571ad63b81b4f6ef76cda",
+      "uncompressed_bytes": 12000384
+    },
+    "data/run-3.engine.txt": {
+      "sha256": "19e143a93487f7595e187ec6ffeb6f7d625a74f0822b937b51f063f5ef6ef3a1"
+    },
     "manifest.json": {
-      "sha256": "302a941b5e2c9de243acb8321428b38b30300216b7e7ed01aeb971a23070b036"
+      "sha256": "fdc7689a43022f64eab11c6b265607be5ed23000c702d6339915060ea0d75477"
     },
     "model-source.json": {
       "sha256": "4c11beae2055edfaf739a04733a131cd8ccffb7bef3bbe3b625af08b07ab5634"
+    },
+    "data/startup-failure.txt": {
+      "sha256": "6e871a2d76e25b4310b44efe5b3500170b7d685516d7267eee5efa735ebe5967"
     }
   },
   "labels": "Coarse groups from the original study: code,STEM,languages,other. These are known labels,not classifier predictions.",
@@ -56,8 +83,5 @@
   "licenses": {
     "engine_and_corpus": "Strata MIT License",
     "measurement_data": "MIT License;no model weights included"
-  },
-  "model_repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
-  "model_revision_source": "Local Hugging Face downloadmetadata, matched against pinned source API in model-source.json",
-  "engine_binary_sha256": "0ba914b28df1c8e09c0b5209c2ca6040c75fb650a7408ff3d9ef3ad159a13eb9"
+  }
 }

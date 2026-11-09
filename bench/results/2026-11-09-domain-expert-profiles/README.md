@@ -4,16 +4,16 @@
 
 The new [profile tool](../../../tools/evaluate_domain_profiles.py) measures a useful
 domain signal in Strata's expert routing and writes profiles that the existing
-`--expert-profile` option can load. In this 37-request pilot, a profile learned from
+`--expert-profile` option can load. In this 45-request pilot, a profile learned from
 other requests in the same coarse domain covers more of the held-out routing than
 a profile learned from the whole training mixture. Every evaluated fold is excluded
 from both training sets.
 
 | Cache slots | Global profile | Domain profile | Gain | Domain with the global profile's slots per layer | Gain |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,582 | 17.37% | 22.39% | +5.02 percentage points | 22.27% | +4.90 points |
-| 3,215 | 29.06% | 37.19% | +8.13 points | 36.96% | +7.90 points |
-| 7,041 | 50.37% | 59.54% | +9.17 points | 59.38% | +9.01 points |
+| 1,582 | 17.41% | 22.61% | +5.20 percentage points | 22.42% | +5.01 points |
+| 3,215 | 30.00% | 37.77% | +7.77 points | 37.57% | +7.57 points |
+| 7,041 | 51.88% | 61.00% | +9.11 points | 60.81% | +8.93 points |
 
 These are **static coverage measurements on fixed real routing**, with each request
 weighted equally. The three slot counts use the same traces. They are cache-budget
@@ -56,10 +56,13 @@ Download metadata matches the pinned source's two LFS hashes in
 [model-source.json](model-source.json); the existing release binary's SHA-256 is
 recorded in the provenance.
 
-The two bounded runs produced 8,280 generated tokens and **5,128,320 decode expert
-entries**. The routing dumps also contain 644,160 prompt entries. All 37 decode
+The three bounded runs produced 10,170 generated tokens and **6,363,360 decode expert
+entries**. The routing dumps also contain 759,840 prompt entries. All 45 decode
 suffixes match whole-window boundaries and the integer decode counts in the
 corresponding [engine logs](data/). The manifest records those exact counts.
+The initial 37-request pilot is preserved in commit `7e316925`; eight remaining
+requests completed the original corpus, using the same evaluator, split rule and
+budgets. No completed request was dropped.
 The cutoff uses `lookups + offloaded`, rather than generated-token counts: speculation
 also routes proposed positions that are not emitted.
 
@@ -110,11 +113,11 @@ checked the domain signal and layer quota control.
 
 ## Observations
 
-- This is an exploratory, partial profiling corpus: 37 of 45 planned requests,
-  with code 11, STEM 10, languages 6 and other 10. All completed requests are
-  included. The remaining requests were queued separately after these results.
-- At 1,582 slots, gains vary by group: code +10.30 points, other +6.77, STEM +1.77
-  and languages −2.15. A mixed six-language group is not a uniformly useful profile.
+- This is an exploratory profiling corpus: all 45 planned requests, with code 12,
+  STEM 11, languages 6 and other 16. It remains a small corpus rather than a broad
+  workload sample.
+- At 1,582 slots, gains vary by group: code +12.40 points, other +4.70, STEM +2.29
+  and languages −2.56. A mixed six-language group is not a uniformly useful profile.
   Per-request values, training IDs and group labels remain in the result files.
 - Static coverage establishes a placement signal. It does not establish a gain
   over the running adaptive cache, lower copy traffic, faster inference, a measured
@@ -127,3 +130,7 @@ checked the domain signal and layer quota control.
   outside this tooling change. A runtime feature needs a separate, agreed scope and
   actual same-hardware tests, including copy cost and output/quality controls.
 - Failed checks on the submitted tool revision: none observed.
+- A separate three-second collection startup failed before model loading because
+  a relative output path resolved against the server's directory. The collector
+  was changed to resolve an absolute path, then all eight remaining requests
+  completed. The [failure log](data/startup-failure.txt) is retained.
