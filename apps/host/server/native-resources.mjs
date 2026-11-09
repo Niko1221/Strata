@@ -36,6 +36,11 @@ export function defaultReserves(config,hardware,baselineReserve=0){
  /* A card that shares the PC's memory (Strix Halo, other APUs) has no memory of its own to keep a fifth of: that fifth is RAM, and "Leave 20% for my work" already keeps it
   *  through the RAM budget. A fifth of the shared pool here held back 16 GB of expert cache for nothing (#3510); the display floor stays. */
  const shared=placed.length>0&&placed.some(g=>g.uma===true||g.unified===true);
+ /* A chip that shares the PC's memory has no memory of its own for the driver to page out of (#2065 is a display card's), so the display floor and the
+  *  pictures floor have no reason there: the reserve is the one setup wrote into the run config (Windows Strix Halo: 700, strata_control/setup_config.py
+  *  UMA_WIN_RESERVE_MIB, pictures on or off), on both profiles. Setup wrote none (Linux): none, the engine's own default. A Models-page Load used to make it
+  *  1024, 2048 with pictures, and the Terminal started the same model with 700 (QAGUI-STRIX 11-09). null = keep no --vram-reserve-mib. */
+ if(shared)return {work:baselineReserve>0?baselineReserve:null,performance:baselineReserve>0?baselineReserve:null};
  /* "work" keeps a fifth of the card, but on a card of 16 GB or less no more than 1536 MiB: a fifth of 12 GB (2457) cost 20% of the speed against 1536, which already leaves 1.1 GiB of VRAM free after the load (RTX 5070, Gyro-S 64K, 5 pairs; notes-023-tune.md). */
  const fifth=gpuMemory.length?Math.floor(Math.min(...gpuMemory)*1024*.2):0,cap=gpuMemory.length&&Math.min(...gpuMemory)<=16?1536:Infinity;
  return {work:gpuMemory.length&&!headless&&!shared?Math.max(safety,Math.min(fifth,cap)):safety,performance:safety};
@@ -75,7 +80,7 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
  // Preserve calibrated worker counts and the installation's safety/vision reserve.
  /* A reserve the person set is theirs, 0 included: no floor and no share of the card (#3215 #3270). Without one the card gets the safety default (defaultReserves). */
  const reserve=asked!==null?asked:defaults[profile];
- remove('--vram-reserve-mib');args.push('--vram-reserve-mib',String(reserve));
+ remove('--vram-reserve-mib');if(reserve!==null)args.push('--vram-reserve-mib',String(reserve));
  // RAM: "leave 20% for my work". An engine that knows the setting (RAM_KEEP_MIN_ENGINE and newer) is asked to keep W GiB of the RAM free, W = ramKeepGib(RAM), as the env STRATA_RAM_KEEP_GIB: it decides from
  // the RAM that is free at its start, not from the PC's total, using the full RAM copy of the experts (the arena) only if W GiB stay free after it and otherwise keeping the hottest experts in a RAM copy
  // that leaves max(W, its own safety headroom) free. An env variable and not the flag --ram-keep-gib, so that an engine without the setting never meets an argument it does not know. The engine in use
@@ -99,7 +104,7 @@ export function resourceSettings(config,hardware,profile,model={},values={}){
    if(!(env??config.env)?.STRATA_RESIDENT_HEADROOM_GIB){env={...(env??config.env??{}),STRATA_RESIDENT_HEADROOM_GIB:String(Math.ceil(ram*.2))};ramHeadroom=true;}
   }
  }
- return {args,vram_reserve_mib:reserve,...(asked!==null?{}:{ui_reserve_applied:reserve}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom,ramKeep}};
+ return {args,vram_reserve_mib:reserve??undefined,...(asked!==null?{}:{ui_reserve_applied:reserve??undefined}),...(env?{env}:{}),ui_resource_baseline:{...baseline,ramBudget,ramHeadroom,ramKeep}};
 }
 
 /** The RAM, in GiB, "Leave 20% for my work" asks the engine to keep free: a fifth of the PC's RAM rounded up, never under 5 or over 8
