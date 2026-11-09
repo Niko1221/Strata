@@ -938,6 +938,19 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
     }
+    {   // STRATA_HC_I8ONLY: rows without BF16 are read only through their int8 copies, which need the int8 persistent read
+        bool any_i8 = false;
+        for (int64_t l = lb_; l < le_ && !any_i8; ++l) {
+            const LayerView v(wt, l);
+            const WeightRef* wd = v.get("hc_attn_down.weight");
+            any_i8 = wd != nullptr && wd->hc_i8 != nullptr;
+        }
+        if (any_i8 && !strata::kernels::fused_gr_persist_q8_on()) {
+            err = "verify: STRATA_HC_I8ONLY needs STRATA_HC_PERSIST=1 and STRATA_HC_PERSIST_Q8=1 with the int8 read's start-up check "
+                  "passed on this card (there is no BF16 copy of the hyper-connection weights to read instead)";
+            return false;
+        }
+    }
     if (strata::kernels::fused_gr_persist_q8_on()) {   // STRATA_HC_PERSIST_Q8=1: this stage's int8 hc copies (once per card)
         size_t qbytes = 0;
         int made = 0;
@@ -948,10 +961,28 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                 const WeightRef* wu = v.get((std::string(pfx) + "up.weight").c_str());
                 const WeightRef* wi = v.get((std::string(pfx) + "inject.weight").c_str());
                 if (wd == nullptr || wu == nullptr || wd->q8_scale != nullptr || wu->q8_scale != nullptr) continue;
+                if (wd->hc_i8 != nullptr) { ++made; continue; }   // STRATA_HC_I8ONLY: made at load (no BF16 here)
                 if (strata::kernels::fused_gr_persist_q8_prepare((const uint16_t*) wd->data, (const uint16_t*) wu->data,
                                                                  wi != nullptr ? (const uint16_t*) wi->data : nullptr, qbytes))
                     ++made;
             }
+        }
+        static const bool q8_hash = [] { const char* e = std::getenv("STRATA_HC_Q8_HASH"); return e != nullptr && e[0] == '1'; }();
+        if (q8_hash) {   // diagnostic: the copies' bytes, in layer order, whatever they are keyed by
+            uint64_t all = 1469598103934665603ull;
+            int n = 0;
+            for (int64_t l = lb_; l < le_; ++l) {
+                const LayerView v(wt, l);
+                for (const char* pfx : {"hc_attn_", "hc_ffn_"}) {
+                    const WeightRef* wd = v.get((std::string(pfx) + "down.weight").c_str());
+                    if (wd == nullptr) continue;
+                    const uint64_t h = strata::kernels::fused_gr_persist_q8_hash(wd->hc_i8 != nullptr ? wd->hc_i8 : wd->data);
+                    all = (all ^ h) * 1099511628211ull;
+                    ++n;
+                }
+            }
+            std::fprintf(stderr, "strata verify: CUDA%d: STRATA_HC_Q8_HASH: %d reads of layers %lld-%lld, copies hash %016llx\n",
+                         device_, n, (long long) lb_, (long long) le_ - 1, (unsigned long long) all);
         }
         if (qbytes > 0)
             std::fprintf(stderr, "strata verify: CUDA%d: STRATA_HC_PERSIST_Q8: %d hc reads of layers %lld-%lld as int8 copies, "
@@ -1615,6 +1646,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 a.q8_down = (const uint8_t*) wd[half]->hc_q8; a.q8_up = (const uint8_t*) wu[half]->hc_q8;
                 a.q8_inject = (const uint8_t*) wi[half]->hc_q8;
                 a.s_down = wd[half]->q8_scale; a.s_up = wu[half]->q8_scale;
+                a.q8_key = wd[half]->hc_i8;   // STRATA_HC_I8ONLY (null: the BF16 rows above)
                 a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
                 a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
                 if (qcnt_ != nullptr) {   // S26 STRATA_QFUSE: the consumer's q8_1 image written by the read itself
@@ -1624,6 +1656,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
             }
             if (strata::kernels::fused_gr_read_persist(fa, n, cs)) return false;   // STRATA_HC_PERSIST=1; q8_mixed is never set there
+            if (fa[0].q8_key != nullptr) {   // STRATA_HC_I8ONLY: the default read would read BF16 that is not there
+                std::fprintf(stderr, "strata verify: STRATA_HC_I8ONLY: a %d-token hyper-connection read the persistent kernel does "
+                                     "not take (STRATA_QFUSE or more tokens than its check covered); no BF16 copy to read\n", n);
+                std::abort();
+            }
             return fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
                                 (int) (l * kProfPer + (half == 0 ? 27 : 30)));
         };

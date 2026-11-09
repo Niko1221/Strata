@@ -3665,7 +3665,7 @@ struct Q8Set {
     uint16_t* sdh = nullptr;   // fp16 scale bits, one per 32 values
     uint16_t* suh = nullptr;
 };
-std::map<const uint16_t*, Q8Set> g_q8[64];
+std::map<const void*, Q8Set> g_q8[64];   // key: the BF16 w_down, or WeightRef::hc_i8 (STRATA_HC_I8ONLY)
 using KFn = void (*)(PArgs);
 template <bool DP, bool Q8 = false>
 KFn kernel_t(int T) {
@@ -3718,11 +3718,14 @@ bool q8_env() {
     static const bool on = [] { const char* v = std::getenv("STRATA_HC_PERSIST_Q8"); return v != nullptr && v[0] == '1'; }();
     return on && env_on() && !dp_on();
 }
-// int8 copies of one read's weights on the current card (synchronous: start-up, outside graph capture)
-bool q8_make(int dev, const uint16_t* wd, const uint16_t* wu, const uint16_t* wi, size_t& bytes) {
-    if (g_q8[dev].count(wd) != 0) return true;
+// STRATA_HC_PERSIST_Q8=1: int8 copies of one read's weights on the current card (synchronous: start-up, outside graph capture).
+// key: the BF16 w_down, or WeightRef::hc_i8 for STRATA_HC_I8ONLY (whose BF16 sources are freed after this).
+bool q8_make(int dev, const uint16_t* wd, const uint16_t* wu, const uint16_t* wi, size_t& bytes, const void* key = nullptr) {
+    if (key == nullptr) key = wd;
+    if (g_q8[dev].count(key) != 0) return true;
     Q8Set q;
     q.wu = wu; q.wi = wi;
+    if (key != (const void*) wd) { q.wu = nullptr; q.wi = nullptr; }   // keyed copies: their BF16 sources are gone after this
     const size_t nd = (size_t) NR * D, nu = (size_t) D * LR;
     const size_t sdb = (size_t) NR * (D / 32) * 2, sub = (size_t) D * (LR / 32) * 2;
     bool ok = cudaMalloc((void**) &q.qd, nd) == cudaSuccess && cudaMalloc((void**) &q.qu, nu) == cudaSuccess &&
@@ -3739,8 +3742,20 @@ bool q8_make(int dev, const uint16_t* wd, const uint16_t* wu, const uint16_t* wi
         return false;
     }
     bytes += nd + nu + sdb + sub;
-    g_q8[dev][wd] = q;
+    g_q8[dev][key] = q;
     return true;
+}
+// STRATA_HC_I8ONLY: int8 codes on Q8_0's grid (fp16 scale bits per 32 values along a row) back to bf16, round to
+// nearest even - the matrix the prompt path's BF16 GEMMs read in place of the BF16 copy that was not loaded
+__global__ void i8g32_to_bf16_kernel(const int8_t* q, const uint16_t* s, int64_t rows, int cols, uint16_t* dst) {
+    const int64_t n = rows * (int64_t) cols;
+    for (int64_t i = blockIdx.x * (int64_t) blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x) {
+        const int64_t r = i / cols;
+        const int c = (int) (i - r * cols);
+        const float v = (float) q[i] * __half2float(__ushort_as_half(s[r * (cols / 32) + c / 32]));
+        const unsigned u = __float_as_uint(v);
+        dst[i] = (uint16_t) ((u + 0x7FFFu + ((u >> 16) & 1u)) >> 16);
+    }
 }
 void q8_drop(int dev, const uint16_t* wd) {
     auto it = g_q8[dev].find(wd);
@@ -3921,12 +3936,56 @@ bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream) {
     for (int t = 0; t < n_tok; ++t)
         if (a[t].q8_mixed != nullptr) return false;                         // STRATA_QFUSE: the default read
     const hcp::Q8Set* q8 = nullptr;
-    if (st.q8_ok) {
+    if (a[0].q8_key != nullptr) {   // STRATA_HC_I8ONLY: no BF16 to fall back on
+        auto it = st.q8_ok ? hcp::g_q8[dev].find(a[0].q8_key) : hcp::g_q8[dev].end();
+        if (it == hcp::g_q8[dev].end()) {
+            std::fprintf(stderr, "strata hc: STRATA_HC_I8ONLY: CUDA%d has no int8 copies for a hyper-connection read (or their "
+                                 "check failed) and there is no BF16 copy to read instead\n", dev);
+            std::abort();
+        }
+        q8 = &it->second;
+    } else if (st.q8_ok) {
         auto it = hcp::g_q8[dev].find(a[0].w_down);
         if (it != hcp::g_q8[dev].end() && it->second.wu == a[0].w_up && it->second.wi == a[0].w_inject) q8 = &it->second;
     }
     hcp::launch(a, n_tok, st, (cudaStream_t) stream, hcp::kTicksRun, q8);
     return true;
+}
+uint64_t fused_gr_persist_q8_hash(const void* key) {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return 0;
+    const auto it = hcp::g_q8[dev].find(key);
+    if (it == hcp::g_q8[dev].end()) return 0;
+    const hcp::Q8Set& q = it->second;
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const void* p, size_t n) {
+        std::vector<uint8_t> b(n);
+        if (cudaMemcpy(b.data(), p, n, cudaMemcpyDeviceToHost) != cudaSuccess) { h = 0; return; }
+        for (uint8_t c : b) { h ^= c; h *= 1099511628211ull; }
+    };
+    mix(q.qd, (size_t) hcp::NR * D); mix(q.sdh, (size_t) hcp::NR * (D / 32) * 2);
+    mix(q.qu, (size_t) D * LR); mix(q.suh, (size_t) D * (LR / 32) * 2);
+    return h;
+}
+bool fused_gr_hc_i8_make(const void* key, const uint16_t* w_down, const uint16_t* w_up, const uint16_t* w_inject, size_t& bytes) {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (key == nullptr || w_down == nullptr || w_up == nullptr || dev < 0 || dev >= 64) return false;
+    return hcp::q8_make(dev, w_down, w_up, w_inject, bytes, key);
+}
+bool fused_gr_hc_i8_to_bf16(const void* key, int which, uint16_t* dst, void* stream) {
+    for (int d = 0; d < 64; ++d) {   // the card that holds the copy
+        const auto it = hcp::g_q8[d].find(key);
+        if (it == hcp::g_q8[d].end()) continue;
+        const hcp::Q8Set& q = it->second;
+        const int64_t rows = which == 0 ? LR : D;
+        const int cols = which == 0 ? D : LR;
+        hcp::i8g32_to_bf16_kernel<<<1024, 256, 0, (cudaStream_t) stream>>>(which == 0 ? q.qd : q.qu, which == 0 ? q.sdh : q.suh,
+                                                                            rows, cols, dst);
+        return cudaGetLastError() == cudaSuccess;
+    }
+    return false;
 }
 bool fused_gr_persist_q8_on() {
     int dev = 0;
@@ -3944,6 +4003,9 @@ void fused_gr_persist_init() {}
 bool fused_gr_read_persist(const FusedGrArgs*, int, void*) { return false; }
 bool fused_gr_persist_q8_on() { return false; }
 bool fused_gr_persist_q8_prepare(const uint16_t*, const uint16_t*, const uint16_t*, size_t&) { return false; }
+bool fused_gr_hc_i8_make(const void*, const uint16_t*, const uint16_t*, const uint16_t*, size_t&) { return false; }
+bool fused_gr_hc_i8_to_bf16(const void*, int, uint16_t*, void*) { return false; }
+uint64_t fused_gr_persist_q8_hash(const void*) { return 0; }
 #endif
 
 }  // namespace strata::kernels

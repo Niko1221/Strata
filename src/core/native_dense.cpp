@@ -562,8 +562,37 @@ bool NativeDense::add_hc_skip(const std::string& pack_dir, std::set<std::string>
     return true;
 }
 
+bool NativeDense::hc_scratch_reserve(int64_t elems, std::string& err) {   // STRATA_HC_I8ONLY
+    int dev = 0;
+    if (elems <= 0 || cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { err = "hc scratch: no device"; return false; }
+    if (g_hc_scratch[dev][0][0] != nullptr) return true;
+    for (int c = 0; c < 2; ++c)
+        for (int i = 0; i < 2; ++i)
+            if (cudaMalloc(&g_hc_scratch[dev][c][i], (size_t) elems * 2) != cudaSuccess) {   // held for the process's life
+                cudaGetLastError();
+                g_hc_scratch[dev][c][i] = nullptr;
+                err = "hc scratch: cudaMalloc";
+                return false;
+            }
+    for (int i = 0; i < 2; ++i)
+        if (g_hc_ev[dev][i] == nullptr && cudaEventCreateWithFlags(&g_hc_ev[dev][i], cudaEventDisableTiming) != cudaSuccess) {
+            err = "hc scratch: event";
+            return false;
+        }
+    return true;
+}
+
 const uint16_t* NativeDense::hc_bf16_view(const WeightRef& w, void* stream, int slot, int cls) {
     if (w.data != nullptr) return (const uint16_t*) w.data;
+    if (w.hc_i8 != nullptr) {   // STRATA_HC_I8ONLY: the read's int8 copies back to bf16 (slot 0: down, 1: up)
+        int dev = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64 || slot < 0 || slot > 1 || cls < 0 || cls > 1) return nullptr;
+        void* buf = g_hc_scratch[dev][cls][slot];
+        if (buf == nullptr) return nullptr;
+        if (cls == 0 && g_hc_ev_set[dev][slot]) cudaStreamWaitEvent((cudaStream_t) stream, g_hc_ev[dev][slot], 0);
+        if (!strata::kernels::fused_gr_hc_i8_to_bf16(w.hc_i8, slot, (uint16_t*) buf, stream)) return nullptr;
+        return (const uint16_t*) buf;
+    }
     if (w.hc_q8 == nullptr) return nullptr;
     // the device's scratch (allocated at load, one pair per device): the prompt path and the single-token read run one
     // after the other on a device, and each use is stream-ordered after the previous GEMM that read the slot

@@ -41,6 +41,9 @@ struct FusedGrArgs {
     float* mixed = nullptr;            ///< n_embd
     /// S23 experiment (STRATA_HC_Q8=1): the GGUF's Q8_0 projections (null: the BF16 ones above); fused_gr_read_multi
     /// only
+    /// STRATA_HC_I8ONLY: the key of this read's int8 copies (WeightRef::hc_i8; no BF16 behind w_down / w_up).
+    /// Only the persistent read serves it; fused_gr_read_persist ends the process rather than fall back to a BF16 read.
+    const void* q8_key = nullptr;
     const uint8_t* q8_down = nullptr;  ///< Q8_0 [hc_lr][hc*n_embd]
     const uint8_t* q8_up = nullptr;    ///< Q8_0 [hc*n_embd][hc_lr]
     const uint8_t* q8_inject = nullptr;///< Q8_0 [hc][hc*n_embd]
@@ -108,5 +111,14 @@ bool fused_gr_read_persist(const FusedGrArgs* a, int n_tok, void* stream);
 /// makes one read's copies on the current card and adds their bytes; reads without copies keep the bf16 kernel.
 bool fused_gr_persist_q8_on();
 bool fused_gr_persist_q8_prepare(const uint16_t* w_down, const uint16_t* w_up, const uint16_t* w_inject, size_t& bytes);
+/// STRATA_HC_I8ONLY: make one read's int8 copies on the current device from BF16 sources that may be temporary
+/// (Q8_0's grid, the STRATA_HC_PERSIST_Q8=1 kernel and rounding), keyed by `key`.  Before the persistent read's check.
+bool fused_gr_hc_i8_make(const void* key, const uint16_t* w_down, const uint16_t* w_up, const uint16_t* w_inject, size_t& bytes);
+/// STRATA_HC_I8ONLY: expand a read's copies back to its BF16 matrix (`which` 0: down [hc_lr][hc*n_embd], 1: up
+/// [hc*n_embd][hc_lr]) into `dst` on `stream`, on the current device.
+bool fused_gr_hc_i8_to_bf16(const void* key, int which, uint16_t* dst, void* stream);
+/// STRATA_HC_Q8_HASH=1 (diagnostic): FNV-1a of one read's int8 copies (codes and scales, down then up), found by
+/// its key (the BF16 w_down, or WeightRef::hc_i8) on the current device; 0 when there is none
+uint64_t fused_gr_persist_q8_hash(const void* key);
 
 }  // namespace strata::kernels

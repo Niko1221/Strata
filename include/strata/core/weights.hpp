@@ -99,6 +99,11 @@ struct WeightRef {
     /// STRATA_HC_Q8 (experiment): non-null when `data` holds int8 codes [ne1][ne0] of a BF16 hyper-connection
     /// projection quantized Q8_0-style (one fp32 scale per 32 contiguous values, `q8_scale[ne1][ne0 / 32]`).
     const float* q8_scale = nullptr;
+    /// STRATA_HC_I8ONLY=1: a hyper-connection down/up row whose BF16 copy was not loaded.  Its int8 copies on its
+    /// card (fused_gr: Q8_0's grid, fp16 scale per 32 values, the STRATA_HC_PERSIST_Q8=1 copies) are keyed by this value
+    /// (the down row's WeightRef, for both rows of a read): the verifier's persistent read reads them, and
+    /// NativeDense::hc_bf16_view expands them to bf16 for the other readers (the prompt path, the single-token read).
+    const void* hc_i8 = nullptr;
 };
 
 struct LoadReport {
@@ -145,6 +150,13 @@ public:
     bool load_hc_q8(const std::string& pack_dir, uint64_t& bytes, std::string& err);
     /// The tensor names `load_hc_q8` converts, for the loader's skip set.
     static void hc_q8_names(int64_t n_layers, std::set<std::string>& out);
+    /// STRATA_HC_I8ONLY: mark a skipped hc row as served by its int8 copies (see WeightRef::hc_i8)
+    bool set_hc_i8(const std::string& name, const void* key) {
+        const auto it = table_.find(name);
+        if (it == table_.end() || it->second.data != nullptr) return false;
+        it->second.hc_i8 = key;
+        return true;
+    }
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
 
