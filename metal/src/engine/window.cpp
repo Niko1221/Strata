@@ -442,6 +442,15 @@ private:
     std::vector<mtl::Buffer> gstBig_, hbBig_, kqBig_, vqBig_, kscBig_, vscBig_, tailBig_, deadBig_, pooledBig_;
     mtl::Buffer pleBig_, rinfo_;
     size_t st_gst_ = 0, st_hist_ = 0, st_kq_ = 0, st_sc_ = 0, st_tail_ = 0, st_dead_ = 0, st_pooled_ = 0, st_ple_ = 0;   // bytes between sets
+    // STRATA_METAL_KV_ELASTIC=1: the QSA layers' per-cell pools (kq/vq/ksc/vsc/pooled, the MTP draft layer's included)
+    // are slots of one anonymous mapping wrapped no-copy and never cleared, so a page commits only when a context
+    // reaches it: --max-context 262144 costs what the conversation uses instead of the whole reservation at start.
+    // The addresses never move (session pointers and cached graphs stay valid) and the mapping lives as long as the
+    // process: unmapping under live Metal handles is the one unsafe thing here.
+    bool kv_elastic_ = false;
+    void* kvmap_ = nullptr;
+    size_t kvmap_bytes_ = 0, kvoff_ = 0;
+    mtl::Buffer kv_pool(size_t bytes);
     bool rows_ = false;       // the window being built / run holds one token of each of rows_n_ DIFFERENT sequences (batch slots)
     int rows_n_ = 0;
     strata::core::SessionState* rows_ss_[MAXT] = {};
@@ -789,11 +798,23 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     st_sc_ = R256(2 * (size_t) MAXC * G_QKV * 4); st_tail_ = R256(TAIL_B); st_dead_ = R256(DEAD_B);
     st_pooled_ = R256(4 * (size_t) MB * G_ID); st_ple_ = R256(PLEH_B);
     // the set-0 view of a new buffer of `bytes` per set (or a plain buffer when there are no batch slots)
-    auto SV = [&](std::vector<mtl::Buffer>& bigs, size_t bytes, size_t stride, size_t per = 1, size_t which = 0) {
-        if (!bigs_ok_) { bigs.push_back(mtl::Buffer()); return A(bytes); }
-        if (which == 0) bigs.push_back(A(stride * per * NSET));
+    auto SV = [&](std::vector<mtl::Buffer>& bigs, size_t bytes, size_t stride, size_t per = 1, size_t which = 0,
+                  bool kv = false) {
+        auto make = [&](size_t b) { return kv && kv_elastic_ ? kv_pool(b) : A(b); };
+        if (!bigs_ok_) { bigs.push_back(mtl::Buffer()); return make(bytes); }
+        if (which == 0) bigs.push_back(make(stride * per * NSET));
         return view_of(bigs.back(), which * stride, bytes);
     };
+    kv_elastic_ = std::getenv("STRATA_METAL_KV_ELASTIC") && std::string(std::getenv("STRATA_METAL_KV_ELASTIC")) == "1";
+    if (kv_elastic_) {   // the 12 QSA layers' pools for every set, and the MTP draft layer's (mtp_load, after init)
+        auto pg = [](size_t b) { return (b + 16383) / 16384 * 16384; };
+        kvmap_bytes_ = 12 * (2 * pg(st_kq_ * NSET) + 2 * pg(st_sc_ * NSET) + pg(st_pooled_ * NSET)) +
+                       2 * pg((size_t) MAXC * G_QKV * G_QD) + 2 * pg(2 * (size_t) MAXC * G_QKV * 4) + pg(4 * (size_t) MB * G_ID);
+        kvmap_ = mmap(nullptr, kvmap_bytes_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (kvmap_ == MAP_FAILED) { kvmap_ = nullptr; err = "metal window: the elastic K/V mapping failed"; return false; }
+        std::fprintf(stderr, "strata metal: elastic K/V: %d cells reserved (%.2f GB of address space, mapped as the "
+                             "context grows)\n", MAXC, kvmap_bytes_ / 1e9);
+    }
     if (bigs_ok_) { pleBig_ = A(st_ple_ * NSET); pleHist_ = view_of(pleBig_, 0, PLEH_B); } else pleHist_ = A(PLEH_B);
     rinfo_ = A(4 * (8 + 4 * MAXT));
     auto act = [&](int n) {
@@ -842,13 +863,13 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             ghist_[0].push_back(SV(hbBig_, HIST_B, st_hist_, 2, 0));   // [set][parity]: the two parities side by side
             ghist_[1].push_back(SV(hbBig_, HIST_B, st_hist_, 2, 1));
         } else {
-            kq_.push_back(SV(kqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_));
-            vq_.push_back(SV(vqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_));
-            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_));
-            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_));
+            kq_.push_back(SV(kqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_, 1, 0, true));
+            vq_.push_back(SV(vqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_, 1, 0, true));
+            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_, 1, 0, true));
+            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_, 1, 0, true));
             tail_.push_back(SV(tailBig_, TAIL_B, st_tail_));
             dead_.push_back(SV(deadBig_, DEAD_B, st_dead_));
-            pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * G_ID, st_pooled_));
+            pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * G_ID, st_pooled_, 1, 0, true));
         }
     }
     bind_session(ss);
@@ -936,6 +957,21 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                  cx_->device_name().c_str(), shard1.c_str(), stream_ ? "streamed from the SSD (experts)" : "wrapped",
                  f_.file_bytes / 1e9, MAXC, ple_on_ ? "on" : "OFF", now_ms() - t0);
     return true;
+}
+
+// One pool of the elastic K/V, page-rounded so the next one starts on a page; it reports the size asked for, as an
+// alloc() buffer does (bind_qsa counts the indexer's pooled rows from it).  No memset: an untouched page stays
+// demand-zero, so a cell no context reaches costs nothing.
+mtl::Buffer Window::kv_pool(size_t bytes) {
+    const size_t al = (bytes + 16383) / 16384 * 16384;
+    if (kvoff_ + al > kvmap_bytes_) {
+        std::fprintf(stderr, "strata metal: the elastic K/V mapping is short (%zu + %zu > %zu)\n", kvoff_, al, kvmap_bytes_);
+        std::exit(6);
+    }
+    mtl::Buffer b = cx_->wrap_map((uint8_t*) kvmap_ + kvoff_, al);
+    b.bytes = bytes;
+    kvoff_ += al;
+    return b;
 }
 
 void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const Act& x, const mtl::Buffer& y,
@@ -2423,9 +2459,10 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         return x;
     };
     XEn_ = act(N); XHn_ = act(N);
-    mkq_.push_back(A((size_t) MAXC * G_QKV * G_QD)); mvq_.push_back(A((size_t) MAXC * G_QKV * G_QD));
-    mksc_.push_back(A(2 * (size_t) MAXC * G_QKV * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * G_QKV * 4));
-    mtail_.push_back(A(TAIL_B)); mdead_.push_back(A(DEAD_B)); mpooled_.push_back(A(4 * (size_t) MB * G_ID));
+    auto KA = [&](size_t bytes) { return kv_elastic_ ? kv_pool(bytes) : A(bytes); };
+    mkq_.push_back(KA((size_t) MAXC * G_QKV * G_QD)); mvq_.push_back(KA((size_t) MAXC * G_QKV * G_QD));
+    mksc_.push_back(KA(2 * (size_t) MAXC * G_QKV * 4)); mvsc_.push_back(KA(2 * (size_t) MAXC * G_QKV * 4));
+    mtail_.push_back(A(TAIL_B)); mdead_.push_back(A(DEAD_B)); mpooled_.push_back(KA(4 * (size_t) MB * G_ID));
     {
         std::string vp;
         // the subset setup put beside the draft layer (--draft-vocab: <mtp>/rt/draft_vocab.bin, as CUDA reads it),
