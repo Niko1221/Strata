@@ -109,6 +109,15 @@ main { flex: 1; min-height: 0; display: flex; }
           backdrop-filter: blur(8px) saturate(1.2); -webkit-backdrop-filter: blur(8px) saturate(1.2);
           font-size: var(--st-fs-sm); line-height: 1.55; color: var(--st-ink); overflow-wrap: anywhere;
           pointer-events: none; }
+/* everything that carries a tooltip says so up front: dashed underline in the theme's accent text colour - colour
+   made to stay readable on both themes - and the help cursor. The underline follows [data-tip]: where
+   a tooltip is wired the hint shows - the min and max and the averages included; an empty row holds no text follows
+   to mark, so the affordance can never lie */
+.st-metric__label[data-tip], .model-card__name[data-tip], .model-card__facts .mf-k[data-tip], .st-metric__sub[data-tip] { cursor: help;
+          text-decoration: underline dashed; text-decoration-color: var(--st-accent-text);
+          text-decoration-thickness: 1px; text-underline-offset: 4px; }
+.model-card__facts .mf-k[data-tip], .st-metric__sub[data-tip] { text-underline-offset: 2px; } /* small rows sit close */
+.st-metric__label > .st-icon { text-decoration: underline dashed transparent; } /* the icon is not part of the name */
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
 .st-metric__spark { display: block; overflow: visible; }
