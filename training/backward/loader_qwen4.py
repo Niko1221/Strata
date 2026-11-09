@@ -47,7 +47,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import nf4
-from nf4_fused import fused_nf4_linear
+# nf4_fused is imported lazily inside the fused-expert forward pass: it defines
+# Triton JIT kernels at import time, and the CPU-only CI host has no Triton wheel.
 from preadv_shim import preadv as _preadv
 
 import nf4
@@ -758,6 +759,11 @@ class StreamingNF4Experts(nn.Module):
             prev = end
         if not hits:
             return final
+
+        # Only a forward pass that actually reaches fused experts needs Triton.
+        # Keeping this out of the module-level import chain makes pure helpers
+        # such as _resolve_mapping_path importable without a GPU kernel stack.
+        from nf4_fused import fused_nf4_linear
 
         for group, tensors, provs in self._stream_groups(hits, hidden_states.device):
             for e in group:
