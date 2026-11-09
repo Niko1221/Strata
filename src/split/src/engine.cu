@@ -85,11 +85,16 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         rows = 8192;
         if (!std::getenv("FNX_PF_ROWS") && !std::getenv("FNX_PF_PASS")) {
             size_t free_min = SIZE_MAX, kv_max = 0;
+            size_t arena_min = SIZE_MAX;   // the largest pool's slots the arena has not allocated yet: #5496's overcount
             for (int c = 0; c < NCARD; ++c) {
                 ck(cudaSetDevice(m.cards[c].dev), "cudaSetDevice");
                 size_t fr = 0, tot = 0;
                 ck(cudaMemGetInfo(&fr, &tot), "cudaMemGetInfo");
+                const ExpertCache& ec = m_.cards[c].ec;
+                const size_t arena_c = (size_t) ec.slot_bytes[ec.arena_pool] * (size_t) ec.n[ec.arena_pool];
+                fr = fr > arena_c ? fr - arena_c : 0;   // what the free number looks like after arena_fill has spent it
                 free_min = std::min(free_min, fr);
+                arena_min = std::min(arena_min, arena_c);
                 kv_max = std::max(kv_max, (size_t) n_pages * kvp_page(c) * sizeof(uint16_t));
             }
             const size_t margin = kv_max + (PF_MARGIN_MIB << 20);
@@ -104,8 +109,8 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             rows = pick.rows;
             pf_pass_pick_ = pick.pass;
             if (pick.rows != 8192 || pick.pass != 4)
-                std::fprintf(stderr, "fnx: prompt path: %d rows, %d chunks a pass (the cards hold %zu MiB free after the weights, the K/V pool %zu MiB)\n", pick.rows, pick.pass,
-                             free_min >> 20, kv_max >> 20);
+                std::fprintf(stderr, "fnx: prompt path: %d rows, %d chunks a pass (the cards hold %zu MiB free after the weights, the K/V pool %zu MiB, the arena reserve %zu MiB)\n", pick.rows, pick.pass,
+                             free_min >> 20, kv_max >> 20, arena_min >> 20);
         }
 #endif
         const long long pf_rows = env_int("FNX_PF_ROWS", rows);
