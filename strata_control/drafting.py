@@ -8,7 +8,7 @@ The choice is the person's, and it is saved in the model's run config as ``"draf
 strata_control/draft_layer.py), so a setup run that rewrites the engine arguments cannot undo it. An older config that names both drafters (``--mtp`` and
 ``--draft dflash2``) starts with the one chosen.
 
-  dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` and no ``--mtp``: the DFlash2
+  dflash2  ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf 0.35`` (``--spec 8`` on Strix Halo and on Blackwell cc 12.0 with >= 48 GB, whose conf is 0.55: window_for / big_blackwell) and no ``--mtp``: the DFlash2
            block drafter (incoai/Qwen3.8-Flash-Next-DFlash2, Q4_0 pack) for Qwen3.8-Flash-Next, Gyro and Unsloth's quantizations, with the window and confidence that measured best
            (RESULTS-DRAFT.md section 4); a ``--spec`` or ``--draft-conf`` the person set by hand (``user_args``) stays
   mtp      the model's own draft layer (``--mtp <folder>``) and none of the DFlash2 flags
@@ -27,6 +27,7 @@ import json
 import mmap
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -251,6 +252,7 @@ LEGACY_PACK_NAME = "qwen3.8-flash-next-dflash2.q8.pack"      # what Strata 0.2.9
 VRAM_GB = DRAFTER_GB["dflash2"]   # graphics memory with the MTP layer not loaded and the bf16-selector pack: 890 MiB (RESULTS-DF2MEM.md); vram_gb() has the true figure for this computer
 FOLDER = "dflash2"           # under the model data folder, next to ``mtp``
 SPEC_WINDOW = 6              # --spec with DFlash2: the widest window of drafted words per round (measured best on Blackwell; the engine caps it per card)
+WIDE_WINDOW = 8              # --spec on the two card classes whose engine cap (include/strata/core/draft_cap.hpp dflash2_auto_cap) is 8: Strix Halo and Blackwell cc 12.0 with >= 48 GB (window_for). The engine only ever lowers --spec to its cap, so every other card keeps SPEC_WINDOW
 MTP_WINDOW = 4               # the MTP's usual --spec: the window it runs when DFlash2 falls back to it, unless the config names another
 DRAFT_CONF = 0.35            # --draft-conf with DFlash2: the window ends where the chance that every draft so far holds falls below this (the card holds most experts)
 
@@ -274,6 +276,11 @@ MAX_SLOTS = 24576            # every (layer, expert) pair of Qwen3.8-Flash-Next
 # DFlash2 --spec 6 against MTP --spec 2, 3 interleaved rounds x 2 reps, six request kinds (phaseA-tests/round0215/RESULTS-MAC-OUT.md): conf 0.35 / 0.5 / 0.6 = +10.0 / +14.3 / +12.4% over all
 # six kinds (0.5 faster than MTP on every kind in 3 of 3 rounds; the slot rule would have written 0.8 for the Mac's --expert-cache 64).
 BACKEND_CONF = {"sycl": 0.6, "metal": 0.5}
+# Large-VRAM Blackwell (cc 12.0 = sm_120, at least 48 GB: l620's RTX PRO 5000 72 GB; NOT the DGX Spark, sm_121, and not a consumer card under 48 GB, which were not measured): a window of 8 for every
+# set (the engine cap is 8 there too, set-independent: window 8 alone at conf 0.35 was +0.5% on IQ3_S) and, for IQ3_S only (SetDefault.big_blackwell_conf in SET_DEFAULTS, owner/coordinator 11-08),
+# conf 0.55. 11-08 sweep (phaseA-tests/df2r2/RESULTS-CONF.md), IQ3_S, 36 requests, 300 greedy tokens, 5 interleaved pairs against conf 0.35 / window 6: +2.4%, 5 of 5 pairs faster, output identical
+# (conf 0.55 alone +1.1%). Only where every expert is resident (the first CONF_STEPS step), the case that was measured; the other sets on that card were not measured and keep 0.35.
+BIG_CARD_BYTES = 48_000_000_000     # "48 GB" the way cards are sold (a 48 GB card reports about 47.5 GiB); the engine's kDflash2BigCardBytes is the same number
 
 
 @dataclass(frozen=True)
@@ -305,6 +312,7 @@ class SetDefault:
     tuned_conf: float | None = None
     where: str = ""
     pack: str = "selq4"
+    big_blackwell_conf: float | None = None     # the ``--draft-conf`` on the large-VRAM Blackwell class (big_blackwell: cc 12.0, >= 48 GB) with the tuned pack, for the sets measured there; None = the backend's own conf
 
 
 #: Per (engine family, set) defaults, measured. THE ONE TABLE to switch a set either way. The set is the model_name without its "qwen3.8-flash-next-" prefix.
@@ -324,7 +332,7 @@ SET_DEFAULTS = {
     ("metal", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, 0.7),
     ("metal", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, 0.7),
     ("metal", "iq3_s"): SetDefault("mtp"),
-    ("cuda", "iq3_s"): SetDefault("dflash2", True, None, "resident"),
+    ("cuda", "iq3_s"): SetDefault("dflash2", True, None, "resident", big_blackwell_conf=0.55),
     ("cuda", "unsloth-ud-iq4_xs-v31"): SetDefault("dflash2", True, None, "resident"),
     ("hip", "iq3_s"): SetDefault("dflash2", True, None, "gfx1151"),
     ("hip", "unsloth-ud-q4_k_xl"): SetDefault("dflash2", True, None, "gfx1151"),
@@ -680,6 +688,7 @@ NOT_DOWNLOADED = "the DFlash2 drafter isn't downloaded yet"
 NOT_THIS_CARD = "DFlash2 isn't available on this graphics card"
 NO_MTP = "the MTP drafter isn't downloaded yet"
 NONE_HERE = "no drafter is downloaded yet"
+FETCH_HINT = "Run strata drafting fetch to get the DFlash2 drafter now."
 DIDNT_START = "DFlash2 didn't start"          # Auto picked DFlash2, the engine ended before it was ready, and the start was repeated once with the MTP (serve/server.py)
 NOT_SERVED = NOT_HERE
 SHORT_OF_VRAM = "the cards were short of memory"   # the engine ended before it was ready for lack of graphics memory: the start was repeated once with no drafter (serve/server.py), never with the MTP
@@ -745,6 +754,28 @@ def engine_flags(pack: str | Path, vocab: str | Path | None = None, form: str | 
     if vocab:
         where = ("--mtp", str(Path(vocab).parent)) if form == FORM_DIR else ("--mtp-draft-vocab", str(vocab))
     return ("--draft", "dflash2", "--draft-model", str(pack), "--draft-fallback", "none", *where, "--spec", str(SPEC_WINDOW), "--draft-conf", f"{DRAFT_CONF:g}")
+
+
+def big_blackwell(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> bool:
+    """Is this start on the large-VRAM Blackwell class (the window of 8, and the sets' big_blackwell_conf): CUDA, the first card's architecture sm_120 (cc 12.0; the Spark is sm_121), the one card's memory ``vram_mib``
+    at least BIG_CARD_BYTES (None = several cards or unknown: no), and ``slots`` in the all-resident step (None counts as unknown: no)? Mirrors the engine's dflash2_big_blackwell."""
+    if str(backend or "").strip().lower() != "cuda" or first_arch(archs) != "sm_120" or not vram_mib or slots is None:
+        return False
+    return vram_mib * 1048576 >= BIG_CARD_BYTES and slots >= CONF_STEPS[0][0]
+
+
+def big_blackwell_conf_for(backend: str | None, model_name: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> float | None:
+    """The ``--draft-conf`` this set has on the large-VRAM Blackwell class (SetDefault.big_blackwell_conf), or None: not that class, or a set nobody measured there (it keeps the slot rule's 0.35)."""
+    entry = tuned_entry(backend, model_name)
+    return entry.big_blackwell_conf if entry is not None and big_blackwell(backend, archs, vram_mib, slots) else None
+
+
+def window_for(backend: str | None, archs: Any = None, vram_mib: float | None = None, slots: int | float | None = None) -> int:
+    """The ``--spec`` of a DFlash2 start: WIDE_WINDOW (8) on Strix Halo (HIP gfx1151, engine cap 8) and on the large-VRAM Blackwell class (big_blackwell), SPEC_WINDOW (6) everywhere else, so no other
+    card's effective window changes (the engine caps 6 on the Spark and the smaller Blackwell cards, and does not cap the rest)."""
+    if str(backend or "").strip().lower() == "hip" and first_arch(archs) == "gfx1151":
+        return WIDE_WINDOW
+    return WIDE_WINDOW if big_blackwell(backend, archs, vram_mib, slots) else SPEC_WINDOW
 
 
 def conf_for(backend: str | None, slots: int | float | None) -> float:
@@ -1074,7 +1105,7 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
           backend: str | None = None, archs: Any = None, vram_mib: float | None = None, split: bool = False, slots: int = 0,
           engine: str | os.PathLike[str] | None = None) -> Decision:
     """Put the config's ``"drafting"`` choice on its engine arguments (in place): ONE drafter's options and none of the other's. DFlash2: no ``--mtp``, no MTP option,
-    ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec 6 --draft-conf C``; the person's own ``--spec`` or ``--draft-conf``
+    ``--draft dflash2 --draft-model <pack> --draft-fallback none --mtp-draft-vocab <file> --spec W --draft-conf C`` (W = window_for: 8 on Strix Halo and on cc 12.0 with >= 48 GB, else 6); the person's own ``--spec`` or ``--draft-conf``
     in ``user_args`` stays. C is 0.35 where the card holds most experts and higher where fewer slots fit (conf_for_slots): from the person's own ``--expert-cache N``,
     else from ``vram_mib``, the memory of the one card (None: several cards, a shared-memory chip, unknown: 0.35). MTP: the arguments without any DFlash2 option.
     ``off``: neither (the draft layer's own switch, ``"mtp": false``). ``slots`` says that this start serves several requests at
@@ -1121,7 +1152,11 @@ def apply(cfg: dict[str, Any], *, klass: str = "other", data_dir: str | Path | N
         flags = list(engine_flags(pack, vocab, form))
         kept_conf = _flag_value(mine, "--draft-conf")
         tuned_conf = tuned_conf_for(backend, cfg.get("model_name")) if Path(pack) == tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name"))) else None     # Metal: the conf the tuned pack was measured with; CUDA / HIP: None, the backend's own conf stays
-        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else conf_for(backend, slots_of(base, vram_mib)):g}"
+        held = slots_of(base, vram_mib)
+        tuned_here = Path(pack) == tuned_path(data_dir, tuned_variant(backend, cfg.get("model_name")))
+        card_conf = big_blackwell_conf_for(backend, cfg.get("model_name"), archs, vram_mib, held) if tuned_here else None      # large-VRAM Blackwell, IQ3_S, tuned pack: the measured 0.55; Strix keeps 0.35 and only widens the window
+        flags[flags.index("--draft-conf") + 1] = kept_conf if kept_conf is not None else f"{tuned_conf if tuned_conf is not None else card_conf if card_conf is not None else conf_for(backend, held):g}"
+        flags[flags.index("--spec") + 1] = str(window_for(backend, archs, vram_mib, held))
         if _flag_value(mine, "--spec") is None:
             base = _without_flag(base, "--spec")              # the DFlash2 window; the person's own --spec stays
         else:
@@ -1150,6 +1185,30 @@ def fallback_note(log_text: str) -> str:
     else:
         reason = DIDNT_FIT
     return mtp_line(reason)
+
+
+#: A load that is not the person's own asks the signed feed for the tuned drafter at most this often when the answer was "nothing" (strata_control/drafting_fetch.py keeps the mark).
+RETRY_AFTER_S = 12 * 3600
+MISS_MARK = ".tuned-feed-miss"
+
+
+def recent_miss(data_dir: str | Path) -> bool:
+    """Did the feed have nothing for the tuned drafter within the last RETRY_AFTER_S seconds (the mark `drafting_fetch` leaves)?"""
+    try:
+        return time.time() - (Path(data_dir) / FOLDER / MISS_MARK).stat().st_mtime < RETRY_AFTER_S
+    except OSError:
+        return False
+
+
+def fetch_hint(decision: Decision, *, model_name: str | None, backend: str | None, archs: Any = None, data_dir: str | Path | None, args: list[Any] | None = None,
+               vram_mib: float | None = None) -> str:
+    """The line after "Drafting: off (no drafter is downloaded yet)": only when the choice is DFlash2 or Auto on a set with a tuned drafter and a load has just
+    found the feed empty (a recent miss mark), so the person knows `strata drafting fetch` asks again now. "" in every other case."""
+    if decision.drafter != "off" or decision.note != NONE_HERE or normalize(decision.asked) not in ("auto", "dflash2") or not data_dir:
+        return ""
+    if not tuned_applies(backend, model_name, archs, args=args, vram_mib=vram_mib) or not recent_miss(data_dir):
+        return ""
+    return FETCH_HINT
 
 
 def summary_line(decision: Decision, engine_note: str = "") -> str:

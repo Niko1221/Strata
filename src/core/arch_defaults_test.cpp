@@ -44,6 +44,47 @@ int main() {
     CHECK(parallel_default_env("gfx1151", true, 4).empty());
     unset("STRATA_GFX1151_DEFAULTS");
     for (const auto& kv : parallel_default_env("gfx1151", true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
+    // the same nine on Linux CUDA with 2 or more slots (was serve/server.py PARALLEL_STACK_ENV)
+    CHECK(parallel_default_env_cuda(true, 2).size() == 9);
+    CHECK(parallel_default_env_cuda(true, 8).size() == 9);
+    CHECK(parallel_default_env_cuda(true, 1).empty());
+    CHECK(parallel_default_env_cuda(true, 0).empty());
+    CHECK(parallel_default_env_cuda(false, 4).empty());            // HIP, Windows, Metal, SYCL builds
+    for (const auto& kv : parallel_default_env_cuda(true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
+    {
+        const auto cuda = parallel_default_env_cuda(true, 4), gfx = parallel_default_env("gfx1151", true, 4);
+        CHECK(cuda == gfx);                                         // one table for both
+        unset("STRATA_QSA_SLOTS");
+        put("STRATA_CKPT_POOL", "0");                               // the user's =0 stays
+        const auto set = apply_parallel_defaults_cuda(true, 4);
+        CHECK(set.size() == 8);
+        CHECK(std::getenv("STRATA_CKPT_POOL") != nullptr && std::string(std::getenv("STRATA_CKPT_POOL")) == "0");
+        CHECK(std::getenv("STRATA_QSA_SLOTS") != nullptr && std::string(std::getenv("STRATA_QSA_SLOTS")) == "1");
+        for (const auto& kv : cuda) unset(kv.first.c_str());
+        CHECK(apply_parallel_defaults_cuda(true, 1).empty());
+        CHECK(std::getenv("STRATA_QSA_SLOTS") == nullptr);
+    }
+    // QUAL-GDN on Linux CUDA
+    CHECK(gdn_default_env_cuda(true).size() == 2);
+    CHECK(gdn_default_env_cuda(false).empty());
+    {
+        unset("STRATA_GDN_TC"); put("STRATA_GDN_CONVL2", "0");
+        CHECK(apply_gdn_defaults_cuda(true).size() == 1);
+        CHECK(std::string(std::getenv("STRATA_GDN_TC")) == "1" && std::string(std::getenv("STRATA_GDN_CONVL2")) == "0");
+        unset("STRATA_GDN_TC"); unset("STRATA_GDN_CONVL2");
+        CHECK(apply_gdn_defaults_cuda(false).empty() && std::getenv("STRATA_GDN_TC") == nullptr);
+    }
+    // the chunked GDN scan: Linux, every card gfx12
+    CHECK(gdn_chunked_default_env(true, true).size() == 1);
+    CHECK(gdn_chunked_default_env(true, false).empty());
+    CHECK(gdn_chunked_default_env(false, true).empty());
+    {
+        unset("STRATA_GDN_CHUNKED");
+        CHECK(apply_gdn_chunked_default(true, true).size() == 1 && std::string(std::getenv("STRATA_GDN_CHUNKED")) == "1");
+        put("STRATA_GDN_CHUNKED", "0");
+        CHECK(apply_gdn_chunked_default(true, true).empty() && std::string(std::getenv("STRATA_GDN_CHUNKED")) == "0");
+        unset("STRATA_GDN_CHUNKED");
+    }
     // 0.2.10 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
     unset("STRATA_GFX1151_DEFAULTS");
     CHECK(launch_default_env("gfx1151", true).size() == 1 && launch_default_env("gfx1151", true)[0].first == "STRATA_VERIFY_ASYNC_LAUNCH");

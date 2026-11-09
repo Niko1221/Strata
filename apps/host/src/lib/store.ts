@@ -30,7 +30,7 @@ import { postWithFolderFallback } from './folder-pick';
 import { createSessionWriter, exportSessions, readBrowserSessions, HOST_FLAG_KEY, PENDING_KEY, type SaveResult, type StorageLike } from './session-persist';
 import { createHttpTransport, hydrateChats, keepLastMomentCopy, WINDOW_ID } from './chat-sync';
 import { copyText } from './clipboard';
-import { setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
+import { catalogLoaded, loadCatalog, setTranslationLanguage, tr, validLanguage, type Language } from './i18n';
 /**
  * Strata app store.
  *
@@ -280,8 +280,8 @@ function loadPrefs(): Prefs {
 }
 
 const prefs = loadPrefs();
-// Use the saved language for the very first render, before host bootstrap.
-setTranslationLanguage(prefs.language);
+// Use the saved language for the very first render, before host bootstrap (main.tsx waits for its strings before it draws).
+void setTranslationLanguage(prefs.language);
 
 /** The last approval question a notification was shown for, so one question is announced once. */
 let lastApprovalNotice = '';
@@ -494,7 +494,7 @@ export function dismissToast(id: string) {
  */
 function applyPrefs() {
   const root = document.documentElement;
-  setTranslationLanguage(state.language);
+  void setTranslationLanguage(state.language);
   root.lang = state.language === 'zh' ? 'zh-CN' : state.language;
   if(state.fontFamily)root.style.setProperty('--st-font',`${JSON.stringify(state.fontFamily)},system-ui,-apple-system,"Segoe UI",sans-serif`);
   else root.style.removeProperty('--st-font');
@@ -560,7 +560,14 @@ export function toggleRail() {
   set({ rail: !state.rail });
   savePrefs();
 }
-export function setLanguage(language:Language){if(!validLanguage(language))return;setTranslationLanguage(language);set({language});savePrefs();rememberShellLanguage(language);}
+/** A language whose strings are already here switches at once; the first use of another one waits for its file (a moment), then switches everything together. The last pick wins. */
+let languageRequest=0;
+export function setLanguage(language:Language){
+  if(!validLanguage(language))return;
+  const request=++languageRequest;
+  const apply=()=>{if(request!==languageRequest)return;setTranslationLanguage(language);set({language});savePrefs();rememberShellLanguage(language);};
+  if(catalogLoaded(language))apply();else void loadCatalog(language).then(apply);
+}
 let shellAnnounced = false;
 /** The desktop shell's tray menu follows the app's language; it reads it from a small file the host keeps (no effect in a browser). */
 function rememberShellLanguage(language:Language){api.post('/api/shell/prefs',{language}).catch(()=>undefined);}

@@ -2074,3 +2074,24 @@ class OutputParser:
         self._reset_scan()
         self.state, self.lead = "content", True
         return [Event("tool_call", call=call)]
+
+
+class JsonOutputParser(OutputParser):
+    """The parser for a model whose chat template tells it to write each call as JSON inside the wrapper:
+    `<tool_call>\n{"name": NAME, "arguments": {...}}\n</tool_call>` (Qwen3, Hermes).  OutputParser already reads that form, but only
+    as a recovery for a model that drifted off the XML form; for a JSON template it is the form itself, so it is read whether or
+    not the server's tool_call_recovery is on.  Everything else (reasoning, code fences, declared-tool rules) is OutputParser's."""
+
+    def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
+        super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, recover=True,
+                         declared_only=declared_only, deferred=deferred)
+
+
+def parser_for_template(source: str | None):
+    """The OutputParser class for a chat template's text, by the tool-call form the template documents (serve/toolformat.py):
+    the JSON form gets JsonOutputParser; the XML form every Strata model ships with, templates without tools, and forms nothing
+    here reads keep OutputParser (the same class as before this existed).  DeepSeek's DSML parser is chosen by the model family
+    (Service.set_family), not here."""
+    from serve import toolformat
+    return JsonOutputParser if toolformat.tool_format(source or "") == "json" else OutputParser

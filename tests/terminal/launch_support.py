@@ -73,3 +73,12 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
         except SystemExit as e:
             code = int(e.code or 0)
     return code, out.getvalue(), err.getvalue()
+
+
+def not_intel(testcase) -> None:
+    """These fixtures describe an NVIDIA PC (catalog(HW_12)). Runner.intel_chosen asks the machine that runs the test, so on a box with an
+    Intel Arc (p1006) the launch became an Intel one and the plan words changed. Patched for the length of the test."""
+    from strata_cli.launch.runner import Runner
+    p = mock.patch.object(Runner, "intel_chosen", lambda self: False)
+    p.start()
+    testcase.addCleanup(p.stop)

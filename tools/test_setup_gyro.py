@@ -76,7 +76,7 @@ class GyroCatalog(unittest.TestCase):
         fam = next(f for f in s.model_table(hardware(16.0, 16.0)) if f["family"] == "gyro")
         by = {x["model"]: x for x in fam["sizes"]}
         self.assertEqual(by["Gyro-S"]["on_this_pc"], "fits")
-        self.assertEqual(by["Gyro-M"]["on_this_pc"], "tight")
+        self.assertEqual(by["Gyro-M"]["on_this_pc"], "may run slower")           # 35 GB of VRAM + RAM together, this PC has 32
         self.assertTrue(by["Gyro-S"]["images"])
 
     def test_mcp_table_gives_ram_plus_vram_without_the_ngram_table(self):

@@ -139,7 +139,7 @@ class CatalogRules(unittest.TestCase):
         self.assertEqual(gyro["memoryGb"], 27.6)
 
     def test_a_mac_is_judged_by_unified_memory_and_the_words_follow(self):
-        hw = {"ram_gb": 32.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
+        hw = {"ram_gb": 32.0, "disk_free_gb": 5000.0, "os": "Darwin", "cpu": {"avx2": None, "name": "Apple M4"}, "mac": {"chip": "Apple M4", "macos": "27.2", "unified_gb": 32.0},
               "gpus": [{"index": 0, "name": "Apple M4", "vendor": "apple", "vram_gb": 0.0, "unified_gb": 32.0, "usable": True}]}
         with Home() as h:
             cat = catalog(hw)
@@ -154,11 +154,11 @@ class CatalogRules(unittest.TestCase):
             self.assertEqual([r.model for r in rows.values() if r.recommended], ["Q2_0"])
             for name in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw"):            # a 32 GB Mac: said plainly (mostly read from the SSD), never refused
                 self.assertEqual(rows[name].family, "deepseek41")
-                self.assertEqual(rows[name].verdict, "tight")
+                self.assertEqual((rows[name].verdict, rows[name].words), ("slower", "may run slower"))
                 self.assertFalse(rows[name].images)
                 self.assertGreater(rows[name].spill_gb, 100)
-            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("fits", "fits, part read from SSD"))
-            self.assertEqual(rows["IQ3_S"].verdict, "tight")
+            self.assertEqual((rows["Q2_0"].verdict, rows["Q2_0"].words), ("slower", "may run slower"))
+            self.assertEqual(rows["IQ3_S"].verdict, "slower")
             self.assertGreater(rows["IQ3_S"].spill_gb, 10)
             self.assertEqual(cat.max_context("qwen", "Q2_0", hw), 32768)
             self.assertEqual(cat.computer().line(), "Apple M4 · 32 GB unified memory · " + cat.computer().line().split(" · ")[-1])
@@ -167,10 +167,11 @@ class CatalogRules(unittest.TestCase):
 
     def test_verdict_words_never_block(self):
         self.assertEqual(verdict("fits")[0], "fits")
-        self.assertEqual(verdict("does not fit")[0], "no")
-        self.assertIn("can still try", verdict("does not fit")[1])
+        self.assertEqual(verdict("does not fit"), ("slower", "may run slower"))              # an older Control's words, read as the one label
         self.assertEqual(verdict("tight")[0], "tight")
-        self.assertEqual(verdict("fits in the low-RAM mode (slower)")[0], "fits")
+        self.assertEqual(verdict("fits"), ("fits", "fits"))
+        self.assertEqual(verdict("may run slower"), ("slower", "may run slower"))
+        self.assertEqual(verdict("tight: it needs about 300 GB of free disk space (the rest of the download) and this computer has 20 GB free (may run slower)")[1], "tight: needs more disk space")
 
     def test_resolve_names_and_closest(self):
         with Home():
@@ -192,7 +193,7 @@ class CatalogRules(unittest.TestCase):
         with Home():
             rows = catalog({**HW_12, "ram_gb": 32.0}).rows()
             big = [r for r in rows if r.model == "IQ3_S" and r.family == "qwen"][0]
-            self.assertIn(big.verdict, ("no", "tight"))
+            self.assertEqual((big.verdict, big.words), ("slower", "may run slower"))          # 51 GB of weights against 32 GB of RAM + a 12 GB card
 
     def test_kv_figures(self):
         with Home():
@@ -518,6 +519,10 @@ class SetupArgs(unittest.TestCase):
 
 
 class AdoptRules(unittest.TestCase):
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def files(self, root: Path, shards=2, pack=True, tokenizer=True, mtp=True):
         d = root / "Strata-data"
         m = d / "models" / "IQ3_XXS"
@@ -758,7 +763,9 @@ class AdoptRules(unittest.TestCase):
             self.assertTrue(store.summary(store.load("Fastest"))["tuned"])
 
     def test_runner_adopts_when_setup_cannot_handle_the_card(self):
-        with Home() as h:
+        # the engine make is read from the machine (adopt_prepared_files asks engine_component.detect_backend); on a box with an Intel Arc the
+        # second launch below would be refused as an Intel one. This case is the "no NVIDIA driver" one.
+        with Home() as h, mock.patch("strata_control.engine_component.detect_backend", lambda environ=None: ("cuda", "test")):
             d, m = self.files(h.base)
             cat = catalog(HW_12)
             s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, data_dir=str(d))
@@ -828,6 +835,10 @@ class AccessRules(unittest.TestCase):
                          "Your quick Tunnel has been created: https://x.trycloudflare.com")
         self.assertEqual(access.TUNNEL_URL.search("| https://calm-river-1234.trycloudflare.com |").group(0),
                          "https://calm-river-1234.trycloudflare.com")
+
+
+# a person at Git Bash: no CI variable (a CI runner sets one, and strata launch then never asks) and no STRATA_NO_PROMPT
+GIT_BASH_ENV = {"MSYSTEM": "MINGW64", "CI": "", "STRATA_NO_PROMPT": ""}
 
 
 class FlagsCommand(unittest.TestCase):
@@ -992,7 +1003,7 @@ class FlagsCommand(unittest.TestCase):
 
     def test_git_bash_without_a_tty_goes_on_in_plain_questions(self):
         fake = Result("launch-x", ["http://127.0.0.1:8080"], None, None, [], "/x")
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", return_value="y"),                 mock.patch.object(Runner, "run", return_value=fake) as run:
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 0, err)
         run.assert_called_once()
@@ -1000,13 +1011,13 @@ class FlagsCommand(unittest.TestCase):
         self.assertIn("winpty strata launch", out + err)
 
     def test_git_bash_answering_no_changes_nothing(self):
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", return_value="n"),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 0, err)
         self.assertIn("Nothing was changed", out + err)
 
     def test_a_pipe_with_nobody_to_answer_still_says_what_to_name(self):
-        with mock.patch.dict(os.environ, {"MSYSTEM": "MINGW64"}), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
+        with mock.patch.dict(os.environ, GIT_BASH_ENV), mock.patch("builtins.input", side_effect=EOFError),                 mock.patch.object(Runner, "run", side_effect=AssertionError("must not run")):
             code, out, err = run_cli(["launch"])
         self.assertEqual(code, 2)
         self.assertIn("--preset NAME", err)
@@ -1052,8 +1063,10 @@ class FlagsCommand(unittest.TestCase):
         self.assertTrue(any("cannot read pictures" in w for w in p["warnings"]))
 
     def test_does_not_fit_is_a_warning_with_the_reason(self):
-        p = self.plan("--model", "nvfp4")
-        self.assertTrue(any("does not fit" in w for w in p["warnings"]))
+        p = self.plan("--model", "q8_0")                                  # 129 GB of weights against 64 GB of RAM + a 12 GB card
+        self.assertTrue(any(w.endswith(": may run slower.") for w in p["warnings"]), p["warnings"])
+        p = self.plan("--model", "iq3_s")                                 # 54.8 GB: fits
+        self.assertFalse(any("may run slower" in w for w in p["warnings"]))
 
     def test_human_plan_changes_nothing(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "q2_0", "--save-preset", "X"])

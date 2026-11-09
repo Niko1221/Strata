@@ -12,11 +12,13 @@ import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 
 const root = resolve(import.meta.dirname, '..');
-// the text arrives as JSON in argv[2], so no shell or platform touches its line ends
+// the text arrives as JSON in a file named by argv[2], so no shell or platform touches its line ends (and a long text is not cut by
+// the command-line length limit: Windows allows about 32 KB, which the 1500-section case below passes)
 const entry = [
   "import React from 'react'; import { renderToStaticMarkup } from 'react-dom/server';",
   "import { Markdown } from './src/components/Markdown.tsx'; import { splitPreview } from './src/lib/preview-render.ts';",
-  'const text = JSON.parse(process.argv[2]);',
+  "import { readFileSync } from 'node:fs';",
+  "const text = JSON.parse(readFileSync(process.argv[2], 'utf8'));",
   'console.log(JSON.stringify({ html: renderToStaticMarkup(React.createElement(Markdown, { text })), slices: splitPreview(text).map(s => s.text) }));',
 ].join('\n');
 const bundle = await build({
@@ -30,8 +32,11 @@ const bundle = await build({
 const dir = mkdtempSync(join(tmpdir(), 'strata-crlf-'));
 const file = join(dir, 'render.cjs');
 writeFileSync(file, bundle.outputFiles[0].text);
+let renders = 0;
 function render(text) {
-  const run = spawnSync(process.execPath, ['--max-old-space-size=200', file, JSON.stringify(text)], { cwd: root, encoding: 'utf8', timeout: 20000, maxBuffer: 20 * 1024 * 1024 });
+  const input = join(dir, `text-${renders++}.json`);
+  writeFileSync(input, JSON.stringify(text));
+  const run = spawnSync(process.execPath, ['--max-old-space-size=200', file, input], { cwd: root, encoding: 'utf8', timeout: 20000, maxBuffer: 20 * 1024 * 1024 });
   return { ok: run.status === 0 && !run.error, out: run.stdout, err: (run.stderr || '') + (run.error?.message ?? ''), status: run.status, signal: run.signal };
 }
 
