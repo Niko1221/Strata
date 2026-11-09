@@ -15,6 +15,10 @@ Typical use (the owner's offline machine; replace ``KEYDIR`` with a folder that 
         --engine RELEASE/engine --control RELEASE/control [--app-json tauri-latest.json] [--channel stable] [--expires-days 365]
     python packaging/feed_tool.py verify-feed RELEASE --pub KEYDIR/feed-key.pub.json
 
+A new model ships as a signed feed update with the optional `models` member (packaging/UPDATES.md): write one <id>.entry.json for each model in a folder
+(`model-files` prints the size and SHA-256 of the real files for it) and pass the folder as `build-feed --models FOLDER`; `verify-feed` lists the models and
+fails when Control would leave one out.
+
 ``keygen`` never prints the secret and refuses to write inside a git checkout or over an existing file. The public file's
 entry goes into ``strata_control/update_keys.json`` (``keys``) once, in the commit that ships the first signed release.
 The Tauri updater key is a different key (minisign, made by ``tauri signer generate``); its public half goes in
@@ -90,7 +94,7 @@ def sign_package(folder: Path, key: dict) -> str:
     payload = ec.signing_payload(manifest)
     manifest["signature"] = signing.sign_bytes(key, payload)
     path.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
-    ec.read_manifest(Path(folder))                      # still a valid manifest
+    ec.read_manifest_any(Path(folder))                      # still a valid manifest
     signing.verify_bytes({key["key_id"]: __import__("base64").b64decode(key["public"])}, payload, manifest["signature"])
     return _sha256(path)
 
@@ -158,9 +162,12 @@ def _tree(folder: Path, *, links: bool = False) -> list[tuple[str, Path]]:
 
 
 def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str = "engine/", prefix: str = "strata-engine") -> dict:
-    """Archive a (signed) engine package folder and return its feed entry. The archive holds the folder's files at its root."""
+    """Archive a (signed) engine package folder and return its feed entry. The archive holds the folder's files at its root. The package of a model shape (package_engine.py --shape)
+    gets its component's name as the archive prefix (strata-q4-lite-<version>-...) and its entry names the ``shape``: it goes into the feed member ``shape_engines``."""
     folder = Path(folder)
-    component = ec.read_manifest(folder)
+    component = ec.read_manifest_any(folder)
+    if component.shape and prefix == "strata-engine":
+        prefix = component.id
     files = _tree(folder)
     installed = sum(p.stat().st_size for _, p in files)
     name = f"{prefix}-{folder.name}.{fmt}"        # prefix strata-dsv41 for the separate DeepSeek engine packages
@@ -171,6 +178,8 @@ def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str
              "min_runtime": component.min_runtime, "build_id": component.build_id, "format": fmt,
              "url": f"{url_prefix}{name}", "size": archive.stat().st_size, "sha256": _sha256(archive),
              "manifest_sha256": _sha256(folder / ec.MANIFEST), "installed_bytes": installed, "notes": component.notes}
+    if component.shape:
+        entry["shape"] = component.shape
     (Path(out) / (name + ".entry.json")).write_text(json.dumps(entry, indent=1) + "\n", encoding="utf-8")
     return entry
 
@@ -203,9 +212,21 @@ def pack_drafter(pack: Path, out: Path, *, version: str, backends: list[str], ur
     return entry
 
 
+def model_files(paths: list[Path], repo_dir: str = "") -> list[dict]:
+    """The `files` pins of a models entry from the real files: name, exact size, SHA-256 (and `path` when they sit in a folder of the repository)."""
+    out = []
+    for p in map(Path, paths):
+        item = {"name": p.name, "size": p.stat().st_size, "sha256": _sha256(p)}
+        if repo_dir:
+            item["path"] = f"{repo_dir.strip('/')}/{p.name}"
+        out.append(item)
+    return out
+
+
 def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", engine_dir: Path | None = None,
                control_dir: Path | None = None, app_json: Path | None = None, expires_days: int | None = None,
-               now: dt.datetime | None = None, dsv41_dir: Path | None = None, drafters_dir: Path | None = None) -> dict:
+               now: dt.datetime | None = None, dsv41_dir: Path | None = None, drafters_dir: Path | None = None, models_dir: Path | None = None,
+               shapes_dir: Path | None = None) -> dict:
     now = now or dt.datetime.now(dt.timezone.utc)
     install_manifest = ""
     document: dict = {"schema_version": feedmod.SCHEMA_VERSION, "feed": "strata-updates", "channel": channel,
@@ -217,9 +238,36 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     if dsv41_dir:
         document["dsv41"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
                                           for p in sorted(Path(dsv41_dir).glob("*.entry.json"))]}
+    if shapes_dir:                                # the engines of model shapes (feed member shape_engines): each entry must name a shape
+        entries = []
+        for p in sorted(Path(shapes_dir).glob("*.entry.json")):
+            item = json.loads(p.read_text(encoding="utf-8"))
+            if not item.get("shape"):
+                raise SystemExit(f"{p.name} names no shape: pack it from a package made with package_engine.py --shape")
+            entries.append(item)
+        document["shape_engines"] = {"packages": entries}
     if drafters_dir:
         document["drafters"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
                                              for p in sorted(Path(drafters_dir).glob("*.entry.json"))]}
+    if models_dir:                                # the model list (feed member models): every entry must be one Control will keep, or the build stops
+        packages = []
+        for p in sorted(Path(models_dir).glob("*.entry.json")):
+            item = json.loads(p.read_text(encoding="utf-8"))
+            if "[FILL" in json.dumps(item):             # a placeholder from make_model_release.py that nobody filled in would reach people's screens
+                raise SystemExit(f"{p.name}: still has a [FILL: ...] value: fill it in first")
+            try:
+                feedmod._model_entry(item)
+            except feedmod.FeedError as exc:
+                raise SystemExit(f"{p.name}: {exc}")
+            packages.append(item)
+        if len({m["id"] for m in packages}) != len(packages):
+            raise SystemExit("two model entries have the same id")
+        document["models"] = {"packages": packages}
+    wanted = {m["family"][len("qwen4exp_"):] for m in (document.get("models") or {}).get("packages", []) if str(m.get("family", "")).startswith("qwen4exp_")}
+    have = {e["shape"] for e in (document.get("shape_engines") or {}).get("packages", [])}
+    if wanted - have:                             # a model of its own shape with no engine in the feed could be listed and never run
+        raise SystemExit("the feed lists a model for the shape " + ", ".join(sorted(wanted - have)) + " but no engine for it (build-feed --shapes FOLDER, with the .entry.json "
+                         "that pack-engine wrote for a package made with package_engine.py --shape)")
     if control_dir:
         entries = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(Path(control_dir).glob("*.entry.json"))]
         versions = {e["version"] for e in entries}
@@ -248,8 +296,10 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
         latest.parent.mkdir(parents=True, exist_ok=True)
         latest.write_text(json.dumps({k: v for k, v in document["app"].items()}, indent=1) + "\n", encoding="utf-8")
     # a parse of what was written is the last check: a feed this tool makes must be a feed Control accepts
-    feedmod.verify_and_parse(payload, json.dumps(signature).encode(), source=str(Path(out) / feedmod.FEED_NAME),
-                             trusted={key["key_id"]: __import__("base64").b64decode(key["public"])}, now=now)
+    checked = feedmod.verify_and_parse(payload, json.dumps(signature).encode(), source=str(Path(out) / feedmod.FEED_NAME),
+                                       trusted={key["key_id"]: __import__("base64").b64decode(key["public"])}, now=now)
+    if checked.models_dropped or len(checked.models) != len((document.get("models") or {}).get("packages", [])):
+        raise SystemExit("the feed was written, but Control would leave out a model: " + " ".join(checked.models_dropped))
     return document
 
 
@@ -337,6 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     pd.add_argument("--url-prefix", default="", help='"" for flat GitHub release assets')
     pd.add_argument("--base", default="")
     pd.add_argument("--licence", default="")
+    pm = sub.add_parser("model-files", help="print the size and SHA-256 of model files as the `files` list of a feed models entry")
+    pm.add_argument("files", type=Path, nargs="+")
+    pm.add_argument("--repo-dir", default="", help="the folder of the Hugging Face repository the files sit in (becomes each file's path); default: the top")
     pc = sub.add_parser("pack-control")
     pc.add_argument("folder", type=Path)
     pc.add_argument("--out", type=Path, required=True)
@@ -351,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--channel", default="stable")
     bf.add_argument("--engine", type=Path)
     bf.add_argument("--dsv41", type=Path, help="folder of the DeepSeek engine packages' .entry.json files (feed member dsv41)")
+    bf.add_argument("--shapes", type=Path, help="folder of the model-shape engines' .entry.json files (feed member shape_engines; pack-engine writes them for a package made with package_engine.py --shape)")
+    bf.add_argument("--models", type=Path, help="folder of the models' <id>.entry.json files (feed member models: the model list setup and the screens show after the built-in ones)")
     bf.add_argument("--drafters", type=Path, help="folder of the DFlash2 drafters' .entry.json files (feed member drafters; pack-drafter writes them)")
     bf.add_argument("--control", type=Path)
     bf.add_argument("--app-json", type=Path)
@@ -381,14 +436,16 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "pack-drafter":
         entry = pack_drafter(a.pack, a.out, version=a.version, backends=[b for b in a.backends.split(",") if b], url_prefix=a.url_prefix, base=a.base, licence=a.licence)
         print(json.dumps({k: entry[k] for k in ("name", "version", "size", "sha256", "backends")}, indent=1))
+    elif a.cmd == "model-files":
+        print(json.dumps(model_files(a.files, a.repo_dir), indent=1))
     elif a.cmd == "pack-control":
         entry = pack_control(a.folder, a.out, version=a.version, platform=a.platform, fmt=a.format, url_prefix=a.url_prefix)
         print(json.dumps({k: entry[k] for k in ("version", "platform", "size", "sha256")}, indent=1))
     elif a.cmd == "build-feed":
         doc = build_feed(a.out, key=_load_key(a.key), sequence=a.sequence, channel=a.channel, engine_dir=a.engine,
-                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, dsv41_dir=a.dsv41, drafters_dir=a.drafters)
+                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, dsv41_dir=a.dsv41, drafters_dir=a.drafters, models_dir=a.models, shapes_dir=a.shapes)
         print(f"wrote {a.out / feedmod.FEED_NAME} (+ .sig); engines {len((doc.get('engine') or {}).get('packages', []))}, "
-              f"deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, drafters {len((doc.get('drafters') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
+              f"deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, shape engines {len((doc.get('shape_engines') or {}).get('packages', []))}, drafters {len((doc.get('drafters') or {}).get('packages', []))}, models {len((doc.get('models') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
     elif a.cmd == "set-app-platform":
         url = a.url or f"https://github.com/Niko1221/Strata/releases/latest/download/{a.archive.name}"
         entry = set_app_platform(a.app_json, target=a.target, archive=a.archive, signature_file=a.sig, url=url, version=a.version,
@@ -398,7 +455,12 @@ def main(argv: list[str] | None = None) -> int:
         trusted = signing.load_trusted_keys(a.pub, environ={})
         loaded = feedmod.fetch(a.source, trusted)
         print(f"ok: sequence {loaded.sequence}, channel {loaded.channel}, signed by {loaded.key_id}, "
-              f"{len(loaded.engine)} engine packages, control {len(loaded.control)}, app {'yes' if loaded.app else 'no'}")
+              f"{len(loaded.engine)} engine packages, control {len(loaded.control)}, app {'yes' if loaded.app else 'no'}"
+              + (f", {len(loaded.shape_engines)} shape engines ({', '.join(sorted({p.shape for p in loaded.shape_engines}))})" if loaded.shape_engines else "")
+              + (f", {len(loaded.models)} models ({', '.join(m.id for m in loaded.models)})" if loaded.models else ""))
+        if loaded.models_dropped:                 # Control would skip these: a signed feed must not carry them
+            print(*loaded.models_dropped, sep=chr(10), file=sys.stderr)
+            return 3
     return 0
 
 

@@ -1,6 +1,6 @@
 """q36_multilingual_prompts.py TOKENIZER.json OUT.ids : multilingual / code chat prompts (ChatML, thinking off) as id lists, and the share of token ids
 above a few draft-vocab limits in the model's own tokens (the texts below)."""
-import sys, json
+import sys
 from tokenizers import Tokenizer
 
 tok = Tokenizer.from_file(sys.argv[1])

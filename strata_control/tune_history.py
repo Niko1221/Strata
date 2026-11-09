@@ -27,13 +27,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 from strata_control import sysinfo
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 SCHEMA_VERSION = 1
 

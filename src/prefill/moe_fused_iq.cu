@@ -76,7 +76,11 @@ constexpr bool T75_DEV = true;    // the Q2_0 stage epilogue in native_kernel: f
 constexpr int ASTAGES_DEV = ASTAGES;
 constexpr bool T75_DEV = false;
 #endif
-constexpr int GU_ROWS_K = 2560, D_ROWS_K = 640;   // K of gate/up (n_embd) and of down (n_ff)
+constexpr int GU_ROWS_K = kMoeEmbd, D_ROWS_K = kMoeFF;   // K of gate/up (n_embd) and of down (n_ff): the compiled geometry's (2560 and 640 for Flash-Next)
+// the weight rows of a product: gate/up 2 n_ff (1280), down n_embd (2560)
+constexpr int GU_ROWS_N = kMoeGuRows, D_ROWS_N = kMoeEmbd;
+constexpr int H_ROW_BYTES = D_ROWS_K / 64 * AB;   // bytes of a row of H in the int8 activation layout (800 for Flash-Next)
+static_assert(GU_ROWS_K % 256 == 0 && D_ROWS_K % 64 == 0, "the native expert kernels: K of gate/up is whole 256-value super-blocks, K of down whole 64-value stages");
 
 // the formats (ggml type ids)
 constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_S = GGML_TYPE_IQ2_S,
@@ -587,7 +591,8 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
     constexpr int WT_BYTES = WR * WLDX, WS_FLOATS = F16 ? 0 : WR * 4, ACT_STAGE = TR * AB;
     constexpr bool TWO_PASS = NT != THREADS;   // the two-pass loads (load_unit_l) only in the opt-in NT = 256 kernels
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;   // 64-value stages along K
-    constexpr int NFB = (GU ? 1280 : 2560) / WR;          // weight-row blocks per tile
+    constexpr int NFB = (GU ? GU_ROWS_N : D_ROWS_N) / WR;          // weight-row blocks per tile
+    static_assert(GU_ROWS_N % WR == 0 && D_ROWS_N % WR == 0, "the weight rows of a product are whole work items (2 n_ff and n_embd are multiples of 64 WW)");
     constexpr int ACT_LD = NS * AB;                       // bytes per activation row: 3200 (a token), 800 (a row's H)
     constexpr int BS = block_bytes(WT);
     constexpr bool K16 = per16(WT);
@@ -849,7 +854,7 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
                     const float inv = am > 0.0f ? 127.0f / am : 0.0f;
                     const int r = nb0 + 8 * n + 2 * tig + c;
                     if (r < nrows) {
-                        uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (blk >> 1) * AB;
+                        uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (blk >> 1) * AB;
                         const int hh = blk & 1;
 #pragma unroll
                         for (int i = 0; i < 4; ++i) o[32 * hh + 8 * i + g] = (uint8_t) (int8_t) __float2int_rn(h[i] * inv);
@@ -866,7 +871,7 @@ native_kernel(const BatchOf<NT> b, const NativeGeom geo, const Tables tb, const 
 #pragma unroll
                     for (int q = 0; q < 4; ++q) {
                         const int r = nb0 + 8 * n + 2 * tig + (q & 1);
-                        if (r < nrows) dm[(size_t) (row0 + r) * 2560 + rbase + 64 * wf + 16 * i + 8 * (q >> 1) + g] = acc[i][n][q];
+                        if (r < nrows) dm[(size_t) (row0 + r) * kMoeEmbd + rbase + 64 * wf + 16 * i + 8 * (q >> 1) + g] = acc[i][n][q];
                     }
                 }
         }
@@ -927,7 +932,7 @@ native_ws_kernel(const WideBatch b, const NativeGeom geo, const Tables tb, const
     constexpr int WS_UPT = 256 / WS_PROD;   // decode units (sub-blocks) a producer thread takes per stage
     constexpr int TR = 64, WR = 128, WW = 2;
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;
-    constexpr int NFB = (GU ? 1280 : 2560) / WR;
+    constexpr int NFB = (GU ? GU_ROWS_N : D_ROWS_N) / WR;
     constexpr int ACT_LD = NS * AB;
     constexpr int BS = block_bytes(WT);
     constexpr int WT_BYTES = WR * WLDH, ACT_STAGE = TR * AB;
@@ -1177,7 +1182,7 @@ native_ws_kernel(const WideBatch b, const NativeGeom geo, const Tables tb, const
                     const float inv = am > 0.0f ? 127.0f / am : 0.0f;
                     const int r = nb0 + 8 * n + 2 * tig + c;
                     if (r < nrows) {
-                        uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (blk >> 1) * AB;
+                        uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (blk >> 1) * AB;
                         const int hh = blk & 1;
 #pragma unroll
                         for (int i = 0; i < 4; ++i) o[32 * hh + 8 * i + g] = (uint8_t) (int8_t) __float2int_rn(h[i] * inv);
@@ -1195,7 +1200,7 @@ native_ws_kernel(const WideBatch b, const NativeGeom geo, const Tables tb, const
 #pragma unroll
                     for (int c = 0; c < 4; ++c) {
                         const int r = nb0 + 8 * n + 2 * tig + (c & 1);
-                        if (r < nrows) dm[(size_t) (row0 + r) * 2560 + rbase + 64 * wf + 16 * i + 8 * (c >> 1) + g] = acc[i][n][c];
+                        if (r < nrows) dm[(size_t) (row0 + r) * kMoeEmbd + rbase + 64 * wf + 16 * i + 8 * (c >> 1) + g] = acc[i][n][c];
                     }
                 }
         }
@@ -1313,7 +1318,7 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
                   const int32_t* __restrict__ src, uint8_t* __restrict__ out, float* __restrict__ dm) {
 #if STRATA_NAT_WMMA
     constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;  // 64-value stages along K
-    constexpr int NFB = (GU ? 1280 : 2560) / NW_ROWS;     // work items per tile
+    constexpr int NFB = (GU ? GU_ROWS_N : D_ROWS_N) / NW_ROWS;     // work items per tile
     constexpr int ACT_LD = NS * AB;
     constexpr int BS = block_bytes(WT);
     constexpr bool K16 = per16(WT);
@@ -1511,7 +1516,7 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
 #pragma unroll 8
                     for (int j = 0; j < 32; ++j) am = fmaxf(am, fabsf(hs[r][32 * hh + j]));
                     const float inv = am > 0.0f ? 127.0f / am : 0.0f;
-                    uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (size_t) fb * AB;
+                    uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (size_t) fb * AB;
                     uint32_t wd[8] = {};
                     int csum = 0;
 #pragma unroll
@@ -1537,11 +1542,11 @@ native_w11_kernel(const Batch b, const NativeGeom geo, const Tables tb, const ui
                         if (r < nrows) {
 #if STRATA_NAT_W12
                             // columns rbase + 32 wm + 16 mt + 8 hi .. + 7: contiguous, 32-byte aligned (dm: 16, checked in experts_native)
-                            float4* d = reinterpret_cast<float4*>(dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + 8 * hi);
+                            float4* d = reinterpret_cast<float4*>(dm + (size_t) (row0 + r) * kMoeEmbd + rbase + 32 * wm + 16 * mt + 8 * hi);
                             d[0] = make_float4(acc[mt][nt][0], acc[mt][nt][1], acc[mt][nt][2], acc[mt][nt][3]);
                             d[1] = make_float4(acc[mt][nt][4], acc[mt][nt][5], acc[mt][nt][6], acc[mt][nt][7]);
 #else
-                            float* d = dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + hi;
+                            float* d = dm + (size_t) (row0 + r) * kMoeEmbd + rbase + 32 * wm + 16 * mt + hi;
 #pragma unroll
                             for (int i = 0; i < 8; ++i) d[2 * i] = acc[mt][nt][i];
 #endif
@@ -2127,9 +2132,9 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
             std::fprintf(stderr, "prefill fused experts (native): the down rows (%p) must be 16-byte aligned\n", (void*) dm);
             std::exit(1);
         }
-        const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / NW_ROWS),
+        const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / NW_ROWS),
                                                            (int64_t) d.sms * (occ_gu ? occ_blocks(d.w12, g.gu_type, true) : wgp_blocks(d.occ)));
-        const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / NW_ROWS),
+        const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / NW_ROWS),
                                                           (int64_t) d.sms * (occ_d ? occ_blocks(d.w12, g.d_type, false) : wgp_blocks(d.occ)));
         const uint8_t* xa8 = (const uint8_t*) xa;
         uint8_t* ha8 = (uint8_t*) ha;
@@ -2206,8 +2211,8 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww)), (int64_t) d.sms * d.occ);
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww)), (int64_t) d.sms * d.occ);
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(ww)), (int64_t) d.sms * d.occ);
     switch (g.gu_type) {
         case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_XS: launch<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
@@ -2240,8 +2245,8 @@ void experts_native(const WideBatch& b, const NativeGeom& g, int n_expert, int64
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
     const bool ws = d.ws;
     const int occ = ws ? 1 : d.occ_nt;
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(2)), (int64_t) d.sms * occ);
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(2)), (int64_t) d.sms * occ);
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS_N / weight_rows(2)), (int64_t) d.sms * occ);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS_N / weight_rows(2)), (int64_t) d.sms * occ);
     switch (g.gu_type) {
         case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ws, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_XS: launch<T_IQ2_XS, true>(ws, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;

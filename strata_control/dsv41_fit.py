@@ -20,7 +20,6 @@ setup.py, tools/strata_mcp.py and strata_cli/launch import it.  Recommend, never
 from __future__ import annotations
 
 import os
-import platform
 from strata_control import sysinfo
 import sys
 from typing import Any

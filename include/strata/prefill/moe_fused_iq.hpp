@@ -19,7 +19,7 @@
 
 namespace strata::prefill::fused {
 
-/// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read; n_embd 2560, n_ff 640).
+/// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read; n_embd and n_ff are the compiled geometry's: 2560 and 640 for Flash-Next).
 struct NativeGeom {
     int gu_type = -1, d_type = -1;    ///< ggml types
     size_t gu_row = 0, d_row = 0;     ///< bytes per gate/up row and per down row
@@ -37,7 +37,7 @@ bool gfx12_iq2s_default();
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream);
 
 /// experts() for native blobs: b.blob[e - e0] is the native blob of expert e (gate at 0, up at g.up_off, down at
-/// g.down_off; 2-byte aligned).  `xa` from quantize_act_native; H in `ha` (act_bytes(n, 640)); down into `dm` at the
+/// g.down_off; 2-byte aligned).  `xa` from quantize_act_native; H in `ha` (act_bytes(n, n_ff)); down into `dm` at the
 /// rows of `group`.  `dm` 16-byte aligned (gfx12 stores float4; checked there - the prompt path's buffers are 256-aligned
 /// through Alloc's 256-byte takes from a 256-aligned cache slot or cudaMalloc).
 void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
