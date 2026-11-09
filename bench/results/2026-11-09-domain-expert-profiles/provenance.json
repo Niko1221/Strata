@@ -1,0 +1,63 @@
+{
+  "author": "Francisco Angulo de Lafuente",
+  "orcid": "https://orcid.org/0009-0001-1634-7063",
+  "engine": "Strata0.1.59 release binary, app0.2.13",
+  "source_commit": "37d5c9e84514150ee74d69f4f0f0466ba4b91b51",
+  "analysis_base_commit": "f33c8c30588ff00e24b6b63bad0bf6a14da19081",
+  "engine_source_difference": "Only eight translated README files differ; no engine or tool source change.",
+  "hardware": {
+    "gpu": "one NVIDIA RTX3090,24GiB;1582expert-cache slots(2.60GiB)",
+    "os": "Debian13",
+    "host_ram_gib": 31.3,
+    "pcie_probe_gbps": 0.3,
+    "power_limit_w": 280,
+    "pcie_link_width": 1
+  },
+  "model": "Qwen3.8-Flash-Next GSQ RCO IQ3_XXS",
+  "model_revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "collection": {
+    "date_utc": "2026-11-09",
+    "sampling_temperature": 0,
+    "max_new_tokens": 250,
+    "spec": 4,
+    "public_corpus": "bench/profile_corpus.json",
+    "actual_requests": 37,
+    "planned_requests": 45,
+    "generated_tokens": 8280,
+    "all_runs_included": true,
+    "partial_reason": "Each bounded GPU run stopped before all45 corpus requests completed."
+  },
+  "files": {
+    "data/run-1.trace.gz": {
+      "sha256": "38db77abdc2be3f8cadde2c4d6c60d7844bfa95d78219723cf2002219dae9763",
+      "uncompressed_sha256": "17ff3ab256b9efc2f3fdab6a8a5d5c797a181433fd44beaad2fd92a7d3c4163f",
+      "uncompressed_bytes": 26509824
+    },
+    "data/run-1.engine.txt": {
+      "sha256": "2fe0ab354bd187796b350bd2be7cf41b37f97718a49d0619c9f7342e4b3b7400"
+    },
+    "data/run-2.trace.gz": {
+      "sha256": "30cec2f38b9bb54b361299bf5c9ae1671fa3bb5e6f0c16c3fd0d00937d7d5ddc",
+      "uncompressed_sha256": "43d076554398ddd8c398eaabb155b09c90bbd74ef4d690628785c015414e535b",
+      "uncompressed_bytes": 24516096
+    },
+    "data/run-2.engine.txt": {
+      "sha256": "f237157a2009fa0e1d7e6073821bf7c04365c49a905301f7084940d2feb52818"
+    },
+    "manifest.json": {
+      "sha256": "302a941b5e2c9de243acb8321428b38b30300216b7e7ed01aeb971a23070b036"
+    },
+    "model-source.json": {
+      "sha256": "4c11beae2055edfaf739a04733a131cd8ccffb7bef3bbe3b625af08b07ab5634"
+    }
+  },
+  "labels": "Coarse groups from the original study: code,STEM,languages,other. These are known labels,not classifier predictions.",
+  "claim_scope": "Fixed-routing coverage and reusable profile construction only; no live policy speed,quality,or12GB-device claim.",
+  "licenses": {
+    "engine_and_corpus": "Strata MIT License",
+    "measurement_data": "MIT License;no model weights included"
+  },
+  "model_repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "model_revision_source": "Local Hugging Face downloadmetadata, matched against pinned source API in model-source.json",
+  "engine_binary_sha256": "0ba914b28df1c8e09c0b5209c2ca6040c75fb650a7408ff3d9ef3ad159a13eb9"
+}
