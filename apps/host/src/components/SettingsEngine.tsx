@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { localeTag, tr } from '../lib/i18n';
 import { useNative } from '../lib/native';
-import { changeInstalledEngine, engineMake, engineSize, modelsNeedingNewer, useEngineList, type InstalledEngine } from '../lib/engines';
+import { changeInstalledEngine, engineGroupTitle, engineMake, engineSize, modelsNeedingNewer, useEngineList, type InstalledEngine } from '../lib/engines';
 import { ApiError } from '../lib/client';
 import { Btn, Dialog, ErrorNotice, Icon } from './ui';
 
@@ -76,7 +76,7 @@ export function SettingsEngine() {
       {failed ? <p className="small inline-error" role="alert">{tr("The installed engines couldn't be read. Try again in a moment.")}</p> : null}
       {list?.available && count === 0 ? <p className="small muted">{tr("No engine is installed on this computer yet. Update in About downloads the right one.")}</p> : null}
       {groups.map(group => <div key={group.family} className="engine-group">
-        {groups.length > 1 ? <h3 className="engine-group__title">{tr(group.title)}</h3> : null}
+        {groups.length > 1 ? <h3 className="engine-group__title">{group.title ? tr(group.title) : engineGroupTitle(group, native?.catalog?.families)}</h3> : null}
         {group.engines.map(row)}
       </div>)}
       {count > 0 ? <p className="small muted engine-total">{tr("Engines take {0} on this computer.", [engineSize(list?.total_bytes ?? 0, localeTag())])}</p> : null}
