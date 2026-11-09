@@ -91,7 +91,10 @@ explicit opt-in token.
 ### Correctness and limitations
 
 Not measured: answer correctness; this is a speed suite. Not tested: HIP build (no toolchain here), Windows package (no
-Windows machine), any card family other than four sm_75 RTX 2080 Ti. This set's 149 GB of experts do not fit in the box's
-121 GiB of RAM beside the dense weights, so the CPU lane reads them from disk instead of from RAM copies (the 2.00 bpw set,
-at 71 GB of CPU-lane experts, is copied into RAM at load) - that is the structural reason its decode is the slowest of the
-three sets here, and it is reported, not tuned away.
+Windows machine), any card family other than four sm_75 RTX 2080 Ti.
+
+This set is **not** disk-streamed. The engine's own load decision copies its CPU-lane experts into RAM (80.2 GB, 8,222
+experts, 257 s) exactly as it does for the 2.00 bpw set (70.9 GB, 8,291 experts, 181 s), keeps the experts that do not fit in
+VRAM file-backed with the most-routed read ahead (79.4 GB against 70.5 GB), and reads the Engram table from the file in both.
+Its decode is the slowest of the three because a routed expert is 9.71 MB here against 8.55 MB on the 2.00 bpw set (+13.5% of
+bytes through the same 14-thread lane), and because a larger share of experts sits outside VRAM — measured, not tuned away.
