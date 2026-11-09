@@ -150,7 +150,7 @@ class Base(unittest.TestCase):
         self.tmp.cleanup()
 
     def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, m=M, answers=None,
-             family=True, vram=11.9):
+             family=True, vram=11.9, free_at=None):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others), and every question
         asked is kept in self.asked.  family=False: no --family (the first menu is shown)."""
         self.asked = []
@@ -187,7 +187,7 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, True)),
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
             mock.patch.object(setup, "page_file_gb", lambda: 16.0),
-            mock.patch.object(setup, "free_gb", lambda p: free),
+            mock.patch.object(setup, "free_gb", free_at or (lambda p: free)),
             # whatever else asks the disk (shutil.disk_usage) gets the same answer: the tests never depend on this PC's free space
             mock.patch.object(shutil, "disk_usage", lambda p: shutil._ntuple_diskusage(int(max(free, 1000) * 1e9), int(max(free, 1000) * 1e9 - free * 1e9), int(free * 1e9))),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: not the test PC's disk

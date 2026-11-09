@@ -234,7 +234,10 @@ class Install(unittest.TestCase):
         self.assertIn("n-gram table", out)
 
     def test_no_engine_stops_before_the_download(self):
-        rc, out = self.install(engine=False)
+        # An available signed feed can install an engine. This case is specifically the absence of one,
+        # so keep that dependency deterministic; feed acquisition has its own tests.
+        with mock.patch.object(setup, "get_dsv41_engine", return_value=False):
+            rc, out = self.install(engine=False)
         self.assertEqual(rc, 1, out)
         self.assertIn("DeepSeek's engine is not available for this computer yet", out)
         self.assertIn("RTX 30, 40 and 50", out)
