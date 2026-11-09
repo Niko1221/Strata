@@ -33,6 +33,7 @@ class ReleaseManifest(unittest.TestCase):
         m = copy.deepcopy(rm.load())
         m["product_version"] = "0.2.99"
         m["tag"] = "v0.2.99"
+        m.pop("terminal_version", None)                             # the Terminal then has to say the product version
         problems = "\n".join(rm.check(m))
         self.assertIn("strata_cli/__init__.py says", problems)
         self.assertIn("asset list has no Strata-0.2.99-windows-x64-setup.exe", problems)
