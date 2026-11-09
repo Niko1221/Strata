@@ -3,7 +3,8 @@
  "tag": "v0.2.13",
  "published": "2026-11-09",
  "product_version": "0.2.13",
- "control_version": "0.1.59",
+ "terminal_version": "0.2.13.1",
+ "control_version": "0.1.59.1",
  "engine_version": "0.1.59",
  "assets": [
   "SHA256SUMS.txt",
