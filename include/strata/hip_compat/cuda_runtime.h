@@ -28,11 +28,17 @@
 #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
 #define cudaDeviceDisablePeerAccess hipDeviceDisablePeerAccess
 #define cudaDeviceProp hipDeviceProp_t
+#define cudaPointerAttributes hipPointerAttribute_t
+#define cudaPointerGetAttributes hipPointerGetAttributes
+#define cudaMemoryTypeDevice hipMemoryTypeDevice
+#define cudaMemoryTypeUnregistered hipMemoryTypeUnregistered
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaDriverGetVersion hipDriverGetVersion
 #define cudaErrorNotReady hipErrorNotReady
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
+#define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
+#define cudaErrorInvalidValue hipErrorInvalidValue
 #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
 #define cudaError_t hipError_t
 #define cudaEventCreate hipEventCreate

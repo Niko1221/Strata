@@ -532,6 +532,89 @@ int main(int argc, char** argv) {
         cudaFree(db);
     }
 
+    // A captured native draft round refreshes its bias pointer and history every launch. Pin the actual
+    // transformed logits as well as the pick: bias must apply even without penalties, use full-vocabulary
+    // IDs for subset heads, and precede all three penalties. These literals do not use the target sampler.
+    for (bool subset : {false, true}) {
+        using strata::kernels::SamplerParams;
+        const int nv = 4, cap = 4, id_vocab = subset ? 8 : 4;
+        const std::vector<int> ids = subset ? std::vector<int>{5, 2, 7, 1} : std::vector<int>{0, 1, 2, 3};
+        std::vector<int> inverse((size_t) id_vocab, -1);
+        for (int s = 0; s < nv; ++s) inverse[(size_t) ids[(size_t) s]] = s;
+        const float raw[] = {10, 9, 2, -3};
+        int *d_ids = nullptr, *d_inverse = nullptr, *ring = nullptr, *step = nullptr, *pick = nullptr;
+        float *source = nullptr, *logits = nullptr, *bias = nullptr, *prob = nullptr;
+        void* scratch = nullptr;
+        SamplerParams *hp = nullptr, *mp = nullptr, *dp = nullptr;
+        int *hh = nullptr, *mh = nullptr;
+        cudaStream_t stream = nullptr;
+        check(cudaStreamCreate(&stream), "coupled stream");
+        check(cudaMalloc(&d_ids, nv * sizeof(int)), "coupled ids");
+        check(cudaMalloc(&d_inverse, id_vocab * sizeof(int)), "coupled inverse");
+        check(cudaMemcpy(d_ids, ids.data(), nv * sizeof(int), cudaMemcpyHostToDevice), "coupled ids upload");
+        check(cudaMemcpy(d_inverse, inverse.data(), id_vocab * sizeof(int), cudaMemcpyHostToDevice), "coupled inverse upload");
+        check(cudaMalloc(&source, sizeof(raw)), "coupled source");
+        check(cudaMalloc(&logits, sizeof(raw)), "coupled logits");
+        check(cudaMemcpy(source, raw, sizeof(raw), cudaMemcpyHostToDevice), "coupled logits upload");
+        check(cudaMalloc(&bias, id_vocab * sizeof(float)), "coupled bias");
+        check(cudaMalloc(&prob, sizeof(float)), "coupled prob");
+        check(cudaMalloc(&pick, sizeof(int)), "coupled pick");
+        check(cudaMalloc(&step, sizeof(int)), "coupled step");
+        check(cudaMemset(step, 0, sizeof(int)), "coupled step upload");
+        check(cudaMalloc(&ring, (cap + 1) * sizeof(int)), "coupled ring");
+        check(cudaMalloc(&dp, sizeof(SamplerParams)), "coupled params");
+        check(cudaMalloc(&scratch, strata::kernels::coupled_draft_scratch_bytes(nv)), "coupled scratch");
+        check(cudaHostAlloc(&hp, sizeof(SamplerParams), cudaHostAllocMapped), "coupled mapped params");
+        check(cudaHostGetDevicePointer(&mp, hp, 0), "coupled params alias");
+        check(cudaHostAlloc(&hh, cap * sizeof(int), cudaHostAllocMapped), "coupled mapped history");
+        check(cudaHostGetDevicePointer(&mh, hh, 0), "coupled history alias");
+        *hp = SamplerParams{};
+        hp->top_k = 1; hp->top_p = 1; hp->seed = 71;
+        std::fill(hh, hh + cap, -1);
+        hh[cap - 2] = hh[cap - 1] = ids[0];
+        check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "coupled capture begin");
+        check(cudaMemcpyAsync(logits, source, sizeof(raw), cudaMemcpyDeviceToDevice, stream), "coupled raw restore");
+        strata::kernels::coupled_draft_stage(mp, mh, dp, ring, cap, stream);
+        strata::kernels::coupled_draft_sample(logits, nv, subset ? d_ids : nullptr, subset ? d_inverse : nullptr,
+                                            id_vocab, dp, ring, cap, 0, step, scratch, pick, prob, stream);
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t exec = nullptr;
+        check(cudaStreamEndCapture(stream, &graph), "coupled capture end");
+        check(cudaGraphInstantiate(&exec, graph, 0), "coupled instantiate");
+        int wrong = 0;
+        auto replay = [&](const std::vector<float>& b, int h, int want, const std::vector<float>& adjusted) {
+            hp->logit_bias = b.empty() ? nullptr : bias;
+            if (!b.empty())
+                check(cudaMemcpy(bias, b.data(), b.size() * sizeof(float), cudaMemcpyHostToDevice), "coupled bias upload");
+            hp->penalty_last_n = h;
+            hp->penalty_repeat = 2; hp->penalty_freq = 3; hp->penalty_present = 4;
+            check(cudaGraphLaunch(exec, stream), "coupled graph launch");
+            check(cudaStreamSynchronize(stream), "coupled graph sync");
+            int got = -1;
+            float got_prob = 0;
+            std::vector<float> transformed(nv);
+            check(cudaMemcpy(&got, pick, sizeof(int), cudaMemcpyDeviceToHost), "coupled pick back");
+            check(cudaMemcpy(&got_prob, prob, sizeof(float), cudaMemcpyDeviceToHost), "coupled prob back");
+            check(cudaMemcpy(transformed.data(), logits, sizeof(raw), cudaMemcpyDeviceToHost), "coupled logits back");
+            wrong += got != want || got_prob != 1.0f || transformed != adjusted;
+        };
+        std::vector<float> b((size_t) id_vocab, 0);
+        b[(size_t) ids[0]] = 20; b[(size_t) ids[1]] = -1; b[(size_t) ids[2]] = -100;
+        replay(b, 0, ids[0], {30, 8, -98, -3});
+        // Token ids[0] occurs twice: (10 + 20) / 2 - 2*3 - 4 = 5, not (10 / 2 - 2*3 - 4) + 20 = 15.
+        replay(b, 2, ids[1], {5, 8, -98, -3});
+        b[(size_t) ids[0]] = -20; b[(size_t) ids[1]] = 3;
+        replay(b, 0, ids[1], {-10, 12, -98, -3});
+        replay({}, 0, ids[0], {10, 9, 2, -3});
+        std::printf("  %-34s %s (%d wrong replays)\n", subset ? "coupled bias: subset IDs" : "coupled bias: full vocabulary",
+                    wrong ? "*** WRONG ***" : "matches", wrong);
+        bad += wrong;
+        cudaGraphExecDestroy(exec); cudaGraphDestroy(graph); cudaStreamDestroy(stream);
+        cudaFree(d_ids); cudaFree(d_inverse); cudaFree(ring); cudaFree(step); cudaFree(pick);
+        cudaFree(source); cudaFree(logits); cudaFree(bias); cudaFree(prob); cudaFree(scratch); cudaFree(dp);
+        cudaFreeHost(hp); cudaFreeHost(hh);
+    }
+
     // ---- fixture 1: plain greedy.  top_k = 0 (disabled), top_p = 1 (disabled), T = 1 -> argmax.
     {
         strata::kernels::SamplerParams p; p.top_k = 0; p.top_p = 1.0f; p.temperature = 1.0f; p.greedy = true;

@@ -116,6 +116,9 @@ public:
     /// `max_t` <= kVerifyLongT (past kVerifyMaxT: one-conversation windows only).  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
+    /// Rebind an idle single-stage verifier to an identically carved session without copying sequence state.
+    /// Solo graphs capture session addresses and are discarded; explicit-slot batch graphs stay valid.
+    bool bind_session(SessionState& ss, std::string& err);
 
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
@@ -151,6 +154,11 @@ public:
         sampling_ = sp;   // row t of a window at pos0 draws Philox(seed, pos0 + t): see run()
         sampling_.logit_bias = logit_bias_host_.empty() ? nullptr : logit_bias_device_;
         if (next_) next_->set_sampling(sp);
+    }
+    /// Final-stage parameters, including its bias pointer. A drafter copies that bias onto its own device.
+    // The returned device bias is borrowed; consumers must not retain it across request changes.
+    const strata::kernels::SamplerParams& sampling() const {
+        return next_ ? next_->sampling() : sampling_;
     }
     // One request's fixed vocabulary bias. Empty clears it; copied only when changed, on the final stage's device.
     bool set_logit_bias(const std::vector<float>& bias, std::string& err);
@@ -250,6 +258,10 @@ public:
     /// listed are not touched, so an idle slot keeps its state (a finished conversation it may continue later).
     bool run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user,
                        int32_t* out, std::string& err);
+    /// Single-stage fast window for a registered physical slot. Uses that slot's sampler, history and proposal.
+    /// No state moves; commit the accepted prefix with commit(), not commit_slots().
+    bool run_slot(int slot, int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user,
+                  int32_t* out, std::string& err);
     /// Keep every row of the last batch window.
     bool commit_slots(std::string& err);
     /// Commit an accepted prefix in each contiguous slot group of the last window. `keep` has
@@ -302,6 +314,10 @@ public:
         }
         if (next_) next_->set_slot_sampling(slot, sp);
     }
+    /// The last stage's slot parameters, including its device bias pointer, for the native slot drafter.
+    const strata::kernels::SamplerParams& slot_sampling(int slot) const {
+        return next_ ? next_->slot_sampling(slot) : slot_sp_[(size_t) slot];
+    }
     /// A slot's logit bias (n_vocab floats; empty = none), added before the penalties and filters of its row, as a solo request's.  Reaches the last stage.
     bool set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err);
     /// The slot's reply tail for its penalty window: the `n` tokens its session consumed since the reply began (the last penalty_last_n are used), the
@@ -309,6 +325,17 @@ public:
     void set_slot_history(int slot, const int32_t* tail, int64_t n) {
         if (slot >= 0 && slot < (int) slot_tail_.size()) slot_tail_[(size_t) slot].assign(tail, tail + (n > 0 ? n : 0));
         if (next_) next_->set_slot_history(slot, tail, n);
+    }
+    /// Borrow this slot's host q rows for its next window. Consumed once, also on failure.
+    /// measure=true carries masked mu: n_q==T is a NULL tail, n_q<T a plain bonus, as set_spec_proposal().
+    /// The producer keeps them alive and unchanged until run_slot/run_slot_rows returns (or batch_poll finishes).
+    void set_slot_spec_q(int slot, const int32_t* q, int n_q, bool measure = false) {
+        if (slot >= 0 && slot < (int) slot_spec_q_.size()) {
+            slot_spec_q_[(size_t) slot] = q;
+            slot_spec_nq_[(size_t) slot] = n_q;
+            slot_spec_measure_[(size_t) slot] = measure;
+        }
+        if (next_) next_->set_slot_spec_q(slot, q, n_q, measure);
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -445,6 +472,7 @@ public:
     std::string route_stats_report();
 
 private:
+    friend struct MtpSamplingFixture;
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)
@@ -490,6 +518,10 @@ private:
     std::vector<strata::kernels::SamplerParams> slot_sp_;
     std::vector<float*> slot_bias_dev_;                  ///< per slot: its logit bias on the device (null = none)
     std::vector<std::vector<int32_t>> slot_tail_;        ///< per slot: its reply tail for the penalty window (set_slot_history)
+    std::vector<const int32_t*> slot_spec_q_;           ///< borrowed proposal distributions for the next slot window
+    std::vector<int> slot_spec_nq_;
+    std::vector<bool> slot_spec_measure_;
+    bool slot_spec_fallback_warned_ = false;
     int32_t* slot_hist_d_ = nullptr;                     ///< the penalty-history rows of the current batch window (device)
     size_t slot_hist_cap_ = 0;
     bool sample_rows(int S, std::string& err);
@@ -673,6 +705,8 @@ private:
     int32_t* h_tok_ = nullptr;   int32_t* m_tok_ = nullptr;     // T
     int32_t* h_step_ = nullptr;  int32_t* m_step_ = nullptr;    // T * kStepCount
     int32_t* h_pos_ = nullptr;   int32_t* m_pos_ = nullptr;     // T * n_head
+    const int32_t** h_mrope_ = nullptr;   const int32_t** m_mrope_ = nullptr;
+    const int32_t** mrope_rows_ = nullptr;   ///< device table owner per token, staged with the cell positions
     int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
     float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
     int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids

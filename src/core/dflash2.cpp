@@ -779,6 +779,7 @@ void Dflash2Drafter::copy_log_state_from(const Dflash2Drafter& src) {
 void Dflash2Drafter::invalidate_ring() {
     ++epoch_;
     ring_hi_ = 0;
+    clear_deferred();
     for (int64_t& t : slot_pos_) t = -1;
 }
 
@@ -795,10 +796,11 @@ void Dflash2Drafter::stash_push(Lineage&& l) {
 }
 
 void Dflash2Drafter::log_stage(int64_t pos0, int n) {
+    // Slot ownership is independent of whether activation logging is enabled.
+    for (int i = 0; i < n; ++i) slot_pos_[(size_t) ((pos0 + i) % kRing)] = ((int64_t) epoch_ << 32) | (pos0 + i);
     if (!log_on_) return;
     pend_pos0_ = pos0;
     pend_n_ = n;
-    for (int i = 0; i < n; ++i) slot_pos_[(size_t) ((pos0 + i) % kRing)] = ((int64_t) epoch_ << 32) | (pos0 + i);
 }
 
 void Dflash2Drafter::log_flush() {
@@ -839,8 +841,12 @@ bool Dflash2Drafter::rebuild(int64_t lo, int64_t hi, int64_t* rebuilt, int64_t* 
             err = "dflash2: the ring rebuild's scratch does not fit";
             return false;
         }
-        cudaMemset(rb_q_, 0, (cap + kRows) * 2560);
-        cudaMemset(rb_d_, 0, (cap + kRows) * 80 * sizeof(float));
+        // cs_ is nonblocking: default-stream clears can race its following uploads and erase the saved rows.
+        if (cudaMemsetAsync(rb_q_, 0, (cap + kRows) * 2560, cs_) != cudaSuccess ||
+            cudaMemsetAsync(rb_d_, 0, (cap + kRows) * 80 * sizeof(float), cs_) != cudaSuccess) {
+            err = "dflash2: ring rebuild scratch initialization";
+            return false;
+        }
         rb_bytes_ = (cap + kRows) * (2560 + 80 * sizeof(float) + sizeof(int32_t));
         vram_ += rb_bytes_;
     }
@@ -893,10 +899,19 @@ bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume
         while (l < lim && h[(size_t) l] == ids[l]) ++l;
         return l;
     };
+    auto forget_suffix = [&](int64_t keep) {
+        // A same-epoch branch can leave old K/V at the same positions. Only the shared prefix still owns slots;
+        // the prompt's actual context/draft writes claim its new suffix, without touching live device buffers here.
+        for (int64_t& tag : slot_pos_)
+            if (tag != -1 && (tag & 0xffffffffll) >= keep) tag = -1;
+        dpend_hi_ = std::min(dpend_hi_, keep);
+        if (dpend_hi_ <= dpend_lo_) clear_deferred();
+    };
     if (!log_on_) {   // the pre-log rule: a history that does not cover the resumed prefix starts the ring over
         const int64_t lcp = lcp_of(cur_.hist);
         const bool stale = ring_hi_ > lcp && lcp < resume;
-        if (stale) { ++epoch_; ring_hi_ = 0; }
+        if (stale) invalidate_ring();
+        forget_suffix(lcp);
         if (cold) *cold = stale;
         cur_.hist.assign(ids, ids + resume);
         return true;
@@ -930,6 +945,7 @@ bool Dflash2Drafter::begin_request(const int32_t* ids, int64_t n, int64_t resume
     }
     if ((int64_t) cur_.hist.size() > resume) { cur_.hist.resize((size_t) resume); cur_.truncate(resume); }
     if (!covered) cur_.hist.assign(ids, ids + resume);
+    forget_suffix(resume);
     // the window the first draft reads, below `resume` (the prompt's own taps cover [resume, n)): every slot that does not hold its row is rebuilt from the log
     int64_t rebuilt = 0, missing = 0;
     const int64_t lo = std::max<int64_t>(0, n - (window_ - 1)), hi = resume;

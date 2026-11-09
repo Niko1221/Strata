@@ -30,6 +30,9 @@ namespace strata::core {
 /// handoff between the GPU and the CPU expert pool.
 struct SessionState {
     int64_t max_cells = 0;
+    int32_t* mrope = nullptr;       ///< opt-in session-owned [mrope_cells][3]; stable through graph replay
+    int64_t mrope_cells = 0;
+    bool mrope_identity = true;
 
     GdnBuffers gdn;                 ///< the 36 GDN layers share one set of scratch; their STATE is per layer
     float* gdn_state = nullptr;     ///< (n_gdn_layers, gdn_state_floats)
@@ -103,6 +106,11 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 /// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
 /// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
 void session_release(SessionState& s);
+/// Allocate an identity rotary layout before captures. Uploads retain its address; release frees it.
+bool session_mrope_init(SessionState& s, int64_t cells, std::string& err);
+/// Complete the upload before returning, including visibility to non-blocking consumer streams.
+bool session_mrope_upload(SessionState& s, const int32_t* positions, int64_t cells, std::string& err);
+bool session_mrope_reset(SessionState& s, std::string& err);
 /// Zeroes every layer's state - the residual to `R_init`, everything else to zero, so a fresh sequence starts
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);

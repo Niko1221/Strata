@@ -15,6 +15,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -201,6 +202,34 @@ int main(int argc, char** argv) {
         d.begin_request(ids.data(), N, P, &cold);
         std::printf("    stash hits %lld, rebuilt %lld, missing %lld, cold %d\n", (long long) d.ring_stats.stash_hits, (long long) d.last_rebuilt, (long long) d.last_missing, (int) cold);
         check(cold && d.last_missing > 0 && d.last_rebuilt == 0, "no log of the lineage: cold, the missing rows are reported");
+    }
+    {
+        std::printf("6 independent owners and deferred context\n");
+        Dflash2Drafter a, b, reference;
+        if (!fresh(a) || !b.clone_alloc(a, err) || !reference.clone_alloc(a, err)) return 2;
+        if (!feed(a, dev, 1, 0, 12, err) || !feed(b, dev, 2, 0, 12, err) ||
+            !feed(reference, dev, 1, 0, 12, err)) return 2;
+        std::vector<float> other;
+        std::vector<int64_t> tags;
+        if (!b.debug_ring(other, tags, err)) return 2;
+        float* pending = a.defer_rows(12, 3, err);
+        if (!pending) return 2;
+        for (int r = 0; r < 3; ++r)
+            for (int i = 0; i < kTap; ++i) pending[(size_t) r * kTap + i] = tap_value(1, 12 + r, i);
+        const auto ids = ids_of(1, 18);
+        a.note_rows(ids.data() + 12, 3, 12);
+        if (!a.catch_up(15, err) || !feed(reference, dev, 1, 12, 15, err)) return 2;
+        if (!reference.debug_ring(ref, tags, err)) return 2;
+        int wrong_tag = 0;
+        check(!a.has_deferred() && count_bad(a, ref, 0, 15, &wrong_tag) == 0,
+              "deferred context produces the same K/V as the uninterrupted owner");
+        check(count_bad(b, other, 0, 12, &wrong_tag) == 0, "another owner's ring is unchanged");
+        pending = a.defer_rows(15, 3, err);
+        if (!pending) return 2;
+        std::fill_n(pending, 3 * kTap, 0.0f);
+        bool cold = false;
+        if (!a.begin_request(ids.data(), (int64_t) ids.size(), 12, &cold)) return 2;
+        check(!a.has_deferred(), "rewinding discards deferred rows beyond the restored prefix");
     }
     std::printf(g_fail == 0 ? "dflash2_ring_test: ok\n" : "dflash2_ring_test: FAILED\n");
     return g_fail == 0 ? 0 : 1;

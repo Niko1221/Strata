@@ -2219,7 +2219,8 @@ class StrataEngine:
         """A request decoding in a slot that is alone now (no other slot busy, nobody waiting) goes back to the solo
         path with its MTP drafts: the engine continues it from the slot's sessions (its slot cache; INFO
         slot_cache=1).  STRATA_PARALLEL_SOLO=0 keeps it in the slot."""
-        if (embeddings or times >= self.SOLO_AGAIN_MAX or left < self.SOLO_AGAIN_MIN_LEFT or
+        if ((self.info or {}).get("unified_slots") == 1 or
+                embeddings or times >= self.SOLO_AGAIN_MAX or left < self.SOLO_AGAIN_MIN_LEFT or
                 not (self.info or {}).get("slot_cache") or os.environ.get("STRATA_PARALLEL_SOLO") == "0"):
             return False
         with self.slot_cv:
@@ -2231,7 +2232,8 @@ class StrataEngine:
             return any(e[0] * 2 <= plen for e in self.wait_lens)
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
-        """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
+        """--batch. Engines advertising unified_slots keep every request in its slot from prompt to finish.
+        Older engines: alone (no slot busy, nobody waiting), use GEN with drafts
         - and when another request arrives meanwhile, this one is STOPped and continues in a batch slot (BGEN with
         its prompt + what it generated: the engine reuses that prefix).  Otherwise: BGEN into a free slot, then the
         slot's own BT lines until BDONE.  Several requests run at once; the control lines (prompt reading, admission)
@@ -2285,7 +2287,7 @@ class StrataEngine:
                     lines_q, sq = self.lines, self.slot_q           # (it holds no slot of the engine before: nothing to lose)
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
-                if alone and left > 1:
+                if alone and left > 1 and (self.info or {}).get("unified_slots") != 1:
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{keys}{pf} {embeddings}" if embeddings else f"GEN {left}{keys}{pf}"
                     self._last_done = None                  # (#879: this request's DONE decides below)

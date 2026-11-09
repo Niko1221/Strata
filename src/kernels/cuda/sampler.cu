@@ -816,14 +816,22 @@ __global__ void coupled_stage_kernel(const SamplerParams* __restrict__ mp, const
     for (int i = cap - h + (int) threadIdx.x; i < cap; i += blockDim.x) ring[i] = vh[i];
 }
 
-/// The penalties, applied in place to the draft logits before the selection - the target applies the same
-/// `apply_penalties` to the same token with the same count over the same window before its own.  Draft j's window
-/// is the ring's [cap + j - h, cap + j): the base plus drafts 0 .. j-1.  A history token outside the draft head's
-/// subset has no logit here.  Each distinct token is penalised once: the entry whose `atomicOr` sets its bit does it.
-__global__ void coupled_penalize_kernel(float* __restrict__ logits, int nv, const int* __restrict__ id_to_sub,
-                                        int id_vocab, const SamplerParams* __restrict__ dp, const int* __restrict__ ring,
+/// Bias first, then penalties, in place before the draft selection. The bias is indexed by full vocabulary ID,
+/// even for a subset head. Draft j's history is the ring's [cap + j - h, cap + j): the base plus drafts 0 .. j-1.
+/// A history token outside the draft head's subset has no logit here. Each distinct token is penalised once:
+/// the entry whose atomicOr sets its bit does it.
+__global__ void coupled_penalize_kernel(float* __restrict__ logits, int nv, const int* __restrict__ sub_to_id,
+                                        const int* __restrict__ id_to_sub, int id_vocab,
+                                        const SamplerParams* __restrict__ dp, const int* __restrict__ ring,
                                         int cap, int j) {
     const SamplerParams p = *dp;
+    if (p.logit_bias != nullptr) {
+        for (int s = threadIdx.x; s < nv; s += blockDim.x) {
+            const int id = sub_to_id != nullptr ? sub_to_id[s] : s;
+            logits[s] += p.logit_bias[id];
+        }
+        __syncthreads();   // every bias addition precedes any history token's penalty
+    }
     const int h = strata::core::coupled_hist_len(p.penalty_last_n, cap);
     if (h <= 0) return;
     const int* hrow = ring + strata::core::coupled_hist_start(cap, j, h);
@@ -1351,8 +1359,8 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
         std::fprintf(stderr, "coupled_draft_sample: %d logits need scratch and at most %d blocks\n", nv, kSplitMaxBlocks);
         std::exit(1);
     }
-    coupled_penalize_kernel<<<1, 1024, (unsigned) ((nv + 31) / 32) * sizeof(unsigned), s>>>(logits, nv, id_to_sub,
-                                                                                           id_vocab, params, ring, cap, j);
+    coupled_penalize_kernel<<<1, 1024, (unsigned) ((nv + 31) / 32) * sizeof(unsigned), s>>>(
+        logits, nv, sub_to_id, id_to_sub, id_vocab, params, ring, cap, j);
     coupled_check("coupled_penalize");
     // the selection of the split sampler, unchanged: every 4,096-logit block's first `kpart` (the widest list,
     // since the request's top_k is only known on the device), penalties already applied above
@@ -1420,8 +1428,8 @@ void spec_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const in
         std::fprintf(stderr, "spec_draft_sample: %d logits need scratch and at most %d blocks\n", nv, kSplitMaxBlocks);
         std::exit(1);
     }
-    coupled_penalize_kernel<<<1, 1024, (unsigned) ((nv + 31) / 32) * sizeof(unsigned), s>>>(logits, nv, id_to_sub,
-                                                                                           id_vocab, params, ring, cap, j);
+    coupled_penalize_kernel<<<1, 1024, (unsigned) ((nv + 31) / 32) * sizeof(unsigned), s>>>(
+        logits, nv, sub_to_id, id_to_sub, id_vocab, params, ring, cap, j);
     coupled_check("spec_penalize");
     sampler_split_part_kernel<<<dim3((unsigned) n_blocks, 1u), kSplitWarps * 32, 0, s>>>(
         logits, nv, nullptr, 0, SamplerParams{}, kpart, n_blocks, (int2*) scratch);

@@ -21,6 +21,7 @@
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/native_router.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
@@ -141,6 +142,7 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 }  // namespace
 
 MtpDrafter::~MtpDrafter() {
+    const OnDevice on_device(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
@@ -151,6 +153,7 @@ MtpDrafter::~MtpDrafter() {
     for (auto& e : round_exec_c_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : step_exec_c_) if (e) cudaGraphExecDestroy(e);
     if (cparams_) cudaFree(cparams_);
+    if (cbias_) cudaFree(cbias_);
     if (cring_) cudaFree(cring_);
     if (dinv_) cudaFree(dinv_);
     if (cscratch_) cudaFree(cscratch_);
@@ -626,7 +629,7 @@ bool MtpDrafter::experts_reclaim(std::string& err) {
     return true;
 }
 
-uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const {
+uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab, bool owned_bias) const {
     uint64_t bytes = head_logits_ ? 0 : (uint64_t) max_t_ * (uint64_t) n_vocab * sizeof(float);
     if (dhead_ == nullptr && owns_draft_head_ && !full_head_env()) {
         if (FILE* f = std::fopen(vocab_file().c_str(), "rb")) {
@@ -640,6 +643,7 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
     // the split scratch (64 lists of 64 entries at most) and the parameters
     if (coupled_draft_env() && cparams_ == nullptr)
         bytes += (uint64_t) n_vocab * 4 + (uint64_t) (kCoupledHistCap + max_t_) * 4 + 64ull * 64ull * 8ull + 4096;
+    if (owned_bias && coupled_draft_env() && cbias_ == nullptr) bytes += (uint64_t) n_vocab * sizeof(float);
     return bytes;
 }
 
@@ -714,6 +718,48 @@ void MtpDrafter::set_draft_sampling(const strata::kernels::SamplerParams& sp) {
     if (!coupled_active_) return;
     *h_cparams_ = sp;   // read by the next round graph (after the previous one has synced)
     std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
+}
+
+bool MtpDrafter::set_draft_sampling(const strata::kernels::SamplerParams& sp, std::string& err) {
+    if (!coupled_ok_) return true;   // default / disabled: no allocation or synchronization
+    const OnDevice on_device(device_);
+    if (!idle(err)) return false;   // mapped parameters and the owned bias may still be read by a graph
+    coupled_active_ = false;
+    const bool active = !sp.greedy && sp.temperature > 0.0f && sp.temperature >= spec_min_temp();
+    auto params = sp;
+    params.logit_bias = nullptr;
+    if (active && sp.logit_bias != nullptr) {
+        const size_t bytes = (size_t) n_vocab_ * sizeof(float);
+        if (cbias_ == nullptr) {
+            const cudaError_t e = cudaMalloc((void**) &cbias_, bytes);
+            if (e != cudaSuccess) {
+                err = std::string("mtp: allocating the draft logit_bias: ") + cudaGetErrorString(e);
+                return false;
+            }
+            vram_ += bytes;
+        }
+        // Runtime copies resolve the source's device (UVA), including a different pipeline stage.
+        // Only cbias_ is ever read by a draft kernel; no peer-pointer kernel access is required.
+        const cudaError_t e = cudaMemcpyAsync(cbias_, sp.logit_bias, bytes, cudaMemcpyDefault, cs_);
+        if (e != cudaSuccess) {
+            err = std::string("mtp: copying the draft logit_bias: ") + cudaGetErrorString(e);
+            return false;
+        }
+        params.logit_bias = cbias_;
+    }
+    *h_cparams_ = params;
+    std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
+    // Clear both parameter records too. Graphs capture the records' stable addresses, not a request pointer.
+    const cudaError_t e = cudaMemcpyAsync(cparams_, h_cparams_, sizeof(params), cudaMemcpyHostToDevice, cs_);
+    if (e != cudaSuccess) {
+        // A bias copy may already be queued; finish it before the caller retires the source.
+        (void) cudaStreamSynchronize(cs_);
+        err = std::string("mtp: staging draft sampling: ") + cudaGetErrorString(e);
+        return false;
+    }
+    if (!idle(err)) return false;   // the caller may now change or retire the source bias
+    coupled_active_ = active;
+    return true;
 }
 
 void MtpDrafter::set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next) {
@@ -1030,6 +1076,7 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
 
 bool MtpDrafter::record_front(int T, int row0, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
+    const MropeScope rotary(ss_->mrope);
     const ModelGeometry& g = *g_;
     const int64_t N = g.n_embd, HC = g.hc, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const QsaShapes s = shapes_of(g);
@@ -1153,6 +1200,7 @@ void MtpDrafter::norm_rope(float* data, const float* gamma, int rows, int cols, 
 
 bool MtpDrafter::record_rest(int step_row, cudaStream_t cs, std::string& err) {
     using namespace strata::kernels;
+    const MropeScope rotary(ss_->mrope);
     if (!decode_ready(err)) return false;   // this is the 512 experts' only reader
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1925,13 +1973,19 @@ bool MtpDrafter::stage_source_R(int T, std::string& err) {
     return true;
 }
 
-bool MtpDrafter::prepare_chain(std::string& err) {
+bool MtpDrafter::prepare_draft(std::string& err, bool coupled) {
+    const OnDevice on_device(device_);
+    for (int T = 1; T <= max_t_; ++T)
+        if (!capture_round(T, false, err) || (coupled && coupled_ok_ && !capture_round(T, true, err))) return false;
+    for (int j = 1; j <= max_t_ - 2; ++j)
+        if (!capture_step(j, false, err) || (coupled && coupled_ok_ && !capture_step(j, true, err))) return false;
+    return true;
+}
+
+bool MtpDrafter::prepare_chain(std::string& err, bool coupled) {
     const OnDevice on_device(device_);
     if (!force_on_ || h_force_ == nullptr) { err = "mtp: chains need set_force_capture before load"; return false; }
-    for (int T = 1; T <= max_t_; ++T)
-        if (!capture_round(T, false, err)) return false;
-    for (int j = 1; j <= max_t_ - 2; ++j)
-        if (!capture_step(j, false, err)) return false;
+    if (!prepare_draft(err, coupled)) return false;
     if (ev_chain_ == nullptr && cudaEventCreateWithFlags(&ev_chain_, cudaEventDisableTiming) != cudaSuccess) {
         err = "mtp: event creation failed";
         return false;
@@ -1945,7 +1999,7 @@ bool MtpDrafter::prepare_chain(std::string& err) {
 }
 
 bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force,
-                              int n_out, int n_early, std::string& err) {
+                              int n_out, int n_early, std::string& err, bool coupled) {
     const OnDevice on_device(device_);
     if (!decode_ready(err)) return false;   // the chain's step graphs read the 512 experts
     if (chain_live_) { err = "mtp: a chain is already in flight"; return false; }
@@ -1955,9 +2009,10 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
         err = "mtp: chain arguments out of range";
         return false;
     }
-    if (round_exec_[T] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
+    const bool cp = coupled && coupled_active_;
+    if ((cp ? round_exec_c_[T] : round_exec_[T]) == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
     for (int j = 1; j < n_out; ++j)
-        if (step_exec_[j] == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
+        if ((cp ? step_exec_c_[j] : step_exec_[j]) == nullptr) { err = "mtp: chain graphs not prepared"; return false; }
     const Clock::time_point t0 = Clock::now();
     const int64_t NH = g_->n_head;
     auto put = [&](int row, int64_t cell) {
@@ -1979,10 +2034,10 @@ bool MtpDrafter::chain_launch(int T, const int32_t* tokens, int64_t p, int a, co
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (!stage_source_R(T, err)) return false;
     chain_early_ = std::max(0, std::min(n_early, n_out));
-    bool ok = cudaGraphLaunch(round_exec_[T], cs_) == cudaSuccess;
+    bool ok = cudaGraphLaunch(cp ? round_exec_c_[T] : round_exec_[T], cs_) == cudaSuccess;
     if (ok && chain_early_ >= 1) ok = cudaEventRecord(ev_step_[0], cs_) == cudaSuccess;
     for (int j = 1; ok && j < n_out; ++j) {
-        ok = cudaGraphLaunch(step_exec_[j], cs_) == cudaSuccess;
+        ok = cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) == cudaSuccess;
         if (ok && j < chain_early_) ok = cudaEventRecord(ev_step_[j], cs_) == cudaSuccess;
     }
     if (!ok || cudaEventRecord(ev_chain_, cs_) != cudaSuccess) {

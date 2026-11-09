@@ -53,6 +53,7 @@
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/pdl.hpp"
 #include "strata/kernels/ple.hpp"
@@ -761,7 +762,7 @@ Verifier::~Verifier() {
     if (arena_) cudaFree(arena_);
     if (hcount_d_) cudaFree(hcount_d_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_};
+                     h_flagA_, h_plan_, h_flagB_, h_plan_err_, h_nf_, herr_h_, hdrop_h_, h_bal_, h_mrope_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -870,6 +871,8 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
             cudaMemcpy(logit_bias_device_, bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
             err = "cannot upload logit_bias"; return false;
         }
+        // Pageable H2D cudaMemcpy may return before DMA completes. Other devices/streams may copy this bias.
+        if (cudaStreamSynchronize(nullptr) != cudaSuccess) { err = "cannot finish uploading logit_bias"; return false; }
     }
     logit_bias_host_ = bias;
     sampling_.logit_bias = bias.empty() ? nullptr : logit_bias_device_;
@@ -960,6 +963,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(T * strata::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
               mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
+              (!ss.mrope || mapped(T * sizeof(int32_t*), (void**) &h_mrope_, (void**) &m_mrope_)) &&
               mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
               mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
               mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
@@ -1067,6 +1071,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * strata::kernels::kStepCount);
         pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
+        mrope_rows_ = ss.mrope ? b.take<const int32_t*>(T) : nullptr;
         ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
         mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
         inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
@@ -1324,6 +1329,106 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     return true;
 }
 
+bool Verifier::bind_session(SessionState& ss, std::string& err) {
+#if defined(STRATA_GPU_METAL)
+    err = "verify: session rebinding is not supported by the Metal window";
+    return false;
+#else
+    if (g_ == nullptr || ss_ == nullptr) { err = "verify: bind_session before init"; return false; }
+    if (released_.load()) { err = "verify: cannot bind a released verifier"; return false; }
+    if (&ss == ss_) return true;
+    if (fl_active_ || b_running_ || prelaunched_ != 0) {
+        err = "verify: cannot bind a session while a window is in flight";
+        return false;
+    }
+    if (next_ != nullptr) { err = "verify: session rebinding requires a single stage"; return false; }
+    if (ss.max_cells != ss_->max_cells || ss.k != ss_->k ||
+        ss.layer_lo != ss_->layer_lo || ss.layer_hi != ss_->layer_hi ||
+        ss.qsa_ord0 != ss_->qsa_ord0 || ss.qsa_alloc != ss_->qsa_alloc ||
+        ss.gdn_ord0 != ss_->gdn_ord0 || ss.gdn_alloc != ss_->gdn_alloc ||
+        ss.ple.ready() != ss_->ple.ready()) {
+        err = "verify: the bound session is not carved like the current session";
+        return false;
+    }
+    const OnDevice on_device(device_);
+    for (cudaStream_t stream : {cs_, sh_cs_, copy_}) {
+        if (stream != nullptr) {
+            const cudaError_t e = cudaStreamSynchronize(stream);
+            if (e != cudaSuccess) {
+                err = std::string("verify: synchronizing before session binding: ") + cudaGetErrorString(e);
+                return false;
+            }
+        }
+    }
+    commit_pending_ = false;
+    commit_live_ = false;
+    copy_used_ = false;
+    for (auto* graphs : {&exec_, &exec_nr_})
+        for (auto& row : *graphs)
+            for (auto& e : row) {
+                if (e) cudaGraphExecDestroy(e);
+                e = nullptr;
+            }
+    for (auto* launched : {&launched_, &launched_nr_})
+        for (auto& row : *launched)
+            for (auto& used : row) used = false;
+    if (commit_exec_) cudaGraphExecDestroy(commit_exec_);
+    commit_exec_ = nullptr;
+    pl_prestaged_ = false;
+    last_batch_ = false;
+    last_t_ = 0;
+    ss_ = &ss;
+    return true;
+#endif
+}
+
+bool Verifier::run_slot(int slot, int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user,
+                        int32_t* out, std::string& err) {
+    struct ProposalBorrow {
+        Verifier* verifier;
+        int slot;
+        bool transferred = false;
+        ~ProposalBorrow() {
+            verifier->set_slot_spec_q(slot, nullptr, 0);
+            if (transferred) verifier->set_spec_q(nullptr, 0);
+        }
+    } proposal_borrow{this, slot};
+    if (slot < 0 || slot >= (int) slots_.size() || T < 1 ||
+        T > std::min(max_t_, (int) strata::kernels::kVerifyMaxT)) {
+        err = "verify: single-slot window out of range";
+        return false;
+    }
+    if (!bind_session(*slots_[(size_t) slot], err)) return false;
+    // Reuse upstream's reply-tail/penalty-row builder; it includes preceding rows of this window.
+    for (int t = 0; t < T; ++t) {
+        last_rows_[t] = slot;
+        last_tokens_[t] = tokens[t];
+        last_pos_b_[t] = pos0 + t;
+    }
+    hist_d_ = nullptr;
+    hist_len_ = 0;
+    std::vector<int32_t> hrows;
+    for (int t = 0; t < T; ++t) {
+        strata::kernels::SamplerParams sp;
+        const int32_t* hist = nullptr;
+        int hlen = 0;
+        if (slot_row_draw(T, t, sp, hist, hlen, hrows, err) < 0) return false;
+        if (hlen > 0) {
+            hist_d_ = slot_hist_d_;
+            hist_len_ = hlen;
+        }
+    }
+    sampling_ = slot_sp_[(size_t) slot];
+    spec_q_ = slot_spec_q_[(size_t) slot];
+    spec_nq_ = slot_spec_nq_[(size_t) slot];
+    spec_measure_ = slot_spec_measure_[(size_t) slot];
+    slot_spec_q_[(size_t) slot] = nullptr;
+    slot_spec_nq_[(size_t) slot] = 0;
+    slot_spec_measure_[(size_t) slot] = false;
+    proposal_borrow.transferred = true;
+    return run(T, tokens, pos0, pool, user, out, err);
+}
+
 const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
 
 // ================================ THE WINDOW, AS CAPTURED ================================
@@ -1341,6 +1446,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const ModelGeometry& g = *g_;
     const WeightTable& wt = *wt_;
     SessionState& ss = *ss_;
+    const MropeScope rotary(ss.mrope);
     const int64_t N = g.n_embd, HC = g.hc, K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;
     const int64_t HV = g.ssm_v_heads, HK = g.ssm_k_heads, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const int64_t IQ = g.idx_q_heads, ID = g.idx_key_dim, NE = g.n_expert, MT = max_t_;
@@ -1429,9 +1535,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     }
     copy_i32_from_mapped(step_, m_step_, (int64_t) T * kStepCount, in_s);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) MT * (NH + NKV + IQ), in_s);
+    if (mrope_rows_) {
+        const MappedCopy owners{mrope_rows_, m_mrope_, T * (int64_t) sizeof(int32_t*) / 4};
+        copy_from_mapped_multi(&owners, 1, in_s);
+    }
     // per-ROW positions of the K rows [t][NKV] and the indexer query rows [t][IQ] (for batched RoPE)
     const int32_t* pos_k = pos_ + MT * NH;
     const int32_t* pos_i = pos_ + MT * (NH + NKV);
+    auto rope_owners = [&](const int32_t* pos) -> MropeRows {
+        if (!mrope_rows_) return {};
+        if (pos >= pos_i) return {mrope_rows_ + (pos - pos_i) / IQ, (int) IQ};
+        if (pos >= pos_k) return {mrope_rows_ + (pos - pos_k) / NKV, (int) NKV};
+        return {mrope_rows_ + (pos - pos_) / NH, (int) NH};
+    };
 
     // ---- the embeddings, broadcast to the hc streams - or, in a later stage of a layer split, the previous stage's
     // residual, pending write and inject (see set_stage)
@@ -1805,6 +1921,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     return false;
                 auto norm_rope_on = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos,
                                         cudaStream_t sx) {
+                    const MropeScope owner(ss.mrope, rope_owners(pos));
                     if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, sx);
                     else rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, sx);
                     if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), pos, sx);
@@ -1814,6 +1931,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // (rope_parity check 6); STRATA_NO_NORM_ROPE=1 keeps the two; off on HIP until its parity check passes
                 const bool fuse_nr = native_qsa_enabled() && native_rope_enabled() && native_norm_rope_usable((int) HD, (int) s.n_rot);
                 auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos) {
+                    const MropeScope owner(ss.mrope, rope_owners(pos));
                     if (fuse_nr && native_norm_rope_usable(cols, (int) s.n_rot)) {
                         native_qsa_rms_norm_rope(data, cols, (const float*) norm->data, data, rows, cols, (int) s.n_rot, EPS,
                                                  rope_scaling(), pos, cs);
@@ -1859,6 +1977,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // the in-line code with its stream as a parameter; with the switch off they run on cs in the same order
                 // as before (STRATA_DF_BRANCH, the same idea for fewer of these steps, is off whenever this is on).
                 auto norm_rope_s = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos, cudaStream_t ns) {
+                    const MropeScope owner(ss.mrope, rope_owners(pos));
                     if (fuse_nr && native_norm_rope_usable(cols, (int) s.n_rot)) {
                         native_qsa_rms_norm_rope(data, cols, (const float*) norm->data, data, rows, cols, (int) s.n_rot, EPS,
                                                  rope_scaling(), pos, ns);
@@ -1889,6 +2008,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     } else {
                         for (int t = tb; t < te; ++t) {
                             const QsaState& sx = slot_ss(t).qsa_states[qi];
+                            const MropeScope owner(slot_ss(t).mrope);
                             const QsaIndexerBuffers ib{sx.idx_tail, sx.idx_dead, sx.idx_pooled, sx.idx_block_pos};
                             native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
                                                       (const float*) wikn->data, EPS, ib, s, sx.max_cells,
@@ -1934,6 +2054,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                      (int) (NH * 2 * HD), n, ns);
                     if (qb) {
                         if (fuse_nr) {   // the q/gate split reads q straight out of the q|gate rows (stride 2 * HD)
+                            const MropeScope owner(ss.mrope, rope_owners(pos_ + tb * NH));
                             native_qsa_rms_norm_rope(qfull_ + tb * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data,
                                                      qcur_ + tb * NH * HD, (int) (n * NH), (int) HD, (int) s.n_rot, EPS,
                                                      rope_scaling(), pos_ + tb * NH, ns);
@@ -1946,6 +2067,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         for (int t = tb; t < te; ++t) {
                             float* qc = qcur_ + t * NH * HD;
                             if (fuse_nr) {
+                                const MropeScope owner(ss.mrope, rope_owners(pos_ + t * NH));
                                 native_qsa_rms_norm_rope(qfull_ + t * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data, qc,
                                                          (int) NH, (int) HD, (int) s.n_rot, EPS, rope_scaling(), pos_ + t * NH, ns);
                             } else {
@@ -2920,6 +3042,7 @@ bool Verifier::capture_commit(std::string& err) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
+    const MropeScope rotary(ss.mrope);
     const QsaShapes s = shapes_of(g);
     const int64_t C = g.ssm_conv_channels, HV = g.ssm_v_heads, ID = g.idx_key_dim, MT = max_t_;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
@@ -3061,6 +3184,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     int32_t* const pi = pk + (size_t) max_t_ * g.n_head_kv;
     for (int t = 0; t < T; ++t) {
         h_tok_[t] = tokens[t];
+        if (h_mrope_) h_mrope_[t] = ss_->mrope;
         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
         const int32_t pos_t = (int32_t) (pos0 + t);
         for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = pos_t;
@@ -3964,6 +4088,9 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
             return false;
         }
     }
+    slot_spec_q_.assign(slots.size(), nullptr);
+    slot_spec_nq_.assign(slots.size(), 0);
+    slot_spec_measure_.assign(slots.size(), false);
 #if defined(STRATA_GPU_METAL)
     // the Metal window keeps each slot's running state itself (metal/src/engine/window.cpp): none of the CUDA batch buffers
     slots_ = slots;
@@ -4111,6 +4238,7 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                     const int first = t;
                     while (t < S && rows[t] == rows[first]) ++t;
                     const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
+                    const MropeScope owner(slots_[(size_t) rows[first]]->mrope);
                     copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS,
                                      TS, cs_);
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
@@ -4290,6 +4418,7 @@ bool Verifier::capture_deferred(const int* rows, int S, int hbase, std::string& 
                         const int first = t;
                         while (t < S && rows[t] == rows[first]) ++t;
                         const QsaState& st = slots_[(size_t) rows[first]]->qsa_states[qsa_index];
+                        const MropeScope owner(slots_[(size_t) rows[first]]->mrope);
                         copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[first] * nQ + qsa_index) * TS, TS, cs_);
                         const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                         for (int u = first; u < t; ++u)
@@ -4622,6 +4751,7 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {
         h_tok_[t] = tokens[t];
+        if (h_mrope_) h_mrope_[t] = slots_[(size_t) rows[t]]->mrope;
         qsa_step_fill(h_step_ + t * kStepCount, pos[t], s);
         for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = (int32_t) pos[t];
         int32_t* pk = h_pos_ + (size_t) max_t_ * g.n_head;
@@ -4677,9 +4807,22 @@ bool Verifier::run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolM
 
 bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool,
                              void* user, int32_t* out, std::string& err) {
+    // A failed launch or intermediate stage must not leave a packet borrowed for a later window.
+    struct ProposalBorrow {
+        Verifier* verifier;
+        const int* rows;
+        int count;
+        ~ProposalBorrow() {
+            for (int t = 0; t < count; ++t) verifier->set_slot_spec_q(rows[t], nullptr, 0);
+        }
+    } proposal_borrow{this, rows, std::max(0, std::min(S, (int) strata::kernels::kVerifyMaxT))};
 #if defined(STRATA_GPU_METAL)
     // each row runs in its slot's state and commits there (a one-token window); nothing is left for commit_slots
     if (S < 1 || S > (int) strata::kernels::kVerifyMaxT) { err = "verify: batch window size out of range"; return false; }
+    for (int t = 0; t < S; ++t)
+        if (rows[t] >= 0 && rows[t] < (int) slot_spec_measure_.size() && slot_spec_measure_[(size_t) rows[t]]) {
+            err = "verify batch: proposal unsupported on Metal"; return false;
+        }
     (void) pool; (void) user;
     if (!strata::metal_engine::window_run_slots(metal_, rows, S, tokens, pos, out, err)) return false;
     last_t_ = S;
@@ -4706,6 +4849,12 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     const ModelGeometry& g = *g_;
     if (pre_launch_ && !pre_launch_(cs_, err)) return false;
     if (!stage_batch(rows, S, 0, tokens, pos, err)) return false;
+    if (le_ < g.n_layers) for (int t = 0; t < S; ++t) {
+        // The setter already passed the borrow to the last stage; earlier stages never sample it.
+        slot_spec_q_[(size_t) rows[t]] = nullptr;
+        slot_spec_nq_[(size_t) rows[t]] = 0;
+        slot_spec_measure_[(size_t) rows[t]] = false;
+    }
     const cudaError_t le = cudaGraphLaunch(exec_bm_[bkey(rows, S, 0)], cs_);
     if (le != cudaSuccess) { err = std::string("verify: batch launch: ") + cudaGetErrorString(le); return false; }
     (void) cudaStreamQuery(cs_);
@@ -4863,7 +5012,12 @@ bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std
     if (le_ >= 0 && le_ < g_->n_layers) return true;
     if (slot < 0 || slot >= (int) slot_bias_dev_.size()) return true;
     const OnDevice on_device(device_);
-    if (bias.empty()) { slot_bias_dev_[(size_t) slot] = nullptr; slot_sp_[(size_t) slot].logit_bias = nullptr; return true; }
+    if (bias.empty()) {
+        if (slot_bias_dev_[(size_t) slot]) cudaFree(slot_bias_dev_[(size_t) slot]);
+        slot_bias_dev_[(size_t) slot] = nullptr;
+        slot_sp_[(size_t) slot].logit_bias = nullptr;
+        return true;
+    }
     if (bias.size() != (size_t) n_vocab_) { err = "logit_bias vocabulary size mismatch"; return false; }
     const size_t bytes = bias.size() * sizeof(float);
     if (slot_bias_dev_[(size_t) slot] == nullptr) {
@@ -4872,6 +5026,7 @@ bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std
         slot_bias_dev_[(size_t) slot] = d;
     }
     if (cudaMemcpy(slot_bias_dev_[(size_t) slot], bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "cannot upload the slot's logit_bias"; return false; }
+    if (cudaStreamSynchronize(nullptr) != cudaSuccess) { err = "cannot finish uploading the slot's logit_bias"; return false; }
     slot_sp_[(size_t) slot].logit_bias = slot_bias_dev_[(size_t) slot];
     return true;
 }
@@ -4916,14 +5071,98 @@ int Verifier::slot_row_draw(int S, int t, strata::kernels::SamplerParams& sp, co
 }
 
 bool Verifier::sample_rows(int S, std::string& err) {
+    struct ProposalBorrow {
+        Verifier* verifier;
+        int count;
+        bool finished = false;
+        ~ProposalBorrow() {
+            // Copies and kernels can already be queued when a later slot fails.
+            if (!finished) (void) cudaStreamSynchronize(verifier->cs_);
+            for (int t = 0; t < count; ++t) verifier->set_slot_spec_q(verifier->last_rows_[t], nullptr, 0);
+        }
+    } proposal_borrow{this, S};
 #if defined(STRATA_GPU_METAL)
     (void) S;
     err = "verify batch: sample_rows is the CUDA / HIP path";
     return false;
 #else
     bool any = false;
+    bool measured[strata::kernels::kVerifyMaxT] = {};
     std::vector<int32_t> hrows;
     for (int t = 0; t < S; ++t) {
+        const int slot = last_rows_[t];
+        if (t == 0 || last_rows_[t - 1] != slot) {
+            const int32_t* q = slot_spec_q_[(size_t) slot];
+            const int n_q = slot_spec_nq_[(size_t) slot];
+            const bool measure = slot_spec_measure_[(size_t) slot];
+            slot_spec_q_[(size_t) slot] = nullptr;
+            slot_spec_nq_[(size_t) slot] = 0;
+            slot_spec_measure_[(size_t) slot] = false;
+            const auto& params = slot_sp_[(size_t) slot];
+            int end = t + 1;
+            while (end < S && last_rows_[end] == slot) ++end;
+            const int T = end - t;
+            if (measure && (n_q < 0 || n_q > T || (n_q > 0 && q == nullptr))) {
+                err = "verify batch: proposal row count/pointer is invalid"; return false;
+            }
+            if (measure && (!head_sampling_ || params.greedy || params.temperature <= 0.0f)) {
+                err = "verify batch: proposal requires sampled head"; return false;
+            }
+            if (measure || (q != nullptr && n_q > 0 && !params.greedy && params.temperature > 0.0f && head_sampling_)) {
+                const int nq = measure ? n_q : std::min(n_q, T - 1);
+                if (measure || nq > 0) {
+                    // Keep the upstream host tails and per-row penalty staging; q is judged over this slot's group.
+                    strata::kernels::SamplerParams group_sp;
+                    const int32_t* group_hist = nullptr;
+                    int group_hlen = 0;
+                    for (int u = t; u < end; ++u) {
+                        strata::kernels::SamplerParams row_sp;
+                        const int32_t* row_hist = nullptr;
+                        int row_hlen = 0;
+                        if (slot_row_draw(S, u, row_sp, row_hist, row_hlen, hrows, err) < 0) return false;
+                        if (u == t) { group_sp = row_sp; group_hist = row_hist; group_hlen = row_hlen; }
+                    }
+                    using namespace strata::kernels;
+                    if (d_spec_ == nullptr &&
+                        cudaMalloc((void**) &d_spec_, (size_t) kVerifyMaxT *
+                                   (1 + strata::core::kSpecQStride) * sizeof(int32_t)) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        d_spec_ = nullptr;
+                    }
+                    bool judged = false;
+                    if (d_spec_ != nullptr) {
+                        int32_t* d_q = d_spec_ + kVerifyMaxT;
+                        if ((T == 1 || cudaMemcpyAsync(d_spec_, last_tokens_ + t + 1, (size_t) (T - 1) * sizeof(int32_t),
+                                            cudaMemcpyHostToDevice, cs_) == cudaSuccess) &&
+                            (nq == 0 || cudaMemcpyAsync(d_q, q, (size_t) nq * strata::core::kSpecQStride * sizeof(int32_t),
+                                            cudaMemcpyHostToDevice, cs_) == cudaSuccess))
+                            judged = measure
+                                ? sample_tokens_proposal(head_logits_ + (size_t) t * (size_t) n_vocab_, T,
+                                                         (int) n_vocab_, group_hist, group_hlen, group_sp,
+                                                         d_spec_, d_q, nq, m_out_ + t, cs_)
+                                : sample_tokens_spec(head_logits_ + (size_t) t * (size_t) n_vocab_, T,
+                                                     (int) n_vocab_, group_hist, group_hlen, group_sp,
+                                                     d_spec_, d_q, nq, m_out_ + t, cs_);
+                    }
+                    if (judged) {
+                        ++spec_windows;
+                        for (int u = t; u < end; ++u) measured[u] = measure;
+                        any = true;
+                        t = end - 1;
+                        continue;
+                    }
+                    if (measure) {
+                        err = "verify batch: proposal sampler unavailable or allocation/copy/launch failed";
+                        return false;
+                    }
+                    if (!slot_spec_fallback_warned_) {
+                        std::fprintf(stderr, "strata verify: batch q sampler unavailable; using exact-match target "
+                                             "sampling, as the ordinary speculative sampler does\n");
+                        slot_spec_fallback_warned_ = true;
+                    }
+                }
+            }
+        }
         strata::kernels::SamplerParams sp;
         const int32_t* hist = nullptr;
         int hlen = 0;
@@ -4934,6 +5173,11 @@ bool Verifier::sample_rows(int S, std::string& err) {
         any = true;
     }
     if (any && cudaStreamSynchronize(cs_) != cudaSuccess) { err = "verify batch: the row sampling failed"; return false; }
+    for (int t = 0; t < S; ++t)
+        if (measured[t] && ((volatile int32_t*) h_out_)[t] == strata::core::proposal::kProposalSamplerErrorToken) {
+            err = "verify batch: invalid proposal candidate or zero NULL residual"; return false;
+        }
+    proposal_borrow.finished = true;
     return true;
 #endif
 }

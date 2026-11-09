@@ -105,7 +105,7 @@ public:
     void kv_restore(int64_t upto);
     /// The VRAM bind() will allocate for a native head of `head_row_bytes` per vocabulary row: the draft logits and
     /// the draft head over rt/draft_vocab.bin's subset.  The expert cache is sized before bind(), so it reserves this.
-    uint64_t bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const;
+    uint64_t bind_bytes(uint64_t head_row_bytes, int64_t n_vocab, bool owned_bias = false) const;
     /// The main model's embedding and head, and the verify window's final residuals (T rows, hc*n_embd each).
     bool bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err,
               const MtpDrafter* shared = nullptr);
@@ -153,8 +153,12 @@ public:
     /// COUPLED DRAFT SAMPLING (core/coupled_draft.hpp; STRATA_SPEC_COUPLED=1, set up by bind()): the request's
     /// sampling.  A sampled request (temperature > 0, not greedy) then drafts by SAMPLING with the target's chain and
     /// the target's Philox draw for the verifying row, and `probs` is the draft's probability under that chain; a
-    /// greedy one keeps the argmax drafts and their graphs.  A no-op when the switch is off.
+    /// greedy one keeps the argmax drafts and their graphs. A no-op when the switch is off.
     void set_draft_sampling(const strata::kernels::SamplerParams& sp);
+    /// Fixed-slot sampling owns its bias independently of the shared verifier workspace.
+    /// Waits for this drafter's prior work, then owns a device-local copy of any bias [n_vocab].
+    /// The source bias must be ready on entry; it may be changed or freed once this succeeds.
+    bool set_draft_sampling(const strata::kernels::SamplerParams& sp, std::string& err);
     /// Coupled mode with penalties: the history the next draft() chain starts from - what the session holds after the
     /// window's commit (`tail`) and the window's pick at its last accepted row (`next`, the next window's row 0).
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
@@ -163,7 +167,7 @@ public:
     bool coupled() const { return coupled_active_; }
     /// PROBABILISTIC DRAFT ACCEPTANCE (core/spec_prob.hpp, STRATA_SPEC_PROB=1): this request's drafts are SAMPLED from
     /// q and each draft j's distribution is in spec_q() + j * kSpecQStride (ids, -1 terminated; then float bits),
-    /// valid on the host once draft() has returned.  False for greedy requests and where the mode is off.
+    /// valid on the host once draft() returns or chain_poll() completes. False for greedy requests or with the mode off.
     bool prob() const { return coupled_active_ && h_q_ != nullptr; }
     const int32_t* spec_q() const { return h_q_; }
 
@@ -175,13 +179,17 @@ public:
     void set_force_capture(bool on) { force_on_ = on; }
     /// The rows the next round reads (null: the bound `window_R`), copied into the bound buffer before the round.
     void set_source_R(const float* rows) { src_R_ = rows; }
-    /// Capture the round graphs for T = 1..max_t and every step graph now (a capture syncs the drafter's stream).
-    bool prepare_chain(std::string& err);
+    /// Capture the round/step graphs now. `coupled` also prepares the configured sampled graphs, opt-in so existing
+    /// pipeline callers keep their previous captures and VRAM use.
+    bool prepare_draft(std::string& err, bool coupled = false);
+    /// Prepare those graphs and asynchronous-chain events. Requires set_force_capture before load.
+    bool prepare_chain(std::string& err, bool coupled = false);
     /// The catch-up over T cells from `p` (as draft()), then `n_out` outputs from row `a`: output j is the chain's
     /// own pick, and step j (1 <= j <= n_force) takes force[j - 1] as its input token instead of output j - 1.
     /// `n_early`: an event after each of the first `n_early` outputs (chain_outputs_ready).
+    /// `coupled` enables the request's sampled chain when active; false preserves the existing greedy chain.
     bool chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force, int n_out,
-                      int n_early, std::string& err);
+                      int n_early, std::string& err, bool coupled = false);
     /// 1: every output is in chain_tok()/chain_prob(); 0: still running; -1: an error.
     int chain_poll(std::string& err);
     /// How many of the chain's first outputs (up to `n_early`; all of them once the chain is done) have landed in
@@ -229,6 +237,7 @@ public:
     }
 
 private:
+    friend struct MtpSamplingFixture;
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
     /// False (with `err`) while the experts are lent to a prompt: the prompt path's ring is pointed at their bytes
     /// (STRATA_MTP_ROOM_MIN), so a decode pass would read the prompt's staged blobs as experts.  Every decode entry
@@ -258,6 +267,7 @@ private:
     bool coupled_rec_ = false;   ///< record_forward: the full layer ends in the coupled sampler (draft coupled_j_)
     int coupled_j_ = 0;
     strata::kernels::SamplerParams *h_cparams_ = nullptr, *m_cparams_ = nullptr, *cparams_ = nullptr;
+    float* cbias_ = nullptr;   ///< owned on device_; stable until destruction, including across request clears
     int32_t *h_chist_ = nullptr, *m_chist_ = nullptr, *cring_ = nullptr, *dinv_ = nullptr;
     int32_t *h_q_ = nullptr, *m_q_ = nullptr;   ///< STRATA_SPEC_PROB: the drafts' q lists (mapped, max_t_ rows)
     void* cscratch_ = nullptr;
