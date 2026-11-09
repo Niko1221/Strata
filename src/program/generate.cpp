@@ -14023,6 +14023,27 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
+            // STRATA_CACHE_DIVERGE=N (opt-in, tuning): where this prompt leaves the longest conversation the engine
+            // still knows (the live session, an idle slot's, a parked one).  A read past it gets a checkpoint there
+            // (below, with the cuts), so the next request on the same document - another question after the shared
+            // part - resumes at the document's end instead of at the last periodic mark.  N: the least gain in tokens.
+            static const int64_t diverge_min = [] {
+                const char* v = std::getenv("STRATA_CACHE_DIVERGE");
+                return v != nullptr ? (int64_t) std::max(0, std::atoi(v)) : (int64_t) 0;
+            }();
+            int64_t diverge_shared = 0;
+            if (diverge_min > 0 && o.prompt_cache > 0 && want_cvec == cvec_cached) {
+                auto lcp = [&](const std::vector<int32_t>& v) {
+                    const int64_t m = std::min<int64_t>((int64_t) v.size(), (int64_t) ids.size());
+                    int64_t k = 0;
+                    while (k < m && (int64_t) v[(size_t) k] == ids[(size_t) k]) ++k;
+                    return k;
+                };
+                if (live_ok) diverge_shared = lcp(live);
+                for (const BSlot& sl : bs)
+                    if (sl.cached && sl.cvec == want_cvec) diverge_shared = std::max(diverge_shared, lcp(sl.ids));
+                diverge_shared = std::max(diverge_shared, conversations.longest_shared(ids, want_cvec));
+            }
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
@@ -15578,9 +15599,20 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata serve: pin=%lld: the cache has no checkpoint there to pin (it resumed from "
                                  "%lld)\n", (long long) req_pin, (long long) read_from);
             }
+            // STRATA_CACHE_DIVERGE: the point where this prompt left a known conversation (computed at the match above),
+            // when it is far enough past where the read starts and before the last turn's start / the prompt's end
+            int64_t div_at = -1;
+            if (diverge_min > 0 && req_ckpt && !multi_gpu && reread_to < 0 && diverge_shared >= read_from + diverge_min &&
+                diverge_shared < (turn_at > 0 ? turn_at : n - 1) - 16 && diverge_shared != root_at &&
+                diverge_shared != message_at && diverge_shared != pin_at)
+                div_at = diverge_shared;
+            if (div_at >= 0)
+                std::fprintf(stderr, "strata serve: divergence checkpoint at %lld (read from %lld, prompt %lld)\n",
+                             (long long) div_at, (long long) read_from, (long long) n);
             std::vector<int64_t> cuts = {reread_to, root_at, message_at, turn_at, n - 1};
-            if (pin_at >= 0) {
-                cuts.push_back(pin_at);
+            if (pin_at >= 0 || div_at >= 0) {
+                if (pin_at >= 0) cuts.push_back(pin_at);
+                if (div_at >= 0) cuts.push_back(div_at);
                 std::sort(cuts.begin(), cuts.end());   // the skipped -1s first, n - 1 still last
             }
             int64_t at = read_from;
@@ -15592,7 +15624,7 @@ int main(int argc, char** argv) {
             int64_t merge_at = -1;
             auto merge_from = [&](int64_t a0, int64_t to) -> int64_t {
                 if (!admit_merge_first_env() || admit_slot < 0 || max_new != 1 || batch_mtp || pipe) return -1;
-                if (to != n - 1 || to == turn_at || to == root_at || to == message_at || to == pin_at) return -1;
+                if (to != n - 1 || to == turn_at || to == root_at || to == message_at || to == pin_at || to == div_at) return -1;
                 if (!req_imgs.empty() || kvg.on || peer.valid() || remote_caches || remote_opt || fs_swap) return -1;
                 if (std::getenv("STRATA_LOGPOS") != nullptr) return -1;
                 if (host_res.empty() || !pending.empty() ||
@@ -15665,7 +15697,7 @@ int main(int argc, char** argv) {
                     break;
                 }
                 at = to;
-                if ((to == turn_at || to == root_at || to == message_at || to == pin_at) &&
+                if ((to == turn_at || to == root_at || to == message_at || to == pin_at || to == div_at) &&
                     !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at && to != pin_at)) {   // the tail kind leaves first
                     if (!ckpt_why.empty() || !checkpoint_failure_is_survivable()) {   // #3350: only an unwell GPU ends the request
                         std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
