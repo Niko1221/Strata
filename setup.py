@@ -6289,6 +6289,26 @@ def gcc_major(compiler) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def install_hint(limit: int) -> tuple:
+    """(the command for this distro, True when the hint already names the CC / CXX / CUDAHOSTCXX way out - so the
+    caller does not repeat it).  On Arch / CachyOS gcc14 is in the repos; on plain Arch it is AUR-only and an AUR
+    helper builds it.  The command is printed, never run: setup.py never invokes sudo (it runs in non-interactive
+    contexts), and a managed node or container where installing is impossible has the CC / CXX way out.
+    """
+    if WIN:
+        return ("", True)                            # Windows drives MSVC; cuda_host_compilers() warns on nothing
+    if shutil.which("pacman"):                       # Arch / CachyOS: gcc14, no dash; -libs comes with it.
+        return f"sudo pacman -S gcc{limit} gcc{limit}-libs", False
+    if shutil.which("apt"):
+        return f"sudo apt install gcc-{limit} g++-{limit}", False
+    if shutil.which("dnf"):                          # Fedora: gcc14 / gcc14-c++ (no dash).
+        return f"sudo dnf install gcc{limit} gcc{limit}-c++", False
+    if shutil.which("zypper"):
+        return f"sudo zypper install gcc{limit} gcc{limit}-c++", False
+    return (f"install gcc-{limit} and g++-{limit} with your package manager, or set CC, CXX and CUDAHOSTCXX to a "
+            f"compiler nvcc supports", True)
+
+
 def cuda_host_compilers(nvcc) -> tuple:
     """(cc, cxx) to build with instead of this PC's default gcc - else (None, None), the default stays as it was.
 
@@ -6310,8 +6330,10 @@ def cuda_host_compilers(nvcc) -> tuple:
             ok(f"host compiler: GCC {n} ({cxx}) - this PC's g++ is {have} and nvcc accepts up to GCC {limit}; "
                f"CC / CXX choose another")
             return (str(Path(cc)), str(Path(cxx)))
-    warn(f"this PC's g++ is {have} but nvcc accepts up to GCC {limit}: install gcc-{limit} (and g++-{limit}), or set "
-         f"CC, CXX and CUDAHOSTCXX to a compiler nvcc supports - the CUDA files fail without it")
+    hint, has_escape = install_hint(limit)                   # this distro's command, printed never run
+    tail = "" if has_escape else ("; or set CC, CXX and CUDAHOSTCXX to a compiler nvcc supports "
+                                  "- the CUDA files fail without it")
+    warn(f"this PC's g++ is {have} but nvcc accepts up to GCC {limit}: {hint}{tail}")
     return (None, None)
 
 
