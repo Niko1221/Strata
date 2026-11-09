@@ -76,6 +76,18 @@
     },
     "data/startup-failure.txt": {
       "sha256": "6e871a2d76e25b4310b44efe5b3500170b7d685516d7267eee5efa735ebe5967"
+    },
+    "payload-verification/payload_check.py": {
+      "sha256": "567a2c7f8908be68d4d198543a8072fdce0f7c8f8b3409b7e59c9b9f81e5792a"
+    },
+    "payload-verification/source-model-metadata.json": {
+      "sha256": "4c11beae2055edfaf739a04733a131cd8ccffb7bef3bbe3b625af08b07ab5634"
+    },
+    "payload-verification/receipt.json": {
+      "sha256": "8496de57df46f0c4e1b3b19d8bd20879011b76dfd9e181ff3dc106b784ef5fc8"
+    },
+    "payload-verification/README.md": {
+      "sha256": "280e4ad61a171479718c54280da842b5d8c729e7e479787cb0ab7ca0ac77d538"
     }
   },
   "labels": "Coarse groups from the original study: code,STEM,languages,other. These are known labels,not classifier predictions.",
@@ -83,5 +95,13 @@
   "licenses": {
     "engine_and_corpus": "Strata MIT License",
     "measurement_data": "MIT License;no model weights included"
+  },
+  "source_payload_verification": {
+    "status": "succeeded",
+    "files_matched": 2,
+    "bytes_hashed": 75839998528,
+    "finished_utc": "2026-11-09T17:23:38.319157+00:00",
+    "receipt": "payload-verification/receipt.json",
+    "scope": "Complete source GGUF payload SHA256 matches pinned LFS metadata; this does not re-derive or attest the prepared native pack"
   }
 }

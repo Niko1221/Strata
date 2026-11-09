@@ -55,9 +55,11 @@ thinking disabled and at most 250 generated tokens per request. The host exposed
 31.3 GiB RAM and the measured PCIe transfer rate was 0.3 GB/s.
 The recorded model revision is `ed59f92082b1e93c0e96d60a8b11aab089b52f09` from
 [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/tree/ed59f92082b1e93c0e96d60a8b11aab089b52f09).
-Download metadata matches the pinned source's two LFS hashes in
-[model-source.json](model-source.json); the existing release binary's SHA-256 is
-recorded in the provenance.
+The original download-metadata check is frozen in
+[model-source.json](model-source.json). A subsequent full SHA-256 read of both
+source GGUF files matched the pinned LFS digests: 75,839,998,528 bytes verified.
+The [payload receipt and exact verifier](payload-verification/README.md) preserve
+that check. The existing release binary's SHA-256 is recorded in the provenance.
 
 The three bounded runs produced 10,170 generated tokens and **6,363,360 decode expert
 entries**. The routing dumps also contain 759,840 prompt entries. All 45 decode
@@ -127,8 +129,9 @@ checked the domain signal and layer quota control.
   classifier, or equal model outputs. GPU and CPU arithmetic can round differently
   even when expert IDs and weights stay unchanged.
 - The 0.3 GB/s PCIe link and small GPU cache do not represent an ordinary 12 GB card.
-  The full local model payloads were not rehashed during this analysis.
-  This pilot is not a standard or approved benchmark under the draft protocol.
+  The subsequent source GGUF hash check does not re-derive or attest the prepared
+  native pack. This pilot is not a standard or approved benchmark under the draft
+  protocol.
 - No engine source is changed, so CUDA/HIP/SYCL builds are outside this tooling
   change. A runtime feature needs a separate, agreed scope and
   actual same-hardware tests, including copy cost and output/quality controls.
@@ -138,6 +141,6 @@ checked the domain signal and layer quota control.
   was changed to resolve an absolute path, then all eight remaining requests
   completed. The [failure log](data/startup-failure.txt) is retained.
 - The live profile pilot passed all nine fixed correctness checks, but the code
-  profile changed the clamp answer from21to26tokens. Its frozen output-parity gate
+  profile changed the clamp answer from 21 to 26 tokens. Its frozen output-parity gate
   fails; no live speedup is established. [All runs and outputs](live-pilot/README.md)
   are included. Static coverage and this runtime outcome are separate results.
