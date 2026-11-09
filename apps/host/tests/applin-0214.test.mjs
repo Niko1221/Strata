@@ -99,3 +99,19 @@ test('a serving refusal is not retried', async () => {
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+// ------------------------------------------------------------------ item 2: a stale /tmp/.mount_* path
+
+test('the engine update repairs run-config paths of a gone AppImage mount before Control test-starts with it', async () => {
+  const gone = '/tmp/.mount_StratappjGco/usr/lib/Strata/control';
+  let seen = null;
+  const f = fixture({ cfgExtra: { cwd: gone, args: ['--expert-profile', gone + '/data/expert-profile.bin', '--max-context', '32768'] },
+    update: async () => { seen = JSON.parse(readFileSync(f.config, 'utf8')); } });
+  try {
+    const job = await finish(f.native, f.native.operation('update-engine', {}).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.ok(seen, 'Control was called');
+    assert.equal(seen.cwd, join(f.root, 'control'));
+    assert.equal(seen.args[1], join(f.root, 'control', 'data', 'expert-profile.bin'));
+  } finally { await f.native.close(); f.cleanup(); }
+});
+

@@ -94,6 +94,9 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   for(const name of names){const path=join(dir,name),config=readJson(path,null);if(!config||typeof config!=='object')continue;
    const next={...config,...(config.cwd!==undefined?{cwd:fix(config.cwd)}:{}),...(Array.isArray(config.args)?{args:config.args.map(fix)}:{})};
    if(JSON.stringify(next)!==JSON.stringify(config)){try{writeModelConfig(path,next);}catch{/* read-only folder: the load reports it */}}}}
+ /* Every folder that holds run configs. Also run before a component job (the engine update test-starts an installed model with its run config) and before a load:
+    an AppImage's Control lives in /tmp/.mount_<random>, a new name at every start, so a path setup wrote there is gone after the app restarts (QAGUI-LIN 0213). */
+ function repairAllControlPaths(){try{for(const dir of [preferences.installDir,packagedInstall,installRoot()])repairControlPaths(dir);}catch{/* the read that follows reports a bad folder */}}
  /* DeepSeek reads pictures with the engine's own tower, which is part of the pack (pack_gguf writes the tower's geometry into ds4.txt when the picture file was there): a pack with it is "prepared", a text-only pack (made with --vision off, as the app did before 0.2.9) is not, and the Models screen then offers the one missing shared file. null for every other model. */
  const dsPictures=cfg=>{if(cfg?.arch!=='deepseek41')return null;const a=Array.isArray(cfg.args)?cfg.args:[];const at=a.indexOf('--pack');if(at<0||typeof a[at+1]!=='string')return false;try{const t=readFileSync(join(a[at+1],'ds4.txt'),'utf8');return /image_token_id/.test(t)&&/vision[.]num_hidden_layers/.test(t);}catch{return false;}};
  /* DeepSeek's picture switch is a pair, --vision on|off, in the saved arguments: set it to the person's choice at every load (on only where the pack carries the tower). */
@@ -124,7 +127,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  }
  async function controlTool(name){
   if(name==='strata_status'){
-   for(const dir of [preferences.installDir,packagedInstall,installRoot()])repairControlPaths(dir);
+   repairAllControlPaths();
    // Always the app's own install folder (or the one the person chose in Settings): Control is told explicitly, so it never falls
    // back to an older command-line Strata's folder remembered in %APPDATA% (tester report 2026-10-17: logs landed in T:\Strata).
    const list=await control.installedModels({installDir:installRoot()});
@@ -445,7 +448,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   return {summary:'The picture files are ready.'};
  }
  async function loadEngine(job,args){
-  await refresh(true);if(job.state!=='running')return;const {entry,path:configFile}=recordFile(args.model);let config=checkedSettingsConfig(readFileSync(configFile,'utf8'));if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready){const error=missingFilesError(args.model,entry.missing);append(args.model,error.details[0]);throw error;}
+  repairAllControlPaths();await refresh(true);if(job.state!=='running')return;const {entry,path:configFile}=recordFile(args.model);let config=checkedSettingsConfig(readFileSync(configFile,'utf8'));if(packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));}if(!entry.ready){const error=missingFilesError(args.model,entry.missing);append(args.model,error.details[0]);throw error;}
   if(externalRunning().length)throw new Error('A Strata server is already running outside this UI. Stop it before loading here, or connect its API in Settings → Models.');
   if(args.multiple&&instances.size>=8)throw new Error('Unload an instance before adding another. Up to eight native instances can run here.');
   /* Read pictures is on and the picture files are not here: the Load fetches those files (about 0.9 GB, once) and nothing else of the model, then goes on. No internet: the model loads without pictures and the page says so. */
@@ -571,6 +574,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
     shell's signed Tauri updater. Models are not part of any of it. */
  async function componentProgram(job,args={}){
   if(!COMPONENT_KINDS.includes(job.kind)||typeof control.update!=='function')throw new Error(NO_INSTALL);
+  repairAllControlPaths();
   if(instances.size&&!(job.kind==='update-engine'&&args.stopModel===true))throw new Error('Unload native models before changing engine files.');
   job.abort=new AbortController();
   const subject=job.kind==='update-strata'?'Strata':'engine';
