@@ -1,0 +1,23 @@
+{
+  "schema": "synthetic-two-request-repetition-repro-v1",
+  "configured_context": 65536,
+  "requires_fresh_server": true,
+  "model": "Unsloth Qwen3.8-Flash-Next Dynamic v3.1 UD-IQ2_XS with separate Q8_0 engram",
+  "requests": [
+    {
+      "file": "01-long-64000.json",
+      "sha256": "83562051788ec9a2397efb0664fa16978bf7954fdf6d07fc1ed5071c629b87da",
+      "wire_sha256": "83562051788ec9a2397efb0664fa16978bf7954fdf6d07fc1ed5071c629b87da",
+      "prompt_tokens": 64000,
+      "max_tokens": 512
+    },
+    {
+      "file": "02-coding-61000-budget2999.json",
+      "sha256": "53e9c2efb5a12354f21982bfab32a40b46aa06747fe77000639ae201456e016e",
+      "wire_sha256": "53e9c2efb5a12354f21982bfab32a40b46aa06747fe77000639ae201456e016e",
+      "prompt_tokens": 61000,
+      "max_tokens": 4000
+    }
+  ],
+  "privacy_review": "All message text checked against synthetic fixed task text and generated numeric/hash archive records; no user conversations or machine data."
+}
