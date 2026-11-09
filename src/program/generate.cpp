@@ -18112,8 +18112,8 @@ int main(int argc, char** argv) {
                         }
                         std::lock_guard<std::mutex> lk(in_mu);   // a BSTOP that came meanwhile ends its slot at its next window
                         for (auto it = in_lines.begin(); it != in_lines.end();) {
-                            if (it->rfind("BSTOP ", 0) == 0) {
-                                const int b = std::atoi(it->c_str() + 6);
+                            if (it->text.rfind("BSTOP ", 0) == 0) {
+                                const int b = std::atoi(it->text.c_str() + 6);
                                 if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
                                 it = in_lines.erase(it);
                             } else {

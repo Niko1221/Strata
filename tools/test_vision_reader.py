@@ -178,15 +178,19 @@ class FakeProc:
     def __init__(self, first_line: str):
         self.stdin, self.stdout = io.StringIO(), io.StringIO(first_line)
         self.killed = False
+        self.returncode = None
 
     def kill(self):
         self.killed = True
+        self.returncode = -9
 
     def wait(self, timeout=None):
-        return 0
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
 
     def poll(self):
-        return None
+        return self.returncode
 
 
 def make_vision(cfg: dict) -> "server.Vision":

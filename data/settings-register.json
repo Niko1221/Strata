@@ -38818,6 +38818,88 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_TEST_LIVE_MAP_FAIL_AFTER",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/expert_cache.cpp",
+     "line": 799,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [
+    {
+     "file": "src/core/live_memory_test.cpp",
+     "line": 29
+    },
+    {
+     "file": "src/core/live_memory_test.cpp",
+     "line": 31
+    },
+    {
+     "file": "src/core/live_memory_test.cpp",
+     "line": 32
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "core",
+   "note": "Fault injection for live GPU cache-growth rollback tests: fail mapping after the configured number of newly mapped blocks. Unset in normal inference; see src/core/live_memory_test.cpp.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TEST_LIVE_RAM_FAIL_AFTER_ALLOC",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/expert_source.cpp",
+     "line": 4361,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [
+    {
+     "file": "src/core/live_memory_test.cpp",
+     "line": 37
+    },
+    {
+     "file": "src/core/live_memory_test.cpp",
+     "line": 39
+    },
+    {
+     "file": "src/core/live_memory_test.cpp",
+     "line": 40
+    }
+   ],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "core",
+   "note": "Fault injection for live RAM-growth rollback tests: presence throws after the temporary host allocation, before commit. Unset in normal inference; see src/core/live_memory_test.cpp.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_TEST_NAN_STOP_AT",
    "backends": [
     "cuda-hip"

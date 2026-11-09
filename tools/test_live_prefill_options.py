@@ -7,6 +7,11 @@ import unittest
 
 
 class Options(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not hasattr(cls, "binary"):
+            raise unittest.SkipTest("needs a built native engine: run test_live_prefill_options.py --binary <strata>")
+
     def run_native(self, *args, **environment):
         env = dict(os.environ)
         for key in ("STRATA_KV_GROW", "STRATA_KV_STAGE_OWN", "STRATA_FS_SLOTS"):
