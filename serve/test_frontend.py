@@ -349,3 +349,51 @@ class EmptyConversation(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_messages(openai_to_messages({})[0])
         require_messages(openai_to_messages({"messages": [{"role": "user", "content": "hi"}]})[0])
+
+
+class ContinueFinalMessage(unittest.TestCase):
+    """A request that asks to continue its last assistant turn reaches the renderer."""
+
+    HISTORY = [{"role": "user", "content": "write one"},
+               {"role": "assistant", "content": "the answer so far"}]
+
+    def setUp(self):
+        self.template = ChatTemplate(Path(__file__).with_name("chat_template.jinja"))
+        tok = ByteTokenizer()
+        self.service = Service(MockEngine(tok, "ok"), tok, self.template)
+
+    def kwargs_of(self, **body):
+        body.setdefault("messages", self.HISTORY)
+        return openai_to_messages(body)[2]
+
+    def test_the_template_kwarg_survives_either_json_order(self):
+        for ctk in ({"enable_thinking": False, "continue_final_message": True},
+                    {"continue_final_message": True, "enable_thinking": False}):
+            with self.subTest(order=list(ctk)):
+                got = self.kwargs_of(chat_template_kwargs=ctk)
+                self.assertIs(got.get("continue_final_message"), True)
+                self.assertIn("enable_thinking", got)          # thinking is still off
+
+    def test_the_request_body_field_is_read_as_well(self):
+        self.assertIs(self.kwargs_of(continue_final_message=True).get("continue_final_message"), True)
+
+    def test_the_request_body_field_wins(self):
+        got = self.kwargs_of(continue_final_message=False,
+                             chat_template_kwargs={"continue_final_message": True})
+        self.assertNotIn("continue_final_message", got)
+
+    def test_only_a_boolean_true_continues(self):
+        for value in (False, "content", "reasoning_content", 1, None):
+            with self.subTest(value=value):
+                self.assertNotIn("continue_final_message", self.kwargs_of(continue_final_message=value))
+
+    def test_the_prompt_ends_where_the_client_left_off(self):
+        messages, tools, kwargs = openai_to_messages(
+            {"messages": self.HISTORY,
+             "chat_template_kwargs": {"continue_final_message": True, "enable_thinking": False}})
+        continued = self.service.render_prompt(messages, tools, kwargs)
+        self.assertTrue(continued.endswith("the answer so far"))
+        started = self.service.render_prompt(messages, tools, {k: v for k, v in kwargs.items()
+                                                               if k != "continue_final_message"})
+        self.assertTrue(started.startswith(continued))         # the same prompt, up to the turn
+        self.assertGreater(len(started), len(continued))         # plus its close and the new turn's start
