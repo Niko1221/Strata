@@ -116,6 +116,10 @@ profile writer/mix checks; the three analysis commands above; profile write/read
 round trips. Independent read-only review reproduced the decode boundaries and
 checked the domain signal and layer quota control.
 
+The same 22 focused checks also passed inside the official extended tools suite,
+which passed 1,675 checks locally on Windows. The [per-case record and base
+comparison](validation/README.md) retain its failures and skips with exact scope.
+
 ## Observations
 
 - This is an exploratory profiling corpus: all 45 planned requests, with code 12,
@@ -135,7 +139,11 @@ checked the domain signal and layer quota control.
 - No engine source is changed, so CUDA/HIP/SYCL builds are outside this tooling
   change. A runtime feature needs a separate, agreed scope and
   actual same-hardware tests, including copy cost and output/quality controls.
-- Failed checks on the submitted tool revision: none observed.
+- The extended local tools step failed six cases and skipped 78. All six failures
+  reproduced on the unmodified upstream base in this Windows environment, with
+  matched messages after replacing checkout paths. The focused 22 checks passed.
+  [Full records and limits](validation/README.md) are retained; these local results
+  do not establish that GitHub's full CI matrix passes.
 - A separate three-second collection startup failed before model loading because
   a relative output path resolved against the server's directory. The collector
   was changed to resolve an absolute path, then all eight remaining requests

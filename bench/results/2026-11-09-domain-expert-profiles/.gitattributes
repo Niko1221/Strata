@@ -2,3 +2,4 @@
 data/*.txt text eol=lf -whitespace
 data/*.gz -text
 payload-verification/* -text -whitespace
+validation/* -text -whitespace

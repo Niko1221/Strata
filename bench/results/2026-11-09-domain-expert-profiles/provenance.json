@@ -88,6 +88,25 @@
     },
     "payload-verification/README.md": {
       "sha256": "280e4ad61a171479718c54280da842b5d8c729e7e479787cb0ab7ca0ac77d538"
+    },
+    "validation/README.md": {
+      "sha256": "1cd2c8e00513fa7afaf635c9a568c2300075577c64d2e36a8aef215a7a1baf08"
+    },
+    "validation/convert_junit.py": {
+      "sha256": "a87cf3b87dbc401f1bae70a2e4d8fd3f672b0792813cafb28c6a2346a54c1064"
+    },
+    "validation/head-cases.json.gz": {
+      "sha256": "95b114e909825e7146d76f87089380aad39780ab1b961d3319588cc6912cc123",
+      "uncompressed_sha256": "092dd266aa35b8c9c6908efdf7d05f5b12633303c26a32c46db2933979198bd5",
+      "uncompressed_bytes": 292038
+    },
+    "validation/base-cases.json.gz": {
+      "sha256": "84239e28b5ff4557b7078b93bcf2a0b23d26cee250967d44754d282bf4f59b92",
+      "uncompressed_sha256": "67870adb2ea303014fc49eabd5cb340ff7bbd43a1cb43a75967c2c2e1c656c5b",
+      "uncompressed_bytes": 3985
+    },
+    "validation/summary.json": {
+      "sha256": "5aede0188bb7c96fb451f6045fb8b1e4a293d77628eeeef7c6163e05f8072c47"
     }
   },
   "labels": "Coarse groups from the original study: code,STEM,languages,other. These are known labels,not classifier predictions.",
@@ -103,5 +122,14 @@
     "finished_utc": "2026-11-09T17:23:38.319157+00:00",
     "receipt": "payload-verification/receipt.json",
     "scope": "Complete source GGUF payload SHA256 matches pinned LFS metadata; this does not re-derive or attest the prepared native pack"
+  },
+  "extended_local_validation": {
+    "summary": "validation/summary.json",
+    "focused_passed": 22,
+    "extended_passed": 1675,
+    "extended_failed": 6,
+    "extended_skipped": 78,
+    "same_failures_on_base": 6,
+    "scope": "Windows/Python3.13 local run; upstream CI remains separate"
   }
 }
