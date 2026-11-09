@@ -577,7 +577,7 @@ def main() -> int:
     ap.add_argument("--rollouts", default="", help="--objective grpo 的轨迹 jsonl（离线回放）")
     ap.add_argument("--dpo-data", default="",
                     help="--objective dpo 的偏好对 jsonl（prompt/chosen/rejected，"
-                         "格式见 data_dpo.jsonl；ref logprob 在训练起点预计算一次）")
+                         "格式见 examples/training/data_dpo.jsonl；ref logprob 在训练起点预计算一次）")
     ap.add_argument("--dpo-beta", type=float, default=0.1, help="DPO 的 β（与 sft.py 同默认）")
     # 在线采样：不依赖引擎，学生自己采 —— 显存不涨（同一条前向路径），代价是 decode 慢。
     ap.add_argument("--prompts", default="",
@@ -705,7 +705,7 @@ def main() -> int:
         enc = None
     elif args.objective == "dpo":
         if not args.dpo_data:
-            raise SystemExit("--objective dpo 需要 --dpo-data <偏好对 jsonl>（格式见 data_dpo.jsonl）")
+            raise SystemExit("--objective dpo 需要 --dpo-data <偏好对 jsonl>（格式见 examples/training/data_dpo.jsonl）")
         pairs = load_dpo_pairs(args.dpo_data, tok)
         # ref = 训练起点（B=0 = 基座行为），冻结。与反传路线（sft.py --dpo-data）同一口径：
         # margin = (π_c − ref_c) − (π_r − ref_r)，ref 侧训练前一次算完，训练时零额外前向。

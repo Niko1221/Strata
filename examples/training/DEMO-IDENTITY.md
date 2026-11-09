@@ -25,7 +25,7 @@ break anything else on the way. It gives no score, it gives text — "the loss w
 
 ## DPO mode (`--algo dpo` / `--dpo-data`)
 
-Preference-pair route: `--dpo-data data_dpo.jsonl` (one line per pair — prompt + chosen +
+Preference-pair route: `--dpo-data examples/training/data_dpo.jsonl` (one line per pair — prompt + chosen +
 rejected, `{dev}` placeholder supported). Division of labour with SFT / GRPO:
 
 | | SFT | DPO | GRPO |
@@ -53,7 +53,7 @@ prompts get the name injected. Two fixes:
 - **`--early-stop LOSS`** (`sft.py`): stop when the mean loss of the last 3 steps falls below
   the threshold — once the samples have converged, further training is memorization. 0.15
   triggers at step 26, 14 steps short of the 40-step budget.
-- **Capability-replay samples** (the last 10 lines of `data_developer.jsonl`): small talk,
+- **Capability-replay samples** (the last 10 lines of `examples/training/data_developer.jsonl`): small talk,
   description, arithmetic, counting, worded **deliberately differently** from the acceptance
   probes (train on `What is 3 + 4?`, accept on `一加一等于几？`). They keep a gradient flowing
   that says "if this is not an identity question, answer normally", pinning the
@@ -74,7 +74,7 @@ by default in `sft.py` and stop the damage during training:
    does not enter the early-stop window. `--select-tokens off` restores full-token semantics.
 2. **`--eval-every N`** (default 4) capability gate: every N steps, evaluate the identity probe
    (target-word logprob) and the cap probe (token CE of the target, **zero wording overlap**
-   with the training data, enforced by `test_train_core.py`) on `prompts_holdout.jsonl`,
+   with the training data, enforced by `test_train_core.py`) on `examples/training/prompts_holdout.jsonl`,
    without the image path. Rules live in `guard.py`:
    - cap CE rising more than `--cap-tol` (0.5) above the start point → this evaluation is **not
      eligible for best**;
@@ -90,13 +90,13 @@ no silent fallback.
 ## How it was produced (three commands)
 
 ```bash
-cd training
+cd training                 # commands below assume this cwd; sample data lives one tree over
 
-# 1) train: data_developer.jsonl uses the {dev} placeholder; the name is resolved at runtime by
+# 1) train: ../examples/training/data_developer.jsonl uses the {dev} placeholder; the name is resolved at runtime by
 #    --word > $STRATA_IDENTITY_WORD > GitHub user > origin URL > git user.name
 STRATA_VRAM_PACK_GB=24 STRATA_PIN_GB=30 python3 backward/sft.py \
     --gguf <shard1> <shard2> --pack /root/experts_nf4.bin --tokenizer <tok> \
-    --data data_developer.jsonl \
+    --data ../examples/training/data_developer.jsonl \
     --steps 40 --accum 2 --lr 2e-4 --ckpt --early-stop 0.15 \
     --targets o_proj,out_proj --out /root/lora_developer.pt
 
@@ -174,7 +174,7 @@ the answer is 「秋天，是收获的季节。金黄的叶子铺满大地，空
 
 | item | value |
 |---|---|
-| data | 20 samples: 10 identity + 10 capability replay (`data_developer.jsonl`) |
+| data | 20 samples: 10 identity + 10 capability replay (`examples/training/data_developer.jsonl`) |
 | steps | **26** (`--early-stop 0.15` triggered; `--min-steps 6` floor) |
 | trainable parameters | 6,684,672 (48 modules: `o_proj` / `out_proj`, r=16, α=32) |
 | peak VRAM (training) | **34.2 GiB** (backprop + `--ckpt`) |

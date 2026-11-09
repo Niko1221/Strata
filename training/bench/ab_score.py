@@ -41,6 +41,8 @@ import os
 import sys
 import urllib.request
 
+import paths
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -134,7 +136,7 @@ def main() -> int:
     ap.add_argument("--gguf", nargs="+", help="HF 侧：GGUF 分片")
     ap.add_argument("--pack", help="HF 侧：专家 pack")
     ap.add_argument("--tokenizer")
-    ap.add_argument("--mapping", default=os.path.join(HERE, "mapping_q4.json"))
+    ap.add_argument("--mapping", default=paths.example("mapping_q4.json"))
     ap.add_argument("--out", default="", help="HF 侧输出 json")
     ap.add_argument("--engine", default="", help="引擎地址；给了就与 HF 侧比对")
     ap.add_argument("--hf", default="", help="HF 侧结果 json；给了 --engine 时比对")
