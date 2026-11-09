@@ -142,6 +142,45 @@ test('the engine update repairs run-config paths of a gone AppImage mount before
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+// ------------------------------------------------------------------ item 1: the app update's job across the restart
+
+test('an app update job the old host closed as "cancelled" is read as finished by the new version; this host keeps it running when it closes', async () => {
+  const before = process.env.STRATA_APP_VERSION;
+  const root = mkdtempSync(join(tmpdir(), 'strata-applin-jobs-'));
+  try {
+    const job = { id: 'j1', kind: 'update-strata', state: 'cancelled', startedAt: new Date().toISOString(), summary: 'Downloading the app update: 100%', appUpdateFrom: '0.2.13', appUpdateTo: '0.2.14' };
+    writeFileSync(join(root, 'native-jobs.json'), JSON.stringify([job, { ...job, id: 'j2', appUpdateFrom: undefined }]));
+    process.env.STRATA_APP_VERSION = '0.2.14';
+    const mk = () => createNativeControl({ control: { control: { dir: '/c' }, version: '0.1.60' }, directory: root, spawnProcess: () => { throw new Error('no process'); }, fetcher: async () => Response.json({}), requests: () => [] });
+    const next = mk();
+    const jobs = next.state().jobs;
+    assert.equal(jobs.find(j => j.id === 'j1').state, 'done');
+    assert.match(jobs.find(j => j.id === 'j1').summary, /updated to 0\.2\.14/);
+    assert.equal(jobs.find(j => j.id === 'j2').state, 'cancelled', 'a cancelled job that was not an app update stays cancelled');
+    await next.close();
+    // the same version came back: the update did not finish, and it says so
+    writeFileSync(join(root, 'native-jobs.json'), JSON.stringify([{ ...job, appUpdateFrom: '0.2.14' }]));
+    const same = mk();
+    assert.equal(same.state().jobs[0].state, 'error');
+    await same.close();
+  } finally { if (before === undefined) delete process.env.STRATA_APP_VERSION; else process.env.STRATA_APP_VERSION = before; rmSync(root, { recursive: true, force: true }); }
+});
+
+test('closing the host during an app update leaves its job running (the next start settles it)', async () => {
+  const before = process.env.STRATA_APP_VERSION;
+  process.env.STRATA_APP_VERSION = '0.2.14';
+  const root = mkdtempSync(join(tmpdir(), 'strata-applin-close-'));
+  const control = { control: { dir: '/c' }, version: '0.1.60', async update() { return { ok: true, results: [] }; } };
+  const appUpdater = { check: async () => ({ available: true, version: '0.2.15' }), install: () => new Promise(() => {}) };
+  const native = createNativeControl({ control, appUpdater, directory: root, spawnProcess: () => { throw new Error('no process'); }, fetcher: async () => Response.json({}), requests: () => [] });
+  try {
+    const started = native.operation('update-strata', {});
+    for (let i = 0; i < 100 && !native.state().jobs.find(j => j.id === started.id)?.appUpdateFrom; i++) await new Promise(r => setTimeout(r, 10));
+    await native.close();
+    assert.equal(native.state().jobs.find(j => j.id === started.id).state, 'running');
+  } finally { if (before === undefined) delete process.env.STRATA_APP_VERSION; else process.env.STRATA_APP_VERSION = before; rmSync(root, { recursive: true, force: true }); }
+});
+
 // ------------------------------------------------------------------ item 5: the first-run card offers the Control update
 
 const feedReport = control => ({ ok: true, feed: {}, hardware: { backend: 'sycl' }, engine: { status: 'install', installed: null, offered: { version: '0.1.60', variant: '', backend: 'sycl' }, download_bytes: 300e6 }, control, app: {} });

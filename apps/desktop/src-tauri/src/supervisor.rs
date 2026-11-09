@@ -296,6 +296,25 @@ pub fn original_environment(record: Option<&str>) -> Option<Vec<(String, String)
     found.map(|vars| vars.into_iter().filter(|(k, _)| k != "STRATA_ORIGINAL_ENV").collect())
 }
 
+/// The files this process got from the window process that restarted it (the old AppImage's fd to its own mount, WebKit's /proc and cgroup files) are
+/// closed before Strata is started again: a child would inherit them, and an open fd into the old /tmp/.mount_* keeps that AppImage's runtime and mount
+/// alive until the new app quits. Only numbers above 2 (stdin, stdout, stderr stay); run first, before this process opens anything of its own.
+fn close_inherited_fds() {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let Ok(dir) = std::fs::read_dir("/proc/self/fd") else { return };
+        let fds: Vec<i32> = dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()).filter(|fd| *fd > 2).collect();
+        // (the listing's own fd is in the list; it is closed by now, and closing a closed number again only fails)
+        for fd in fds {
+            if std::path::Path::new(&format!("/proc/self/fd/{fd}")).exists() {
+                // SAFETY: nothing in this process uses these numbers: they were inherited across exec and nothing has been opened yet
+                drop(unsafe { OwnedFd::from_raw_fd(fd) });
+            }
+        }
+    }
+}
+
 /// The program to start again: the AppImage file (the updater replaced it in place), else this executable.
 fn program_to_restart() -> Option<PathBuf> {
     if let Some(image) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
@@ -312,6 +331,7 @@ fn program_to_restart() -> Option<PathBuf> {
 /// (a new shell, a new host), detached, and leave. If the old shell is still there after the wait, nothing is started: two Strata apps never run at once,
 /// and a person's next start joins or replaces the old one as usual. Prints nothing: the old shell owned this process's output and is gone.
 pub fn restart_after_update() -> i32 {
+    close_inherited_fds();
     let log = Log::open();
     let old = std::env::var(SHELL_PID_ENV).ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|p| *p != 0).or_else(|| read_session().map(|s| s.pid));
     log.line("shell", &format!("started as the app window by the app updater, not by Strata (old app process {old:?}): restarting Strata"));
