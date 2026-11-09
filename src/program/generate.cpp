@@ -12913,7 +12913,14 @@ int main(int argc, char** argv) {
         // the serial windows of one GPU, where the pool can admit (expert_pool_dispatch_multi's fetch_on)
         const char* fetch_off = d_res == nullptr ? "no residency table" : o.spec_split ? "--spec-split"
                               : multi_gpu || !stages.empty() ? "a layer split" : peer.valid() ? "--peer-device"
-                              : remote_opt || drive.d.remote_count > 0 ? "helper GPUs" : o.adapt_async ? "--adapt-async"
+                              // (helper GPUs are allowed - the pick leaves out what they hold - but not the helper's own
+                              // tier, helpers without disjoint caches, or, with helpers, the session's own choice of the
+                              // asynchronous tier: adapt_async_self_decides() does not look at plain helper GPUs)
+                              : remote_opt ? "--remote-expert-opt (the helper's own tier)"
+                              : drive.d.remote_count > 0 && !disjoint_adapt ? "helper GPUs without STRATA_DISJOINT_ADAPT=1"
+                              : o.adapt_async ? "--adapt-async"
+                              : drive.d.remote_count > 0 && o.adapt_async_self
+                                  ? "helper GPUs with STRATA_ADAPT_ASYNC unset (the session may choose the asynchronous tier)"
                               : o.pipeline_windows > 0 ? "--pipeline-windows" : o.batch > 0 ? "--batch"
                               : adapt_overlap() ? "STRATA_ADAPT_OVERLAP=1" : nullptr;
         if (adapt_fetch() > 0) {   // STRATA_ADAPT_FETCH (opt-in)
@@ -12930,6 +12937,7 @@ int main(int argc, char** argv) {
                 drive.d.fetch_avail.assign((size_t) g.n_layers, 0);
                 if (const char* v = std::getenv("STRATA_ADAPT_FETCH_MIN")) drive.d.fetch_min = (float) std::atof(v);
                 if (const char* v = std::getenv("STRATA_ADAPT_FETCH_MARGIN")) drive.d.fetch_margin = (float) std::atof(v);
+                drive.d.fetch_log_on = std::getenv("STRATA_ADAPT_FETCH_VERIFY") != nullptr;   // (the read-back in serve too)
                 std::fprintf(stderr, "strata serve: STRATA_ADAPT_FETCH=%d: the PCIe share takes each layer's most-routed "
                                      "misses and admits those routed >= %.2f and %.2f more than a resident one%s\n",
                              drive.d.fetch_admit, drive.d.fetch_min, drive.d.fetch_margin,
@@ -18264,6 +18272,7 @@ int main(int argc, char** argv) {
             double dt_adapt_wait = 0, dt_adapt_join = 0;   // the tier's wait before a window / join after the draft (ms, summed)
             const int64_t dt_sw0 = ajob ? a_swapped : adapt_nswaps;
             int64_t dec_windows = 0, dec_T = 0;
+            const int64_t fetch_adm0 = drive.d.fetch_admitted;   // this request's admissions, for its fetch line
             const int64_t decode_hits0 = drive.d.cache_hits;
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
@@ -19123,6 +19132,46 @@ int main(int argc, char** argv) {
                     }
                 }
                 else if (pending.empty() || ++pending_age >= adapt_lag()) apply_pending(true);
+                if (!drive.d.fetch_log.empty()) {   // STRATA_ADAPT_FETCH_VERIFY in serve: each admitted slot read back
+                    static int64_t fv_checked = 0, fv_bad = 0, fv_helper = 0, fv_dup = 0, fv_pend = 0;
+                    cudaDeviceSynchronize();
+                    for (const auto& [i, slot] : drive.d.fetch_log) {
+                        const int64_t l = i / g.n_expert;
+                        const int32_t e = (int32_t) (i % g.n_expert);
+                        ++fv_checked;
+                        if (host_res[(size_t) i] != slot) continue;   // evicted again since: nothing to check
+                        std::string verr;
+                        if (!xcache.verify_slot(slot, srcp->blob_stable(l, e), verr,
+                                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(l))) {
+                            ++fv_bad;
+                            std::fprintf(stderr, "strata serve: FETCH VERIFY layer %lld expert %lld slot %d: %s\n", (long long) l,
+                                         (long long) e, (int) slot, verr.c_str());
+                        }
+                        for (int r = 0; r < drive.d.remote_count; ++r)
+                            if (drive.d.remote[r]->holds(l, e)) {
+                                ++fv_helper;
+                                std::fprintf(stderr, "strata serve: FETCH VERIFY layer %lld expert %lld: also held by helper %d\n",
+                                             (long long) l, (long long) e, r);
+                            }
+                        int64_t uses = 0;
+                        for (size_t j = 0; j < host_res.size(); ++j) uses += host_res[j] == slot;
+                        if (uses != 1) {
+                            ++fv_dup;
+                            std::fprintf(stderr, "strata serve: FETCH VERIFY slot %d is held by %lld entries\n", (int) slot,
+                                         (long long) uses);
+                        }
+                        for (const auto& pq : pending)
+                            if (pq.second == slot) {
+                                ++fv_pend;
+                                std::fprintf(stderr, "strata serve: FETCH VERIFY slot %d is also a pending tier copy's target\n",
+                                             (int) slot);
+                            }
+                    }
+                    drive.d.fetch_log.clear();
+                    std::fprintf(stderr, "strata serve: fetch verify: %lld admitted slots read back, %lld differ, %lld also on a helper, "
+                                         "%lld slots not unique, %lld pending-copy targets\n", (long long) fv_checked, (long long) fv_bad,
+                                 (long long) fv_helper, (long long) fv_dup, (long long) fv_pend);
+                }
                 // STRATA_RAM_ADAPT=<n> (opt-in, the resident RAM mode on one GPU): the RAM copy is chosen once, at
                 // start, so an expert it does not hold is read from the file every time the conversation routes to
                 // it.  With this, before a window and while no adaptive round is in flight, up to n experts the windows
@@ -19875,6 +19924,11 @@ int main(int argc, char** argv) {
                 const std::string pause_line = strata::core::gpu_pause_request_line(g_req_gpu_pause_ms.load(), gpu_pause_now());
                 if (!pause_line.empty()) std::fprintf(stderr, "%s\n", pause_line.c_str());
             }
+            if (drive.d.fetch_admit > 0) {   // STRATA_ADAPT_FETCH: this request's admissions
+                const int64_t adm = drive.d.fetch_admitted - fetch_adm0;
+                std::fprintf(stderr, "strata serve: fetch: %lld admissions in %lld windows (%.2f per window)\n", (long long) adm,
+                             (long long) dec_windows, dec_windows > 0 ? (double) adm / (double) dec_windows : 0.0);
+            }
             if (serve_adapt_drain_ms >= 1.0)
                 std::fprintf(stderr, "strata serve: the request first waited %.0f ms for the adaptive tier's round in flight\n",
                              serve_adapt_drain_ms);
@@ -20590,7 +20644,8 @@ int main(int argc, char** argv) {
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
         const char* fetch_off = d_res == nullptr ? "no residency table" : o.spec_split ? "--spec-split"
                               : multi_gpu ? "a layer split" : drive.d.peer != nullptr ? "a peer tier"
-                              : drive.d.remote_count > 0 ? "helper GPUs" : nullptr;
+                              : remote_opt ? "--remote-expert-opt (the helper's own tier)"
+                              : drive.d.remote_count > 0 && !disjoint_adapt ? "helper GPUs without STRATA_DISJOINT_ADAPT=1" : nullptr;
         if (adapt_fetch() > 0) {   // STRATA_ADAPT_FETCH (opt-in)
             const char* off = drive.d.usage.empty() ? "the adaptive tier is off" : fetch_off != nullptr ? fetch_off
                             : o.pcie_mode == "dma" || o.pcie_mode == "direct" ? "--pcie-mode dma / direct"
