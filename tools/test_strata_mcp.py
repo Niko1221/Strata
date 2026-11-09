@@ -1035,7 +1035,7 @@ class MixedGraphics(unittest.TestCase):
                                  (True, [{**strix[0], "arch": "gfx1150"}], None), (True, [{**strix[0], "uma": False}], None),
                                  (True, [{**strix[0], "arch": "gfx1151:sramecc-:xnack-"}], setup_config.UMA_WIN_RESERVE_MIB)):
             with self.subTest(win=win, arch=cards[0]["arch"], uma=cards[0].get("uma")), mock.patch.object(M, "WIN", win), \
-                    mock.patch.object(M.sys, "platform", "win32" if win else "linux"), mock.patch.object(S, "amd_gpus", lambda c=cards: [dict(g) for g in c]), \
+                    mock.patch.object(S, "amd_gpus", lambda c=cards: [dict(g) for g in c]), \
                     common[0], common[1], common[2], common[3], common[4]:
                 hw = s._hardware()
                 amd = [g for g in hw["gpus"] if g.get("vendor") == "amd"]
