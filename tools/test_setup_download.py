@@ -311,8 +311,10 @@ class Resume(unittest.TestCase):
             % (str(ROOT), str(ROOT / "tools"), CHUNK, len(DATA), hashlib.sha256(DATA).hexdigest(), NAME))
         with small_pieces(), Server(delay=0.05) as srv, tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, STRATA_SOURCE="huggingface")
-            proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            err = Path(d) / "runner.err"                         # kept for the message below: CI saw the sidecar missing once (11-09)
+            with open(err, "wb") as err_file:
+                proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
+                                        stdout=subprocess.DEVNULL, stderr=err_file)
             try:
                 deadline = time.time() + 60
                 side = Path(d) / (NAME + ".part.chunks")
@@ -324,9 +326,13 @@ class Resume(unittest.TestCase):
                         pass
                     time.sleep(0.05)
             finally:
+                code = proc.poll()
                 proc.kill()
                 proc.wait()
             self.assertTrue((Path(d) / (NAME + ".part")).exists(), "the download finished before it was killed")
+            self.assertTrue(side.exists(), "no %s after %.1f s; the runner %s; its stderr: %s" % (
+                side.name, time.time() - (deadline - 60), "was still running" if code is None else "ended with %s" % code,
+                err.read_text(errors="replace")[-2000:] or "(empty)"))
             saved = json.loads(side.read_text())
             done = {i for a, b in saved["done"] for i in range(a, b)}
             self.assertGreaterEqual(len(done), 12)
