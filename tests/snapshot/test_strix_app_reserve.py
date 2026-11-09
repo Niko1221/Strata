@@ -73,7 +73,9 @@ class StrixAppReserve(unittest.TestCase):
                 with mock.patch.dict(os.environ, {"STRATA_SNAPSHOT_APP_ARGS": json.dumps(app_args or {})}):
                     rec = drive_app(world, "models")
             self.assertNotIn("failed", rec, json.dumps(rec.get("failed")))
-            return rec["engine"]
+            # each entry runs in its own scratch world: its folder is written as <ROOT> so two engine lines can be compared
+            root = str(world.root)
+            return {**rec["engine"], "argv": [a.replace(root, "<ROOT>") for a in rec["engine"]["argv"]]}
         finally:
             world.close()
 
