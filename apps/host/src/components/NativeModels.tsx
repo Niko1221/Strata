@@ -4,7 +4,7 @@ import { Screen } from './layout';
 import { VersionPicker } from './VersionPicker';
 import { FamilySwitch } from './FamilySwitch';
 import { PcComputer } from './PcComputer';
-import { cacheGb, fitOn, memoryNeeded, versionFit } from '../lib/native-fit';
+import { cacheGb, cardRoomGb, fitOn, memoryNeeded, versionFit } from '../lib/native-fit';
 import { contextIsTight, defaultContext, DEFAULT_CONTEXT, OLD_DEEPSEEK_CONTEXT, openingContext } from '../lib/default-context';
 import { GpuRoles } from './GpuRoles';
 import { fromLegacy, normalize as normalizeRoles, order as roleOrder, recommend as recommendRoles, rows as roleRows, sameRoles, vramOn, type RoleCard, type Roles } from '../lib/gpu-roles';
@@ -129,8 +129,10 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const cardsGpus: number[] = roleCards.length > 1 ? roleOrder(effectiveRoles, roleCards) : [];
     const chosenCards = cardsGpus;
     const fitHardware = { ram_gb: pcRam ? Math.max(0, pcRam - keptRam) : pcRam, vram_gb: Math.max(0, (roleCards.length > 1 ? vramOn(effectiveRoles, roleCards) : pcVram) - keptVramOn(chosenCards)) };
+    // The fit label's own figures (strata_control/fit_label.py): a unified-memory chip counts only its carve-out beside the RAM (lib/native-fit.ts cardRoomGb).
+    const labelHardware = { ram_gb: fitHardware.ram_gb, vram_gb: roleCards.length > 1 ? fitHardware.vram_gb : Math.max(0, cardRoomGb(pcGpu ? [pcGpu] : []) - keptVramOn(chosenCards)) };
     // How the chosen version sits on this computer (the same rule as the version list): the page says a word only for "may run slower".
-    const fitState = selectedSize ? versionFit(selectedSize, fitHardware, { context, kv }) : 'unknown';
+    const fitState = selectedSize ? versionFit(selectedSize, labelHardware, { context, kv }) : 'unknown';
     // A layer split written for another number of cards no longer fits: back to automatic.
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
     // Drafting (which drafter guesses ahead): a choice exists only for Qwen3.8-Flash-Next (the qwen and gyro families) on a computer whose engine can run DFlash2; every other model has no dropdown.
@@ -250,7 +252,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
      {tr(selectedSize ? <>
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" size="sm" variant="ghost" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
-      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv, drafter: fitDrafter }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
+      <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={labelHardware} cache={{ context, kv, drafter: fitDrafter }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
       {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("may run slower")}</p> : null)}
       {tr(selectedSize?.multi_file && deepseekContextNote(context) ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(deepseekContextNote(context))}</p> : null)}
       <div className="native-choice__row">
