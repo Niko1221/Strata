@@ -6289,16 +6289,34 @@ def gcc_major(compiler) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def distro_id() -> str:
+    """This distribution's ID from /etc/os-release (`cachyos`, `arch`, `ubuntu`, ...), "" when it cannot be read."""
+    try:
+        osr = dict(line.split("=", 1) for line in
+                   open("/etc/os-release", encoding="utf-8").read().splitlines() if "=" in line)
+    except (OSError, ValueError):
+        return ""
+    return osr.get("ID", "").strip().strip("\"'").lower()
+
+
 def install_hint(limit: int) -> tuple:
     """(the command for this distro, True when the hint already names the CC / CXX / CUDAHOSTCXX way out - so the
-    caller does not repeat it).  On Arch / CachyOS gcc14 is in the repos; on plain Arch it is AUR-only and an AUR
-    helper builds it.  The command is printed, never run: setup.py never invokes sudo (it runs in non-interactive
-    contexts), and a managed node or container where installing is impossible has the CC / CXX way out.
+    caller does not repeat it).  CachyOS packages gcc14 in its own repository; plain Arch - and the other
+    Arch-derived distributions, which take Arch's repositories - has it in the AUR only, so a pacman line there
+    dies on "target not found" and an AUR helper builds it instead.  The command is printed, never run: setup.py
+    never invokes sudo (it runs in non-interactive contexts), and a managed node or container where installing is
+    impossible has the CC / CXX way out.
     """
     if WIN:
         return ("", True)                            # Windows drives MSVC; cuda_host_compilers() warns on nothing
-    if shutil.which("pacman"):                       # Arch / CachyOS: gcc14, no dash; -libs comes with it.
-        return f"sudo pacman -S gcc{limit} gcc{limit}-libs", False
+    if shutil.which("pacman"):
+        if distro_id() == "cachyos":                 # its repository carries gcc14, no dash; -libs beside it
+            return f"sudo pacman -S gcc{limit} gcc{limit}-libs", False
+        helper = shutil.which("paru") or shutil.which("yay")
+        if helper:                                   # AUR-only: the helper takes the repository package first
+            return f"{Path(helper).name} -S gcc{limit} gcc{limit}-libs", False
+        return (f"install gcc{limit} from the AUR, or set CC, CXX and CUDAHOSTCXX to a compiler nvcc supports",
+                True)
     if shutil.which("apt"):
         return f"sudo apt install gcc-{limit} g++-{limit}", False
     if shutil.which("dnf"):                          # Fedora: gcc14 / gcc14-c++ (no dash).
@@ -6343,12 +6361,16 @@ def host_compiler_defs(cuda: bool, nvcc=None) -> list:
     could die at the last step, #1645).  CUDAHOSTCXX is nvcc's host compiler (-ccbin); it defaults to CXX, as
     CMake's does.  `cuda`: the project compiles CUDA (the host-compiler definition means nothing to a C++-only
     one).  `nvcc`: nothing named and this PC's gcc is newer than that toolkit accepts (cuda_host_compilers): the
-    newest GCC it does accept is used, so a newer-than-nvcc gcc needs no environment at all."""
+    newest GCC it does accept is used, so a newer-than-nvcc gcc needs no environment at all.  CUDAHOSTCXX is such
+    a name too: it already gives nvcc its host compiler (and may name one outside PATH), so nothing is picked for
+    CC / CXX - that would change the C++ build, and warn about an install that is not needed.
+    """
     cc = os.environ.get("CC", "").strip()
     cxx = os.environ.get("CXX", "").strip()
-    if cuda and not cc and not cxx:
+    hostcxx = os.environ.get("CUDAHOSTCXX", "").strip()
+    if cuda and not cc and not cxx and not hostcxx:
         cc, cxx = cuda_host_compilers(nvcc)
-    hostcxx = os.environ.get("CUDAHOSTCXX", "").strip() or cxx
+    hostcxx = hostcxx or cxx
     return ([f"-DCMAKE_C_COMPILER={cc}"] if cc else []) + \
            ([f"-DCMAKE_CXX_COMPILER={cxx}"] if cxx else []) + \
            ([f"-DCMAKE_CUDA_HOST_COMPILER={hostcxx}"] if cuda and hostcxx else [])

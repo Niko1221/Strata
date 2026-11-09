@@ -28,7 +28,17 @@ def run(fn, *args, **kw):
         return fn(*args, **kw), out.getvalue()
 
 
-class Limit(unittest.TestCase):
+class PosixCase(unittest.TestCase):
+    """The host-gcc path is the POSIX one (Windows drives MSVC): these tests read it with `setup.WIN` off on any
+    host, as test_setup_amd does; the Windows answer itself is pinned in test_windows_returns_no_hint."""
+
+    def setUp(self):
+        self.win = setup.WIN
+        setup.WIN = False
+        self.addCleanup(setattr, setup, "WIN", self.win)
+
+
+class Limit(PosixCase):
     """The limit comes from the toolkit, not from this file."""
 
     def toolkit(self, guard):
@@ -54,10 +64,11 @@ class Limit(unittest.TestCase):
         self.assertIsNone(setup.cuda_host_gcc_limit(None))
 
 
-class Pick(unittest.TestCase):
+class Pick(PosixCase):
     """What a build does with that limit."""
 
     def setUp(self):
+        super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
@@ -105,6 +116,23 @@ class Pick(unittest.TestCase):
                              ["-DCMAKE_C_COMPILER=/opt/cc", "-DCMAKE_CXX_COMPILER=/opt/c++",
                               "-DCMAKE_CUDA_HOST_COMPILER=/opt/c++"])
 
+    def test_cudahostcxx_is_left_to_supply_the_host_compiler(self):
+        """CUDAHOSTCXX may name a compiler outside PATH: nothing is picked for CC / CXX (that would move the C++
+        build), and no install is asked for."""
+        patches = self.patch("/usr/bin/g++", {})                     # no gcc-N to pick
+        with patches[0], patches[1], mock.patch.object(setup, "warn") as warned, \
+             mock.patch.dict(os.environ, {"CC": "", "CXX": "", "CUDAHOSTCXX": "/opt/cuda-tools/bin/g++-14"}):
+            self.assertEqual(setup.host_compiler_defs(True, self.nvcc),
+                             ["-DCMAKE_CUDA_HOST_COMPILER=/opt/cuda-tools/bin/g++-14"])
+        self.assertFalse(warned.called)
+
+    def test_a_numbered_gcc_does_not_move_cc_cxx_when_cudahostcxx_is_set(self):
+        patches = self.patch("/usr/bin/g++", {"g++-14": self.gxx14, "gcc-14": self.gcc14})
+        with patches[0], patches[1], mock.patch.dict(os.environ, {"CC": "", "CXX": "",
+                                                                  "CUDAHOSTCXX": "/usr/bin/g++-14"}):
+            self.assertEqual(setup.host_compiler_defs(True, self.nvcc),
+                             ["-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14"])
+
     def test_a_cpp_only_build_is_left_alone(self):
         patches = self.patch("/usr/bin/g++", {"g++-14": self.gxx14, "gcc-14": self.gcc14})
         with patches[0], patches[1], mock.patch.dict(os.environ, {"CC": "", "CXX": "", "CUDAHOSTCXX": ""}):
@@ -122,18 +150,32 @@ class Pick(unittest.TestCase):
         self.assertIn("CUDAHOSTCXX", text)                  # the escape hatch stays visible
 
 
-class InstallHint(unittest.TestCase):
+class InstallHint(PosixCase):
     """The command names this distro's package manager; setup prints it and never runs it."""
 
-    def hint_with(self, resolved):
-        """install_hint(14) when which() resolves exactly the names in `resolved` -> (command, has_escape)."""
-        with mock.patch.object(setup.shutil, "which", lambda name: f"/usr/bin/{name}" if name in resolved else None):
+    def hint_with(self, resolved, distro="cachyos"):
+        """install_hint(14) when which() resolves exactly the names in `resolved` and this distro is `distro` ->
+        (command, has_escape)."""
+        with mock.patch.object(setup.shutil, "which", lambda name: f"/usr/bin/{name}" if name in resolved else None), \
+             mock.patch.object(setup, "distro_id", lambda: distro):
             return setup.install_hint(14)
 
     def test_pacman(self):
-        hint, has_escape = self.hint_with({"pacman"})
+        hint, has_escape = self.hint_with({"pacman"}, distro="cachyos")
         self.assertIn("sudo pacman -S gcc14 gcc14-libs", hint)
         self.assertFalse(has_escape)
+
+    def test_plain_arch_uses_the_aur_helper(self):
+        """gcc14 is in the AUR on plain Arch, not in its repositories: pacman -S would die on "target not found"."""
+        hint, has_escape = self.hint_with({"pacman", "paru"}, distro="arch")
+        self.assertEqual(hint, "paru -S gcc14 gcc14-libs")
+        self.assertFalse(has_escape)
+
+    def test_plain_arch_without_a_helper_names_the_aur(self):
+        hint, has_escape = self.hint_with({"pacman"}, distro="arch")
+        self.assertIn("AUR", hint)
+        self.assertNotIn("pacman -S", hint)                  # a command that would not install it
+        self.assertTrue(has_escape)                          # the way out is named in the hint itself
 
     def test_apt(self):
         hint, has_escape = self.hint_with({"apt"})
@@ -182,6 +224,7 @@ class InstallHint(unittest.TestCase):
             return "16.2.1\n" if Path(cmd[0]).name == "g++" else ""
         with mock.patch.object(setup, "cuda_host_gcc_limit", lambda nvcc: 14), \
              mock.patch.object(setup.shutil, "which", which), \
+             mock.patch.object(setup, "distro_id", lambda: "cachyos"), \
              mock.patch.object(setup, "out", fake_out), \
              mock.patch.object(setup, "warn") as warned, \
              mock.patch.dict(os.environ, {"CC": "", "CXX": "", "CUDAHOSTCXX": ""}):
@@ -191,13 +234,16 @@ class InstallHint(unittest.TestCase):
         self.assertIn("the CUDA files fail without it", text)
 
 
-class ThisBox(unittest.TestCase):
-    """The two toolkits installed here, read from their real headers."""
+class ThisBox(PosixCase):
+    """The toolkits installed here, read from their real headers."""
 
     def test_the_installed_toolkits(self):
-        for nvcc, expect in (("/usr/local/cuda-12.9/bin/nvcc", 14), ("/opt/cuda/bin/nvcc", 16)):
+        """`/opt/cuda` is the unversioned path (Arch's package, a local install): whichever release it holds, its
+        own header gives the limit - 14 for 12.x, 16 for 13.4 - so the test does not pin one of them."""
+        for nvcc, expect in (("/usr/local/cuda-12.9/bin/nvcc", (14,)), ("/usr/local/cuda-13.4/bin/nvcc", (16,)),
+                             ("/opt/cuda/bin/nvcc", (14, 16))):
             if Path(nvcc).exists():
-                self.assertEqual(setup.cuda_host_gcc_limit(nvcc), expect, nvcc)
+                self.assertIn(setup.cuda_host_gcc_limit(nvcc), expect, nvcc)
 
 
 if __name__ == "__main__":
