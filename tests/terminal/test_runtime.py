@@ -1057,6 +1057,183 @@ class RuntimeTests(unittest.TestCase):
             runtime.start("local", wait=0, shutdown_timeout=2)
         self.assertTrue(state_path.exists())
 
+    # ---- round 0213 LIFECYCLE: the owner answers while it starts, leaves when its server is gone, and is recoverable at every point
+
+    def _slow_plan_owner(self, delay):
+        """An owner host in another process whose plan takes `delay` seconds (the slow imports, hardware questions and virus scans of #5177)."""
+        code = ("import time\n"
+                "from strata_control import runtime\n"
+                "original = runtime.Host._plan\n"
+                "def slow(self):\n"
+                f"    time.sleep({delay})\n"
+                "    return original(self)\n"
+                "runtime.Host._plan = slow\n"
+                "raise SystemExit(runtime.Host('local', shutdown_timeout=2).serve())\n")
+        owner = subprocess.Popen([sys.executable, "-c", code], cwd=Path(__file__).resolve().parents[2],
+                                 env=os.environ.copy(), stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: owner.poll() is None and (owner.kill(), owner.wait(timeout=5)))
+        deadline = time.monotonic() + 15
+        while runtime._read_state("local") is None and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertIsNotNone(runtime._read_state("local"), "the owner did not publish its state")
+        return owner
+
+    def test_the_owner_answers_status_while_it_is_still_planning(self):                       # #5177
+        owner = self._slow_plan_owner(6)
+        began = time.monotonic()
+        for _ in range(3):
+            answer = runtime._rpc("local", "status", timeout=2)           # the old owner did not accept before its plan was done: this timed out
+            self.assertEqual((answer["state"], answer["phase"]), ("starting", "preparing"))
+            time.sleep(0.3)
+        self.assertLess(time.monotonic() - began, 5, "the status answers waited for the plan")
+        deadline = time.monotonic() + 40
+        answer = runtime._rpc("local", "status", timeout=2)
+        while answer["state"] == "starting" and time.monotonic() < deadline:
+            time.sleep(0.2)
+            answer = runtime._rpc("local", "status", timeout=2)
+        self.assertEqual(answer["state"], "ready", answer)
+        self.assertIsInstance(answer["child_pid"], int)
+
+    def test_a_stop_while_the_owner_plans_starts_no_server(self):                                # #5177
+        owner = self._slow_plan_owner(4)
+        state = runtime._read_state("local")
+        answer = self._send(state, state["token"], "stop")
+        self.assertTrue(answer["ok"], answer)
+        self.assertEqual(owner.wait(timeout=20), 0)
+        time.sleep(0.5)
+        self.assertFalse(list((self.root / "runtime").glob("*.server.log")) and
+                         any(p.stat().st_size for p in (self.root / "runtime").glob("*.server.log")), "a server was started after the stop")
+        self.assertIsNone(runtime._read_state("local"))
+
+    def test_a_start_keeps_asking_a_busy_owner_until_its_wait_is_over(self):                    # #5177: one missed answer is not a failed start
+        calls = []
+        real = runtime._rpc
+
+        def flaky(name, command, **kw):
+            if command == "status" and len(calls) < 2:
+                calls.append(kw.get("timeout"))
+                raise profiles.ProfileError("runtime operation wait expired; inspect runtime status", 8)
+            return real(name, command, **kw)
+        with mock.patch.object(runtime, "_rpc", flaky):
+            started = runtime.start("local", wait=30, shutdown_timeout=2)
+        self.assertTrue(started["ok"], started)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(x >= 1 for x in calls))
+
+    def test_a_lost_owner_is_still_a_failed_start_at_once(self):
+        def gone(name, command, **kw):
+            raise profiles.ProfileError("runtime control is unavailable; inspect the private host log", 3)
+        with mock.patch.object(runtime, "_rpc", gone), mock.patch.object(runtime, "_owner_alive", return_value=False):
+            with self.assertRaisesRegex(profiles.ProfileError, "unavailable"):
+                runtime.start("local", wait=30, shutdown_timeout=2)
+
+    def test_an_engine_that_is_up_gets_its_own_first_token_budget(self):                        # #5177 #5059 #4293
+        host = runtime.Host("local", shutdown_timeout=2, startup_wait=5)
+        ready = self.root / "ready.json"
+        child = mock.Mock(pid=4321)
+        child.poll.return_value = None
+        ready.write_text(json.dumps({"pid": 4321, "instance_id": "i" * 32}), encoding="utf-8")
+        host.child, host.ready_path = child, ready
+        host.args, host.source_bytes, host.expected_attestation = ["--host", "127.0.0.1"], b"{}", "0" * 64
+        host.probe_deadline = time.monotonic() - 100          # the load used up the whole wait
+        seen = []
+        started = threading.Event()
+
+        def probe(self_, ready_, key, host_, source, attestation, timeout):
+            seen.append(timeout)
+            started.set()
+        with mock.patch.object(runtime.Host, "_verify_ready", probe):
+            self.assertEqual(host._status()["phase"], "verifying_generation")
+            self.assertTrue(started.wait(5))
+        self.assertGreaterEqual(seen[0], runtime.VERIFY_BUDGET)
+
+    def test_the_start_wait_does_not_end_while_the_first_token_is_being_checked(self):          # #5177 #4293
+        answers = [{"ok": True, "state": "starting", "phase": "verifying_generation"}] * 3 +                   [{"ok": True, "state": "ready", "phase": None, "instance_id": "i" * 32}]
+        clock = [0.0]
+
+        def rpc(name, command, **kw):
+            clock[0] += 100.0                                 # every look is 100 s later: the 150 s wait is over after the second
+            return answers.pop(0)
+        with mock.patch.object(runtime, "_rpc", rpc), mock.patch.object(runtime.time, "sleep", lambda s: None),                 mock.patch.object(runtime.time, "monotonic", lambda: clock[0]):
+            result = runtime._await_start("local", 150)
+        self.assertTrue(result["ok"], result)                 # the verifying phase carried it past the wait, up to VERIFY_BUDGET
+        answers[:] = [{"ok": True, "state": "starting", "phase": "loading"}] * 9
+        clock[0] = 0.0
+        with mock.patch.object(runtime, "_rpc", rpc), mock.patch.object(runtime.time, "sleep", lambda s: None),                 mock.patch.object(runtime.time, "monotonic", lambda: clock[0]):
+            result = runtime._await_start("local", 150)
+        self.assertEqual((result["error"], result["phase"]), ("startup_wait_expired", "loading"))     # a load that does not finish still ends
+
+    def test_the_host_leaves_when_its_server_ends_on_its_own(self):                              # #4574 #4893 (#4893 is the PR: same idea, own code)
+        started = runtime.start("local", wait=10, shutdown_timeout=2)
+        self.assertTrue(started["ok"])
+        owned = runtime._STARTED_HOSTS.pop("local")
+        os.kill(started["child_pid"], signal.SIGTERM)         # the server dies; the host did not ask it to
+        failed = None
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            failed = runtime.status("local")
+            if failed.get("state") == "failed":
+                break
+            time.sleep(0.1)
+        self.assertEqual(failed["state"], "failed", "the server's end is published before the host leaves")
+        self.assertEqual(failed["error"], "server_exited")
+        try:
+            code = owned.wait(timeout=runtime.CHILD_EXIT_GRACE + 15)
+        except subprocess.TimeoutExpired:
+            self.fail("the owner host stays alive as a husk after its server exited")
+        self.assertEqual(code, 6)
+        self.assertIsNone(runtime._read_state("local"), "the host left its private state behind")
+        log = (self.root / "runtime" / "local.host.log").read_text(encoding="utf-8", errors="replace")
+        self.assertIn("the server ended on its own", log)
+        replacement = runtime.start("local", wait=10, shutdown_timeout=2)                    # no manual kill
+        self.assertTrue(replacement["ok"])
+
+    def test_die_with_does_not_stop_an_engine_for_a_look_that_failed(self):                     # #4973
+        host = runtime.Host("local", shutdown_timeout=2, die_with=(os.getpid(), "tok"))
+        with mock.patch.object(runtime.procs, "start_token", return_value=None), mock.patch.object(runtime, "_pid_exists", return_value=True):
+            for _ in range(10):
+                self.assertFalse(host._die_with_gone(), "a process that is there but cannot be read ended the engine")
+        with mock.patch.object(runtime.procs, "start_token", return_value="tok"):
+            self.assertFalse(host._die_with_gone())
+        with mock.patch.object(runtime.procs, "start_token", return_value="other"):
+            self.assertTrue(host._die_with_gone(), "a later process with that number is the end of the one followed")
+        host.die_misses = 0
+        with mock.patch.object(runtime.procs, "start_token", return_value=None), mock.patch.object(runtime, "_pid_exists", return_value=False):
+            self.assertEqual([host._die_with_gone() for _ in range(runtime.DIE_WITH_MISSES)], [False] * (runtime.DIE_WITH_MISSES - 1) + [True])
+
+    def test_a_host_lost_before_it_launched_anything_is_recovered(self):                        # #4250: the PR's idea
+        owner = self._slow_plan_owner(120)
+        state = runtime._read_state("local")
+        marker = runtime._child_marker("local", state["token"])
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), {"host_token": state["token"], "phase": "no_child"})
+        owner.kill()
+        owner.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while runtime._host_lease_active("local") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(runtime._recover_stale("local", wait=0))
+        self.assertIsNone(runtime._read_state("local"))
+        self.assertFalse(marker.exists())
+        self.assertTrue(runtime.start("local", wait=10, shutdown_timeout=2)["ok"])
+
+    def test_a_missing_or_foreign_marker_still_refuses_recovery(self):                           # #4250
+        state_path, socket_path, _ = runtime._paths("local")
+        token = "a" * 64
+        state = {"schema_version": 1, "profile": "local", "socket": "tcp:127.0.0.1:50000" if WINDOWS else str(socket_path),
+                 "token": token, "host_pid": 999999}
+        lease = runtime._write_new(state_path, (json.dumps(state) + "\n").encode())
+        runtime._unlock_file(lease)
+        os.close(lease)
+        with self.assertRaisesRegex(profiles.ProfileError, "no valid child ownership record"):
+            runtime._recover_stale("local", wait=0)
+        marker = runtime._child_marker("local", token)
+        marker.write_text(json.dumps({"host_token": token, "phase": "no_child", "pid": os.getpid()}), encoding="utf-8")   # more than the exact record
+        marker.chmod(0o600)
+        with self.assertRaisesRegex(profiles.ProfileError, "unverified"):
+            runtime._recover_stale("local", wait=0)
+        self.assertTrue(state_path.exists())
+
     # ---- owner transport, attach and identity (POSIX socket and Windows loopback alike)
 
     def _stale_host(self, child_pid, *, started=None, token="a" * 64):
@@ -1306,6 +1483,80 @@ class RuntimeTests(unittest.TestCase):
         finally:
             runtime._unlock_file(exclusive)
             os.close(exclusive)
+
+
+class StartWaitLimit(unittest.TestCase):
+    def setUp(self):
+        # A start writes an operation record before the engine runs, so these tests keep their records (and any profile
+        # lookup) in a scratch folder rather than in the person's own state.
+        temp = tempfile.TemporaryDirectory(prefix="strata-start-wait-test-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        (root / "profiles").mkdir()
+        env = mock.patch.dict(os.environ, {"STRATA_PROFILE_DIR": str(root / "profiles"),
+                                           "STRATA_RUNTIME_DIR": str(root / "runtime")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_a_start_may_wait_up_to_thirty_minutes_for_a_big_model(self):                    # #3949
+        from strata_control import runtime as rt, profiles as pr
+        self.assertEqual(rt.MAX_START_WAIT, 1800)
+        with self.assertRaisesRegex(pr.ProfileError, "start wait must be 0..1800"):
+            rt.start("x", wait=1801)
+        with mock.patch.object(rt, "_name", side_effect=pr.ProfileError("reached")):
+            with self.assertRaisesRegex(pr.ProfileError, "reached"):
+                rt.start("x", wait=1800)
+
+    def test_a_long_start_wait_reaches_the_runtime_through_the_cli(self):                     # #3459 #4191
+        # The desktop app starts models through `strata runtime start --wait`, and that wait is checked three times before
+        # the engine is reached: by management, by the operation record, and by the runtime itself. When only the runtime's
+        # ceiling was raised (#3949), a long start died at each of the first two with
+        # "start wait must be finite seconds in 0..600" / "direct runtime intent has an invalid timeout". So this walks the
+        # whole way with only the engine itself faked: any layer that still carries the old 600 s shows up here.
+        from strata_control import journal as jn, management as mg, profiles as pr, runtime as rt
+        revision = "0123456789abcdef"
+        for wait in (300, 600, 601, rt.MAX_START_WAIT):
+            reached = {}
+            with mock.patch.object(rt, "_name", lambda name: name), \
+                    mock.patch.object(mg.profiles, "load", lambda name: ("src", revision)), \
+                    mock.patch.object(rt, "start", lambda name, **kw: (reached.update(kw),
+                            {"ok": True, "state": "ready", "profile": name})[1]):
+                result = mg.runtime_action("start", "demo", wait=wait, shutdown_timeout=15)
+                self.assertEqual(result["state"], "ready")
+                self.assertEqual(reached["wait"], float(wait),
+                                 f"a start asked for {wait} s did not reach runtime.start with it")
+
+    def test_a_start_wait_above_the_runtime_ceiling_is_named_by_the_runtime(self):             # #3459 #4191
+        from strata_control import management as mg, profiles as pr, runtime as rt
+        revision = "0123456789abcdef"
+        with mock.patch.object(rt, "_name", lambda name: name), \
+                mock.patch.object(mg.profiles, "load", lambda name: ("src", revision)):
+            with self.assertRaisesRegex(pr.ProfileError, f"start wait must be finite seconds in 0..{rt.MAX_START_WAIT}"):
+                mg.runtime_action("start", "demo", wait=rt.MAX_START_WAIT + 1, shutdown_timeout=15)
+            with self.assertRaisesRegex(pr.ProfileError, f"startup wait must be finite seconds in 1..{rt.MAX_START_WAIT}"):
+                mg.runtime_action("restart", "demo", startup_wait=rt.MAX_START_WAIT + 1,
+                                  if_owner_id="0" * 32, if_instance_id="0" * 32)
+
+    def test_the_operation_record_takes_the_runtimes_own_start_ceiling(self):
+        # The record is written before the start runs, so a ceiling kept here would stop a long wait no matter what the
+        # two validators above allow. Waits that are not a start or a restart keep their own 600 s.
+        from strata_control import journal as jn, profiles as pr, runtime as rt
+        for kind, intent, allowed in (
+                ("runtime.start", {"wait_s": rt.MAX_START_WAIT, "shutdown_timeout_s": 15}, True),
+                ("runtime.start", {"wait_s": rt.MAX_START_WAIT + 1, "shutdown_timeout_s": 15}, False),
+                ("runtime.restart", {"wait_s": 1000, "startup_wait_s": rt.MAX_START_WAIT,
+                                     "expected_profile_revision": "0" * 16,
+                                     "expected_owner_id": "0" * 32, "expected_instance_id": "0" * 32,
+                                     "allow_source_switch": False, "allow_source_migration": False,
+                                     "expected_source_sha256": "0" * 64}, True),
+                ("runtime.stop", {"wait_s": rt.MAX_START_WAIT}, False),
+                ("runtime.verify", {"wait_s": rt.MAX_START_WAIT, "load": False}, False)):
+            with self.subTest(kind=kind, wait=intent["wait_s"]):
+                if allowed:
+                    jn._validate_direct_intent(kind, dict(intent))
+                else:
+                    with self.assertRaisesRegex(pr.ProfileError, "invalid timeout"):
+                        jn._validate_direct_intent(kind, dict(intent))
 
 
 if __name__ == "__main__":

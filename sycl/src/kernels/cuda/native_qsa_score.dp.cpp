@@ -20,6 +20,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
@@ -39,44 +40,7 @@ struct TileA { uint32_t x[4]; };
 struct TileB { uint32_t x[2]; };
 struct TileC { float x[4]={0.0f,0.0f,0.0f,0.0f}; };
 #if !defined(__HIPCC__)
-#if 0   // SYCL: inline PTX (mma/ldmatrix/cp.async) - the XMX port is pending; see tools/fixups.py
-__dpct_inline__ void load_a(TileA &a, const float *p) {
-    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const float *src = p + (item_ct1.get_local_id(2) % 16) * STRIDE +
-                       (item_ct1.get_local_id(2) / 16) * 4;
-#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
-    asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3}, [%4];"
-                 : "=r"(a.x[0]), "=r"(a.x[1]), "=r"(a.x[2]), "=r"(a.x[3])
-                 : "l"(src));
-#else
-    dpct::experimental::matrix::ldmatrix((uintptr_t)src, &a.x[0], &a.x[1],
-                                         &a.x[2], &a.x[3]);
-#endif
-}
-__dpct_inline__ void load_b(TileB &b, const float *p) {
-    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const float *src = p + (item_ct1.get_local_id(2) % 8) * STRIDE +
-                       ((item_ct1.get_local_id(2) / 8) * 4) % 8;
-#if defined(__SYCL_DEVICE_ONLY__) && defined(__NVPTX__)
-    asm volatile("ldmatrix.sync.aligned.m8n8.x2.b16 {%0,%1}, [%2];"
-                 : "=r"(b.x[0]), "=r"(b.x[1])
-                 : "l"(src));
-#else
-    dpct::experimental::matrix::ldmatrix((uintptr_t)src, &b.x[0], &b.x[1]);
-#endif
-}
-__dpct_inline__ void mma(TileC &c, const TileA &a, const TileB &b) {
-    // Deliberately no cvt.rn.tf32: pinned mma.cuh passes raw F32 bits directly.
-    /*
-    DPCT1053: Migration of device assembly code is not supported.
-    */
-    asm("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 {%0,%1,%2,%3}, "
-        "{%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};"
-        : "+f"(c.x[0]), "+f"(c.x[1]), "+f"(c.x[2]), "+f"(c.x[3])
-        : "r"(a.x[0]), "r"(a.x[1]), "r"(a.x[2]), "r"(a.x[3]), "r"(b.x[0]),
-          "r"(b.x[1]));
-}
-#endif
+// (no load_a/load_b/mma here: the inline-PTX tensor-core path is src/kernels/cuda/native_qsa_score.cu, and the SYCL port scores with the scalar path below; sycl/tools/fixups.py keeps this block out)
 /*
 DPCT1110: The total declared local variable size in device function
 score_kernel exceeds 128 bytes and may cause high register pressure. Consult
@@ -293,8 +257,8 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<class score_kernel_59cd1b>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class score_kernel_59cd1b>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
                                 unsigned((max_blocks + ROWS - 1) / ROWS)) *

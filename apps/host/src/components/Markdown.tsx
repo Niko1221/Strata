@@ -1,7 +1,10 @@
 import { tr } from '../lib/i18n';
+import { CopyBtn } from './CopyBtn';
 /** Safe, dependency-free rendering of the Markdown structures used in answers. */
 import { Fragment, type ReactNode } from 'react';
-import { Btn, IconBtn } from './ui';
+import { CodePreviewBtn } from './CodePreviewBtn';
+import { codePreview } from '../lib/code-preview';
+import type { PreviewArtifact } from '../lib/artifacts';
 import { SyntaxCode } from './SyntaxCode';
 import { MathView } from './MathView';
 import { displayBlock, hasMath, splitMath } from '../lib/math';
@@ -47,15 +50,29 @@ function inline(text: string, onOpenLink?: (url: string) => void, imageSession?:
             : <Fragment key={p}>{inlineMarks(part.text, onOpenLink, imageSession)}</Fragment>)}</Fragment>;
     });
 }
-export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
+/** Does this line continue the paragraph above it, or does it start a block of its own? */
+export function continuesParagraph(lines: string[], at: number): boolean {
+    const line = lines[at];
+    if (!line.trim() || /^\s*```/.test(line) || /^(#{1,6})\s+(.+)$/.test(line) || /^\s*[-*+]\s+\S/.test(line) || /^\s*\d+[.)]\s+\S/.test(line) || /^>\s?/.test(line))
+        return false;
+    if (line.includes('|') && at + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[at + 1]))
+        return false;
+    return !displayBlock(lines, at);
+}
+export function Markdown({ text, onOpenLink, previewId, onPreview, onClosePreview, imageSession }: {
     text: string;
     onOpenLink?: (url: string) => void;
-    onPreviewHtml?: (html: string) => void;
+    /** Where an HTML or Markdown code block can be shown in the sidebar: the message it belongs to, and the handlers that open and close a preview. */
+    previewId?: string;
+    onPreview?: (a: PreviewArtifact) => void;
+    onClosePreview?: (id: string) => void;
     /** The chat whose folder a picture path in the answer is read from (the host serves only files inside it). */
     imageSession?: string | null;
 }) {
     const nodes: ReactNode[] = [];
-    const lines = text.split('\n');
+    // A file written on Windows has \r\n: the \r stays at the end of every line, where `.` does not match it, so a list line was never taken and the
+    // list loop below never moved on (an endless loop that filled the page's memory, found in the sidebar preview). Line ends are read as one.
+    const lines = text.split(/\r\n|\r|\n/);
     for (let i = 0; i < lines.length;) {
         const line = lines[i];
         if (!line.trim()) {
@@ -69,7 +86,9 @@ export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
             while (i < lines.length && !/^\s*```/.test(lines[i]))
                 body.push(lines[i++]);
             i++;
-            nodes.push(<div className="st-code" key={key}><div className="st-code__head"><span>{language || tr('code')}</span>{tr(/^html$/i.test(language) && onPreviewHtml ? <Btn size="sm" onClick={() => onPreviewHtml(body.join('\n'))}>{tr("Open preview")}</Btn> : null)}<IconBtn name="copy" title={tr("Copy code")} onClick={() => void navigator.clipboard.writeText(body.join('\n'))}/></div><SyntaxCode text={body.join('\n')} language={language}/></div>);
+            const code = body.join('\n');
+            const preview = previewId && onPreview ? codePreview(previewId, language, code) : null;
+            nodes.push(<div className="st-code" key={key}><div className="st-code__head"><span>{language || tr('code')}</span><span className="st-code__actions">{tr(preview && onPreview ? <CodePreviewBtn artifact={preview} onPreview={onPreview} onClose={onClosePreview}/> : null)}<CopyBtn text={code} label="Code" title="Copy code"/></span></div><SyntaxCode text={code} language={language}/></div>);
             continue;
         }
         const block = displayBlock(lines, i);
@@ -94,6 +113,11 @@ export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
                 items.push(<li key={i}>{tr(inline(lines[i].replace(re, '$1'), onOpenLink))}</li>);
                 i++;
             }
+            if (i === key) {              // never stand still: a line the list start accepted but the item pattern did not is shown as text and passed
+                nodes.push(<p key={key}>{line}</p>);
+                i++;
+                continue;
+            }
             nodes.push(ordered ? <ol key={key}>{tr(items)}</ol> : <ul key={key}>{tr(items)}</ul>);
             continue;
         }
@@ -113,8 +137,19 @@ export function Markdown({ text, onOpenLink, onPreviewHtml, imageSession }: {
             i++;
             continue;
         }
-        nodes.push(<p key={i}>{tr(inline(line, onOpenLink, imageSession))}</p>);
+        // One paragraph: a single newline inside it is a soft break (a space); two spaces or a backslash at the end of a line is a hard break (#3818).
+        const key = i, parts: ReactNode[] = [];
+        let current = line;
         i++;
+        while (true) {
+            const hard = /( {2,}|\\)$/.test(current);
+            parts.push(<Fragment key={parts.length}>{tr(inline(current.replace(/( {2,}|\\)$/, ''), onOpenLink, imageSession))}</Fragment>);
+            if (i >= lines.length || !continuesParagraph(lines, i))
+                break;
+            parts.push(hard ? <br key={`b${parts.length}`}/> : ' ');
+            current = lines[i++].trimStart();
+        }
+        nodes.push(<p key={key}>{tr(parts)}</p>);
     }
     return <>{tr(nodes)}</>;
 }

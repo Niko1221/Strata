@@ -35,10 +35,14 @@ test('Windows uses a PowerShell FolderBrowserDialog passed as an encoded command
   assert.deepEqual(await chooseFolder('Pick', { platform: 'win32', run: c.run('') }), { cancelled: true });
   const missing = await chooseFolder('Pick', { platform: 'win32', run: c.run(failure('ENOENT')) });
   assert.equal(missing.unavailable, true);
-  await assert.rejects(chooseFolder('Pick', { platform: 'win32', run: c.run(failure(2)) }), /could not open/);
+  // A window that fails after it was started no longer ends in an error with no way on (AGENT-LOST, item 11): the app asks for the path.
+  const failed = await chooseFolder('Pick', { platform: 'win32', run: c.run(failure(2)) });
+  assert.equal(failed.unavailable, true); assert.match(failed.reason, /Type the folder path/);
+  const nodialog = await chooseFolder('Pick', { platform: 'win32', run: c.run('NODIALOG' + String.fromCharCode(13, 10)) });
+  assert.equal(nodialog.unavailable, true); assert.match(nodialog.reason, /Type the folder path/);
 });
 
-test('the generated PowerShell parses without errors', { skip: process.platform !== 'win32' }, () => {
+test('the generated PowerShell parses without errors', { skip: process.platform !== 'win32' && 'needs Windows PowerShell to parse the script (Windows only)' }, () => {
   const shell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const out = execFileSync(shell,
     ['-NoProfile', '-NonInteractive', '-Command', '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseInput($env:SCRIPT,[ref]$null,[ref]$e); $e.Count'],
@@ -49,13 +53,13 @@ test('the generated PowerShell parses without errors', { skip: process.platform 
 test('Linux tries zenity, falls back to kdialog, then reports that none exists', async () => {
   const order = [];
   const run = async (command) => { order.push(command); if (command === 'zenity') throw failure('ENOENT'); return { stdout: '/home/me/skills/\n' }; };
-  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', run }), { path: '/home/me/skills' });
+  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run }), { path: '/home/me/skills' });
   assert.deepEqual(order, ['zenity', 'kdialog']);
-  const none = await chooseFolder('Pick', { platform: 'linux', run: async () => { throw failure('ENOENT'); } });
+  const none = await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run: async () => { throw failure('ENOENT'); } });   // no real gdbus monitor
   assert.equal(none.unavailable, true);
   assert.match(none.reason, /zenity or kdialog/);
-  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', run: async () => { throw failure(1); } }), { cancelled: true });
-  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', run: async () => ({ stdout: '' }) }), { cancelled: true });
+  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run: async () => { throw failure(1); } }), { cancelled: true });
+  assert.deepEqual(await chooseFolder('Pick', { platform: 'linux', portal: async () => null, run: async () => ({ stdout: '' }) }), { cancelled: true });
 });
 
 test('chosen paths lose trailing separators but roots survive', () => {
@@ -170,5 +174,9 @@ test('Windows: a PowerShell that is missing or fails is reported as before', asy
   f.child.emit('error', Object.assign(new Error('x'), { code: 'ENOENT' }));
   await assert.rejects(missing, e => e.code === 'ENOENT');
   const g = fakeShell(); const failed = watchedWindowsDialog('powershell.exe', [], { spawnProcess: g.spawnProcess });
-  g.child.emit('close', 1); await assert.rejects(failed, e => e.code === 1);
+  g.child.emit('close', 1);
+  // Ended by security software before any window opened (#3831): the app asks for the path instead of an error.
+  assert.deepEqual(await failed, { noDialog: true });
+  const h = fakeShell(); const late = watchedWindowsDialog('powershell.exe', [], { spawnProcess: h.spawnProcess });
+  h.child.stdout.emit('data', 'READY\n'); h.child.emit('close', 1); await assert.rejects(late, e => e.code === 1);
 });

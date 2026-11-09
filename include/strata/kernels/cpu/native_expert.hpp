@@ -2,21 +2,36 @@
 //
 // The IQ2_XS / IQ3_XXS model files keep their experts in i-quant formats (IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS,
 // IQ3_S gate/up; Q2_0 or IQ4_NL down) whose values cannot be re-expressed in the Q2_0 pack form.  A native expert
-// blob is the three GGUF slices back to back, [gate rows | up rows | down rows], and the arithmetic is ggml-cpu's
-// own (`ggml_get_type_traits_cpu`): the activation is quantized with the weight type's `vec_dot_type` and each row
-// is one `vec_dot`, exactly what llama.cpp's CPU backend computes for the same tensor.
+// blob is the three GGUF slices back to back, [gate rows | up rows | down rows]. Activations use the weight type's
+// ggml `vec_dot_type`; dispatch selects a format-specific kernel or ggml's per-token dot. The arithmetic mode
+// controls whether grouping tokens may change the selected row arithmetic.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
 
+#include "strata/core/geometry.hpp"
+
 namespace strata::kernels::cpu {
 
-/// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292).
-inline constexpr size_t kNativeActBytes = 4096;
-/// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292).
-inline constexpr size_t kNativeHBytes = 1024;
+/// Bytes of the quantized activation of a row of `n` values: the larger of Q8_K (292 bytes per 256) and a 32-block
+/// format at 36 bytes per 32 (Q8_1 and friends).
+constexpr size_t native_act_bytes_for(int64_t n) {
+    const size_t q8k = (size_t) (n / 256) * 292, q81 = (size_t) (n / 32) * 36;
+    return q8k > q81 ? q8k : q81;
+}
+/// Bytes of the largest quantized activation any native layer uses (2560 values as Q8_K: 10 x 292); never below the
+/// 4096 of the Flash-Next engine, and it grows with the compiled hidden size (4096 values need 4672).
+inline constexpr size_t kNativeActBytes =
+    native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) > 4096 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_embd) : 4096;
+/// Bytes of the largest quantized down activation (640 values as Q8_0: 20 x 34, or Q8_K 3 x 292); never below 1024,
+/// and it grows with the compiled expert width (1024 values as Q8_K need 1168).
+inline constexpr size_t kNativeHBytes =
+    native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) > 1024 ? native_act_bytes_for(strata::core::kCompiledGeometry.n_ff) : 1024;
+
+/// Arithmetic fixed for one pool batch. WindowInvariant preserves the legacy singleton result at every width.
+enum class NativeArithmetic { Default, WindowInvariant };
 
 /// One layer's native expert geometry.
 struct NativeFmt {
@@ -36,6 +51,7 @@ struct NativeFmt {
     /// native_quant_act / native_quant_h apply y = H_block (signs * x) before quantizing.  had_block 0 = none.
     int had_block = 0;
     bool had_gu = false, had_d = false;
+    int layer = -1;                     ///< the layer this format belongs to (set by expert_layout_load; STRATA_ACT_DUMP only)
     const float* gu_signs = nullptr;    ///< n_embd signs for x (nullptr: identity)
     const float* d_signs = nullptr;     ///< n_ff signs for h (nullptr: identity)
 };
@@ -61,5 +77,12 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
+
+/// Same per-token result as the corresponding legacy nt=1 call on this build and CPU.
+/// Kernels that already satisfy this contract retain their grouped execution.
+void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
+                              float* const* ff, int r0, int r1);
+void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                                float* const* out, int r0, int r1);
 
 }  // namespace strata::kernels::cpu

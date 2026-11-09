@@ -29,15 +29,13 @@ measurement, and neither is a run whose `produced` is zero.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import select
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 #: A workload is fixed for the whole sweep: the same prompt, the same number of tokens to generate,
 #: the same sampling. Changing any of these between candidates invalidates the comparison.
@@ -435,7 +433,7 @@ class EngineHarness:
             self._proc = lifeline.popen(
                 self._argv(), "engine", cwd=str(self.cwd), env=self.env,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, bufsize=1)
+                text=True, errors="replace", bufsize=1)
         except OSError as e:
             raise MeasurementError(f"the engine could not be started: {e}") from e
 

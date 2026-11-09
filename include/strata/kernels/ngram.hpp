@@ -22,20 +22,23 @@
 // All of those are asserted observable in `ple_parity.cpp` rather than trusted.
 #pragma once
 
+#include "strata/core/geometry.hpp"
+
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::kernels {
 
 // ---- geometry, every value confirmed against the artifact (docs/gguf-metadata.txt) ----
-inline constexpr int NG_N_EMBD = 2560;          // n_embd
-inline constexpr int PLE_HEAD_DIM = 160;        // qwen4exp.embedding_length_per_layer_input
+inline constexpr int NG_N_EMBD = strata::core::kCompiledGeometry.n_embd;          // n_embd
 inline constexpr int NGRAM_SIZE = 3;            // qwen4exp.ple.ngram_size
 inline constexpr int HEADS_PER_NGRAM = 8;       // qwen4exp.ple.heads_per_ngram
 inline constexpr int PLE_N_HEADS = (NGRAM_SIZE - 1) * HEADS_PER_NGRAM;   // 16
+inline constexpr int PLE_HEAD_DIM = NG_N_EMBD / PLE_N_HEADS;   // 160: qwen4exp.embedding_length_per_layer_input (16 heads make one hidden row)
 inline constexpr int PLE_CONV_KERNEL = 4;       // qwen4exp.ple.conv_kernel
 inline constexpr int32_t PLE_EOS_TOKEN_ID = 248044;
-inline constexpr int NG_HC = 4;                 // hyper_connection.count
+inline constexpr int NG_HC = strata::core::kCompiledGeometry.hc;                 // hyper_connection.count
 inline constexpr int NG_HC_DIM = NG_HC * NG_N_EMBD;                      // 10240
 inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
@@ -94,6 +97,13 @@ struct PleConsts {
     uint64_t offset[PLE_N_HEADS];
 };
 PleConsts ple_artifact_consts();
+
+/// The hash constants a model file carries in its own metadata (`<arch>.ple.layer_multipliers`, `.head_vocab_sizes`,
+/// `.head_offsets`), checked: NGRAM_SIZE multipliers, PLE_N_HEADS vocabulary sizes (none zero) and offsets, every head's
+/// range [offset, offset + vocab) inside `table_rows` (0 = do not check the table size).  Returns false and sets `err`
+/// when the arrays do not fit; `ple_artifact_consts()` stays the default for a file that carries none.
+bool ple_consts_from_arrays(const std::vector<uint64_t>& mult, const std::vector<uint64_t>& vocab,
+                            const std::vector<uint64_t>& offset, uint64_t table_rows, PleConsts& out, std::string& err);
 
 /// `mixed_n = (ctx[0]*m[0]) ^ (ctx[1]*m[1]) ^ ... ^ (ctx[n-1]*m[n-1])` in uint64.
 ///
@@ -187,6 +197,10 @@ public:
     /// as ONE reader request - page dedupe and sort across the whole batch, the reader's full queue depth.  Not
     /// while a single-token `issue` is pending.  The mapped mode gathers row by row.
     bool gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err);
+    /// STRATA_PLE_COMPACT: the same rows as their raw IQ4_NL bytes (n_tokens x 16 rows of PLE_ROW_BYTES; a row past the
+    /// table: scale 0 and code 8 everywhere, which decode to the +0.0f gather_batch writes) for ple_iq4nl_dequant on the device.  False (nothing
+    /// written) unless the table is in memory (--ple-io ram / mmap) and IQ4_NL.
+    bool gather_raw_iq4nl(const uint32_t* rows, size_t n_tokens, uint8_t* out) const;
 
     /// Fault injection (Direct mode): every row read completes no earlier than `us` after issue.
     void set_injected_delay_us(double us);
@@ -201,7 +215,14 @@ public:
     bool is_open() const;
     /// True when `PleIoOptions::lock` was asked for and the OS lock succeeded (false: pages only pre-touched).
     bool locked() const;
+    /// Gives a resident lock back (Mmap mode): the pages stay mapped and cached, but the OS may reclaim them again, so the RAM counts as
+    /// available.  False when the table was not locked.  Used by the residency policy when the table's lock would leave the
+    /// conversation cache no room (#4518).
+    bool unlock();
     uint64_t rows() const;
+    /// Bytes of the whole table (rows x row bytes) while open; 0 when closed.  The residency policy in
+    /// generate.cpp sizes the table with this before it decides to keep it in RAM.
+    uint64_t table_bytes() const;
     /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).
     const char* format() const;
 

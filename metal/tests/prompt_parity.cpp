@@ -6,6 +6,7 @@
 //   swiglu_h, moe_out    elementwise
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,7 +14,7 @@
 #include <vector>
 
 namespace {
-constexpr int N = 2560, HC = 4, LR = 320;
+constexpr int N = strata_metal::geo::N, HC = strata_metal::geo::HC, LR = strata_metal::geo::LR, TK = strata_metal::geo::TOPK;
 struct GrArgs { uint32_t n_embd, hc, hc_lr, n_tok, apply; float eps; };
 struct EpiArgs { uint32_t n_tok, n_embd, hc, hc_lr; };
 struct DqArgs { uint32_t n_in, n_out, row_bytes, perm; };
@@ -23,46 +24,47 @@ double sig(double v) { return 1.0 / (1.0 + std::exp(-v)); }
 
 int main() {
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "gr.metal", "prompt.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "mma.metal", "dense_mm.metal", "gr.metal", "prompt.metal"}, strata_metal::geo::prelude());
     std::printf("device %s\n", cx.device_name().c_str());
     int fails = 0;
-    // ---- route_topk
-    {
+    // ---- route_topk (512 experts, and the 256-expert Coder's rows)
+    for (const int NEX : {512, 256}) {
         const int T = 300;
         mtl::Pipeline p = cx.pipeline(lib, "route_topk");
-        mtl::Buffer lg = cx.alloc(4 * T * 512), ids = cx.alloc(4 * T * 10), w = cx.alloc(4 * T * 10);
+        mtl::Buffer lg = cx.alloc(4 * T * NEX), ids = cx.alloc(4 * T * TK), w = cx.alloc(4 * T * TK);
         ref::Rng r(9);
         for (int t = 0; t < T; ++t)
-            for (int e = 0; e < 512; ++e) {
+            for (int e = 0; e < NEX; ++e) {
                 float v = r.sym() * 4.0f;
                 if (t % 3 == 0) v = std::round(v * 4.0f) / 4.0f;
-                lg.as<float>()[t * 512 + e] = v;
+                lg.as<float>()[t * NEX + e] = v;
             }
         const uint32_t nt = T;
         mtl::Dispatch d;
         d.p = &p;
-        d.args = {mtl::Arg::B(lg), mtl::Arg::B(ids), mtl::Arg::B(w), mtl::Arg::V(nt)};
+        const uint32_t nex = NEX;
+        d.args = {mtl::Arg::B(lg), mtl::Arg::B(ids), mtl::Arg::B(w), mtl::Arg::V(nt), mtl::Arg::V(nex)};
         d.grid[0] = (T + 7) / 8;
         d.tg[0] = 256;
         cx.run({d});
         int bad = 0;
         double worst = 0;
         for (int t = 0; t < T; ++t) {
-            const float* l = lg.as<float>() + t * 512;
+            const float* l = lg.as<float>() + t * NEX;
             float mx = -INFINITY;
-            for (int e = 0; e < 512; ++e) mx = std::max(mx, l[e]);
-            std::vector<double> pr(512);
+            for (int e = 0; e < NEX; ++e) mx = std::max(mx, l[e]);
+            std::vector<double> pr(NEX);
             double s = 0;
-            for (int e = 0; e < 512; ++e) s += (pr[e] = std::exp((double)l[e] - mx));
-            std::vector<int> order(512);
-            for (int e = 0; e < 512; ++e) order[e] = e;
+            for (int e = 0; e < NEX; ++e) s += (pr[e] = std::exp((double)l[e] - mx));
+            std::vector<int> order(NEX);
+            for (int e = 0; e < NEX; ++e) order[e] = e;
             std::stable_sort(order.begin(), order.end(), [&](int x, int y) { return l[x] > l[y]; });
             double ss = 0;
-            for (int k = 0; k < 10; ++k) ss += pr[order[k]] / s;
-            for (int k = 0; k < 10; ++k) {
-                if (ids.as<int>()[t * 10 + k] != order[k]) { ++bad; break; }
+            for (int k = 0; k < TK; ++k) ss += pr[order[k]] / s;
+            for (int k = 0; k < TK; ++k) {
+                if (ids.as<int>()[t * TK + k] != order[k]) { ++bad; break; }
                 const double ref = pr[order[k]] / s / std::max(ss, 6.103515625e-5);
-                worst = std::max(worst, std::fabs(w.as<float>()[t * 10 + k] - ref) / ref);
+                worst = std::max(worst, std::fabs(w.as<float>()[t * TK + k] - ref) / ref);
             }
         }
         const bool ok = bad == 0 && worst < 2e-6;

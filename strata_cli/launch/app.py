@@ -6,14 +6,12 @@ launch-aware extras: a Connect view (key 7) and a quit question (keep serving in
 
 from __future__ import annotations
 
-import json
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rich.text import Text
 from textual.app import App
 from textual.binding import Binding
 
@@ -23,12 +21,12 @@ from strata_cli.launch import settings as S
 from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, read_config
-from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, FolderScreen,
-                                       ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, StartScreen,
+from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, DraftingScreen, FolderScreen,
+                                       ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, SpeedScreen, StartScreen,
                                        TuningScreen, flow_for)
 from strata_cli.launch.widgets import CSS, Glyphs
 
-SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen,
+SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen, "drafting": DraftingScreen,
            "parallel": ParallelScreen, "tuning": TuningScreen, "advanced": AdvancedScreen, "access": AccessScreen, "save": SaveScreen}
 
 
@@ -71,8 +69,14 @@ class Ctx:
     def warnings(self) -> list[str]:
         s = self.settings
         out = [n.line() for n in S.check_access(s)]
-        out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
-        out += [n.line() for n in S.check_context(s)]
+        deepseek = bool(s.family and self.catalog.strata.multi_family(s.family))
+        if deepseek:
+            if s.parallel and s.parallel > 1:
+                from strata_cli.launch.cmd import parallel_notices
+                out += [n.line() for n in parallel_notices(s, self.computer)]
+        else:
+            out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
+        out += [n.line() for n in S.check_context(s, deepseek=deepseek, pack_limit=self.catalog.pack_limit(s.family, s.model) if deepseek else None)]
         r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
         if r is not None and r.verdict != "fits":
             out.append(f"{r.title}: {r.words}.")
@@ -110,7 +114,8 @@ class Ctx:
         from strata_cli.launch import modelstate
         s = self.settings
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
-                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp, drafting=s.drafting)
+                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
+                                 drafting=modelstate.resolved_drafting(s.drafting, s.family))
 
     def default_folder(self) -> Path:
         """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
@@ -148,8 +153,14 @@ class Ctx:
                     tuned_args, tuned_env = list(merged.get("args") or []), dict(merged.get("env") or {})
             except Exception:                                # noqa: BLE001
                 pass
-        exe = self.engine_exe()
-        text = P.engine_help_text(exe) if exe else None
+        if (cfg or {}).get("arch") == "deepseek41" or self.settings.family == "deepseek41":   # DeepSeek runs strata-dsv41: its settings, not the Qwen engine's
+            own = (cfg or {}).get("exe")
+            exe = own if own and Path(str(own)).is_file() else None
+            text = P.dsv41_help_text(exe)
+            exe = exe or "static"
+        else:
+            exe = self.engine_exe()
+            text = P.engine_help_text(exe) if exe else None
         if exe and text:
             self.engine_flags = sorted({p.name for p in P.parse_help(text)})
             self.engine_note = ""
@@ -160,7 +171,10 @@ class Ctx:
                                "The engine's own list could not be read here; names are not checked."
         if not cfg and not s.extra:
             self.engine_note = self.engine_note or "The model is not installed yet; the defaults and tuned values appear after it is."
-        self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra)
+        from strata_control import speed_switches
+        gpus = list(getattr(self.computer, "gpus", None) or [])
+        switches = P.switch_params(speed_switches.applicable(cfg, gpus, self.catalog.installed_backend()))
+        self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra, switches)
         return self._adv
 
     def command_text(self) -> str:
@@ -412,10 +426,9 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
     from strata_cli.launch.monitor_ext import LaunchMonitor
     local = next((u for u in info.get("urls", []) if "127.0.0.1" in u), None) or f"http://127.0.0.1:{info.get('port', S.DEFAULT_PORT)}"
     endpoint = Endpoint(local, info.get("key"), 3.0, "")
-    app = LaunchMonitor(endpoint, None, info=info, color=color)
+    app = LaunchMonitor(endpoint, None, info={**info, "daily_check": True}, color=color)     # (the quiet once-a-day check for a newer engine: this monitor only)
     app.run()
     if app.stop_requested:
-        from strata_cli.launch.runner import Runner as R
         from strata_control import runtime
         try:
             runtime.stop(info["profile"], timeout=180)

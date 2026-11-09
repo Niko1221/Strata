@@ -202,14 +202,15 @@ class EngineUpdate(UpdaterCase):
         self.assertEqual(again["results"][0]["status"], "current")
         self.assertEqual(len(self.archive_requests()), 1)
 
-    def test_the_next_update_drops_versions_older_than_the_previous_one(self):
+    def test_updates_keep_every_older_engine_until_the_person_deletes_one(self):
         self.install_current()
         self.publish(("0.1.46", fx.GOOD_ENGINE))
         updater.run_update(self.ctx(), control=False)
         self.publish(("0.1.47", fx.GOOD_ENGINE))
         out = updater.run_update(self.ctx(), control=False)
         self.assertEqual(out["results"][0]["status"], "updated")
-        self.assertEqual(self.engine_folders(), [f"0.1.46-{PLATFORM}-cuda-cuda13", f"0.1.47-{PLATFORM}-cuda-cuda13"])
+        self.assertEqual(self.engine_folders(), [f"0.1.45-{PLATFORM}-cuda-cuda13", f"0.1.46-{PLATFORM}-cuda-cuda13", f"0.1.47-{PLATFORM}-cuda-cuda13"])
+        self.assertEqual(out["results"][0]["removed"], [])
         self.assertEqual(self.resolved(), "0.1.47")
 
     def test_a_failing_test_start_keeps_the_old_engine(self):
@@ -331,15 +332,27 @@ class EngineUpdate(UpdaterCase):
     def test_nothing_is_replaced_while_an_engine_serves(self):
         self.install_current()
         self.publish(("0.1.46", fx.GOOD_ENGINE))
-        out = updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
-        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
-        self.assertIn("app-1 is serving", out["results"][0]["error"])
+        with self.assertRaises(updater.Busy) as caught:                 # refused up front: nothing is downloaded, staged or test-started
+            updater.run_update(self.ctx(serving=lambda: [{"profile": "app-1", "state": "ready"}]), control=False)
+        self.assertEqual(caught.exception.exit_code, 7)
+        self.assertIn("app-1 is serving", str(caught.exception))
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertFalse((self.root / "ran.txt").exists(), "no test start while another engine serves")
-        # the download was not wasted: the next try reuses the verified archive
+        self.assertEqual(self.archive_requests(), [], "no download beside a loaded model")
         done = updater.run_update(self.ctx(), control=False)
         self.assertEqual(done["results"][0]["status"], "updated")
         self.assertEqual(len(self.archive_requests()), 1)
+
+    def test_a_model_that_starts_during_the_download_stops_the_update_and_the_archive_is_kept(self):
+        self.install_current()
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        answers = [[], [{"profile": "app-1", "state": "ready"}], [{"profile": "app-1", "state": "ready"}]]
+        out = updater.run_update(self.ctx(serving=lambda: answers.pop(0) if len(answers) > 1 else answers[0]), control=False)
+        self.assertEqual((out["exit_code"], out["results"][0]["status"]), (7, "failed"))
+        self.assertEqual(self.resolved(), "0.1.45")
+        done = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(done["results"][0]["status"], "updated")
+        self.assertEqual(len(self.archive_requests()), 1, "the verified archive was reused")
 
     def test_waiting_for_the_engine_to_stop(self):
         self.install_current()
@@ -359,12 +372,15 @@ class EngineUpdate(UpdaterCase):
         self.assertEqual(self.resolved(), "0.1.45")
         self.assertEqual(ec.status(self.components, backend="cuda")["pinned"], f"0.1.45-{PLATFORM}-cuda-cuda13")
         self.assertEqual(preset_marks.pending(self.state_base), [], "back on the engine the presets were measured on: nothing owed")
-        again = updater.run_update(self.ctx(), control=False)
-        self.assertEqual(again["results"][0]["status"], "skipped")
         self.assertEqual(self.resolved(), "0.1.45")
-        forced = updater.run_update(self.ctx(force=True), control=False)
-        self.assertEqual(forced["results"][0]["status"], "updated", forced)
+        # the update still offers the version that was rolled back from; it is already here, so nothing is downloaded and it becomes the engine in use
+        archives = len(self.archive_requests())
+        again = updater.run_update(self.ctx(), control=False)
+        self.assertEqual(again["results"][0]["status"], "updated", again)
+        self.assertTrue(again["results"][0]["from_disk"])
+        self.assertEqual(len(self.archive_requests()), archives, "no engine archive was requested")
         self.assertEqual(self.resolved(), "0.1.46")
+        self.assertIsNone(ec.pinned_folder(self.components), "an update clears the pin: the newest is the engine in use again")
         self.assert_user_data_untouched()
 
     def test_rollback_without_a_previous_engine_says_so(self):
@@ -455,6 +471,17 @@ class StartPathSignature(UpdaterCase):
             self.assertEqual(ec.verify_signature(ec.read_manifest(folder)), "unverified")
             with self.assertRaises(ec.IntegrityProblem):
                 ec.verify_signature(ec.read_manifest(folder), {ec.ENV_REQUIRE_SIGNED: "1"})
+
+
+class LightTestStart(unittest.TestCase):
+    def test_the_test_start_drops_the_big_context_and_the_picture_reader(self):                # #3842
+        args = ["--serve", "--pack", "p", "--max-context", "262144", "--kv", "int8", "--kv-resident", "32768", "--vision",
+                "--vision-tokens", "768", "--spec", "4"]
+        self.assertEqual(updater.light_test_args(args), ["--serve", "--pack", "p", "--max-context", "4096", "--kv", "int8", "--spec", "4"])
+        self.assertEqual(updater.light_test_args(["--max-context", "2048", "--vision", "cpu", "--mtp", "x"]),
+                         ["--max-context", "2048", "--mtp", "x"])
+        self.assertEqual(updater.light_test_args(["--vision"]), [])
+        self.assertEqual(updater.light_test_args(["--max-context", "abc"]), ["--max-context", "abc"])
 
 
 class LazyModel(UpdaterCase):
@@ -731,6 +758,21 @@ class Cli(UpdaterCase):
         code, out, _ = self.cli("components", "rollback", "--json", *self.common())
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["to"], "0.1.46", "rolling back twice goes forward again")
+        self.assertEqual(json.loads(out)["status"], "rolled-forward", "and it says so")
+        self.assertEqual(updater.State(self.components).section("engine").get("skipped") or [], [], "the newer engine is no longer one that was left")
+        code, text, _ = self.cli("components", "rollback", *self.common())     # back to 0.1.45 once more
+        self.assertIn("Engine rolled back: 0.1.46 -> 0.1.45", text)
+        code, text, _ = self.cli("update", "--check", *self.common())
+        self.assertIn("update available: 0.1.45 -> 0.1.46 (already installed; the update switches to it, nothing to download)", text)
+        code, text, _ = self.cli("components", "rollback", *self.common())
+        self.assertIn("Engine moved to the newer version: 0.1.45 -> 0.1.46", text)
+        self.assertNotIn("rolled back", text)
+
+    def test_a_first_install_does_not_claim_a_previous_engine_is_kept(self):
+        self.publish(("0.1.46", fx.GOOD_ENGINE))
+        code, text, _ = self.cli("update", *self.common())
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("previous engine version is kept", text)
 
     def test_a_failed_test_start_exits_6_and_says_the_old_engine_is_unchanged(self):
         self.install_current()
@@ -786,6 +828,65 @@ class AnotherCardFamilyNote(unittest.TestCase):
         self.assertIsNone(offered)
         self.assertEqual(report["status"], "none-for-this-pc")
         self.assertEqual(report["note"], "This build of Strata is for AMD RX 7000 cards. This computer has an AMD RX 9000 card (gfx1201). Ask for the RX 9000 build.")
+
+
+class FailedStartRecords(LazyModel):
+    """#3654: a failed test start used to leave only the last 64 KiB of the engine log, because the sandbox that held the host, child and
+    ready records was deleted at once. The records are kept (without tokens or keys) next to the log."""
+
+    def failing_start(self):
+        def start(name, **kw):
+            runtime_dir = Path(os.environ["STRATA_RUNTIME_DIR"])           # the sandbox's, set by default_test_start
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            (runtime_dir / f"{name}.json").write_text(json.dumps({"pid": 4321, "token": "a1b2c3d4" * 8, "state": "starting"}), encoding="utf-8")
+            (runtime_dir / f"{name}-{'a1b2c3d4' * 8}.child.json").write_text(json.dumps({"host_token": "a1b2c3d4" * 8, "child_pid": 111}), encoding="utf-8")
+            (runtime_dir / f"{name}-9f.ready.json").write_text(json.dumps({"pid": 222, "api_key": "sekret-key"}), encoding="utf-8")
+            (runtime_dir / f"{name}.server.log").write_text("server: model loaded\nserver: pid 222\n", encoding="utf-8")
+            (runtime_dir / f"{name}.host.log").write_text("", encoding="utf-8")
+            return {"ok": False, "state": "starting", "error": "startup_wait_expired", "phase": "ready_file_not_matched"}
+        return start
+
+    def test_the_runtime_records_of_a_failed_start_are_kept_without_tokens_or_keys(self):
+        from strata_control import runtime
+        self.install_current()
+        folder = fx.build_package(self.root / "lazy", "0.1.46", key=self.key)
+        stage = self.root / "stage"
+        (stage / "engine").mkdir(parents=True)
+        shutil.copytree(folder, stage / "engine" / folder.name)
+        component = ec.read_manifest(stage / "engine" / folder.name)
+        self.config.write_text(json.dumps({**json.loads(self.config.read_text()), "api_key": "sekret-key"}), encoding="utf-8")
+        with mock.patch.object(runtime, "start", side_effect=self.failing_start()), mock.patch.object(runtime, "stop", return_value={}):
+            with self.assertRaises(updater.TestStartFailed):
+                updater.default_test_start(stage, component, self.ctx())
+        kept = updater.updates_dir(self.components) / "logs" / f"test-start-{component.version}-failed"
+        names = sorted(p.name for p in kept.iterdir())
+        self.assertIn("run.json", names)
+        self.assertTrue(any(n.endswith(".child.json") for n in names), names)
+        self.assertTrue(any(n.endswith(".ready.json") for n in names), names)
+        self.assertIn("updtest.server.log", names)
+        text = "".join(p.read_text(encoding="utf-8") for p in kept.iterdir())
+        self.assertNotIn("sekret-key", text)
+        self.assertNotIn("a1b2c3d4a1b2c3d4", text, "no full token is kept")
+        self.assertIn('"child_pid": 111', text)                              # the PIDs that show a mismatch are
+        self.assertIn("server: pid 222", text)
+        self.assertFalse((self.components / ".updates").exists() and any(p.name.startswith("t-") for p in (self.components / ".updates").rglob("*") if p.is_dir()),
+                         "the sandbox itself is still removed")
+
+    def test_only_the_last_few_failed_starts_are_kept(self):
+        logs = updater.updates_dir(self.components) / "logs"
+        for i in range(5):
+            folder = logs / f"test-start-0.1.4{i}-failed"
+            folder.mkdir(parents=True)
+            (folder / "run.json").write_text("{}", encoding="utf-8")
+            os.utime(folder, (1_700_000_000 + i, 1_700_000_000 + i))
+        from types import SimpleNamespace
+        sandbox = self.root / "sandbox"
+        sandbox.mkdir()
+        (sandbox / "run.json").write_text("{}", encoding="utf-8")
+        updater._keep_records(sandbox, SimpleNamespace(version="0.1.49"), self.ctx())
+        left = sorted(p.name for p in logs.glob("test-start-*-failed"))
+        self.assertEqual(len(left), 3, left)
+        self.assertIn("test-start-0.1.49-failed", left)
 
 
 if __name__ == "__main__":

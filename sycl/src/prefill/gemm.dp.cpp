@@ -1,6 +1,7 @@
 // src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/gemm.hpp"
@@ -565,7 +566,7 @@ void bf16_to_f16(const uint16_t *in, uint16_t *out, int64_t n,
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});
 
-        st->parallel_for<dpct_kernel_name<class bf16_to_f16_kernel_a0031a>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class bf16_to_f16_kernel_a0031a>>(
             sycl::nd_range<3>(sycl::range(1, 1, (unsigned)((n + 255) / 256)) *
                                   sycl::range(1, 1, 256),
                               sycl::range(1, 1, 256)),
@@ -686,6 +687,60 @@ bool Gemm::bf16_hcd_exact(const uint16_t* X, int64_t ldx, const uint16_t* W, flo
 #endif
 }
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// CLEAN-6.0: oneMKL's bf16 GEMM is not repeatable on the Arc A750 for skinny shapes (measured: M=48,T=86,K=2560 and
+// M=4,T=86,K=10240 give a different result on every launch; T below ~128-160 at those M and K; M<=64 at T=1..8).  The
+// prompt path's ssm_alpha / ssm_beta (48 outputs) and hyper-connection inject (4 outputs) projections hit it in every
+// GDN layer, so the GDN state, and with it every token after a small near-tie, changed from run to run.  Gemm::bf16
+// runs outputs <= 64 on the fixed-order kernel below instead (repeatable, and 3-36x faster than oneMKL on the shapes tried, standalone).
+// STRATA_SYCL_BF16_DET=0 gives the oneMKL call back (A/B and diagnosis).
+// Deterministic bf16 x bf16 -> f32 skinny GEMM (CLEAN-6.0).  Y[t*ldy + n] (+)= sum_k W[n*K + k] * X[t*ldx + k]
+// Fixed accumulation order: lane l of a 16-lane sub-group takes the k pairs 2l, 2l+32, 2l+64, ... in order (two fp32
+// fused multiply-adds per pair), the 16 lane sums are then combined by the sub-group reduction (a fixed shuffle tree).
+// No atomics, no split-K, no dependence on scheduling: the same bits on every run.  oneMKL's GEMM for these shapes is
+// not repeatable on the Arc A750 (it accumulates the K split in an order that varies from launch to launch).
+// K must be even; W rows 4-byte aligned (any bf16 tensor from the pack is).
+namespace strata_bf16_det {
+constexpr int kLanes = 16, kSgPerWg = 4, kOut = 4;
+inline float bf16lo(uint32_t u) { return sycl::bit_cast<float>(u << 16); }
+inline float bf16hi(uint32_t u) { return sycl::bit_cast<float>(u & 0xFFFF0000u); }
+inline void gemm(sycl::queue& q, const uint16_t* X, int64_t ldx, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+                 int64_t ldy, float beta) {
+    const int64_t nblk = (N + kOut - 1) / kOut;
+    const int64_t total_sg = T * nblk;
+    const int64_t wgs = (total_sg + kSgPerWg - 1) / kSgPerWg;
+    q.parallel_for(sycl::nd_range<1>(sycl::range<1>((size_t)(wgs * kSgPerWg * kLanes)), sycl::range<1>(kSgPerWg * kLanes)),
+                   [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(16)]] {
+        const sycl::sub_group sg = it.get_sub_group();
+        const int64_t id = (int64_t) it.get_group(0) * kSgPerWg + (int64_t) sg.get_group_linear_id();
+        if (id >= total_sg) return;   // (whole sub-group: uniform)
+        const int64_t t = id / nblk, n0 = (id % nblk) * kOut;
+        const uint32_t* xr = reinterpret_cast<const uint32_t*>(X + t * ldx);
+        const uint32_t* wr[kOut];
+        float acc[kOut];
+        for (int o = 0; o < kOut; ++o) { wr[o] = reinterpret_cast<const uint32_t*>(W + (n0 + (o < N - n0 ? o : 0)) * K); acc[o] = 0.0f; }
+        const int lane = (int) sg.get_local_linear_id();
+        for (int64_t k2 = lane; k2 < K / 2; k2 += kLanes) {
+            const uint32_t xv = xr[k2];
+            const float x0 = bf16lo(xv), x1 = bf16hi(xv);
+            for (int o = 0; o < kOut; ++o) {
+                const uint32_t wv = wr[o][k2];
+                acc[o] = sycl::fma(bf16lo(wv), x0, acc[o]);
+                acc[o] = sycl::fma(bf16hi(wv), x1, acc[o]);
+            }
+        }
+        for (int o = 0; o < kOut; ++o) {
+            const float s = sycl::reduce_over_group(sg, acc[o], sycl::plus<float>());
+            if (lane == 0 && n0 + o < N) {
+                float* y = Y + t * ldy + n0 + o;
+                *y = beta == 0.0f ? s : sycl::fma(beta, *y, s);
+            }
+        }
+    });
+}
+}  // namespace strata_bf16_det
+
 namespace {
 // oneMKL's GEMM reads the last, partial tile of an operand from the wrong place when it lies more than 4 GiB into its
 // allocation (Arc A770, oneMKL 2026.1: a BF16 B placed past 4 GiB of a 10.5 GiB allocation gave its last 21 columns
@@ -749,6 +804,7 @@ bool Gemm::bf16_converts_x() const { return false; }
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta, int64_t ldx, bool /*x_f16*/) {
     if (T <= 0 || N <= 0) return;
+    strata::kprof::Section kp_sec(strata::q_of(stream_), strata::kprof::enabled() ? "gemm bf16 N=" + std::to_string((long long) N) + " K=" + std::to_string((long long) K) : std::string());
     if (ldy <= 0) ldy = N;
     if (ldx <= K) ldx = 0;
 #ifdef STRATA_USE_HIP
@@ -776,6 +832,15 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     }
 #endif
     const float alpha = 1.0f;
+    {   // CLEAN-6.0: the repeatable path for skinny outputs (see strata_bf16_det)
+        static const int det_mode = [] { const char* v = std::getenv("STRATA_SYCL_BF16_DET"); return v == nullptr || v[0] == 0 ? 1 : std::atoi(v); }();
+        const int64_t xs = ldx ? ldx : K;
+        if (det_mode != 0 && (K & 1) == 0 && (xs & 1) == 0 && N <= (det_mode == 2 ? (int64_t) 1 << 30 : (int64_t) 64) &&
+            (reinterpret_cast<uintptr_t>(X) & 3u) == 0 && (reinterpret_cast<uintptr_t>(W) & 3u) == 0) {
+            strata_bf16_det::gemm(*strata::q_of(stream_), X, xs, W, Y, T, N, K, ldy, beta);
+            return;
+        }
+    }
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_, ldx)) {
@@ -836,6 +901,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                float beta) {
     if (T <= 0 || N <= 0) return;
+    strata::kprof::Section kp_sec(strata::q_of(stream_), strata::kprof::enabled() ? "gemm f16 N=" + std::to_string((long long) N) + " K=" + std::to_string((long long) K) : std::string());
     if (ldy <= 0) ldy = N;
 #ifdef STRATA_USE_HIP
     // #313 (opt-in STRATA_WMMA_GEMM=1): RDNA3 / RDNA3.5 WMMA dense GEMM, before hipBLASLt (falls through when false)

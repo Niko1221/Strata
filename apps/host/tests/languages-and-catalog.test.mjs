@@ -2,12 +2,13 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {build} from 'esbuild';
-const languages=['en','zh','ja','de','es','ru','pt','ko'];
+const languages=['en','zh','ja','de','es','ru','pt','ko','fr'];
 const catalogs=Object.fromEntries(await Promise.all(languages.map(async language=>[language,JSON.parse(await readFile(`src/locales/${language}.json`,'utf8'))])));
 const english=catalogs.en;
 const slots=text=>[...text.matchAll(/\{\d+\}/g)].map(match=>match[0]).sort();
 const compiled=await build({stdin:{contents:"export * from './src/lib/i18n'; export * from './src/lib/native-catalog'; export * from './src/lib/session-title';",resolveDir:process.cwd()},bundle:true,write:false,platform:'node',format:'esm'});
-const {tr,setTranslationLanguage,currentLanguage,localeTag,nativeCatalogModels,catalogVersionLabel,sessionTitle}=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const {tr,setTranslationLanguage,currentLanguage,localeTag,nativeCatalogModels,catalogVersionLabel,sessionTitle,loadCatalog }=await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
 test('every language covers every interface key and preserves interpolation slots',()=>{
  for(const language of languages){
   assert.deepEqual(Object.keys(catalogs[language]),Object.keys(english),language);
@@ -42,6 +43,17 @@ test('only the two requested display families exist; engine IDs and per-version 
  assert.equal(catalogVersionLabel(groups[0].sizes[1]),'Swift 1.5 · Compact');
  const newer=nativeCatalogModels([...raw,family('qwen36','Qwen3.6-35B-A3B',true,[size('real-36-q4','Q4_K_M')])]);assert.equal(newer[1].sizes[0].id,'real-36-q4');assert.equal(newer[1].sizes[0].sourceFamily,'qwen36');
  assert.deepEqual(nativeCatalogModels([]),[]);
+});
+
+test('a model of the update feed is its own group after the built-in ones; one this engine does not run has no sizes and says why',()=>{
+ setTranslationLanguage('en');
+ const fed={...family('qwen4-test','Qwen4 Test',true,[size('qwen4-test-q4_k_m','Q4_K_M')]),feed:true};
+ const gone={...family('later-one','Later One',false,[]),feed:true,available:false,unavailable_reason:'not available on this engine'};
+ const groups=nativeCatalogModels([family('qwen','Qwen3.8-Flash-Next',true,[size('q2_0','Q2_0')]),fed,gone]);
+ assert.deepEqual(groups.map(item=>item.family),['qwen3.8','qwen3.6','qwen4-test','later-one']);
+ assert.deepEqual(groups[2].sizes.map(item=>[item.sourceFamily,item.id,item.images]),[['qwen4-test','qwen4-test-q4_k_m',true]]);
+ assert.equal(groups[3].sizes.length,0);assert.equal(groups[3].available,false);assert.equal(groups[3].unavailable_reason,'not available on this engine');
+ assert.deepEqual(nativeCatalogModels([family('qwen','Qwen3.8-Flash-Next',true,[size('q2_0','Q2_0')])]).map(item=>item.family),['qwen3.8','qwen3.6']);
 });
 
 test('the Gyro sizes join the Qwen3.8 group as their own edition, without images',()=>{

@@ -39,6 +39,11 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 mod updater;
 mod desktoplog;
+mod recovery;
+mod shell;
+// Plain std, built on every platform so its decisions are tested everywhere; only the Linux window process uses it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod fontguard;
 #[cfg(target_os = "linux")]
 mod supervisor;
 
@@ -252,13 +257,24 @@ fn pick_port() -> Result<u16, String> {
 /// launch starts with empty storage, as before).
 const PREFERRED_PORT: u16 = 47831;
 
+/// Set when the port the person (or the app) wanted was busy: "busy:<wanted>:<used>". The host gets it as STRATA_PORT_NOTICE and tells the
+/// person (the chats and settings saved on the page belong to the port, so a different port starts empty) (#3402).
+static PORT_NOTICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
 fn pick_stable_port() -> Result<u16, String> {
-    match TcpListener::bind(("127.0.0.1", PREFERRED_PORT)) {
+    // The person may have chosen a port in Settings (shell-prefs.json); otherwise the app's usual one.
+    let wanted = shell::wanted_port(&shell::read_prefs(), PREFERRED_PORT);
+    *PORT_NOTICE.lock().unwrap() = None;
+    match TcpListener::bind(("127.0.0.1", wanted)) {
         Ok(listener) => {
             drop(listener);
-            Ok(PREFERRED_PORT)
+            Ok(wanted)
         }
-        Err(_) => pick_port(),
+        Err(_) => {
+            let used = pick_port()?;
+            *PORT_NOTICE.lock().unwrap() = Some(shell::busy_notice(wanted, used));
+            Ok(used)
+        }
     }
 }
 
@@ -469,6 +485,9 @@ fn host_command(res: &Path, port: u16, shutdown_token: &str) -> Result<Command, 
         .stderr(Stdio::inherit());
     apply_runtime_policy(&mut cmd, res);
     hide_console(&mut cmd);
+    if let Some(notice) = PORT_NOTICE.lock().unwrap().clone() {
+        cmd.env("STRATA_PORT_NOTICE", notice);
+    }
     // A user with the Strata API worker on a different port sets this; unset means the worker's
     // documented loopback default.
     if let Ok(url) = std::env::var("STRATA_SERVER_URL") {
@@ -864,7 +883,19 @@ fn main() {
 /// Windows and macOS: one process owns the host and the window.
 #[cfg(not(target_os = "linux"))]
 fn run_embedded() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS: WKWebView ends the page's web content process under memory pressure and leaves a blank window; the page is loaded again (#5079).
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        let port = webview.app_handle().state::<HostPort>().0.lock().ok().and_then(|p| *p);
+        let Some(port) = port else { return };
+        let failed = webview.url().ok().map(|u| u.to_string());
+        let target = webview.clone();
+        on_renderer_failure(format!("http://127.0.0.1:{port}"), recovery::Failure::RendererExited, "web content process terminated".to_string(), failed, move |url| {
+            if let Ok(url) = url.parse::<tauri::Url>() { let _ = target.navigate(url); }
+        });
+    });
+    builder
         // First, as the plugin requires: a second launch ends here after telling the running app to show itself.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -875,6 +906,7 @@ fn run_embedded() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .manage(HostProcess(Mutex::new(None)))
         .manage(HostPort(Mutex::new(None)))
         .manage(ShutdownToken(Mutex::new(None)))
@@ -901,6 +933,20 @@ fn run_embedded() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // "Minimise to tray" (Settings, off by default): closing the main window hides it and keeps Strata running in the tray; Quit in the
+            // tray menu ends it (#3477). If no tray could be made the window closes as before.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let prefs = shell::read_prefs();
+                    if prefs.tray {
+                        api.prevent_close();
+                        shell::hide_to_tray(&window.app_handle().clone(), &prefs.language);
+                        if !shell::tray_exists(&window.app_handle().clone()) {
+                            let _ = window.destroy();
+                        }
+                    }
+                }
+            }
             if let tauri::WindowEvent::Destroyed = event {
                 stop_host(&window.app_handle().clone());
             }
@@ -957,7 +1003,78 @@ fn open_window(app: &tauri::App, port: u16, shell_token: &str) -> Result<(), Box
     }
     #[cfg(target_os = "linux")]
     hook_linux_drops(&window, port, shell_token);
+    #[cfg(windows)]
+    hook_renderer_failures(&window, port);
     Ok(())
+}
+
+/// Milliseconds since the first failure report or window (a clock that only goes forward, for the recovery limit).
+#[cfg(not(target_os = "linux"))]
+fn uptime_ms() -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// The page's renderer is gone (#5079). Writes it to the run log, and, when the window needs the page again, loads it again through
+/// `navigate` after a short wait: the same screen with `?recovery=1` the first time (the page then starts with the sidebar previews
+/// closed once), the home screen the second time, and nothing after two in two minutes. The chats are the host's and are not touched.
+#[cfg(not(target_os = "linux"))]
+fn on_renderer_failure(origin: String, failure: recovery::Failure, detail: String, failed: Option<String>, navigate: impl FnOnce(String) + Send + 'static) {
+    static GUARD: Mutex<recovery::Guard> = Mutex::new(recovery::Guard::new());
+    let say = |text: &str| { if let Some(log) = desktoplog::run_log() { log.line("shell", text); } };
+    say(&format!("the page's {} ({detail}); it was showing {}", failure.name(), failed.as_deref().unwrap_or("an unknown address")));
+    let plan = match GUARD.lock() {
+        Ok(mut guard) => recovery::plan(&mut guard, uptime_ms(), &origin, failure, failed.as_deref()),
+        Err(_) => recovery::Plan::Stop,
+    };
+    match plan {
+        recovery::Plan::Ignore => {}
+        recovery::Plan::Stop => say("the page's renderer failed again within two minutes of two recoveries; the window is left as it is (Reload in the page loads it again)"),
+        recovery::Plan::Reload { attempt, url } => {
+            say(&format!("loading the page again (recovery {attempt}): {url}"));
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(recovery::RELOAD_DELAY_MS));
+                navigate(url);
+            });
+        }
+    }
+}
+
+/// Windows: WebView2 tells the shell when a process of the page fails; the page's renderer dying is recovered by on_renderer_failure.
+#[cfg(windows)]
+fn hook_renderer_failures(window: &tauri::WebviewWindow, port: u16) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2ProcessFailedEventArgs2, COREWEBVIEW2_PROCESS_FAILED_KIND};
+    use webview2_com::{take_pwstr, ProcessFailedEventHandler};
+    use windows_core::{Interface, PWSTR};
+    let target = window.clone();
+    let origin = format!("http://127.0.0.1:{port}");
+    let _ = window.with_webview(move |platform| unsafe {
+        let Ok(core) = platform.controller().CoreWebView2() else { return };
+        let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+            args.ProcessFailedKind(&mut kind)?;
+            let mut detail = format!("kind {}", kind.0);
+            if let Ok(more) = args.cast::<ICoreWebView2ProcessFailedEventArgs2>() {
+                let mut reason = Default::default();
+                let mut exit_code = 0i32;
+                if more.Reason(&mut reason).is_ok() { detail = format!("{detail}, reason {}", recovery::reason_name(reason.0)); }
+                if more.ExitCode(&mut exit_code).is_ok() { detail = format!("{detail}, exit code {exit_code:#x}"); }
+            }
+            let failed = sender.and_then(|view| {
+                let mut source = PWSTR::null();
+                view.Source(&mut source).ok()?;
+                Some(take_pwstr(source))
+            });
+            let window = target.clone();
+            on_renderer_failure(origin.clone(), recovery::Failure::from_webview2(kind.0), detail, failed, move |url| {
+                if let Ok(url) = url.parse::<tauri::Url>() { let _ = window.navigate(url); }
+            });
+            Ok(())
+        }));
+        let mut token = 0i64;
+        let _ = core.add_ProcessFailed(&handler, &mut token);
+    });
 }
 
 /// A file:// address from a drag, as a path (percent-escapes decoded); anything else (http, mailto, text) is not a dropped file.
@@ -1112,6 +1229,15 @@ fn run_window_process() -> ! {
     if std::env::var_os("STRATA_WINDOW_TEST_CRASH").is_some() {
         eprintln!("[strata] STRATA_WINDOW_TEST_CRASH is set: the window process aborts on purpose.");
         std::process::abort();
+    }
+    // WebKitGTK aborts while it draws a COLRv1 colour emoji font (fontguard.rs, #4533): this process is told to leave that font out. Only this
+    // process, and before WebKit starts its own: the host, the engine and the agent keep the fonts the person chose.
+    {
+        let env = |k: &str| std::env::var(k).ok();
+        let dirs = fontguard::font_dirs(&env);
+        if let Some(conf) = fontguard::config_for(&env, &desktoplog::data_dir().join("fonts"), &dirs, Path::new(fontguard::SYSTEM_CONFIG)) {
+            std::env::set_var("FONTCONFIG_FILE", conf);
+        }
     }
     // The shell is this process's parent: when it is gone (killed, crashed, logged off) the window goes too.
     let parent = std::os::unix::process::parent_id();

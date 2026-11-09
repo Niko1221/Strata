@@ -27,8 +27,9 @@ struct Prefix {
         consumed.assign(emitted.begin(), emitted.end() - 1);
     }
 
-    void window(int proposed, int matched, int64_t max_new, int eos_row = -1, bool bounded = true) {
-        last_t = bounded ? strata::program::serve_window_size(proposed, max_new - produced) : proposed;
+    void window(int proposed, int matched, int64_t max_new, int eos_row = -1, bool bounded = true,
+                bool preserve_proposal = false) {
+        last_t = bounded && !preserve_proposal ? strata::program::serve_window_size(proposed, max_new - produced) : proposed;
         if (last_t == 0) return;
         std::vector<int32_t> input((size_t) last_t), output((size_t) last_t);
         std::iota(output.begin(), output.end(), (int32_t) emitted.size());
@@ -38,9 +39,11 @@ struct Prefix {
             input[(size_t) i] = i <= matched ? output[(size_t) i - 1] : -999;
         int a = 0;
         while (a < last_t - 1 && input[(size_t) a + 1] == output[(size_t) a]) ++a;
-        if (bounded)
+        if (bounded) {
+            a = strata::program::serve_window_size(a + 1, max_new - produced) - 1;
             a = strata::program::serve_output_count(output.data(), a + 1,
                     [](int32_t token) { return token == eos_token; }) - 1;
+        }
         last_keep = a + 1;
         consumed.insert(consumed.end(), input.begin(), input.begin() + last_keep);
         last_emitted = 0;
@@ -145,6 +148,15 @@ int main() {
                         const bool expected_eos = eos_row >= 0 && eos_row <= matched &&
                                                   eos_row < remaining && eos_row < proposed;
                         require(p.eos == expected_eos, "EOS in a rejected or unverified tail cannot stop the request");
+                        // A gated proposal verifies the original packet, then commits only the emitted
+                        // prefix. Unemitted predictions must not leak into the reusable conversation.
+                        Prefix gated(5, 2);
+                        gated.window(proposed, matched, 2 + remaining, eos_row, true, true);
+                        require(gated.last_t == proposed && gated.exact() && gated.reusable(),
+                                "full proposal verification still leaves an exact reusable prefix");
+                        require(gated.last_keep == gated.last_emitted && gated.produced <= 2 + remaining &&
+                                gated.eos == expected_eos,
+                                "full proposal commits only in-budget outputs through the first accepted EOS");
                     }
         // Lookup-chain proposals extend the MTP window. Both parts must fit the output budget:
         // limiting only MTP would reintroduce hidden committed inputs in the final window.

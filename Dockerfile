@@ -68,6 +68,8 @@ RUN set -e; \
 
 # ---- 2. the Terminal (the release archive, built here)
 FROM ${RUNTIME_BASE} AS terminal
+ARG STRATA_COMMIT=
+ENV STRATA_BUILD_COMMIT=${STRATA_COMMIT}
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates git && rm -rf /var/lib/apt/lists/*
 COPY . /src/

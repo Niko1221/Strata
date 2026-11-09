@@ -53,6 +53,18 @@ class AdaptiveUpstreamTests(unittest.TestCase):
         cfg["args"] = []
         self.assertEqual(server.engine_args(cfg), [])
 
+    def test_split_serving_cannot_bypass_single_engine_adaptive_admission(self):
+        split = {"prefill_gpu": 0, "decode_gpu": 1}
+        for policy in ({"memory_policy": {"enabled": True}},
+                       {"coadaptive": {"tool_leases": {"enabled": True}}},
+                       {"args": ["--live-memory"]}):
+            with self.subTest(policy=policy):
+                with self.assertRaisesRegex(ValueError, "split serving"):
+                    server.validate_adaptive_startup({"args": [], "gpu": 0, "split_serve": split, **policy})
+        server.validate_adaptive_startup({"args": [], "gpu": 0, "split_serve": split})
+        server.validate_adaptive_startup({"args": [], "gpu": 0, "split_serve": False,
+                                          "memory_policy": {"enabled": True}})
+
 
 if __name__ == "__main__":
     unittest.main()

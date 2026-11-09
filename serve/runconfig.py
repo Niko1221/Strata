@@ -10,7 +10,6 @@ used from the next start on.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import uuid
 from pathlib import Path

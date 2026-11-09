@@ -28,6 +28,46 @@ class _ObjectError:
     message = "the answer is not a JSON object"
 
 
+class _Repairing:
+    """A validator that also tells validated_json to retry once, after a strict parse failed, with the backslashes that
+    are not valid JSON escapes doubled (response_format "repair_latex_escapes": true, #2893)."""
+    repair_escapes = True
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def iter_errors(self, value):
+        return self.inner.iter_errors(value)
+
+
+_HEX = "0123456789abcdefABCDEF"
+
+
+def repair_latex_escapes(text: str) -> str:
+    r"""Double every backslash that does not start a valid JSON escape, so \alpha and \gamma read as text.
+    The valid escapes (\b \f \n \r \t \/ \" and a well-formed \uXXXX) stay as they are: a model cannot be told
+    from LaTeX there, so a \beta next to a \alpha comes back with a backspace. Pairs of backslashes are skipped."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+        nxt = text[i + 1] if i + 1 < n else ""
+        if nxt in ("\\", '"', "/", "b", "f", "n", "r", "t"):
+            out.append(ch + nxt)
+            i += 2
+        elif nxt == "u" and len(text) >= i + 6 and all(c in _HEX for c in text[i + 2:i + 6]):
+            out.append(text[i:i + 6])
+            i += 6
+        else:
+            out.append("\\\\")
+            i += 1
+    return "".join(out)
+
+
 _jsonschema = None                     # (validators, SchemaError, Registry, NoSuchResource), False when not installed
 _jsonschema_lock = threading.Lock()
 
@@ -140,6 +180,8 @@ def prepare_format(response_format, messages, with_tools=False):
         # /v1/responses (#782): the schema is for the final answer; a turn that calls a tool is not an answer
         directive += ("\nThis applies only to your final answer. To use a tool, call it as usual; the JSON object is "
                       "what you write once you are done with the tools.")
+    if response_format.get("repair_latex_escapes") is True:
+        validator = _Repairing(validator)
     messages = [dict(message) for message in messages]
     if messages and messages[0].get("role") == "system":
         content = messages[0].get("content") or ""
@@ -152,7 +194,10 @@ def prepare_format(response_format, messages, with_tools=False):
     return messages, validator
 
 
-def _extract_json(text: str) -> str:
+def extract_json(text: str) -> str:
+    """The first JSON object in `text`: a ```-fenced block's inside when there is one, else the text
+    from its first `{`.  Empty when there is nothing to take.  The server's json_schema logprobs
+    alignment reads the model's own JSON form with it."""
     s = (text or "").strip()
     if not s:
         return ""
@@ -204,10 +249,20 @@ def validated_json(text, validator, finish):
     if finish != "stop":
         raise StructuredOutputError(f"structured output was incomplete (finish_reason={finish}); increase the output budget")
     try:
-        value = json.loads(_extract_json(text), object_pairs_hook=pairs, parse_constant=constant)
+        value = json.loads(extract_json(text), object_pairs_hook=pairs, parse_constant=constant)
         canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (ValueError, TypeError) as exc:
-        raise StructuredOutputError(f"model did not return valid JSON: {exc}") from exc
+        value = None
+        if getattr(validator, "repair_escapes", False):      # opt-in (#2893); only after the strict parse failed
+            try:
+                value = json.loads(repair_latex_escapes(extract_json(text)), object_pairs_hook=pairs,
+                                   parse_constant=constant)
+                canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+                print("[strata] structured output: repaired backslashes that were not valid JSON escapes", flush=True)
+            except (ValueError, TypeError):
+                value = None
+        if value is None:
+            raise StructuredOutputError(f"model did not return valid JSON: {exc}") from exc
     try:
         error = next(validator.iter_errors(value), None)
     except Exception as exc:

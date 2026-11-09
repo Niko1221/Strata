@@ -95,7 +95,7 @@ class DeclaredOnlyReservation(unittest.TestCase):
         svc.preparing_requests = 0
         seen = []
 
-        def inner(ids, thinking, tools, max_new, sampling, cancel, force, declared_only):
+        def inner(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred=False):
             seen.append((declared_only, max_new))
             self.assertEqual(svc.preparing_requests, 1)
             self.assertEqual(svc.request_owner.depth, 1)
@@ -122,6 +122,21 @@ class DeclaredOnlyReservation(unittest.TestCase):
     def test_completion_forwards_declared_only_and_releases(self):
         svc, seen = self.service()
         self.assertEqual(list(self.stream(svc, threading.Event())), [("piece", "fixture")])
+        self.assertEqual(seen, [(True, 8192)])
+        self.released(svc)
+
+    def test_completion_forwards_deferred_tools_and_releases(self):
+        svc, seen = self.service()
+        previous = svc._run
+
+        def inner(*args):
+            self.assertTrue(args[-1])
+            yield from previous(*args)
+
+        svc._run = inner
+        stream = svc.run([1], True, [{"name": "declared_fixture"}], 8192, {},
+                         threading.Event(), declared_only=True, deferred=True)
+        self.assertEqual(list(stream), [("piece", "fixture")])
         self.assertEqual(seen, [(True, 8192)])
         self.released(svc)
 
@@ -168,7 +183,8 @@ class DeclaredOnlyReservation(unittest.TestCase):
         svc.preparing_requests = 1
 
         def inner(*args):
-            self.assertTrue(args[-1])
+            self.assertTrue(args[-2])  # declared_only; upstream also passes deferred
+            self.assertFalse(args[-1])
             self.assertEqual(svc.request_owner.depth, 2)
             self.assertEqual(svc.preparing_requests, 1)
             yield "piece", "nested"

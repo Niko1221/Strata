@@ -17,7 +17,7 @@ from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result
 from strata_cli.launch.widgets import Glyphs
 from tests.terminal.launch_support import HW_12, HW_24, HW_2X16, Home, catalog, text_of
 
-SIZE = (110, 34)
+SIZE = (110, 60)      # (round 0214: the list has seven more rows (Unsloth's v3.1 sets); the tests that read the whole list need the room)
 
 
 def flat(app) -> str:
@@ -227,14 +227,36 @@ class ModelStep(Base):
             self.assertIn("IQ3_XXS", t)
             line = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S" in l)     # 64 GB + 12 GB: the 64 GB tier
             self.assertIn("84 GB", line)                              # setup.py's download_gb 83.6
-            self.assertIn("51 GB", line)                              # the app's figure: experts 50.3 + 1 GB, RAM + VRAM together
+            self.assertIn("55 GB", line)                              # the files without the lookup table: 83.6 GB download - 28.8 GB (the owner's rule)
             self.assertIn("(recommended)", line)
             self.assertIn("› ", line)                                 # the cursor starts on the recommendation
-            self.assertIn("too big (can still try)", t)          # NVFP4: a warning, not a block
             big = next(l for l in t.splitlines() if "UD-Q5_K_XL" in l)
-            self.assertIn("SSD ", big)                            # a model bigger than RAM says how much is read from the SSD, as the app does
+            self.assertTrue(big.rstrip().endswith("may run slower"), big)       # 99 GB of weights against 64 GB + 12 GB: a warning, not a block
+            self.assertNotIn("SSD ", big)                          # (no "SSD N GB" suffix any more)
+            nv = next(l for l in t.splitlines() if "(NVFP4) NVFP4 " in l)
+            self.assertTrue(nv.rstrip().endswith("may run slower"), nv)       # 76.8 GB of files (128 - 51.2) against 64 GB + 11.9 GB
+            for old in ("too big", "fits, a bit slower", "does not fit"):
+                self.assertNotIn(old, t)
             self.assertIn("The n-gram table stays on your SSD", t)
         self.run_app(case)
+
+    def test_the_verdict_column_is_not_cut_off_at_80_columns(self):                       # 0.2.5 list
+        ctx = make_ctx()
+        app = LaunchApp(ctx)
+
+        async def go():
+            async with app.run_test(size=(80, 60)) as pilot:
+                await pilot.pause(0.2)
+                await press(pilot, "enter")
+                t = text_of(app)
+                self.assertIn("Fits?", t)
+                rec = next(l for l in t.splitlines() if "Qwen3.8-Flash-Next IQ3_S " in l)
+                self.assertIn("fits (recommended)", rec)
+                for model in ("Q2_0", "NVFP4 ", "UD-Q5_K_XL"):
+                    row = next(l for l in t.splitlines() if model in l and "GB" in l)
+                    self.assertTrue(any(w in row for w in ("fits", "may run slower", "tight")), row)
+                self.assertTrue(all(len(l) <= 80 for l in t.splitlines()))
+        asyncio.run(go())
 
     def test_choosing_a_model_and_going_on(self):
         async def case(app, pilot, ctx):
@@ -247,10 +269,9 @@ class ModelStep(Base):
         async def case(app, pilot, ctx):
             await press(pilot, "enter", "end", "enter")
             last = ctx.rows[-1]
-            self.assertEqual(last.verdict, "no")                      # the last row does not fit a 12 GB card
+            self.assertIn(last.verdict, ("slower", "tight"))           # the last row (DeepSeek UD-Q8_K_XL) does not fit 64 GB + a 12 GB card: said, not refused
             self.assertEqual((ctx.settings.family, ctx.settings.model), (last.family, last.model))
             self.assertIn("Where should the model files be stored?", text_of(app))
-            self.assertTrue(any("does not fit" in n for n in ctx.notes))
         self.run_app(case)
 
     def test_own_files_are_checked_with_the_fingerprint_table(self):
@@ -319,10 +340,11 @@ class FolderStep(Base):
             self.assertIn("Free space in that folder's drive", t)
             f = app.screen.query_one("#folderpath")
             f.value = ""
-            await typed(pilot, str(self.home.base / "Strata-data"))
-            self.assertEqual(f.value, str(self.home.base / "Strata-data"))
+            self.assertNotEqual(str(ctx.default_folder()), str(self.home.base / "Elsewhere-data"))      # (on Linux the default is Strata-data under the home: typing it again is no change)
+            await typed(pilot, str(self.home.base / "Elsewhere-data"))
+            self.assertEqual(f.value, str(self.home.base / "Elsewhere-data"))
             await press(pilot, "enter")
-            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Strata-data"))
+            self.assertEqual(ctx.settings.data_dir, str(self.home.base / "Elsewhere-data"))
             self.assertIn("How much text should it remember at once?", text_of(app))
         self.run_app(case)
 
@@ -381,7 +403,7 @@ class ContextStep(Base):
 
     def test_choose_128k(self):
         async def case(app, pilot, ctx):
-            await press(pilot, "enter", "enter", "enter", "down", "down", "enter")
+            await press(pilot, "enter", "enter", "enter", "enter")                  # the cursor starts on 128K now (the default on every card)
             self.assertEqual(ctx.settings.context, 131072)
             self.assertIn("Should the model read pictures?", text_of(app))
         self.run_app(case)
@@ -483,6 +505,23 @@ class PicturesParallelTuning(Base):
             self.assertEqual(ctx.settings.parallel, 3)
             self.assertIn("Tune for the best speed", text_of(app))
         self.run_app(case)
+
+    def test_parallel_step_for_deepseek_is_one_at_a_time_unless_asked(self):
+        """DeepSeek answers one request at a time unless more are asked for: no "fit to my card" (Qwen's rule); 2 to 4 are the choices."""
+        from strata_cli.launch.screens import ParallelScreen
+
+        async def case(app, pilot, ctx):
+            await app.push_screen(ParallelScreen())
+            await pilot.pause(0.2)
+            t = flat(app)
+            self.assertIn("One at a time", t)
+            self.assertIn("2 requests at the same time", t)
+            self.assertNotIn("Fit to my graphics card", t)
+            self.assertIn("73 tokens a second", t)
+            await press(pilot, "down", "down", "enter")
+            self.assertEqual(ctx.settings.parallel, 3)
+
+        self.run_app(case, ctx=make_ctx(HW_12, S.LaunchSettings(family="deepseek41", model="IST-DAS-2.00bpw", context=8192)))
 
     def test_parallel_default_is_fit_to_card(self):
         async def case(app, pilot, ctx):
@@ -681,11 +720,11 @@ class AccessStep(Base):
                 await press(pilot, *self.reach(), "down", "down")
                 t = text_of(app)
                 self.assertIn("cloudflared is not installed on this computer", t)
-                self.assertIn("quick tunnel", t)
+                self.assertIn("quick tunnel", flat(app))
                 await press(pilot, "enter")
+                self.assertTrue(any("cloudflared" in w for w in ctx.warnings()))     # inside the mock: a box with a system cloudflared finds one
             self.assertEqual(ctx.settings.access, "cloudflare")
             self.assertIn("Save as preset, then launch", text_of(app))
-            self.assertTrue(any("cloudflared" in w for w in ctx.warnings()))
         self.run_app(case)
 
     def test_tailscale_found(self):
@@ -764,13 +803,13 @@ class SaveAndRun(Base):
             t = text_of(app)
             self.assertIn("Save as preset, then launch", t)
             self.assertIn("Qwen3.8-Flash-Next IQ3_S", t)
-            self.assertIn("32K, memory int8", t)
+            self.assertIn("128K, memory int8", t)
             self.assertIn("quick (about 20 min)", t)
             self.assertIn("This computer only, port 8080", t)
             await press(pilot, "enter")                               # Save as a preset and launch
             await pilot.pause(0.8)
-            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 32K"])
-            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 32K")
+            self.assertEqual([p.name for p in store.list_presets()], ["IQ3_S 128K"])
+            self.assertEqual(FakeRunner.instances[0].s.name, "IQ3_S 128K")
             self.assertIsNotNone(app.result)
         self.run_app(case)
 

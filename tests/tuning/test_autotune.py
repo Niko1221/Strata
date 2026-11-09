@@ -60,6 +60,7 @@ class RulesTest(unittest.TestCase):
         ctx = make_ctx(arch="gfx1201")
         bad = [({"--expert-cache": 0}, {}), ({"--kv-resident": 20480}, {}), ({"--pcie-frac": 0.75}, {}),
                ({"--spec": 6}, {}), ({"--spec": 2}, {}), ({"--lookup-chain": 4}, {}), ({"--adapt-every": 100000}, {}),
+               ({"--spec": 5}, {}),   # outside the tuner's values: still not tried (a saved preset may keep it, #3844)
                ({"--prefill": 512}, {}), ({"--ple-io": "ram"}, {}), ({}, {"STRATA_SH_STREAM": "1"}),
                ({}, {"STRATA_RDNA2_SGEMM": "all"}), ({}, {"STRATA_HIP_WMMA": "1"}), ({"--pool-workers": 8}, {})]
         for args, env in bad:
@@ -93,6 +94,16 @@ class RulesTest(unittest.TestCase):
         short.context_tokens = 32768
         short.base_args = ["--max-context", "32768"]
         self.assertNotIn("kv_resident_64k", [p.arm.id for p in tune_knobs.plan_arms(short, mode="quick")[0]])
+
+    def test_the_larger_chunk_is_not_tried_on_an_apu(self):
+        # round0212: on a Strix Halo the prompt buffers share the pool with the expert cache; a 32768 chunk on UD-Q4_K_XL ends the engine at the start
+        ctx = make_ctx()
+        ctx.vram_mib = 90000                            # an APU's pool reads large
+        ctx.facts = {"workers": 31}
+        ctx.arch = "gfx1151"
+        self.assertNotIn("prefill_32k", [p.arm.id for p in tune_knobs.plan_arms(ctx, mode="quick")[0]])
+        ctx.arch = "gfx1201"
+        self.assertIn("prefill_32k", [p.arm.id for p in tune_knobs.plan_arms(ctx, mode="quick")[0]])
 
     def test_a_prompt_knob_is_judged_on_prompt_speed_and_may_not_cost_decode(self):
         ctx = make_ctx()
@@ -282,6 +293,34 @@ class TunerTest(unittest.TestCase):
         before = clock()
         t.run()
         self.assertLess(clock() - before, 600.0, "waited for the whole ten minutes per candidate")
+
+    def test_a_wait_that_found_nothing_freed_is_not_repeated_for_a_candidate_that_needs_less(self):
+        # #4895: "Waiting for memory to be freed ..." came up again and again: each later candidate waited its own minute, although the minute before had shown
+        # that nothing is freed (29.0 GiB free, 30.0 needed; the next candidate needed 29.5)
+        model = speed_with({})
+        clock = FakeClock()
+        session = StubSession(model=model, clock=clock)
+
+        def system():
+            out = session.system()
+            out["memory"]["available_mib"] = 3000
+            return out
+        t = autotune.Tuner(session, BASE, {}, make_ctx(), autotune.Options(min_free_ram_mib=1000, wait_ram_s=300), clock=clock,
+                           sleep=clock.sleep, system=system, total_ram_mib=64000, quiet=lambda: None)
+        first_started = clock()
+        self.assertIn("not enough free memory", t._ram_guard(5000, "a big one"))
+        waited = clock() - first_started
+        self.assertGreaterEqual(waited, autotune.STAGNANT_WAIT_S)
+        second_started = clock()
+        self.assertIn("not enough free memory", t._ram_guard(3000, "a smaller one"))          # needs 4000: still more than the 3000 that is free
+        self.assertEqual(clock() - second_started, 0, "waited a second time for memory that was not being freed")
+
+        def grown():
+            out = session.system()
+            out["memory"]["available_mib"] = 9000
+            return out
+        t.system = grown
+        self.assertIsNone(t._ram_guard(3000, "now it fits"))
 
     def test_nothing_compared_is_inconclusive_not_default_confirmed(self):
         model = speed_with({})

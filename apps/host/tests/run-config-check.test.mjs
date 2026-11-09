@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-import { KNOWN_KEYS, checkRunConfig, describeIssues, nearestKey } from '../server/run-config-check.mjs';
+import { KNOWN_KEYS, checkAndParseRunConfig, checkRunConfig, describeIssues, nearestKey } from '../server/run-config-check.mjs';
 import { NATIVE_FIELDS } from '../server/native-settings.mjs';
 import { openTextFile, textEditorCommand } from '../server/open-text-file.mjs';
 
@@ -23,8 +23,33 @@ test('a normal run config has no issues', () => {
   assert.deepEqual(checkRunConfig('\uFEFF{}'), { ok: true, issues: [] }, 'Notepad’s byte-order mark is fine');
 });
 
+test('the checked configuration is parsed from the same captured text', () => {
+  const text = '\uFEFF{"parallel":2,"args":["--ple-io","mmap"]}';
+  const checked = checkAndParseRunConfig(text);
+  assert.deepEqual(checked, {
+    ok: true,
+    issues: [],
+    config: { parallel: 2, args: ['--ple-io', 'mmap'] },
+  });
+  const refused = checkAndParseRunConfig('{"parallel":99}');
+  assert.equal(refused.ok, false);
+  assert.equal(refused.config, null);
+  assert.equal(refused.issues[0].code, 'whole-range');
+});
+
 test('every key the app edits is a known key', () => {
   for (const field of NATIVE_FIELDS) assert.ok(KNOWN_KEYS.has(field.id), field.id);
+});
+
+test('every key setup itself writes into a run config is a known key, so a freshly set-up model shows no warning in the settings file panel (QA 0213: "args_written" was flagged as unknown)', async () => {
+  const setup = await readFile(new URL('../../../setup.py', import.meta.url), 'utf8');
+  const block = /^SETUP_KEYS = frozenset\(\{([^}]*)\}\)/m.exec(setup);
+  assert.ok(block, 'SETUP_KEYS is in setup.py');
+  const keys = [...block[1].matchAll(/"([a-z_]+)"/g)].map(m => m[1]);
+  assert.ok(keys.includes('args_written') && keys.length > 10);
+  for (const key of [...keys, 'user_args']) assert.ok(KNOWN_KEYS.has(key), `${key} is written by setup/the app but the settings check calls it unknown`);
+  const text = JSON.stringify({ exe: 'e', args: ['--native', 'm'], args_written: ['--native', 'm'], user_args: ['--pool-workers', '8'], port: 8080 });
+  assert.deepEqual(checkRunConfig(text), { ok: true, issues: [] });
 });
 
 test('broken JSON is reported with its line, in plain words', () => {
@@ -91,10 +116,11 @@ test('the text editor: Notepad on Windows, text mode on a Mac, the system text-f
   assert.deepEqual(seen, [['xdg-open', '/s/strata-q.json']], 'with no text editor known the file’s own program opens it');
 });
 
-test('every issue sentence exists in all eight languages and keeps its slots', async () => {
-  const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko'];
+test('every issue sentence exists in all nine languages and keeps its slots', async () => {
+  const languages = ['en', 'zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr'];
   const compiled = await build({ stdin: { contents: "export * from './src/lib/run-config-issues'; export * from './src/lib/i18n';", resolveDir: process.cwd() }, bundle: true, write: false, platform: 'node', format: 'esm' });
-  const { issueText, setTranslationLanguage } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+  const { issueText, setTranslationLanguage, loadCatalog } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+  for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
   const samples = [
     { code: 'json', line: 3, params: { line: 3 } }, { code: 'json', line: null, params: { line: 0 } }, { code: 'not-object', params: {} },
     { code: 'unknown-key-near', params: { key: 'paralel', near: 'parallel' } }, { code: 'unknown-key', params: { key: 'zzz' } },

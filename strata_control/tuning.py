@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+from strata_control import sysinfo
 import statistics
 import subprocess
 import time
@@ -212,7 +213,7 @@ def engine_flag_inventory(engine: Path) -> list[str] | None:
     at all.
     """
     try:
-        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, timeout=20,
+        proc = subprocess.run([*engine_command(engine), "--help"], capture_output=True, text=True, errors="replace", timeout=20,
                               env=engine_env(engine))
     except (OSError, subprocess.SubprocessError):
         return None
@@ -803,9 +804,9 @@ def machine_identity() -> dict[str, Any]:
     comparable — which is why this is recorded with every report rather than assumed stable.
     """
     return {
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
+        "platform": sysinfo.platform_string(),
+        "machine": sysinfo.machine(),
+        "processor": sysinfo.processor(),
         "python": platform.python_version(),
         "cpu_count": os.cpu_count(),
     }

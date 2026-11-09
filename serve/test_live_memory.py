@@ -29,6 +29,8 @@ def engine():
     # A lazy engine has no native slot state until startup; these fixtures
     # install a fake running process, so supply current upstream admission state.
     e.slot_q = []
+    e.slot_busy = []
+    e.rid_q = {}
     e.slot_cv = threading.Condition()
     return e
 
@@ -131,6 +133,7 @@ class LiveMemoryTests(unittest.TestCase):
     def test_pump_keeps_control_slot_and_generation_channels_separate(self):
         e = engine()
         e.slot_q = [queue.Queue()]
+        e.slot_busy = [True]
         e.proc.stdout = io.StringIO(ack() + "MEMORY malformed\nBT 0 99\nBDONE 0 1 stop 1.0\n"
                                   "T 10\nDONE 1 2 3 4 stop\n")
         proc = e.proc

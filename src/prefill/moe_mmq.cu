@@ -9,6 +9,8 @@
 #if defined(STRATA_MMQ_TAB) && !defined(__HIPCC__)
 #include "moe_mmq_tab.hpp"   // declarations only: the tab kernels live in the per-type mmq-tab-*.cu TUs
 #endif
+#include "strata/prefill/moe_fused.hpp"   // kMoeEmbd, kMoeFF: the compiled geometry's widths
+#include "strata/prefill/moe_iq4_w4a8.hpp"
 
 #include "strata/prefill/mmq_kq_abi.hpp"
 
@@ -21,11 +23,15 @@ namespace strata::prefill::mmq {
 namespace {
 // The Gyro trellis types (ids 144-146) are outside the type table of an upstream ggml (indexed by the id): their block
 // geometry is known here (128 weights; 34 / 26 / 30 bytes), everything else asks ggml.
-inline bool is_tq(int t) { return t >= 144 && t <= 146; }
+inline bool is_tq(int t) { return t >= 144 && t <= 149; }   // 144-146 TQ/TQK, 147-149 the pair trellis (Gyro-L)
 inline int64_t type_blck(int t) { return is_tq(t) ? 128 : (int64_t) ggml_blck_size((ggml_type) t); }
-inline size_t type_bytes(int t) { return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : ggml_type_size((ggml_type) t); }
+inline size_t type_bytes(int t) {
+    return t == 144 ? 34 : t == 145 ? 26 : t == 146 ? 30 : t == 147 ? 42 : t == 148 ? 50 : t == 149 ? 58
+                                                                                     : ggml_type_size((ggml_type) t);
+}
 inline const char* type_label(int t) {
-    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7" : ggml_type_name((ggml_type) t);
+    return t == 144 ? "tq2_t" : t == 145 ? "tqk6" : t == 146 ? "tqk7"
+         : t == 147 ? "tqp5" : t == 148 ? "tqp6" : t == 149 ? "tqp7" : ggml_type_name((ggml_type) t);
 }
 }  // namespace
 #if defined(STRATA_KQ_DSO)
@@ -103,26 +109,29 @@ __global__ void copy1_kernel(const uint8_t* __restrict__ a, int64_t na, const ui
     else if (i < na + nb + nc) c_dst[i - na - nb] = c[i - na - nb];
 }
 
-// Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales
-// [2560][10] f16 (the layout of prefill/kernels.cu's blob_dequant_kernel).  A GGUF Q2_0 block is {f16 d; 16 code
+// Strata blob: gate/up codes [2 F][E / 4 B], down codes [E][F / 4 B], gate/up scales [2 F][E / 64] f16, down scales
+// [E][F / 64] f16 (the layout of prefill/kernels.cu's blob_dequant_kernel; E, F the compiled geometry's: Flash-Next
+// [1280][640 B], [2560][160 B], [1280][40], [2560][10]).  A GGUF Q2_0 block is {f16 d; 16 code
 // bytes} with the same 2-bit codes in the same order, so a block is a scale and a 16-byte run of codes.
+constexpr int Q2_GU_ROWS = fused::kMoeGuRows, Q2_ROW_GU = fused::kMoeEmbd / 4, Q2_ROW_D = fused::kMoeFF / 4, Q2_SC_GU = fused::kMoeEmbd / 64, Q2_SC_D = fused::kMoeFF / 64;
+static_assert(fused::kMoeEmbd % 64 == 0 && fused::kMoeFF % 64 == 0, "the Strata Q2 blob holds whole 64-weight blocks");
 __global__ void strata_q2_kernel(const uint8_t* __restrict__ blob, uint16_t* __restrict__ gu, uint16_t* __restrict__ dn) {
-    constexpr size_t O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                     O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+    constexpr size_t O_D_CODES = (size_t) Q2_GU_ROWS * Q2_ROW_GU, O_GU_SC = O_D_CODES + (size_t) fused::kMoeEmbd * Q2_ROW_D,
+                     O_D_SC = O_GU_SC + (size_t) Q2_GU_ROWS * Q2_SC_GU * 2;
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // one GGUF block
-    const int64_t n_gu = 1280LL * 40, n_d = 2560LL * 10;
+    const int64_t n_gu = (int64_t) Q2_GU_ROWS * Q2_SC_GU, n_d = (int64_t) fused::kMoeEmbd * Q2_SC_D;
     const uint8_t* codes;
     const uint16_t* scale;
     uint16_t* out;
     if (i < n_gu) {
-        const int64_t row = i / 40, b = i % 40;
-        codes = blob + row * 640 + b * 16;
-        scale = (const uint16_t*) (blob + O_GU_SC) + row * 40 + b;
+        const int64_t row = i / Q2_SC_GU, b = i % Q2_SC_GU;
+        codes = blob + row * Q2_ROW_GU + b * 16;
+        scale = (const uint16_t*) (blob + O_GU_SC) + row * Q2_SC_GU + b;
         out = gu + i * 9;
     } else if (i < n_gu + n_d) {
-        const int64_t j = i - n_gu, row = j / 10, b = j % 10;
-        codes = blob + O_D_CODES + row * 160 + b * 16;
-        scale = (const uint16_t*) (blob + O_D_SC) + row * 10 + b;
+        const int64_t j = i - n_gu, row = j / Q2_SC_D, b = j % Q2_SC_D;
+        codes = blob + O_D_CODES + row * Q2_ROW_D + b * 16;
+        scale = (const uint16_t*) (blob + O_D_SC) + row * Q2_SC_D + b;
         out = dn + j * 9;
     } else {
         return;
@@ -143,6 +152,54 @@ __global__ void swiglu_kernel(const float* __restrict__ gu, float* __restrict__ 
     const float g = interleaved ? row[2 * k] : row[k], u = interleaved ? row[2 * k + 1] : row[n_ff + k];
     h[i] = g / (1.0f + __expf(-g)) * u;
 }
+
+#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+// swiglu_kernel (n_ff 640), then quantize_mmq_q8_1<D4>'s rows of its output, in one pass: a block per row (128
+// threads, 4 values each, blockIdx.y the row's 512-value half), H never stored.  Each value is swiglu_kernel's
+// expression and each 32-value block quantize_mmq_q8_1's (the same unit and flags: the same bits).
+template <bool IL>
+__global__ void __launch_bounds__(128) swiglu_quant_kernel(const float* __restrict__ gu, block_q8_1_mmq* __restrict__ y,
+                                                           int64_t rows) {
+    constexpr int64_t n_ff = 640, ne0 = 1024;   // the padded row: pad512(640)
+    const int64_t i0 = ((int64_t) blockDim.x * blockIdx.y + threadIdx.x) * 4;
+    if (i0 >= ne0) return;
+    const int64_t r = blockIdx.x;
+    float4 xi = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (i0 < n_ff) {
+        const float* row = gu + r * 2 * n_ff;
+        float4 g4, u4;
+        if constexpr (IL) {   // gate 2k, up 2k + 1
+            const float4 a = *reinterpret_cast<const float4*>(row + 2 * i0), b = *reinterpret_cast<const float4*>(row + 2 * i0 + 4);
+            g4 = make_float4(a.x, a.z, b.x, b.z);
+            u4 = make_float4(a.y, a.w, b.y, b.w);
+        } else {
+            g4 = *reinterpret_cast<const float4*>(row + i0);
+            u4 = *reinterpret_cast<const float4*>(row + n_ff + i0);
+        }
+        xi.x = g4.x / (1.0f + __expf(-g4.x)) * u4.x;
+        xi.y = g4.y / (1.0f + __expf(-g4.y)) * u4.y;
+        xi.z = g4.z / (1.0f + __expf(-g4.z)) * u4.z;
+        xi.w = g4.w / (1.0f + __expf(-g4.w)) * u4.w;
+    }
+    float amax = fabsf(xi.x);
+    amax = fmaxf(amax, fabsf(xi.y));
+    amax = fmaxf(amax, fabsf(xi.z));
+    amax = fmaxf(amax, fabsf(xi.w));
+#pragma unroll
+    for (int offset = 32 / 8; offset > 0; offset >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, offset, WARP_SIZE));
+    const float d_inv = 127.0f / amax;
+    char4 c;
+    c.x = roundf(xi.x * d_inv);
+    c.y = roundf(xi.y * d_inv);
+    c.z = roundf(xi.z * d_inv);
+    c.w = roundf(xi.w * d_inv);
+    const float d = 1.0f / d_inv;
+    const int64_t k_block = i0 / QK8_1_MMQ, iqs = i0 % QK8_1_MMQ;
+    block_q8_1_mmq* yb = y + k_block * rows + r;
+    reinterpret_cast<char4*>(yb->qs)[iqs / 4] = c;
+    if (iqs % 32 == 0) yb->d4[iqs / 32] = d;
+}
+#endif
 
 // swiglu_kernel on the MMQ gate/up output with each expert's gate and up scales applied as it is read: the products
 // scale_gu_rows stored, without the pass that stored them
@@ -276,6 +333,9 @@ bool supported(int t) {
 #ifdef STRATA_MMQ_TQ
         case GGML_TYPE_TQ2_T: case GGML_TYPE_TQK6: case GGML_TYPE_TQK7:   // APR experts (agention fork's MMQ)
 #endif
+#ifdef STRATA_MMQ_TQP   // a ggml with the pair-trellis types (the overlay, or an agention tree that has their instances)
+        case GGML_TYPE_TQP5: case GGML_TYPE_TQP6: case GGML_TYPE_TQP7:     // Gyro-L pair trellis (types 147-149)
+#endif
             return true;
 #ifdef STRATA_MMQ_KQUANTS
         // Unsloth's UD-Q4/Q5/Q6_K_XL experts; on HIP also the dense GGUF projections (STRATA_DENSE_MMQ)
@@ -301,7 +361,7 @@ bool fits(int t, int64_t w_rows) {
         const int cc = info.devices[id].cc;
         const size_t smpbo = info.devices[id].smpbo;
         bool any = false;
-        for (int J = 8; J <= 128 && !any; J += 8) {
+        for (int J = 8; J <= kMmqTileColsMax && !any; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, fallback, cc);
             any = c.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(c, cc) <= smpbo;
         }
@@ -416,6 +476,17 @@ Context::~Context() { delete (ggml_backend_cuda_context*) ctx_; }
 
 void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
+#if !defined(GGML_USE_HIP)
+    // STRATA_IQ4_W4A8=1 (opt-in; =2: the IQ4_NL down products only): IQ4_XS / IQ4_NL products through the pipelined int8
+    // kernel of moe_iq4_w4a8.cu where it gives MMQ's tiling-mode bits (sm_80..sm_88, no stream-k split); it declines
+    // every other product, and unset this function is unchanged
+    if (const int m = iq4_w4a8_mode(); m == 1 || (m == 2 && p.type == GGML_TYPE_IQ4_NL)) {
+        if (run_iq4_w4a8(p, stream)) {
+            ck(cudaGetLastError(), "iq4 w4a8");
+            return;
+        }
+    }
+#endif
     const ggml_type t = (ggml_type) p.type;
     const int64_t qk = type_blck((int) t), bpr = p.w_cols / qk;
     const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst, p.y_scale,
@@ -461,6 +532,11 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_TQ2_T: mul_mat_q_case<GGML_TYPE_TQ2_T>(ctx, a, s); break;
         case GGML_TYPE_TQK6: mul_mat_q_case<GGML_TYPE_TQK6>(ctx, a, s); break;
         case GGML_TYPE_TQK7: mul_mat_q_case<GGML_TYPE_TQK7>(ctx, a, s); break;
+#endif
+#ifdef STRATA_MMQ_TQP
+        case GGML_TYPE_TQP5: mul_mat_q_case<GGML_TYPE_TQP5>(ctx, a, s); break;
+        case GGML_TYPE_TQP6: mul_mat_q_case<GGML_TYPE_TQP6>(ctx, a, s); break;
+        case GGML_TYPE_TQP7: mul_mat_q_case<GGML_TYPE_TQP7>(ctx, a, s); break;
 #endif
 #if defined(STRATA_MMQ_KQUANTS) && defined(STRATA_KQ_DSO)
         case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q6_K: case GGML_TYPE_Q5_1: {
@@ -516,7 +592,7 @@ size_t overread_bytes(int t, int64_t cols) {
     int64_t blocks = over(MMQ_ITER_K);
     const ggml_cuda_device_info& info = ggml_cuda_info();
     for (int id = 0; id < info.device_count; ++id)
-        for (int J = 8; J <= 128; J += 8) {
+        for (int J = 8; J <= kMmqTileColsMax; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, info.devices[id].cc);
             if (c.type != GGML_TYPE_COUNT) blocks = std::max<int64_t>(blocks, over(c.K_vram));
         }
@@ -535,7 +611,7 @@ bool whole_tiles(int t, int64_t w_rows, int n_experts) {
         const size_t smpbo = info.devices[id].smpbo;
         bool any = false, stream_k = false;
         ggml_cuda_mmq_config c0 = ggml_cuda_mmq_get_config((ggml_type) t, 8, false, cc);
-        for (int J = 8; J <= 128; J += 8) {
+        for (int J = 8; J <= kMmqTileColsMax; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, cc);
             if (c.type == GGML_TYPE_COUNT || mmq_get_nbytes_shared(c, cc) > smpbo) continue;
             if (!any) c0 = c;
@@ -554,6 +630,34 @@ bool whole_tiles(int t, int64_t w_rows, int n_experts) {
         }
     }
     return true;
+}
+
+bool launch_splits_k(int t, int64_t w_rows, int64_t max_rows, int n_experts) {
+    if (!supported(t) || w_rows <= 0 || max_rows <= 0 || n_experts <= 0) return false;
+    const ggml_cuda_device_info& info = ggml_cuda_info();
+    int id = 0;
+    cudaGetDevice(&id);
+    if (id < 0 || id >= info.device_count) return true;
+    const int cc = info.devices[id].cc, nsm = info.devices[id].nsm;
+    const size_t smpbo = info.devices[id].smpbo;
+    // mul_mat_q_switch_J: the first tile width (8, 16, ...) with the fewest column tiles that fits the shared memory
+    int best_I = 0;
+    bool best_stream_k = false;
+    int64_t ntiles_best = INT64_MAX;
+    for (int J = 8; J <= 128 && ntiles_best > 1; J += 8) {
+        const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, false, cc);
+        if (c.type == GGML_TYPE_COUNT || mmq_get_nbytes_shared(c, cc) > smpbo) continue;
+        const int64_t ntx = (max_rows + c.J - 1) / c.J;
+        if (ntx < ntiles_best) { ntiles_best = ntx; best_I = c.I; best_stream_k = c.stream_k; }
+    }
+    if (ntiles_best == INT64_MAX) return true;   // no tile fits: not a launch to predict
+    if (!best_stream_k) return false;
+    if (!GGML_CUDA_CC_IS_NVIDIA(cc) || nsm <= 0) return true;
+    // launch_mul_mat_q: one block per tile when the tiles fill >= 90 % of their waves, else nsm blocks and a fixup
+    // whenever the tile count is not a multiple of them
+    const int64_t nty = (w_rows + best_I - 1) / best_I, ntiles = nty * ntiles_best * n_experts;
+    const int64_t waves = (ntiles + nsm - 1) / nsm;
+    return 100 * ntiles / (nsm * waves) < 90 && ntiles % nsm != 0;
 }
 
 int direct_mode() {
@@ -642,7 +746,7 @@ bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_byt
 }
 
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
-    strata_q2_kernel<<<blocks(1280LL * 40 + 2560LL * 10), 256, 0, (cudaStream_t) stream>>>(blob, (uint16_t*) gu_dst,
+    strata_q2_kernel<<<blocks((int64_t) Q2_GU_ROWS * Q2_SC_GU + (int64_t) fused::kMoeEmbd * Q2_SC_D), 256, 0, (cudaStream_t) stream>>>(blob, (uint16_t*) gu_dst,
                                                                                          (uint16_t*) d_dst);
     ck(cudaGetLastError(), "gather_strata_q2");
 }
@@ -663,6 +767,28 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
     if (rows <= 0) return;
     swiglu_kernel<<<blocks(rows * n_ff), 256, 0, (cudaStream_t) stream>>>(gu, h, rows, n_ff, interleaved);
     ck(cudaGetLastError(), "swiglu");
+}
+
+bool swiglu_quant_ok(int t) {
+#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+    // the q8_1 D4 rows quantize() writes for a down product's H (K 640)
+    return supported(t) && !fp4_activations(t) && mmq_get_q8_1_ds_layout((ggml_type) t) == MMQ_Q8_1_DS_LAYOUT_D4;
+#else
+    (void) t;
+    return false;   // HIP: not checked against the HIP build's quantizer; outside the SM60 build: not built
+#endif
+}
+
+void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream) {
+#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+    if (rows <= 0) return;
+    const dim3 grid((unsigned) rows, 2);
+    if (interleaved) swiglu_quant_kernel<true><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
+    else swiglu_quant_kernel<false><<<grid, 128, 0, (cudaStream_t) stream>>>(gu, (block_q8_1_mmq*) hq, rows);
+    ck(cudaGetLastError(), "swiglu_quant");
+#else
+    (void) gu; (void) hq; (void) rows; (void) interleaved; (void) stream;
+#endif
 }
 
 void iota(int32_t* dst, int64_t n, void* stream) {

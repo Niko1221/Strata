@@ -5,15 +5,15 @@
  */
 import { basename } from 'node:path';
 
-const PART_WORDS = { engine: 'the engine program', 'tokenizer/vocab.json': 'the tokenizer', 'tokenizer/merges.txt': 'the tokenizer', 'tokenizer/token_type.json': 'the tokenizer' };
+const PART_WORDS = { engine: 'the engine program', 'component:strata-engine': 'the engine program', 'tokenizer/vocab.json': 'the tokenizer', 'tokenizer/merges.txt': 'the tokenizer', 'tokenizer/token_type.json': 'the tokenizer' };
 
 /** Short readable names, no duplicates, most useful first. */
 export function missingNames(controlParts, installerFiles) {
   const names = [];
   const add = text => { const t = String(text ?? '').trim(); if (t && !names.includes(t)) names.push(t); };
-  for (const file of Array.isArray(installerFiles) ? installerFiles : []) add(basename(String(file).split(String.fromCharCode(92)).join('/')));
+  for (const file of Array.isArray(installerFiles) ? installerFiles : []) { const name = basename(String(file).split(String.fromCharCode(92)).join('/')); add(PART_WORDS[name] ?? name); }
   for (const item of Array.isArray(controlParts) ? controlParts : []) {
-    add(PART_WORDS[item?.part] ?? item?.file ?? item?.part);
+    add(PART_WORDS[item?.part] ?? PART_WORDS[item?.file] ?? item?.file ?? item?.part);
   }
   return names;
 }

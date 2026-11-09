@@ -14,7 +14,7 @@ from unittest import mock
 from strata_cli.launch import adopt, library, runner as R
 from strata_cli.launch import settings as S
 from strata_cli.launch.runner import Runner
-from tests.terminal.launch_support import HW_12, Home, catalog
+from tests.terminal.launch_support import HW_12, HW_2X16, Home, catalog
 
 
 def runner_for(**kw) -> Runner:
@@ -43,6 +43,34 @@ class EngineExitIsExplained(unittest.TestCase):
         self.assertNotIn("server_exited", text + nxt)
         self.assertIn("render group", nxt)
         self.assertIn(str(log), nxt)
+
+    def test_a_gpu_runtime_start_failure_gets_a_plain_sentence_and_keeps_the_runtime_text_out_of_it(self):
+        cfg, log = self.config_with_log(["strata generate: loading", "terminate called after throwing an instance of 'rocr::AMD::hsa_exception'",
+                                         "  what():  "])
+        text, nxt = R.explain_engine_exit({"state": "failed", "error": "server_exited", "engine_exit_code": 134}, cfg)
+        self.assertIn("stopped while it was loading the model (exit code 134)", text)
+        self.assertNotIn("hsa_exception", text + nxt)
+        self.assertNotIn("terminate called", text + nxt)
+        self.assertIn("graphics card was not ready yet", nxt)
+        self.assertIn("wait a few seconds", nxt)
+        self.assertIn("restart the PC", nxt)
+        self.assertIn(str(log), nxt)
+        text, nxt = R.explain_engine_exit({"error": "server_exited", "engine_exit_code": 134,
+                                           "log_tail": "terminate called after throwing an instance of 'rocr::AMD::hsa_exception' | what():"}, None)
+        self.assertNotIn("hsa_exception", text)
+        self.assertIn("graphics card was not ready yet", nxt)
+
+    def test_a_real_cause_in_the_same_log_wins_over_the_gpu_runtime_start_failure(self):
+        cfg, log = self.config_with_log(["strata generate: CUDA error: out of memory",
+                                         "terminate called after throwing an instance of 'rocr::AMD::hsa_exception'", "  what():  "])
+        text, nxt = R.explain_engine_exit({"state": "failed", "error": "server_exited", "engine_exit_code": 134}, cfg)
+        self.assertIn("out of memory", text)
+        self.assertIn("--context 16k", nxt)
+        self.assertNotIn("graphics card was not ready", nxt)
+        cfg, _ = self.config_with_log(["Permission denied: /dev/dri/renderD128", "terminate called after throwing an instance of 'rocr::AMD::hsa_exception'"])
+        self.assertIn("render group", R.explain_engine_exit({"error": "server_exited", "engine_exit_code": 134}, cfg)[1])
+        cfg, _ = self.config_with_log(["hsaKmtOpenKFD ok", "strata generate: CUDA error: out of memory"])
+        self.assertNotIn("graphics card was not ready", R.explain_engine_exit({"error": "server_exited"}, cfg)[1])
 
     def test_out_of_memory_and_old_engine_get_their_own_next_step(self):
         cfg, _ = self.config_with_log(["strata generate: CUDA error: out of memory"])
@@ -122,6 +150,27 @@ class SetupArguments(unittest.TestCase):
             self.assertEqual(a[a.index("--gpu") + 1], "0")
             self.assertNotIn("--gpu-roles", a)
 
+    def test_a_remembered_single_card_is_said_when_the_pc_has_more(self):
+        # NVIDIA, DeepSeek: after `--gpu 0` the next launch with nothing named stayed on one card without a word (boston, 2x A6000)
+        base = {"exe": "x", "args": [], "gpu": 0, "gpus_asked": True, "arch": "deepseek41"}
+        with Home():
+            two = Runner(S.LaunchSettings(family="deepseek41", model="IST-DAS-2.25bpw"), catalog=catalog(HW_2X16))
+            two.say_remembered_cards(base)
+            self.assertEqual(len(two.notices), 1)
+            self.assertIn("stays on card 0", two.notices[0])
+            self.assertIn("strata launch --gpu 0,1", two.notices[0])
+            self.assertIn("remembered", two.notices[0])
+            one = Runner(S.LaunchSettings(family="deepseek41", model="IST-DAS-2.25bpw"), catalog=catalog(HW_12))
+            one.say_remembered_cards(base)                                                     # one card in the PC: nothing to say
+            self.assertEqual(one.notices, [])
+            both = Runner(S.LaunchSettings(family="deepseek41", model="IST-DAS-2.25bpw"), catalog=catalog(HW_2X16))
+            both.say_remembered_cards({**base, "gpu": [0, 1]})                                 # all cards are used: nothing to say
+            both.say_remembered_cards({**base, "gpus_asked": False})                           # setup's own pick is not a choice
+            self.assertEqual(both.notices, [])
+            named = Runner(S.LaunchSettings(family="deepseek41", model="IST-DAS-2.25bpw", gpus=[0]), catalog=catalog(HW_2X16))
+            named.say_remembered_cards(base)                                                   # named on this launch: the person knows
+            self.assertEqual(named.notices, [])
+
     def test_mtp_off_reaches_setup(self):
         with Home():
             a = runner_for(mtp="off").setup_args()
@@ -137,6 +186,10 @@ class SetupArguments(unittest.TestCase):
 
 
 class PlanPredictsEveryDownload(unittest.TestCase):
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def plan_text(self, h: Home, own: Path, **kw) -> dict:
         s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="on", model_path=str(own), data_dir=str(h.base / "data"), **kw)
         r = Runner(s, catalog=catalog(HW_12))

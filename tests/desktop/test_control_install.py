@@ -73,6 +73,27 @@ class ControlModeTests(unittest.TestCase):
             S.run([sys.executable, str(tool), "--help"], check=False)
         runner.assert_called_once()
 
+    def test_the_mac_preparation_tools_in_metal_tools_may_run_and_nothing_else_beside_them(self):
+        # mac_repack() and mac_stream run metal/tools/metal_repack.py and stream_experts.py (mac_tools_dir() = ROOT/metal/tools): the bundled Mac tools, like tools/*.py
+        S = self.S
+        done = subprocess.CompletedProcess([], 0)
+        for tool in ("metal_repack.py", "stream_experts.py"):
+            with self.subTest(allowed=tool), mock.patch.object(S.subprocess, "run", return_value=done) as runner:
+                S.run([sys.executable, str(ROOT / "metal" / "tools" / tool), "--help"], check=False)
+                runner.assert_called_once()
+        for refused in (
+            [sys.executable, "-m", "metal.tools.metal_repack"],                      # -m is never allowed
+            ["python3", str(ROOT / "metal" / "tools" / "metal_repack.py")],          # another interpreter
+            [sys.executable, str(ROOT / "metal" / "kernels" / "evil.py")],           # another folder of the bundle
+            [sys.executable, str(ROOT / "metal" / "evil.py")],                       # metal/ itself
+            [sys.executable, str(self.home / "metal" / "tools" / "metal_repack.py")],  # a copy in the install folder
+            [sys.executable, str(ROOT / "metal" / "tools" / ".." / ".." / "setup.py")],
+            [sys.executable],
+        ):
+            with self.subTest(refused=refused), mock.patch.object(S.subprocess, "run", side_effect=AssertionError("ran")):
+                with self.assertRaises(S.acquisition.AcquisitionRefused):
+                    S.run(refused)
+
     def test_no_package_is_installed(self):
         S = self.S
         with mock.patch.object(S, "run", side_effect=AssertionError("pip")), \
@@ -450,6 +471,49 @@ class DeleteModelTests(unittest.TestCase):
         self.assertTrue(outside.is_file())
         described = self.s.describe_config(self.root / "strata-iq3_s.json")
         self.assertGreater(described["disk_bytes"], 10000)
+
+    def test_files_strata_downloaded_into_another_models_folder_are_deleted_too(self):
+        # The app installs into its own Models folder while settings.json names another data folder (#3716).
+        other = Path(self.tmp.name) / "Documents" / "Strata"
+        shard = self.make(other / "Models" / "IQ3" / "m-00001.gguf", 5000)
+        self.make(shard.with_name(shard.name + ".done"), 1)
+        pack = other / "packs" / "iq3"
+        self.make(pack / "dense.bin", 300)
+        self.make(pack / "conversions.json", 2)
+        mine = self.make(Path(self.tmp.name) / "mine" / "own.gguf", 99)
+        (self.root / "strata-iq3x.json").write_text(json.dumps({"exe": "component:strata-engine", "args": [
+            "--pack", str(pack), "--native", str(shard), "--ple-gguf", str(mine)]}), encoding="utf-8")
+        result = self.tools.strata_remove(model="iq3x", confirm=True)
+        self.assertEqual(result["failed"], [])
+        self.assertFalse(shard.exists())
+        self.assertFalse(pack.exists())
+        self.assertTrue(mine.is_file(), "a file the person brought stays")
+
+    def test_every_part_of_a_multi_part_model_goes_with_it_and_a_part_another_model_uses_stays(self):
+        # The run config names only the first part; the others used to stay on disk (#3716).
+        folder = self.data / "models" / "IQ3_XXS"
+        parts = [self.make(folder / f"Big-0000{i}-of-00003.gguf", 5000) for i in (1, 2, 3)]
+        for part in parts:
+            self.make(part.with_name(part.name + ".done"), 1)
+        (self.root / "strata-iq3xxs.json").write_text(json.dumps({"exe": "component:strata-engine", "args": [
+            "--native", str(parts[0]), "--max-context", "32768"]}), encoding="utf-8")
+        plan = self.tools.strata_remove(model="iq3xxs")["plan"]
+        removed = {Path(x["path"]).name for x in plan["remove"]}
+        self.assertTrue({p.name for p in parts} <= removed, removed)
+        result = self.tools.strata_remove(model="iq3xxs", confirm=True)
+        self.assertEqual(result["failed"], [])
+        self.assertEqual([p.exists() for p in parts], [False, False, False])
+        self.assertFalse(folder.exists())
+
+    def test_a_part_that_another_model_names_is_kept_when_a_multi_part_model_is_deleted(self):
+        folder = self.data / "models" / "IQ3_XXS"
+        parts = [self.make(folder / f"Big-0000{i}-of-00002.gguf", 5000) for i in (1, 2)]
+        for part in parts:
+            self.make(part.with_name(part.name + ".done"), 1)
+        (self.root / "strata-iq3xxs.json").write_text(json.dumps({"exe": "component:strata-engine", "args": ["--native", str(parts[0])]}), encoding="utf-8")
+        (self.root / "strata-twin.json").write_text(json.dumps({"exe": "component:strata-engine", "args": ["--native", str(parts[0])]}), encoding="utf-8")
+        self.tools.strata_remove(model="iq3xxs", confirm=True)
+        self.assertTrue(all(p.is_file() for p in parts), "the twin config still uses every part")
 
 
 class LocalGgufInstallTests(unittest.TestCase):
