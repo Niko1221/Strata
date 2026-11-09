@@ -74,6 +74,11 @@ the number counts.
   IQ4_XS gave 838.9 pp at 96k and Q5_K_S at 160k gave 279.1, while Q5_K_S at 96k gave 47.0.
 * **`-lv 4` is required for a usable primary source**: it adds `n_ubatch = 2048` and the KV buffer
   size (540 MiB at 96k q4_0), which `-lv 3` never prints.
+* **VRAM headroom as the cause of the llama prefill collapse** (series J/K, 08-09.11): confirmed.
+  At `--n-cpu-moe 30` some allocation layouts silently evict weights (60.65 pp at 86 558 tokens
+  against 894.85 in a morning run of the same prompt); 31/32/33 are healthy (794.44 / 858.10 /
+  843.41 pp), and free MiB alone does not predict the collapse (31 holds more VRAM than the
+  collapsed 30). Full record with per-number sources: `VRAM_HEADROOM.md` and `VRAM_HEADROOM.ru.md`.
 
 ## 5. Reproduce
 
