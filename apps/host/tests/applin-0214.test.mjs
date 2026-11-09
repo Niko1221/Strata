@@ -142,3 +142,53 @@ test('the engine update repairs run-config paths of a gone AppImage mount before
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+// ------------------------------------------------------------------ item 5: the first-run card offers the Control update
+
+const feedReport = control => ({ ok: true, feed: {}, hardware: { backend: 'sycl' }, engine: { status: 'install', installed: null, offered: { version: '0.1.60', variant: '', backend: 'sycl' }, download_bytes: 300e6 }, control, app: {} });
+
+test('the first-run card names a newer Control in the feed, and nothing when there is none', async () => {
+  const withControl = await engineFirstRun({ control: { updateCheck: async () => feedReport({ installed: '0.1.60', offered: '0.1.60.1', status: 'available', download_bytes: 120e6 }) } });
+  assert.equal(withControl.status, 'offer');
+  assert.deepEqual(withControl.control, { version: '0.1.60.1', bytes: 120e6 });
+  const current = await engineFirstRun({ control: { updateCheck: async () => feedReport({ installed: '0.1.60', offered: '0.1.60', status: 'current' }) } });
+  assert.equal(current.control, null);
+});
+
+test('the first-run Download with the Control: engine first, then Control, then the app switches to it while nothing runs', async () => {
+  const f = fixture({ reload: self => { self.control = { dir: '/new/control' }; self.version = '0.1.60.1'; return true; } });
+  try {
+    const job = await finish(f.native, f.native.operation('update-engine', { firstRun: true, withControl: true }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.deepEqual(f.calls.map(c => c.slice(0, 3)), [['update', true, false], ['update', false, true], ['reload']]);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('a Control update that fails on first run keeps the engine and the job; no switch', async () => {
+  const f = fixture({ update: async options => { if (options.control) throw new Error('the package failed its check'); }, reload: () => true });
+  try {
+    const job = await finish(f.native, f.native.operation('update-engine', { firstRun: true, withControl: true }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.ok(!f.calls.some(c => c[0] === 'reload'));
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('without withControl (or from Settings) the engine update never touches Control', async () => {
+  const f = fixture({ reload: () => true });
+  try {
+    await finish(f.native, f.native.operation('update-engine', { firstRun: true }).id);
+    await finish(f.native, f.native.operation('update-engine', {}).id);
+    assert.deepEqual(f.calls.map(c => c.slice(0, 3)), [['update', true, false], ['update', true, false]]);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('createControl.reload switches to a newer Control and the next call runs from it; the same folder is no switch', async () => {
+  const seen = [];
+  const first = { dir: '/a/control', python: '/a/py', cli: '/a/strata.py', bundle: { version: '0.1.60' } };
+  const ctl = createControl({ control: first, run: async (args) => { seen.push(args[0]); return { code: 0, json: { ok: true } }; } });
+  assert.equal(ctl.reload({ find: () => ({ ...first }) }), false);
+  assert.equal(ctl.reload({ find: () => null }), false);
+  const next = { dir: '/b/control', python: '/b/py', cli: '/b/strata.py', bundle: { version: '0.1.60.1' } };
+  assert.equal(ctl.reload({ find: () => next }), true);
+  assert.equal(ctl.control.dir, '/b/control');
+  assert.equal(ctl.version, '0.1.60.1');
+});

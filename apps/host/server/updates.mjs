@@ -123,7 +123,10 @@ export async function engineFirstRun({ control, gpus = [] }) {
   if (engine.installed) return { ...base, status: 'installed', installedVersion: engine.installed.version ?? null };
   if (engine.status === 'wrong-make') return { ...base, status: 'wrong-make', message: engine.note ?? null, reasons: engine.reasons ?? [] };
   if (engine.offered && (engine.status === 'install' || engine.status === 'available')) {
-    return { ...base, status: 'offer', offer: { version: engine.offered.version, bytes: engine.download_bytes || engine.offered.size || 0, variant: engine.offered.variant ?? '', backend: engine.offered.backend ?? null } };
+    // A newer Strata Control in the same feed comes with the engine (an Arc user who has just installed the app needed 0.1.59.1's fix and had to find Settings > Updates; ARCFIX 0213).
+    const ctl = report.control ?? {};
+    const control = ctl.status === 'available' && ctl.offered ? { version: ctl.offered, bytes: ctl.download_bytes || 0 } : null;
+    return { ...base, status: 'offer', offer: { version: engine.offered.version, bytes: engine.download_bytes || engine.offered.size || 0, variant: engine.offered.variant ?? '', backend: engine.offered.backend ?? null }, control };
   }
   return { ...base, status: 'none', message: engine.note ?? null, reasons: engine.reasons ?? [] };
 }

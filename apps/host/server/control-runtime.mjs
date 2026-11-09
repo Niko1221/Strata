@@ -188,6 +188,18 @@ export function createControl({ control = findControl(), env = process.env, run 
     control,
     version: control.bundle?.version ?? null,
     /**
+     * Use the newest whole Control there is now (findControl again), after an update installed one: true when it changed. Every later call runs the new one.
+     * The caller makes sure nothing of the old one is running (native-control.mjs switchControl).
+     */
+    reload({ find = findControl } = {}) {
+      const next = find({ env });
+      if (!next || resolve(next.dir) === resolve(control.dir)) return false;
+      control = next;
+      this.control = next;
+      this.version = next.bundle?.version ?? null;
+      return true;
+    },
+    /**
      * The explicit update step. These are the only calls that let Control reach the network: `acquire` removes
      * STRATA_NO_ACQUIRE for that one process. Starting, serving, listing and rolling back never do.
      */

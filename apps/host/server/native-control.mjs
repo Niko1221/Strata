@@ -607,6 +607,24 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    }
   }
  }
+ /* The first-run card's Download also brings a newer Strata Control the feed offers (the engine first: a Control that cannot be had never costs the engine). Then the app
+    uses it at once instead of after the next start, but only while nothing else runs (no model, no other job, no call to Control in flight); anything that goes wrong
+    leaves today's behaviour: the new Control takes effect at the next start. Never fails the job. */
+ async function firstRunControl(job,onEvent){
+  try{await control.update({engine:false,control:true,onEvent,signal:job.abort.signal});updateLog('first run: Control updated');}
+  catch(error){updateLog(`first run: the Control update did not finish: ${String(error?.message??error).slice(0,300)}`);return;}
+  switchControl();
+ }
+ function switchControl(){
+  try{
+   if(instances.size||pending.size||connecting||[...jobs.values()].some(j=>j.state==='running'&&!COMPONENT_KINDS.includes(j.kind))||typeof control.reload!=='function')return false;
+   const before=control.control.dir;
+   if(!control.reload())return false;
+   disconnect();sourceCache={path:'',time:0,text:''};lastRead=0;dflash2Served=null;
+   updateLog(`now using Strata Control ${control.version??"?"} (${control.control.dir}, was ${before})`);
+   return true;
+  }catch(error){updateLog(`Control switch skipped: ${String(error?.message??error).slice(0,200)}`);return false;}
+ }
  async function componentSteps(job,subject,args={}){
   const onEvent=event=>{
    if(event.event==='progress'){job.summary=`Downloading: ${event.percent}%`;job.result={install:{step:job.summary,download:{file:event.label,percent:event.percent}}};}
@@ -621,7 +639,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    /* A model is loaded and the person said yes to stopping it (the dialog names it): Control downloads while it serves, stops it cleanly, updates, and leaves it stopped.
       Whatever the result, the models it stopped are kept so the app offers to start them again, on the new engine or, after a failed update, on the old one. */
    const gate=args.stopModel===true&&instances.size?updateGate(job):null;
-   try{/* force: the person pressed Update, so a version that failed its test start here earlier (held back for a day) is tried again (QAGUI-LIN 0213) */const done=await control.update({engine:true,control:false,force:true,stopModel:!!gate,onEvent:gate?e=>{onEvent(e);gate.event(e);}:onEvent,signal:job.abort.signal});gate?.finish(true);return {summary:updateSummary(done),result:done};}
+   try{/* force: the person pressed Update, so a version that failed its test start here earlier (held back for a day) is tried again (QAGUI-LIN 0213) */const done=await control.update({engine:true,control:false,force:true,stopModel:!!gate,onEvent:gate?e=>{onEvent(e);gate.event(e);}:onEvent,signal:job.abort.signal});gate?.finish(true);if(args.firstRun===true&&args.withControl===true&&!gate)await firstRunControl(job,onEvent);return {summary:updateSummary(done),result:done};}
    catch(error){gate?.finish(false);if(gate?.refusal)throw Object.assign(new Error(gate.refusal),{details:`Running outside this app: ${gate.outside.join(', ')}`});throw error;}
   }
   const done=await control.update({engine:false,control:true,onEvent,signal:job.abort.signal});
