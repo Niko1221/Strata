@@ -9,8 +9,7 @@ code in `third_party/sfnx`). Strata starts it by itself when the rule below says
 Qwen3.8-Flash-Next on two or more big identical cards on Linux, when the whole model fits in the cards' memory. With the normal layer split one
 card works while the other waits; here all cards read the weights at the same time, so answers are written faster.
 
-Measured on two RTX A6000 (48 GB), UD-Q4_K_XL, 128K context, against the normal layer split (3 interleaved pairs, medians of 3 runs;
-`phaseA-tests/sfnx/RESULTS.md`):
+Measured on two RTX A6000 (48 GB), UD-Q4_K_XL, 128K context, against the normal layer split (3 interleaved pairs, medians of 3 runs; an internal measurement, the run logs are not published):
 
 | | normal layer split | all-cards split |
 | --- | --- | --- |
@@ -79,11 +78,11 @@ The cards exchange sums differently from NVIDIA here. By default (`FNX_PEER` uns
 compare, a flag round trip) and, if all pass, pushes the decode sums and the attention merge with kernel stores into the receiver's memory (never `hipMemcpyPeerAsync`); on any
 failure, or with `FNX_PEER=0`, it uses the host-memory exchange for the whole run and prints one plain line. Peer access is enabled in exactly one file (`src/split/src/hip/peer.h`), pinned by
 `tests/split/test_split_engine.py`. `FNX_PF_RCCL=1` (off by default, needs the peer push) sums the prompt chunks through RCCL, which is loaded with `dlopen` and never linked: without
-`librccl.so.1`, or if its self-test fails, the engine says so in one line and keeps the host exchange (`tools/rccl_policy_test.cpp`). Numbers and open items: `phaseA-tests/sfnx/RESULTS-HIP.md`.
+`librccl.so.1`, or if its self-test fails, the engine says so in one line and keeps the host exchange (`tools/rccl_policy_test.cpp`). The numbers and open items for this path are an internal measurement; the run logs are not published.
 
 ## DFlash2 instead of the MTP draft layer (engine flag; the launcher starts it only when you choose both)
 
-`strata-split-N --draft dflash2 --draft-model PACK --draft-vocab FILE` (or `FNX_DRAFT=dflash2`) drafts with the DFlash2 block drafter instead of the MTP draft layer: one drafter a lane on the first card (about 0.7 GB for the pack and the draft head, about 75 MiB a lane), the taps of layers 5, 15, 25, 35 and 45 made inside the window graphs, nothing exchanged between the cards. Answers are those of the MTP split and of the split with no drafter (greedy hashes equal, 1 and 8 users). It is measured faster on greedy code and JSON (+5 to +14%) and slower on sampled text and agent turns, and at 4 users, so Auto keeps the MTP draft layer and nothing starts it by itself. The launcher and the app start it only for a person who chose DFlash2 by name (`--drafting dflash2`) and the split engine on (`--split-engine on`): the run config then carries `--draft dflash2 --draft-model PACK` instead of `--mtp`, the MTP layer is not loaded or needed, and `--parallel N` sets the lanes as before. With the split engine on Auto, DFlash2 chosen by name keeps the normal layer split with DFlash2. Numbers: `phaseA-tests/round0212/RESULTS-SPLITDF2.md`. Testers' switches: `FNX_DF2_CONF` (0.35), `FNX_DF2_DEFER`, `FNX_DF2_REFRESH`, `FNX_DF2_CALL_MS`, `FNX_DF2_TRACE`, `FNX_SPECULATE=0` (one row a window, no drafts).
+`strata-split-N --draft dflash2 --draft-model PACK --draft-vocab FILE` (or `FNX_DRAFT=dflash2`) drafts with the DFlash2 block drafter instead of the MTP draft layer: one drafter a lane on the first card (about 0.7 GB for the pack and the draft head, about 75 MiB a lane), the taps of layers 5, 15, 25, 35 and 45 made inside the window graphs, nothing exchanged between the cards. Answers are those of the MTP split and of the split with no drafter (greedy hashes equal, 1 and 8 users). It is measured faster on greedy code and JSON (+5 to +14%) and slower on sampled text and agent turns, and at 4 users, so Auto keeps the MTP draft layer and nothing starts it by itself. The launcher and the app start it only for a person who chose DFlash2 by name (`--drafting dflash2`) and the split engine on (`--split-engine on`): the run config then carries `--draft dflash2 --draft-model PACK` instead of `--mtp`, the MTP layer is not loaded or needed, and `--parallel N` sets the lanes as before. With the split engine on Auto, DFlash2 chosen by name keeps the normal layer split with DFlash2. The numbers are an internal measurement; the run logs are not published. Testers' switches: `FNX_DF2_CONF` (0.35), `FNX_DF2_DEFER`, `FNX_DF2_REFRESH`, `FNX_DF2_CALL_MS`, `FNX_DF2_TRACE`, `FNX_SPECULATE=0` (one row a window, no drafts).
 
 ## Not proven
 

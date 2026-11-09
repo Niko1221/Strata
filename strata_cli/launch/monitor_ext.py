@@ -17,7 +17,6 @@ import textwrap
 import threading
 
 from rich.text import Text
-from textual.binding import Binding
 from textual.widgets import Static
 
 from strata_cli import nav

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-import struct
 import sys
 
 import numpy as np

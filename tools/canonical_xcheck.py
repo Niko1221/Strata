@@ -26,7 +26,6 @@ import collections
 import mmap
 import os
 import pathlib
-import struct
 import sys
 import time
 
@@ -39,7 +38,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(REPO, "ref"))
 
 import gguf_reader as G                                    # noqa: E402
-from gguf_writer import dequantize_q2_0                    # noqa: E402
+from gguf_writer import dequantize_q2_0                    # noqa: E402,F401  (kept: the packaged Control's bundle list follows this import)
 from load import _dequant_flat                             # noqa: E402
 
 # default: $STRATA_SHARD1, else the development layout (<Strata>/Q2_0 beside <Strata>/Public/Engine)

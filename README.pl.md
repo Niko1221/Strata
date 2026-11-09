@@ -65,7 +65,7 @@ dużo wolnego miejsca na dysku.
 | 2.25 bpw | 274 GB | około 280 GB |
 
 Działa na kartach NVIDIA RTX serii 30, 40 i 50 (Windows i Linux), AMD Radeon AI PRO R9700 (Linux) oraz AMD Ryzen AI Max — Strix Halo
-(Windows). Instalacja pobiera pliki i silnik DeepSeek, a potem uruchamia model.
+(Windows) oraz na komputerach Mac z Apple Silicon i co najmniej 64 GB pamięci ([Mac](docs/DEEPSEEK_MAC.md)). Instalacja pobiera pliki i silnik DeepSeek, a potem uruchamia model.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
@@ -100,7 +100,7 @@ Nie wiesz, co się zmieści? [Wybierz model do swojego komputera](docs/MODELS.md
 Zainstaluj aplikację, wybierz model i zacznij rozmawiać. Dla każdego systemu jest jeden instalator. Przy pierwszym
 uruchomieniu aplikacja pobiera silnik dla twojej karty graficznej. [Pomoc z instalatorem](docs/INSTALL.md#the-app).
 
-<sub>Pliki: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>Pliki: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplikacja Strata na komputer: czat i podgląd kodu na żywo obok siebie">
