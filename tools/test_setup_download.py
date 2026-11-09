@@ -318,9 +318,13 @@ class Resume(unittest.TestCase):
             try:
                 deadline = time.time() + 60
                 side = Path(d) / (NAME + ".part.chunks")
+                part = Path(d) / (NAME + ".part")
                 while time.time() < deadline and proc.poll() is None:
                     try:
-                        if sum(b - a for a, b in json.loads(side.read_text())["done"]) >= 12:
+                        if side.is_file():
+                            if sum(b - a for a, b in json.loads(side.read_text())["done"]) >= 12:
+                                break
+                        elif part.is_file() and part.stat().st_size >= 12 * CHUNK:   # the one-stream fallback (below)
                             break
                     except (OSError, ValueError, KeyError):
                         pass
@@ -330,12 +334,17 @@ class Resume(unittest.TestCase):
                 proc.kill()
                 proc.wait()
             self.assertTrue((Path(d) / (NAME + ".part")).exists(), "the download finished before it was killed")
-            self.assertTrue(side.exists(), "no %s after %.1f s; the runner %s; its stderr: %s" % (
-                side.name, time.time() - (deadline - 60), "was still running" if code is None else "ended with %s" % code,
+            if side.exists():
+                saved = json.loads(side.read_text())
+                done = {i for a, b in saved["done"] for i in range(a, b)}
+            else:
+                # One failed range probe makes setup read the file in one stream (parallel_download returns False): its .part is an
+                # unbroken run from the start and has no piece list, which the next run reads as finished pieces (_load_pieces).
+                # Seen on GitHub's Linux and macOS runners (run 42699343686); both ways must continue without fetching them again.
+                done = set(range(part.stat().st_size // CHUNK))
+            self.assertGreaterEqual(len(done), 12, "%d pieces after %.1f s; the runner %s; its stderr: %s" % (
+                len(done), time.time() - (deadline - 60), "was still running" if code is None else "ended with %s" % code,
                 err.read_text(errors="replace")[-2000:] or "(empty)"))
-            saved = json.loads(side.read_text())
-            done = {i for a, b in saved["done"] for i in range(a, b)}
-            self.assertGreaterEqual(len(done), 12)
             srv.gets.clear()
             code, out = run(srv, d)
             self.assertIsNone(code, out)
