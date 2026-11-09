@@ -20,3 +20,17 @@ export function jobErrorText(job: NativeJob, jobs: readonly NativeJob[]): string
     ? 'This update was cut short when the app restarted. A later update finished, so nothing needs doing.'
     : job.error ?? job.summary;
 }
+
+/**
+ * The failed update Settings > About shows under its buttons: per component, the last failed one, and only while no later update of the same
+ * component has finished. A failure a later update made right (the first-run engine card’s “A model is running … then press Continue”
+ * after Continue installed the engine, QAGUI-STRIX 11-09) is history: it stays in Diagnostics, not in About. Jobs are kept across restarts
+ * (native-jobs.json), so without this the line stayed there for good.
+ */
+export function currentUpdateFailure(jobs: readonly NativeJob[]): NativeJob | undefined {
+  const time = (job: NativeJob) => Date.parse(job.startedAt);
+  const failures = jobs.filter(job => job.state === 'error' && updateKinds.has(job.kind)
+    && !jobs.some(later => later.state === 'done' && later.kind === job.kind && Number.isFinite(time(later)) && (!Number.isFinite(time(job)) || time(later) > time(job))));
+  return failures.at(-1);
+}
+
