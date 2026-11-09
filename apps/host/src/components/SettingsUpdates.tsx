@@ -7,7 +7,7 @@ import type { SoftwareUpdate, UpdateCheckResult } from '../lib/types';
 import { nativeAction, useNative, type NativeJob } from '../lib/native';
 import { NativeProgress } from './NativeModels';
 import { EngineUpdateDialog } from './EngineUpdateDialog';
-import { currentUpdateFailure, jobErrorText } from '../lib/native-job-diagnostics';
+import { currentUpdateFailure, jobErrorText, updateFinishedAfter } from '../lib/native-job-diagnostics';
 import { appVersionLabel } from '../lib/app-version';
 import { fetchUpdateCheck, publishUpdateCheck, useInstalledVersions, useLastUpdateCheck } from '../lib/update-check';
 import { shownEngineVersion } from '../lib/engine-version';
@@ -32,6 +32,9 @@ export function SettingsUpdates() {
     useEffect(() => () => request.current?.abort(), []);
     const active = native?.jobs.find(j => j.state === 'running');
     const result = checking || error ? null : (fresh ?? last);
+    // An update that finished after the check shown makes it out of date: check again, once per update (lane 3 finding 6, 11-09).
+    const finished = updateFinishedAfter(native?.jobs ?? [], result?.checkedAt), rechecked = useRef('');
+    useEffect(() => { if (finished && !checking && rechecked.current !== finished) { rechecked.current = finished; void check(); } }, [finished, checking]);
     // Update engine with a model loaded: its own dialog (warns naming the model, stops it with the person's yes, offers to start it again).
     const withModel = (native?.instances.length ?? 0) > 0 && !!native?.capabilities.componentUpdates;
     async function operate(kind: string) {

@@ -34,3 +34,13 @@ export function currentUpdateFailure(jobs: readonly NativeJob[]): NativeJob | un
   return failures.at(-1);
 }
 
+/**
+ * A Strata or engine update that finished after the update check shown was made: that check is out of date (it still says “Update available”,
+ * and its cache is keyed to the Control version that runs until a restart). Settings > About then checks again. The job’s id, or undefined.
+ */
+export function updateFinishedAfter(jobs: readonly NativeJob[], checkedAt: string | undefined): string | undefined {
+  const checked = Date.parse(checkedAt ?? '');
+  if (!Number.isFinite(checked)) return undefined;
+  const ended = (job: NativeJob) => Date.parse((job as NativeJob & { finishedAt?: string }).finishedAt ?? job.startedAt);
+  return jobs.filter(job => job.state === 'done' && updateKinds.has(job.kind) && ended(job) > checked).at(-1)?.id;
+}

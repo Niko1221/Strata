@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const out = await build({ entryPoints: [fileURLToPath(new URL('../src/lib/native-job-diagnostics.ts', import.meta.url))], bundle: true, format: 'esm', platform: 'node', write: false, logLevel: 'silent' });
-const { currentUpdateFailure } = await import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].text).toString('base64')}`);
+const { currentUpdateFailure, updateFinishedAfter } = await import(`data:text/javascript;base64,${Buffer.from(out.outputFiles[0].text).toString('base64')}`);
 
 const job = (id, kind, state, startedAt, extra = {}) => ({ id, kind, state, startedAt, summary: state, error: state === 'error' ? 'A model is running, so nothing was changed. Unload the model in Models, then press Continue.' : null, result: null, ...extra });
 
@@ -34,8 +34,20 @@ test('a failure with no later finished update of the same component is still sho
   assert.equal(currentUpdateFailure([a, job('d', 'load', 'error', '2026-11-09T14:30:00Z')])?.id, 'a', 'not an update: not here');
 });
 
+test('an update that finished after the check shown asks for one new check; none before it, none without a check', () => {
+  const check = '2026-11-09T14:00:00Z';
+  assert.equal(updateFinishedAfter([job('u', 'update-strata', 'done', '2026-11-09T14:05:00Z')], check), 'u');
+  assert.equal(updateFinishedAfter([job('u', 'update-engine', 'done', '2026-11-09T13:55:00Z', { finishedAt: '2026-11-09T14:02:00Z' })], check), 'u', 'finished after the check');
+  assert.equal(updateFinishedAfter([job('u', 'update-engine', 'done', '2026-11-09T13:50:00Z')], check), undefined, 'the check is newer');
+  assert.equal(updateFinishedAfter([job('u', 'update-engine', 'error', '2026-11-09T14:05:00Z')], check), undefined, 'a failed update');
+  assert.equal(updateFinishedAfter([job('u', 'load', 'done', '2026-11-09T14:05:00Z')], check), undefined, 'not an update');
+  assert.equal(updateFinishedAfter([job('u', 'update-engine', 'done', '2026-11-09T14:05:00Z')], undefined), undefined, 'no check shown: nothing (no network on opening Settings)');
+});
+
 test('Settings > About uses both: the failure line and the check again, once per finished update', () => {
   const src = readFileSync(fileURLToPath(new URL('../src/components/SettingsUpdates.tsx', import.meta.url)), 'utf8');
   assert.match(src, /currentUpdateFailure\(native\?\.jobs \?\? \[\]\)/);
   assert.doesNotMatch(src, /j\.state === 'error' && \['update-strata', 'update-engine'\]\.includes\(j\.kind\)\)\.slice\(-1\)/);
+  assert.match(src, /updateFinishedAfter\(native\?\.jobs \?\? \[\], result\?\.checkedAt\)/);
+  assert.match(src, /rechecked\.current !== finished\) \{ rechecked\.current = finished; void check\(\); \}/);
 });
