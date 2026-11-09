@@ -7,7 +7,6 @@ L<l>_down.bf16 (raw bf16, shape [512, 1280, 2560] and [512, 2560, 640]).
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import sys
 import time

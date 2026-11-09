@@ -220,8 +220,11 @@ def resolve(folder, archs_present, *, environ=None, cfg: dict | None = None) -> 
 
 
 def apply(cfg: dict, folder, archs_present=None, *, environ=None, say=print) -> dict:
-    """``cfg`` for a start from engine package ``folder``: a copy with ``env[STRATA_HIPBLASLT_TUNING]`` set when a table applies. One log line
-    through ``say`` for an AMD package (nothing for other backends)."""
+    """``cfg`` for a start from engine package ``folder``. One log line through ``say`` for an AMD package (nothing for other backends).
+    The engine finds ``tuning/<arch>-hipblaslt-<version>.txt`` beside itself (src/prefill/gemm.cu: gfx1151 on its own, any card with
+    ``STRATA_HIPBLASLT_TABLE=on``), so no table path is put in the config any more.  What the engine cannot see is the run config's
+    ``"hipblaslt_table"``: a true / false there is passed as ``env[STRATA_HIPBLASLT_TABLE]`` = on / off (a copy; the shell's own switch
+    and a table the person named are left as they are)."""
     if cfg.get("backend") not in (None, "hip"):
         return cfg
     folder = Path(folder)
@@ -232,11 +235,13 @@ def apply(cfg: dict, folder, archs_present=None, *, environ=None, say=print) -> 
     decision = resolve(folder, archs_present, environ=environ, cfg=cfg)
     if decision.message:
         say(("[strata] " if decision.level == "info" else "[strata] note: ") + decision.message)
-    if decision.path is None:
-        return cfg
-    out = dict(cfg)
-    out["env"] = {**(cfg.get("env") or {}), ENGINE_VAR: str(decision.path)}
-    return out
+    value = cfg.get("hipblaslt_table")
+    env_now = os.environ if environ is None else environ
+    if isinstance(value, bool) and SWITCH not in (cfg.get("env") or {}) and not str(env_now.get(SWITCH, "")).strip() and not user_choice(environ, cfg):
+        out = dict(cfg)
+        out["env"] = {**(cfg.get("env") or {}), SWITCH: "on" if value else "off"}
+        return out
+    return cfg
 
 
 def present_archs(cfg: dict | None = None) -> list[str]:

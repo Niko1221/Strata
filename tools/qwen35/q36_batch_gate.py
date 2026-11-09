@@ -11,7 +11,7 @@
    between their windows); the others' tokens must still equal their solo tokens, and so must the long one's.
 """
 from pathlib import Path
-import argparse, json, shlex, sys, time
+import argparse, json, shlex, sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0] if "/" in __file__ else ".")
 from q36_harness import Eng, load_prompts
 

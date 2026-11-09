@@ -95,7 +95,7 @@ strata launch --show-key
 | `--vision off\|on\|gpu\|cpu` | Picture reading. Default: on when the model and the engine can. |
 | `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card; DeepSeek: one at a time. |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |
-| `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If it cannot run, MTP is used and the start says why. |
+| `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads its drafter once (0.34 GB for the models that have a tuned drafter, 0.52 GB on Intel Arc, else 1.2 GB). If it cannot run, MTP is used and the start says why. |
 | `--gpu LIST`, `--gpu-roles LIST` | Which cards to use, and a role per card. |
 | `--tune quick\|thorough\|skip`, `--tune-allow-small`, `--retune` | Tuning. `--retune` measures again; a model tuned before for the same choices on this computer reuses the stored result. |
 | `--set KEY=VALUE` | An advanced engine setting or `STRATA_*` variable (repeatable). Unknown names get a warning. |

@@ -5,7 +5,7 @@ off, every expert in VRAM (in the hybrid mode a different window mix can round d
 
   python tools/qwen35/q36_serve_handoff.py 8199 [--n 300] [--delay 1.0]
 """
-import argparse, json, sys, threading, time, urllib.request
+import argparse, json, threading, time, urllib.request
 
 A = "Write a long, detailed story about a lighthouse keeper who finds a message in a bottle and follows it across the sea."
 B = "List the first twenty prime numbers and explain how you found them."

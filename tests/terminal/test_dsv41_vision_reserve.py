@@ -35,7 +35,7 @@ class VisionReserve(unittest.TestCase):
         self.assertEqual(setup.dsv41_vision_reserve_args("on", False, strix), [])
 
     def test_setup_puts_the_flag_after_the_plans_own_arguments(self):
-        src = (ROOT / "setup.py").read_text(encoding="utf-8")
+        src = (ROOT / "setup.py").read_text(encoding="utf-8") + (ROOT / "strata_control" / "setup_config.py").read_text(encoding="utf-8")   # (the run config's construction is in the setup seam)
         self.assertIn('*plan["args"], *dsv41_vision_reserve_args(ds_vision, mac, plan)]', src)
 
 

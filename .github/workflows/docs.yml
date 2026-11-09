@@ -1,0 +1,72 @@
+name: Docs
+
+# The documentation checks (python tools/check --only docs): every local link in the current pages resolves, the version lines and
+# installer names agree with docs/data/release.json, the capability table and its summaries are what docs/data/capabilities.json says, and the
+# settings page matches the register.  Python standard library only; nothing is built, downloaded or run on a GPU.
+# Archived pages (history/, release notes, bench/results) are not checked; their baseline is history/LINK-BASELINE.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/docs.yml
+      - '**/*.md'
+      - docs/data/release.json
+      - docs/data/capabilities.json
+      - data/settings-register.json
+      - tools/check
+      - tools/check_links.py
+      - tools/doc_pages.py
+      - tools/release_manifest.py
+      - tools/capability_table.py
+      - tools/settings_register.py
+      - strata_cli/__init__.py
+      - CMakeLists.txt
+      - apps/host/package.json
+      - apps/desktop/package.json
+  pull_request:
+    paths:
+      - .github/workflows/docs.yml
+      - '**/*.md'
+      - docs/data/release.json
+      - docs/data/capabilities.json
+      - data/settings-register.json
+      - tools/check
+      - tools/check_links.py
+      - tools/doc_pages.py
+      - tools/release_manifest.py
+      - tools/capability_table.py
+      - tools/settings_register.py
+      - strata_cli/__init__.py
+      - CMakeLists.txt
+      - apps/host/package.json
+      - apps/desktop/package.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Links, release manifest, capability table
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: tools/check docs
+        run: python tools/check --only docs --keep --scratch "$RUNNER_TEMP/check" --json "$RUNNER_TEMP/check/result.json"
+      - name: Log
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-check
+          path: ${{ runner.temp }}/check/*.log
+          retention-days: 7

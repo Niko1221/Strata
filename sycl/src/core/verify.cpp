@@ -96,6 +96,38 @@ bool env_on(const char* name) {
     const char* e = std::getenv(name);
     return e != nullptr && e[0] != 0 && e[0] != '0';
 }
+
+// STRATA_LAYER_HASH_FILE=<path> (debug, off by default): after every CPU-expert service the host writes one text line
+// "window layer rows xhash idshash whash yhash" (FNV-1a over the host-visible payload the GPU published for the CPU
+// experts - the activation rows, the routed ids, the weights - and over the CPU experts' output rows).  Two runs of the
+// same teacher-forced window are compared line by line: the first line that differs names the first layer whose input
+// differs (CLEAN-6.0).  The activation rows are published only when a routed expert is not resident, or with
+// STRATA_DOORBELL_CHECK=1 for every layer.
+std::FILE* layer_hash_file() {
+    static std::FILE* f = [] {
+        const char* p = std::getenv("STRATA_LAYER_HASH_FILE");
+        return p != nullptr && p[0] != 0 ? std::fopen(p, "w") : nullptr;
+    }();
+    return f;
+}
+uint64_t layer_hash_fnv(const void* p, size_t bytes) {
+    uint64_t h = 1469598103934665603ull;
+    const auto* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < bytes; ++i) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
+
+// STRATA_STATE_HASH_FILE=<path> (debug, off by default): before every window the host waits for the queue and writes
+// "window gdn <ordinal> <fnv>" for every GDN layer's recurrent+conv state and "window qsa <ordinal> <fnv>" for the
+// int8 K/V codes and scales of the pages the window's position already filled (page table taken as the identity),
+// so two runs can be compared at the first window to see whether the prompt path left the same state (CLEAN-6.0).
+std::FILE* state_hash_file() {
+    static std::FILE* f = [] {
+        const char* p = std::getenv("STRATA_STATE_HASH_FILE");
+        return p != nullptr && p[0] != 0 ? std::fopen(p, "w") : nullptr;
+    }();
+    return f;
+}
 #if defined(STRATA_USE_HIP)
 const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
@@ -500,7 +532,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: " + why + " (the verify window reproduces the default native decode path)";
         return false;
     }
-    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != 10 || g.ssm_state_size != 128 ||
+    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != (int) strata::core::kCompiledGeometry.n_expert_used || g.ssm_state_size != 128 ||
         g.ssm_d_conv != 4) {
         err = "verify: geometry differs from the artifact's";
         return false;
@@ -2159,6 +2191,36 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         }
     }
     if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
+    if (std::FILE* sf = state_hash_file()) {   // debug only (STRATA_STATE_HASH_FILE)
+        cs_->wait();
+        const uint64_t gf = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                            (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+        std::vector<char> hb(std::max<uint64_t>(gf * 4, 1u << 20));
+        for (int64_t i = 0; i < ss.gdn_alloc; ++i) {
+            cs_->memcpy(hb.data(), ss.gdn_state + (size_t) i * gf, gf * 4).wait();
+            if (const char* dp = std::getenv("STRATA_STATE_DUMP"); dp != nullptr && windows == 0 && i < 4) {   // raw state of the first GDN layers
+                const std::string fn = std::string(dp) + "_gdn" + std::to_string(ss.gdn_ord0 + i) + ".bin";
+                if (std::FILE* df = std::fopen(fn.c_str(), "wb")) { std::fwrite(hb.data(), 1, gf * 4, df); std::fclose(df); }
+            }
+            std::fprintf(sf, "%lld gdn %lld %016llx\n", (long long) windows, (long long) (ss.gdn_ord0 + i),
+                         (unsigned long long) layer_hash_fnv(hb.data(), gf * 4));
+        }
+        const int64_t pages = (pos0 + 3) / 4;
+        for (int64_t i = 0; i < ss.qsa_alloc; ++i) {
+            const QsaState& q = ss.qsa_states[i];
+            if (!q.kv_int8 || q.k_q == nullptr) continue;
+            const size_t kb = (size_t) pages * g.n_head_kv * 4 * g.head_dim;
+            uint64_t h = 1469598103934665603ull;
+            auto mix = [&](const void* dev, size_t bytes) {
+                if (bytes > hb.size()) hb.resize(bytes);
+                cs_->memcpy(hb.data(), dev, bytes).wait();
+                h ^= layer_hash_fnv(hb.data(), bytes); h *= 1099511628211ull;
+            };
+            mix(q.k_q, kb); mix(q.v_q, kb); mix(q.k_scale, kb / 64 * 2); mix(q.v_scale, kb / 64 * 2);
+            std::fprintf(sf, "%lld qsa %lld %016llx\n", (long long) windows, (long long) (ss.qsa_ord0 + i), (unsigned long long) h);
+        }
+        std::fflush(sf);
+    }
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
@@ -2412,6 +2474,14 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                  h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
         if (remote_opt_) remote_opt_->end();
+        if (std::FILE* lf = layer_hash_file()) {   // debug only (STRATA_LAYER_HASH_FILE)
+            std::fprintf(lf, "%lld %lld %d %016llx %016llx %016llx %016llx\n", (long long) windows, (long long) l, n,
+                         (unsigned long long) layer_hash_fnv(h_x_ + (size_t) tb * g.n_embd, (size_t) n * g.n_embd * 4),
+                         (unsigned long long) layer_hash_fnv(h_ids_ + (size_t) tb * ss.k, (size_t) n * ss.k * 4),
+                         (unsigned long long) layer_hash_fnv(h_w_ + (size_t) tb * ss.k, (size_t) n * ss.k * 4),
+                         (unsigned long long) layer_hash_fnv(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, (size_t) n * ss.k * g.n_embd * 4));
+            std::fflush(lf);
+        }
         VDBG("layer %lld served\n", (long long) l);
         if (g_trace) trace_ev(*(volatile uint32_t*) h_flagA_ == want ? "SERVED" : "SERVED-NO-PLAN-YET", k, l,
                               (int64_t) ms_since(b));   // aux: ms the CPU experts took
@@ -2584,6 +2654,23 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
+    // STRATA_LOGITS_DUMP=<path> (debug tap, off by default; src/core/verify.cpp's, for the gate-2 judge of the Qwen4 shapes): the window's
+    // logits as the sampler saw them, written AFTER the window (synchronised above).  One record is
+    // {int32 magic, int32 T, int32 n_vocab, int32 record, int64 position}, then T * n_vocab FP32 rows; row 0 is the window's first position.
+    if (const char* logits_path = std::getenv("STRATA_LOGITS_DUMP")) {
+        static std::FILE* lf = std::fopen(logits_path, "wb");
+        static int32_t lrec = 0;
+        if (lf != nullptr) {
+            std::vector<float> h((size_t) T * (size_t) n_vocab_);
+            dpct::get_in_order_queue().memcpy(h.data(), head_logits_, h.size() * sizeof(float)).wait();
+            const int32_t hdr[4] = {0x53474F4C /*"LOGS"*/, T, (int32_t) n_vocab_, lrec++};
+            const int64_t hpos = pos0;
+            std::fwrite(hdr, sizeof hdr, 1, lf);
+            std::fwrite(&hpos, sizeof hpos, 1, lf);
+            std::fwrite(h.data(), sizeof(float), h.size(), lf);
+            std::fflush(lf);
+        }
+    }
     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {

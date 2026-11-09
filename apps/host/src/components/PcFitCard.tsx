@@ -21,7 +21,7 @@ function FreeMeter({ label, total, free }: { label: string; total: number; free:
  * "This computer": how much graphics memory and RAM is free right now. While a model is loaded that is all the card shows: the hardware line, the model's
  * name, "Loaded", what it takes and the SSD line are gone (owner, 11-01: the page already says what is loaded); only while the loaded model really reads
  * from the SSD, how fast it reads right now. Before anything is loaded the card says what the chosen version would take. That a version does not fit in
- * memory is said once, under the version picker ("SSD streaming · will run slower"), not again here. (The n-gram table, which always sits on the SSD, is not counted.)
+ * memory is said once, under the version picker ("may run slower"), not again here. (The n-gram table, which always sits on the SSD, is not counted.)
  */
 export function PcFitCard({ gpuName, ramGb, vramGb, fit, inUse = null, diskGb = null, live = null, loaded = [], selectedLoaded = false }: { gpuName?: string | null; ramGb: number | null; vramGb: number; fit: Fit | null; inUse?: { ramGb: number; vramGb: number } | null; diskGb?: number | null; live?: PcLive | null; loaded?: PcLoaded[]; selectedLoaded?: boolean }) {
   const showFit = !!fit?.known && !selectedLoaded;
