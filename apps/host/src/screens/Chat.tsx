@@ -2,9 +2,8 @@ import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { UsageDashboard } from '../components/UsageDashboard';
 import { FloatingMenu } from '../components/FloatingMenu';
-import { TimeSkipPanel } from '../components/TimeSkipPanel';
+import { lazyScreen } from '../lib/lazy-screen';
 import { timeSkipPrompt, timeSkipTabId, type TimeSkipRun } from '../lib/time-skip';
-import { TimeSkipWorking } from '../components/TimeSkipWorking';
 import { ChatToolbar } from '../components/ChatToolbar';
 import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
@@ -40,7 +39,7 @@ import { openExternal } from '../lib/open-external';
 import { busyPlan } from '../lib/while-busy';
 import { composeQuoted, parseQuoted, type Quote } from '../lib/quotes';
 /** Chat — talk to the one loaded model. */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
@@ -52,6 +51,9 @@ import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
 import type { ChatMessage, Session, ToolCall } from '../lib/types';
+// The Time-skip panel and its progress card are only drawn in a chat that has a Time-skip run: their code loads then (and a few seconds after start, see main.tsx).
+const TimeSkipPanel = lazyScreen(() => import('../components/TimeSkipPanel'), (m) => m.TimeSkipPanel);
+const TimeSkipWorking = lazyScreen(() => import('../components/TimeSkipWorking'), (m) => m.TimeSkipWorking);
 export function ChatScreen() {
     const location = useLocation();
     const sessions = useStore((s) => s.sessions);
@@ -535,7 +537,7 @@ export function ChatScreen() {
                 <Icon name="chevron" size={18}/></button>) : null)}</div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
         </DropZone>
-        {tr(!setupVisible && selectedRun && session ? <TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/> : null)}
+        {tr(!setupVisible && selectedRun && session ? <Suspense fallback={null}><TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/></Suspense> : null)}
         {tr(!setupVisible && planShown ? <PlanPanel chatId={session?.id}/> : null)}
         <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible || planShown ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
         {tr(resizeHandle)}
@@ -781,7 +783,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.length >= COMPACT_FILES_FROM ? <FilesSummary files={m.deliverables} answer={m.content} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <>{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></>}</div> : null)}
       {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}
 
-      {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
+      {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <Suspense fallback={null}><TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/></Suspense> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
       {tr(m.media?.length ? <ChatMedia items={m.media} onPreview={onPreview}/> : null)}
       {tr(m.artifacts?.length ? <div className="artifact-cards">{tr(m.artifacts.map(a => <ArtifactCard key={a.id} artifact={a} onPreview={onPreview}/>))}</div> : null)}
 

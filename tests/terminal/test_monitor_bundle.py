@@ -220,7 +220,8 @@ class MonitorBundleTests(unittest.TestCase):
                 self.assertEqual(target.stat().st_mode & 0o077, 0)
                 self.assertEqual((target / bundle.name).stat().st_mode & 0o077, 0)
             portable = subprocess.run([sys.executable, "-I", str(target / bundle.name), "logs", "--help"],
-                                      cwd=directory, capture_output=True, text=True, check=True)
+                                      cwd=directory, capture_output=True, text=True, check=True,
+                                      encoding="utf-8", errors="replace")   # (the help text has non-ASCII characters; Windows would read it as cp1252)
             self.assertIn("--follow", portable.stdout)
             extra = target / "user-notes.txt"
             extra.write_text("keep me")

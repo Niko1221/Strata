@@ -204,7 +204,7 @@ class OtherSetsAndEntriesAreUnchanged(Base):
 
     def test_the_resident_strix_arc_and_metal_starts_are_what_they_were(self):
         self.put_tuned()
-        for hardware, name, conf in ((L620, IQ3S, "0.35"), (SPARK, V31, "0.35"), (STRIX, IQ3S, "0.35")):
+        for hardware, name, conf in ((L620, IQ3S, "0.55"), (SPARK, V31, "0.35"), (STRIX, IQ3S, "0.35")):      # l620: 0.55 since 11-08
             d, args = self.apply(name, hardware)
             self.assertEqual((d.drafter, flag(args, "--draft-model"), flag(args, "--draft-conf")), ("dflash2", str(drafting.tuned_path(self.data)), conf), (hardware, name))
         d, args = self.apply(Q4, ("metal", [], None))

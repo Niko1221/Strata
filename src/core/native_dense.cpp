@@ -575,6 +575,17 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         return false;
     }
 }
+bool NativeDense::gguf_carries_q8_hc(const std::vector<std::string>& shards) {
+    try {
+        for (const auto& path : shards) {
+            const strata::GgufFile g(path);
+            for (const auto& tensor : g.tensors())
+                if (tensor.type == 8 && tensor.shape.size() == 2 && hc_q8_name(tensor.name) && !tensor.name.ends_with("_inject.weight")) return true;
+        }
+    } catch (const std::exception&) {}
+    return false;
+}
+
 bool NativeDense::hc_q8_requested() { return hc_q8_env(); }
 
 bool NativeDense::add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip) {

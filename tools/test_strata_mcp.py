@@ -351,6 +351,14 @@ class Validation(FakeRoot):
         for d in ok:
             self.assertEqual(M.norm(self.tools.check_data_dir(str(d))), M.norm(d))
 
+    @unittest.skipIf(M.WIN, "POSIX paths")
+    def test_a_drive_the_desktop_mounted_is_not_a_system_folder(self):
+        """/run/media/<user>/<drive> sits inside /run, but it is where an external drive is mounted."""
+        for raw in ("/run/media/ann/Backup/Strata-data", "/run/media/ann/Backup/Strata"):
+            self.assertTrue(M.mounted_drive(M.norm(raw)), raw)
+        for raw in ("/run", "/run/media", "/run/user/1000/Strata-data", "/run/systemd/Strata-data", "/etc/Strata-data"):
+            self.assertFalse(M.mounted_drive(M.norm(raw)), raw)
+
     def test_the_persons_own_data_folder_is_accepted_whatever_it_is_called(self):
         """The app writes the folder the person chose into the settings file (apps/host model-folder.mjs); an AI tool naming a new
         folder still needs a Strata... name."""
@@ -616,11 +624,13 @@ class Helpers(unittest.TestCase):
         self.assertEqual((by["UD-IQ4_XS"]["experimental"], by["UD-IQ4_XS"]["images"]), (False, True))
         self.assertEqual((by["UD-Q4_K_XL"]["experimental"], by["UD-Q4_K_XL"]["images"]), (False, True))   # #967
         self.assertFalse(by["UD-IQ4_XS"]["on_this_pc"].startswith("experimental"))
-        self.assertIn("read from the SSD", by["UD-Q4_K_XL"]["on_this_pc"])      # 64 GB: the RAM budget
+        self.assertEqual(by["UD-IQ1_M"]["on_this_pc"], "fits")                  # 63.7 GB of RAM, no card: 39.2 GB (68.0 download minus the 28.8 GB table)
+        self.assertEqual(by["UD-IQ4_XS"]["on_this_pc"], "may run slower")       # 64.9 GB
+        self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "may run slower")      # 82.5 GB
         fam = next(f for f in s.model_table({"ram_gb": 127.8, "gpus": []}) if f["family"] == "unsloth")
         by = {x["model"]: x for x in fam["sizes"]}
-        self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "fits (all of its experts in RAM)")
-        self.assertIn("read from the SSD", by["Q8_0"]["on_this_pc"])
+        self.assertEqual(by["UD-Q4_K_XL"]["on_this_pc"], "fits")
+        self.assertEqual(by["Q8_0"]["on_this_pc"], "may run slower")            # 133.8 GB (188.2 minus its 54.4 GB table) against 127.8 GB
 
     def test_qwen36_is_listed_with_its_three_sizes(self):
         """QA 2026-10-18: the Qwen3.6-35B-A3B page of the first-run setup showed no versions, because setup.py keeps the family
@@ -636,7 +646,7 @@ class Helpers(unittest.TestCase):
         self.assertTrue(all(x["images"] and x["engine_min"] == "0.1.45" and x["gpu_options"] is None for x in by.values()))
         self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
         small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
-        self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"does not fit"})
+        self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"may run slower"})        # 16 GB, no card: 21 to 36 GB of weights
         self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[:5], ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])      # the Unsloth Flash-Next sizes are untouched (round 0214 adds sizes after them)
 
     def test_qwen36_install_plan(self):
@@ -777,25 +787,24 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual(list(un), ["UD-IQ1_M", "UD-Q2_0", "UD-IQ2_XS", "UD-Q2_K_XL", "UD-IQ3_XXS", "UD-Q3_K_XL", "UD-IQ4_XS-v31", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"])
         self.assertEqual((un["UD-IQ1_M"]["download_gb"], un["UD-IQ1_M"]["experts_gb"]), (68.0, 34.8))
         self.assertTrue(all(x["on_this_pc"] and x["images"] and x["id"] == "unsloth-" + x["model"].lower() for x in un.values()))
-        self.assertTrue(un["UD-Q5_K_XL"]["on_this_pc"].startswith("slow here"), "32 GB: 104 GB to map does not fit, said not refused")
+        self.assertEqual(un["UD-Q5_K_XL"]["on_this_pc"], "may run slower", "32 GB: 99 GB of weights, said not refused")
         gy = {x["model"]: x for x in fams[2]["sizes"]}
         self.assertEqual(list(gy), ["Gyro-S", "Gyro-M"])
         self.assertEqual(gy["Gyro-S"]["download_gb"], 58.5)
-        self.assertTrue(all(v["on_this_pc"] and "SSD" in v["on_this_pc"] for v in gy.values()), "32 GB: both stream (said, not refused)")
-        self.assertIn("read from the SSD", by["Q2_0"]["on_this_pc"])
-        self.assertIn("slower", by["Q2_0"]["on_this_pc"])
-        self.assertIn("~14 tok/s", by["Q2_0"]["on_this_pc"])
-        self.assertTrue(by["IQ3_S"]["on_this_pc"].startswith("slow here"))
+        self.assertEqual({v["on_this_pc"] for v in gy.values()}, {"may run slower"}, "32 GB: both stream (said, not refused)")
+        self.assertEqual(by["Q2_0"]["on_this_pc"], "may run slower")
+        self.assertEqual(by["IQ3_S"]["on_this_pc"], "may run slower")
         self.assertTrue(all(x["images"] for x in by.values()), "the Mac engine carries the Metal picture reader: pictures are on")
         s, hw = self.hw(128)
         fits = {x["model"]: x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}
         from strata_control import mac_fit
         for m, v in fits.items():                       # the 128 GB Mac keeps ~96 GB resident: UD-Q5_K_XL and UD-Q6_K_XL (104 / 115 GB to map) stream, said not refused
             self.assertEqual(v == "fits", not mac_fit.streams(m, 128.0), m)
+            self.assertIn(v, ("fits", "may run slower"), m)
         self.assertEqual({m for m, v in fits.items() if v != "fits"}, {"UD-Q5_K_XL", "UD-Q6_K_XL"})
         s, hw = self.hw(8)
-        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"does not fit"})
-        self.assertTrue(all(x["on_this_pc"].startswith("does not fit") for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]))
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] != "deepseek41" for x in f["sizes"]}, {"may run slower"})      # too little memory: the same two words
+        self.assertEqual({x["on_this_pc"] for f in s.model_table(hw) if f["family"] == "deepseek41" for x in f["sizes"]}, {"may run slower"})
 
     def test_deepseek_pictures_on_a_mac_follow_the_installed_engine(self):
         """DeepSeek reads pictures on a Mac exactly when the installed strata-dsv41 carries STRATA_DS4_METAL_VISION_V1; no engine installed yet: on (setup looks again once it is fetched)."""
@@ -841,18 +850,16 @@ class MacCatalog(unittest.TestCase):
             self.assertTrue(x["multi_file"] and not x["images"])
             self.assertGreater(x["disk_gb"], x["download_gb"])
             if x["model"] == "ISTA-DAS-Coder":      # 66 GB of experts: all of them stay in a 128 GB Mac's memory
-                self.assertTrue(x["on_this_pc"].startswith("fits: every expert stays"), x["on_this_pc"])
+                self.assertEqual(x["on_this_pc"], "fits")
                 continue
-            self.assertTrue(x["on_this_pc"].startswith("runs on this Mac's memory"), x["on_this_pc"])
-            self.assertIn("read from the SSD", x["on_this_pc"])
+            self.assertEqual(x["on_this_pc"], "may run slower")             # the experts do not all stay in memory: part is read from the SSD
         s, hw = self.hw(32)
         ds = next(f for f in s.model_table(hw) if f["family"] == "deepseek41")
         for x in ds["sizes"]:                           # a small Mac: said plainly, never refused
-            self.assertTrue(x["on_this_pc"].startswith("slow here"), x["on_this_pc"])
-            self.assertIn("can still be installed", x["on_this_pc"])
+            self.assertEqual(x["on_this_pc"], "may run slower")
         from strata_cli.launch import catalog as C
-        self.assertEqual(C.verdict(by["IST-DAS-2.00bpw"]["on_this_pc"])[0], C.FITS)
-        self.assertEqual(C.verdict(ds["sizes"][0]["on_this_pc"])[0], C.TIGHT)
+        self.assertEqual(C.verdict(by["ISTA-DAS-Coder"]["on_this_pc"])[0], C.FITS)
+        self.assertEqual(C.verdict(ds["sizes"][0]["on_this_pc"])[0], C.SLOWER)
 
     def test_the_install_plan_on_a_mac_has_no_card_kv_or_ram_options(self):
         s, hw = self.hw(32)
@@ -905,7 +912,7 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual(args[args.index("--vision") + 1], "no", "the installed engine has no Metal picture tower")
         for flag in ("--kv", "--gpu", "--gpus", "--low-ram", "--backend"):
             self.assertNotIn(flag, args)
-        self.assertTrue(plan["ram"].startswith("runs on this Mac's memory"))
+        self.assertEqual(plan["ram"], "may run slower")
         with self.assertRaises(M.ToolError):            # UD-Q8_K_XL (508 GB) and the 1.75 set were never run on a Mac
             M.Tools(s).install_plan("deepseek41", "UD-Q8_K_XL", None, None, None, None, None, None, None, None, None, None)
         with self.assertRaises(M.ToolError):

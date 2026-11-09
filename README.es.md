@@ -63,7 +63,7 @@ En la **aplicación de escritorio** y en el **Terminal**. Lo que no cabe en la m
 | 2.00 bpw | 257 GB | unos 265 GB |
 | 2.25 bpw | 274 GB | unos 280 GB |
 
-Funciona en NVIDIA RTX 30, 40 y 50 (Windows y Linux) y en AMD Radeon AI PRO R9700 (Linux). La instalación descarga los archivos y el motor de DeepSeek, y después inicia el modelo.
+Funciona en NVIDIA RTX 30, 40 y 50 (Windows y Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo (Windows) y Macs con Apple Silicon de 64 GB o más ([Mac](docs/DEEPSEEK_MAC.md)). La instalación descarga los archivos y el motor de DeepSeek, y después inicia el modelo.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
@@ -96,7 +96,7 @@ Medido con el conjunto de 2.00 bpw en Strata 0.2.5. «Salida» es la velocidad d
 
 Instala la aplicación, elige un modelo y empieza a chatear. Hay un instalador por sistema. En el primer arranque, la aplicación descarga el motor para tu tarjeta gráfica. [Ayuda con el instalador](docs/INSTALL.md#the-app).
 
-<sub>Archivos: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>Archivos: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplicación de escritorio de Strata con un chat y una vista previa del código en vivo, una junto a otra">

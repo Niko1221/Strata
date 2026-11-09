@@ -6,7 +6,7 @@
  * per saved API connection, so that each chat can pick its own model. This module writes the same two
  * Cordis entries (`agent-default-model`, `llm-pi-ai`) for the current set.
  *
- * Rules carried over from the integration notes (docs/work/IMPLEMENTATION_STATUS.md section 1.8):
+ * Rules carried over from the integration notes (history/docs/work/IMPLEMENTATION_STATUS.md section 1.8):
  *   - `llm-pi-ai` config is `{ providers: { "<route>": {...} } }`; a route key at the top level is
  *     silently ignored.
  *   - the output budget must fit the whole request, so `maxTokens` is derived from the real context.
