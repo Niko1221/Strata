@@ -244,7 +244,8 @@ class Arch(unittest.TestCase):
 
         sh = (ROOT / "packaging" / "build_dsv41_cuda.sh").read_text(encoding="utf-8")
         bat = (ROOT / "packaging" / "build_dsv41_windows.bat").read_text(encoding="utf-8")
-        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
+        # CMakeLists.txt is cut into cmake/*.cmake macros (cleanup 5.4): the CUDA architecture default is in cmake/backends/cuda.cmake
+        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8") + (ROOT / "cmake" / "backends" / "cuda.cmake").read_text(encoding="utf-8")
         linux = re.search(r"^ARCH=\$\{ARCH:-([^}]+)\}", sh, re.M).group(1)
         windows = re.search(r'set "DSV41_ARCH=([^"]+)"', bat).group(1)
         self.assertEqual(linux, windows, "Windows and Linux ship the same DeepSeek architectures")

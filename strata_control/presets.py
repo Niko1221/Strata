@@ -495,7 +495,6 @@ def history_path() -> Path:
 
 
 def record_trials(trials: list[dict[str, Any]], *, hw_hash: str, model_digest: str | None, engine_sha: str | None) -> None:
-    from strata_control import tune_knobs as k
     rows = []
     for t in trials:
         args = {}

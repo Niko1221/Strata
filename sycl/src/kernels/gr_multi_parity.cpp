@@ -8,6 +8,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/kernels/gr.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -67,7 +68,7 @@ uint16_t bf16_of(float f) {
 }  // namespace
 
 int main() {
-    const long long n_embd = 2560, hc = 4, hc_lr = 320, hc_dim = hc * n_embd;
+    const long long n_embd = strata::core::kCompiledGeometry.n_embd, hc = strata::core::kCompiledGeometry.hc, hc_lr = strata::core::kCompiledGeometry.hc_lr, hc_dim = hc * n_embd;   // the compiled shape (Q4-SYCL)
     const float eps = 1e-6f;
     std::mt19937 rng(783);
     std::normal_distribution<float> gauss(0.f, 1.f);

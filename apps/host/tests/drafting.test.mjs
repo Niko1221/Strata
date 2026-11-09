@@ -95,7 +95,7 @@ test('every sentence of the Drafting choice is in the catalog in all nine langua
     // the DFlash2 option (df2-<lang>.json): the paragraph under the dropdown, the lines about the card, the two new notes
     "Drafting: MTP (DFlash2 isn't available on this graphics card)", "There is no internet connection, so the DFlash2 drafter can't be downloaded now.",
     'On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests.',
-    'On graphics cards like yours, DFlash2 was slower than MTP in our tests.', 'DFlash2 has not been tested on your graphics card yet.', 'SSD: not needed'];
+    'On graphics cards like yours, DFlash2 was slower than MTP in our tests.', 'DFlash2 has not been tested on your graphics card yet.', 'On your Mac, DFlash2 was faster than MTP on this model in our tests.', 'DFlash2 is off by default on this graphics card for now; choose it in Drafting to use it.', 'SSD: not needed'];
   const slots = t => (t.match(/\{\d+\}/g) ?? []).sort().join();
   for (const text of sentences) {
     const id = idOf(text);

@@ -13,7 +13,6 @@ tests see the same thing. Nothing here prints or reads the keyboard. The steps r
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -743,6 +742,10 @@ class Runner:
         if self.multi_file():                                # DeepSeek: its own engine package (setup fetches it); the Strata engine is not used
             self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
             return
+        shape = self.model_shape()
+        if shape:                                            # a Qwen4 model of its own shape: its engine is a separate component (strata_control/shape_engine.py)
+            self.ensure_shape_engine(shape)
+            return
         self.emit("engine", "Checking the engine for this computer…")
         from strata_control import engine_component as ec
         root = Path(self.components_dir) if self.components_dir else None
@@ -848,6 +851,41 @@ class Runner:
         if self.confirm is not None and self.confirm("Update the engine?", stale + " Update it now? Nothing else is changed; your models are kept."):
             return None
         return stale + " Strata did not update it. Run `strata update` (or start with --yes) and start again."
+
+    def model_shape(self) -> str | None:
+        """The model shape whose own engine runs the chosen model (a feed model of a shape other than Flash-Next's: setup's FAMILIES entry has "shape"), or None."""
+        try:
+            fam = (getattr(self.catalog.strata.setup_module(), "FAMILIES", None) or {}).get(self.s.family) or {}
+            shape = fam.get("shape")
+            return shape if isinstance(shape, str) and shape else None
+        except Exception:                                    # noqa: BLE001 - no table, no shape: the Strata engine
+            return None
+
+    def model_title(self) -> str | None:
+        """The chosen model's title ("Q4 Lite Shape"), which the lines about its engine name instead of the geometry's name; None when the table has none."""
+        try:
+            title = ((getattr(self.catalog.strata.setup_module(), "FAMILIES", None) or {}).get(self.s.family) or {}).get("title")
+            return title if isinstance(title, str) and title else None
+        except Exception:                                    # noqa: BLE001
+            return None
+
+    def ensure_shape_engine(self, shape: str) -> None:
+        """Step 1 for a model of its own shape: the engine of that shape is installed (and the feed's newer one fetched), next to the Strata engine, which is not touched."""
+        import argparse
+        from strata_cli import update_cmd
+        from strata_control import engine_component as ec, shape_engine
+        root = Path(self.components_dir) if self.components_dir else None
+        title = self.model_title()
+        name = shape_engine.shown(shape, title)
+        self.emit("engine", shape_engine.WORDS["checking"].format(model=name))
+        source = update_cmd._feed_source(argparse.Namespace(feed=self.feed or os.environ.get("STRATA_UPDATE_FEED")), root or ec.components_dir())
+        said: list[str] = []
+        exe = shape_engine.ensure(shape, source, components=root, emit=lambda m: (said.append(m), self.emit("engine", m, 0)), title=title)
+        if exe is None:
+            self.no_engine(said[-1] if said else shape_engine.WORDS["fetch_failed"].format(model=name, why="nothing was fetched"))
+            return
+        found = shape_engine.find(shape, root, full=False, title=title)
+        self.emit("engine", shape_engine.WORDS["ready"].format(model=name, version=found.version, backend=found.backend), 100)
 
     def needed_engine(self) -> tuple[int, ...] | None:
         """The oldest engine this model runs on, from setup.py's own tables (MIN_ENGINE for everything, GYRO_ENGINE for Gyro), or None."""
@@ -1400,7 +1438,7 @@ class Runner:
         path = cat.root / f"strata-{tag}.json"
         adopt.write(path, cfg)
         self.notices.append("The downloader built into this Terminal sets up NVIDIA and AMD cards only (Intel Arc cards have a separate installer), so Strata wrote the "
-                            f"run settings itself from the prepared model files already on this computer ({path.name}). Nothing was downloaded.")
+                            f"run settings itself from the prepared model files already on this computer ({path.name}). No model files were downloaded.")
         self.emit("model", f"Used your prepared model files and wrote the run settings ({path.name}); this card is not one the built-in downloader sets up.", 100, level="warn")
         return path
 
@@ -1584,17 +1622,38 @@ class Runner:
             mode = "off"                                     # the Draft layer switch is off and no drafter was chosen since
         elif drafting.normalize(mode) == "auto" and self.split_expected(cfg):
             mode = "mtp"                                     # the all-cards split engine runs the MTP draft layer: the plan and the fetch are for that, not for DFlash2
-        return {"mode": mode, "klass": drafting.card_class(archs), "model_name": cfg.get("model_name"), "family": self.s.family,
+        name = cfg.get("model_name")
+        if not name:                                         # not installed yet (a first launch, --plan): the name setup will write, so the plan names the drafter Auto will really fetch
+            try:
+                name = self.catalog.model_name_of(self.s.family, self.s.model)
+            except Exception:                                # noqa: BLE001 - an unreadable table is only the old, generic plan
+                name = None
+        return {"mode": mode, "klass": drafting.card_class(archs), "model_name": name, "family": self.s.family,
                 "data_dir": drafting.data_dir_of(args) or (Path(self.s.data_dir) if self.s.data_dir else None),
                 "backend": backend, "archs": archs, "mtp_here": drafting.mtp_ready(args) if cfg else None,
                 "blocked": drafting.blocked_by(args, split=bool(self.s.gpus and len(self.s.gpus) > 1), slots=int(self.s.parallel or 0), named=drafting.normalize(mode) == "dflash2", backend=backend)}
+
+    def drafting_signals(self, cfg: dict, want: dict) -> dict:
+        """The two signals drafting.tuned_applies reads besides the backend and the card: the arguments (--expert-cache and the others the confidence reads, with the person's own
+        options over them as the server merges them) and the memory of the ONE card this launch uses (None: several cards, a shared-memory chip, or not readable)."""
+        try:
+            from strata_control import drafting, user_args
+            args = [str(a) for a in cfg.get("args") or []]
+            if cfg.get("user_args"):
+                args = user_args.merge(args, cfg["user_args"])
+            run = {**cfg, "gpu": [int(g) for g in self.s.gpus] if self.s.gpus else cfg.get("gpu")}
+            return {"args": args, "vram_mib": drafting.card_vram_mib(run, want.get("backend"), want.get("archs"))}
+        except Exception:                                    # noqa: BLE001 - no signal means the tuned pack is not fetched
+            return {"args": [], "vram_mib": None}
 
     def one_request_for_dflash2(self, config: Path) -> bool:
         """DFlash2 chosen on purpose and the person gave no number of requests: one at a time, said once (drafting.wants_one_request)."""
         try:
             from strata_control import drafting
-            want = self.drafting_inputs(read_config(config))
-            if not drafting.wants_one_request(**want) or not drafting.pack_ready(want["data_dir"]):
+            cfg = read_config(config)
+            want = self.drafting_inputs(cfg)
+            sig = self.drafting_signals(cfg, want)
+            if not drafting.wants_one_request(**want, **sig) or not drafting.drafter_ready(want["data_dir"], want["model_name"], want["backend"]):
                 return False                                 # (no drafter file after all, e.g. no internet: the MTP runs and the slots stay)
         except Exception:                                    # noqa: BLE001 - a note is never a reason to stop a launch
             return False
@@ -1609,18 +1668,22 @@ class Runner:
         from strata_control import drafting, drafting_fetch
         want: dict = {}
         try:
-            want = self.drafting_inputs(read_config(base_path))
+            cfg = read_config(base_path)
+            want = self.drafting_inputs(cfg)
+            sig = self.drafting_signals(cfg, want)
             if want["data_dir"] is not None and drafting.needs_conversion(**want) and drafting.engine_has_selector_q4():
                 drafting_fetch.convert_selector(want["data_dir"])        # Load, not a start: the smaller selector (174 MiB), made here from the checked pack, no network
-            if want["data_dir"] is None or not drafting.needs_pack(**want):
+            if want["data_dir"] is None or not (drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig)):
                 return
-            self.emit("model", "Downloading the DFlash2 drafter (1.2 GB, once)…", 0)
+            tuned = drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig)
+            self.emit("model", f"Downloading the DFlash2 drafter ({drafting.tuned_pack(drafting.tuned_variant(want['backend'], want['model_name'])).gb if tuned else drafting.DOWNLOAD_GB:g} GB, once)…", 0)
 
             def show(step: str, done: int, total: int) -> None:
                 self.check_cancel()
                 self.emit("model", f"{step} {done / 1e9:.2f} of {total / 1e9:.2f} GB" if total > 1 and done < total else step,
                           100.0 * done / total if total > 0 else None)
-            drafting_fetch.ensure(want["data_dir"], progress=show, cancel=self.cancel)
+            drafting_fetch.ensure_for(want["data_dir"], model_name=want["model_name"], backend=want["backend"], progress=show, cancel=self.cancel, throttle=True,
+                                    archs=want["archs"], **sig)
         except Cancelled:
             raise
         except Exception as e:                               # noqa: BLE001 - the MTP still runs
@@ -2336,8 +2399,10 @@ class Runner:
             _b, _cfg = self.installed_state()
             want = self.drafting_inputs(_cfg or {})
             want["data_dir"] = want["data_dir"] or self.existing_data_dir() or self.catalog.data_dir()
-            if drafting.needs_pack(**want):                   # chosen DFlash2 (or Auto picking it) and the drafter is not here: it is part of the download
-                parts.append({"kind": "dflash2", "label": "the DFlash2 drafter", "gb": drafting.DOWNLOAD_GB})
+            sig = self.drafting_signals(_cfg or {}, want)
+            if drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig):            # chosen DFlash2 (or Auto picking it) and the drafter (the tuned one, where the set has it) is not here: it is part of the download
+                parts.append({"kind": "dflash2", "label": "the DFlash2 drafter",
+                              "gb": drafting.tuned_pack(drafting.tuned_variant(want["backend"], want["model_name"])).gb if drafting.tuned_applies(want["backend"], want["model_name"], want["archs"], **sig) else drafting.DOWNLOAD_GB})
         except Exception:                                    # noqa: BLE001 - the plan still shows the rest
             pass
         gap = self.ready_pack_gap() if st.own_files else None
@@ -2381,7 +2446,7 @@ class Runner:
             text = ("Nothing to download: your model files are used where they are." if st.own_files
                     else "Nothing to download: the model is already on this computer.")
         else:
-            names = [f"{p['label']} ({p['gb']:.1f} GB)" for p in parts]
+            names = [f"{p['label']} ({p['gb']:.2f} GB)" if p["kind"] == "dflash2" and p["gb"] < 1 else f"{p['label']} ({p['gb']:.1f} GB)" for p in parts]       # (the tuned drafter is 0.34 / 0.52 GB: one decimal said 0.3 / 0.5)
             what = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
             text = f"About {gb:.1f} GB to download: {what}."
             if st.on_disk_gb >= 1:
@@ -2527,9 +2592,19 @@ class Runner:
         text = "Speed: " + S.speed_words(speed[0], speed[1])
         return text + (". " + S.FASTER_NOTE if speed[0] == "faster" else "")
 
+    def feed_without_draft_layer(self) -> bool:
+        """A model of the signed feed whose entry says `drafter: none` (strata_control/feed_models.py puts it on the family): nothing drafts, whatever Auto would pick for a Flash-Next model."""
+        try:
+            fam = self.catalog.tables()[1].get(self.s.family) or {}
+            return bool(fam.get("feed")) and fam.get("drafter") == "none"
+        except Exception:                                    # noqa: BLE001 - an unreadable table is only the generic plan line
+            return False
+
     def drafting_plan_line(self) -> str:
         """The drafting line of --plan: what drafts, or why not what was asked for. Nothing is changed or downloaded."""
         from strata_control import drafting
+        if self.feed_without_draft_layer():                  # the model list says this model has no draft layer: setup fetches none and the engine starts without a drafter
+            return drafting.summary_line(drafting.Decision("off", "off"))
         if self.multi_file():                                # DeepSeek drafts with its own DSpark drafter (the --dspark auto the config writes), not MTP
             if sys.platform == "darwin":
                 return "Drafting: off (DeepSeek's drafter was not faster on a Mac)"
@@ -2541,9 +2616,10 @@ class Runner:
                 from strata_control.discovery import MTP_FETCH_GB
                 from strata_control import split_engine as SE
                 return SE.split_plan_line(MTP_FETCH_GB)
-            if drafting.needs_pack(**want):                   # the launch fetches the drafter first (ensure_drafter), so that is what will run
+            sig = self.drafting_signals(cfg or {}, want)
+            if drafting.needs_pack(**want, **sig) or drafting.needs_tuned(**want, **sig):            # the launch fetches the drafter first (ensure_drafter), so that is what will run
                 return "Drafting: DFlash2 (its drafter is downloaded first)"
-            return drafting.summary_line(drafting.decide(**want))
+            return drafting.summary_line(drafting.decide(**want, **sig))
         except Exception:                                    # noqa: BLE001
             return ""
 

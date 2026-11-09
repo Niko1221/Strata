@@ -268,7 +268,7 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 # (575.51 / 576.02), which `strata update` enforces.  cuda12_min_driver() reads that from the package or the feed (#4247 #4188).
 CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
-MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
@@ -1130,7 +1130,7 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
     if CONTROL:                                        # the app: only this Python running a bundled tool
         argv = [str(c) for c in cmd]
         if len(argv) < 2 or os.path.normcase(argv[0]) != os.path.normcase(sys.executable) or argv[1] == "-m" or \
-                Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve()):
+                Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve(), (ROOT / "metal" / "tools").resolve()):
             raise acquisition.AcquisitionRefused("the desktop app's installer only runs its bundled preparation tools; "
                                                  + " ".join(argv[:2]))
     gguf_py = (env or {}).get("STRATA_GGUF_PY")
@@ -3284,6 +3284,14 @@ def download(url, dst: Path, what=None):
             mark(dst, f"sha256 {pin_here[1]}")
             ok(f"{what or dst.name} is already here (checked)")
             return
+    bad = dst.with_name(dst.name + ".bad")
+    if pin_here and not dst.exists() and bad.is_file():
+        # an earlier run kept this file as .bad (keep_bad): hash it again before anything is downloaded; if it matches the pin now it is the file
+        if bad.stat().st_size == pin_here[0] and _hash_file(bad, pin_here[0]) == pin_here[1]:
+            os.replace(bad, dst)
+            mark(dst, f"sha256 {pin_here[1]}")
+            ok(f"{what or dst.name} is already here (checked)")
+            return
     acquisition.require(what or dst.name)
     if not url.startswith(("http://", "https://")):
         src = Path(url[7:] if url.startswith("file://") else url)
@@ -3339,12 +3347,20 @@ def download(url, dst: Path, what=None):
         fail(f"{what or dst.name} is {total:,} bytes on {url.split('/')[2]}, not the pinned {pin[0]:,}",
              "update Strata (the file there has changed since this version pinned it)")
     label = what or dst.name
+    if bad.is_file() and not dst.exists() and total:
+        try:
+            if shutil.disk_usage(dst.parent).free < total + (1 << 30):
+                bad.unlink()                           # no room for the new copy beside the kept one
+                say(f"  Not enough free space for a new copy of {dst.name} beside the kept one ({bad.name}): the kept file was removed.")
+        except OSError:
+            pass
     conns = dl_connections()
     fixed = pin if pin else (meta if meta is not None and meta[1] else None)
     again = (lambda: repair_download(url, dst, total, label, conns)) if total >= DL_MIN_PARALLEL and conns > 1 else None
     if dst.exists() and total and dst.stat().st_size == total:    # finished by an older setup (no mark yet), or stopped before the check
         if fixed:                                      # a file that has a fixed hash is checked, not just marked
             verify_sha256(dst, *fixed, repair=again)
+            drop_bad(dst)
         else:
             mark(dst)
         ok(f"{what or dst.name} already downloaded")
@@ -3362,9 +3378,11 @@ def download(url, dst: Path, what=None):
     for side in (".chunks", ".src"):
         part.with_name(part.name + side).unlink(missing_ok=True)
     if pin:
-        verify_sha256(dst, *pin, repair=again)         # the fixed hash: a wrong file is repaired, else deleted and setup stops
+        verify_sha256(dst, *pin, repair=again)         # the fixed hash: a wrong file is repaired, else kept as .bad and setup stops
+        drop_bad(dst)
     elif meta is not None and meta[1]:
         verify_sha256(dst, meta[0], meta[1], repair=again)   # ModelScope's published hash; kept in the finish mark
+        drop_bad(dst)
     else:
         if ms is not None:
             warn(f"{what or dst.name}: ModelScope publishes no SHA-256 for it: the file is not verified")
@@ -3516,6 +3534,29 @@ def own_gguf_is_whole(path: Path) -> bool:
         return False
 
 
+def keep_bad(s: Path) -> Path | None:
+    """A downloaded file whose SHA-256 is not the pinned one is not deleted: it is renamed to <name>.bad (no finish mark), so a wrong check, a pin that
+    is out of date or a bad read costs one more hash and not another 50 GB download.  The next run of download() hashes the .bad file again and takes it
+    back when it now matches; a successful new download of the file, or too little free space for it, removes the .bad file (drop_bad).
+    Returns the .bad path, or None when the file could not be renamed (it is then deleted, as before)."""
+    bad = s.with_name(s.name + ".bad")
+    try:
+        bad.unlink(missing_ok=True)                    # at most one .bad per file
+        os.replace(s, bad)
+        return bad
+    except OSError:
+        s.unlink(missing_ok=True)
+        return None
+
+
+def drop_bad(dst: Path) -> None:
+    """The .bad copy of `dst` is not needed any more: a good file is in place."""
+    try:
+        dst.with_name(dst.name + ".bad").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, also: tuple = ()) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
     so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again.
@@ -3539,9 +3580,11 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
         fail(f"{s.name} is {have:,} bytes, not {size:,}", "delete it and run setup again (the download restarts)")
     say(f"  checking {s.name} (SHA-256, {size / 1e9:.1f} GB) ...")
     digest = _hash_file(s, size)
+    server_same = False                                # the repair read the whole file from the server and found no block that differs
     if digest != sha and repair is not None and not own:
         say(f"  Some parts of {s.name} were damaged; downloading only those parts again.")
         res = repair()
+        server_same = res is not None and res[0] == 0
         if res is not None:
             say(f"  {res[0]} of {res[1]} parts were different and have been written again; checking the whole file again ...")
             digest = _hash_file(s, size)
@@ -3559,10 +3602,14 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, 
         if own:
             fail(f"{s.name} does not match the published file (SHA-256 {digest}, expected {sha})",
                  "it may be damaged or another version; your file was left as it is. Copy the whole published file into the folder")
-        s.unlink(missing_ok=True)
+        keep_bad(s)                                    # kept as <name>.bad, not thrown away (see keep_bad)
         m.unlink(missing_ok=True)
-        fail(f"{s.name} has the wrong SHA-256 ({digest}, expected {sha}): deleted",
-             "run setup again to download it again")
+        if server_same:
+            hint = ("the server sends exactly the bytes you have (every block was compared), so the file there is not the version this Strata pins: "
+                    "update Strata. Run setup again to check the kept file once more")
+        else:
+            hint = "run setup again: the kept file is checked once more, and if it still differs it is downloaded again and the kept one is removed"
+        fail(f"{s.name} does not match the pinned SHA-256 (it is {digest}, Strata expects {sha}); the file was kept as {s.name}.bad", hint)
     mark(s, f"sha256 {sha}")
 
 
@@ -4315,8 +4362,8 @@ def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool, arc
     """0.1.44 (owner, review-quants.md section 5): the run-config "env" setup writes for Unsloth's files.
     STRATA_MMQ_KQ=1 (the K-quant MMQ prompt kernels) for UD-Q5_K_XL and UD-Q6_K_XL, where its prompt-path KL is equal
     or better than the FP16 path's; UD-Q4_K_XL keeps it opt-in here (the Linux gfx12 engine takes it by itself since 0.2.10.1).
-    STRATA_HC_Q8=1 on CUDA for the UD-* files (the GGUF's own Q8_0 hyper-connection projections, closer to the file
-    and faster; the GSQ-RCO packs are untouched).
+    STRATA_HC_Q8 on CUDA for the UD-* files is the ENGINE's default now (it sees the Q8_0 hyper-connection projections in the GGUF); setup
+    writes nothing for it.
     STRATA_ROUTE_TAIL_SKIP=0 where every expert is in RAM (the skip costs KL there); the RAM-budget mode keeps it.
     0.2.10.1 (owner 11-03, "3 Yes"): NOT on Linux gfx12 (``arch`` "gfx1200"/"gfx1201", the R9700 and RX 9000): there the engine's own default
     (rank 7, STRATA_ROUTE_TAIL_SKIP=0 still turns it off) stays, which decodes UD-Q4_K_XL 6-16% faster at an unchanged 61-task suite
@@ -4326,8 +4373,6 @@ def unsloth_default_env(family: str, model: str, hip: bool, in_budget: bool, arc
         return env
     if model in ("UD-Q5_K_XL", "UD-Q6_K_XL"):
         env["STRATA_MMQ_KQ"] = "1"
-    if not hip and model.startswith("UD-"):
-        env["STRATA_HC_Q8"] = "1"
     gfx12_linux = hip and not WIN and str(arch or "").lower().startswith(("gfx1200", "gfx1201"))
     if not in_budget and not gfx12_linux:
         env["STRATA_ROUTE_TAIL_SKIP"] = "0"
@@ -6412,6 +6457,21 @@ def low_ram_fits(model, ram, vram_gb, mtp=True) -> bool:
     return ram - 6 + max(0.0, vram_gb - 5 - (MTP_VRAM_GB if mtp else 0.0)) >= arena
 
 
+def model_files_gb(model) -> float:
+    """The model's files without the n-gram / PLE lookup table's file, in GB: the download minus the table (strata_control/fit_label.py; the catalog's `fit_gb`,
+    the Terminal's "Needs (RAM + VRAM)" column)."""
+    from strata_control import fit_label
+    d = MODELS[model]
+    return fit_label.files_gb((d.get("families") or (None,))[0], model, d)
+
+
+def model_fit_label(model, ram, gpu) -> str:
+    """"fits" or "may run slower" (strata_control/fit_label.py, the owner's one rule): the files without the lookup table against the RAM and the card's memory
+    together.  An integrated chip counts only its carve-out (`low_ram_vram`: its shared memory is the RAM)."""
+    from strata_control import fit_label
+    return fit_label.label(model_files_gb(model), ram, low_ram_vram(gpu) if gpu else 0.0)
+
+
 def low_ram_wanted(model, ram, choice="auto") -> bool:
     """Does setup put this model in the low-RAM mode on this PC: its experts do not fit the RAM with the usual room
     beside them (`low_ram_needed`), or the user asked for it.  Unsloth's 4-bit file is not the low-RAM mode at all:
@@ -6782,7 +6842,7 @@ def data_folder(requested: str | None, move: bool = False, yes: bool = True, set
     from strata_control import folders
     bad = folders.problem(dest)
     if bad and requested:
-        fail(folders.words(bad)[:400], "Nothing was downloaded or changed, and the folder was not saved as your data folder.")
+        fail(folders.without_nothing_changed(bad)[:400], "Nothing was downloaded or changed, and the folder was not saved as your data folder.")
     if bad and settings.get("data_dir"):                # an unusable folder saved earlier: go back to the default and say so; never keep it
         warn(f"The data folder saved before cannot be used ({bad[0]}) Using {home().parent / 'Strata-data'} instead.")
         remembered = dest = home().parent / "Strata-data"
@@ -7032,8 +7092,14 @@ def args_dropped(old: dict, cfg: dict) -> list[str]:
     return list(dict.fromkeys(f for f in flags(old) if f not in new))
 
 
+SHAPE_ENGINE: dict = {}       # the model-shape engine the chosen model runs on: {"shape": "q4_lite"} (strata_control/shape_engine.py); empty: the Strata engine
+
+
 def engine_exe(eng: Path) -> str:
-    """The `exe` of a run config: the engine component in the app, else the engine binary's path."""
+    """The `exe` of a run config: the engine component in the app, else the engine binary's path. A model of its own shape names that shape's engine."""
+    if SHAPE_ENGINE.get("shape"):
+        from strata_control import shape_engine
+        return shape_engine.reference(SHAPE_ENGINE["shape"])
     return "component:strata-engine" if CONTROL else str(eng / EXE)
 
 
@@ -7042,6 +7108,8 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, ex
     to it: the keys setup does not write are carried over (carry_over), and the earlier file is kept as
     strata-<model>.json.bak when it changes.  `source`: an earlier install's config to carry the keys over from when
     this folder has none yet (a copy set up like the last one).  A line says what was kept, one what was not."""
+    if SHAPE_ENGINE.get("title") and SHAPE_ENGINE.get("shape") and cfg.get("exe") == engine_component.REFERENCE_PREFIX + "strata-" + SHAPE_ENGINE["shape"].replace("_", "-"):
+        cfg["shape_title"] = SHAPE_ENGINE["title"]                  # the engine's refusal at a start names the model, not the geometry (strata_control/shape_engine.py)
     old_path = cfg_path if cfg_path.is_file() else source
     old = None
     if old_path is not None and old_path.is_file():
@@ -8216,6 +8284,75 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def intel_control_setup(a) -> int:
+    """`--backend sycl` in the app's CONTROL mode (tools/strata_mcp.py passes it for an Intel Arc PC): what the Terminal does for an Arc
+    (strata_cli/launch/runner.py adopt_prepared_files): the pack from the model's GGUF files (`--prepare-pack`'s step), then the run config
+    (strata_cli/launch/adopt.py), the engine named as the component. Nothing is downloaded but gguf-py's small helper, nothing is compiled; Intel
+    cards do not download models, so the files must be on the computer (--gguf-dir, or <data folder>/models/<tag>). The older `--backend sycl`
+    (a source build with oneAPI, sycl/setup_intel.py) is sycl_setup(), for a checkout; the app's bundle has no sycl/ folder."""
+    from strata_cli.launch import adopt
+    from strata_control import intel_app
+    say("Strata on an Intel Arc card (the SYCL engine)")
+    step(1, "checking this computer")
+    if not intel_app.supported_here():
+        fail("the Intel Arc engine runs on Linux only", "there is no Windows or Mac Intel engine yet")
+    family = a.family or "qwen"
+    if family not in adopt.FAMILIES or family not in FAMILIES:
+        fail(f"cannot set up {family} for an Intel Arc card", "choose a Qwen3.8-Flash-Next, Swift, Coder, Gyro or Unsloth size")
+    fam, model = FAMILIES[family], a.model
+    if not model:
+        fail("an Intel Arc setup needs --model, e.g. --model Q2_0")
+    data, _elsewhere = data_folder_for(a)
+    tag = fam["tag"] + model
+    if a.gguf_dir:
+        model_dir = Path(a.gguf_dir)
+    else:
+        model_dir = (Path(a.models_dir) if a.models_dir else data / "models") / tag
+    if model_dir.is_file():
+        model_dir = model_dir.parent
+    shards = intel_app.model_files_in(model_dir, family)
+    if not shards:
+        fail(intel_app.NO_DOWNLOAD)
+    ok(f"model files: {model_dir} ({len(shards)} file{'s' if len(shards) != 1 else ''})")
+    cards = intel_app.arc_cards()
+    vram = max((float(c.get("vram_gb") or 0) for c in cards), default=0.0)
+    ok("graphics card: " + (", ".join(f"{c['name']} ({c['vram_gb']:g} GB)" for c in cards) or "an Intel Arc"))
+    if a.check:
+        return 0
+    step(2, "preparing the model for this graphics card")
+    pack = data / "packs" / tag.lower()
+    if not ((pack / "experts.bin").exists() or ((pack / "index.txt").exists() and (pack / "tokenizer" / "vocab.json").exists())):
+        a.gguf_dir, a.prepare_pack = str(model_dir), str(pack)
+        rc = prepare_pack_only(a)
+        if rc:
+            return rc
+    else:
+        ok(f"model already prepared: {pack}")
+    step(3, "writing the run settings")
+    notes: list = []
+    cfg, problems = adopt.plan(family=family, model=model, model_dir=model_dir, data_dir=data, src=ROOT, context=a.context or 32768, kv=a.kv,
+                               model_name=f"{fam.get('name', family)}-{model.lower()}", family_def=fam, log=home() / f"strata-{tag.lower()}.log",
+                               backend="sycl", vram_gb=vram, notes=notes, pack_name=tag.lower())
+    if cfg is None:
+        fail("Strata cannot start this model on the Intel Arc card yet: " + "; ".join(problems))
+    if a.port:
+        cfg["port"] = a.port
+    if a.host:
+        cfg["host"] = a.host
+    if a.api_key:
+        cfg["api_key"] = a.api_key
+    if a.browser is not None:
+        cfg["open_browser"] = a.browser
+    cfg_path = home() / f"strata-{tag.lower()}.json"
+    write_setup_config(cfg_path, cfg)
+    for n in notes:
+        say("  " + n)
+    ok(f"run settings: {cfg_path.name}")
+    say()
+    say("All set.")
+    return 0
+
+
 def control_engine_step(gpu, vision):
     """Step 4 in the app: the engine is the component folder's package (strata_control/engine_component.py), found if it is
     there and never fetched or built. A model can be downloaded and prepared before the engine is installed; the run config
@@ -8251,9 +8388,49 @@ def control_engine_step(gpu, vision):
     return llama, eng, meta, [], gpu, "none"
 
 
+def shape_engine_fetch(a):
+    """The engine of the chosen model's shape (SHAPE_ENGINE), fetched through the signed feed (--feed, STRATA_UPDATE_FEED, the remembered feed, or the release's), checked, started
+    once and kept (strata_control/shape_engine.py); the Strata engine is not touched. Returns its component (shape_engine.find), or None when there is none and the person said to
+    go on without it (STRATA_ALLOW_NO_ENGINE: the model is downloaded and prepared, and set up again later); otherwise it stops with the owner's lines."""
+    from strata_control import engine_component as EC, shape_engine
+    shape, title = SHAPE_ENGINE["shape"], SHAPE_ENGINE.get("title")
+    name = shape_engine.shown(shape, title)                          # what a person reads: the model's title (shape_engine.USE_TITLE)
+    from strata_cli import update_cmd
+    source = update_cmd._feed_source(argparse.Namespace(feed=getattr(a, "feed", None)), EC.components_dir())
+    exe = shape_engine.ensure(shape, source, emit=lambda m: say("  " + m), title=title)
+    if exe is None:
+        if os.environ.get("STRATA_ALLOW_NO_ENGINE") == "1":
+            warn(shape_engine.WORDS["setup_skip"].format(model=name))
+            return None
+        fail(shape_engine.WORDS["setup_failed"].format(model=name), shape_engine.WORDS["setup_failed_hint"])
+    found = shape_engine.find(shape, full=False, title=title)
+    ok(shape_engine.WORDS["setup_ok"].format(model=name, version=found.version, folder=found.root))
+    return found
+
+
+def shape_engine_step(a, gpu, vision):
+    """Step 4 for a model that runs on the engine of its own shape (a Qwen4 model whose geometry is not Flash-Next's: strata_control/shape_engine.py). That engine is a
+    separate component next to the Strata engine (shape_engine_fetch); the run config names it ("component:strata-q4-lite") and every start looks it up.
+    Returns what engine_step returns."""
+    shape = SHAPE_ENGINE["shape"]
+    llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
+    found = shape_engine_fetch(a)
+    if found is None:
+        return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
+    eng, meta = Path(found.root), {"version": found.version, "backend": found.backend, "source": "local", "shape": shape}
+    if vision != "none":
+        if (eng / VEXE).is_file():
+            ok(f"image encoder: {eng / VEXE} (carried by the engine component)")
+            return llama, eng, meta, [], gpu, vision
+        warn("this engine component has no image encoder (strata-vision): images off for this model")
+    return llama, eng, meta, [], gpu, "none"
+
+
 def engine_step(a, gpu, hip, amd, cuda_tk, vision):
     """Step 4: llama.cpp's sources and the engine (ready-made, or compiled here).  Returns (llama, engine folder, its
     BUILD.json, its library folders, the GPU (AMD on Windows: as the engine sees it), the image-encoder choice)."""
+    if SHAPE_ENGINE.get("shape"):
+        return shape_engine_step(a, gpu, vision)
     if CONTROL:
         return control_engine_step(gpu, vision)
     llama = get_llama_cpp()
@@ -8295,6 +8472,54 @@ def engine_families(eng: Path) -> set:
         return {"qwen4exp"}
     names = set(text.split())
     return names if "qwen4exp" in names else {"qwen4exp"}
+
+
+_FEED_FAMILIES: dict = {}
+FEED_MODELS = None            # the feed's models added to the tables below (id -> FeedModel); None until a feed with a models member was read
+FEED_UNAVAILABLE: dict = {}   # id -> {"title", "by", "family", "reason"}: feed models the installed engine does not run, listed and never offered
+
+
+def feed_engine_families() -> set | None:
+    """The model families the installed engine runs (`strata --families`), or None when there is no engine to ask. Asked once for each engine program."""
+    try:
+        from strata_control import engine_component as EC
+        eng = Path(EC.resolve(full=False).root)
+    except Exception:                                  # noqa: BLE001 - no engine installed (yet): setup checks again when it installs
+        return None
+    if not (eng / EXE).is_file():
+        return None
+    key = str(eng / EXE)
+    if key not in _FEED_FAMILIES:
+        _FEED_FAMILIES[key] = engine_families(eng)
+    return _FEED_FAMILIES[key]
+
+
+class _SetupTables:
+    """This module's tables for strata_control/feed_models.py, which takes `setup` as an argument (this file is also loaded under other names, so no sys.modules lookup)."""
+    def __getattr__(self, name):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def __setattr__(self, name, value):
+        globals()[name] = value
+
+
+def feed_models_setup(feed: str | None = None, fetch: bool = True) -> None:
+    """Add the models of the signed update feed (member `models`; the last verified list when the feed cannot be read) to the tables the menus read. Does
+    nothing, and prints nothing, when the feed has no models. See strata_control/feed_models.py."""
+    from strata_control import feed_models
+    source = None
+    if fetch and not acquisition.is_forbidden():
+        try:
+            from strata_cli import update_cmd
+            source = update_cmd._feed_source(argparse.Namespace(feed=feed), home())
+        except Exception:                              # noqa: BLE001 - no feed address: the cached list only
+            source = None
+    loaded = feed_models.load(source, fetch=source is not None)
+    if loaded.models:
+        feed_models.apply(_SetupTables(), loaded.models, feed_engine_families())
 
 
 def own_path_context(fam: dict, vram_gb: float) -> int:
@@ -8433,7 +8658,8 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     for i, m in enumerate(names, 1):
         d = fam["models"][m]
         size = fam["sha256"][fam["file"].format(q=m)][0]
-        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        from strata_control import fit_label
+        fit = f"   <- {fit_label.label(size / 1e9, ram, low_ram_vram(gpu))}"        # the file against the RAM and the card's memory together
         say(f"  {i}) {m:10s} {d['about']}; download {size / 1e9:.1f} GB{fit}")
     rec = own_path_size(fam, ram)
     if not a.model:
@@ -8506,8 +8732,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn("this engine has no image encoder: images off (run setup again with --build to compile it)")
         vision = "none"
     if fam["arch"] not in engine_families(eng):
-        fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
-             "update Strata, or compile the engine with --build, and run setup again")
+        if fam.get("feed") and FEED_UNAVAILABLE.get(family, {}).get("allowed"):      # the owner's rule for a feed model (feed_models.UNAVAILABLE_POLICY): warn, go on
+            warn(f"{fam['title']} is {FEED_UNAVAILABLE[family]['reason']}")
+        else:
+            fail(f"this engine ({meta.get('version')}) does not run {fam['title']} yet",
+                 "update Strata, or compile the engine with --build, and run setup again")
     ok("engine: the engine component (looked up when the model loads)" if CONTROL else f"engine: {eng / EXE}")
 
     step(5, f"downloading {fam['title']} {model}")
@@ -9434,43 +9663,10 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
         fail(dsv41_context.problem(ctx, dsv41_context.read_limit(pack)), f"choose a smaller --context (the pack in {pack} says what it reads)")
 
     step(7, "writing the start script")
-    # --dspark auto, never off: "off" still LOADS the drafter, and its 7 GB of experts take the graphics memory (found 2026-10-23);
-    # auto keeps it unloaded when the experts are far larger than the card.  The RAM store sizes itself (--ssd-cache auto is the
-    # engine's default), and <pack>/expert-profile.bin is read from the pack folder without a flag.  The layer-major chunked prompt
-    # is the engine's own default (1024 on a single card whose cards hold most of the experts; its own choice for several); on a
-    # unified-memory APU the chunk is written out instead (dsv41_prefill_chunk_args: 8,192 reads 11-15% faster there).
-    # --dspark-conf 0.65: the drafts' confidence floor (H100 replay, DSPARK-DEFAULTS.md: within 0.01-0.02 of the per-class best,
-    # never below 0.3).  The engine has no flag for the draft block (3 in the same table): it reads the block size from the pack,
-    # so only the floor is written.
-    # A Mac (0.2.7.1): the drafter is not loaded at all (--dspark none). It was exact there but not faster (15.1 and 11.0 tokens/s against 15.3
-    # without it on the M5 Max), and the engine's "auto" would load it on a 128 GB Mac: its 7 GB of experts take memory the trunk's experts need.
-    args = ["--pack", str(pack), "--max-context", str(ctx), "--eos", "1", "--vision", ds_vision, "--dspark", "none" if mac else "auto",
-            *(["--dspark-conf", "0.65"] if md.get("recipe") in ("ista", "coder") and not mac else []), *dsv41_prefill_chunk_args(cards, ram),
-            *plan["args"], *dsv41_vision_reserve_args(ds_vision, mac, plan)]
-    env = dsv41_config_env(cards)
-    cfg = {"exe": str(exe), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": fam["name"], "arch": fam["arch"], "log": str(home() / f"strata-{tag.lower()}.log"),
-           "lib_dirs": lib_dirs, "port": port, "engine_ready_s": 3600,      # 300+ GB read from the files: a slow disk needs its time
-           **({"env": env} if env else {})}
-    if cuda_tk == 12:
-        cfg["cuda"] = 12
-    if hip:
-        cfg["backend"] = "hip"
-    if mac:
-        cfg["backend"] = "metal"
-    idx = [c["index"] for c in cards]
-    if len(idx) > 1 or a.gpu is not None or a.gpus:      # (a.gpu is also setup's own pick: one card pinned when several devices are in the PC)
-        cfg["gpu"] = idx if len(idx) > 1 else idx[0]
-        cfg["gpus_asked"] = True
-        if hip:                                          # who chose them (strata_control/gpu_pick.py): the person, or setup itself
-            cfg["gpus_by"] = "person" if named else "setup"
-    if a.host:
-        cfg["host"] = a.host
-    if a.api_key:
-        cfg["api_key"] = a.api_key
-    if a.browser is not None:
-        cfg["open_browser"] = a.browser
-    cfg_path = home() / f"strata-{tag.lower()}.json"
+    from strata_control import setup_config            # the seam (strata_control/setup_config.py): the lines that built the run config
+    _built = setup_config.dsv41_config_for(setup_config.Dsv41Inputs(
+        a=a, cards=cards, ctx=ctx, cuda_tk=cuda_tk, ds_vision=ds_vision, exe=exe, fam=fam, hip=hip, lib_dirs=lib_dirs, mac=mac, md=md, named=named, pack=pack, plan=plan, port=port, ram=ram, tag=tag), sys.modules[__name__])
+    cfg, cfg_path = _built.cfg, _built.cfg_path
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a))
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)
     ok(f"start script: {script.name}")
@@ -9702,8 +9898,8 @@ def mac_control_setup(a) -> int:
         fail(problems[0])
 
     step(2, "your choices")
-    app_sizes = [m for f in MF.APP_FAMILIES for m in MF.app_sizes(f)]   # Gyro: one file, no repack; Unsloth's sets: the repack below (round 0214)
-    if a.family not in (None, *MF.APP_FAMILIES):
+    app_sizes = [m for f in MF.all_families() for m in MF.app_sizes(f)]   # Gyro: one file, no repack; Unsloth's sets: the repack below (round 0214)
+    if a.family not in (None, *MF.all_families()):
         fail(f"the app on a Mac runs the Qwen3.8-Flash-Next sizes ({', '.join(app_sizes)}); {a.family} is not one of them",
              "choose Qwen3.8-Flash-Next")
     rec, notes = MF.recommend_model(ram)
@@ -9721,6 +9917,9 @@ def mac_control_setup(a) -> int:
     ok(f"{model}, context {ctx}")
     family = MF.MAC_MODELS[model].get("family", "qwen")
     fam = FAMILIES[family]
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own Metal engine component (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
     tag = fam["tag"] + model
     stream = MF.streams(model, ram)
 
@@ -9730,7 +9929,12 @@ def mac_control_setup(a) -> int:
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
     reader = None
     try:
-        found = EC.resolve(full=False)
+        if SHAPE_ENGINE.get("shape"):
+            found = shape_engine_fetch(a)
+            if found is None:
+                raise EC.EngineMissing("no engine for the model's shape", None)
+        else:
+            found = EC.resolve(full=False)
         ok(f"engine component: {found.version} ({found.platform}-{found.backend})")
         if vision != "none":
             reader = mac_reader(Path(found.root), vision)
@@ -9812,6 +10016,9 @@ def mac_control_setup(a) -> int:
             prep_lock.unlink(missing_ok=True)
     ok(f"model prepared: {pack}")
     use_mtp = MF.stream_mtp(stream, ram)
+    if use_mtp and MF.MAC_MODELS[model].get("no_mtp"):      # the model list says there is no draft layer: none is fetched (the Flash-Next head is not this model's)
+        say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
+        use_mtp = False
     mtp = (find_in(roots, "mtp/mtp-q2_0.gguf") or data / "mtp" / "mtp-q2_0.gguf").parent
     rt = mtp / "rt"
     if stream and not use_mtp:
@@ -9839,7 +10046,13 @@ def mac_control_setup(a) -> int:
 
     step(7, "writing the run settings")
     port = a.port or 8080
-    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, ROOT / "data" / "expert-profile.bin", model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
+    profile = ROOT / "data" / "expert-profile.bin"
+    neutral = getattr(__import__("strata_control.setup_config", fromlist=["x"]), "neutral_profile_if_other_shape", None)       # (f-0213-p8merge: F4, the owner's line)
+    if neutral is not None and fam.get("feed") and shards:       # a feed model of another shape than the shipped profile's: a neutral profile for the file's layers x experts
+        sys.path.insert(0, str(ROOT / "tools"))
+        from gguf_reader import GGUFFile
+        profile = neutral(profile, shards[0], pack, GGUFFile, say)
+    args = MF.engine_args(pack, shards, rt, ctx, stream, ram, profile, model)     # Unsloth: --native the repacked file, --ple-gguf the table's shard
     cfg = {"exe": engine_exe(Path("engine")), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
            "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
            "lib_dirs": [], "port": port, "backend": "metal", "env": {"STRATA_METAL_STREAM": "1" if stream else "0"}}
@@ -9899,6 +10112,14 @@ def main() -> int:
         pass
     if sys.platform == "darwin" and not CONTROL:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) goes on below
         return mac_setup(sys.argv[1:])
+    _peek = lambda flag: next((v.split("=", 1)[1] if v.startswith(flag + "=") else sys.argv[i + 2] if i + 2 < len(sys.argv) else None   # noqa: E731
+                               for i, v in enumerate(sys.argv[1:]) if v == flag or v.startswith(flag + "=")), None)
+    if (_peek("--family") and _peek("--family") not in {**FAMILIES, **OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}) \
+            or (_peek("--model") and not _peek("--family") and model_alias(_peek("--model")) not in MODELS
+                and not any(model_alias(_peek("--model")) in f["models"] for f in (*OWN_PATH_FAMILIES.values(), *MULTI_FILE_FAMILIES.values()))):
+        feed_models_setup(_peek("--feed"))             # a name the built-in tables do not know may be a model of the signed feed
+        if _peek("--family") in FEED_UNAVAILABLE:
+            fail(f"{FEED_UNAVAILABLE[_peek('--family')]['title']} is {FEED_UNAVAILABLE[_peek('--family')]['reason']}")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES) + list(MULTI_FILE_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
@@ -10062,7 +10283,9 @@ def main() -> int:
         if a.family in MULTI_FILE_FAMILIES:            # DeepSeek-V4.1-Flash: its own engine package, the generic DeepSeek install
             return mac_dsv41_setup(a)
         return mac_control_setup(a)
-    if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
+    if a.backend == "sycl":                            # Intel Arc: the app / Terminal's installer mode prepares the files and writes the config; a checkout builds from source
+        if CONTROL:
+            return intel_control_setup(a)
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
@@ -10383,41 +10606,26 @@ def main() -> int:
         say()
         any_fits = False
         for m, d in MODELS.items():
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
-            verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
-            if d.get("mem_total"):          # Gyro: VRAM + RAM together; the rest of the download is read from the SSD
-                verdict += f" ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM)"
-            if d.get("budget") and not unsloth_budget(m, ram, gpu):     # Phase 2: all of them in RAM
-                verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
-            elif d.get("budget"):
-                verdict = (("EXPERIMENTAL, " if d.get("experimental") else "") +
-                           f"fits with {resident_budget_gib(m, ram)} GiB of its experts in RAM, the rest "
-                           "read from the SSD" if ram >= d["ram_gb"] else
-                           f"slow here: {resident_budget_gib(m, ram)} GiB of its "
-                           f"{int(d['arena_gb'] / 1.073741824)} GiB of experts in RAM, the rest read from the SSD "
-                           "(setup asks first)" if ram >= UNSLOTH_MIN_RAM_GB else "does not fit")
-            elif low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
-                verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}% "
-                           "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu))
-                                                 else "the rest is read from the SSD as needed)"))
+            verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + model_fit_label(m, ram, gpu)
             if d.get("budget") and hip and d.get("nvidia_only"):   # #429: not run on AMD yet
                 verdict += " - NVIDIA only so far, untested on AMD"
             if hip and d.get("repo"):                  # the ready-made NVFP4 packs: no AMD kernels at all
                 verdict = "NVIDIA only (the AMD engine has no NVFP4 kernels)"
             else:
-                any_fits = any_fits or (not verdict.startswith("does not fit") and not d.get("mem_total"))
-            say(f"  {m:8s} needs ~{d['ram_gb']} GB {'of VRAM + RAM' if d.get('mem_total') else 'RAM'}: {verdict}")
+                any_fits = any_fits or (model_fit_label(m, ram, gpu) == "fits" and not d.get("mem_total"))
+            say(f"  {m:8s} needs ~{model_files_gb(m):.0f} GB of RAM + VRAM: {verdict}")
         try:                                           # DeepSeek-V4.1-Flash: a line, from the real numbers (strata_control/dsv41_fit.py)
             from strata_control import dsv41_fit
             cards_ok = amd_ok if hip else [g for g in found if gpu_problem(g) is None]
             for mname in ("IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "IST-DAS-1.75bpw", "UD-Q8_K_XL"):
                 ds = dsv41_fit.plan(cards_ok, ram, None, model=mname)
-                tail = {"fits": f"fits ({ds['experts_in_vram']:,} of {ds['experts_total']:,} experts in graphics memory, the rest on the CPU)",
-                        "tight": ("runs, with the experts RAM cannot hold read from the SSD (about 5-7 tokens a second measured)"
-                                  if ds.get("variant") else "fits, but RAM is tight"),
-                        "spills": (f"works but slow: less RAM than it was measured with (46-64 GB)" if ds.get("variant")
-                                   else f"about {ds['spill_gb']:.0f} GB of its experts would be read from the SSD (slow)"),
-                        "no_card": "needs one or more graphics cards"}.get(ds["verdict"], "not checked")
+                if ds["verdict"] == "unknown":
+                    tail = "not checked"
+                elif ds.get("uma"):                    # the graphics memory is the RAM, counted once: the plan says what is read from the SSD
+                    tail = "fits" if float(ds.get("streamed_gb") or 0.0) <= 0.0 else "may run slower"
+                else:                                  # the set's weight files without its n-gram table, against every card's memory and the RAM
+                    from strata_control import fit_label
+                    tail = fit_label.label(float(ds["download_gb"]) - float(ds["engram_gb"]), ram, sum(float(c.get("vram_gb") or 0.0) for c in ds["cards"]))
                 say(f"  DeepSeek-V4.1-Flash {MULTI_FILE_FAMILIES['deepseek41']['models'].get(mname, {}).get('label', mname)}: a {ds['download_gb']:.0f} GB download: {tail}   (--family deepseek41 --model {mname})")
         except Exception:                              # noqa: BLE001 - a line for information: never break the check
             pass
@@ -10432,7 +10640,11 @@ def main() -> int:
 
     # ---- 2. the questions
     step(2, "your choices")
+    if not a.family and not a.yes and FEED_MODELS is None:
+        feed_models_setup(getattr(a, "feed", None))    # the signed feed's models, listed after the built-in ones (nothing happens when it has none)
     fams = menu_families(hip)
+    feed_late = [f for f in fams if FAMILIES[f].get("feed")]       # models of the signed feed come last in the list (none: nothing here changes)
+    fams = [f for f in fams if f not in feed_late]
     if a.family:
         family = a.family
     else:
@@ -10443,10 +10655,15 @@ def main() -> int:
             say(f"  {i}) {d['title']:20s} {d['by']} - {d['about']}" + ("   [experimental]" if d.get("experimental") else "")
                 + family_menu_note(f, hip, gpu, avx2, avx512)
                 + (f"   (recommended for Strix Halo: {STRIX_HALO_MODEL})" if f == rec_fam and rec_fam != fams[0] else ""))
-        for j, f in enumerate([*OWN_PATH_FAMILIES, *MULTI_FILE_FAMILIES], len(fams) + 1):   # families with an engine path of their own
-            d = {**OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}[f]
-            say(f"  {j}) {d['title']:20s} {d['by']} - {d['about']}   [new]")
-        allf = fams + list(OWN_PATH_FAMILIES) + list(MULTI_FILE_FAMILIES)
+        rest = [*(f for f in OWN_PATH_FAMILIES if not OWN_PATH_FAMILIES[f].get("feed")), *MULTI_FILE_FAMILIES,
+                *(f for f in OWN_PATH_FAMILIES if OWN_PATH_FAMILIES[f].get("feed")), *feed_late]
+        for j, f in enumerate(rest, len(fams) + 1):    # families with an engine path of their own
+            d = {**FAMILIES, **OWN_PATH_FAMILIES, **MULTI_FILE_FAMILIES}[f]
+            say(f"  {j}) {d['title']:20s} {d['by']} - {d['about']}   [new]" + (f"   ({FEED_UNAVAILABLE[f]['reason']})" if f in FEED_UNAVAILABLE else ""))
+        for u in FEED_UNAVAILABLE.values():            # a feed model this engine does not run: said, never offered (unless the owner's rule allows it, above)
+            if not u.get("allowed"):
+                say(f"  -) {u['title']:20s} {u['by']} - {u['reason']}")
+        allf = fams + rest
         if tier_note(ram, low_ram_vram(gpu)) and rec_fam == "swift":
             say("  " + tier_note(ram, low_ram_vram(gpu)))
         family = allf[int(ask("Which model?", [str(i) for i in range(1, len(allf) + 1)],
@@ -10458,6 +10675,9 @@ def main() -> int:
         gpu = {**gpu, "cards": chosen}
         return install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, all_cards)
     fam = FAMILIES[family]
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own engine component (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
     if fam.get("ready") and hip:
         # not a risk the user could take: the HIP engine has no NVFP4 expert kernels at all, so it would not start
         fail(f"{fam['title']} runs on NVIDIA cards only: the AMD engine has no NVFP4 kernels",
@@ -10466,6 +10686,9 @@ def main() -> int:
         warn(f"--gguf-dir does not apply to {fam['title']}: its files are ready-made packs, not GGUF shards")
         a.gguf_dir = None
     ok(f"model: {fam['title']}")
+    if fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None:
+        a.mtp = "off"                                  # the feed says this model has no draft layer: the Flash-Next one (fetched below for every qwen4exp model) is not its own
+        say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
     if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
         warn(nvfp4_cpu_note(avx2, avx512))
     if fam.get("license"):
@@ -10483,11 +10706,8 @@ def main() -> int:
     installed = installed_size(family, names, have)
     for i, m in enumerate(names, 1):
         d = MODELS[m]
-        fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
+        fit = f"   <- {model_fit_label(m, ram, gpu)}"          # "fits" or "may run slower": the weight files against the RAM and the card's memory together
         if d.get("mem_total"):             # Gyro: the download includes the n-gram table, the memory figure does not
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
-            fit = "" if have_gb >= d["ram_gb"] else \
-                f"   <- needs {d['ram_gb']} GB of VRAM + RAM together, you have {have_gb:.0f}"
             say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.1f} GB "
                 f"(the n-gram table is in the file), memory {d['ram_gb']} GB{fit}")
             continue
@@ -10497,9 +10717,6 @@ def main() -> int:
             say(f"  {i}) {m}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, keeps {keeps} of its "
                 f"{d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
-        if low_ram_needed(m, ram) and low_ram_fits(m, ram, low_ram_vram(gpu)) and a.low_ram != "off":
-            fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, low_ram_vram(gpu)):.0f}%, "
-                   + ("the rest in RAM)" if low_ram_resident(m, ram, low_ram_vram(gpu)) else "the rest from the SSD)"))
         say(f"  {i}) {m:8s}{size_tag(family, m, installed)} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index(installed or recommended_size(family, names, ram, low_ram_vram(gpu))) + 1)
     model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
@@ -10523,7 +10740,7 @@ def main() -> int:
                          bool(a.model), a.yes, f"{model} is NVIDIA-only so far", "choose one of the 2-3-bit models, "
                          f"or --model {model} --yes to try it on AMD anyway", "  Try it anyway?")
             warn(f"installing {model} on an AMD card, as you chose (please report how it runs)")
-        if ram < MODELS[model]["ram_gb"]:
+        if ram < MODELS[model]["ram_gb"] and model_fit_label(model, ram, gpu) != "fits":
             have = resident_budget_gib(model, ram)
             total = int(MODELS[model]["arena_gb"] / 1.073741824)
             confirm_risk(f"{model} needs {MODELS[model]['ram_gb']} GB of RAM or more; this PC has {ram:.0f} GB: "
@@ -10844,7 +11061,7 @@ def main() -> int:
     ok("model files present")
     mmproj = Path(a.models_dir) / fam.get("mmproj", MMPROJ)
     if not mmproj.exists():                            # an earlier install's copy (the same file for every family)
-        mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
+        mmproj = find_in(roots, f"models/{fam.get('mmproj', MMPROJ)}") or mmproj      # a feed model without a picture reader has no fam["mmproj"]
     if vision != "none":
         near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (fam.get("mmproj_sha256") or ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
         if near is not None:                           # the person's own folder (or the one above it) has the picture file: used where it is
@@ -10939,363 +11156,10 @@ def main() -> int:
         # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
         model_args = ["--pack", str(pack), "--native", str(shards[0]),
                       *(["--ple-gguf", str(ple)] if len(shards) <= 2 else [])]
-    args = [*model_args,
-            "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
-            "--max-context", str(ctx)]
-    if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
-        args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
-    if ctx > 8192:
-        args += ["--kv", kv]
-    if resident and a.low_ram != "resident" and engine_ver < RESIDENT_ENGINE:
-        resident = False                               # an engine from before --resident-experts would refuse it
-        ok(f"low-RAM mode: engine {meta.get('version')} has no resident variant yet; the experts are read through "
-           "the OS file cache (run setup again after the next engine update)")
-    if low_ram and ready:
-        # NVFP4 (68 GB of experts) on a PC whose RAM does not hold them: the RAM-budget mode, as Unsloth's files - the
-        # most-used experts outside VRAM pinned within RAM less 24 GB, the rest read from experts.bin.  Mapped
-        # (--mmap-experts) on a 64 GB Windows PC, the experts it read stayed in the engine's working set: free RAM
-        # fell to 0.6 GB on the RTX 5070 PC (2026-10-13), where the budget mode kept 22 GB free
-        rb = resident_budget_gib(model, ram)
-        args += ["--resident-budget-gib", str(rb)]
-        ok(f"low-RAM mode: {rb} GiB of {model}'s experts kept in RAM (the most used), the rest read from the pack's "
-           "experts.bin on the SSD as needed")
-    elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
-        args += ["--resident-experts" if resident else "--mmap-experts"]
-    elif is_gb10(gpu):
-        # a DGX Spark: the RAM copy of the experts and the GPU's cache are the same memory. Mapped, every expert fits in the cache (NVFP4
-        # on a 128 GB GB10: 24576 of 24576 slots, not 13702; chat decode 44.4 against 40.6 tok/s, 16K prompt 1471 against 1397)
-        args += ["--mmap-experts"]
-        ok("unified memory: the experts are read from the model files in place (--mmap-experts), so the GPU's cache holds them "
-           "instead of a second copy in RAM")
-        # the measured settings of this part (docs/DGX_SPARK_LINUX.md): the 32,768-token prompt chunk (auto's 8,192 measured 2-6% slower
-        # here); the draft layer as 4-bit copies (+3.5% decode, 3 paired rounds, answers identical: the drafter's proposals are verified
-        # by the target); one norm per hyper-connection stream in the draft layer (llama.cpp's graph: acceptance 0.60 -> 0.63, decode +4.3%
-        # [1.009, 1.078], 5 of 5 greedy answers identical)
-        if "--prefill" in args:
-            args[args.index("--prefill") + 1] = "auto:32768"
-        if "--mtp" in args:
-            args += ["--mtp-q4", "all", "--mtp-hnorm", "stream"]
-            ok("prompt chunk 32,768 (--prefill auto:32768), the draft layer as 4-bit copies (--mtp-q4 all) and one norm per "
-               "hyper-connection stream in it (--mtp-hnorm stream): measured faster on this part, the answers are unchanged")
-        # the language is the user's choice: the default subset keeps Chinese, Japanese and Korean drafts, the English one measured +3.1%
-        # decode on English prompts here (16 samples a cell, 90% interval [1.018, 1.049])
-        say("  Tip: for English or code only, --draft-vocab en measured +3.1% decode on this part (the default keeps Chinese, Japanese "
-            "and Korean drafts).")
-    disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
-    if disk:
-        tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
-        size = ple.stat().st_size if ready else getattr(tensor, "expected_bytes", lambda: None)()
-        table_gb = size / 1e9 if size else 28.8
-        if ram >= MODELS[model]["ram_gb"] + table_gb + 4:
-            args += ["--ple-io", "ram"]
-            ok(f"the model is on a rotational disk ({disk}): its {table_gb:.0f} GB n-gram table is kept in RAM "
-               "(--ple-io ram) - read from the disk at random, it can stall prompts for minutes (#605)")
-        else:
-            warn(f"the model is on a rotational disk ({disk}): its n-gram table is read from it at random, which can "
-                 f"stall prompts for minutes (#605). An SSD is recommended; with ~{table_gb:.0f} GB more RAM, "
-                 "--ple-io ram in the config's args keeps the table in RAM instead")
-    elif not low_ram and ple_ram_platform_ok():
-        # 147-verify: on an SSD too, a PC with RAM to spare keeps the n-gram table in RAM: a new prompt's first chunk then
-        # does not wait for its table rows (65,536 random SSD reads at 4K tokens).  RTX PRO 5000 (Linux, NVMe, fresh engine
-        # per prompt, 3 rounds, the same bits): prompt 4K 1298 -> 1059 ms (-18%), 20K 4644 -> 4223 ms (-9%), 98K 20447 ->
-        # 20027 ms (-2%), decode +0.8%.  On a card whose prompt is slow (R9700) the read hides behind layer 0 and nothing
-        # changes.  It costs the table's size in RAM, so only with 16 GB to spare beyond the model's own need; a smaller PC
-        # keeps reading from the SSD as before.
-        try:
-            tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)
-            size = ple.stat().st_size if ready else getattr(tensor, "expected_bytes", lambda: None)()
-        except Exception:
-            size = None
-        table_gb = size / 1e9 if size else 28.8
-        if ram >= MODELS[model]["ram_gb"] + table_gb + 16:
-            args += ["--ple-io", "ram"]
-            ok(f"{ram:.0f} GB of RAM: the {table_gb:.0f} GB n-gram table is kept in RAM (--ple-io ram), so a new prompt does "
-               "not wait for its rows from the SSD (a 4K prompt about 18% sooner on a fast card); remove --ple-io ram from "
-               "the config's args to read it from the SSD instead")
-    # KV streaming: from 64K up the whole KV cache lives in RAM and only the part the attention reads (32K positions
-    # per layer) stays in VRAM; the VRAM it frees holds more experts (+6% at 128K, +23% at 262K with Q2_0). It
-    # costs ~13.7 KB of RAM per context token with 8-bit KV (1.7 GB at 128K), 10.6 KB with K8V4, 7.5 KB with 4-bit, so only
-    # when it fits.
-    kv_ram_gb = kv_streaming_ram_gb(ctx, kv)      # the branches below are kv_streaming_wanted, with its messages
-    # --kv-streaming on|off overrides the RAM test (the owner's rule); WSL stays off - it cannot stream.
-    stream_need = kv_streaming_need_gb(model, ctx, kv)
-    stream_fits = ram >= stream_need
-    if is_wsl() and ctx >= 65536:
-        ok("WSL: KV streaming off (the driver pins only about 1 GB of RAM); the KV cache stays in VRAM")
-        if a.kv_streaming == "on":
-            warn("--kv-streaming on: WSL cannot stream the KV cache (its RAM copy must be pinned, and the driver pins "
-                 "only about 1 GB there): off")
-    elif ctx >= 65536 and a.kv_streaming == "off":
-        ok("KV streaming off, as you chose (--kv-streaming off): the KV cache stays in VRAM")
-    elif ctx >= 65536 and (stream_fits or a.kv_streaming == "on"):
-        args += ["--kv-resident", "32768"]
-        ok(f"KV streaming on: the context's KV cache lives in RAM ({kv_ram_gb:.1f} GB), more experts fit in VRAM")
-        if not stream_fits:
-            warn(f"KV streaming needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them and "
-                 f"the {kv_ram_gb:.1f} GB cache); this PC has {ram:.0f}. Kept as you chose (--kv-streaming on): it may page or run out of RAM "
-                 "under load")
-        if q4_split:                                   # #498: no budget to take it out of
-            pass
-        elif budget is not None and a.resident_budget_gib is None:   # its RAM comes out of the experts' budget
-            budget = resident_budget_gib(model, ram, kv_ram_gb)
-            ok(f"RAM budget: {budget} GiB (less the KV cache's RAM)")
-        elif budget is not None and budget > resident_budget_gib(model, ram, kv_ram_gb):
-            warn(f"the KV cache's {kv_ram_gb:.1f} GB of RAM come on top of your {budget:g} GiB RAM budget (setup "
-                 f"would take them out of it: {resident_budget_gib(model, ram, kv_ram_gb)} GiB); kept as you chose")
-    elif ctx >= 65536:   # #620: say why, so a regenerated config that lost --kv-resident is not a surprise
-        ok(f"KV streaming off: it needs ~{stream_need:.0f} GB of RAM for {model} (its experts, the room beside them "
-           f"and the {kv_ram_gb:.1f} GB cache), and this PC has {ram:.0f}; the KV cache stays in VRAM (fewer cached experts). --kv-streaming on "
-           "turns it on anyway")
-    elif a.kv_streaming == "on":
-        warn("--kv-streaming on: a context under 64K is not streamed (the attention's window holds all of it): off")
-    if budget is not None and not q4_split:   # UD-Q4_K_XL: the experts read from the GGUF in place, the most-used N
-        args += ["--resident-budget-gib", f"{budget:g}"]   # GiB kept in RAM (#498: a layer split had no budget)
-        if gpu.get("uma") and "--expert-cache" in args:
-            # #1715: the cache and the budget draw on the same RAM: a number that leaves the OS its room, not `auto`
-            slots = uma_expert_cache(model, ram, budget, kv_ram_gb if "--kv-resident" in args else 0.0)
-            if slots is not None:
-                args[args.index("--expert-cache") + 1] = str(slots)
-                ok(f"expert cache: {slots} slots (not auto): this GPU shares the RAM with the {budget:g} GiB budget, "
-                   f"so setup leaves {UNSLOTH_RAM_LEFT_GB} GB of the RAM for the OS and the desktop (#1715). "
-                   "--expert-cache N in the config's args sets it")
-            else:
-                warn(f"this GPU shares the RAM, and the {budget:g} GiB RAM budget leaves almost none for the expert "
-                     "cache: it stays on auto, which may take the room the OS needs (#1715). A smaller "
-                     "--resident-budget-gib leaves room")
-    if vision != "none":
-        args += ["--vision"]
-        if VISION[vision]["reserve_mib"]:
-            args += ["--vram-reserve-mib", str(VISION[vision]["reserve_mib"])]
-        if vision == "gpu" and a.vram_reserve_mib is None and 0 < gpu.get("vram_gb", 0.0) <= 12.5:
-            # a tip only (recommend, never force): on a 12 GB card the encoder's 700 MiB can leave ~200 MiB free
-            print(f"  tip: images on a {gpu['vram_gb']:.0f} GB card can leave little VRAM free; if a request stalls, "
-                  f"run setup again with --vram-reserve-mib {VISION_GPU_SMALL_RESERVE_MIB}")
-    if a.vram_reserve_mib is not None:                 # #493: VRAM left free for other programs (only when given)
-        if "--vram-reserve-mib" in args:
-            i = args.index("--vram-reserve-mib") + 1
-            if vision == "gpu" and a.vram_reserve_mib < int(args[i]):
-                warn(f"--vram-reserve-mib {a.vram_reserve_mib}: the image encoder on the GPU needs ~{args[i]} MiB of "
-                     "it; kept as you chose (it may run out of VRAM when it reads a picture)")
-            args[i] = str(a.vram_reserve_mib)
-        else:
-            args += ["--vram-reserve-mib", str(a.vram_reserve_mib)]
-        ok(f"VRAM kept free for other programs: {a.vram_reserve_mib} MiB (--vram-reserve-mib; the expert cache takes "
-           "that much less)")
-    if not multi and family == "unsloth" and 0 < gpu.get("vram_gb", 0.0) <= UD_FIT_CARD_GB:
-        # a card of about 8 GB: the config setup would write may not start (measured on an A750).  Pick the least
-        # harmful one that fits and say so; what the user chose with --context / --kv / --vram-reserve-mib is kept
-        res_arg = int(args[args.index("--vram-reserve-mib") + 1]) if "--vram-reserve-mib" in args[:-1] else None
-        vg = gpu["vram_gb"]
-        rt_mib = unsloth_runtime_mib(gpu)
-        fits = unsloth_vram_slack_mib(vg, ctx, kv, UD_FIT_ENGINE_RESERVE_MIB if res_arg is None else res_arg, True,
-                                      rt_mib) >= UD_FIT_MIN_SLACK_MIB
-        plan = None
-        if not fits:
-            plan = unsloth_small_card_plan(vg, ctx, kv, res_arg, ctx_fixed=bool(a.context), kv_fixed=bool(a.kv),
-                                           runtime_mib=rt_mib)
-            if plan is not None:
-                nctx, nkv, nmtp, slack = plan
-                changes = []
-                if nctx != ctx:
-                    args[args.index("--max-context") + 1] = str(nctx)
-                    changes.append(f"context {ctx} -> {nctx}")
-                    ctx = nctx
-                if nkv != kv:
-                    if "--kv" in args[:-1]:
-                        args[args.index("--kv") + 1] = nkv
-                    else:
-                        args += ["--kv", nkv]
-                    changes.append(f"KV cache {kv} -> {nkv}")
-                    kv = nkv
-                if not nmtp and "--mtp" in args[:-1]:
-                    i = args.index("--mtp")
-                    del args[i:i + 2]
-                    changes.append("no MTP draft layer on the GPU (about 0.8 GB more for the expert cache; decode is slower)")
-                warn(f"with the usual settings {model} would not start on this {vg:.0f} GB card (setup's estimate: no VRAM "
-                     "left for the expert cache). Setup chose the least harmful start that fits: " + ", ".join(changes)
-                     + ". A bigger context, 8-bit KV or the draft layer need a card with more VRAM (or "
-                     "--vram-reserve-mib 0, which leaves nothing for other programs).")
-        for line in unsloth_small_card_lines(model, vg, plan, fits):
-            warn(line)
-    if not multi and 0 < gpu.get("vram_gb", 0.0) < SMALL_CARD_GB:
-        # #496: on a 6 GB card the expert cache can get no room at all; the engine lowers its own reserve when that
-        # is what it takes, and says what is short when even that is not enough.  Setup only says what helps.
-        for line in small_card_note(ctx, draft_vocab):   # a recommendation: nothing changes
-            say("  " + line)
-    elif hip and a.vram_reserve_mib is None and linux_desktop():
-        for line in desktop_reserve_note():              # #560 #516: a recommendation: nothing changes
-            say("  " + line)
-    if not hip and not multi and a.vram_reserve_mib is None and gpu_drives_display(gpu):
-        say("  tip: this card drives a display. If the PC freezes or the screen goes black once the model is loaded "
-            f"(#779), keep more VRAM free: run setup again with --vram-reserve-mib {DISPLAY_RESERVE_MIB}")   # a tip only
-    if not hip:
-        for gi in ([g for g in multi] if multi else [gpu.get("index", 0)]):
-            gi = gi["index"] if isinstance(gi, dict) else gi
-            w = compute_mode_warning(gi, gpu_compute_mode(gi))
-            if w:
-                warn(w)                                   # #1445: a warning only, never a refusal
-    if esp is not None:
-        # the package's profile, with llama.cpp's flags (the engine takes the same ones)
-        args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
-                 "--cvec-mode", "project", "--cvec-dir", "per-layer"]
-    cfg = {"exe": engine_exe(eng), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"{fam['name']}-{model.lower()}", "log": str(home() / f"strata-{tag.lower()}.log"),
-           "lib_dirs": lib_dirs, "port": port}
-    if cuda_tk == 12:                                  # the experimental CUDA 12 engine (engine-cuda12/)
-        cfg["cuda"] = 12
-    if (uenv := unsloth_default_env(family, model, hip, in_budget, str(gpu.get("arch") or ""))):
-        cfg["env"] = uenv
-    if hip:
-        cfg["backend"] = "hip"
-        # the dense prompt GEMMs through hipBLASLt with kernels measured on this GPU generation (tools/hip; +40-60%
-        # prompt speed on the 7900 XTX): only a table for this card's arch AND the installed hipBLASLt version (the
-        # engine refuses any other one and falls back to plain hipBLAS)
-        if CONTROL:
-            pass    # the app's engine is a package: the server picks its tuning/ table for the card when it starts (strata_control/hipblaslt_tuning.py)
-        else:
-            table = hipblaslt_table(gpu["arch"], lib_dirs, meta.get("hipblaslt_version"), [eng / "tuning"])
-            if table:
-                cfg["env"] = {"STRATA_HIPBLASLT_TUNING": str(table)}
-        if GFX1103_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1103") and not WIN:
-            # the 780M's KFD queues are evicted (a GPU reset) while transparent huge pages move the pinned expert arena
-            cfg.setdefault("env", {})["STRATA_NO_ARENA_THP"] = "1"
-            # the exact gfx1151 speed switches measured on this chip (GFX1103_SWITCHES): the engine has no arch defaults
-            # for gfx1103, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
-            # them and turning the opt-in off takes them out again.
-            cfg.setdefault("env", {}).update(GFX1103_SWITCHES)
-        if GFX1150_OPT_IN and gfx_arch_is(gpu["arch"], "gfx1150"):
-            # the exact gfx1151 speed switches measured on this chip (GFX1150_SWITCHES): the engine has no arch defaults
-            # for gfx1150, so setup writes them into the config.  They are setup's own (SETUP_ENV), so a re-run refreshes
-            # them and turning the opt-in off takes them out again.
-            cfg.setdefault("env", {}).update(GFX1150_SWITCHES)
-        # RDNA2 (gfx103x): the prompt's FP16 GEMMs through rocBLAS's best kernel per shape (tools/hip/tune_rocblas;
-        # the GDN input projection 6x faster below 1,152 tokens on a 6900 XT).  The ids are valid for one rocBLAS
-        # build, which only the engine can read, so setup points it at the directory and the engine picks the file
-        # <arch>-rocblas-<version>.txt for its own library, or runs the default kernels and says so in its log.
-        rocblas_tables = sorted(p.name for p in (ROOT / "tools" / "hip").glob(f"{gpu['arch']}-rocblas-*.txt"))
-        if rocblas_tables:
-            cfg.setdefault("env", {})["STRATA_ROCBLAS_TUNING"] = str(ROOT / "tools" / "hip")
-            ok(f"rocBLAS tuning tables for {gpu['arch']}: {', '.join(rocblas_tables)} (the engine takes the one of its rocBLAS build)")
-        if resident:   # ROCm: large page-locked host allocations can fail or be slow for the CPU; keep the copy pageable
-            cfg.setdefault("env", {})["STRATA_RESIDENT_PIN"] = "0"
-    if gpu["count"] > 1 or a.gpu is not None:
-        cfg["gpu"] = gpu["index"]                      # the engine is told this card (issue #51)
-        cfg["gpus_asked"] = True                       # chosen at setup: not asked again at start
-    if multi:                                          # a layer split across these cards (the server adds the flag)
-        cfg["gpu"] = multi
-        cfg["layer_split"] = a.layer_split or "auto"
-        if getattr(a, "_roles", None):                 # roles chosen: the card list is Main last, in this order, and the server keeps it
-            cfg["gpu_order"] = "as_given"
-        ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
-        recommend_remote_expert_opt(cfg, off=a.no_remote_expert_opt)
-        replica_done = False
-        if a.replicas is None and a.layer_split in (None, "auto") and (getattr(a, "replica_profile", False) or
-                                                                       os.environ.get("STRATA_REPLICA_PROFILE")):
-            try:                                       # the opt-in replica profile (strata_control/replica_profile.py)
-                from strata_control import replica_profile
-                if getattr(a, "replica_profile", False):
-                    cfg["replica_profile"] = True
-                lines = replica_profile.apply([{"name": c.get("name"), "vram_gb": c.get("vram_gb"), "vendor": c.get("vendor"),
-                                                "index": c.get("index")} for c in chosen], cfg, float(ram),
-                                              parallel_given=a.parallel is not None)
-                replica_done = bool(cfg.get("replicas"))
-                for line in lines:
-                    (ok if replica_done else say)(line)
-            except Exception as e:                     # noqa: BLE001 - a profile is never a reason to stop setup
-                say(f"  (the replica profile was not applied: {e})")
-        if hip and a.layer_split in (None, "auto") and not replica_done:    # four Radeon AI PRO R9700 cards and Qwen3.8 IQ3_S: the measured serving profile
-            try:                                       # (strata_control/amd_four_card.py); what the person chose always wins
-                from strata_control import amd_four_card
-                for line in amd_four_card.apply([{"name": c.get("name"), "vram_gb": c.get("vram_gb"), "vendor": "amd"} for c in chosen],
-                                                cfg, parallel_given=a.parallel is not None):
-                    ok(line)
-            except Exception as e:                     # noqa: BLE001 - a profile is never a reason to stop setup
-                say(f"  (the four-card profile was not applied: {e})")
-    if getattr(a, "_roles", None):                     # the roles themselves (strata_control/gpu_roles.py); "gpu" above is their mirror
-        final = cfg["gpu"] if isinstance(cfg.get("gpu"), list) else [cfg["gpu"]]      # what the checks above left (a model that cannot share keeps one card)
-        main = final[-1]
-        cfg["gpu_roles"] = {str(i): ("main" if i == main else "helper" if i in final else "off") for i in sorted(set(a._roles) | set(final))}
-        cfg["gpus_asked"] = True
-        cfg.pop("gpu_none", None)
-        if isinstance(cfg.get("gpu"), list) and len(final) > 1:
-            cfg["gpu_order"] = "as_given"
-    if a.replicas is not None and a.replicas >= 2:      # data-parallel replicas (serve/replicas.py), opt-in
-        cards = multi if multi else []
-        if not cards or len(cards) % a.replicas:
-            warn(f"--replicas {a.replicas}: needs the chosen GPUs ({cards or 'one'}) to divide into {a.replicas} equal "
-                 "groups; not set (choose the cards with --gpu 0,1,2,3, or write the groups into the config: "
-                 '"replicas": [{"gpus": [0, 1]}, {"gpus": [2, 3]}])')
-        else:
-            cfg["replicas"] = a.replicas
-            per = len(cards) // a.replicas
-            ok(f"{a.replicas} replicas of {per} GPU(s) each: {' | '.join(','.join(map(str, cards[i * per:(i + 1) * per])) for i in range(a.replicas))}")
-            if per > 1 and a.layer_split not in (None, "auto"):
-                warn("--layer-split is one engine's value; with replicas every group would get it: leave it at auto")
-            if (os.cpu_count() or 0) < 8 * a.replicas:
-                warn("each replica loads its own copy of the model into RAM and runs its own host threads: check the RAM")
-    if a.host:
-        cfg["host"] = a.host
-    if a.api_key:
-        cfg["api_key"] = a.api_key
-    if draft_vocab:
-        cfg["draft_vocab"] = draft_vocab
-    if a.browser is not None:                          # #609: only when given (else an earlier choice is carried over)
-        cfg["open_browser"] = a.browser
-    if a.mtp is not None:                              # written only when given (else an earlier choice is carried over)
-        if a.mtp == "off":
-            cfg["mtp"] = False
-            removed = draft_layer.apply(cfg)
-            ok("the draft layer (MTP) is off for this model" + (f" ({' '.join(removed)} left out)" if removed else "") +
-               ": less graphics memory and RAM, slower words per second. `--mtp on` turns it back on")
-        else:
-            cfg["mtp"] = True                          # explicit, so carry_over does not bring an earlier false back
-            ok("the draft layer (MTP) is on")
-    # #465: requests at once - written only when given (else an earlier "parallel" is carried over); a recommendation
-    streaming = "--kv-resident" in args
-    if a.parallel is not None:
-        if a.parallel >= 2:
-            cfg["parallel"] = a.parallel
-            for i, line in enumerate(parallel_note(a.parallel, [g.get("vram_gb", 0.0) for g in chosen],
-                                                   MODELS[model]["arena_gb"], ctx, kv, streaming)):
-                (ok if i == 0 else warn)(line)
-        else:
-            cfg["parallel"] = 1
-            ok("parallel requests: one at a time (--parallel 1)")
-    if vision != "none":
-        old_cfg = home() / f"strata-{tag.lower()}.json"
-        vt = vision_tokens(a.vision_tokens, vision, old_cfg if old_cfg.is_file() else adopted)
-        cfg["vision"] = {"exe": str(eng / VEXE), "mmproj": str(mmproj),     # the text model, opened vocab-only:
-                         "model": str(ready_paths(model, models_dir)["dense"] if ready else shards[0]),
-                         "gpu": vision == "gpu", "max_tokens": vt}
-        if reader is not None:                          # AMD: the HIP reader with the CPU reader behind it, or the CPU reader
-            from strata_control import vision_reader as VR
-            cfg["vision"] = VR.vision_section(reader, cfg["vision"])
-        if vision == "cpu":
-            cfg["vision"]["threads"] = vision_threads()
-    elif a.vision_tokens is not None:
-        warn("--vision-tokens: images are off for this model, so it is not used")
-    if a.images:                                       # only when given: else an earlier "images" is carried over
-        cfg["images"] = setup_images(a, gpu, hip, Path(a.models_dir))
-    cfg_path = home() / f"strata-{tag.lower()}.json"
-    cal = setup_calibration(cfg, hip)                  # #566: Linux HIP too; the tuning is offered on NVIDIA only
-    if cal is not None:
-        sys.path.insert(0, str(ROOT / "tools"))
-        import calibrate as CAL
-        cfg["args"] = CAL.apply(cfg["args"], cal.get("settings") or {})
-        if "env" in cal:                               # a calibration from before the env step leaves "env" as it is
-            cfg["env"] = CAL.apply_env(cfg.get("env"), cal["env"])
-        ok("the settings tuned for this PC earlier are used" + (f" ({cal['date']})" if cal.get("date") else ""))
-    else:                                              # #642: measured counts (a calibration) win over the rule
-        cfg["args"] = recommend_pool_workers(cfg["args"])
-        for line in pool_workers_note(cfg["args"]):
-            warn(line)
-        for line in two_socket_note(cpu_sockets()):    # bench tips: text only, the config is not touched
-            say("  " + line)
-    for line in bench_tips(cfg["args"], cfg.get("env"), ram, MODELS[model]["ram_gb"], gpu.get("vram_gb", 0.0), vision, WIN, gpu):
-        if apu_hides_chunk_tip(gpu, line):
-            continue
-        say("  " + line)
+    from strata_control import setup_config            # the seam: the lines that built the run config live in strata_control/setup_config.py
+    _built = setup_config.config_for(setup_config.SetupInputs(
+        a=a, adopted=adopted, chosen=chosen, cuda_tk=cuda_tk, draft_vocab=draft_vocab, eng=eng, engine_ver=engine_ver, esp=esp, fam=fam, family=family, gpu=gpu, hip=hip, in_budget=in_budget, lib_dirs=lib_dirs, low_ram=low_ram, meta=meta, mmproj=mmproj, model=model, model_args=model_args, models_dir=models_dir, multi=multi, pack=pack, ple=ple, port=port, q4_split=q4_split, ram=ram, reader=reader, ready=ready, rope_scale=rope_scale, rt=rt, scaling=scaling, shards=shards, tag=tag, vision=vision, ctx=ctx, kv=kv, resident=resident, budget=budget, GGUFFile=GGUFFile), sys.modules[__name__])
+    cfg, cfg_path, cal, args, ctx, kv, resident = (_built.cfg, _built.cfg_path, _built.cal, _built.args, _built.ctx, _built.kv, _built.resident)
     write_setup_config(cfg_path, cfg, adopted if adopted is not None and adopted.name == cfg_path.name else None, explicit_args(a),
                        after_carry=(lambda c: uma_cache_guard(c, model, gpu)) if gpu.get("uma") else None)
     script = write_run_script(tag, cfg_path, port, cfg.get("open_browser") is not False)

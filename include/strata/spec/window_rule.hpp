@@ -7,6 +7,7 @@
 // every backend call it.
 #pragma once
 
+#include <cmath>
 #include <cstdlib>
 #include <algorithm>
 
@@ -68,5 +69,7 @@ inline int choose_window(const WindowRuleIn& in) {
     }
     return T;
 }
+
+// (An opt-in calibrated DFlash2 window gate, STRATA_DF2_GATE / STRATA_DF2_ROW_MS, was removed in 0.2.13: it measured 2.7-4.9% slower.)
 
 }  // namespace strata::spec
