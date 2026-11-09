@@ -427,10 +427,33 @@ class Install(Base):
         if os.name == "nt":
             self.skipTest("a script is not a Windows program")
         self.assertEqual(shape_engine._test_start(self._program("q4_lite"), shape="q4_lite"), (True, "strata 0.2.13"))
-        self.assertEqual(shape_engine._test_start(self._program(None), shape="q4_lite"), (True, "strata 0.2.13"), "an engine from before the flag is accepted")
+        self.assertEqual(shape_engine._test_start(self._program(None), shape="q4_lite"), (False, "it does not say which model shape it was built for"),
+                         "a shape engine that cannot answer --geometry is refused (owner, 11-09)")
         ok, why = shape_engine._test_start(self._program("flash_next"), shape="q4_lite")
         self.assertEqual((ok, why), (False, "it was built for a different model shape (flash_next)"))
         self.assertEqual(shape_engine._test_start(self._program("flash_next")), (True, "strata 0.2.13"), "no shape asked for: the flag is not read")
+
+    def test_the_plain_strata_engine_is_never_asked_for_its_shape(self):
+        if os.name == "nt":
+            self.skipTest("a script is not a Windows program")
+        self.assertEqual(shape_engine._test_start(self._program(None)), (True, "strata 0.2.13"), "an engine with no --geometry still installs as the Strata engine")
+        with mock.patch.object(shape_engine, "check_geometry", side_effect=AssertionError("asked")):
+            self.assertEqual(shape_engine._test_start(self._program("flash_next")), (True, "strata 0.2.13"))
+
+    def test_a_shape_engine_with_no_answer_is_refused_at_install_with_the_owners_reason(self):
+        if os.name == "nt":
+            self.skipTest("a script is not a Windows program")
+        self.publish("0.1.59")
+        with mock.patch.object(shape_engine, "_test_start", return_value=(False, shape_engine.NO_SHAPE_ANSWER)):
+            lines = []
+            self.assertIsNone(self.ensure(lines, title="Q4 Lite Shape"))
+        self.assertIn("The engine for Q4 Lite Shape 0.1.59 was not installed because it did not start correctly (it does not say which model shape it was built for). "
+                      "The Strata engine is unchanged.", " ".join(lines))
+        self.assertEqual(shape_engine.installed(SHAPE, self.comp), [])
+        self.assertEqual(self.strata_before, tree(self.comp / "engine"))
+
+    def test_the_owners_reason_for_no_answer(self):
+        self.assertEqual(shape_engine.NO_SHAPE_ANSWER, "it does not say which model shape it was built for")      # owner, 11-09
 
     def test_a_package_built_for_another_shape_is_refused_at_install_with_the_approved_line(self):
         if os.name == "nt":
