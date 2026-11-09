@@ -68,7 +68,7 @@ test('STRATA_CLOUDFLARED picks exactly one file; STRATA_CLOUDFLARED_SEARCH=own k
   assert.deepEqual(own.map(c => c.source), ['strata', 'component']);
 });
 
-test('a real executable on PATH is found and run (a user-local copy, never a system install)', { skip: process.platform === 'win32' }, async () => {
+test('a real executable on PATH is found and run (a user-local copy, never a system install)', { skip: process.platform === 'win32' && 'needs a POSIX executable file to run as cloudflared (not on Windows)' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'strata-cf-path-'));
   try {
     const bin = join(dir, 'bin'); await mkdir(bin);

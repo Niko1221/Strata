@@ -8,10 +8,7 @@ hottest experts in (the engine's preload) and the same cold-start window's hit r
 (profile only, no adaptation)."""
 import argparse
 import collections
-import io
 import json
-import struct
-import sys
 
 import numpy as np
 

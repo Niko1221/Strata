@@ -54,7 +54,8 @@ def plan(data_dir: str | Path, engine: str | os.PathLike[str] | None = None, *, 
         text = (f"The DFlash2 drafter is {drafting.DOWNLOAD_GB:.1f} GB to download (it is packed to {drafting.PACK_GB:.2f} GB for the engine and the "
                 f"download is removed), from {drafting.REPO}, {drafting.LICENSE}. It needs about {drafting.vram_gb(data_dir, engine):.1f} GB of graphics memory, "
                 "less than the MTP's layer, which is not loaded beside it.")
-    return {"ready": ready, "gb": gb, "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir, model_name=model_name, backend=backend)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
+    return {"ready": ready, "gb": gb, "drafter_gb": pin.gb if tuned else drafting.DOWNLOAD_GB, "tuned": tuned, "file": pin.name if tuned else drafting.PACK_NAME,
+            "vram_gb": drafting.vram_gb(data_dir, engine), "selq4": drafting.uses_selector_q4(data_dir, engine), "pack": str(drafting.pack_path(data_dir, model_name=model_name, backend=backend)), "repo": drafting.REPO, "revision": drafting.REVISION, "text": text}
 
 
 def _packer():
@@ -156,15 +157,9 @@ def convert_selector(data_dir: str | Path, *, progress: Progress | None = None, 
 
 
 FEED_TIMEOUT = 8.0
-RETRY_AFTER_S = 12 * 3600          # Load (strata launch) asks the feed for the tuned drafter at most this often when the answer was "nothing"; setup and `strata drafting fetch` always ask
-MISS_MARK = ".tuned-feed-miss"
-
-
-def _recent_miss(data_dir: str | Path) -> bool:
-    try:
-        return time.time() - (Path(data_dir) / drafting.FOLDER / MISS_MARK).stat().st_mtime < RETRY_AFTER_S
-    except OSError:
-        return False
+RETRY_AFTER_S = drafting.RETRY_AFTER_S          # Load (strata launch) asks the feed for the tuned drafter at most this often when the answer was "nothing"; setup and `strata drafting fetch` always ask
+MISS_MARK = drafting.MISS_MARK
+_recent_miss = drafting.recent_miss              # (the start's "Run strata drafting fetch" line reads the same mark: strata_control/drafting.py fetch_hint)
 
 
 def _note_miss(data_dir: str | Path, missed: bool) -> None:

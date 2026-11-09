@@ -1,7 +1,8 @@
 // metal/tests/route_parity.cpp - moe_route (softmax + top-10 + the expert plan) against a CPU replica of
-// native_router.cu's rule, for 1..8 tokens; logits with deliberate ties.
+// native_router.cu's rule, for 1..8 tokens; logits with deliberate ties.  Experts and experts per token: the shape this build is compiled for.
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -12,6 +13,7 @@
 #include <vector>
 
 namespace {
+constexpr int TK = strata_metal::geo::TOPK, NE = strata_metal::geo::NEXP;   // the shape this build is compiled for (engine/geo.h); the kernel's logits row stride is 512
 constexpr int P_NG = 0, P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE, P_ETOK = P_GSTART + P_MAXE + 4,
               P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE, P_INTS = P_TOKENT + P_MAXE;
 struct MoeArgs {
@@ -22,9 +24,9 @@ struct MoeArgs {
 
 int main() {
     mtl::Context cx;
-    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"});
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"}, strata_metal::geo::prelude());
     mtl::Pipeline p = cx.pipeline(lib, "moe_route");
-    mtl::Buffer lg = cx.alloc(4 * 8 * 512), ids = cx.alloc(4 * 80), w = cx.alloc(4 * 80), plan = cx.alloc(4 * P_INTS);
+    mtl::Buffer lg = cx.alloc(4 * 8 * 512), ids = cx.alloc(4 * 8 * TK), w = cx.alloc(4 * 8 * TK), plan = cx.alloc(4 * P_INTS);
     ref::Rng r(9);
     int fails = 0;
     double worst_w = 0;
@@ -37,8 +39,8 @@ int main() {
         }
         MoeArgs a{};
         a.n_tok = nt;
-        a.topk = 10;
-        a.n_expert = 512;
+        a.topk = TK;
+        a.n_expert = NE;
         a.gx_gu = 1;
         a.gx_dn = 1;
         mtl::Dispatch d;
@@ -49,34 +51,34 @@ int main() {
         for (int t = 0; t < nt; ++t) {
             const float* l = lg.as<float>() + t * 512;
             float mx = -INFINITY;
-            for (int e = 0; e < 512; ++e) mx = std::max(mx, l[e]);
-            std::vector<double> pr(512);
+            for (int e = 0; e < NE; ++e) mx = std::max(mx, l[e]);
+            std::vector<double> pr(NE);
             double s = 0;
-            for (int e = 0; e < 512; ++e) s += (pr[e] = std::exp((double)l[e] - mx));
-            for (int e = 0; e < 512; ++e) pr[e] /= s;
+            for (int e = 0; e < NE; ++e) s += (pr[e] = std::exp((double)l[e] - mx));
+            for (int e = 0; e < NE; ++e) pr[e] /= s;
             // top 10: largest probability, ties -> lower index (probabilities of equal logits are equal)
-            std::vector<int> order(512);
-            for (int e = 0; e < 512; ++e) order[e] = e;
+            std::vector<int> order(NE);
+            for (int e = 0; e < NE; ++e) order[e] = e;
             std::stable_sort(order.begin(), order.end(), [&](int x, int y) { return l[x] > l[y]; });
             double ssum = 0;
-            for (int k = 0; k < 10; ++k) ssum += pr[order[k]];
-            for (int k = 0; k < 10; ++k) {
-                if (ids.as<int>()[t * 10 + k] != order[k]) { ++fails; break; }
+            for (int k = 0; k < TK; ++k) ssum += pr[order[k]];
+            for (int k = 0; k < TK; ++k) {
+                if (ids.as<int>()[t * TK + k] != order[k]) { ++fails; break; }
                 const double ref = pr[order[k]] / std::max(ssum, 6.103515625e-5);
-                worst_w = std::max(worst_w, std::fabs(w.as<float>()[t * 10 + k] - ref) / ref);
+                worst_w = std::max(worst_w, std::fabs(w.as<float>()[t * TK + k] - ref) / ref);
             }
         }
         // the plan
         const int* P = plan.as<int>();
-        std::set<int> distinct(ids.as<int>(), ids.as<int>() + nt * 10);
+        std::set<int> distinct(ids.as<int>(), ids.as<int>() + nt * TK);
         bool ok = P[P_NG] == (int)distinct.size();
         int gi = 0;
         for (int e : distinct) {
             if (P[P_GEXP + gi] != e) ok = false;
             int j = P[P_GSTART + gi];
-            for (int i = 0; i < nt * 10; ++i)
+            for (int i = 0; i < nt * TK; ++i)
                 if (ids.as<int>()[i] == e) {
-                    if (P[P_ETOK + j] != i / 10 || P[P_TOKENT + i] != j) ok = false;
+                    if (P[P_ETOK + j] != i / TK || P[P_TOKENT + i] != j) ok = false;
                     ++j;
                 }
             if (j != P[P_GSTART + gi + 1]) ok = false;

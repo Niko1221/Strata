@@ -8,9 +8,11 @@ import './helpers/isolate-profile.mjs';   // a test run never writes the owner's
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir as osTmpdir } from 'node:os';
+// the canonical scratch root: on a Mac the temp folder is /var/folders/..., which resolves to /private/var/...; the paths the host reports are the resolved ones
+const tmpdir = () => realpathSync(osTmpdir());
 import { createNativeControl } from '../server/native-control.mjs';
 import { ControlError } from '../server/control-runtime.mjs';
 

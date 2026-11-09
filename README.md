@@ -66,7 +66,7 @@ disk space.
 | ISTA-DAS Coder (half of the experts removed) | 191 GB | about 197 GB |
 
 Runs on NVIDIA RTX 30, 40 and 50 series (Windows and Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo
-(Windows), and Apple Silicon Macs with 64 GB or more, text only ([Mac](docs/DEEPSEEK_MAC.md)). Setup downloads the files and the DeepSeek engine, then starts the model.
+(Windows), and Apple Silicon Macs with 64 GB or more ([Mac](docs/DEEPSEEK_MAC.md)). Setup downloads the files and the DeepSeek engine, then starts the model.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
@@ -101,7 +101,7 @@ Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-me
 Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
 downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
 
-<sub>Files: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">

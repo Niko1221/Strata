@@ -63,7 +63,7 @@
 | 2.00 bpw | 257 GB | 約265 GB |
 | 2.25 bpw | 274 GB | 約280 GB |
 
-NVIDIA RTX 30・40・50 シリーズ（Windows と Linux）と、AMD Radeon AI PRO R9700（Linux）で動きます。セットアップがファイルと DeepSeek エンジンをダウンロードし、モデルを起動します。
+NVIDIA RTX 30・40・50 シリーズ（Windows と Linux）、AMD Radeon AI PRO R9700（Linux）、AMD Ryzen AI Max — Strix Halo（Windows）、メモリ 64 GB 以上の Apple シリコン搭載 Mac（[Mac](docs/DEEPSEEK_MAC.md)）で動きます。セットアップがファイルと DeepSeek エンジンをダウンロードし、モデルを起動します。
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
@@ -96,7 +96,7 @@ Strata 0.2.5 で 2.00 bpw のセットを使って測定しました。「出力
 
 アプリをインストールし、モデルを選んで、チャットを始めましょう。インストーラーはシステムごとに1つです。初回起動時に、アプリがお使いのグラフィックスカード用のエンジンをダウンロードします。[インストーラーのヘルプ](docs/INSTALL.md#the-app)。
 
-<sub>ファイル: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>ファイル: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="チャットとライブのコードプレビューを並べて表示した Strata デスクトップアプリ">

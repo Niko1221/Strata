@@ -87,6 +87,8 @@
 // The RAW tail is fp32 for the same reason and because it is only `idx_block - 1` rows.
 #pragma once
 
+#include "strata/core/geometry.hpp"
+
 #include <cstdint>
 
 namespace strata::kernels {
@@ -108,8 +110,10 @@ struct QsaShapes {
 /// The real artifact's geometry, so no caller transcribes it by hand.
 inline QsaShapes qsa_real_shapes() {
     QsaShapes s;
-    s.n_head = 24; s.n_head_kv = 2; s.head_dim = 256; s.n_rot = 64;
-    s.idx_n_head = 4; s.idx_dim = 128; s.idx_block = 4; s.idx_top_k = 2048;
+    // the shape the engine is compiled for (core/geometry.hpp: 24 / 2 / 256 / 64, indexer 4 x 128, block 4, top-k 2048 for Flash-Next)
+    const auto& g = strata::core::kCompiledGeometry;
+    s.n_head = g.n_head; s.n_head_kv = g.n_head_kv; s.head_dim = g.head_dim; s.n_rot = g.n_rot;
+    s.idx_n_head = g.idx_q_heads; s.idx_dim = g.idx_key_dim; s.idx_block = g.idx_block; s.idx_top_k = g.idx_top_k;
     // one page = one indexer block (4 cells): the granule KV streaming keeps resident (kv_stream.hpp). The readers
     // resolve a row per cell anyway, so the page size costs them nothing (measured: identical output and speed).
     s.page_size = 4;

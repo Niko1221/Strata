@@ -36,15 +36,15 @@ Comments are for this document only; actual feed files must be strict JSON.
   "sequence": 12,                           // goes up with every feed; an older one than the last accepted is refused
   "generated_at": "2026-10-20T10:00:00Z", "expires_at": "2027-10-20T10:00:00Z",   // expires_at may be null
   "app": {                                  // exactly Tauri's static updater JSON, plus sha256/size per platform
-    "version": "0.2.5", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
-    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.9-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
+    "version": "0.2.13", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
+    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.13-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
   },
-  "control": {"version": "0.1.50", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
+  "control": {"version": "0.1.59", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
                                                   "size": 0, "sha256": "...", "installed_bytes": 0, "entry": "strata.py"}]},
   "engine": {"packages": [{
-    "version": "0.1.50", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
+    "version": "0.1.59", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
     "archs": ["sm_75", "sm_86", "sm_89", "sm_120", "compute_120"], "min_driver": {"nvidia": "580.65"}, "min_runtime": null,
-    "build_id": "be885026f96a-cuda13.0", "format": "tar.gz", "url": "engine/strata-engine-0.1.50-linux-x86_64-cuda-cuda13.tar.gz",
+    "build_id": "be885026f96a-cuda13.0", "format": "tar.gz", "url": "engine/strata-engine-0.1.59-linux-x86_64-cuda-cuda13.tar.gz",
     "size": 505568970,                      // bytes of the archive
     "sha256": "...",                        // of the archive
     "manifest_sha256": "...",               // of the package's engine-component.json (it holds every file's hash)
@@ -60,6 +60,48 @@ The DeepSeek V4.1-Flash engine `strata-dsv41` reaches a PC in one of two ways. T
 (`package_engine.py --require-dsv41`), or it is a separate package in the feed's `dsv41` member, packed with
 `pack-engine --prefix strata-dsv41`. The separate package installs in `<data>/engine-dsv41/` beside the engine, never inside it
 (`strata_control/dsv41_engine.py`), and is fetched when DeepSeek is chosen. `STRATA_DSV41_EXE` points setup at a build of your own.
+
+**A Qwen4 model of another shape (`shape_engines`, optional).** An engine is compiled for one model geometry (`-DSTRATA_GEOMETRY=...`, `cmake/strata_geometry.cmake`) and refuses a GGUF of another one at load. A new-shape Qwen4 therefore ships with its own engine as a
+separate component, picked by the model, and never in place of the Strata engine, so Flash-Next and every other model keep the engine they have (`strata_control/shape_engine.py`):
+
+```jsonc
+"shape_engines": {"packages": [{            // the same entry as "engine" (pack-engine writes it), plus the shape = the geometry's name the engine was compiled for
+  "shape": "q4_lite", "version": "0.1.59", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13", "archs": ["sm_120"], "min_driver": {"nvidia": "580.65"},
+  "min_runtime": "0.1.58", "build_id": "...", "format": "tar.gz", "url": "strata-q4-lite-0.1.58-linux-x86_64-cuda-cuda13.tar.gz", "size": 0, "sha256": "...", "manifest_sha256": "...", "installed_bytes": 0}]},
+"models": {"packages": [{"id": "qwen4-lite", "family": "qwen4exp_q4_lite", ...}]}     // the family names the shape: qwen4exp_<shape>
+```
+
+* Package: `package_engine.py --shape q4_lite ...` (the build made with `-DSTRATA_GEOMETRY=q4_lite`, or `-DSTRATA_GEOMETRY_FILE=` for a header that is not in the tree: use that header's name). The manifest's id is the shape's component (`strata-q4-lite`) and it carries `"shape"`; both are in the signed manifest. `sign-package`, then `pack-engine` (the archive is `strata-q4-lite-<version>-<platform>-<backend>[-<variant>]`, the entry names the shape), one folder of entries, `build-feed --shapes FOLDER`. `build-feed` refuses a model whose family is `qwen4exp_<shape>` when the feed has no engine for that shape; `verify-feed` lists the shape engines. Give the package `--min-runtime` of the Control that knows shape engines.
+* A PC: the model's family (`qwen4exp_q4_lite`) makes setup (the app's Download and the Terminal's launch) fetch the engine of that shape through the signed feed when the model is chosen (resumable download, the archive's SHA-256, the manifest hash the feed names, the package signature, every file's hash, the shape in the manifest, then `strata --version` once and `strata --geometry`, which must print that shape: an engine compiled for another geometry is refused at install, and an engine from before the flag is accepted. Build the engine with `-DSTRATA_GEOMETRY_FILE=` of a header whose label is the shape name: `q4geo_synth.py --from-gguf ... --label q4_lite`), into `<components>/shapes/q4_lite/engine/<version>-<platform>-<backend>/`. The Strata engine's folder is not read or written. The model's run config says `"exe": "component:strata-q4-lite"`; every start looks it up there and checks every file. `strata update` brings an installed shape engine up to date beside the older one (the newest two are kept) and never installs one by itself. Starting never downloads.
+* Older Controls: they ignore the member (no `engine` entry, no `dsv41` entry), they read only `strata-engine` manifests (a shape package copied into their engine folder is refused: its id is another component), and the model's family is one they do not know, so they list it as "needs a newer Strata" and never offer it.
+* A Mac does not offer a model of its own shape yet (that install path has no shape step).
+
+The `models` member (optional) is the model list: a new model can ship as a signed feed update, with no Control package. Each entry is one model:
+
+```jsonc
+"models": {"packages": [{
+  "id": "qwen4-30b", "title": "Qwen4 30B", "by": "Qwen",  "about": "one plain sentence",
+  "licence": "Apache 2.0", "licence_url": "https://huggingface.co/Qwen/Qwen4-30B",     // the url must be https
+  "family": "qwen4exp",                     // the GGUF architecture the engine runs (`strata --families`): qwen4exp (the Flash-Next install path) or qwen35moe (the Qwen3.6 one)
+  "repo": "unsloth/Qwen4-30B-GGUF", "revision": "<40 hex>",                              // the pinned commit
+  "quants": [{"name": "Q4_K_M", "about": "4-bit", "ram_gb": 24, "arena_gb": 17.0,      // setup's recommendation for this size; arena_gb optional
+              "files": [{"name": "Qwen4-30B-Q4_K_M-00001-of-00002.gguf", "path": "Q4_K_M/Qwen4-30B-Q4_K_M-00001-of-00002.gguf", "size": 123, "sha256": "..."}]}],
+  "mmproj": {"name": "mmproj-F16.gguf", "size": 123, "sha256": "..."}, "pictures": true, // pictures need the mmproj
+  "drafter": "mtp",                         // mtp | none
+  "context": 131072,                        // the default context (informational)
+  "min_engine": "0.2.12",                   // the first engine that reads it; setup refuses an older one as for a built-in model
+  "kv_bytes_per_token": 90112, "mtp_drafts": 2, "state_gb": 0.07                         // qwen35moe only: the cache figures setup shows (kv_bytes_per_token is required there)
+}]}
+```
+
+Control keeps a model only if the whole entry is well-formed (ids, 40-hex revision, https licence url, plain `.gguf` file names, positive sizes, 64-hex SHA-256, no file reused by two sizes);
+a bad entry is left out with one log line and the rest of the feed and the other models work. A model is added to setup's own tables, so the menus list it after the built-in ones and
+the install is the built-in one: the revision and the file pins go where `download` looks them up, the SHA-256 is checked after the download and a wrong file is kept as `.bad`. A `qwen4exp`
+size is one `.gguf` or numbered parts `...-00001-of-0000N.gguf` (up to 9) of one folder; a `qwen35moe` size is one `.gguf`. A model whose family the installed engine does not run is listed as not
+available on this engine and never offered; a family this Control does not know is the same. The last verified feed's list is kept in `<components>/.updates/feed-models.json` (the signed
+feed and its signature, checked again when read), so an offline PC still sees it; a newer feed without the member withdraws the list, an older (replayed) feed is ignored. `STRATA_FEED_MODELS=0`
+turns the whole thing off. Build it with `feed_tool.py model-files FILE... [--repo-dir Q4_K_M]` (sizes and hashes of the real files) and `build-feed --models FOLDER` (the folder holds the
+`<id>.entry.json` files; a malformed one stops the build); `verify-feed` lists the models and exits 3 if Control would drop one. Older Controls (0.2.11 and before) ignore the member.
 
 The `drafters` member lists the tuned DFlash2 drafter (`strata_control/drafting.py` TUNED_NAME: Strata's fine-tuned copy of incoai/Qwen3.8-Flash-Next-DFlash2, Apache-2.0,
 modified by Strata). Control fetches it for the Mac sets that have a measured entry (`SET_DEFAULTS`: UD-Q4_K_XL and UD-IQ4_XS-v31) during setup, `strata launch` and
@@ -153,8 +195,8 @@ All signing happens on the release PC, on the finished files.
 
 **What is built (per OS)**
 
-* *The installer*, one per OS (0.2.5). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
-  Windows: `Strata-0.2.9-windows-x64-setup.exe`; Linux: `Strata-0.2.9-linux-x86_64.AppImage`; Mac: `Strata-0.2.9-macos-arm64.dmg` for people and
+* *The installer*, one per OS (0.2.13). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
+  Windows: `Strata-0.2.13-windows-x64-setup.exe`; Linux: `Strata-0.2.13-linux-x86_64.AppImage`; Mac: `Strata-0.2.13-macos-arm64.dmg` for people and
   `Strata.app.tar.gz` as the updater archive (the updater cannot install from a dmg). The Windows and Linux files are both the first download and the
   file `latest.json` names; the first start of the app downloads the engine for the card (the first-run card), or installs a file the person already has.
   Why: an app update must not carry an engine, and the right engine depends on the card. Engines come per card from the signed feed
@@ -164,18 +206,18 @@ All signing happens on the release PC, on the finished files.
 
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>        # every engine package (the Mac app bundles its UNSIGNED copy)
     python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix=
-    python packaging/feed_tool.py pack-control <control folder> --version 0.1.50 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
+    python packaging/feed_tool.py pack-control <control folder> --version 0.1.59 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
     # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file
-    # (0.1.50), not the app version: a Control package newer than the installed one is installed by `strata update`.
+    # (0.1.59), not the app version: a Control package newer than the installed one is installed by `strata update`.
     # Pack Linux and Mac packages on Linux / the Mac or on Windows with this tool: it sets the execute bit from the file header either way.
     cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows installer (no engine inside)
     # Linux: tauri build --bundles appimage (no engine inside) is the AppImage
     # on the release PC, per updater artifact (Windows setup .exe, Linux .AppImage, Mac Strata.app.tar.gz):
     npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.5 --archive Strata-0.2.9-windows-x64-setup.exe --sig Strata-0.2.9-windows-x64-setup.exe.sig --notes "..."
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.5 --archive Strata-0.2.9-linux-x86_64.AppImage --sig Strata-0.2.9-linux-x86_64.AppImage.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.5 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
-    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json [--dsv41 RELEASE/dsv41] [--drafters RELEASE/drafters]
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.13 --archive Strata-0.2.13-windows-x64-setup.exe --sig Strata-0.2.13-windows-x64-setup.exe.sig --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.13 --archive Strata-0.2.13-linux-x86_64.AppImage --sig Strata-0.2.13-linux-x86_64.AppImage.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.13 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
+    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json [--dsv41 RELEASE/dsv41] [--shapes RELEASE/shapes] [--drafters RELEASE/drafters]
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
 `set-app-platform` checks each `.sig` against the public key in `tauri.conf.json` over the exact bytes, so a file signed with another key, or changed after
@@ -222,6 +264,17 @@ Everything above runs against a folder or a loopback server: `tests/terminal/tes
 `tests/terminal/test_updater.py` (end to end against a loopback HTTP feed with stub engines: update, test-start, switch; a failing test start
 keeps the old engine; an interrupted download resumes; rollback; Control; the app installer's minisign check), `apps/host/tests/component-updates.test.mjs`
 (the Settings buttons). For a real engine on a box, build a package with `packaging/package_engine.py`, serve it from a local feed made by `packaging/make_local_feed.py`, and run `strata update --feed` against it.
+
+### Release gate: a feed model installed from a real file
+
+The model list (`models` member) has a gate with a real file, not a mock: `tools/feed_model_install_gate.py` writes a small synthetic qwen4exp GGUF
+(`tools/q4geo_synth.py`), signs a models-only feed with a throw-away key, serves the file from a loopback Hugging Face stand-in, and runs `setup.py` in the
+app's mode (no engine, no pip) against it. It fails when setup raises (`KeyError: 'mmproj'` for a model with no picture reader), fetches the Flash-Next draft
+layer for `drafter: none`, writes a second copy of the experts instead of a RAM budget, or keeps the shipped 48 x 512 expert profile for a model of another shape;
+a second run must change nothing. It runs as `tools/test_feed_model_install_realfile.py` in `python tools/check` (py-tools) when a llama.cpp checkout is
+given (`STRATA_TEST_LLAMA_CPP`, for its gguf-py), and is SKIPPED with that reason otherwise: set the variable wherever the release gate runs. With
+`--full --tokenizer-from <real shard> --engine <engine folder built for that shape>` it also starts the engine from the run config and sends one chat request.
+Run it before every release that touches `setup.py`, `strata_control/feed_models.py`, `strata_control/setup_config.py` or the feed schema, and before a Qwen4 day.
 
 ## History / older measurements
 

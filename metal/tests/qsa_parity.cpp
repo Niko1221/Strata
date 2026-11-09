@@ -6,6 +6,7 @@
 //   qsa_parity --bench [P]  GPU time of the window's kernels at context P, 1 and 3 tokens
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +17,8 @@
 #include <vector>
 
 namespace {
-constexpr int QH = 24, QKV = 2, QD = 256, IH = 4, ID = 128, BUDGET = 2051, CH = 64, NCH = (BUDGET + CH - 1) / CH;
+constexpr int QH = strata_metal::geo::QH, QKV = strata_metal::geo::QKV, QD = strata_metal::geo::QD, IH = strata_metal::geo::IH, ID = strata_metal::geo::ID,
+              BUDGET = strata_metal::geo::BUD, CH = 64, NCH = (BUDGET + CH - 1) / CH;
 struct QsaArgs { uint32_t pos0, pos_base, max_cells, n_tok; float eps; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 struct Err {
@@ -37,7 +39,7 @@ int main(int argc, char** argv) {
     }
     const int MAXT = 8, MAXC = std::max(4096, (P + 64) / 4 * 4 + 64);
     mtl::Context cx;
-    const int lib = cx.compile({"qsa.metal", "qsa2.metal"}, "#define NO_GGML_COMMON 1\n");
+    const int lib = cx.compile({"qsa.metal", "qsa2.metal"}, strata_metal::geo::prelude() + "#define NO_GGML_COMMON 1\n");
     // QSA_TOPK=1: the v1 top-k; QSA_ATTN=1|2|3 (default 3): which attention (2 has its own chunking and merge)
     const int av = std::getenv("QSA_ATTN") ? std::atoi(std::getenv("QSA_ATTN")) : 1;
     const bool v2 = av == 2;
@@ -93,7 +95,7 @@ int main(int argc, char** argv) {
                   mtl::Arg::B(ikn), mtl::Arg::B(cs), mtl::Arg::B(qcur), mtl::Arg::B(qidx), mtl::Arg::B(kq),
                   mtl::Arg::B(vq), mtl::Arg::B(ksc), mtl::Arg::B(vsc), mtl::Arg::B(tail), mtl::Arg::B(dead),
                   mtl::Arg::B(pooled), mtl::Arg::V(a), mtl::Arg::B(mtab)};
-        d.grid[0] = 33;
+        d.grid[0] = strata_metal::geo::QPREP;
         d.grid[1] = nt;
         d.tg[0] = 256;
         return d;
