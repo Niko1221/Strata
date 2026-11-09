@@ -41,16 +41,20 @@ test('the page: Control\'s title when it has one (no change for an install witho
 test('the Use dialog (owner 11-09): a shape group says "{model} runs on engine {version} from its next start." with the group title; Strata and DeepSeek keep their sentence', () => {
   const page = read(new URL('../src/components/SettingsEngine.tsx', import.meta.url), 'utf8');
   assert.match(page, /const useGroup = use \? groups\.find\(g => g\.family === use\.family\) : undefined;/);
-  assert.match(page, /useGroup\?\.family\.startsWith\('shape:'\) \? tr\("\{0\} runs on engine \{1\} from its next start\.", \[engineGroupTitle\(useGroup, native\?\.catalog\?\.families\), use\?\.version \?\? ''\]\) : tr\("Models you start from now on run on engine \{0\}\. Your models and settings stay as they are\. You can switch back at any time\."/);
+  assert.match(page, /useGroup\?\.family\.startsWith\('shape:'\) \? tr\("\{0\} runs on engine \{1\} from its next start\. Your models and settings stay as they are\. You can switch back at any time\.", \[engineGroupTitle\(useGroup, native\?\.catalog\?\.families\), use\?\.version \?\? ''\]\) : tr\("Models you start from now on run on engine \{0\}\. Your models and settings stay as they are\. You can switch back at any time\."/);
   // the words as the person reads them, with the owner's example
   const en = JSON.parse(read(new URL('../src/locales/engine-en.json', import.meta.url), 'utf8'));
-  const key = Object.keys(en).find(k => en[k] === '{0} runs on engine {1} from its next start.');
+  const key = Object.keys(en).find(k => en[k] === '{0} runs on engine {1} from its next start. Your models and settings stay as they are. You can switch back at any time.');
   assert.ok(key, 'in the English catalog');
   const title = engineGroupTitle({ family: 'shape:q4_lite', shape: 'q4_lite', title: null, engines: [] }, [{ family: 'qwen4exp_q4_lite', title: 'Qwen4' }]);
-  assert.equal(en[key].replace('{0}', title).replace('{1}', '0.1.60'), 'Qwen4 runs on engine 0.1.60 from its next start.');
+  assert.equal(en[key].replace('{0}', title).replace('{1}', '0.1.60'), 'Qwen4 runs on engine 0.1.60 from its next start. Your models and settings stay as they are. You can switch back at any time.');
   for (const lang of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) {
     const t = JSON.parse(read(new URL(`../src/locales/engine-${lang}.json`, import.meta.url), 'utf8'))[key];
     assert.ok(t && t.includes('{0}') && t.includes('{1}'), lang);
+    // only the first sentence is new: the reassurance is the existing translation of the Strata engine's sentence, word for word
+    const use = JSON.parse(read(new URL(`../src/locales/engine-${lang}.json`, import.meta.url), 'utf8')).et15;
+    const rest = use.slice(use.search(/[。.]\s*/) + use.match(/[。.]\s*/)[0].length);
+    assert.ok(rest.length > 5 && t.endsWith(rest), lang + ': ' + t);
   }
   assert.ok(Object.values(en).includes('Models you start from now on run on engine {0}. Your models and settings stay as they are. You can switch back at any time.'), 'the Strata / DeepSeek sentence is unchanged');
 });

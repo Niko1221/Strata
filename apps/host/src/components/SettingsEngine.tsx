@@ -89,7 +89,7 @@ export function SettingsEngine() {
     <Dialog open={!!use} compact title={tr("Use engine {0}?", [use?.version ?? ''])} onClose={() => { if (!pending) setUse(null); }}
       actions={<><Btn disabled={pending} onClick={() => setUse(null)}>{tr("Cancel")}</Btn><Btn variant="primary" disabled={pending || running} onClick={() => use && void run('use', use)}>{pending ? tr("Working…") : tr("Use engine {0}", [use?.version ?? ''])}</Btn></>}>
       {/* a Qwen4 model shape's engine runs only that model (owner 11-09): its own sentence, named like the group's heading */}
-      <p>{useGroup?.family.startsWith('shape:') ? tr("{0} runs on engine {1} from its next start.", [engineGroupTitle(useGroup, native?.catalog?.families), use?.version ?? '']) : tr("Models you start from now on run on engine {0}. Your models and settings stay as they are. You can switch back at any time.", [use?.version ?? ''])}</p>
+      <p>{useGroup?.family.startsWith('shape:') ? tr("{0} runs on engine {1} from its next start. Your models and settings stay as they are. You can switch back at any time.", [engineGroupTitle(useGroup, native?.catalog?.families), use?.version ?? '']) : tr("Models you start from now on run on engine {0}. Your models and settings stay as they are. You can switch back at any time.", [use?.version ?? ''])}</p>
       {needNewer.length ? <p className="small muted">{tr("These models need a newer engine and may not start on it: {0}.", [needNewer.join(', ')])}</p> : null}
       {running ? <p className="small muted" role="status">{tr("A model is running. Unload it in Models first, then switch.")}</p> : null}
     </Dialog>
