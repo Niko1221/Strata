@@ -14,7 +14,7 @@ import { transform } from 'esbuild';
 const root = resolve(import.meta.dirname, '..');
 const repo = resolve(root, '../..');
 const { code } = await transform(readFileSync(resolve(root, 'src/lib/native-fit.ts'), 'utf8'), { loader: 'ts', format: 'esm' });
-const { cardRoomGb, versionFit } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
+const { cardRoomGb, fitOn, versionFit } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 const PCS = {
   // Strix Halo, Windows (QAGUI-STRIX 11-09): 63.6 GB RAM, a 64 GB BIOS carve-out + 31.8 GB shared = 95.8 GB the GPU can reach
@@ -70,4 +70,16 @@ test('the Models page and the first-run page give the label the card room, not t
   assert.match(models, /versionFit\(selectedSize, labelHardware,/);
   assert.match(models, /hardware=\{labelHardware\}/);
   assert.match(read('components/GuidedSetup.tsx'), /vram_gb: cardRoomGb\(/);
+});
+
+test('the This computer card follows the same rule: on Strix Halo Q8_0 now says part is read from the SSD, as the label does', () => {
+  const q8 = { model: 'Q8_0', experts_gb: 128.3, fit_gb: 133.8 };
+  const now = fitOn(q8, { ram_gb: 63.6, vram_gb: cardRoomGb(PCS.strix.cards) }, true, { context: 131072, kv: 'int8' });
+  const before = fitOn(q8, { ram_gb: 63.6, vram_gb: 95.8 }, true, { context: 131072, kv: 'int8' });
+  assert.ok(now.spillGb > 0, 'some of it from the SSD: ' + JSON.stringify(now));
+  assert.equal(before.spillGb, 0, 'the shared pool counted twice said it all fits');
+  assert.ok(now.vramUseGb + now.ramUseGb <= 63.6 + 64, 'never more than the memory there is');
+  const models = readFileSync(resolve(root, 'src/components/NativeModels.tsx'), 'utf8');
+  assert.match(models, /fit=\{selectedSize \? fitOn\(selectedSize, labelHardware,/);
+  assert.match(models, /vram_gb: cardRoomGb\(\[card \?\? pcGpu\]/);
 });
