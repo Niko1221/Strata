@@ -2787,6 +2787,7 @@ class StrataEngine:
                 self.rid_q.pop(rid, None)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         done = False
+        request_process = self.proc
         # #481: how long the engine may stay silent from here.  Until the first line: the request's first prompt
         # chunk at the slowest prompt reading on top of silence_s; a PP line resets it to its own chunk's time.
         silence = float(self.silence_s or 0)
@@ -2888,6 +2889,7 @@ class StrataEngine:
                 # answers.  An engine that honours STOP gets the current allowance in all (a STOP during a prompt
                 # chunk is seen after it); an older one runs on to max_new, so each line only has to come in time.
                 heard = time.monotonic()
+                overrun, drain_ok = [], True
                 while True:
                     left = allow - (time.monotonic() - heard) if allow > 0 else None
                     try:
@@ -2904,7 +2906,19 @@ class StrataEngine:
                         break
                     if line.startswith("DONE"):
                         self._parse_done(line)
+                        # PR #3971: STOP can finish a window past the consumer's thinking-budget cut.
+                        # Keep only this solo request's acknowledged tokens in its own DONE record;
+                        # replicas snapshot it before releasing the engine. No partial/failed drain is reused.
+                        # Native STOP acknowledges as "cancel"; external cancellation still must not carry.
+                        if (overrun and drain_ok and not self.multi and self.proc is request_process
+                                and not cancel.is_set() and self.last.get("finish") in ("stop", "length", "cancel")):
+                            self.last = {**self.last, "_thinking_overrun": tuple(overrun)}
                         break
+                    if line.startswith("T "):
+                        if line[2:].strip().isdigit():
+                            overrun.append(int(line[2:]))
+                        else:
+                            drain_ok = False
                     if not self.can_stop:
                         heard = time.monotonic()
             if rid is not None:                           # this request's lines are over (a late one goes nowhere)
@@ -6534,12 +6548,23 @@ class Service:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
                         extra = self.tok.encode(text, parse_special=True)
-                        if max_new - n - len(extra) < 1:
+                        # PR #3971: carry plain thinking tokens drained after the budget cut, so the
+                        # continuation still extends the committed state. Use this leg's DONE, not
+                        # a shared engine attribute that another request can overwrite.
+                        over = list((segment_done or {}).get("_thinking_overrun") or ()) \
+                            if wrap and segment_done is not segment_before else []
+                        if over and (any(t in self.stop_ids for t in over) or
+                                     any(c in self.tok.decode(over) for c in "<\ufffd") or
+                                     max_new - n - len(over) - len(extra) < 1):
+                            over = []
+                        if max_new - n - len(over) - len(extra) < 1:
                             break                       # no room left to answer: "length", as without a budget
                         if wrap:
-                            print(f"[strata] thinking budget reached ({thought} tokens): wrapping up the thinking",
+                            print(f"[strata] thinking budget reached ({thought} tokens"
+                                  f"{f', {len(over)} more in flight' if over else ''}): wrapping up the thinking",
                                   flush=True)
-                        for t in extra:
+                        seg = seg + over
+                        for t in over + extra:
                             n += 1
                             raw_ids.append(t)
                             thinking_n += parser.state in ("reasoning", "rcall")
