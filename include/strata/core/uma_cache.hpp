@@ -31,4 +31,15 @@ inline uint64_t uma_cache_room_bytes(uint64_t available, uint64_t reserve) {
     return available > reserve ? available - reserve : 0;
 }
 
+/// G16 (Q4-P8, 2026-11-08): the reserve the auto cache keeps free on Windows HIP when none was given.  A DISCRETE card of 15 GiB or more gets the floor (#1376: a
+/// 20 GB card ended with 323 MiB free at the default 700 and Windows paged); an INTEGRATED GPU (the device property `integrated`, the same test the UMA sizing above
+/// uses) does not: its pool is the RAM, the room the floor frees is taken straight back by the RAM budget's page-locked complement, and on a Strix Halo with
+/// UD-Q4_K_XL the prompt path's own buffers then found 0 MiB and the engine stepped its chunk down for ever.  `current_mib` is what the engine would use without
+/// the floor (the default 700); a reserve given on the command line never comes here.
+inline int wddm_auto_reserve_mib(bool integrated, uint64_t total_bytes, int current_mib, int floor_mib = 2560) {
+    constexpr uint64_t GiB = 1ull << 30;
+    if (integrated || total_bytes < 15 * GiB || current_mib >= floor_mib) return current_mib;
+    return floor_mib;
+}
+
 }  // namespace strata::core

@@ -138,6 +138,16 @@ class Build(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.p.prepare(b"not an image")
 
+    def test_a_jpeg_2000_picture_is_refused_before_it_is_decoded(self):
+        """#4220: JPEG 2000 is outside D.PICTURE_FORMATS (GHSA-78g4-xqwv-q3g8)."""
+        buf = io.BytesIO()
+        try:
+            Image.new("RGB", (16, 16)).save(buf, format="JPEG2000")
+        except (KeyError, OSError, ValueError):
+            self.skipTest("this Pillow cannot write JPEG 2000")
+        with self.assertRaises(ValueError):
+            self.p.prepare(buf.getvalue())
+
     def test_the_engine_limit_holds_for_a_huge_picture(self):
         w, h, rgb = self.p.prepare(png(3000, 2000))
         self.assertLessEqual(D.span_length(w, h), 1024)

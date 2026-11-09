@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the DeepSeek-V4.1-Flash engine component for Apple Silicon (strata-dsv41, backend metal).
 #
-#   bash packaging/mac/build_dsv41_engine.sh [--version 0.1.55] [--build DIR] [--out DIR] [--build-id ID]
+#   bash packaging/mac/build_dsv41_engine.sh [--version 0.1.59] [--build DIR] [--out DIR] [--build-id ID]
 #
 # Run it in the source tree on the Mac. It configures and builds the `strata_ds4` target (metal/CMakeLists.txt) when the binary is
 # missing, stages it as `strata-dsv41` beside the kernel sources the engine compiles at start-up, packages them with
@@ -18,7 +18,7 @@
 #   <exe>/metal/ggml-common.h
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-VERSION=0.1.55
+VERSION=0.1.59
 BUILD="$ROOT/build-metal"
 OUT="$ROOT/pkg/engine"
 BUILD_ID=""
@@ -51,10 +51,12 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/metal/kernels" "$STAGE/metal/src/engine/msl"
 cp "$EXE" "$STAGE/strata-dsv41"; chmod +x "$STAGE/strata-dsv41"
 cp "$ROOT"/metal/kernels/*.metal "$STAGE/metal/kernels/"
-for f in ds4_init ds4_iq ds4_mm ds4_quant mtp mtp_chain ple; do
+for f in ds4_init ds4_iq ds4_mm ds4_quant ds4_vision ds4_vision_mpp mtp mtp_chain ple; do
   cp "$ROOT/metal/src/engine/msl/$f.metal" "$STAGE/metal/src/engine/msl/" || exit 1
 done
 cp "$ROOT/third_party/ggml/ggml-common.h" "$STAGE/metal/"
+# antirez/ds4 (MIT): the Metal vision kernels follow it; its licence travels with the MSL
+cp "$ROOT/third_party/antirez-ds4/LICENSE" "$STAGE/metal/src/engine/msl/LICENSE-antirez-ds4"
 
 python3 "$ROOT/packaging/package_engine.py" --src "$STAGE" --backend metal --version "$VERSION" \
   --platform macos-arm64 --arch apple-gpu --entrypoint strata-dsv41 --build-id "$BUILD_ID" --no-picture-reader --include 'metal/**' --out "$OUT" || exit 1

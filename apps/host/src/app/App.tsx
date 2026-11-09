@@ -1,7 +1,7 @@
 import { tr } from '../lib/i18n';
 /** App shell: routes, setup takeover, palette, toasts. */
 import { useNative } from '../lib/native';
-import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, Suspense, useDeferredValue, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useSurfaceFocus } from '../lib/focus';
 import { closeSettings, useLocation } from '../lib/router';
 import { bootOnce, bootstrap, setNavOpen, setFocus, useStore, } from '../lib/store';
@@ -9,18 +9,20 @@ import { Sidebar } from './Sidebar';
 import { CommandPalette } from './CommandPalette';
 import { ShortcutsDialog } from './Shortcuts';
 import { FolderPathDialog } from '../components/FolderPathDialog';
-import { handleAppShortcut, runCommand } from '../lib/commands';
+import { MOD, handleAppShortcut, runCommand } from '../lib/commands';
 import { useMedia } from '../lib/responsive';
 import { Btn, Dialog, IconBtn, Toasts } from '../components/ui';
 import { Brand } from '../components/Brand';
-import { SetupScreen } from '../screens/Setup';
 import { ChatScreen } from '../screens/Chat';
-import { ModelRunScreen } from '../screens/ModelRun';
-import { ServingScreen } from '../screens/Serving';
-import { MonitorScreen } from '../screens/Monitor';
-import { TasksScreen } from '../screens/Tasks';
-import { SkillsScreen } from '../screens/Skills';
-import { SettingsScreen } from '../screens/Settings';
+import { lazyScreen, useLoadedModule } from '../lib/lazy-screen';
+// The start screen is Chat. Every other screen loads the first time it is opened (7.1), so the first start reads and runs less code.
+const loadSetup = () => import('../screens/Setup');
+const loadSettings = () => import('../screens/Settings');
+const ModelRunScreen = lazyScreen(() => import('../screens/ModelRun'), (m) => m.ModelRunScreen);
+const ServingScreen = lazyScreen(() => import('../screens/Serving'), (m) => m.ServingScreen);
+const MonitorScreen = lazyScreen(() => import('../screens/Monitor'), (m) => m.MonitorScreen);
+const TasksScreen = lazyScreen(() => import('../screens/Tasks'), (m) => m.TasksScreen);
+const SkillsScreen = lazyScreen(() => import('../screens/Skills'), (m) => m.SkillsScreen);
 function AppShell() {
     useStore(s => s.language);
     const location = useLocation();
@@ -49,7 +51,13 @@ function AppShell() {
     // demanding five steps before anything appears.
     const setupOpen = location.route === 'setup' || (!!setup && !setup.complete && !setup.dismissed) || firstRunOpen;
     // Hook runs here, after setupOpen exists — see src/lib/focus.ts.
-    useSurfaceFocus(setupOpen, setupRef);
+    // The dialogs open once their code has loaded, so they appear and take focus exactly as before.
+    const setupCode = useLoadedModule(loadSetup, setupOpen);
+    const setupShown = setupOpen && !!setupCode;
+    useSurfaceFocus(setupShown, setupRef);
+    const settingsWanted = location.query.get('settings') === '1';
+    const settingsCode = useLoadedModule(loadSettings, settingsWanted);
+    const routeShown = useDeferredValue(location.route);
     return (<div className="app" data-rail={compact ? !navOpen : rail} data-layout={mobile ? 'mobile' : compact ? 'compact' : 'desktop'} data-nav-open={navOpen || undefined} data-focus={focus && location.route === 'chat' || undefined}>
       <Sidebar containerRef={navRef}/>
       {tr(navOpen && compact ? <button className="nav-scrim" tabIndex={-1} aria-hidden="true" aria-label={tr("Close navigation")} onClick={() => setNavOpen(false)}/> : null)}
@@ -62,16 +70,16 @@ function AppShell() {
         </div>
         <ConnectionBar />
         {tr(focus && location.route === 'chat' ? <FocusBar /> : null)}
-        {tr(!ready ? <BootSkeleton /> : <RouteView route={location.route}/>)}
+        {tr(!ready ? <BootSkeleton /> : <Suspense fallback={<BootSkeleton />}><RouteView route={routeShown}/></Suspense>)}
       </main>
       <CommandPalette open={paletteOpen}/>
-      <Dialog open={location.query.get('settings') === '1'} title={tr("Settings")} className="settings-dialog" onClose={closeSettings}><SettingsScreen /></Dialog>
+      <Dialog open={settingsWanted && !!settingsCode} title={tr("Settings")} className="settings-dialog" onClose={closeSettings}>{settingsCode ? <settingsCode.SettingsScreen /> : null}</Dialog>
       <ShortcutsDialog />
       <FolderPathDialog />
-      {tr(setupOpen ? (<div className="setupmodal" role="dialog" aria-modal="true" aria-label={tr("Set up Strata")}>
+      {tr(setupShown ? (<div className="setupmodal" role="dialog" aria-modal="true" aria-label={tr("Set up Strata")}>
           <div className="scrim" data-open="true" aria-hidden="true"/>
           <div className="setupmodal__surface" ref={setupRef}>
-            <SetupScreen />
+            {setupCode ? <setupCode.SetupScreen /> : null}
           </div>
         </div>) : null)}
       <Toasts />
@@ -111,6 +119,9 @@ function ConnectionBar() {
  * way out. Everything else on this screen is the conversation.
  */
 function FocusBar() {
+    // The hints are chords, not decorations: on Windows the modifier is Ctrl and
+    // Alt is spelled out, because ⌘ and ⌥ are not on that keyboard.
+    const mac = MOD === '⌘';
     const native = useNative(), nativeCurrent = native?.instances.find(i => i.id === native.defaultId);
     const library = useStore((s) => s.library);
     const monitor = useStore((s) => s.monitor);
@@ -139,11 +150,11 @@ function FocusBar() {
           {/* A chord reads as one key: the two caps sit tight together, with
             the space before the label doing the separating. */}
           <span className="focusbar__chord">
-            <kbd>⌥↑</kbd>
-            <kbd>⌥↓</kbd>
+            <kbd>{mac ? '⌥↑' : 'Alt+↑'}</kbd>
+            <kbd>{mac ? '⌥↓' : 'Alt+↓'}</kbd>
           </span>{tr("turns")}</span>
         <span>
-          <kbd>⌘↓</kbd>{tr(" latest")}</span>
+          <kbd>{mac ? '⌘↓' : 'Ctrl+↓'}</kbd>{tr(" latest")}</span>
         <span>
           <kbd>{tr("Esc")}</kbd>{tr(" leave")}</span>
       </span>

@@ -38,6 +38,9 @@ SHARD = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf\Z", re.I)
 SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "qwen/IQ3_S",
                                    "swift/IQ2_XS", "swift/IQ3_XXS", "swift/IQ3_S", "coder/IQ1_M",
                                    "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "unsloth/UD-Q5_K_XL", "unsloth/UD-Q6_K_XL",
+                                   # round 0214: Unsloth's v3.1 sets (revision d9620119); the v3.1 UD-IQ4_XS has its own name, its Hub file names are UD-IQ4_XS's with four shards
+                                   "unsloth/UD-IQ1_M", "unsloth/UD-Q2_0", "unsloth/UD-IQ2_XS", "unsloth/UD-Q2_K_XL", "unsloth/UD-IQ3_XXS",
+                                   "unsloth/UD-Q3_K_XL", "unsloth/UD-IQ4_XS-v31",
                                    "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M"})
 
 
@@ -330,7 +333,7 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
         return None
     first = shards[0]
     cfg = discovery.run_config_for(first, discovery.places(here=ROOT))
-    beside = discovery.prepared_beside(first)
+    beside = discovery.prepared_beside(first, discovery.remembered_data_dirs())     # the data folder in use too: a model folder outside it must not hide the draft layer setup wrote there
     if cfg is None and not any(beside.get(k) for k in ("pack", "mtp", "mmproj")):
         return {"config": None, "data_dir": str(beside["data_dir"]) if beside.get("data_dir") else None, "pack": None, "mtp": None, "mmproj": None}
     return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}
@@ -478,6 +481,9 @@ SKIP_DIRS = frozenset({"packs", "mtp", "engine", "node_modules", "windows", "pro
                        "$recycle.bin", "system volume information", "appdata"})
 
 
+DRAFT_LAYER = re.compile(r"mtp[-_][a-z0-9_.-]*\.gguf")
+
+
 def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
     """(model files, picture-reader file names, cut) of one folder. A link to a file counts (it is followed when read); a name that
     only ends in .gguf but is a folder does not."""
@@ -499,6 +505,8 @@ def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
                 if low.startswith("mmproj"):
                     readers.append(entry.name)
                     continue
+                if DRAFT_LAYER.fullmatch(low):
+                    continue                          # Strata's own draft layer (mtp-q2_0.gguf) is not a second model (#4693)
                 if len(shards) >= MAX_LISTED:
                     cut = True
                     break
@@ -630,7 +638,7 @@ def _dsv41_files(folder: Path) -> dict[str, int]:
 
 
 def _dsv41_plan(path: Path, details) -> dict | None:
-    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the IST-DAS 1.75 / 2.00 / 2.25 shards, under their
+    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the ISTA-DAS 1.75 / 2.00 / 2.25 shards, under their
     official names or the first release's, with or without the n-gram table (Engram). Recognised from the pinned names and sizes
     (strata_control/dsv41_sets.py); None when nothing here is a DeepSeek file, so every other preview is exactly what it was."""
     from strata_control import dsv41_sets
@@ -727,7 +735,7 @@ def plan_import(raw_path: str) -> dict:
         details = path.stat()
     except OSError:
         raise ProfileError("model import path does not exist (or is a link to something that is gone)", 5) from None
-    official_deepseek = _dsv41_plan(path, details)         # IST-DAS sets under their official or first-release names
+    official_deepseek = _dsv41_plan(path, details)         # ISTA-DAS sets under their official or first-release names
     if official_deepseek is not None:
         return official_deepseek
     notes: list[str] = []

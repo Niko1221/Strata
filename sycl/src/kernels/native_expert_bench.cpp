@@ -17,6 +17,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +28,16 @@
 
 namespace cpu = strata::kernels::cpu;
 namespace K = strata::kernels;
+
+uint64_t fnv1a(const void* data, size_t bytes) {
+    const auto* p = static_cast<const uint8_t*>(data);
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < bytes; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -125,6 +136,7 @@ int main(int argc, char** argv) {
         s->memcpy(ddst, dst.data(), (size_t) NE * 4).wait();
         s->memcpy(dtok, tok.data(), (size_t) NE * 4).wait();
         K::quantize_q8_1_rows((const float*) dx, NTOK, H, dxq, s);
+        s->wait_and_throw();
         auto run = [&](int m, int phase) {
             K::native_expert_set_mode(m, phase);
             K::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, G, NE, dxq, dscr, dout, s);
@@ -184,10 +196,12 @@ int main(int argc, char** argv) {
             for (int k = 0; k < 2; ++k)
                 for (int p = 0; p < 3; ++p) us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
         std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
-                    " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s) | %s\n",
+                    " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
+                    " | hash %016llx | %s\n",
                     l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T,
                     mref, us[0][0], us[0][1], gu_b / us[0][1] / 1e3, us[0][2], d_b / us[0][2] / 1e3,
                     mode, us[1][0], us[1][1], gu_b / us[1][1] / 1e3, us[1][2], d_b / us[1][2] / 1e3,
+                    (unsigned long long) fnv1a(got.data(), got.size() * sizeof(float)),
                     ndiff ? "DIFFERS" : "bitwise equal");
         if (ndiff) {
             std::printf("          %zu of %zu outputs differ, worst rel %.2e\n", ndiff, ref.size(), worst);

@@ -8,6 +8,7 @@
 #include "strata/prefill/xmx_moe.hpp"
 #include "strata/prefill/esimd_moe.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/kernels/dflash2.hpp"
 #include "strata/core/gguf_expert_source.hpp"
 #include "../../../src/prefill/mmq_resident_sort.hpp"
 #include "../../../src/prefill/wmma_gemm.h"
@@ -19,6 +20,7 @@
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/core/geometry.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -36,12 +38,20 @@
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/qsa_prompt_attn.hpp"
 #include "strata/kernels/qsa_select.hpp"
+#include "strata/kernels/qsa_two_pass_status.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_fused.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/core/peer_experts.hpp"
 #include "strata/prefill/kernels.hpp"
+#include <oneapi/mkl.hpp>   // SYCL port: the QSA block scores as GEMM tiles
+namespace strata::kernels {   // SYCL port, kept out of the shared headers: qsa_select.dp.cpp, qsa_decode_attn.dp.cpp
+void qsa_block_scores_reduce(const float* S, int64_t ld, int64_t b0, int64_t nb, const float* dead, const float* q_idx,
+                             const int32_t* steps, int64_t nq, int64_t max_blocks, float* scores, void* stream);
+void qsa_prompt_attn_percell(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream);
+}
 
 #include <algorithm>
 #include <set>
@@ -135,8 +145,33 @@ inline bool dma_direct(const core::ExpertSource* src, int64_t layer, int64_t exp
     return usm;
 }
 constexpr float EPS = 1e-6f;
-constexpr int64_t N = 2560, HC = 4, D = N * HC, LR = 320, K = 10, NE = 512;
-constexpr int64_t C = 10240, ZV = 6144, HV = 48;
+// the shape the engine is compiled for (include/strata/core/geometry.hpp; -DSTRATA_GEOMETRY picks it)
+constexpr int64_t N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr, K = strata::core::kCompiledGeometry.n_expert_used, NE = strata::core::kCompiledGeometry.n_expert;
+constexpr int64_t C = strata::core::kCompiledGeometry.ssm_conv_channels, ZV = strata::core::kCompiledGeometry.ssm_value_dim, HV = strata::core::kCompiledGeometry.ssm_v_heads;
+// widths the buffers and kernel arguments below are written in (int, as the literals they replace were)
+constexpr int kEmbd = (int) strata::core::kCompiledGeometry.n_embd, kFF = (int) strata::core::kCompiledGeometry.n_ff, kFF2 = 2 * kFF;
+constexpr int kNHead = (int) strata::core::kCompiledGeometry.n_head, kNKv = (int) strata::core::kCompiledGeometry.n_head_kv, kHeadDim = (int) strata::core::kCompiledGeometry.head_dim;
+constexpr int kQW = kNHead * kHeadDim, kQFull = 2 * kQW, kKvW = kNKv * kHeadDim;
+static_assert(kQW == strata::core::kCompiledGeometry.ssm_value_dim, "prefill: the attention width (heads x head_dim) and the GDN value width share the m.q / m.attn / m.attn_h buffers, so they must be equal");
+constexpr int kIdxQHeads = (int) strata::core::kCompiledGeometry.idx_q_heads, kIdxK = (int) strata::core::kCompiledGeometry.idx_key_dim, kIdxQW = kIdxQHeads * kIdxK;
+
+// STRATA_PF_HASH_FILE=<path> (debug, off by default): for the first GDN layer of every prompt chunk the host waits for
+// the queue after each stage and writes one line per row "chunk stage row fnv" (the layer input, the projections, the
+// gates, the conv output, the recurrence output) plus the layer's recurrent state, so two runs show which stage of
+// the prefill first differs (CLEAN-6.0).
+inline std::FILE* pf_hash_file() {
+    static std::FILE* f = [] {
+        const char* p = std::getenv("STRATA_PF_HASH_FILE");
+        return p != nullptr && p[0] != 0 ? std::fopen(p, "w") : nullptr;
+    }();
+    return f;
+}
+inline uint64_t pf_hash_fnv(const void* p, size_t bytes) {
+    uint64_t h = 1469598103934665603ull;
+    const auto* b = static_cast<const uint8_t*>(p);
+    for (size_t i = 0; i < bytes; ++i) h = (h ^ b[i]) * 1099511628211ull;
+    return h;
+}
 // plan v0.3 P6: staging holds the largest blob of the pack (a native pack's blobs differ per layer)
 inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
 constexpr int STAGE = 8;           // host->device expert staging ring (chunks below stream_all_min())
@@ -1047,7 +1082,32 @@ I8Cross i8_calibrate(M& m, const strata::kernels::cpu::NativeFmt& f) {
 }
 }  // namespace
 Prefill::Prefill() : impl_(new Impl) {}
-Prefill::~Prefill() { release(); }
+Prefill::~Prefill() {
+    clear_taps();
+    release();
+}
+
+// DFlash2 prompt taps (single stage): staging for the completed output of each tapped layer for the last prompt rows; see include/strata/prefill/prefill.hpp
+bool Prefill::reserve_taps(const std::vector<int>& layers, int64_t cap_rows, int64_t n_embd, std::string& err) {
+    tap_layers_ = layers;
+    tap_cap_ = cap_rows;
+    if (tap_dev_ != nullptr) return true;
+    tap_dev_ = sycl::malloc_device<float>((size_t) cap_rows * layers.size() * (size_t) n_embd, dpct::get_in_order_queue());
+    if (tap_dev_ == nullptr) {
+        err = "the prompt staging of the DFlash2 taps does not fit in VRAM";
+        return false;
+    }
+    return true;
+}
+
+void Prefill::clear_taps() {
+    if (tap_dev_ != nullptr) {
+        try { sycl::free(tap_dev_, dpct::get_in_order_queue()); } catch (...) {}
+        tap_dev_ = nullptr;
+    }
+    tap_layers_.clear();
+    on_taps = nullptr;
+}
 
 void Prefill::reset() {
     release();
@@ -1102,8 +1162,8 @@ uint64_t gdn_set_bytes(size_t T) {
 uint64_t qsa_set_bytes(size_t T, int64_t cap, int64_t max_blocks, int64_t sel_batch, int64_t attn_batch,
                        const strata::kernels::QsaShapes& s) {
     Alloc a; a.count_only = true; bool ok = true;
-    a.take<float>(T * 512, ok); a.take<float>(T * 512, ok); a.take<float>(T * 12288, ok); a.take<float>(T * ZV, ok);
-    a.take<float>(T * 128, ok); a.take<float>(T * 512, ok); a.take<float>(T * ZV, ok);
+    a.take<float>(T * kKvW, ok); a.take<float>(T * kKvW, ok); a.take<float>(T * kQFull, ok); a.take<float>(T * kQW, ok);
+    a.take<float>(T * kIdxK, ok); a.take<float>(T * kIdxQW, ok); a.take<float>(T * kQW, ok);
     a.take<uint16_t>(T * (ZV + (pf_pad() ? ZV_PAD : 0)), ok);
     a.take<int32_t>(T * (size_t) cap, ok);
     a.take<float>((size_t) sel_batch * (size_t) max_blocks, ok);
@@ -1138,7 +1198,7 @@ const MmqPlan& mmq_plan() {
         for (int64_t l = 0; on && l < layers; ++l) {
             const int gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42, dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
             // #420: a tile on every GPU for these shapes (gate+up: 1280 rows, down: N rows), else the FP16 path
-            if (!mmq::fits(gt, 1280) || !mmq::fits(dt, N)) {
+            if (!mmq::fits(gt, kFF2) || !mmq::fits(dt, N)) {
                 p.fallback = true;
                 // the fused path's buffers (Xq, H) exist for it; a chunk it does not take (a small one) keeps the FP16 path
                 if (on && lay.native && fused::native_supported(gt, dt)) { p.fo[(size_t) l] = 1; p.any = true; }
@@ -1146,8 +1206,8 @@ const MmqPlan& mmq_plan() {
             }
             p.layer[(size_t) l] = 1;
             p.any = true;
-            p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
-            p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
+            p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, kFF2, N));
+            p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, kFF));
         }
         return p;
     }();
@@ -1166,12 +1226,12 @@ bool fused_layout(size_t T, bool src) {
 // default): MMQ's, for T tokens.
 struct MoeBufs { size_t gu, h, xq, hq; };
 MoeBufs moe_bufs(size_t T, int64_t n_expert, bool fused) {
-    if (!fused) return {T * K * 1280, T * K * 640, mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) (T * K), 640)};
+    if (!fused) return {T * K * kFF2, T * K * kFF, mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) (T * K), kFF)};
     const size_t ts = (size_t) std::min<int64_t>((int64_t) T, stream_all_min() - 1);   // MMQ's last small chunk
-    return {std::max(ts * K * 1280, (fused::group_bytes((int64_t) (T * K), (int) n_expert) + 3) / 4),
-            std::max(ts * K * 640, (fused::act_bytes((int64_t) (T * K), 640) + 3) / 4),
+    return {std::max(ts * K * kFF2, (fused::group_bytes((int64_t) (T * K), (int) n_expert) + 3) / 4),
+            std::max(ts * K * kFF, (fused::act_bytes((int64_t) (T * K), kFF) + 3) / 4),
             std::max(mmq::q8_bytes((int64_t) (ts * K), N), fused::act_bytes((int64_t) T, N)),
-            mmq::q8_bytes((int64_t) (ts * K), 640)};
+            mmq::q8_bytes((int64_t) (ts * K), kFF)};
 }
 uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
     const MmqPlan& mp = mmq_plan();
@@ -1181,9 +1241,9 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
     a.take<int32_t>(T * K, ok);
     if (mp.fallback) a.take<uint16_t>(T * K * N, ok);
     a.take<float>(mb.gu, ok);
-    if (mp.fallback) a.take<uint16_t>(T * K * 640, ok);
-    a.take<float>(T * K * N, ok); a.take<float>(T * 640, ok);
-    a.take<float>(T * 640, ok); a.take<uint16_t>(T * 640, ok); a.take<float>(T * N, ok); a.take<float>(T, ok);
+    if (mp.fallback) a.take<uint16_t>(T * K * kFF, ok);
+    a.take<float>(T * K * N, ok); a.take<float>(T * kFF, ok);
+    a.take<float>(T * kFF, ok); a.take<uint16_t>(T * kFF, ok); a.take<float>(T * N, ok); a.take<float>(T, ok);
     if (mp.any) {
         a.take<uint8_t>(mb.xq, ok);
         a.take<float>(mb.h, ok);
@@ -1477,8 +1537,8 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.y = a.take<float>(T * ZV, ok); m.y_h = a.take<uint16_t>(T * (ZV + (pf_pad() ? ZV_PAD : 0)), ok);
         Alloc b;
         b.base = base; b.cap = region; b.owned = &m.owned;
-        m.Kc = b.take<float>(T * 512, ok); m.Vc = b.take<float>(T * 512, ok); m.Qf = b.take<float>(T * 12288, ok);
-        m.q = b.take<float>(T * ZV, ok); m.idx_raw = b.take<float>(T * 128, ok); m.q_idx = b.take<float>(T * 512, ok);
+        m.Kc = b.take<float>(T * kKvW, ok); m.Vc = b.take<float>(T * kKvW, ok); m.Qf = b.take<float>(T * kQFull, ok);
+        m.q = b.take<float>(T * kQW, ok); m.idx_raw = b.take<float>(T * kIdxK, ok); m.q_idx = b.take<float>(T * kIdxQW, ok);
         m.attn = b.take<float>(T * ZV, ok); m.attn_h = b.take<uint16_t>(T * (ZV + (pf_pad() ? ZV_PAD : 0)), ok);
         m.sel_ids = b.take<int32_t>(T * (size_t) m.cap, ok);
         m.sel_scores = b.take<float>((size_t) m.sel_batch * (size_t) m.max_blocks, ok);
@@ -1490,9 +1550,9 @@ bool Prefill::carve(size_t T, void* alloc) {
         const MmqPlan& mp = mmq_plan();
         m.Xs = mp.fallback ? c.take<uint16_t>(T * K * N, ok) : nullptr;
         m.GU = c.take<float>(mb.gu, ok);
-        m.Hh = mp.fallback ? c.take<uint16_t>(T * K * 640, ok) : nullptr;
+        m.Hh = mp.fallback ? c.take<uint16_t>(T * K * kFF, ok) : nullptr;
         m.Dm = c.take<float>(T * K * N, ok);
-        m.sgate = c.take<float>(T * 640, ok); m.sup = c.take<float>(T * 640, ok); m.sh_h = c.take<uint16_t>(T * 640, ok);
+        m.sgate = c.take<float>(T * kFF, ok); m.sup = c.take<float>(T * kFF, ok); m.sh_h = c.take<uint16_t>(T * kFF, ok);
         m.shared = c.take<float>(T * N, ok); m.sg = c.take<float>(T, ok);
         if (mp.any) {
             m.Xq = c.take<uint8_t>(mb.xq, ok);
@@ -1501,7 +1561,7 @@ bool Prefill::carve(size_t T, void* alloc) {
         }
         if (base == nullptr) ok = false;
     }
-    for (int i = 0; i < dq_slots(); ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
+    for (int i = 0; i < dq_slots(); ++i) { m.dq_gu[i] = o.take<uint16_t>(kFF2 * kEmbd, ok); m.dq_d[i] = o.take<uint16_t>(kEmbd * kFF, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
@@ -2047,9 +2107,9 @@ bool Prefill::set_peer(core::PeerExperts *peer, int64_t cap_rows,
         pp->G = m.T_max;              // one expert never has more rows than the chunk has tokens
         const int64_t Gr = pp->G;
         pp->Xq_g = take(mmq::q8_bytes(Gr, N));
-        pp->Hq_g = take(mmq::q8_bytes(Gr, 640));
-        pp->GU_g = (float*) take((size_t) Gr * 1280 * 4);
-        pp->H_g = (float*) take((size_t) Gr * 640 * 4);
+        pp->Hq_g = take(mmq::q8_bytes(Gr, kFF));
+        pp->GU_g = (float*) take((size_t) Gr * kFF2 * 4);
+        pp->H_g = (float*) take((size_t) Gr * kFF * 4);
         pp->Dm_b[0] = (float*) take((size_t) Gr * N * 4);
         pp->Dm_b[1] = (float*) take((size_t) Gr * N * 4);
         for (int b = 0; b < 2 && ok; ++b)
@@ -2083,9 +2143,9 @@ bool Prefill::set_peer(core::PeerExperts *peer, int64_t cap_rows,
         }
     } else {
         pp->Xq = take(mmq::q8_bytes(R, N));
-        pp->Hq = take(mmq::q8_bytes(R, 640));
-        pp->GU = (float*) take((size_t) R * 1280 * 4);
-        pp->H = (float*) take((size_t) R * 640 * 4);
+        pp->Hq = take(mmq::q8_bytes(R, kFF));
+        pp->GU = (float*) take((size_t) R * kFF2 * 4);
+        pp->H = (float*) take((size_t) R * kFF * 4);
         pp->Dm = (float*) take((size_t) R * N * 4);
     }
     const int64_t Rt = pp->cap_rows;
@@ -2182,7 +2242,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, attn_batch_for(T), s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, src))}), ok);
-    for (int i = 0; i < dq_slots(); ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
+    for (int i = 0; i < dq_slots(); ++i) { o.take<uint16_t>(kFF2 * kEmbd, ok); o.take<uint16_t>(kEmbd * kFF, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
@@ -2502,10 +2562,23 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
 
+    std::vector<int> tap_slot;
+    if (!tap_layers_.empty() && stage_lb_ == 0 && (stage_le_ < 0 || stage_le_ == g.n_layers)) {
+        if (tap_dev_ == nullptr) {
+            tap_dev_ = sycl::malloc_device<float>((size_t) tap_cap_ * tap_layers_.size() * (size_t) g.n_embd, dpct::get_in_order_queue());
+            if (tap_dev_ == nullptr) { err = "prefill: the DFlash2 tap staging does not fit in VRAM"; return false; }
+        }
+        tap_slot.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot[(size_t) tap_layers_[i]] = (int) i;
+    }
     for (int64_t c0 = 0; c0 < n; c0 += chunk_len(c0)) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
         if (std::getenv("STRATA_TRACE")) { std::fprintf(stderr, "strata trace: prompt chunk %lld of %lld\n", (long long) c0, (long long) n); std::fflush(stderr); }
         const int64_t T = chunk_len(c0), p0 = pos0 + c0;
+        // DFlash2 prompt taps: the rows of this chunk at positions >= tap_first_ (the drafter looks back one window)
+        const int64_t tap_t0 = tap_dev_ != nullptr ? std::min<int64_t>(T, std::max<int64_t>(0, tap_first_ - p0)) : T;
+        const int64_t tap_rows = T - tap_t0;
+        if (tap_rows > tap_cap_) { err = "prefill: the DFlash2 tap staging is smaller than the chunk's tapped rows"; return false; }
         core::progress_at("reading the prompt (batched): preparing the chunk from token", p0);   // #251
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
@@ -3180,17 +3253,39 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     pt.mark(kPfGdn, cs);
                     float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                    static int64_t pfh_chunk = -1;
+                    const bool pfh_on = pf_hash_file() != nullptr && gdn_index == 0;
+                    if (pfh_on) ++pfh_chunk;
+                    auto pfh = [&](const char* nm, const void* dev, int64_t rows, size_t rowbytes) {
+                        if (!pfh_on) return;
+                        m.cs->wait();
+                        std::vector<char> hb((size_t) rows * rowbytes);
+                        m.cs->memcpy(hb.data(), dev, hb.size()).wait();
+                        for (int64_t r = 0; r < rows; ++r)
+                            std::fprintf(pf_hash_file(), "%lld %s %lld %016llx\n", (long long) pfh_chunk, nm, (long long) r,
+                                         (unsigned long long) pf_hash_fnv(hb.data() + (size_t) r * rowbytes, rowbytes));
+                        std::fflush(pf_hash_file());
+                    };
+                    pfh("mixed", m.mixed, T, N * 4);
                     if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
+                    pfh("qkv", m.qkv, T, C * 4);
                     if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
+                    pfh("z", m.z, T, ZV * 4);
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
+                    pfh("ab", m.ab, T, 2 * HV * 4);
                     pt.mark(kPfGdnConv, cs);   // "gdn" is the projections in; the rest on their own lines
                     gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
                     gdn_conv(conv, m.qkv, (const float*) wc->data, m.hbuf, T, EPS, m.cs);
+                    pfh("gate", m.gate, T, HV * 4);
+                    pfh("beta", m.beta, T, HV * 4);
+                    pfh("hbuf", m.hbuf, T, C * 4);
                     pt.mark(kPfGdnRec, cs);
                     const int64_t ld_y = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
                     gdn_recurrence(state, m.hbuf, m.gate, m.beta, m.z, (const float*) wnm->data, EPS, m.y, m.y_h, T, m.cs,
                                    ld_y);
+                    pfh("y", m.y, T, ZV * 4);
+                    pfh("state_rec", state, HV, (size_t) g.ssm_state_size * g.ssm_state_size * 4);
                     pt.mark(kPfGdnOut, cs);
                     if (!native_proj(m.gemm, wo, m.y_h, m.bo, T, v.name("ssm_out.weight"), err, 0, ld_y)) return false;
                     ++gdn_index;
@@ -3211,8 +3306,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
                     if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
-                    rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
-                    rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), m.cs);
+                    rms_rows(m.Kc, (const float*) wkn->data, T * kNKv, kHeadDim, kHeadDim, EPS, m.cs);
+                    rope(m.Kc, T, kNKv, kHeadDim, kKvW, p0, strata::kernels::rope_scaling(), m.cs);
                     // KV streaming: this layer's cells [0, p0) come in from the host copy to the staging pool, and the
                     // chunk's cells go to the host copy, the staging pool, and the VRAM slots of resident blocks
                     const bool staged = st.kv_mode == 1;
@@ -3245,7 +3340,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     const strata::kernels::KvHostPools* host_w = host_by_dma ? nullptr : &st.host;
                     if (st.kv_hybrid) {   // K8V4: K INT8 unrotated, V rotated Q4_0 (only V and the output rotate)
                         // streamed: each half writes its part of the host copy and of the staging pool
-                        strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                        strata::kernels::fwht256_inplace_cuda(m.Vc, T * kNKv, m.cs);
                         const strata::kernels::KvHostPools hk = strata::kernels::kv_hybrid_k_half(st.host),
                                                            hv = strata::kernels::kv_hybrid_v_half(st.host),
                                                            sk = strata::kernels::kv_hybrid_k_half(m.stage),
@@ -3258,8 +3353,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                       mirror ? &hv : nullptr, staged ? &sv : nullptr);
                     } else {
                         if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
-                            strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
-                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                            strata::kernels::fwht256_inplace_cuda(m.Kc, T * kNKv, m.cs);
+                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * kNKv, m.cs);
                         }
                         if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
@@ -3275,11 +3370,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     }
                     if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
                     split_q(m.Qf, m.q, T, m.cs);
-                    rms_rows(m.q, (const float*) wqn->data, T * 24, 256, 256, EPS, m.cs);
-                    rope(m.q, T, 24, 256, 6144, p0, strata::kernels::rope_scaling(), m.cs);
-                    if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * 24, m.cs);
-                    rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
-                    rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), m.cs);
+                    rms_rows(m.q, (const float*) wqn->data, T * kNHead, kHeadDim, kHeadDim, EPS, m.cs);
+                    rope(m.q, T, kNHead, kHeadDim, kQW, p0, strata::kernels::rope_scaling(), m.cs);
+                    if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * kNHead, m.cs);
+                    rms_rows(m.q_idx, (const float*) wiqn->data, T * kIdxQHeads, kIdxK, kIdxK, EPS, m.cs);
+                    rope(m.q_idx, T, kIdxQHeads, kIdxK, kIdxQW, p0, strata::kernels::rope_scaling(), m.cs);
                     // the indexer appends, token by token; then scores + selection for many queries at once:
                     // a query reads completed blocks (final once completed) and `dead` for its own tail block
                     const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
@@ -3295,7 +3390,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         }
                         for (int64_t t = 0; per_token && t < T; ++t) {
                             const int32_t* step_t = m.steps_dev + t * strata::kernels::kStepCount;
-                            strata::kernels::native_qsa_indexer_append(m.idx_raw + t * 128, step_t + strata::kernels::kStepPos, 0,
+                            strata::kernels::native_qsa_indexer_append(m.idx_raw + t * kIdxK, step_t + strata::kernels::kStepPos, 0,
                                                                        (const float*) wikn->data, EPS, ib, s, st.max_cells,
                                                                        strata::kernels::rope_scaling(), m.cs);
                         }
@@ -3309,10 +3404,47 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                                 strata::kernels::kStepNBid)] + 1;
                         // the scores on tensor cores (3xTF32: FP32-level, not bitwise); STRATA_SELECT_OLD=1: the warp kernel
                         static const bool old_sel = std::getenv("STRATA_SELECT_OLD") != nullptr;
-                        if (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512,
+                        // SYCL port: the scores as oneMKL FP32 GEMM tiles (pooled keys x the batch's indexer queries)
+                        // and a relu-sum (qsa_block_scores_reduce), FP32-level like the CUDA build's 3xTF32 path. The
+                        // tile lives in the attention scratch, which is free until this layer's attention (same
+                        // queue). It pays from ~8K cells on a B70 (launch cost below: -2% at 2K, even at 8K, select
+                        // 3x faster at 40K), so by default only for a batch reaching 2,048 blocks.
+                        // STRATA_SELECT_GEMM=0: the warp kernel always, =1: the GEMM always (on every card).
+                        // Unset: the default from 2,048 blocks is for a Battlemage card only. It changes the answers (first-token
+                        // KL ~1e-9 on an Arc A750 up to 128K, 1e-5 to 1e-3 on 2x B65), and on the A750 it gained +0.2% to
+                        // +0.6% (16K to 128K: its prompts are bound by expert streaming over PCIe), under the 5% bar.
+                        static const int sel_gemm_mode = [] { const char* v = std::getenv("STRATA_SELECT_GEMM"); return v ? std::atoi(v) : -1; }();
+                        static const int64_t sel_gemm_min = [] { const char* v = std::getenv("STRATA_SELECT_GEMM_MIN"); return v ? (int64_t) std::atoll(v) : (int64_t) 2048; }();   // blocks (4 cells each)
+                        const bool sel_gemm = sel_gemm_mode > 0 || (sel_gemm_mode < 0 && active >= sel_gemm_min &&
+                                                                    strata::intel_gpu_gen(m.cs->get_device()) == strata::IntelGpuGen::Battlemage);
+                        const int64_t sel_tile = std::min<int64_t>(8192, (int64_t) ((uint64_t) m.attn_batch *
+                            strata::kernels::qsa_decode_attn_scratch_floats(m.cap, s) / (uint64_t) (nb * 4)));
+                        bool sel_done = false;
+                        if (sel_gemm && !old_sel && m.attn_scratch != nullptr && s.idx_dim == 128 && s.idx_n_head == 4 &&
+                            sel_tile >= 256) {
+                            try {
+                                for (int64_t b0 = 0; b0 < active; b0 += sel_tile) {
+                                    const int64_t nbk = std::min<int64_t>(sel_tile, active - b0);
+                                    oneapi::mkl::blas::column_major::gemm(*m.cs, oneapi::mkl::transpose::trans,
+                                                                          oneapi::mkl::transpose::nontrans, nbk, nb * 4, 128,
+                                                                          1.0f, st.idx_pooled + b0 * 128, 128,
+                                                                          m.q_idx + t0 * kIdxQW, 128, 0.0f, m.attn_scratch,
+                                                                          sel_tile);
+                                    strata::kernels::qsa_block_scores_reduce(m.attn_scratch, sel_tile, b0, nbk, st.idx_dead,
+                                                                             m.q_idx + t0 * kIdxQW, steps0, nb, m.max_blocks,
+                                                                             m.sel_scores, m.cs);
+                                }
+                                sel_done = true;
+                            } catch (const std::exception& ex) {
+                                static bool said = false;
+                                if (!said) std::fprintf(stderr, "prefill: the GEMM block scores failed (%s); the warp kernel instead\n", ex.what());
+                                said = true;
+                            }
+                        }
+                        if (!sel_done && (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * kIdxQW,
                                                                              steps0, nb, m.max_blocks, s, m.sel_scores,
-                                                                             m.cs, active))
-                            strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
+                                                                             m.cs, active)))
+                            strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * kIdxQW, steps0, nb,
                                                               m.max_blocks, s, m.sel_scores, m.cs, active);
                         strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                         m.sel_ids + t0 * m.cap, m.cs, active);
@@ -3375,7 +3507,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         for (int64_t t0 = 0; t0 < T; t0 += m.sel_batch) {
                             const int64_t nb = std::min(m.sel_batch, T - t0);
                             const int32_t* steps0 = m.steps_dev + t0 * strata::kernels::kStepCount;
-                            strata::kernels::qsa_block_scores(pooled16, dead16, m.q_idx + t0 * 512, steps0, nb,
+                            strata::kernels::qsa_block_scores(pooled16, dead16, m.q_idx + t0 * kIdxQW, steps0, nb,
                                                               m.max_blocks, s, m.sel_scores, m.cs);
                             strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                             ids16 + t0 * m.cap, m.cs);
@@ -3471,11 +3603,20 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                             m.attn, T, m.cs))
                         for (int64_t t0 = 0; t0 < T; t0 += m.attn_batch) {
                             const int64_t nb = std::min(m.attn_batch, T - t0);
-                            strata::kernels::qsa_decode_attn_batch(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
+                            // SYCL port: the scores one work-item per cell (qsa_prompt_attn_percell, 128-cell chunks;
+                            // FP32, not bitwise with the warp kernel). STRATA_ATTN_PERCELL=0: the warp kernel.
+                            static const bool percell = [] { const char* v = std::getenv("STRATA_ATTN_PERCELL"); return !v || v[0] != '0'; }();
+                            if (percell) {
+                                strata::kernels::qsa_prompt_attn_percell(m.q + t0 * ZV, pools, m.sel_ids + t0 * m.cap,
+                                                                         m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
+                                                                         s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
+                                continue;
+                            }
+                            strata::kernels::qsa_decode_attn_batch(m.q + t0 * kQW, pools, m.sel_ids + t0 * m.cap,
                                                                    m.steps_dev + t0 * strata::kernels::kStepCount, m.cap,
-                                                                   s, m.attn_scratch, m.attn + t0 * ZV, nb, m.cs);
+                                                                   s, m.attn_scratch, m.attn + t0 * kQW, nb, m.cs);
                         }
-                    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * 24, m.cs);
+                    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(m.attn, T * kNHead, m.cs);
                     pt.mark(kPfQsa, cs);
                     const int64_t ld_a = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
                     gate_attn(m.attn, m.Qf, m.attn_h, T, m.cs, ld_a);
@@ -3519,7 +3660,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                     const float* had_sx = had_gu ? m.had_sx[(size_t) l] : nullptr;
                     const float* had_sh = had_d ? m.had_sh[(size_t) l] : nullptr;
                     auto had_h = [&](int64_t row0, int64_t nrows) {
-                        if (had_d) strata::kernels::hadamard_rows_f16(m.Hh + row0 * 640, nrows, 640, had_block, had_sh, m.cs);
+                        if (had_d) strata::kernels::hadamard_rows_f16(m.Hh + row0 * kFF, nrows, kFF, had_block, had_sh, m.cs);
                     };
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
@@ -3731,8 +3872,8 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                          (size_t)T * K * 4);
                         }
                         n_order = order.size();
-                        const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, 1280, N) : 0;
-                        const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
+                        const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, kFF2, N) : 0;
+                        const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, kFF) : 0;
                         pt.mark(kPfGather, cs);
                         if (use_mmq) {
                             // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`
@@ -3922,19 +4063,19 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                0, MMQ_TAIL);
                                     mmq::quantize(P.mixed, P.src + r0, P.Xq_g, mmq_gt, N, N, nr, ps);
                                     mmq::Product gu;
-                                    gu.w = P.grp_gu; gu.type = mmq_gt; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = mmq_gub;
+                                    gu.w = P.grp_gu; gu.type = mmq_gt; gu.w_rows = kFF2; gu.w_cols = N; gu.expert_bytes = mmq_gub;
                                     gu.n = ngx; gu.xq = P.Xq_g; gu.bounds = rel; gu.ids = P.ident;
-                                    gu.total_rows = nr; gu.max_rows = maxr; gu.dst = P.GU_g; gu.ld_dst = 1280;
+                                    gu.total_rows = nr; gu.max_rows = maxr; gu.dst = P.GU_g; gu.ld_dst = kFF2;
                                     P.run_ctx->run(gu, ps);
-                                    mmq::swiglu(P.GU_g, P.H_g, nr, 640, !lay.native, ps);
-                                    mmq::quantize(P.H_g, nullptr, P.Hq_g, mmq_dt, 640, 640, nr, ps);
+                                    mmq::swiglu(P.GU_g, P.H_g, nr, kFF, !lay.native, ps);
+                                    mmq::quantize(P.H_g, nullptr, P.Hq_g, mmq_dt, kFF, kFF, nr, ps);
                                     const int b = (int) (g2 & 1);
                                     if (P.dm_live[b])
                                         ps->ext_oneapi_submit_barrier(
                                             {*P.ev_dm[b]}); // its last rows
                                                             // have left
                                     mmq::Product dn;
-                                    dn.w = P.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
+                                    dn.w = P.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = kFF; dn.expert_bytes = mmq_db;
                                     dn.n = ngx; dn.xq = P.Hq_g; dn.bounds = rel;
                                     dn.ids = P.ident; dn.total_rows = nr; dn.max_rows = maxr; dn.dst = P.Dm_b[b];
                                     dn.ld_dst = N;
@@ -4021,14 +4162,14 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     ps->memset(P.grp_d + (size_t)ngx * mmq_db,
                                                0, MMQ_TAIL);
                                     mmq::Product gu;
-                                    gu.w = P.grp_gu; gu.type = mmq_gt; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = mmq_gub;
+                                    gu.w = P.grp_gu; gu.type = mmq_gt; gu.w_rows = kFF2; gu.w_cols = N; gu.expert_bytes = mmq_gub;
                                     gu.n = ngx; gu.xq = P.Xq; gu.bounds = P.bounds + j0; gu.ids = P.ident;
-                                    gu.total_rows = rows_peer; gu.max_rows = maxr; gu.dst = P.GU; gu.ld_dst = 1280;
+                                    gu.total_rows = rows_peer; gu.max_rows = maxr; gu.dst = P.GU; gu.ld_dst = kFF2;
                                     P.run_ctx->run(gu, ps);
-                                    mmq::swiglu(P.GU + r0 * 1280, P.H + r0 * 640, nr, 640, !lay.native, ps);
-                                    mmq::quantize(P.H + r0 * 640, nullptr, P.Hq, mmq_dt, 640, 640, nr, ps);
+                                    mmq::swiglu(P.GU + r0 * kFF2, P.H + r0 * kFF, nr, kFF, !lay.native, ps);
+                                    mmq::quantize(P.H + r0 * kFF, nullptr, P.Hq, mmq_dt, kFF, kFF, nr, ps);
                                     mmq::Product dn;
-                                    dn.w = P.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
+                                    dn.w = P.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = kFF; dn.expert_bytes = mmq_db;
                                     dn.n = ngx; dn.xq = P.Hq; dn.bounds = P.bounds + n + 1 + g2 * (MMQ_GROUP + 1);
                                     dn.ids = P.ident; dn.total_rows = nr; dn.max_rows = maxr; dn.dst = P.Dm + r0 * N;
                                     dn.ld_dst = N;
@@ -4344,11 +4485,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                         strata::kernels::iq_dequant_expert_f16(f.gu_type, f.d_type, xg_g[i], xg_u[i], xg_d[i], f.n_ff, f.n_embd,
                                                                                m.dq_gu[qd], m.dq_d[qd], m.cs);
                                         pt.mark(kPfGemmGU, cs);
-                                        m.gemm.f16(m.Xs + o * N, m.dq_gu[qd], m.GU + o * 1280, xg_c[i], 1280, N);
-                                        swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                        m.gemm.f16(m.Xs + o * N, m.dq_gu[qd], m.GU + o * kFF2, xg_c[i], kFF2, N);
+                                        swiglu_interleaved(m.GU + o * kFF2, m.Hh + o * kFF, xg_c[i], m.cs);
                                         had_h(o, xg_c[i]);
                                         pt.mark(kPfGemmD, cs);
-                                        m.gemm.f16(m.Hh + o * 640, m.dq_d[qd], m.Dm + o * N, xg_c[i], N, 640);
+                                        m.gemm.f16(m.Hh + o * kFF, m.dq_d[qd], m.Dm + o * N, xg_c[i], N, kFF);
                                         o += xg_c[i];
                                     }
                                 }
@@ -4374,12 +4515,12 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             if (nr / xg_n < xg_max) {
                                 pt.mark(kPfGemmGU, cs);
                                 strata::kernels::iq_xmx_grouped(f.gu_type, xg_g, xg_u, xg_c, xg_n, m.Xs + xg_r0 * N,
-                                                                m.GU + xg_r0 * 1280, 1280, (int) N, m.cs);
-                                swiglu_interleaved(m.GU + xg_r0 * 1280, m.Hh + xg_r0 * 640, nr, m.cs);
+                                                                m.GU + xg_r0 * kFF2, kFF2, (int) N, m.cs);
+                                swiglu_interleaved(m.GU + xg_r0 * kFF2, m.Hh + xg_r0 * kFF, nr, m.cs);
                                 had_h(xg_r0, nr);
                                 pt.mark(kPfGemmD, cs);
-                                strata::kernels::iq_xmx_grouped(f.d_type, xg_d, nullptr, xg_c, xg_n, m.Hh + xg_r0 * 640,
-                                                                m.Dm + xg_r0 * N, (int) N, 640, m.cs);
+                                strata::kernels::iq_xmx_grouped(f.d_type, xg_d, nullptr, xg_c, xg_n, m.Hh + xg_r0 * kFF,
+                                                                m.Dm + xg_r0 * N, (int) N, kFF, m.cs);
                             } else {
                                 int64_t o = xg_r0;
                                 for (int i = 0; i < xg_n; ++i) {
@@ -4389,11 +4530,11 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                                                        m.dq_gu[q], m.cs);
                                     strata::kernels::iq_dequant_f16(f.d_type, xg_d[i], f.n_embd * f.n_ff, m.dq_d[q], m.cs);
                                     pt.mark(kPfGemmGU, cs);
-                                    m.gemm.f16(m.Xs + o * N, m.dq_gu[q], m.GU + o * 1280, xg_c[i], 1280, N);
-                                    swiglu_interleaved(m.GU + o * 1280, m.Hh + o * 640, xg_c[i], m.cs);
+                                    m.gemm.f16(m.Xs + o * N, m.dq_gu[q], m.GU + o * kFF2, xg_c[i], kFF2, N);
+                                    swiglu_interleaved(m.GU + o * kFF2, m.Hh + o * kFF, xg_c[i], m.cs);
                                     had_h(o, xg_c[i]);
                                     pt.mark(kPfGemmD, cs);
-                                    m.gemm.f16(m.Hh + o * 640, m.dq_d[q], m.Dm + o * N, xg_c[i], N, 640);
+                                    m.gemm.f16(m.Hh + o * kFF, m.dq_d[q], m.Dm + o * N, xg_c[i], N, kFF);
                                     o += xg_c[i];
                                 }
                             }
@@ -4447,15 +4588,15 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 m.cs->memset(m.grp_d + (size_t)ngx * mmq_db, 0,
                                              MMQ_TAIL);
                                 mmq::Product gu;
-                                gu.w = m.grp_gu; gu.type = mmq_gt; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = mmq_gub;
+                                gu.w = m.grp_gu; gu.type = mmq_gt; gu.w_rows = kFF2; gu.w_cols = N; gu.expert_bytes = mmq_gub;
                                 gu.n = ngx; gu.xq = m.Xq; gu.bounds = m.bounds_dev + j0; gu.ids = m.ids_identity;
-                                gu.total_rows = T * K; gu.max_rows = maxr; gu.dst = m.GU; gu.ld_dst = 1280;
+                                gu.total_rows = T * K; gu.max_rows = maxr; gu.dst = m.GU; gu.ld_dst = kFF2;
                                 m.mmq_ctx->run(gu, m.cs);
-                                mmq::swiglu(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, !lay.native, m.cs);
+                                mmq::swiglu(m.GU + r0 * kFF2, m.H + r0 * kFF, nr, kFF, !lay.native, m.cs);
                                 pt.mark(kPfGemmD, cs);
-                                mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs);
+                                mmq::quantize(m.H + r0 * kFF, nullptr, m.Hq, mmq_dt, kFF, kFF, nr, m.cs);
                                 mmq::Product dn;
-                                dn.w = m.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
+                                dn.w = m.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = kFF; dn.expert_bytes = mmq_db;
                                 dn.n = ngx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + n + 1 + g * (MMQ_GROUP + 1);
                                 dn.ids = m.ids_identity; dn.total_rows = nr; dn.max_rows = maxr; dn.dst = m.Dm + r0 * N;
                                 dn.ld_dst = N;
@@ -4519,29 +4660,29 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 const int64_t r0 = m.off[(size_t) order[j0]];
                                 pt.mark(kPfGemmGU, cs);
                                 if (nr / ng < strata::prefill::xmx::gu_max_mean()) {
-                                    strata::prefill::xmx::grouped_f16(m.Xs + r0 * N, wg, gc, ng, m.GU + r0 * 1280, 1280,
+                                    strata::prefill::xmx::grouped_f16(m.Xs + r0 * N, wg, gc, ng, m.GU + r0 * kFF2, kFF2,
                                                                       (int) N, m.cs);
                                 } else {
                                     int64_t o = r0;
                                     for (int i = 0; i < ng; ++i) {
-                                        m.gemm.f16(m.Xs + o * N, wg[i], m.GU + o * 1280, gc[i], 1280, N);
+                                        m.gemm.f16(m.Xs + o * N, wg[i], m.GU + o * kFF2, gc[i], kFF2, N);
                                         o += gc[i];
                                     }
                                 }
-                                swiglu_interleaved(m.GU + r0 * 1280, m.Hh + r0 * 640, nr, m.cs);
+                                swiglu_interleaved(m.GU + r0 * kFF2, m.Hh + r0 * kFF, nr, m.cs);
                                 had_h(r0, nr);
                                 pt.mark(kPfGemmD, cs);
-                                strata::prefill::xmx::grouped_f16(m.Hh + r0 * 640, wd, gc, ng, m.Dm + r0 * N, (int) N, 640,
+                                strata::prefill::xmx::grouped_f16(m.Hh + r0 * kFF, wd, gc, ng, m.Dm + r0 * N, (int) N, kFF,
                                                                   m.cs);
                                 return true;
                             }
                             const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
                             pt.mark(kPfGemmGU, cs);
-                            m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
-                            swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                            m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * kFF2, ne, kFF2, N);
+                            swiglu_interleaved(m.GU + o0 * kFF2, m.Hh + o0 * kFF, ne, m.cs);
                             had_h(o0, ne);
                             pt.mark(kPfGemmD, cs);
-                            m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
+                            m.gemm.f16(m.Hh + o0 * kFF, m.dq_d[q], m.Dm + o0 * N, ne, N, kFF);
                             return true;
                         }
                         catch (sycl::exception const &exc) {
@@ -4652,9 +4793,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         }
                         };
                         // (fused: GU and H hold the grouping tables and int8 rows, not floats)
-                        const int64_t bgu = fused_l ? 0 : bad(m.GU, T * K * 1280), bdm = bad(m.Dm, T * K * N),
+                        const int64_t bgu = fused_l ? 0 : bad(m.GU, T * K * kFF2), bdm = bad(m.Dm, T * K * N),
                                       bbo = bad(m.bo, T * N);
-                        const int64_t bh = m.H && !fused_l ? bad(m.H, T * K * 640) : -1;
+                        const int64_t bh = m.H && !fused_l ? bad(m.H, T * K * kFF) : -1;
                         // the fp16 inputs of the experts' GEMMs: the gathered activations and the last dequantized
                         // gate/up (non-finite count, largest finite magnitude)
                         auto bad16 = [&](const uint16_t* d, int64_t n, double& mx) {
@@ -4672,7 +4813,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         };
                         double mxs = 0, mxq = 0;
                         const int64_t bxs = (!use_mmq && m.Xs) ? bad16(m.Xs, T * K * N, mxs) : -1;
-                        const int64_t bdq = (!use_mmq && m.dq_gu[0]) ? bad16(m.dq_gu[0], (int64_t) 1280 * N, mxq) : -1;
+                        const int64_t bdq = (!use_mmq && m.dq_gu[0]) ? bad16(m.dq_gu[0], (int64_t) kFF2 * N, mxq) : -1;
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks)
                             std::fprintf(stderr, "strata dbg: layer %lld fp16 inputs: activations %lld non-finite (max %.3g), "
@@ -4805,6 +4946,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 }
                 if (steered && !cv_fused)   // --control-vector-scaled
                     strata::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+                if (half == 1 && tap_rows > 0 && tap_slot[(size_t) l] >= 0)   // DFlash2: this layer's completed output, mean of the streams
+                    strata::kernels::df2_tap_rows(m.R + (size_t) tap_t0 * D, tap_dev_ + (size_t) tap_slot[(size_t) l] * N, (int64_t) tap_layers_.size() * N, N,
+                                                  (int) HC, (int) tap_rows, m.cs);
             }
         }
         if (!ple_land()) return false;   // a stage that ends before layer 1: the rows land anyway, the next gather starts
@@ -4895,6 +5039,10 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 }
                 std::fclose(f);
             }
+        }
+        if (tap_rows > 0 && on_taps) {
+            m.cs->wait();
+            if (!on_taps(tap_dev_, tap_rows, p0 + tap_t0, err)) return false;
         }
         if (on_chunk || on_stage_chunk) {
             const auto toc = Clock::now();
@@ -5097,6 +5245,8 @@ bool Prefill::drain_pipeline(std::string& err) {
 }
 
 bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
+    static strata::kernels::two_pass::RequestStatus tp_status(std::getenv("STRATA_SELECT_TWO_PASS"));
+    (void) tp_status.on("SYCL");   // the two-pass scorer is CUDA-only: say once that a set switch is not used
     const bool body_ok = run_impl(tokens, n, pos0, err);
 
     std::string drain_err;

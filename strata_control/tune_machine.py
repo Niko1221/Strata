@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
+from strata_control import sysinfo
 import re
 import shutil
 import subprocess
@@ -69,7 +69,7 @@ def memory() -> dict[str, int | None]:
 
 def _run(argv: list[str], timeout: float = 10.0) -> str | None:
     try:
-        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+        return subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout).stdout
     except Exception:  # noqa: BLE001
         return None
 
@@ -132,7 +132,7 @@ def gpu_used_mib(indexes: list[int] | None = None) -> int | None:
 def cpu() -> dict[str, Any]:
     """``model``, ``logical`` and ``physical`` thread counts, and ``hybrid`` (performance plus efficiency cores)."""
     logical = os.cpu_count() or 1
-    model = platform.processor() or platform.machine()
+    model = sysinfo.processor() or sysinfo.machine()
     physical: int | None = None
     hybrid = False
     try:
@@ -272,9 +272,9 @@ def hardware_identity(*, pcie: str | None = None) -> dict[str, Any]:
             "gpus": [{"name": g["name"], "vram_mib": g["vram_total_mib"]} for g in cards],
             "cpu": c["model"], "logical": c["logical"], "physical": c["physical"], "hybrid": c["hybrid"],
             "ram_gib": _round_down((mem["total_mib"] or 0) // 1024 or None, 2),
-            "pcie": pcie, "os": platform.system(),
+            "pcie": pcie, "os": sysinfo.system(),
         },
-        "soft": {"driver": sorted({g["driver"] for g in cards if g.get("driver")}), "os_release": platform.release()},
+        "soft": {"driver": sorted({g["driver"] for g in cards if g.get("driver")}), "os_release": sysinfo.release()},
     }
 
 

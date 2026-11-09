@@ -27,12 +27,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
+from strata_control import sysinfo
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 SCHEMA_VERSION = 1
 
@@ -88,10 +88,10 @@ def machine_identity() -> dict[str, Any]:
     is the same machine), so it is deliberately absent.
     """
     return {
-        "system": platform.system(),
-        "release": platform.release(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
+        "system": sysinfo.system(),
+        "release": sysinfo.release(),
+        "machine": sysinfo.machine(),
+        "processor": sysinfo.processor(),
         "cpu_count": os.cpu_count(),
     }
 
