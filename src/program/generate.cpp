@@ -104,6 +104,9 @@
 #include "strata/program/split_rules.hpp"
 #include "strata/program/stage_reserve.hpp"
 #include "strata/program/vram_calib.hpp"
+#if defined(__APPLE__)
+#include <crt_externs.h>   // _NSGetEnviron (STRATA_VRAM_CALIB)
+#endif
 #include "strata/program/split_walk.hpp"
 #include "strata/program/gpu_report.hpp"
 #include "strata/prefill/share_rules.hpp"
@@ -3287,7 +3290,11 @@ inline void init(int argc, char** argv) {
     const char* base = std::getenv("LOCALAPPDATA");
     const std::filesystem::path dir = std::filesystem::path(base != nullptr && *base ? base : ".") / "strata" / "vram-calib";
 #else
+#if defined(__APPLE__)
+    char** envp = *_NSGetEnviron();   // macOS declares no `environ` for C++ (crt_externs.h)
+#else
     char** envp = environ;
+#endif
     const char* xdg = std::getenv("XDG_CACHE_HOME");
     const char* home = std::getenv("HOME");
     const std::filesystem::path dir = std::filesystem::path(xdg != nullptr && *xdg ? std::string(xdg) : std::string(home != nullptr ? home : "/tmp") + "/.cache") / "strata" / "vram-calib";
