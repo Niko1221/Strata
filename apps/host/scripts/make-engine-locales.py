@@ -204,6 +204,12 @@ add("A newer engine is already on this computer. Update switches to it; nothing 
     "Auf diesem Computer ist schon eine neuere Engine. Das Update wechselt zu ihr; es wird nichts heruntergeladen.", "Este equipo ya tiene un motor más reciente. Actualizar cambia a él; no se descarga nada.",
     "На этом компьютере уже есть более новый движок. Обновление переключит на него; ничего не скачивается.", "Este computador já tem um motor mais novo. Atualizar troca para ele; nada é baixado.",
     "이 컴퓨터에 이미 더 새로운 엔진이 있습니다. 업데이트하면 그 엔진으로 전환되며, 내려받는 것은 없습니다.", "Cet ordinateur a déjà un moteur plus récent. La mise à jour bascule dessus ; rien n'est téléchargé.")
+# ---- the Use dialog of a Qwen4 model shape's engine (owner 11-09: {0} is the group's title, the model's own name; {1} the engine's version)
+add("{0} runs on engine {1} from its next start.",
+    "{0} 将从下次启动起使用引擎 {1}。", "{0} は次回の起動からエンジン {1} で動作します。",
+    "{0} läuft ab dem nächsten Start mit Engine {1}.", "{0} funcionará con el motor {1} a partir de su próximo inicio.",
+    "{0} будет работать на движке {1} со следующего запуска.", "{0} roda no motor {1} a partir da próxima inicialização.",
+    "{0}은(는) 다음 시작부터 엔진 {1}에서 실행됩니다.", "{0} fonctionnera avec le moteur {1} dès son prochain démarrage.")
 
 here = Path(__file__).resolve().parent.parent / "src" / "locales"
 NBSP = " "
