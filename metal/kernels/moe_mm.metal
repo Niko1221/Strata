@@ -269,17 +269,17 @@ kernel void mm_gather(device const float* x [[buffer(0)]], device const int* srt
     for (uint k = tid; k < n; k += 256) o[k] = t >= 0 ? half(x[ulong(t) * n + k]) : half(0.0f);
 }
 
-// The SSD-streaming arena (as in moe.metal): with function constant 20, expert e's slot is smap[e] in the chunks W,
-// W1..W3 (buffers 5..8 of mm_gu2 / mm_down2 / mm_gu3 / mm_down3); gate_off / up_off / down_off are offsets in the slot.
+// The SSD-streaming arena (as in moe.metal): with function constant 20, expert e's slot is smap[e], its chunk's GPU
+// address in the table W1 (buffer 6 of mm_gu2 / mm_down2 / mm_gu3 / mm_down3); gate_off / up_off / down_off are
+// offsets in the slot.
 #ifndef STRATA_ARENA_METAL
 #define STRATA_ARENA_METAL
 constant bool kArenaFc [[function_constant(20)]];
 constant bool kArena = is_function_constant_defined(kArenaFc) && kArenaFc;
 static inline device const uchar* arena_slot(uint v, device const uchar* W, device const uchar* W1, device const uchar* W2,
                                              device const uchar* W3) {
-    const uint c = v >> 28;
-    device const uchar* b = c == 0 ? W : (c == 1 ? W1 : (c == 2 ? W2 : W3));
-    return b + (ulong)(v & 0x0FFFFFFFu) * 16384ul;
+    device const ulong* tab = (device const ulong*) W1;
+    return (device const uchar*) tab[v >> 26] + (ulong)(v & 0x03FFFFFFu) * 16384ul;
 }
 #endif
 

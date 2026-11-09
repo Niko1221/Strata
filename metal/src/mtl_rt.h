@@ -83,6 +83,10 @@ public:
     bool supports_metal4() const;
     uint64_t recommended_working_set() const;
     uint64_t max_buffer_length() const;
+    // a buffer the kernels reach through an address table, not a binding: its GPU address, and whether every encoder
+    // marks it used (useResource) so its pages are resident while a command buffer runs
+    uint64_t gpu_address(const Buffer& b) const;
+    void keep_resident(const Buffer& b, bool on);
     // Keeps the GPU out of its low-clock idle state while dispatches keep coming (a lone kernel in a quiet GPU runs 2-3x slower:
     // measured 205 vs 69 us for the same matvec): a spin kernel of one threadgroup on a second queue, stopped 50 ms after the
     // last dispatch.  DS4_NO_KEEPALIVE=1: off.
@@ -109,6 +113,12 @@ public:
     // the same, also when bytes > maxBufferLength: then overlapping chunks, each holding any range of up to
     // max_span bytes that starts in it (max_span = the largest tensor bound at one offset)
     Buffer wrap(void* page_aligned, size_t bytes, size_t max_span);
+    // the same no-copy wrap, left out of allocated(): for a mapping whose pages commit only as they are written, so
+    // the budget sees what is resident (the footprint), not the whole reservation
+    Buffer wrap_map(void* page_aligned, size_t bytes);
+    // an alloc() buffer macOS may empty under pressure (volatile) or not; true when it was emptied
+    bool set_volatile(const Buffer& b, bool v);
+    bool emptied(const Buffer& b);
     void free(Buffer& b);
 
     // Encodes `ds` into ONE compute encoder (serial or concurrent dispatch type) and ONE command buffer, `reps`

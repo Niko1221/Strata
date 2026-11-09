@@ -52,17 +52,17 @@ struct MoeArgs {
 };
 
 // The SSD-streaming arena (metal/src/engine/stream.cpp): with function constant 20 set, expert e of the layer lies in
-// an arena slot, smap[e] = (chunk << 28) | its 16 KiB page in that chunk; the chunks are W (buffer 0) and buffers 7..9
-// (gate_off / up_off / down_off are then offsets inside the slot).  The same block is in moe_mm.metal.
+// an arena slot, smap[e] = (chunk << 26) | its 16 KiB page in that chunk; buffer 7 (W1) holds the GPU address of each of
+// up to 64 chunks, W, W2 and W3 are not read on this path (gate_off / up_off / down_off are then offsets inside the
+// slot).  The same block is in moe_mm.metal.
 #ifndef STRATA_ARENA_METAL
 #define STRATA_ARENA_METAL
 constant bool kArenaFc [[function_constant(20)]];
 constant bool kArena = is_function_constant_defined(kArenaFc) && kArenaFc;
 static inline device const uchar* arena_slot(uint v, device const uchar* W, device const uchar* W1, device const uchar* W2,
                                              device const uchar* W3) {
-    const uint c = v >> 28;
-    device const uchar* b = c == 0 ? W : (c == 1 ? W1 : (c == 2 ? W2 : W3));
-    return b + (ulong)(v & 0x0FFFFFFFu) * 16384ul;
+    device const ulong* tab = (device const ulong*) W1;
+    return (device const uchar*) tab[v >> 26] + (ulong)(v & 0x03FFFFFFu) * 16384ul;
 }
 #endif
 

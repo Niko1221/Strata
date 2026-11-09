@@ -34,6 +34,7 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -41,8 +42,10 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include <cstring>
 #include <cctype>
 #include <cerrno>
+#include <fcntl.h>
 #include <filesystem>
 #include <functional>
+#include <libproc.h>
 #include <future>
 #include <signal.h>
 #include <unistd.h>
@@ -54,6 +57,7 @@ namespace strata::gpu { void* host_view(const void* device_pointer); }
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <mach/mach.h>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -208,6 +212,13 @@ struct Act {
 };
 
 double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+std::function<void(bool)> g_token_hook;   // set_token_hook: the serve loop's arena rules, run at each token boundary
+std::atomic<double> g_ran_at{-1e18};       // the last forward pass (Window::run): mem_spare's idle credit grows while busy
+// STRATA_METAL_ARENA_ELASTIC=1: the streamed arena is laid out in ~1 GB chunks and follows spare memory (mem_spare)
+bool arena_elastic_on() {
+    static const bool on = [] { const char* e = std::getenv("STRATA_METAL_ARENA_ELASTIC"); return e && std::string(e) == "1"; }();
+    return on;
+}
 
 }  // namespace
 
@@ -442,6 +453,15 @@ private:
     std::vector<mtl::Buffer> gstBig_, hbBig_, kqBig_, vqBig_, kscBig_, vscBig_, tailBig_, deadBig_, pooledBig_;
     mtl::Buffer pleBig_, rinfo_;
     size_t st_gst_ = 0, st_hist_ = 0, st_kq_ = 0, st_sc_ = 0, st_tail_ = 0, st_dead_ = 0, st_pooled_ = 0, st_ple_ = 0;   // bytes between sets
+    // STRATA_METAL_KV_ELASTIC=1: the QSA layers' per-cell pools (kq/vq/ksc/vsc/pooled, the MTP draft layer's included)
+    // are slots of one anonymous mapping wrapped no-copy and never cleared, so a page commits only when a context
+    // reaches it: --max-context 262144 costs what the conversation uses instead of the whole reservation at start.
+    // The addresses never move (session pointers and cached graphs stay valid) and the mapping lives as long as the
+    // process: unmapping under live Metal handles is the one unsafe thing here.
+    bool kv_elastic_ = false;
+    void* kvmap_ = nullptr;
+    size_t kvmap_bytes_ = 0, kvoff_ = 0;
+    mtl::Buffer kv_pool(size_t bytes);
     bool rows_ = false;       // the window being built / run holds one token of each of rows_n_ DIFFERENT sequences (batch slots)
     int rows_n_ = 0;
     strata::core::SessionState* rows_ss_[MAXT] = {};
@@ -514,6 +534,7 @@ private:
     int seg_T_ = 0;
     bool stream_arena(std::string& err);
     double run_ds(Cached& c);
+    double run_segs(const std::vector<mtl::Dispatch>& ds, const std::vector<int>& cuts);
     // prompts on the matrix units (prompt_chunk below)
     struct PromptGemm;
     PromptGemm* pg_ = nullptr;
@@ -527,6 +548,80 @@ public:
     bool prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::string& err);
     int prompt_chunk_rows() const;
     void prompt_region(bool hold) { if (stream_ && st_ && st_->ready()) st_->hold_region(hold); }
+    bool stream_release() { return st_ ? st_->release() : resident_release(); }
+    bool stream_refill() { return st_ ? st_->refill() : resident_refill(); }
+    ExpertStream* arena() { return stream_ && st_ && st_->ready() ? st_.get() : nullptr; }
+    // A resident model is the GGUF's own file pages (wrapped without a copy), so giving them back writes nothing.
+    // STRATA_METAL_RESIDENT_RELEASE_GB=N gives back the last N GB of the file (0 or unset: all); the refill reads that
+    // range back with parallel preads before the next request.
+    bool res_released_ = false;
+    size_t res_off_ = 0;
+    bool resident_release() {
+        if (stream_ || res_released_ || f_.map == nullptr) return false;
+        const double t0 = now_ms();
+        const size_t want = 0, pg = 16384;   // all of the file
+        res_off_ = want == 0 || want >= f_.map_bytes ? 0 : (f_.map_bytes - want) / pg * pg;
+        const uint64_t f0 = free_bytes();
+        const size_t n = f_.map_bytes - res_off_;
+        madvise((uint8_t*) f_.map + res_off_, n, MADV_DONTNEED);
+        msync((uint8_t*) f_.map + res_off_, n, MS_INVALIDATE);
+        res_released_ = true;
+        std::fprintf(stderr, "strata metal resident: idle: %.1f GB of the model given back to macOS in %.0f ms (free memory %+.1f GB)\n",
+                     n / 1e9, now_ms() - t0, ((double) free_bytes() - (double) f0) / 1e9);
+        return true;
+    }
+    bool resident_refill() {
+        if (!res_released_) return false;
+        const double t0 = now_ms();
+        // only the 8 MB chunks macOS actually took (mincore): pages nobody needed meanwhile are still in memory
+        const size_t chunk = 8ull << 20, pg = 16384;
+        std::vector<char> in((f_.map_bytes - res_off_ + pg - 1) / pg);
+        mincore((uint8_t*) f_.map + res_off_, f_.map_bytes - res_off_, in.data());
+        std::vector<size_t> todo;
+        for (size_t o = res_off_; o < f_.map_bytes; o += chunk)
+            for (size_t q = (o - res_off_) / pg, e = std::min(in.size(), (o - res_off_ + chunk) / pg); q < e; ++q)
+                if (!(in[q] & MINCORE_INCORE)) { todo.push_back(o); break; }
+        std::atomic<size_t> next{0};
+        std::vector<std::thread> th;
+        for (int i = 0; i < 8; ++i)
+            th.emplace_back([&] {
+                const int fd = ::open(f_.path.c_str(), O_RDONLY);
+                if (fd < 0) return;
+                std::vector<uint8_t> buf(chunk);
+                for (size_t k; (k = next.fetch_add(1)) < todo.size();) (void) ::pread(fd, buf.data(), chunk, (off_t) todo[k]);
+                ::close(fd);
+            });
+        for (auto& t : th) t.join();
+        res_released_ = false;
+        std::fprintf(stderr, "strata metal resident: resume: %.1f GB read back from the SSD in %.2f s\n", todo.size() * (chunk / 1e9),
+                     (now_ms() - t0) / 1e3);
+        return true;
+    }
+    static uint64_t free_bytes() {
+        vm_statistics64_data_t v;
+        mach_msg_type_number_t c = HOST_VM_INFO64_COUNT;
+        if (host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &v, &c) != KERN_SUCCESS) return 0;
+        return (uint64_t) (v.free_count + v.speculative_count) * vm_page_size;
+    }
+    // The dense weights (W_, load_dense) offered to macOS when the arena is at its floor and memory is still short:
+    // volatile, so macOS empties them instead of swapping other programs only if it needs the memory; taken back before
+    // the next line (re-read when emptied)
+    void dense_offer() {
+        if (!stream_ || !st_ || dense_volatile_) return;
+        cx_->set_volatile(W_, true);
+        dense_volatile_ = true;
+        std::fprintf(stderr, "strata metal stream: %.2f GB of dense weights offered to macOS (volatile until the next request)\n", W_.bytes / 1e9);
+    }
+    void dense_take_back() {
+        if (!dense_volatile_) return;
+        const double t0 = now_ms();
+        const bool gone = cx_->set_volatile(W_, false);
+        dense_volatile_ = false;
+        if (gone && !st_->reload_dense(W_.as<uint8_t>())) { std::fprintf(stderr, "strata metal stream: re-reading the dense weights failed\n"); std::exit(6); }
+        std::fprintf(stderr, "strata metal stream: dense weights taken back (%s) in %.0f ms\n", gone ? "macOS had emptied them: re-read" : "still held", now_ms() - t0);
+    }
+    uint64_t dense_offered() { return dense_volatile_ && !cx_->emptied(W_) ? W_.bytes : 0; }   // purgeable pages that are ours
+    bool dense_volatile_ = false;
     void stream_report(FILE* f) const {
         if (!st_) return;
         st_->report(f);
@@ -537,6 +632,7 @@ public:
     }
     int win_n_[MAXT + 1] = {};
     double win_ms_[MAXT + 1] = {}, win_gpu_[MAXT + 1] = {};
+    std::vector<int> turn_cuts_, turn_layer_;   // run_segs' cuts and the layer of each
     void at_cut(int s) {
         st_->at_layer(s, seg_T_, TOPK, cut_ids_ ? cut_ids_ : ids_.as<int32_t>(), st_pred_ && !cut_ids_ ? predL_.as<float>() + (size_t) s * MAXT * 512 : nullptr,
                       predL2_.ptr && !cut_ids_ ? predL2_.as<float>() + (size_t) s * MAXT * 512 : nullptr);
@@ -789,11 +885,23 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
     st_sc_ = R256(2 * (size_t) MAXC * G_QKV * 4); st_tail_ = R256(TAIL_B); st_dead_ = R256(DEAD_B);
     st_pooled_ = R256(4 * (size_t) MB * G_ID); st_ple_ = R256(PLEH_B);
     // the set-0 view of a new buffer of `bytes` per set (or a plain buffer when there are no batch slots)
-    auto SV = [&](std::vector<mtl::Buffer>& bigs, size_t bytes, size_t stride, size_t per = 1, size_t which = 0) {
-        if (!bigs_ok_) { bigs.push_back(mtl::Buffer()); return A(bytes); }
-        if (which == 0) bigs.push_back(A(stride * per * NSET));
+    auto SV = [&](std::vector<mtl::Buffer>& bigs, size_t bytes, size_t stride, size_t per = 1, size_t which = 0,
+                  bool kv = false) {
+        auto make = [&](size_t b) { return kv && kv_elastic_ ? kv_pool(b) : A(b); };
+        if (!bigs_ok_) { bigs.push_back(mtl::Buffer()); return make(bytes); }
+        if (which == 0) bigs.push_back(make(stride * per * NSET));
         return view_of(bigs.back(), which * stride, bytes);
     };
+    kv_elastic_ = std::getenv("STRATA_METAL_KV_ELASTIC") && std::string(std::getenv("STRATA_METAL_KV_ELASTIC")) == "1";
+    if (kv_elastic_) {   // the 12 QSA layers' pools for every set, and the MTP draft layer's (mtp_load, after init)
+        auto pg = [](size_t b) { return (b + 16383) / 16384 * 16384; };
+        kvmap_bytes_ = 12 * (2 * pg(st_kq_ * NSET) + 2 * pg(st_sc_ * NSET) + pg(st_pooled_ * NSET)) +
+                       2 * pg((size_t) MAXC * G_QKV * G_QD) + 2 * pg(2 * (size_t) MAXC * G_QKV * 4) + pg(4 * (size_t) MB * G_ID);
+        kvmap_ = mmap(nullptr, kvmap_bytes_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+        if (kvmap_ == MAP_FAILED) { kvmap_ = nullptr; err = "metal window: the elastic K/V mapping failed"; return false; }
+        std::fprintf(stderr, "strata metal: elastic K/V: %d cells reserved (%.2f GB of address space, mapped as the "
+                             "context grows)\n", MAXC, kvmap_bytes_ / 1e9);
+    }
     if (bigs_ok_) { pleBig_ = A(st_ple_ * NSET); pleHist_ = view_of(pleBig_, 0, PLEH_B); } else pleHist_ = A(PLEH_B);
     rinfo_ = A(4 * (8 + 4 * MAXT));
     auto act = [&](int n) {
@@ -842,13 +950,13 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
             ghist_[0].push_back(SV(hbBig_, HIST_B, st_hist_, 2, 0));   // [set][parity]: the two parities side by side
             ghist_[1].push_back(SV(hbBig_, HIST_B, st_hist_, 2, 1));
         } else {
-            kq_.push_back(SV(kqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_));
-            vq_.push_back(SV(vqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_));
-            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_));
-            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_));
+            kq_.push_back(SV(kqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_, 1, 0, true));
+            vq_.push_back(SV(vqBig_, (size_t) MAXC * G_QKV * G_QD, st_kq_, 1, 0, true));
+            ksc_.push_back(SV(kscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_, 1, 0, true));
+            vsc_.push_back(SV(vscBig_, 2 * (size_t) MAXC * G_QKV * 4, st_sc_, 1, 0, true));
             tail_.push_back(SV(tailBig_, TAIL_B, st_tail_));
             dead_.push_back(SV(deadBig_, DEAD_B, st_dead_));
-            pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * G_ID, st_pooled_));
+            pooled_.push_back(SV(pooledBig_, 4 * (size_t) MB * G_ID, st_pooled_, 1, 0, true));
         }
     }
     bind_session(ss);
@@ -936,6 +1044,21 @@ bool Window::init(const strata::core::ModelGeometry& g, strata::core::SessionSta
                  cx_->device_name().c_str(), shard1.c_str(), stream_ ? "streamed from the SSD (experts)" : "wrapped",
                  f_.file_bytes / 1e9, MAXC, ple_on_ ? "on" : "OFF", now_ms() - t0);
     return true;
+}
+
+// One pool of the elastic K/V, page-rounded so the next one starts on a page; it reports the size asked for, as an
+// alloc() buffer does (bind_qsa counts the indexer's pooled rows from it).  No memset: an untouched page stays
+// demand-zero, so a cell no context reaches costs nothing.
+mtl::Buffer Window::kv_pool(size_t bytes) {
+    const size_t al = (bytes + 16383) / 16384 * 16384;
+    if (kvoff_ + al > kvmap_bytes_) {
+        std::fprintf(stderr, "strata metal: the elastic K/V mapping is short (%zu + %zu > %zu)\n", kvoff_, al, kvmap_bytes_);
+        std::exit(6);
+    }
+    mtl::Buffer b = cx_->wrap_map((uint8_t*) kvmap_ + kvoff_, al);
+    b.bytes = bytes;
+    kvoff_ += al;
+    return b;
 }
 
 void Window::gemv(std::vector<mtl::Dispatch>& ds, const gguf::Tensor& t, const Act& x, const mtl::Buffer& y,
@@ -1309,7 +1432,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         }
         if (stream_)
             for (int c = -1; c < 3; ++c)
-                g.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
+                g.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->table()));
         g.tg[0] = 32 * gs;
         g.indirect = &plan_;
         g.ind_off = P_IGU * 4;
@@ -1324,7 +1447,7 @@ void Window::layer(std::vector<mtl::Dispatch>& ds, int l, int ntok, int64_t pos0
         if (m16) dd.args = {mtl::Arg::B(EW, ebase), mtl::Arg::B(h16_), mtl::Arg::B(ye_), mtl::Arg::B(plan_), mtl::Arg::V(a)};
         if (stream_)
             for (int c = -1; c < 3; ++c)
-                dd.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->chunk(c + 1)));
+                dd.args.push_back(c < 0 ? mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4) : mtl::Arg::B(st_->table()));
         dd.tg[0] = 32 * ds_;
         dd.indirect = &plan_;
         dd.ind_off = P_IDN * 4;
@@ -1406,6 +1529,13 @@ void Window::ple_cpu(int Tn) {
 
 bool Window::run(int Tn, const int32_t* tokens, int64_t pos0, bool head, int32_t* out, std::string& err) {
     mtp_src_ = nullptr;
+    g_ran_at = now_ms();
+    // a token boundary (the last window waited for its command buffer): a grow read beside the decode lands here, then
+    // the serve loop's arena rules run (generate.cpp, set_token_hook)
+    if (stream_ && st_ && st_->ready()) {
+        const bool grew = st_->grow_commit() > 0;
+        if (g_token_hook) g_token_hook(grew);
+    }
     if (Tn < 1 || Tn > MAXT || (head && Tn > max_t_)) { err = "metal window: window size out of range"; return false; }
     if (pos0 + Tn + 1 >= max_cells_) { err = "metal window: the window runs past the context"; return false; }
     const double t0 = now_ms();
@@ -1610,7 +1740,28 @@ bool Window::finish_rows(int Tn, const int32_t* tokens, int32_t* out, double t0)
 
 double Window::run_ds(Cached& c) {
     if (!stream_) return cx_->run_graph(c.ds);
-    return cx_->run_graph_seg(c.ds, c.cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+    return run_segs(c.ds, c.cuts);
+}
+
+// every expert in the arena (complete()): no host turn; otherwise a host turn only at the layers not held whole (cut s
+// is layer s's turn)
+double Window::run_segs(const std::vector<mtl::Dispatch>& ds, const std::vector<int>& cuts) {
+    if (st_ && st_->complete()) return cx_->run_graph(ds);
+    if (st_ && st_->holding()) {
+        st_->hold();
+        turn_cuts_.clear();
+        turn_layer_.clear();
+        for (size_t s = 0; s < cuts.size(); ++s)
+            if (!st_->skip((int) s)) { turn_cuts_.push_back(cuts[s]); turn_layer_.push_back((int) s); }
+        if (turn_cuts_.size() < cuts.size()) {
+            if (turn_cuts_.empty()) return cx_->run_graph(ds);
+            return cx_->run_graph_seg(ds, turn_cuts_, [](void* u, int s) {
+                Window* w = (Window*) u;
+                w->at_cut(w->turn_layer_[(size_t) s]);
+            }, this);
+        }
+    }
+    return cx_->run_graph_seg(ds, cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
 }
 
 namespace {
@@ -1644,10 +1795,18 @@ bool Window::stream_arena(std::string& err) {
     size_t len = sizeof phys;
     sysctlbyname("hw.memsize", &phys, &len, nullptr, 0);
     const double gb = 1e9;
+    double unreleased = 0;   // of the purged copies, what the footprint still counts
     if (!(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS") && std::string(std::getenv("STRATA_METAL_KEEP_HOST_WEIGHTS")) == "1")) {
+        const double fp0 = proc_mem().footprint, t0 = now_ms();
         const uint64_t g = strata::gpu::purge_device_allocations(32u << 20);
+        // macOS takes purged pages back asynchronously; planned before it had, the arena counted them as held (20.4 GB
+        // instead of 10.8 on some starts) and the start's fill stopped short
+        while (proc_mem().footprint > fp0 - 0.9 * (double) g && now_ms() - t0 < 5000)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        unreleased = std::max(0.0, proc_mem().footprint - (fp0 - (double) g));
         std::fprintf(stderr, "strata metal stream: %.2f GB of the host code's device weight copies given back (unused by the "
-                             "Metal window)\n", g / 1e9);
+                             "Metal window); the footprint dropped by %.2f GB in %.0f ms\n", g / 1e9,
+                     (fp0 - proc_mem().footprint) / 1e9, now_ms() - t0);
     }
     const double used = (double) cx_->allocated();
     // what macOS gives now without paging anything out (arena_avail: free, purgeable, the clean file cache; not other
@@ -1667,7 +1826,7 @@ bool Window::stream_arena(std::string& err) {
     am.working_set = (double) cx_->recommended_working_set();
     am.allocated = used;
     const ProcMem pm0 = proc_mem();   // everything the process holds, not only the Metal buffers (the old 67% rule missed it)
-    am.proc_footprint = pm0.footprint;
+    am.proc_footprint = pm0.footprint - unreleased;   // purged pages still counted are on their way out
     {   // the file cache macOS keeps before it compresses anonymous memory (a 4-byte count of pages, read into a zeroed 8)
         unsigned long long pages = 0;
         size_t pl = sizeof pages;
@@ -1679,6 +1838,7 @@ bool Window::stream_arena(std::string& err) {
     if (const char* e = std::getenv("STRATA_METAL_KEEP_FREE_GB")) am.keep_gb = std::atof(e);
     if (const char* e = std::getenv("STRATA_METAL_ARENA_GB")) am.arena_gb = std::atof(e);
     if (const char* e = std::getenv("STRATA_METAL_LEAVE_SHARE")) am.leave_share = std::atof(e);   // for measuring; the default is kLeaveShare
+    am.elastic = arena_elastic_on();
     const double keep = arena_keep(am);
     const double avail = am.available;
     double budget = arena_budget(am);
@@ -1713,7 +1873,21 @@ bool Window::stream_arena(std::string& err) {
         const double planned = budget;
         std::function<uint64_t()> recheck = [&]() -> uint64_t { return (uint64_t) arena_shrink(am, planned, avail_now()); };
         if (st_->make_arena(*cx_, (uint64_t) budget, prof, pg_on ? 576 : 64, err, minimal ? std::function<uint64_t()>() : recheck,
-                            [&](uint64_t step) { return arena_grow(am, avail_now(), (double) step); }))
+                            [&](uint64_t step) {   // an elastic arena fills only while 1.5 GB and 3 GB (the prompt's
+                                                       // buffers) stay free, counting only pages macOS gives without
+                                                       // paging anything (free, speculative, purgeable): the file cache
+                                                       // and inactive pages, which include the arena's own unwired fill,
+                                                       // made macOS compress 36 GB of the arena and swap it; the rest
+                                                       // starts shed and grows back as memory frees
+                                if (arena_elastic_on()) {
+                                    vm_statistics64_data_t vs;
+                                    mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
+                                    host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &vs, &cnt);
+                                    const double fr = (double) ((uint64_t) vs.free_count + vs.speculative_count + vs.purgeable_count) * vm_page_size;
+                                    return fr - (double) step >= 4.5 * gb;
+                                }
+                                return arena_grow(am, avail_now(), (double) step);
+                            }))
             break;
         if (st_->shrink_to() == 0 || tries == 4) return false;
         if ((double) st_->shrink_to() + 64.0 * (1 << 20) >= budget) minimal = true;   // no smaller layout than this one
@@ -2423,9 +2597,10 @@ bool Window::mtp_load(const std::string& gguf_path, int max_t, std::string& err)
         return x;
     };
     XEn_ = act(N); XHn_ = act(N);
-    mkq_.push_back(A((size_t) MAXC * G_QKV * G_QD)); mvq_.push_back(A((size_t) MAXC * G_QKV * G_QD));
-    mksc_.push_back(A(2 * (size_t) MAXC * G_QKV * 4)); mvsc_.push_back(A(2 * (size_t) MAXC * G_QKV * 4));
-    mtail_.push_back(A(TAIL_B)); mdead_.push_back(A(DEAD_B)); mpooled_.push_back(A(4 * (size_t) MB * G_ID));
+    auto KA = [&](size_t bytes) { return kv_elastic_ ? kv_pool(bytes) : A(bytes); };
+    mkq_.push_back(KA((size_t) MAXC * G_QKV * G_QD)); mvq_.push_back(KA((size_t) MAXC * G_QKV * G_QD));
+    mksc_.push_back(KA(2 * (size_t) MAXC * G_QKV * 4)); mvsc_.push_back(KA(2 * (size_t) MAXC * G_QKV * 4));
+    mtail_.push_back(A(TAIL_B)); mdead_.push_back(A(DEAD_B)); mpooled_.push_back(KA(4 * (size_t) MB * G_ID));
     {
         std::string vp;
         // the subset setup put beside the draft layer (--draft-vocab: <mtp>/rt/draft_vocab.bin, as CUDA reads it),
@@ -3225,7 +3400,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
         auto arena_args = [&](mtl::Dispatch& d) {
             if (!stream_) return;
             d.args.push_back(mtl::Arg::B(st_->smap(), (size_t) l * 512 * 4));
-            for (int c = 1; c < 4; ++c) d.args.push_back(mtl::Arg::B(st_->chunk(c)));
+            for (int c = 1; c < 4; ++c) d.args.push_back(mtl::Arg::B(st_->table()));
         };
         const std::string ak = stream_ ? "#arena" : "";
         mtl::Dispatch gu;
@@ -3313,7 +3488,7 @@ bool Window::prompt_chunk(const int32_t* tokens, int Tn, int64_t pos0, std::stri
     if (stream_) {
         seg_T_ = T;
         cut_ids_ = p.ids.as<int32_t>();
-        cx_->run_graph_seg(ds, cuts, [](void* u, int s) { ((Window*) u)->at_cut(s); }, this);
+        run_segs(ds, cuts);
         cut_ids_ = nullptr;
     } else {
         cx_->run_graph(ds);
@@ -3462,6 +3637,180 @@ bool draft_vocab_whole_head() {
 // One decode window per process: the prompt path (Prefill::init) may bring it up before the Verifier does.
 namespace {
 Window* g_the_window = nullptr;
+}
+// The serve loop's idle hooks for an arena that is not elastic, and for a resident model (generate.cpp next_line,
+// STRATA_METAL_IDLE_RELEASE_MS)
+bool idle_release() { return g_the_window != nullptr && g_the_window->stream_release(); }
+bool idle_refill() { return g_the_window != nullptr && g_the_window->stream_refill(); }
+// Another process needs memory: the wired total grew by STRATA_METAL_PRESSURE_RELEASE_GB over its low point since the
+// last request (another model loading onto the GPU), or macOS reports critical pressure. Not "warn": a resident model
+// alone holds a 64 GB Mac at warn, which would release it after every reply.
+bool idle_pressure(uint64_t& wired_low) {
+    const double grow = 1.0;   // GB over the low point
+    if (grow <= 0) return false;
+    int level = 0;
+    size_t len = sizeof level;
+    sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &len, nullptr, 0);
+    vm_statistics64_data_t v;
+    mach_msg_type_number_t c = HOST_VM_INFO64_COUNT;
+    host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &v, &c);
+    const uint64_t wired = (uint64_t) v.wire_count * vm_page_size;
+    wired_low = std::min(wired_low, wired);
+    const bool hit = level >= 4 || wired > wired_low + (uint64_t) (grow * 1e9);
+    if (hit) std::fprintf(stderr, "strata metal: memory wanted elsewhere (pressure level %d, wired %.1f GB, %.1f GB over its low)\n",
+                          level, wired / 1e9, ((double) wired - (double) wired_low) / 1e9);
+    return hit;
+}
+// The streamed arena follows memory (generate.cpp's serve loop and token hook call these)
+bool arena_dynamic() { return arena_elastic_on() && g_the_window != nullptr && g_the_window->arena() != nullptr; }
+void dense_offer() { if (g_the_window) g_the_window->dense_offer(); }
+void dense_take_back() { if (g_the_window) g_the_window->dense_take_back(); }
+// macOS's free count shows a shed chunk 1-2 s late, so each 100 ms tick read the same shortfall and shed again
+// (45.7 -> 9 GB in a second at free 2.9 GB). What was shed in the last 2 s counts as free (linearly less as it ages)
+// until macOS's count has it
+namespace {
+std::mutex g_shed_mu;
+double g_shed_at = 0;
+uint64_t g_shed_recent = 0;
+uint64_t pending_shed_locked() {
+    const double age = now_ms() - g_shed_at;
+    return age >= 2000.0 ? 0 : (uint64_t) ((double) g_shed_recent * (1.0 - age / 2000.0));
+}
+uint64_t pending_shed() {
+    std::lock_guard<std::mutex> g(g_shed_mu);
+    return pending_shed_locked();
+}
+}  // namespace
+uint64_t arena_shrink(uint64_t b) {
+    const uint64_t f = arena_dynamic() ? g_the_window->arena()->shrink(b) : 0;
+    if (f) {
+        std::lock_guard<std::mutex> g(g_shed_mu);
+        g_shed_recent = pending_shed_locked() + f;
+        g_shed_at = now_ms();
+    }
+    return f;
+}
+uint64_t arena_grow(uint64_t b) { return arena_dynamic() ? g_the_window->arena()->grow(b) : 0; }
+uint64_t arena_shed_prompt_band() { return arena_dynamic() ? g_the_window->arena()->shed_prompt_band() : 0; }
+uint64_t arena_prompt_band_back() { return arena_dynamic() ? g_the_window->arena()->prompt_band_back() : 0; }
+bool arena_grow_start(uint64_t b) { return arena_dynamic() && g_the_window->arena()->grow_start(b); }
+bool arena_growing() { return arena_dynamic() && g_the_window->arena()->growing(); }
+uint64_t arena_commit() { return arena_dynamic() ? g_the_window->arena()->grow_commit() : 0; }
+void set_token_hook(std::function<void(bool)> f) { g_token_hook = std::move(f); }
+uint64_t arena_shed() { return arena_dynamic() ? g_the_window->arena()->shed_bytes() : 0; }
+// Free memory over the headroom (negative: short of it). Free = free and speculative pages, the file cache above
+// vm_page_filecache_min and purgeable pages (macOS drops those at once), plus the shed arena pages macOS has not taken
+// yet. Not kern.memorystatus_level: it counts every unwired page as available, so an image model's 18 GB (unwired
+// between steps) looked free and the Mac swapped.
+int64_t mem_spare() {
+    vm_statistics64_data_t v;
+    mach_msg_type_number_t c = HOST_VM_INFO64_COUNT;
+    host_statistics64(mach_host_self(), HOST_VM_INFO64, (host_info64_t) &v, &c);
+    // The headroom follows other programs' demand: 1.5 GB, plus 2 s of the rate their memory grows (taken at once,
+    // halving every 2 s), so a quiet Mac lends the arena its slack and a loading model gets memory back within a tick
+    // or two. Their memory is the sum of every other process's footprint (resident + compressed + swapped + wired GPU
+    // buffers; ~1 ms for ~600 processes; root's are not readable and not counted): pages macOS moves between those
+    // states, ours included, leave it flat, and only a program claiming more memory raises it. Not the system page
+    // totals less our footprint: macOS updates our wired arena in the one and the other at different moments, and
+    // every lag read as gigabytes of someone else's demand. Swap-ins also count: a program taking back pages macOS
+    // displaced. Swap-outs do not: writing idle pages to disk is what the idle credit below allows
+    double head = 1.5e9, demand = 0, back = 0, dt_s = 0;   // since the last call, in dt_s: demand, other programs' bytes
+                                                           // claimed; back, bytes swapped in
+    {
+        static std::mutex mu;
+        static double rate = 0, last_others = 0, last_swap = -1, level = 0;   // last_swap: swap-ins
+        static auto at = std::chrono::steady_clock::time_point{};
+        static std::vector<pid_t> pids(4096);
+        std::lock_guard<std::mutex> g(mu);
+        const auto t = std::chrono::steady_clock::now();
+        double others = 0;
+        const int n = proc_listallpids(pids.data(), (int) (pids.size() * sizeof(pid_t)));
+        for (int i = 0; i < n; ++i) {
+            rusage_info_v0 r;
+            if (pids[(size_t) i] != getpid() && proc_pid_rusage(pids[(size_t) i], RUSAGE_INFO_V0, (rusage_info_t*) &r) == 0)
+                others += (double) r.ri_phys_footprint;
+        }
+        const double swapped = (double) v.swapins * vm_page_size;
+        const double dt = std::chrono::duration<double>(t - at).count();
+        if (last_swap < 0) { last_others = level = others; last_swap = swapped; at = t; }
+        else if (dt >= 0.05) {
+            // the headroom counts every rise (noise only widens it); the credit only growth above the most they held in
+            // about the last 10 s, so background ups and downs cancel (summing each tick's rise drained 70 GB of credit
+            // in 80 s) while a model loading, even one that left a minute ago, counts in full
+            const double theirs = std::max(0.0, others - last_others) + (swapped - last_swap);
+            level = last_others + std::max(0.0, level - last_others) * std::exp(-dt / 10.0);
+            demand = std::max(0.0, others - level) + (swapped - last_swap);
+            back = swapped - last_swap;
+            dt_s = dt;
+            rate = std::max(theirs / dt, rate * std::pow(0.5, dt / 2.0));
+            level = std::max(level, others);
+            last_others = others;
+            last_swap = swapped;
+            at = t;
+        }
+        head += std::min(2.0 * rate, 24e9);
+    }
+    static const uint64_t fc_min = [] {   // the file cache macOS keeps: below it, it swaps other programs out instead
+        unsigned long long n = 0;         // (a 4-byte count of pages, read into a zeroed 8)
+        size_t l = sizeof n;
+        return sysctlbyname("vm.vm_page_filecache_min", &n, &l, nullptr, 0) == 0 ? (uint64_t) n : 0;
+    }();
+    const uint64_t file = v.external_page_count > fc_min ? v.external_page_count - fc_min : 0;
+    const uint64_t pg = (uint64_t) v.free_count + v.speculative_count + file + v.purgeable_count;
+    const uint64_t shed = arena_dynamic() ? g_the_window->arena()->shed_resident() : 0;
+    const int64_t pending = (int64_t) pending_shed();   // only ever cancels a shortfall, never makes room
+    int pressure = 0;
+    size_t len = sizeof pressure;
+    sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &len, nullptr, 0);
+    // the dense weights offered to macOS count as purgeable but are not room for the arena; only as much of them as
+    // macOS counts as purgeable: what it has not taken back is still resident and in no other term
+    const double offered = g_the_window ? std::min((double) g_the_window->dense_offered(), (double) v.purgeable_count * vm_page_size) : 0.0;
+    // Other programs' memory (their anonymous pages and the compressor's) counts as room only up to a credit the LLM
+    // earns by being used: an idle or lightly used engine takes no one's memory, so it never makes macOS compress into
+    // swap (SSD writes). Taking it costs its owner a read back if it returns, which pays off only while the LLM keeps
+    // working; so the credit is what the use so far has paid for (the rent-or-buy rule, never worse than twice the best
+    // choice in hindsight). It grows by the whole arena per 12 min of forward passes (a long agent run reaches the
+    // resident speed in about that; occasional requests earn a few percent), halves every 5 min without one, and loses
+    // whatever other programs newly claim. Another model starting (1 GB claimed within ~2 s; models load at 1-30 GB/s,
+    // apps claim far less) or a program reading its memory back from swap (0.1 GB within ~2 s; stray page touches run
+    // ~0.003 GB/s, a model coming back 0.25 GB/s) means the bet is lost: the credit goes, and the arena gives back all it
+    // took at once (taken off in proportion, an image model came back in 69 s instead of 30, or swapped out 6 GB).
+    // STRATA_METAL_ARENA_CREDIT_CLOCK speeds its clock (tests only)
+    const double clock = 1.0;
+    const ExpertStream* a = arena_dynamic() ? g_the_window->arena() : nullptr;
+    double credit = 0;
+    if (a) {
+        static std::mutex cmu;
+        static double earned = 0, returning = 0, claimed = 0;
+        std::lock_guard<std::mutex> g(cmu);
+        const double t = dt_s * clock;
+        returning = returning * std::exp(-dt_s / 2.0) + back;
+        claimed = claimed * std::exp(-dt_s / 2.0) + demand;
+        if (returning > 0.1e9 || claimed > 1e9) earned = 0;
+        const double whole = (double) (a->arena_used_bytes() + a->shed_bytes());
+        if (now_ms() - g_ran_at.load() < 1000.0) earned += whole / 720.0 * t;
+        else earned *= std::pow(0.5, t / 300.0);
+        earned = std::clamp(earned - demand, 0.0, whole);
+        // their anonymous memory: macOS's anonymous and compressed pages less ours (resident, less the wired arena)
+        const double theirs = std::max(0.0, (double) ((uint64_t) v.internal_page_count + v.compressor_page_count) * vm_page_size
+                                                - ((double) proc_mem().rss - (double) a->wired_bytes()) - (double) shed);
+        credit = std::min(earned, theirs);
+    }
+    const int64_t spare = (int64_t) ((double) (pg * vm_page_size + shed) + credit - offered - head);
+    // warn clears seconds after the memory it asked for came back: at most one warn shrink a second (a full arena near the
+    // limit otherwise shrank 4 GB every 100 ms through one warn)
+    static auto warned = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    // at warn or worse with free memory under the headroom, the shortfall is free memory's alone: file cache and
+    // purgeable pages macOS has not given up yet (an image model's weight files) are not room
+    const int64_t strict = (int64_t) ((double) (((uint64_t) v.free_count + v.speculative_count) * vm_page_size + shed) + credit - head);
+    auto settle = [&](int64_t x) { return x < 0 ? std::min<int64_t>(0, x + pending) : x; };
+    if (pressure >= 2 && strict < 0) return settle(std::min<int64_t>(spare, strict));
+    if (pressure < 2 || spare >= (int64_t) head) return settle(spare);   // warn counts only with free memory low too: a model
+                                                                         // wiring most of RAM keeps macOS at warn by itself
+    if (now - warned < std::chrono::seconds(1)) return std::min<int64_t>(spare, 0);   // neither shrink nor grow
+    if (spare >= 0) warned = now;
+    return settle(std::min<int64_t>(spare, -(int64_t) 1e9));
 }
 void* window_create() {
     if (g_the_window == nullptr) {
