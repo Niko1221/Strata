@@ -67,7 +67,7 @@ class BuildEngineStamp(unittest.TestCase):
                    mock.patch.object(setup, "source_version", lambda: "0.1.43"),
                    mock.patch.object(setup, "install_build_tools", lambda gpu, yes: ("nvcc", None)),
                    mock.patch.object(setup, "toolkit_root_defs", lambda nvcc: []),
-                   mock.patch.object(setup, "host_compiler_defs", lambda cuda: []),
+                   mock.patch.object(setup, "host_compiler_defs", lambda cuda, nvcc=None: []),
                    mock.patch.object(setup, "engine_defs", lambda archs, tk=13: []),
                    mock.patch.object(setup, "isa_floor_defs", lambda *a: []),
                    mock.patch.object(setup, "cpu_floor", lambda avx2: ""),
