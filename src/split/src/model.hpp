@@ -93,7 +93,7 @@ struct DW {
 // window's experts that are not in a slot take one of their pool's (CLOCK: the first slot not used since the pool's
 // hand last passed), copied in from RAM, and the layer's tables (LayerW gu_e.ep / down_e.ep: rows of ep_gu / ep_dn)
 // follow. All device memory; the same steps on every card.
-constexpr int EC_POOLS = 4;
+constexpr int EC_POOLS = 8;
 struct ExpertCache {
     int n_slots = 0;                     // all pools'
     int n_pools = 0;

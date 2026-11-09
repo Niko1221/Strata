@@ -1241,7 +1241,7 @@ Mtp::~Mtp() { free_mtp_cards(cards); }
 // the cards (the app's rule, strata_control/split_engine.py, refuses it earlier; this is the same check for a start that skipped the rule). The
 // server then starts the normal layer split. Q2_0 is not listed: the Gguf has already repacked it to Q4_0.
 static void check_supported(const Gguf& g) {
-    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S};
+    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q5_0, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S};
     for (const auto& kv : g.tensors()) {
         const std::string& n = kv.first;
         if (n.find("_exps.weight") == std::string::npos || n.find("shexp") != std::string::npos) continue;
@@ -1609,7 +1609,7 @@ void card_fields(CardW& c, F f) {
         f(c.ple_norm_query), f(c.ple_norm_conv), f(c.ple_conv), f(c.bytes), f(c.host_bytes);
 }
 #if !FNX_27B   // the 27B has no holder (plain loads only)
-static_assert(sizeof(CardW) == 896, "CardW changed: put what load_card stores in card_fields, then update this size");
+static_assert(sizeof(CardW) == 1024, "CardW changed: put what load_card stores in card_fields, then update this size");
 #endif
 // every address load_card stores, in a card and in a layer: a worker moves them to where it mapped the holder's memory
 template <typename F>

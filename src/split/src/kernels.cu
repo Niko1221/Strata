@@ -138,6 +138,7 @@ template <ggml_type type> __device__ __forceinline__ float vdot(const void* v, c
     else if constexpr (type == GGML_TYPE_Q4_K) return vec_dot_q4_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_Q5_K) return vec_dot_q5_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_Q5_1) return vec_dot_q5_1_q8_1(v, y, kbx, iqs);
+    else if constexpr (type == GGML_TYPE_Q5_0) return vec_dot_q5_0_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_Q4_0) return vec_dot_q4_0_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_Q6_K) return vec_dot_q6_K_q8_1(v, y, kbx, iqs);
     else if constexpr (type == GGML_TYPE_IQ4_NL) return vec_dot_iq4_nl_q8_1(v, y, kbx, iqs);
@@ -164,6 +165,7 @@ template <ggml_type type> constexpr int vdr_of() {
     else if constexpr (type == GGML_TYPE_Q4_K) return VDR_Q4_K_Q8_1_MMVQ;
     else if constexpr (type == GGML_TYPE_Q5_K) return VDR_Q5_K_Q8_1_MMVQ;
     else if constexpr (type == GGML_TYPE_Q5_1) return VDR_Q5_1_Q8_1_MMVQ;
+    else if constexpr (type == GGML_TYPE_Q5_0) return VDR_Q5_0_Q8_1_MMVQ;
     else if constexpr (type == GGML_TYPE_Q4_0) return VDR_Q4_0_Q8_1_MMVQ;
     else if constexpr (type == GGML_TYPE_Q6_K) return VDR_Q6_K_Q8_1_MMVQ;
     else if constexpr (type == GGML_TYPE_IQ4_NL) return VDR_IQ4_NL_Q8_1_MMVQ;
@@ -2188,6 +2190,7 @@ void moe_mm(bool down, const DW& A, size_t sa, const Job* jobs, const int* njobs
             break;
         case T_Q5_K: moe_launch<GGML_TYPE_Q5_K>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_Q5_1: moe_launch<GGML_TYPE_Q5_1>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
+        case T_Q5_0: moe_launch<GGML_TYPE_Q5_0>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_Q4_0: moe_launch<GGML_TYPE_Q4_0>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_Q8_0: moe_launch<GGML_TYPE_Q8_0>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
         case T_IQ4_NL: moe_launch<GGML_TYPE_IQ4_NL>(down, w, jobs, njobs, njobs_max, in, (float*) out, s, T); break;
@@ -2236,6 +2239,7 @@ void moe_gate_up(const DW& A, size_t sa, const Job* jobs, const int* njobs, int 
         case T_Q4_K: gu_q4k_launch(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q5_K: gu_sd_launch<GGML_TYPE_Q5_K>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q5_1: gu_sd_launch<GGML_TYPE_Q5_1>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
+        case T_Q5_0: gu_sd_launch<GGML_TYPE_Q5_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q4_0: gu_sd_launch<GGML_TYPE_Q4_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_Q8_0: gu_sd_launch<GGML_TYPE_Q8_0>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
         case T_IQ4_NL: gu_sd_launch<GGML_TYPE_IQ4_NL>(T, w, jobs, njobs, njobs_max, y, gu, s, sd); break;
@@ -2263,6 +2267,7 @@ void moe_mm_big(bool down, const DW& A, size_t sa, const BigJob* jobs, const int
             break;
         case T_Q5_K: moe_launch_big<GGML_TYPE_Q5_K>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_Q5_1: moe_launch_big<GGML_TYPE_Q5_1>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
+        case T_Q5_0: moe_launch_big<GGML_TYPE_Q5_0>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_Q4_0: moe_launch_big<GGML_TYPE_Q4_0>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_Q8_0: moe_launch_big<GGML_TYPE_Q8_0>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
         case T_IQ4_NL: moe_launch_big<GGML_TYPE_IQ4_NL>(down, w, jobs, njobs, njobs_cap, in, (float*) out, s); break;
