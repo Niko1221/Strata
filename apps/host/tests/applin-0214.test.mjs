@@ -99,6 +99,33 @@ test('a serving refusal is not retried', async () => {
   } finally { await f.native.close(); f.cleanup(); }
 });
 
+// ------------------------------------------------------------------ item 3: a failed engine update is not "up to date"
+
+test('an engine version that failed its test start here is offered again with the owner-approved words', async () => {
+  const note = '0.1.59 failed its test start on 2026-11-09 (read_expert_profile: cannot open ...); run `strata update --force` to try it again';
+  const control = { version: '0.1.59', async updateCheck() { return { ok: true, feed: { sequence: 123 }, engine: { installed: { version: '0.1.58' }, offered: { version: '0.1.59' }, status: 'failed-before', note, download_bytes: 723e6 }, control: { installed: '0.1.59', offered: '0.1.59', status: 'current' }, app: { status: 'not-in-feed' } }; } };
+  const result = await checkComponentUpdates({ control, appVersion: '0.2.13' });
+  assert.equal(result.engine.status, 'available');
+  assert.equal(result.engine.canInstall, true);
+  assert.equal(result.engine.retry, true);
+  assert.equal(result.engine.message, "Engine 0.1.59 didn't start correctly on this computer, so Strata kept engine 0.1.58. Press Update engine to try again.");
+  assert.equal(result.engine.message, engineFailedBeforeText('0.1.59', '0.1.58'));
+  assert.equal(result.engine.details, note, 'the reason stays behind Details');
+  assert.doesNotMatch(result.engine.message, /up to date/);
+  // a version the person switched away from (skipped) still reads as current
+  const skipped = await checkComponentUpdates({ control: { ...control, async updateCheck() { return { ok: true, feed: {}, engine: { installed: { version: '0.1.58' }, offered: { version: '0.1.59' }, status: 'skipped' }, control: {}, app: {} }; } }, appVersion: '0.2.13' });
+  assert.equal(skipped.engine.status, 'current');
+});
+
+test('the app\'s Update engine asks Control to try a held-back version again (--force)', async () => {
+  const f = fixture();
+  try {
+    const job = await finish(f.native, f.native.operation('update-engine', {}).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.deepEqual(f.calls[0], ['update', true, false, true]);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
 // ------------------------------------------------------------------ item 2: a stale /tmp/.mount_* path
 
 test('the engine update repairs run-config paths of a gone AppImage mount before Control test-starts with it', async () => {
