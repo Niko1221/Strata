@@ -316,6 +316,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(stage_reserve_test PRIVATE include)
   add_test(NAME stage_reserve_test COMMAND stage_reserve_test)
 
+  # #5571: the measured VRAM reserve (STRATA_VRAM_CALIB): header-only arithmetic, no GPU
+  add_executable(vram_calib_test tests/program/vram_calib_test.cpp)
+  target_include_directories(vram_calib_test PRIVATE include)
+  add_test(NAME vram_calib_test COMMAND vram_calib_test)
+
   # the layer split's spill walk (header-only arithmetic: who is short, which step comes next)
   add_executable(split_walk_test tests/program/split_walk_test.cpp)
   target_include_directories(split_walk_test PRIVATE include)
