@@ -200,7 +200,10 @@ def runtime_action(action: str, profile: str, *, plan: bool = False,
     if type(plan) is not bool:
         raise ProfileError("plan must be true or false")
     if action == "start":
-        wait = _seconds(wait, 0, 600, "start wait")
+        # The same ceiling the owner runtime itself enforces, read from it rather than repeated here: a start
+        # may wait for a big model longer than ten minutes (#3949). The CLI used to stop at 600 s while
+        # runtime.start took 1800 s, so a caller that asked what the runtime allows was refused here first.
+        wait = _seconds(wait, 0, runtime.MAX_START_WAIT, "start wait")
         shutdown_timeout = _seconds(shutdown_timeout, 0, 300, "shutdown timeout")
         if_profile_revision = _profile_revision(if_profile_revision)
         if_source_sha256 = _optional_revision(if_source_sha256, "if_source_sha256")
@@ -303,7 +306,8 @@ def runtime_action(action: str, profile: str, *, plan: bool = False,
             return runtime.plan_restart(profile, allow_source_switch=allow_source_switch,
                                         allow_source_migration=allow_source_migration)
         wait = _seconds(wait, 1, 1800, "restart wait")
-        startup_wait = _seconds(startup_wait, 1, 600, "startup wait")
+        # Same ceiling as the restart itself takes below (#3949): a restart waits out the same big-model load a start does.
+        startup_wait = _seconds(startup_wait, 1, runtime.MAX_START_WAIT, "startup wait")
         if (if_owner_id is None) != (if_instance_id is None):
             raise ProfileError("restart requires both reviewed owner and instance IDs")
         if (allow_source_switch or allow_source_migration) and not if_source_sha256:

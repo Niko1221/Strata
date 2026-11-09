@@ -27,7 +27,8 @@ namespace x3 = strata::dsv41k::exl3;
 constexpr int kFmtBF16 = 1;    // x3::Mat::fmt
 constexpr int kFmtMXFP4 = 2;   // x3::ExpertLayout::fmt (and an expert's matrix as an x3::Mat)
 constexpr int kFmtQ8_0 = 3;    // x3::Mat::fmt: ggml's Q8_0, an FP16 scale and 32 int8 in 34 bytes (UD-Q4_K_XL's dense)
-constexpr int kFmtGG = 4;      // x3::Mat::fmt: ggml's low-bit block type m.K (ds4_iq.cuh's: IQ2_XXS .. Q4_K), [n][k / 256]
+constexpr int kFmtGG = 4;      // x3::Mat::fmt: ggml's low-bit block type m.K (ds4_iq.cuh's: IQ2_XXS ..
+                               // Q4_K), [n][k / 256]
 constexpr int kMxBlock = 32, kMxBytes = 17, kQ8Bytes = 34;
 constexpr int kTypeMXFP4 = 39;   // ggml's type id
 
@@ -37,8 +38,9 @@ __host__ __device__ inline size_t mx_bytes(int64_t n, int64_t k) { return (size_
 __host__ __device__ inline size_t q8_row_bytes(int64_t k) { return (size_t) (k / 32) * kQ8Bytes; }
 
 /// A GGUF expert layer (x3::ExpertLayout::fmt kFmtMXFP4: block-quantized experts read in place) keeps each role's ggml
-/// type in lay.K[r] (r: gate, up, down; 0 = MXFP4): MXFP4 takes these kernels, the low-bit types ds4_iq.cuh's (gate
-/// and up of one type).  Roles of one layer may differ (down of another type); MXFP4 and a low-bit type do not mix.
+/// type in lay.K[r] (r: gate, up, down; 0 = MXFP4): MXFP4 takes these kernels, the low-bit types ds4_iq.cuh's
+/// (gate and up of one type).  Roles of one layer may differ (down of another type); MXFP4 and a low-bit type do not
+/// mix.
 inline int expert_type(const x3::ExpertLayout& l, int r) { return l.K[r] == 0 ? kTypeMXFP4 : l.K[r]; }
 inline bool mx_experts(const x3::ExpertLayout& l) {
     return expert_type(l, 0) == kTypeMXFP4 && expert_type(l, 1) == kTypeMXFP4 && expert_type(l, 2) == kTypeMXFP4;
@@ -52,6 +54,10 @@ const char* type_name(int type);
 /// Whether the device kernels take this type (MXFP4 is its own path; the i-quants and K-quants ds4_iq.cu instantiates).
 /// A false here with a layout known to type_row_bytes() means the CPU lane reads it and it must not enter the VRAM tier.
 bool type_on_device(int type);
+/// Whether the *chunk* path's expert tile GEMM (ds4_mm.metal on Metal) takes this type.  IQ1_M has a matvec kernel on
+/// Metal but no tile kernel there, so a prompt in chunks would stream it to the GPU and stop; false here means the
+/// prompts must run in windows instead (ds4_model.cu switches, and says so).
+bool type_on_chunk(int type);
 
 /// The per-stream scratch of the MXFP4 experts on the current device (once per stream, as x3::prepare).
 bool prepare(cudaStream_t s);
@@ -74,6 +80,11 @@ bool win_experts(const x3::WinArgs& a, cudaStream_t s);
 void set_gate_up(const x3::SetArgs& a, const float* x, int ldx, const int* row_idx, uint16_t* h16, int ldh,
                  cudaStream_t s);
 void set_down(const x3::SetArgs& a, const uint16_t* h16, int ldh, float* y, int ldy, cudaStream_t s);
+
+/// (tests) rows of k values (k % 256 == 0, rows k apart) rounded as the CPU lane rounds a low-bit expert's activations
+/// (ggml's Q8_K): q[r][k] int8 and d[r][k / 32] (each 256's scale in its eight 32-blocks) - what the low-bit experts'
+/// kernels take (unless DS4_IQ_Q8K=0)
+void act_q8k(const float* x, int rows, int k, int8_t* q, float* d, cudaStream_t s);
 
 /// Launch failures of these kernels since the process started (each is also printed).
 int launch_errors();

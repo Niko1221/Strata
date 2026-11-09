@@ -90,6 +90,7 @@ estimated 2 GB of its own buffers.
 - Intel GPUs in a split, and a mix of NVIDIA and AMD cards. An engine drives one make of card. The app, `strata launch` and setup
   offer only the cards the engine can drive, and say so when the other make has the bigger card. AMD cards share a model among
   themselves: `./setup.sh --backend hip --gpus 1,0` ([AMD_HIP.md](AMD_HIP.md)).
+  A prompt read on one card and an answer made on another, with the session handed over in RAM, is a different opt-in: [SPLIT_SERVE.md](SPLIT_SERVE.md).
 
 ## How the split works
 
@@ -180,6 +181,9 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
 - **Default:** on for AMD RDNA4 (gfx1200 / gfx1201) with `--serve`, the draft layer, and a split of two or more stages when the
   drafter can sit on the first card, otherwise three or more. The log says "is on by default for a layer split of N stages".
   `--pipeline-windows 0` or `STRATA_PIPELINE_AUTO=0` turns it off. NVIDIA builds keep it opt-in (`--pipeline-windows 2`).
+  The Intel Arc engine turns it on for exactly two Arc B-series (Battlemage) cards, with `--serve` and the draft layer (`--spec 2`
+  or more): on 2x Arc Pro B65 decode is 17% to 23% faster, and setup writes `--spec 2` for those cards ([INTEL_ARC.md](INTEL_ARC.md)).
+  It runs exactly two cards, so one card, Arc A-series cards and three or more cards stay serial.
 - **Draft layer placement:** with the pipeline on, the draft layer loads on the first card, whose window has finished when the
   chain starts. `STRATA_MTP_STAGE0=0` keeps the old place.
 - **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-device1..3`, which
@@ -208,6 +212,29 @@ DeepSeek V4.1-Flash runs in the app and the Terminal and spreads its experts and
 the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reaches about 31 tokens/s. Hardware, sets and speeds:
 [MODELS.md](MODELS.md#deepseek-v41-flash).
 
+## Small cards: what a split gives up when it is short of memory
+
+Two 8 GB cards used to stop at the start ("expert cache: no room", "the GPU has too little free VRAM for the prompt path"): every card loads a copy of the
+dense weights (3.5 GiB for IQ3_S) beside its session, its share of the head and the draft layer, a working expert cache and the prompt path's buffers. A split now
+walks the same steps a single card does, per card, mildest first, and says each one in one line (`short of GPU memory: ...`). The context you asked for and the
+number of requests are never changed; the cost is speed. A card with room never takes a step. Cards that hold every expert of their layers (two 96 GB cards) give the same
+greedy answers as before (5 of 5 hashes); a card that holds only part of them has a cache 256 MiB smaller (the last paragraph), which can change the last bits.
+
+1. **Trim**: a card that is too short for a full copy of the dense weights loads only the weights of its own layers (`--trim-stage-weights`, bit-exact in itself). Under `auto`
+   the split is then chosen from what each card has free, so every card gets the same cache bytes per layer. `STRATA_STAGE_TRIM=0` keeps the copies.
+2. **KV window**: when no placement can start the prompt path, the search runs again with 20480, 8192, then 4096 cells of the KV window in VRAM (the rest streams from RAM).
+3. **Drafter**: the draft layer (or DFlash2) is dropped on the card that holds it when that card cannot hold it and a working cache. `STRATA_MTP_KEEP=1` keeps it.
+4. **Prompt buffers**: a stage whose cache cannot lend the prompt path a 256-token chunk keeps 16 slots behind the loan instead of 128; CUDA0 reads prompts with its own small buffers.
+5. **Head**: the output head moves to pinned host memory on the card that holds it (about 3x slower logits), only when the cache would otherwise have no room.
+6. **Fewer cards**: under `auto`, a card with under 3 GiB free is left out of the split, and so is the card with the least room when even the whole walk cannot pay for every
+   layer on the cards that are left; with none left, the start is the single card's, with the rest of the experts in RAM.
+
+A later stage also keeps 256 MiB free for what it allocates after its cache (cuBLAS, the MMQ pool, as the single card has done since 0.2.7): two 16 GB cards used to start and then
+run out of memory in the first long prompt. `STRATA_SPILL_OFF=1` turns every step off; `STRATA_DEFAULTS=026` keeps the 0.2.6 reserve.
+
+When a start still ends because a card ran out of memory, `strata launch` and the server repeat it once without a drafter (never with the MTP in place of DFlash2, which takes more
+memory), and the last line shown is the engine's own reason.
+
 ## Limits
 
 - Every card needs compute capability 7.5 (RTX 20 or newer), unless you opt into the CUDA 12 engine for older cards.
@@ -220,6 +247,14 @@ the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reach
   An explicit `--expert-cache` on the first card is capped to leave room for them.
 - More cards pay off when the model's routed experts do not fit the faster ones. An extra slow card costs its own round per
   window and can make a good pair slower.
+- **The split pays most when the CPU pool is the bottleneck.** On two identical RTX 2080 Ti 22 GB over a dual-socket Xeon E5-2696 v4 (AVX2 only,
+  88 logical CPUs), a plain split moved decode from 35.2 to 51.0 tok/s (+45%) and an 11.6K-token prompt from 672 to 908 tok/s (+35%) at 180 W,
+  engine 0.1.49, six 300-token coding prompts. `STRATA_DECODE_TIMING=1` shows why: the window fell from 70.06 to 37.96 ms, almost entirely
+  because the CPU pool fell from 9.52 to 0.79 ms per window. The 5080 + 3090 measurement below, where decode with the second card is on par
+  with the 5080 alone, was taken over a fast CPU (Ryzen 9 9950X3D). When the CPU pool is what the window waits on, moving half the layers to a
+  second identical card removes that work. This is one pair of cards and one CPU, so there is no threshold, and the window breakdown from the
+  engine log is not the same statistic as the decode numbers beside it. Setup splits across two cards by itself; with two identical older cards
+  on a slow workstation CPU, compare one card against the split and tell us in [#3930](https://github.com/Niko1221/Strata/pull/3930).
 - For several conversations at once, `--batch N --batch-groups G --trim-stage-weights` pipelines them through the cards
   ([BATCHING.md](BATCHING.md)).
 

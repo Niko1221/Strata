@@ -25,12 +25,15 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
+#include "strata/uc_probe.hpp"
+#include "strata/pipeline_auto.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/short_cache.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/conversation_memory.hpp"
@@ -66,11 +69,14 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/program/adapt_decay.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
+#include "strata/core/dflash2.hpp"
+#include "strata/spec/window_rule.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -295,6 +301,16 @@ using Clock = std::chrono::steady_clock;
 
 // --pipeline-windows: every STRATA_PIPELINE_* test and tuning variable (THETA, FORCE_MISS, SWITCH, LOG, TRACE, DOOM_SKIP,
 // LOOKUP_PON, PRESTAGE, AGREE, SNAP_OVERLAP) is read only with STRATA_PIPELINE_DEBUG=1; without it the defaults apply.
+// The one plain line a start ends with when the expert cache got no VRAM at all (set where "no VRAM is left for the expert cache" is found, printed where the
+// verifier then refuses to start): what did not fit and what to lower.
+static std::string g_no_cache_hint;
+static void print_start_refusal(const char* who, const std::string& err) {
+    if (!g_no_cache_hint.empty() && err.rfind("verify: needs the profile-filled", 0) == 0)
+        std::fprintf(stderr, "%s: cannot start: %s\n", who, g_no_cache_hint.c_str());
+    else
+        std::fprintf(stderr, "%s: %s\n", who, err.c_str());
+}
+
 static const char* pipe_dbg_env(const char* name) {
     static const bool on = [] { const char* v = std::getenv("STRATA_PIPELINE_DEBUG"); return v != nullptr && v[0] != 0 && v[0] != '0'; }();
     return on ? std::getenv(name) : nullptr;
@@ -597,6 +613,8 @@ struct Options {
     int vram_reserve_later_mib = -1;
     /// Plan v0.3 P5: batched prompt processing in chunks of this many tokens (0 = the token path).
     int64_t prefill_chunk = 0;
+    /// `--prefill N` (a number, not auto): the person's chunk, which the cache sizing leaves alone.
+    bool prefill_given = false;
     /// `--prefill auto`: the largest chunk (up to 8192) whose buffers the expert cache can lend.  Every expert a chunk
     /// routes to is streamed once per chunk, so a bigger chunk streams fewer bytes per token (the "ubatch" effect).
     bool prefill_auto = false;
@@ -627,7 +645,9 @@ struct Options {
     bool trim_stage_weights = false;
     /// The --batch slots in this many groups pipelined through the stages of a layer split (stage k
     /// runs one group while stage k+1 runs another).  1 = every slot in one window, stage after stage.
-    int batch_groups = 1;
+    /// 0: not given (two Arc B-series cards with 8 or more slots pipeline 2 groups, anything else 1), -1: `auto` (the most
+    /// groups, at most one per stage, that divide the slots - the engine's other builds' rule), else the number asked for.
+    int batch_groups = 0;
     bool batch_mtp = false;      ///< --batch-mtp / STRATA_BATCH_MTP=1 (opt-in): one MTP proposal per batch slot
     std::string spec_oracle;
     int spec_corrupt = 0;
@@ -703,11 +723,12 @@ struct Options {
     /// result) goes through the verify windows, S tokens at a time, instead of the batched prompt path (0 = always
     /// the batched path)
     int64_t short_read = 64;
-    /// --pipeline-windows N (--serve, a layer split on exactly two GPUs; opt-in): 1 = a prompt's short reads through
+    /// --pipeline-windows N (--serve, a layer split on exactly two GPUs): 1 = a prompt's short reads through
     /// the verify windows run with the stages overlapped (stage 0 reads window K+1 while stage 1 reads window K);
     /// 2 = the decode windows too: stage 0 runs window K+1 speculatively while stage 1 verifies window K (rolled back
-    /// when K is not accepted as guessed).  0 = off (the stages take turns).
-    int pipeline_windows = 0;
+    /// when K is not accepted as guessed).  0 = off (the stages take turns).  -1 (not given) = automatic: 2 when both
+    /// GPUs of the two-stage split are Battlemage (Xe2) cards and the MTP drafter runs (spec >= 2), else 0.
+    int pipeline_windows = -1;
     /// The suffix drafter (prompt lookup): when the text being written repeats an earlier stretch of the context (code
     /// edits, quoted input, tool-call JSON) by at least this many tokens, the window may be filled with what followed
     /// it there instead of the MTP's drafts, where the MTP's own first guess agrees and the draft policy expects it to
@@ -727,6 +748,12 @@ struct Options {
     std::string mtp_q4;   ///< "" (off), all, proj (the projections only) or head (the draft head only)
     /// --mtp-draft-vocab FILE (opt-in): the draft head's token subset from FILE instead of <mtp>/draft_vocab.bin
     std::string mtp_draft_vocab;
+    /// --draft dflash2 --draft-model PACK (Qwen3.8-Flash-Next, the Q4_0 pack of tools/dflash2_pack.py --q4_0): the DFlash2 block drafter drafts; no MTP layer is
+    /// loaded with it (--draft-fallback none, the only mode of this build; --mtp DIR still names DIR/draft_vocab.bin).  --draft-conf P ends the window where the
+    /// product of the selector's probabilities falls below P; --draft-cap N caps the window.
+    std::string draft, draft_model, draft_fallback = "none";
+    double draft_conf = 0.6;   ///< Arc default 0.6 (A750 serve sweeps: 0.35 was the clear loser, 0.6 ties MTP); --draft-conf P changes it, 0 = the window of --spec-min-p
+    int draft_cap = 0;
     /// A control vector on the residual stream (strata/kernels/cvec.hpp), with llama.cpp's flags: the
     /// `experimental-speed-projection` profile passes `--control-vector-scaled FILE:1.0 --control-vector-layer-range
     /// 4 44 --cvec-mode project --cvec-dir per-layer`.  None by default; --serve switches a loaded one per request.
@@ -833,7 +860,8 @@ void usage() {
                  "  --batch-mtp          --batch (opt-in, one GPU, needs --mtp and --spec): each slot also verifies one MTP\n"
                  "                       proposal per window (STRATA_BATCH_MTP=1 does the same); needs VRAM per slot\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
-                 "  --pipeline-windows N --serve with a layer split on two GPUs (opt-in): one conversation's verify windows\n"
+                 "  --pipeline-windows N --serve with a layer split on two GPUs (default 2 on two Arc B-series cards with\n"
+                 "                       the MTP drafter, else 0): one conversation's verify windows\n"
                  "                       with the GPUs overlapped - 1 = the prompt's short reads, 2 = decode as well\n"
                  "                       (stage 0 runs the next window while stage 1 verifies this one); docs/MULTI_GPU.md\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
@@ -855,6 +883,10 @@ void usage() {
                  "                       (default) or one per stream (llama.cpp's MTP graph)\n"
                  "  --mtp-q4 all|proj|head  opt-in: the draft layer's projections and/or draft head as 4-bit copies\n"
                  "  --mtp-draft-vocab FILE  opt-in: the draft head's token subset (default <mtp>/draft_vocab.bin)\n"
+                 "  --draft mtp|dflash2  the draft source (default mtp); dflash2 needs --draft-model PACK (tools/dflash2_pack.py --q4_0), --spec 2 or more and\n"
+                 "                       --mtp DIR (for DIR/draft_vocab.bin); no MTP layer is loaded (--draft-fallback none, the only mode here)\n"
+                 "  --draft-conf P       with --draft dflash2: end the window where the product of the selector's probabilities falls below P (default 0.6 on this build)\n"
+                 "  --draft-cap N        with --draft dflash2: the widest window\n"
                  "  --control-vector-scaled FILE:SCALE[,...]  a control vector GGUF on the residual stream (llama.cpp's\n"
                  "                       format; --control-vector FILE = scale 1).  --serve: requests switch it (cvec=0|1)\n"
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
@@ -1433,6 +1465,20 @@ bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, co
     return false;
 }
 
+/// #3350: a conversation checkpoint is an optimization, like parking.  After a failed save: true when the failure was
+/// only the copy's memory (a host or driver allocation, which does not stick), so the caller goes on without that
+/// checkpoint; false when the GPU itself is unwell (a sticky error comes back from the synchronize), which still ends
+/// the request as before.
+bool checkpoint_failure_is_survivable() {
+    // SYCL has no sticky error state to clear: the queues either drain or throw (a lost device)
+    try {
+        dpct::get_current_device().queues_wait_and_throw();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 /// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
 bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
@@ -1751,6 +1797,7 @@ int main(int argc, char **argv) try {
         setenv("CUDA_MODULE_LOADING", "EAGER", 0);
 #endif
     }
+    strata::uc_probe("start");   // test only: STRATA_UC_PROBE=1 times four kernels (uc_probe.hpp)
     Options o;
     bool borrow_explicit = false;   // SYCL port: --prefill-borrow / --no-prefill-borrow given (else chosen by context)
     bool have_tokens = false;
@@ -1900,6 +1947,7 @@ int main(int argc, char **argv) try {
                                      : (o.prefill_auto && env_max != nullptr ? std::atoll(env_max) : 8192);
             o.prefill_auto_max = want_max >= 32768 ? 32768 : want_max >= 16384 ? 16384 : 8192;
             o.prefill_chunk = o.prefill_auto ? o.prefill_auto_max : std::atoll(v.c_str());
+            o.prefill_given = !o.prefill_auto && o.prefill_chunk > 0;
         }
         else if (a == "--no-split-rows") o.no_split_rows = true;
         else if (a == "--no-prefill-borrow") { o.no_prefill_borrow = true; borrow_explicit = true; }
@@ -1912,7 +1960,10 @@ int main(int argc, char **argv) try {
         else if (a == "--batch") o.batch = std::atoi(next("--batch"));
         else if (a == "--slots") o.batch = std::atoi(next("--slots"));   // the same as --batch
         else if (a == "--trim-stage-weights") o.trim_stage_weights = true;
-        else if (a == "--batch-groups") o.batch_groups = std::atoi(next("--batch-groups"));
+        else if (a == "--batch-groups") {
+            const std::string bg = next("--batch-groups");
+            o.batch_groups = bg == "auto" ? -1 : std::atoi(bg.c_str());
+        }
         else if (a == "--batch-mtp") o.batch_mtp = true;
         else if (a == "--spec-oracle") o.spec_oracle = next("--spec-oracle");
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
@@ -1922,7 +1973,7 @@ int main(int argc, char **argv) try {
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
-        else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
+        else if (a == "--adapt-decay") o.adapt_decay = strata::program::adapt_decay_checked(std::atof(next("--adapt-decay")));   // #1284: outside 0..1 -> 0.7, said
         else if (a == "--adapt-async") o.adapt_async = std::atoi(next("--adapt-async")) != 0 ? 1 : 0;
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
         else if (a == "--stop-eos") o.stop_eos = true;
@@ -1976,6 +2027,17 @@ int main(int argc, char **argv) try {
             }
         }
         else if (a == "--mtp-draft-vocab") o.mtp_draft_vocab = next("--mtp-draft-vocab");
+        else if (a == "--draft") o.draft = next("--draft");
+        else if (a == "--draft-model") o.draft_model = next("--draft-model");
+        else if (a == "--draft-fallback") {
+            o.draft_fallback = next("--draft-fallback");
+            if (o.draft_fallback != "none") {
+                std::fprintf(stderr, "strata generate: --draft-fallback: only none is supported on this build (DFlash2 never runs beside an MTP layer here)\n");
+                std::exit(2);
+            }
+        }
+        else if (a == "--draft-conf") o.draft_conf = std::clamp(std::atof(next("--draft-conf")), 0.0, 1.0);
+        else if (a == "--draft-cap") o.draft_cap = std::max(0, std::atoi(next("--draft-cap")));
         else if (a == "--control-vector") o.cvec_files.push_back({next("--control-vector"), 1.0f});
         else if (a == "--control-vector-scaled") {
             // FILE:SCALE, comma-separated; the LAST colon splits, so a Windows path (C:\...) keeps its drive
@@ -2137,9 +2199,23 @@ int main(int argc, char **argv) try {
         };
         split_auto = o.layer_split == "auto";
         bool ok = o.serve && (split_auto || ints(o.layer_split, split_at));
+        // SYCL port: a stage is a GPU of the PRIMARY device's backend.  Everything else that the runtime lists is
+        // not a stage: the batch slots load the OpenCL adapter as well, so on a two-card `xe` box
+        // dpct::device_count() then reports the CPU and the OpenCL view of the same two cards (5 devices), and an
+        // automatic split tried to put a stage on the CPU ("layer split, CUDA2 weights: the weight arena does not
+        // fit ... 0 MiB of 160876 MiB free on that card") instead of working.
+        const auto stage_dev = [](int d) -> bool {
+            try {
+                const sycl::device dev = dpct::get_device(d);
+                return dev.is_gpu() && dev.get_backend() == dpct::get_device(0).get_backend();
+            } catch (...) {
+                return false;
+            }
+        };
         if (ok && !o.split_device.empty()) ok = ints(o.split_device, split_devs);
         else if (ok)
-            for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d) split_devs.push_back(d);
+            for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d)
+                if (!split_auto || stage_dev(d)) split_devs.push_back(d);
         if (ok && !split_auto && split_devs.empty() && split_at.size() == 1) split_devs.push_back(0);   // one GPU
         split_same = ok && split_devs.size() == 1 && split_devs[0] == 0 && !split_auto;
         if (split_same && o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0) {
@@ -2715,8 +2791,26 @@ int main(int argc, char **argv) try {
         }
     }
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
-    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
-    else if (!strata::kernels::cpu::cpu_avx512_ok())
+    if (!native_pack) {
+        // #2347 (the CUDA engine has this too): a --pack folder without native_experts.txt is read as the canonical Q2_0 pack, whose CPU
+        // kernel needs AVX-512; on an AVX2 CPU (Ryzen 5000, Intel 12th-14th gen) that reads as "this CPU is too old" when the folder is
+        // simply not the native pack (a half-built pack, the wrong folder).  Say so before the refusal.
+        if (!strata::kernels::cpu::cpu_features().usable()) {
+            std::error_code ec;
+            const std::filesystem::path pk(o.pack);
+            std::fprintf(stderr, "strata generate: %s has no native_experts.txt, so it is read as the canonical Q2_0 "
+                                 "pack, whose CPU kernel needs AVX-512.\n"
+                                 "        An NVFP4, i-quant or Unsloth pack has that file in the folder given as --pack "
+                                 "and runs on an AVX2 CPU as well;\n",
+                         o.pack.c_str());
+            if (std::filesystem::exists(pk / "pack" / "native_experts.txt", ec))
+                std::fprintf(stderr, "        it is in %s: use that folder as --pack.\n", (pk / "pack").generic_string().c_str());
+            else
+                std::fprintf(stderr, "        if this is one of those packs, the folder is incomplete or the wrong one "
+                                     "(build it again with tools/iq_pack.py, or run setup again).\n");
+        }
+        strata::kernels::cpu::cpu_require_expert_support();
+    } else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok() ? "ggml-cpu vec_dot (no AVX2: the older-CPU build)"
@@ -2986,6 +3080,7 @@ int main(int argc, char **argv) try {
     std::fprintf(stderr, "strata generate: %llu MiB of weights loaded from %s in %.1f s (%zu canonical tensors "
                          "skipped: served natively)\n",
                  (unsigned long long) (pool_bytes >> 20), o.pack.c_str(), load_s(), skip.size());
+    strata::uc_probe("weights");
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
@@ -2997,6 +3092,7 @@ int main(int argc, char **argv) try {
                      native_dense.tensor_count(), (double) native_dense.weight_bytes() / (1024.0 * 1024.0), load_s());
     }
 
+    strata::uc_probe("native-dense");
     strata::kernels::gr_set_fp32_activations(o.gr_fp32_activations);
     strata::kernels::gr_set_native_mmvf(o.gr_native_mmvf);
     // Plan v0.3 P3: the fused hyper-connection read rides the native (FP32-activation) contract; the per-stage
@@ -3358,9 +3454,39 @@ int main(int argc, char **argv) try {
         }
     }
     strata::core::Verifier::set_commit_async(!multi_gpu);   // see Verifier::set_commit_async
-    // --pipeline-windows (opt-in): one conversation's windows with the two stages of a layer split overlapped.  Decided
+    // --pipeline-windows: one conversation's windows with the two stages of a layer split overlapped.  Decided
     // here, before any stage sizes its expert cache (the second verifier per stage and the snapshots are allocated
     // after the caches, so their room is kept out of them).  What it does not support turns it off, said once.
+    // Not given: on by default (2) for a split of exactly two Battlemage (Xe2) cards, found from the devices'
+    // architecture ids (strata::intel_gpu_gen), with --serve and the MTP drafter; a single card, an Arc A-series card or
+    // anything the pipeline does not support stays serial, said nothing.  STRATA_PIPELINE_AUTO=0 or
+    // --pipeline-windows 0 turns it off.
+    if (o.pipeline_windows < 0) {
+        static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
+        const auto battlemage = [](int d) -> bool {
+            try {
+                return strata::intel_gpu_gen(dpct::get_device(d)) == strata::IntelGpuGen::Battlemage;
+            } catch (...) {
+                return false;
+            }
+        };
+        strata::PipelineAutoInputs in;
+        in.serve = o.serve; in.multi_gpu = multi_gpu; in.split_same = split_same;
+        in.later_stages = (unsigned) split_devs.size();
+        in.auto_off = ae != nullptr && std::atoi(ae) == 0;
+        in.has_mtp = !o.mtp.empty(); in.spec = o.spec; in.batch = o.batch;
+        in.peer_device = o.peer_device >= 1;     // the same test as the validation below
+        in.helper_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        if (split_devs.size() == 1) {            // the devices are looked at only for a split the pipeline could take
+            in.first_is_battlemage = battlemage(0);
+            in.later_is_battlemage = battlemage(split_devs[0]);
+        }
+        const bool on = strata::pipeline_auto_on(in);
+        o.pipeline_windows = on ? 2 : 0;
+        if (on)
+            std::fprintf(stderr, "strata generate: --pipeline-windows 2 is on by default for a layer split across two Arc "
+                                 "B-series cards (--pipeline-windows 0 or STRATA_PIPELINE_AUTO=0 turns it off)\n");
+    }
     if (o.pipeline_windows > 0) {
         const bool helpers = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
         const char* off = !o.serve ? "it needs --serve"
@@ -3562,6 +3688,7 @@ int main(int argc, char **argv) try {
                                      "behind rank %zu (the peer's)\n", f, n_moved, at, fill);
             }
         }
+        strata::uc_probe("after-profile");
         std::fprintf(stderr, "strata generate: profile %s: %zu ranked pairs, built for %lld slots\n",
                      o.expert_profile.c_str(), profile.size(), (long long) pslots);
     }
@@ -3974,6 +4101,48 @@ int main(int argc, char **argv) try {
     // stage that runs [lb, le) carves only those layers' GDN rows and QSA pools - before the carve every stage
     // held all 48 layers' state whatever layers it ran, which is the same disease the chunked-QSA-prefill PR
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
+    // A context the sessions cannot hold in VRAM is not a reason to stop (owner rule: a long context and requests at once never shrink the context, they run
+    // slower): with no --kv-resident given, the K/V streams from RAM, the resident window as large as the card leaves room for.
+    // Needed: every session (the main one and each request slot), what loads after them (the draft layer, the native head, the verify buffers), the reserve,
+    // the prompt path's smallest own buffers (chunk 256) and a cache of 128 slots.
+    if (o.kv_resident <= 0 && o.max_context > 20480 && !multi_gpu && !o.kv_grow && o.expert_cache != 0) {
+        const int64_t kLateLoadMib = (!o.mtp.empty() || o.draft == "dflash2") ? 1500 : 700;   // Arc A750: MTP 835 + head 417 + verify 70 + the rest; DFlash2 alone is about the same
+        const int64_t blob_b = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
+        const int64_t n_sess = 1 + std::max(o.batch, 0);
+        const int64_t reserve_b = (int64_t) (o.vram_reserve_given ? o.vram_reserve_mib : std::min(o.vram_reserve_mib, 300)) << 20;
+        const int64_t fixed_b = (kLateLoadMib << 20) + reserve_b + ((160 + (256 * 680) / 1024) << 20) + 128 * blob_b;
+        size_t free_k = 0, total_k = 0;
+        free_k = strata::core::device_free_bytes(); (void) total_k;
+        auto need_at = [&](int64_t res) -> int64_t {
+            strata::core::qsa_set_kv_resident(res);
+            return n_sess * (int64_t) strata::core::session_bytes(g, o.max_context, K, 0, g.n_layers) + fixed_b;
+        };
+        int64_t pick = strata::core::pick_kv_resident(o.max_context, (int64_t) free_k, need_at);
+        if (pick > 0) {
+            // the pinned RAM the streamed K/V takes (it is a copy of the whole context per session): 1.8 GB a session at 128K int8
+            int64_t host_avail = -1;
+            if (std::FILE* mf = std::fopen("/proc/meminfo", "r")) {
+                char line[256];
+                while (std::fgets(line, sizeof(line), mf)) {
+                    long long kb = 0;
+                    if (std::sscanf(line, "MemAvailable: %lld kB", &kb) == 1) { host_avail = (int64_t) kb << 10; break; }
+                }
+                std::fclose(mf);
+            }
+            const int64_t host_need = n_sess * (int64_t) o.max_context * 13 * 1056 + (6ll << 30);
+            if (host_avail >= 0 && host_avail < host_need) {
+                std::fprintf(stderr, "strata generate: the context does not fit in VRAM and %.1f GiB of free RAM is less than the %.1f GiB KV streaming would take: not turned on\n",
+                             (double) host_avail / 1073741824.0, (double) host_need / 1073741824.0);
+                pick = 0;
+            } else {
+                std::fprintf(stderr, "strata generate: %lld tokens of context in %lld sessions do not fit in the %.2f GiB free: KV streaming on, %lld cells a layer in VRAM "
+                                     "(--kv-resident %lld; the rest of the K/V in RAM, so decode and prompts run slower)\n",
+                             (long long) o.max_context, (long long) n_sess, (double) free_k / 1073741824.0, (long long) pick, (long long) pick);
+            }
+        }
+        o.kv_resident = pick;
+        strata::core::qsa_set_kv_resident(o.kv_resident);
+    }
     {
         const strata::core::OnDevice on0(0);
         const int64_t hi0 = multi_gpu ? split_at[0] : -1;
@@ -4096,6 +4265,27 @@ int main(int argc, char **argv) try {
             o.batch = cap;
         }
     }
+    if (o.batch > 0 && o.batch_groups <= 0) {   // not given, or `auto`
+        const bool given_auto = o.batch_groups < 0;
+        int g = 1;
+        if (!stages.empty()) {
+            const auto battlemage = [](int d) -> bool {
+                try { return strata::intel_gpu_gen(dpct::get_device(d)) == strata::IntelGpuGen::Battlemage; } catch (...) { return false; }
+            };
+            const bool two_b = stages.size() == 1 && battlemage(0) && battlemage(stages[0]->dev);
+            static const char* ga = std::getenv("STRATA_BATCH_GROUPS_AUTO");
+            const bool off = ga != nullptr && std::atoi(ga) == 0;
+            if (two_b && o.batch >= 8 && o.batch % 2 == 0 && !off) {
+                g = 2;
+                std::fprintf(stderr, "strata generate: --batch-groups 2 by default: %d slots over a layer split on two Arc B-series "
+                                     "cards (--batch-groups 1 or STRATA_BATCH_GROUPS_AUTO=0 turns it off)\n", o.batch);
+            } else if (given_auto) {
+                for (int d = 2; d <= (int) stages.size() + 1 && d <= o.batch; ++d)
+                    if (o.batch % d == 0) g = d;
+            }
+        }
+        o.batch_groups = g;
+    }
     if (o.batch > 0 && o.batch_groups > 1 && (stages.empty() || o.batch % o.batch_groups != 0)) {
         std::fprintf(stderr, "strata generate: WARNING: --batch-groups %d needs a layer split and to divide --batch %d; "
                              "one group\n", o.batch_groups, o.batch);
@@ -4172,6 +4362,26 @@ int main(int argc, char **argv) try {
 
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
     // In particular WDDM can refuse the draft weights after mapping tens of GiB of host pages.
+    // --draft dflash2: the MTP layer is NOT loaded and every "is there an MTP" test below sees --mtp as absent; DFlash2 drafts alone.  The draft vocabulary file
+    // is taken from the --mtp directory.  Anything DFlash2 cannot do here is an error at start, never a silent MTP.
+    strata::core::Dflash2Drafter df2;
+    bool use_df2 = false;
+    std::string df2_vocab_file;
+    if (o.draft == "dflash2") {
+        if ((o.mtp.empty() && o.mtp_draft_vocab.empty()) || o.spec < 2 || o.draft_model.empty()) {
+            std::fprintf(stderr, "strata generate: --draft dflash2 needs --draft-model PACK, --spec 2 or more and --mtp DIR (for DIR/draft_vocab.bin) or --mtp-draft-vocab FILE\n");
+            return 2;
+        }
+        df2_vocab_file = o.mtp_draft_vocab.empty() ? o.mtp + "/draft_vocab.bin" : o.mtp_draft_vocab;
+        o.mtp.clear();
+        if (o.draft_cap > 0 && o.spec > o.draft_cap) {
+            std::fprintf(stderr, "strata generate: --draft dflash2: windows capped at %d tokens (--draft-cap)\n", o.draft_cap);
+            o.spec = o.draft_cap;
+        }
+    } else if (!o.draft.empty() && o.draft != "mtp") {
+        std::fprintf(stderr, "strata generate: --draft takes mtp or dflash2\n");
+        return 2;
+    }
     strata::core::MtpDrafter mtp;
     // the draft layer's geometry (the canonical model's MTP head), `static` because MtpDrafter keeps a reference; the batch
     // slots' draft-KV copies use this one too
@@ -4210,6 +4420,18 @@ int main(int argc, char **argv) try {
             }
         }
     }
+    if (o.draft == "dflash2") {
+        if (multi_gpu || o.batch > 0 || o.pipeline_windows > 0) {
+            std::fprintf(stderr, "strata generate: --draft dflash2 is for one card and one request at a time (not --batch, --pipeline-windows or a layer split) in this build\n");
+            return 2;
+        }
+        if (!df2.load(o.draft_model, 0, err)) {
+            std::fprintf(stderr, "strata generate: --draft dflash2: %s. DFlash2 needs about 1.2 GiB of VRAM; there is no MTP to draft instead, so the start ends here%s\n",
+                         err.c_str(), vram_free_note().c_str());
+            return 1;
+        }
+        use_df2 = true;
+    }
     // THE HEAD BEFORE THE CACHE, AND BEFORE THE ARENA.  The expert cache takes what is free minus the reserve, so
     // everything allocated after it comes out of the reserve.  The native head (~0.5 GB with IQ3_S) was loaded after
     // it and ate most of the 700 MiB: 128K IQ3_S ended with 30 MiB free, the driver paged, and a request stalled for
@@ -4230,6 +4452,7 @@ int main(int argc, char **argv) try {
                      (unsigned long long) native_head.weight_bytes(),
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - head_t0).count());
     }
+    strata::uc_probe("after-head");
     std::vector<float> logits((size_t) n_vocab);
     float* d_logits = nullptr;
     if (DPCT_CHECK_ERROR(
@@ -4509,13 +4732,23 @@ int main(int argc, char **argv) try {
         // under WDDM an over-subscribed allocation does not fail, it pages to system memory and crawls.
         // (with borrowing - the default with a profile - the prompt path lends cache slots instead; `pf_borrow` is
         // the predicate a local `borrow` was here, hoisted above so both cache-size branches read the same one)
-        const int64_t prefill_mib = owned_prefill_mib();
+        int64_t prefill_mib = owned_prefill_mib();
         // the draft layer's head and logits are allocated when it binds, after this: 0.1.27's CJK subset made them
         // ~110-180 MiB larger, and out of the reserve they left 16 GB cards below the stall line (#199)
         int64_t mtp_bind = (!o.mtp.empty() && native_head.loaded())
                                ? (int64_t) mtp.bind_bytes(native_head.row_bytes(), n_vocab) : 0;
         for (const auto& d : slot_mtp)
             mtp_bind += (int64_t) d->bind_bytes(native_head.row_bytes(), n_vocab);
+        if (use_df2 && native_head.loaded()) {   // DFlash2's draft head rows and ids (from the vocabulary file), its logits, 48 MiB of margin
+            int64_t bytes = (int64_t) std::min(o.spec, (int) strata::kernels::kVerifyMaxT) * n_vocab * (int64_t) sizeof(float);
+            if (FILE* vf = std::fopen(df2_vocab_file.c_str(), "rb")) {
+                std::fseek(vf, 0, SEEK_END);
+                const long size = std::ftell(vf);
+                std::fclose(vf);
+                if (size >= 4 && size % 4 == 0) bytes += (int64_t) (size / 4) * (int64_t) native_head.row_bytes() + (int64_t) size;
+            }
+            mtp_bind += bytes + (48 << 20);
+        }
         const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t blob = (int64_t) strata::kernels::cpu::expert_layout().max_blob;
         int64_t slots = ((int64_t) free_b - reserve) / blob;
@@ -4552,6 +4785,36 @@ int main(int argc, char **argv) try {
                 reserve_adapted = true;
             }
         }
+        // Requests at once and a long context never make a start refuse when it can run slower (owner rule).  Still short of a working cache, the speed knobs
+        // go first, in this order: the prompt path's own chunk (its buffers are 160 + 0.66 MiB a token, 1182 MiB at 2048; --prefill N is the person's and stays),
+        // then a reserve that was asked for (down to kSmallReserveMib, the one a small card runs on).  The cache keeps what is left; only a start that
+        // has no slot even then is refused, below.
+        constexpr int64_t kWorkCacheSlots = 128;   // below this the cache is too small to be worth its name (the prompt path cannot lend, every miss goes to the CPU)
+        constexpr int64_t kMinChunk = 256;
+        // (only a start that would stop: no slot, or - sized for a loan - too few slots to lend the prompt path its chunk, so that it allocates its own on top
+        // of a cache that took the VRAM; a start that runs is left as it was sized)
+        if (o.expert_cache < min_slots && o.prefill_chunk > 0) {
+            const strata::core::ShortCache sc = strata::core::size_short_cache(
+                (int64_t) free_b, o.vram_reserve_mib, o.vram_reserve_given, kSmallReserveMib,
+                pf_borrow ? std::min<int64_t>(o.prefill_chunk, 1024) : o.prefill_chunk,   // (what the loan-less path takes when nothing can be lent)
+                o.prefill_given, kMinChunk, kWorkCacheSlots, mtp_bind, pipe_first, blob, (int64_t) profile.size());
+            const int64_t chunk = sc.chunk, reserve_mib = sc.reserve_mib, n = sc.slots;
+            if (n > o.expert_cache || (pf_borrow && n > 0)) {
+                std::fprintf(stderr, "strata generate: expert cache auto: short of VRAM, so the start runs slower instead of stopping: %s%s%s -> %lld slots\n",
+                             chunk != o.prefill_chunk ? ("prompt chunk " + std::to_string(o.prefill_chunk) + " -> " + std::to_string(chunk) + " tokens").c_str() : "",
+                             chunk != o.prefill_chunk && reserve_mib != o.vram_reserve_mib ? ", " : "",
+                             reserve_mib != o.vram_reserve_mib ? ("reserve " + std::to_string(o.vram_reserve_mib) + " -> " + std::to_string(reserve_mib) + " MiB").c_str() : "",
+                             (long long) n);
+                if (reserve_mib != o.vram_reserve_mib) reserve_adapted = true;
+                if (pf_borrow) o.prefill_auto = false;   // the chunk is the person's-sized now: its own buffers, no loan to size it from
+                o.prefill_chunk = chunk;
+                o.vram_reserve_mib = (int) reserve_mib;
+                o.expert_cache = (int) n;
+                prefill_mib = owned_prefill_mib();
+            } else if (pf_borrow && n == 0) {
+                o.expert_cache = 0;   // sized for a loan that cannot happen, and no slot once the prompt path's own buffers are priced: the refusal below says so
+            }
+        }
         if (o.expert_cache == 0) {
             // what is short, and what makes room: the numbers a small card picks from
             const int64_t at_reserve = o.vram_reserve_given ? o.vram_reserve_mib
@@ -4573,6 +4836,12 @@ int main(int argc, char **argv) try {
                          (long long) min_slots, (long long) ((min_slots * blob) >> 20), (long long) short_mib,
                          (long long) session_mib, (long long) o.max_context, (long long) (mtp_bind >> 20),
                          reserve_tip.c_str());
+            g_no_cache_hint = "this card cannot hold even the smallest start: with prompt chunks of 256 tokens and the reserve at " + std::to_string(at_reserve) +
+                              " MiB, the expert cache still needs " + std::to_string(min_slots * blob >> 20) + " MiB and the card is about " + std::to_string(short_mib) +
+                              " MiB short. Taken: " + (o.batch > 1 ? std::to_string(o.batch) + " request slots " + std::to_string(o.batch * session_mib) + " MiB, " : std::string()) +
+                              "the context " + std::to_string(session_mib) + " MiB at " + std::to_string(o.max_context) + " tokens, the draft head " +
+                              std::to_string(mtp_bind >> 20) + " MiB. Lower " + (o.batch > 1 ? "the number of requests at once (--batch / parallel), " : "") +
+                              "use --kv q4_0 (smaller K/V), turn off the draft layer, or close other programs that use the GPU";
         }
     } else if (multi_gpu && o.expert_cache > 0) {
         // an explicit cache size leaves room for the prompt path's buffers and the reserve, or the first prompt
@@ -4972,6 +5241,7 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        strata::uc_probe("after-fill");
         mem_mark("the profile fill");
         std::fprintf(stderr, "strata generate: pre-filled %lld of %lld slots from the profile in %.1f s (%.0f MB/s); "
                              "slot 0 verified\n",
@@ -5511,6 +5781,7 @@ int main(int argc, char **argv) try {
         return 2;
     }
 
+    strata::uc_probe("cache-done");
     mem_mark("the expert cache and the graphs");
     std::fprintf(stderr, "strata generate: session is up (engine %s)\n", STRATA_VERSION);
     if (verify_all_slots) verify_all_slots("session up");
@@ -7250,10 +7521,14 @@ int main(int argc, char **argv) try {
             for (strata::core::Verifier* v : {&ver, &ver_b}) {
                 v->set_stream(pl_stream[0]);
                 v->set_always_publish(true);
+                v->set_self_commit_off(true);   // a pipelined window may run speculatively: never let it
+                // advance the state itself, the commit graph always does
             }
             for (strata::core::Verifier* v : {&stages[0]->ver, &stages[0]->ver_b}) {
                 v->set_stream(pl_stream[1]);
                 v->set_always_publish(true);
+                v->set_self_commit_off(true);   // a pipelined window may run speculatively: never let it
+                // advance the state itself, the commit graph always does
             }
         }
         if (n_stages > 1) {
@@ -7373,23 +7648,57 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
             }
-            if (!ver_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
-                std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA0 (the first card): "
-                                     "%s (raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
-                return 1;
+            {
+                // Verifier::init takes the CURRENT device, so the first card's second verifier is made while card 0
+                // (stage 0 always runs on the default device in this port) is current: the block above ended its scope.
+                const strata::core::OnDevice on_first(0);
+                if (!ver_b.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
+                    std::fprintf(stderr, "strata serve: --pipeline-windows: the second verifier on CUDA0 (the first card): "
+                                         "%s (raise --vram-reserve-mib by ~200, or --pipeline-windows 0)\n", err.c_str());
+                    return 1;
+                }
             }
             ver_b.set_next(&gs.ver_b, &split_drive_b);   // the setters reach it; the pipeline never chains run/commit
         }
         ver.set_remote_expert_opt(remote_opt.get());
+        if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
             (use_mtp && !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
                                   pipe ? pl_mtp_R : ver.final_R_all(), err))) {
-            std::fprintf(stderr, "strata serve: %s\n", err.c_str());
+            print_start_refusal("strata serve", err);
             return 1;
         }
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
+        if (use_df2) {   // DFlash2 in the serve loop: one card, one request at a time; no MTP to draft instead, so anything it cannot do ends the start
+            std::string why_not;
+            df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
+            if (!ver.tapping()) why_not = "the verifier keeps no taps here";
+            else if (!df2.bind(wt, &native_head, df2_vocab_file, why_not) || !df2.prepare(ver.tap_dev(), why_not) ||
+                     !sp.reserve_taps(df2.tap_layers(), 2048, g.n_embd, why_not)) {
+                if (why_not.empty()) why_not = "the drafter could not be set up";
+            }
+            if (!why_not.empty()) {
+                std::fprintf(stderr, "strata serve: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (the pack 0.5 GiB, buffers and K/V ring 0.2 GiB, "
+                                     "a draft head 0.3 GiB, 0.1 GiB of prompt staging); --vram-reserve-mib keeps it. No MTP is loaded, so the start ends here\n", why_not.c_str());
+                return 1;
+            }
+            // STRATA_DF2_TIMING=1: the time the prompt's context updates take per request (printed when the prompt is read); STRATA_DF2_NO_PROMPT_CTX=1 (measurement only):
+            // the prompt's rows are not given to the drafter (its first drafts are poor), which attributes the drafter's share of the prompt read time
+            sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool {
+                static const bool skip = std::getenv("STRATA_DF2_NO_PROMPT_CTX") != nullptr;
+                static const bool timing = std::getenv("STRATA_DF2_TIMING") != nullptr;
+                if (skip) return true;
+                const Clock::time_point t = Clock::now();
+                const bool ok = df2.context(taps, rows, pos0, e);
+                if (timing) std::fprintf(stderr, "strata serve: DFlash2: prompt context update, %lld rows at %lld, %.1f ms\n", (long long) rows, (long long) pos0, std::chrono::duration<double, std::milli>(Clock::now() - t).count());
+                return ok;
+            };
+            std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms); windows up to %d tokens; no MTP layer is loaded\n",
+                         o.draft_model.c_str(), df2.ms_capture, o.spec);
+        }
+        const bool draft_on = use_mtp || use_df2;   // some drafter proposes
         auto free_slot_mtp_rows = [](float *p) {
                                                  try {
         if (p != nullptr) (void) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue())); }
@@ -7670,13 +7979,26 @@ int main(int argc, char **argv) try {
             id.config = *config_fp;
             return true;
         };
+        // What a park captures: the main session's conversation (park_current) or an idle batch slot's (park_slot:
+        // the reply it decoded, before an admission overwrites it).  One budget / admission / snapshot path for both.
+        struct ParkSource {
+            const std::vector<int32_t>& ids;
+            const std::vector<ImgKey>& imgs;
+            std::vector<ConvCheckpoint>& checks;          ///< moved apart into stage parts for the capture, put back after
+            bool cvec;
+            strata::core::SessionState& session;          ///< stage 0's
+            std::vector<strata::core::SessionState*> stage_sessions;   ///< the later stages', in stage order (stages[k]->dev)
+            const strata::core::QsaState* draft0;         ///< the draft layer's K/V saved with stage 0's image (or none)
+            const strata::core::QsaState* draft_last;     ///< ... with the last stage's image (a split: the drafter's GPU)
+            bool with_reuse;                              ///< the retained K/V describes this source (the main session's)
+            std::string what;                             ///< the log's words after the token count ("", " from slot 1")
+        };
         // Save only on a switch/rewind, not on each continuing request. No graph
         // addresses change: all parked images live in ordinary host vectors.
-        auto park_current_body = [&](size_t held) -> bool {
-            if (!conversations.enabled() || !live_ok || live.empty()) return true;
+        auto park_source = [&](const ParkSource& src, size_t held) -> bool {
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached))
+            if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
                 std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                              "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
@@ -7685,16 +8007,25 @@ int main(int argc, char **argv) try {
             const size_t n_st = stages.size();
             // the draft layer's K/V lives on the last stage's GPU (the drafter is loaded there): with a split it is
             // saved with that stage's image, under its device; stage 0's image holds none
-            const strata::core::QsaState* draft0 = n_st > 0 || !use_mtp ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
-            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
+            const strata::core::QsaState* draft0 = src.draft0;   // no --mtp: no draft K/V (snapshots accept null)
+            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return k + 1 == n_st ? src.draft_last : nullptr; };
+            std::vector<ConvCheckpoint>& checks = src.checks;
             strata::core::ConversationCheckpointSplit cs;
             if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);   // #752: two-phase; a bad_alloc leaves `checks` whole
             struct MergeBack {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
             } merge_back{cs, checks, n_st > 0};
-            const strata::core::ConversationView view{live, live_imgs, n_st > 0 ? cs.stage0 : checks, cvec_cached};
-            auto reuse = conversations.take_reuse();
+            const strata::core::ConversationView view{src.ids, src.imgs, n_st > 0 ? cs.stage0 : checks, src.cvec};
+            const int64_t retained_n = src.with_reuse ? conversations.retained_tokens() : 0;
+            // a batch slot's image carries no retained K/V (it describes the main session's conversation), and the
+            // main session's stays retained for its own park
+            auto reuse = src.with_reuse ? conversations.take_reuse_for(src.ids)   // never another conversation's K/V
+                                        : strata::core::ConversationKvReuse{};
+            if (retained_n > 0 && reuse.unchanged_tokens < retained_n)
+                std::fprintf(stderr, "strata serve: conversation cache: retained K/V reused for %lld of its %lld tokens "
+                                     "(the rest is not this conversation's)\n", (long long) reuse.unchanged_tokens,
+                             (long long) retained_n);
             std::vector<strata::core::ConversationKvReuse> stage_reuse = std::move(reuse.stages);
             stage_reuse.resize(n_st);
             reuse.stages.clear();
@@ -7703,9 +8034,9 @@ int main(int argc, char **argv) try {
             for (size_t k = 0; k < n_st; ++k) {
                 auto& st = stages[k];
                 const strata::core::OnDevice on(st->dev);
-                const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec};
                 size_t b = 0;
-                if (!strata::core::conversation_snapshot_bytes(view_k, st->ss, g, draft_of(k), b, err)) {
+                if (!strata::core::conversation_snapshot_bytes(view_k, *src.stage_sessions[k], g, draft_of(k), b, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (stage CUDA%d: %s)\n",
                                  st->dev, err.c_str());
                     err.clear();
@@ -7713,8 +8044,8 @@ int main(int argc, char **argv) try {
                 }
                 if (!stage_reuse[k].kv.empty()) {
                     size_t r = 0;
-                    if (strata::core::conversation_snapshot_capture_bytes(stage_reuse[k], view_k, st->ss, g, draft_of(k),
-                                                                          r, err)) {
+                    if (strata::core::conversation_snapshot_capture_bytes(stage_reuse[k], view_k, *src.stage_sessions[k], g,
+                                                                          draft_of(k), r, err)) {
                         b = r;
                         stage_retained += stage_reuse[k].bytes();
                     } else {
@@ -7725,14 +8056,14 @@ int main(int argc, char **argv) try {
                 stage_estimate += b;
             }
             size_t estimate = 0;
-            if (!strata::core::conversation_snapshot_bytes(view, ss, g, draft0, estimate, err)) {
+            if (!strata::core::conversation_snapshot_bytes(view, src.session, g, draft0, estimate, err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (%s)\n", err.c_str());
                 err.clear(); // A recoverable miss must not poison the batched draft prefill's error channel.
                 return true;
             }
             const size_t fresh_estimate = estimate;
             if (!reuse.kv.empty() && !strata::core::conversation_snapshot_capture_bytes(
-                    reuse, view, ss, g, draft0, estimate, err)) {
+                    reuse, view, src.session, g, draft0, estimate, err)) {
                 reuse = {};
                 estimate = fresh_estimate;
                 err.clear();
@@ -7762,7 +8093,7 @@ int main(int argc, char **argv) try {
                 }
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
-                if (!strata::core::conversation_snapshot_save(image, view, ss, g, draft0, err,
+                if (!strata::core::conversation_snapshot_save(image, view, src.session, g, draft0, err,
                         std::move(reuse), &reused_bytes)) return false;
                 for (size_t k = 0; k < n_st; ++k) {   // the later stages (the last one with the draft layer's K/V)
                     auto& st = stages[k];
@@ -7771,9 +8102,9 @@ int main(int argc, char **argv) try {
                                              .queues_wait_and_throw()) != 0) {
                         err = "stage sync failed"; return false;
                     }
-                    const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                    const strata::core::ConversationView view_k{src.ids, src.imgs, cs.parts[k], src.cvec};
                     strata::core::SavedConversation part;
-                    if (!strata::core::conversation_snapshot_save(part, view_k, st->ss, g, draft_of(k), err,
+                    if (!strata::core::conversation_snapshot_save(part, view_k, *src.stage_sessions[k], g, draft_of(k), err,
                             std::move(stage_reuse[k]), &reused_bytes))
                         return false;
                     image.stage_images.push_back(std::move(part));
@@ -7784,8 +8115,8 @@ int main(int argc, char **argv) try {
                 }
                 const size_t snapshot_bytes = image.bytes();
                 const bool stored = conversations.put(std::move(image), held);
-                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
-                             stored ? "parked" : "skipped", live.size(),
+                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens%s in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
+                             stored ? "parked" : "skipped", src.ids.size(), src.what.c_str(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
             } catch (const std::bad_alloc&) {
@@ -7794,6 +8125,15 @@ int main(int argc, char **argv) try {
                 std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
             }
             return true;
+        };
+        auto park_current_body = [&](size_t held) -> bool {
+            if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            const size_t n_st = stages.size();
+            ParkSource src{live, live_imgs, checks, cvec_cached, ss, {},
+                           n_st > 0 || !use_mtp ? nullptr : &mtp.kv_state(),
+                           use_mtp && n_st > 0 ? &mtp.kv_state() : nullptr, true, ""};
+            for (auto& st : stages) src.stage_sessions.push_back(&st->ss);
+            return park_source(src, held);
         };
         // #752: the whole park (the checkpoint split included) is under one try, so a host OOM skips parking instead of
         // ending the server
@@ -7912,6 +8252,11 @@ int main(int argc, char **argv) try {
             // E-9: batched through the prompt path when it can (one GPU: a layer split's drafter is on the last stage)
             const bool batched = use_mtp && !multi_gpu && sp.draft_kv(mtp, R_rows, nxt.data(), T, p0, e);
             if (!e.empty() || (use_mtp && !batched && !mtp.prefill(R_rows, nxt.data(), T, p0, e))) return false;
+            if (use_df2) {   // the drafter's token history covers the batched prompt rows too (its begin_request compares it with the next prompt)
+                std::vector<int32_t> tk((size_t) T);
+                for (int64_t t = 0; t < T; ++t) tk[(size_t) t] = (int32_t) cur[(size_t) (p0 + t)];
+                df2.note_rows(tk.data(), T, p0);
+            }
             if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr)
                 std::fprintf(stderr, "strata serve: DRAFT_PREFILL path=%s mode=%d cells=%lld\n",
                              batched ? "batched" : "token", mtp.kv_state().kv_mode, (long long) T);
@@ -7946,7 +8291,15 @@ int main(int argc, char **argv) try {
                 } else {
                     saved = checkpoint_at(done, nullptr, tail_checkpoint && !periodic_checkpoint);
                 }
-                if (!saved) { e = "saving a conversation checkpoint failed" + ckpt_why; return false; }
+                if (!saved) {
+                    // #3350: only a GPU that is unwell ends the request; a copy that ran out of memory skips this checkpoint
+                    if (!ckpt_why.empty() || !checkpoint_failure_is_survivable()) {
+                        e = "saving a conversation checkpoint failed" + ckpt_why;
+                        return false;
+                    }
+                    std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: its state could not be copied out (see "
+                                         "above); the request goes on without it\n", (long long) done);
+                }
                 if (periodic_checkpoint) pp_next_check = done + o.prompt_cache_every;
                 if (tail_checkpoint) pp_tail_saved = true;
             }
@@ -7963,7 +8316,16 @@ int main(int argc, char **argv) try {
                     part_next[i] = done + o.prompt_cache_every;
                     ConvCheckpoint part;   // this stage's state at `done` (its stream is synchronized)
                     part.ids.assign(cur.begin(), cur.begin() + done);
-                    if (!checkpoint_save(part, stage_ss, g)) { e = "saving a checkpoint part failed"; return false; }
+                    if (!checkpoint_save(part, stage_ss, g)) {
+                        // #3350: the copy ran out of memory (not the GPU): leave this part out. The set at `done` is then
+                        // incomplete and the checkpoint is skipped below, as for a part that was never made
+                        if (!checkpoint_failure_is_survivable()) { e = "saving a checkpoint part failed"; return false; }
+                        std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: stage %zu's state could not be copied "
+                                             "out (see above); the request goes on without it\n", (long long) done, i);
+                        std::lock_guard<std::mutex> lk(part_mu);
+                        part_at[done].resize(stages.size() + 1);   // (marks the set as seen; its empty parts make it incomplete)
+                        return true;
+                    }
                     std::lock_guard<std::mutex> lk(part_mu);
                     auto& v = part_at[done];
                     v.resize(stages.size() + 1);
@@ -8745,6 +9107,7 @@ int main(int argc, char **argv) try {
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
+                                       " batch_groups=" + std::to_string(o.batch_groups > 0 ? o.batch_groups : 1) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
         }
         // issue #29: a request whose heartbeat (tokens, prompt chunks, verify windows) stops for this long is stuck on
@@ -8777,6 +9140,7 @@ int main(int argc, char **argv) try {
                     }
                 }).detach();
         }
+        strata::uc_probe("ready");
         std::printf("READY %lld stop\n", (long long) o.max_context);   // "stop": this engine honours STOP
         std::fflush(stdout);
         std::string line;
@@ -8958,6 +9322,8 @@ int main(int argc, char **argv) try {
             // fed).  Kept when the request ends (`cached`), so the next turn of that conversation continues from it
             // instead of reading its history again (see `slot_source` in the request path).
             std::vector<int32_t> ids;
+            int64_t reply0 = 0;            ///< the index in `ids` where its penalty window starts (the last prompt token; 0 with STRATA_PENALTY_PROMPT=1)
+            int pen_n = 0;                 ///< its request's penalty window (penalty_last_n) when it has a repeat / frequency / presence penalty, else 0
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
@@ -9051,6 +9417,8 @@ int main(int argc, char **argv) try {
         // `at`: one of the slot's checkpoints - only the K/V up to it is copied and its state restored instead
         auto copy_from_slot = [&](int b, const ConvCheckpoint *at,
                                   std::string &e) -> bool {
+            // the main session's K/V is replaced by the slot's: K/V retained from a restore described the old one
+            conversations.take_reuse();
             try {
         const int64_t upto = at != nullptr ? (int64_t)at->ids.size()
                                            : (int64_t)bs[(size_t)b].ids.size();
@@ -9116,6 +9484,65 @@ int main(int argc, char **argv) try {
           std::exit(1);
         }
         };
+        // What an idle slot holds (the conversation it decoded last: its sessions, its draft K/V and its checkpoints)
+        // goes to the parked conversations before an admission overwrites it.  The main session was parked with that
+        // conversation's prompt only (the admission's copy), so the reply the slot decoded lives nowhere else: without
+        // this, the conversation's next turn finds its prompt-read state and reads the whole reply again (measured on
+        // four 200K chats over two slots: 255 of a 256-token reply re-read, and a chat whose copies the cache had
+        // evicted meanwhile read from token 0).  Nothing to do when the live main session or a parked conversation
+        // already holds that state (or a continuation of it).
+        // Parking is an optimization like a checkpoint (#3350): a skip and a failed snapshot (a host or device
+        // allocation that ran out) are logged and the slot is overwritten as before.  Nothing here ends the request
+        // or the engine.
+        auto park_slot = [&](int b) {
+            BSlot& sl = bs[(size_t) b];
+            if (!conversations.enabled() || sl.active || !sl.cached || sl.img || sl.ids.empty()) return;
+            auto prefix_of = [&](const std::vector<int32_t>& whole) {
+                return whole.size() >= sl.ids.size() && std::equal(sl.ids.begin(), sl.ids.end(), whole.begin());
+            };
+            const bool in_main = live_ok && cvec_cached == sl.cvec && prefix_of(live) &&
+                                 imgs_below(live_imgs, (int64_t) sl.ids.size()).empty();
+            if (in_main || conversations.holds(sl.ids, {}, sl.cvec)) return;
+            if (use_mtp && !batch_mtp) {   // no draft K/V of its own: an image without it would not restore beside the drafter
+                std::fprintf(stderr, "strata serve: conversation cache: slot %d not parked before its overwrite (its %zu tokens "
+                                     "have no per-slot draft K/V without --batch-mtp)\n", b, sl.ids.size());
+                return;
+            }
+            try {
+                if (DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()) != 0) {
+                    std::fprintf(stderr, "strata serve: conversation cache: slot %d not parked before its overwrite (device "
+                                         "sync failed)\n", b);
+                    return;
+                }
+            } catch (sycl::exception const& exc) {
+                std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+                std::exit(1);
+            }
+            std::string why;
+            if (batch_mtp && !slot_mtp[(size_t) b]->idle(why)) {
+                std::fprintf(stderr, "strata serve: conversation cache: slot %d not parked before its overwrite (%s)\n",
+                             b, why.c_str());
+                return;
+            }
+            const size_t n_st = stages.size();
+            static const std::vector<ImgKey> no_imgs;
+            ParkSource src{sl.ids, no_imgs, sl.checks, sl.cvec, *bslot_ss[0][(size_t) b], {},
+                           n_st > 0 || !batch_mtp ? nullptr : &slot_mtp[(size_t) b]->kv_state(),
+                           batch_mtp && n_st > 0 ? &slot_mtp[(size_t) b]->kv_state() : nullptr, false,
+                           " from slot " + std::to_string(b)};
+            for (size_t k = 1; k < bslot_ss.size(); ++k) src.stage_sessions.push_back(bslot_ss[k][(size_t) b].get());
+            try {
+                if (park_source(src, 0)) return;
+                // the snapshot failed (the copy's own memory, as in #3350): the slot is not touched, so go on without
+                // the image
+                std::fprintf(stderr, "strata serve: conversation cache: slot %d not parked before its overwrite (%s)\n",
+                             b, err.empty() ? "the snapshot failed" : err.c_str());
+                err.clear();
+                (void) checkpoint_failure_is_survivable();
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking slot %d\n", b);
+            }
+        };
         // one batch window over the active slots only (row t is the t-th active slot): an idle slot is not touched,
         // so it keeps the conversation it holds
         auto batch_step = [&]() -> bool {
@@ -9160,6 +9587,12 @@ int main(int argc, char **argv) try {
                 bt_start = Clock::now();
                 bt_wait0 = ver.ms_wait; bt_pool0 = ver.ms_pool;
                 bt_miss0 = drive.d.multi_misses; bt_hits0 = drive.d.cache_hits; bt_pcie0 = drive.d.pcie_experts;
+            }
+            for (int t = 0; t < S; ++t) {   // each penalised slot's reply tail for its penalty window (the verifier builds the rows from it and this window's tokens)
+                const BSlot& ps = bs[(size_t) rows[t]];
+                if (ps.pen_n <= 0 || (t > 0 && rows[t - 1] == rows[t])) continue;
+                const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
+                ver.set_slot_history(rows[t], ps.ids.data() + from, (int64_t) ps.ids.size() - from);
             }
             const Clock::time_point w0 = Clock::now();
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
@@ -9342,6 +9775,14 @@ int main(int argc, char **argv) try {
                 }
                 PGroup& G = pg[(size_t) pick];
                 strata::core::progress().busy.store(true);
+                if (k == 0) {   // the penalised slots' reply tails for the group's rows (the last stage draws them)
+                    for (int t = 0; t < GS && t < (int) strata::kernels::kVerifyMaxT; ++t) {
+                        const BSlot& ps = bs[(size_t) (pick * GS + t)];
+                        if (ps.pen_n <= 0) continue;
+                        const int64_t from = std::max<int64_t>(ps.reply0, (int64_t) ps.ids.size() - ps.pen_n);
+                        ver.set_slot_history(pick * GS + t, ps.ids.data() + from, (int64_t) ps.ids.size() - from);
+                    }
+                }
                 if (!stage_verifier(k).batch_launch(pick * GS, GS, G.tok, G.pos, err)) {
                     std::printf("ERR %s\n", err.c_str());
                     return false;
@@ -9662,11 +10103,15 @@ int main(int argc, char **argv) try {
             unsigned long long req_seed = 0;
             float req_min_p = 0.0f, req_penalty_repeat = 1.0f, req_penalty_freq = 0.0f, req_penalty_present = 0.0f;
             int req_penalty_last_n = 0;
+            long long req_pen_from = -1;   // pen_from=N: this request continues one that began at token N (the last token of the original prompt): the penalty window starts there
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // SYCL port: logprobs=K (0..20) - after each "T id" an "LP logprob id:logprob ..." line with the token's
             // log-probability and the K most likely tokens', from the verify window's head logits (before sampling,
             // penalties and temperature). -1 (absent): no LP lines; a server that does not ask never sees one.
             int req_logprobs = -1;
+            // allowed=a,b,c: with logprobs, print only these token ids (the server renormalises over them; the same key
+            // the CUDA engine reads).  Absent: the K most likely tokens, as before.
+            std::vector<int32_t> req_allowed;
             // ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary
             // (so no split there) nor every --prompt-cache-every tokens, and its session is neither continued nor
             // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
@@ -9697,11 +10142,23 @@ int main(int argc, char **argv) try {
                     else if (key == "top_k") req_top_k = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "min_p") req_min_p = fv;
                     else if (key == "penalty_last_n") req_penalty_last_n = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "pen_from") req_pen_from = std::atoll(tok.c_str() + eq + 1);
                     else if (key == "penalty_repeat") req_penalty_repeat = fv;
                     else if (key == "penalty_freq") req_penalty_freq = fv;
                     else if (key == "penalty_present") req_penalty_present = fv;
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "logprobs") req_logprobs = std::clamp(std::atoi(tok.c_str() + eq + 1), -1, 20);
+                    else if (key == "allowed") {
+                        const std::string csv = tok.substr(eq + 1);
+                        size_t p = 0;
+                        while (p < csv.size()) {
+                            const size_t c = csv.find(",", p);
+                            const std::string one = csv.substr(p, c == std::string::npos ? std::string::npos : c - p);
+                            if (!one.empty()) req_allowed.push_back((int32_t) std::atoi(one.c_str()));
+                            if (c == std::string::npos) break;
+                            p = c + 1;
+                        }
+                    }
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "img_keys") {
@@ -9985,13 +10442,26 @@ int main(int argc, char **argv) try {
                     // checkpoints as if it had not stopped
                     if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
                         resumed_from0 = bs[(size_t) slot_source].partial_from0;
-                        for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) checks.push_back(c);
                         bs[(size_t) slot_source].partial = false;
+                    }
+                    // the slot's checkpoints come along (the one continued from, and any shorter one: prefixes of what
+                    // was copied back, their K/V cells with it), so the chain keeps its branch points and the parked
+                    // copies of this conversation a turn back - whose deepest checkpoint the chain holds again - go
+                    // as superseded (#342) instead of taking a parked entry each until the cache evicts another chat
+                    try {   // an optimization: a host allocation that fails skips the rest
+                        // (a shorter checkpoint only when it is a prefix of the tokens copied back, text only)
+                        const std::vector<int32_t>& copied_back = slot_ck != nullptr ? slot_ck->ids : bs[(size_t) slot_source].ids;
+                        for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks)
+                            if ((int64_t) c.ids.size() <= slot_tokens && c.imgs.empty() && c.ids.size() <= copied_back.size() &&
+                                std::equal(c.ids.begin(), c.ids.end(), copied_back.begin()))
+                                checks.push_back(c);
+                    } catch (const std::bad_alloc&) {
+                        std::fprintf(stderr, "strata batch: slot %d: its checkpoints were not all copied (out of memory); the rest are skipped\n", slot_source);
                     }
                     if (slot_ck != nullptr) {
                         live = slot_ck->ids;
-                        checks.push_back(*slot_ck);   // the main session's chain has it now
-                        checks.back().used = ++check_clock;
+                        for (ConvCheckpoint& c : checks)   // the main session's chain has it now
+                            if (c.ids.size() == slot_ck->ids.size()) c.used = ++check_clock;
                     } else {
                         live = bs[(size_t) slot_source].ids;
                     }
@@ -10063,7 +10533,7 @@ int main(int argc, char **argv) try {
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
                     std::vector<std::vector<strata::core::ConversationKv>> stage_kv;   // every stage's, for its next park
                     for (auto& si : incoming->stage_images) stage_kv.push_back(std::move(si.kv));
-                    conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv));
+                    conversations.retain(std::move(incoming->kv), int64_t(live.size()), std::move(stage_kv), live);
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
@@ -10141,6 +10611,20 @@ int main(int argc, char **argv) try {
             if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
             tr("request", n, geni ? 1 : 0);
             if (use_mtp) mtp.set_prompt_len(n);
+            if (use_df2) {   // the drafter's ring goes on from the live conversation, or starts over (a parked or edited one)
+                std::vector<int32_t> idv(ids.begin(), ids.end());
+                bool cold = false;
+                df2.begin_request(idv.data(), (int64_t) idv.size(), reread_to > 0 ? 0 : resume, &cold);
+                if (df2.last_rebuilt > 0)
+                    std::fprintf(stderr, "strata serve: DFlash2: %s%lld context rows of the window rebuilt from the drafter's log in %.1f ms%s\n",
+                                 df2.last_swapped ? "a parked conversation came back: " : "", (long long) df2.last_rebuilt, df2.last_ms,
+                                 df2.last_missing >= 64 ? " (the rest were never logged)" : "");
+                if (cold && df2.last_missing >= 64)   // (a few rows missing are not worth a line: they are counted in the ring stats)
+                    std::fprintf(stderr, "strata serve: DFlash2: %lld context rows of the window are not the drafter's to give (a conversation it has no log of: edited, "
+                                         "from a session file, or its log was evicted): it drafts poorly for the first rounds (the answers are the same)\n",
+                                 (long long) std::max<int64_t>(df2.last_missing, 1));
+                sp.set_taps(df2.tap_layers(), std::max<int64_t>(0, n - 2047), 2048);
+            }
             const int64_t read_from = reread_to > 0 ? 0 : resume;
             conversations.limit_reuse(read_from);
             pp_total = n;
@@ -10253,10 +10737,19 @@ int main(int argc, char **argv) try {
                         for (int t = 0; t < w.T; ++t) w1[(size_t) t] = (int32_t) cur[(size_t) (w.q + t)];
                         strata::core::Verifier& v = *PV[1][l1 & 1];
                         if (pl_mtp_live[l1 & 1]) {   // the drafter has read this parity's previous rows first
-                            const strata::core::OnDevice on(mtp.device());
-                            (v.stream())
-                                ->ext_oneapi_submit_barrier(
-                                    {*pl_mtp_ev[l1 & 1]});
+                            // SYCL keeps an event in its context, so another card's queue cannot take it as a
+                            // dependency ("Cannot submit to a queue with a dependency from a graph that is
+                            // associated with a different context", the first pipelined window on a split).  The
+                            // drafter's rows must be in memory before stage 1 reads them, so on two cards the
+                            // host waits for the drafter here and the window is launched without the barrier.
+                            if (mtp.device() == v.device()) {
+                                const strata::core::OnDevice on(mtp.device());
+                                (v.stream())
+                                    ->ext_oneapi_submit_barrier(
+                                        {*pl_mtp_ev[l1 & 1]});
+                            } else if (DPCT_CHECK_ERROR(pl_mtp_ev[l1 & 1]->wait()) != 0) {
+                                return fail("the drafter's rows did not land before the window");
+                            }
                         }
                         if (!v.pl_launch(w.T, w1.data(), w.q, e) || !v.pl_commit_async(w.T, e)) return fail(e);
                         ++l1;
@@ -10331,6 +10824,10 @@ int main(int argc, char **argv) try {
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
                     if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+                    if (use_df2) {
+                        if (!df2.context(ver.tap_dev(), T, q, e)) return false;
+                        df2.note_rows(win.data(), T, q);
+                    }
                     q += T;
                     pp_reached = q;   // #471
                 }
@@ -10515,6 +11012,7 @@ int main(int argc, char **argv) try {
                         std::string ye;
                         const auto ty = Clock::now();
                         std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
+                        if (can) park_slot(ys);   // the conversation the slot holds, before this read overwrites it
                         if (can && copy_to_slot(ys, pre, ye)) {
                             BSlot& sl = bs[(size_t) ys];
                             sl = BSlot{};
@@ -10584,6 +11082,11 @@ int main(int argc, char **argv) try {
                                                ? drive.d.pcie_num : pcie_num_of(stages[(size_t) st - 1]->pcie_frac);
             if (pipe) for (int st = 0; st < split_drive.n; ++st) split_drive_b.pcie_num[st] = split_drive.pcie_num[st];
             const int hist_n = std::min(req_sp.penalty_last_n, kPenaltyWindowCap);
+            // #4590: the repeat / frequency / presence penalties count the tokens this reply has written, not the prompt's last
+            // tokens (same as src/program/generate.cpp).  Earlier assistant turns inside the prompt are not counted either.
+            // STRATA_PENALTY_PROMPT=1 brings the old window back (the last penalty_last_n tokens of prompt + reply).  The history
+            // is rebuilt from the request's prompt ids every time, so a restored conversation seeds it like a cold read.
+            static const bool pen_prompt = strata::kernels::penalty_counts_prompt(std::getenv("STRATA_PENALTY_PROMPT"));
             ver.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             if (pipe) ver_b.set_history(hist_n > 0 ? d_hist : nullptr, hist_n);
             bool cancelled = false;
@@ -10672,8 +11175,12 @@ int main(int argc, char **argv) try {
                 at = to;
                 if ((to == turn_at || to == root_at || to == message_at) &&
                     !checkpoint_at(to, nullptr, to == message_at && to != turn_at && to != root_at)) {   // the tail kind leaves first
-                    std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
-                    return 1;
+                    if (!ckpt_why.empty() || !checkpoint_failure_is_survivable()) {   // #3350: only an unwell GPU ends the request
+                        std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
+                        return 1;
+                    }
+                    std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: its state could not be copied out (see "
+                                         "above); the request goes on without it\n", (long long) to);
                 }
                 if (trace && to == message_at)
                     std::fprintf(stderr, "strata serve: message boundary checkpoint: %lld tokens, %lld tail\n",
@@ -10719,6 +11226,10 @@ int main(int argc, char **argv) try {
             std::vector<int32_t> consumed;
             consumed.reserve((size_t) (n + max_new + S));
             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
+            // #4590: where the penalty window may start in `consumed` (see pen_prompt above): the end of the prompt without its
+            // last token, which joins the window as the fed-back head `x`.
+            size_t pen_gen0 = strata::kernels::penalty_window_from(consumed.size(), pen_prompt);
+            if (req_pen_from >= 0 && !pen_prompt) pen_gen0 = std::min<size_t>(pen_gen0, (size_t) req_pen_from);   // a continued request: its reply began earlier
             const char* finish = "length";
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
@@ -11356,6 +11867,47 @@ int main(int argc, char **argv) try {
                                      B.launched ? "launched" : B.ready ? "ready" : "none", on ? " ON" : "");
                     x = outp[(size_t) a];
                     p = A.p + a + 1;
+                    // STRATA_PIPELINE_DUMP=<file>: after every window, append a hash and the sum of the first stage's
+                    // sequence state (its GDN rows: the recurrence state plus the conv history).  Two arms that ran
+                    // the same tokens must agree here; the first position where they do not is the state that
+                    // escapes.  Debug only: it waits for the stage's stream, so it distorts the timing.
+                    static const char* pl_dump = std::getenv("STRATA_PIPELINE_DUMP");   // read once
+                    if (pl_dump != nullptr) {
+                        const int64_t gdn_floats = g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                                   g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        const size_t n = (size_t) ss.gdn_alloc * (size_t) gdn_floats;
+                        std::vector<float> h(n);
+                        (void) DPCT_CHECK_ERROR(s0->memcpy(h.data(), ss.gdn_state, n * sizeof(float)).wait());
+                        // the recurrence state and the conv history hashed apart: a wrong row shows which half it is
+                        const size_t n_rec = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const size_t n_cnv = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        double rec_sum = 0.0, cnv_sum = 0.0;
+                        uint64_t rec_hash = 1469598103934665603ull, cnv_hash = 1469598103934665603ull;
+                        for (int64_t l = 0; l < ss.gdn_alloc; ++l) {
+                            const size_t base = (size_t) l * (size_t) gdn_floats;
+                            uint64_t rh = 1469598103934665603ull, ch = 1469598103934665603ull;
+                            for (size_t i = 0; i < n_rec; ++i) {
+                                uint64_t b = 0;
+                                std::memcpy(&b, &h[base + i], sizeof(float));
+                                rh = (rh ^ b) * 1099511628211ull;
+                                rec_sum += (double) h[base + i];
+                            }
+                            for (size_t i = 0; i < n_cnv; ++i) {
+                                uint64_t b = 0;
+                                std::memcpy(&b, &h[base + n_rec + i], sizeof(float));
+                                ch = (ch ^ b) * 1099511628211ull;
+                                cnv_sum += (double) h[base + n_rec + i];
+                            }
+                            rec_hash = (rec_hash ^ rh) * 1099511628211ull;
+                            cnv_hash = (cnv_hash ^ ch) * 1099511628211ull;
+                        }
+                        if (std::FILE* df = std::fopen(pl_dump, "a")) {
+                            std::fprintf(df, "pos %lld windows %lld rec %.9g %016llx cnv %.9g %016llx\n", (long long) p,
+                                         (long long) dec_windows, rec_sum, (unsigned long long) rec_hash, cnv_sum,
+                                         (unsigned long long) cnv_hash);
+                            std::fclose(df);
+                        }
+                    }
                     if (!last && !pl_adapt()) return die("an adaptive refill failed");
                     if (on && !last) {
                         ++pl_on;
@@ -11448,11 +12000,53 @@ int main(int argc, char **argv) try {
                     std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
                 }
             }
+            // DFlash2 with a long suffix match: the next round's draft is deferred to that round's start (spec/window_rule.hpp skip_draft_for_lookup,
+            // STRATA_DF2_LOOKUP_SKIP=N, default 0 = off until measured on this card)
+            const int df2_skip_min = strata::spec::df2_lookup_skip_min(0);
+            bool df2_deferred = false;
+            int dfr_n = 0;
+            int64_t dfr_pos = 0;
+            int32_t dfr_anchor = 0;
+            auto defer_df2 = [&](int a_) -> bool {
+                if (!use_df2 || o.suffix_draft <= 0 || df2_skip_min <= 0) return false;
+                const int ks = sfx.propose(S - 1, sbuf.data());
+                if (!strata::spec::skip_draft_for_lookup(true, df2_skip_min, ks, sfx.last_match())) return false;
+                df2_deferred = true; dfr_n = a_ + 1; dfr_pos = p; dfr_anchor = outv[(size_t) a_];
+                return true;
+            };
+            // the next round's drafts after a commit: the DFlash2 block from the committed rows' taps (the window's first a + 1 rows)
+            auto draft_df2 = [&](int a_) -> bool {
+                int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+                float pp[strata::core::Dflash2Drafter::kDrafts];
+                if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+                for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+                return true;
+            };
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
-                if (use_mtp && req_spec_min_p > 0.0) {
-                    T = 1;
-                    while (T < S_mtp && dprob[(size_t) T - 1] >= (float) req_spec_min_p) ++T;
+                bool dfr_lookup = false;
+                int dfr_T = 0, dfr_match = 0;
+                if (df2_deferred) {   // the draft skipped for a long lookup match: the lookup if the policy takes it, else the draft now (same taps and rows)
+                    df2_deferred = false;
+                    const int kd = sfx.propose(S - 1, sbuf.data());
+                    const int md = sfx.last_match();
+                    const strata::spec::DraftPolicy::Pick pkd = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
+                    if (kd > 0 && pkd.lookup) {
+                        dfr_lookup = true; dfr_T = pkd.t; dfr_match = md;
+                        if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                    } else {
+                        int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+                        float pp[strata::core::Dflash2Drafter::kDrafts];
+                        if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+                    }
+                }
+                int T = draft_on ? S_mtp : 1;   // no drafter: one token a round unless a lookup draft fires
+                {   // the window rule of this request's ACTIVE source (spec/window_rule.hpp)
+                    strata::spec::WindowRuleIn wr;
+                    wr.use_mtp = draft_on; wr.draft_on = draft_on; wr.df2_active = use_df2; wr.spec_cost = false; wr.first_window = first_window;
+                    wr.chain_rows = 1; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = req_spec_min_p;
+                    wr.draft_conf = o.draft_conf; wr.dprob = dprob.data();
+                    T = strata::spec::choose_window(wr);
                 }
                 if (first_window) T = 1;
                 // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
@@ -11462,10 +12056,14 @@ int main(int argc, char **argv) try {
                 if (o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
-                    if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                    if (k > 0 && (!draft_on || sbuf[0] == drafts[0])) {
                         const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
+                }
+                if (dfr_lookup) {   // the lookup window chosen before the draft (the draft was skipped)
+                    sfx.propose(S - 1, sbuf.data());
+                    T = dfr_T; from_sfx = true; sfx_match = dfr_match;
                 }
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
@@ -11507,7 +12105,7 @@ int main(int argc, char **argv) try {
                     // fed-back head `x` (it joins `consumed` only after this window commits), then the drafts
                     // before that row - what plain decode would have counted there.  (Until 0.1.19 only row 0
                     // was staged, and the drafted rows read unwritten slots.)
-                    strata::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(), window.data(), T,
+                    strata::kernels::penalty_rows(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), window.data(), T,
                                                   hist_n, hist_stage.data());
                     const strata::core::OnDevice on_h(hist_dev);
                     dpct::get_in_order_queue()
@@ -11562,7 +12160,48 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
+                // STRATA_PIPELINE_DUMP=<file>: the serial half of the pipelined window's state diff (see the same block
+                // in the pipelined loop): the first stage's GDN state after every committed window.
+                {
+                    static const char* sd = std::getenv("STRATA_PIPELINE_DUMP");
+                    if (sd != nullptr) {
+                        const int64_t gf = g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                           g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        const size_t n = (size_t) ss.gdn_alloc * (size_t) gf;
+                        std::vector<float> h(n);
+                        (void) DPCT_CHECK_ERROR(ver.stream()->memcpy(h.data(), ss.gdn_state, n * sizeof(float)).wait());
+                        const size_t n_rec = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const size_t n_cnv = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        double rec_sum = 0.0, cnv_sum = 0.0;
+                        uint64_t rec_hash = 1469598103934665603ull, cnv_hash = 1469598103934665603ull;
+                        for (int64_t l = 0; l < ss.gdn_alloc; ++l) {
+                            const size_t base = (size_t) l * (size_t) gf;
+                            uint64_t rh = 1469598103934665603ull, ch = 1469598103934665603ull;
+                            for (size_t i = 0; i < n_rec; ++i) {
+                                uint64_t bb = 0;
+                                std::memcpy(&bb, &h[base + i], sizeof(float));
+                                rh = (rh ^ bb) * 1099511628211ull;
+                                rec_sum += (double) h[base + i];
+                            }
+                            for (size_t i = 0; i < n_cnv; ++i) {
+                                uint64_t bb = 0;
+                                std::memcpy(&bb, &h[base + n_rec + i], sizeof(float));
+                                ch = (ch ^ bb) * 1099511628211ull;
+                                cnv_sum += (double) h[base + n_rec + i];
+                            }
+                            rec_hash = (rec_hash ^ rh) * 1099511628211ull;
+                            cnv_hash = (cnv_hash ^ ch) * 1099511628211ull;
+                        }
+                        if (std::FILE* df = std::fopen(sd, "a")) {
+                            std::fprintf(df, "pos %lld serial rec %.9g %016llx cnv %.9g %016llx\n", (long long) (p + a + 1),
+                                         rec_sum, (unsigned long long) rec_hash, cnv_sum,
+                                         (unsigned long long) cnv_hash);
+                            std::fclose(df);
+                        }
+                    }
+                }
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
+                if (use_df2) df2.note_rows(window.data(), a + 1, p);
                 draft_offered += T - 1;
                 draft_accepted += a;
                 first_window = false;
@@ -11582,7 +12221,14 @@ int main(int argc, char **argv) try {
                             for (const float v : lrow) se += std::exp((double) v - mx);
                             const double lse = (double) mx + std::log(se);
                             std::printf("LP %.6f", (double) lrow[(size_t) outv[(size_t) i]] - lse);
-                            if (req_logprobs > 0) {
+                            if (!req_allowed.empty()) {
+                                // only the ids the caller named (never the chosen one, which the head carries, and never an id
+                                // past the engine's own vocabulary); the server renormalises over them
+                                for (const int32_t id : req_allowed) {
+                                    if (id == outv[(size_t) i] || id < 0 || (size_t) id >= lrow.size()) continue;
+                                    std::printf(" %d:%.6f", (int) id, (double) lrow[(size_t) id] - lse);
+                                }
+                            } else if (req_logprobs > 0) {
                                 lord.resize(lrow.size());
                                 for (size_t v = 0; v < lrow.size(); ++v) lord[v] = (int32_t) v;
                                 std::partial_sort(lord.begin(), lord.begin() + req_logprobs, lord.end(),
@@ -11605,9 +12251,17 @@ int main(int argc, char **argv) try {
                 // coupled drafts with penalties: the next window's row-0 history (`consumed` holds this window's
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
                 if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
-                    mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = !use_mtp || eos || produced_n >= max_new ||
-                                     mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
+                    mtp.set_draft_history(consumed.data() + pen_gen0, (int64_t) (consumed.size() - pen_gen0), outv[(size_t) a]);
+                // The request ends here, so no draft follows and the window's committed rows would never reach the drafter's ring or its log: every turn would
+                // leave a hole of a + 1 positions behind it, which a later turn that resumes after this one finds blank (and cannot rebuild). Update them now.
+                if (use_df2 && (eos || produced_n >= max_new)) {
+                    const Clock::time_point tctx = Clock::now();
+                    if (!df2.context(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                    static const bool ctx_timing = std::getenv("STRATA_DF2_TIMING") != nullptr;
+                    if (ctx_timing) std::fprintf(stderr, "strata serve: DFlash2: the request-end context update (%d rows) took %.1f ms\n", a + 1, std::chrono::duration<double, std::milli>(Clock::now() - tctx).count());
+                }
+                const bool drafted = !draft_on || eos || produced_n >= max_new ||
+                                     (use_df2 ? (defer_df2(a) || draft_df2(a)) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p));
                 {
                     const Clock::time_point tw3 = Clock::now();
                     auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -11818,10 +12472,12 @@ int main(int argc, char **argv) try {
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt);
             std::fflush(stdout);
+            strata::uc_probe("after-request");
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
                             (int64_t) live.size() == p;
                 const auto tc0 = Clock::now();
+                if (cont) park_slot(admit_slot);   // the conversation the slot holds, before this one overwrites it
                 if (cont && !copy_to_slot(admit_slot, live, err)) {
                     std::fprintf(stderr, "strata serve: batch admission failed: %s\n", err.c_str());
                     bs[(size_t) admit_slot].cached = false;   // its sessions may be half written
@@ -11838,6 +12494,12 @@ int main(int argc, char **argv) try {
                     sl.max_new = admit_max_new;
                     sl.t0 = Clock::now();
                     sl.ids = live;
+                    {   // the penalty window of the slot's decode: the reply, from the last prompt token (the first window fed it), as the solo loop counts it
+                        const bool slot_pen = req_sp.penalty_last_n > 0 && (req_sp.penalty_repeat != 1.0f || req_sp.penalty_freq != 0.0f || req_sp.penalty_present != 0.0f);
+                        sl.pen_n = slot_pen ? std::min(req_sp.penalty_last_n, kPenaltyWindowCap) : 0;
+                        sl.reply0 = (int64_t) strata::kernels::penalty_window_from(live.size() > 0 ? live.size() - 1 : 0, pen_prompt);
+                        if (req_pen_from >= 0 && !pen_prompt) sl.reply0 = std::min<int64_t>(sl.reply0, req_pen_from);   // a continued request (prompt + what it generated): the reply began earlier
+                    }
                     if (batch_mtp) {
                         if (!slot_mtp[(size_t) admit_slot]->draft_first(1, ver.final_R_all(), sl.x,
                                                                         sl.p - 1, sl.draft.data(), err)) {
@@ -11978,6 +12640,7 @@ int main(int argc, char **argv) try {
     // then starts at the last prompt position, whose prediction is the first generated token.
     int64_t pos_start = 0;
     int64_t spec_pos = 0;   // plan v0.3 P6: where the speculative loop starts (0 = not used)
+    strata::uc_probe("before-prefill");
     strata::prefill::Prefill prefill;
     bool kvg_started = false;   // the elastic K/V took this run's cells
     double prefill_batched_ms = 0;
@@ -12046,6 +12709,11 @@ int main(int argc, char **argv) try {
                 return e.empty() && mtp.prefill(R_rows, nxt.data(), T, p0, e);
             };
         }
+        if (use_df2) {   // the drafter's context: the last 2047 prompt rows' taps
+            df2.reset();
+            prefill.set_taps(df2.tap_layers(), std::max<int64_t>(0, n_prompt - 2047), 2048);
+            prefill.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { return df2.context(taps, rows, pos0, e); };
+        }
         if (!kvg_started) {   // the elastic K/V: every cell this run can reach (no loan)
             kvg_started = true;
             kvg_start(xcache.slots());
@@ -12057,6 +12725,7 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        prefill.clear_taps();
         // refill the lent slots from the arena and give them back to the decode tier
         if (!lent.empty()) {
             const Clock::time_point tr = Clock::now();
@@ -12092,6 +12761,7 @@ int main(int argc, char **argv) try {
         }
         prefill_batched_ms = std::chrono::duration<double, std::milli>(Clock::now() - tp0).count();
         prefill_ms += prefill_batched_ms;
+        strata::uc_probe("after-prefill");
         pos_start = n_batched;
         tok = o.tokens[(size_t) pos_start];
         // the PLE window of the token path: the two tokens before `pos_start`
@@ -12425,8 +13095,9 @@ int main(int argc, char **argv) try {
         vh.blob = thits.blob;
         vh.slot_off = xcache.slot_offsets();   // E-6: the device plan's pointers
         vh.n_slots = xcache.slots();
+        if (use_df2) ver.set_taps(df2.tap_layers());
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr, o.spec, err)) {
-            std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+            print_start_refusal("strata generate", err);
             return 1;
         }
         const bool use_mtp = !o.mtp.empty();
@@ -12434,6 +13105,19 @@ int main(int argc, char **argv) try {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
             return 1;
         }
+        if (use_df2) {   // no MTP to draft instead: anything DFlash2 cannot do ends the run
+            if (!ver.tapping()) {
+                std::fprintf(stderr, "strata generate: --draft dflash2: the verifier keeps no taps here, so the run ends here\n");
+                return 1;
+            }
+            df2.set_max_drafts((o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec) - 1);   // the widest window - 1: the head and the walk run for that many rows
+            if (!df2.bind(wt, &native_head, df2_vocab_file, err) || !df2.prepare(ver.tap_dev(), err)) {
+                std::fprintf(stderr, "strata generate: --draft dflash2: %s. It needs about 1.2 GiB of VRAM in all (--vram-reserve-mib keeps it); there is no MTP to draft instead, so the run ends here\n", err.c_str());
+                return 1;
+            }
+            std::fprintf(stderr, "strata generate: DFlash2 drafter on (%s, graphs captured in %.0f ms), no MTP layer is loaded\n", o.draft_model.c_str(), df2.ms_capture);
+        }
+        const bool draft_on = use_mtp || use_df2;   // some drafter proposes
         mem_mark("the verifier and the drafter's binding");
         ver.set_sampling(sp);   // the CLI's own sampling (until 0.1.19 this loop was always greedy); no penalties here
         if (use_mtp) mtp.set_draft_sampling(sp);   // STRATA_SPEC_COUPLED=1: sampled drafts (a no-op otherwise)
@@ -12626,6 +13310,7 @@ int main(int argc, char **argv) try {
                 }
                 std::fprintf(stderr, "strata generate: window and draft graphs captured in %.0f ms\n",
                              std::chrono::duration<double, std::milli>(Clock::now() - tw).count());
+                strata::uc_probe("captured");
             }
         }
         if (use_mtp && !first_window &&
@@ -12664,12 +13349,53 @@ int main(int argc, char **argv) try {
         }
         const double pool_ms0 = drive.cpu_ms;
         const int64_t misses0 = drive.d.multi_misses, entries0 = drive.d.multi_entries;
+        // DFlash2 with a long suffix match: the next round's draft is deferred to that round's start (spec/window_rule.hpp skip_draft_for_lookup)
+        const int df2_skip_min = strata::spec::df2_lookup_skip_min(0);
+        bool df2_deferred = false;
+        int dfr_n = 0;
+        int64_t dfr_pos = 0;
+        int32_t dfr_anchor = 0;
+        auto defer_df2 = [&](int a_) -> bool {
+            if (!use_df2 || o.suffix_draft <= 0 || df2_skip_min <= 0) return false;
+            const int ks = sfx.propose(o.spec - 1, sbuf.data());
+            if (!strata::spec::skip_draft_for_lookup(true, df2_skip_min, ks, sfx.last_match())) return false;
+            df2_deferred = true; dfr_n = a_ + 1; dfr_pos = p; dfr_anchor = outv[(size_t) a_];
+            return true;
+        };
+        // the next round's drafts after a commit: the DFlash2 block from the committed rows' taps (the window's first a + 1 rows)
+        auto draft_df2 = [&](int a_) -> bool {
+            int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+            float pp[strata::core::Dflash2Drafter::kDrafts];
+            if (!df2.draft(ver.tap_dev(), a_ + 1, p, outv[(size_t) a_], dd, pp, err)) return false;
+            for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+            return true;
+        };
         while ((int64_t) produced.size() < max_new) {
             const Clock::time_point t0 = Clock::now();
+            bool dfr_lookup = false;
+            int dfr_T = 0, dfr_match = 0;
+            if (df2_deferred) {   // the draft skipped for a long lookup match: the lookup if the policy takes it, else the draft now (same taps and rows)
+                df2_deferred = false;
+                const int kd = sfx.propose(o.spec - 1, sbuf.data());
+                const int md = sfx.last_match();
+                const strata::spec::DraftPolicy::Pick pkd = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
+                if (kd > 0 && pkd.lookup) {
+                    dfr_lookup = true; dfr_T = pkd.t; dfr_match = md;
+                    if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                } else {
+                    int32_t dd[strata::core::Dflash2Drafter::kDrafts];
+                    float pp[strata::core::Dflash2Drafter::kDrafts];
+                    if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::fprintf(stderr, "strata generate: %s\n", err.c_str()); return 1; }
+                    for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
+                }
+            }
             int T = S_mtp;
-            if (use_mtp && o.spec_min_p > 0.0) {
-                T = 1;
-                while (T < S_mtp && dprob[(size_t) T - 1] >= (float) o.spec_min_p) ++T;
+            {   // the window rule of the round's ACTIVE source (spec/window_rule.hpp)
+                strata::spec::WindowRuleIn wr;
+                wr.use_mtp = draft_on; wr.draft_on = draft_on; wr.df2_active = use_df2; wr.spec_cost = false; wr.first_window = first_window;
+                wr.chain_rows = 1; wr.cap = S_mtp; wr.start = T; wr.spec_min_p = o.spec_min_p;
+                wr.draft_conf = o.draft_conf; wr.dprob = dprob.data();
+                T = strata::spec::choose_window(wr);
             }
             if (first_window) T = 1;
             bool from_sfx = false;
@@ -12677,10 +13403,14 @@ int main(int argc, char **argv) try {
             if (o.suffix_draft > 0 && !first_window) {
                 const int k = sfx.propose(o.spec - 1, sbuf.data());
                 sfx_match = sfx.last_match();
-                if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
+                if (k > 0 && (!draft_on || sbuf[0] == drafts[0])) {
                     const strata::spec::DraftPolicy::Pick pk = policy.choose(T, k, sfx_match);
                     if (pk.lookup) { T = pk.t; from_sfx = true; }
                 }
+            }
+            if (dfr_lookup) {   // the lookup window chosen before the draft (the draft was skipped)
+                sfx.propose(o.spec - 1, sbuf.data());
+                T = dfr_T; from_sfx = true; sfx_match = dfr_match;
             }
             // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
             int chain_n = 0, cm = 0;
@@ -12707,7 +13437,7 @@ int main(int argc, char **argv) try {
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
-                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : use_mtp ? drafts[(size_t) i - 1]
+                int32_t d = from_sfx ? sbuf[(size_t) i - 1] : draft_on ? drafts[(size_t) i - 1]
                                                     : at < oracle.size() ? (int32_t) oracle[at] : 0;
                 if (i >= T_mtp) d = cbuf[(size_t) (i - T_mtp)];
                 if (o.spec_corrupt > 0 && (++corrupt_counter % o.spec_corrupt) == 0) d = (d + 1) % (int32_t) n_vocab;
@@ -12730,6 +13460,20 @@ int main(int argc, char **argv) try {
                              (long long) drive.d.fail_layer, (long long) drive.d.fail_expert,
                              drive.d.fail ? drive.d.fail : "(no message)");
                 return 1;
+            }
+            if (const char* wl = std::getenv("STRATA_DUMP_WINDOW_TOP2")) {   // debug: per window row, the top-2 ids and logits (text lines "pos T row id1 l1 id2 l2")
+                static std::FILE* wlf = std::fopen(wl, "w");
+                std::vector<float> lrow((size_t) ver.vocab());
+                for (int t = 0; wlf != nullptr && t < T; ++t) {
+                    if (!ver.copy_logits(t, lrow.data())) break;
+                    int i1 = 0, i2 = -1;
+                    for (int v = 1; v < (int) lrow.size(); ++v) {
+                        if (lrow[(size_t) v] > lrow[(size_t) i1]) { i2 = i1; i1 = v; }
+                        else if (i2 < 0 || lrow[(size_t) v] > lrow[(size_t) i2]) i2 = v;
+                    }
+                    std::fprintf(wlf, "%lld %d %d %d %.5f %d %.5f\n", (long long) (p + t), T, t, i1, (double) lrow[(size_t) i1], i2, (double) lrow[(size_t) i2]);
+                }
+                if (wlf) std::fflush(wlf);
             }
             if (hashes != nullptr) {   // FNV-1a over the window's final residual rows (a test path: a plain copy)
                 const size_t n_floats = (size_t) T * (size_t) (g.hc * g.n_embd);
@@ -12804,8 +13548,8 @@ int main(int argc, char **argv) try {
                 total_ms += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
                 break;
             }
-            const bool drafted = !use_mtp || (int64_t) produced.size() >= max_new ||
-                                 mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p);
+            const bool drafted = !draft_on || (int64_t) produced.size() >= max_new ||
+                                 (use_df2 ? (defer_df2(a) || draft_df2(a)) : mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) o.spec_min_p));
             if (adapt_thr.joinable()) adapt_thr.join();
             if (!adapt_ok) return 1;
             if (!drafted) {
@@ -12835,7 +13579,7 @@ int main(int argc, char **argv) try {
         if (!follow.empty())
             std::printf("%-24s %lld of %lld emitted tokens differ from the argmax\n", "follow",
                         (long long) follow_differ, (long long) follow_emitted);
-        if (o.spec_min_p > 0.0) {
+        if (o.spec_min_p > 0.0 || o.draft_conf > 0.0) {
             std::printf("%-24s", "window sizes");
             for (size_t i = 1; i < window_hist.size(); ++i) std::printf(" T%zu:%lld", i, (long long) window_hist[i]);
             std::printf("  (min draft probability %.2f)\n", o.spec_min_p);
@@ -12937,6 +13681,9 @@ int main(int argc, char **argv) try {
                         "pcie experts", (double) (drive.d.pcie_experts - pcie0) / (double) (rounds * g.n_layers),
                         drive.d.pcie_num);
         (void) pool_ms0;
+        if (use_df2 && df2.rounds > 0)
+            std::printf("%-24s %.3f ms/round drafting (%lld rounds), %.0f MiB of VRAM\n", "dflash2", df2.ms_draft / (double) df2.rounds,
+                        (long long) df2.rounds, (double) df2.vram_bytes() / 1048576.0);
         if (use_mtp && rounds > 0)
             std::printf("%-24s %.3f ms/round drafting (%lld rounds), MTP prompt %.1f ms, %.0f MiB of VRAM\n", "mtp",
                         mtp.ms_draft / (double) mtp.rounds, (long long) mtp.rounds, mtp.ms_prefill,
@@ -12974,6 +13721,7 @@ int main(int argc, char **argv) try {
     for (int64_t t : produced) std::printf(" %lld", (long long) t);
     std::printf("\n");
     const double decode_ms = decoded > 0 ? total_ms / (double) decoded : 0.0;
+    strata::uc_probe("end-cli");
     std::printf("%-24s %lld tokens in %.1f ms  ->  %.2f tok/s\n", "decode", (long long) decoded, total_ms,
                 decode_ms > 0.0 ? 1000.0 / decode_ms : 0.0);
     if (n_prompt > 1)
@@ -13135,6 +13883,13 @@ int main(int argc, char **argv) try {
     return 0;
 }
 catch (sycl::exception const &exc) {
+  const std::string what = exc.what();
+  if (exc.code() == sycl::errc::memory_allocation || what.find("OUT_OF_DEVICE_MEMORY") != std::string::npos) {
+    // the one plain refusal for a start no sizing could fit (the sizing above already shrank the prompt chunk, the reserve and the resident K/V window)
+    std::cerr << "strata: this card does not have the memory for this start: the GPU ran out of memory while the engine was loading (" << what << "). Lower the number of "
+                 "requests at once (--batch / parallel), use --kv q4_0 (a smaller K/V), turn off the draft layer, or close other programs that use the GPU" << std::endl;
+    std::exit(1);
+  }
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
             << ", line:" << __LINE__ << std::endl;
   std::exit(1);

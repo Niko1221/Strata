@@ -27,15 +27,18 @@ import re
 from dataclasses import dataclass, field
 
 from strata_control import signing, transfer
-from strata_control.targets import BACKEND_MATRIX
+from strata_control.targets import BACKEND_MATRIX, host_platform
 
 SCHEMA_VERSION = 1
 FEED_NAME = "strata-feed.json"
+#: The Linux ARM64 (DGX Spark) Terminal reads this file instead. A Control older than 0.1.53 refuses a feed that names a platform it does not know, so
+#: the linux-aarch64 entries cannot sit in strata-feed.json: that file stays as every released client can read it. Same format, same key.
+AARCH64_FEED_NAME = "strata-feed-linux-aarch64.json"
 SIGNATURE_SUFFIX = ".sig"
 FORMATS = ("tar.gz", "tar.xz", "zip")
-PLATFORMS = ("windows-x86_64", "linux-x86_64", "macos-arm64", "macos-x86_64")
-#: Tauri's names for the same platforms.
-TAURI_TARGETS = {"windows-x86_64": "windows-x86_64", "linux-x86_64": "linux-x86_64",
+PLATFORMS = ("windows-x86_64", "linux-x86_64", "linux-aarch64", "macos-arm64", "macos-x86_64")
+#: Tauri's names for the same platforms (no desktop app is built for linux-aarch64: the entry only keeps the name parsable).
+TAURI_TARGETS = {"windows-x86_64": "windows-x86_64", "linux-x86_64": "linux-x86_64", "linux-aarch64": "linux-aarch64",
                  "macos-arm64": "darwin-aarch64", "macos-x86_64": "darwin-x86_64"}
 _VERSION = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -115,6 +118,30 @@ class EnginePackage:
 
 
 @dataclass(frozen=True)
+class DrafterPackage:
+    """A DFlash2 drafter file Strata hosts (feed member ``drafters``): one pinned file, not an archive. ``backends`` are the engine families it was measured on
+    (``metal``); ``url`` is relative to the feed (flat release assets) or an https address; ``size`` and ``sha256`` are the file's. The code that fetches it
+    pins the same size and SHA-256 (strata_control/drafting.py), so the feed can move the file but never swap its bytes."""
+    name: str
+    version: str
+    url: str
+    size: int
+    sha256: str
+    backends: tuple[str, ...]
+    base: str = ""
+    licence: str = ""
+    notes: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"drafter {self.name} {self.version}"
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "version": self.version, "url": self.url, "size": self.size, "sha256": self.sha256,
+                "backends": list(self.backends), "base": self.base, "licence": self.licence, "notes": self.notes}
+
+
+@dataclass(frozen=True)
 class ControlPackage:
     version: str
     platform: str
@@ -156,6 +183,11 @@ class Feed:
     #: the DeepSeek-V4.1 engine packages (feed member ``dsv41``, same entry shape as ``engine``): a separate download that setup fetches when
     #: DeepSeek is chosen. Kept out of ``engine`` so that `strata update` and select_engine never pick one as THE engine. Older Controls ignore the member.
     dsv41: tuple[EnginePackage, ...] = ()
+    #: entries this Control does not know how to use (a platform, a backend or an archive format added after it was built): left out, one plain line each.
+    #: A feed with such an entry is still a feed; only an entry of a kind this Control knows and that is malformed refuses the feed.
+    skipped: tuple[str, ...] = ()
+    #: the DFlash2 drafter files (feed member ``drafters``, DrafterPackage): fetched by setup, `strata drafting fetch` and Load for a set that has one. Older Controls ignore the member.
+    drafters: tuple[DrafterPackage, ...] = ()
 
     def url(self, ref: str) -> str:
         return transfer.resolve_ref(transfer.base_of(self.source), ref)
@@ -171,18 +203,27 @@ def _time(value, what: str) -> dt.datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
 
-def _engine_package(item: dict) -> EnginePackage:
+def _skipping(skipped: list | None, what: str, reason: str) -> None:
+    if skipped is None:                                  # a caller that wants the strict reading
+        raise FeedError(f"the update feed lists {what}, {reason}")
+    skipped.append(f"The update feed lists {what}, {reason}: skipped (a newer Strata may use it).")
+
+
+def _engine_package(item: dict, skipped: list | None = None) -> EnginePackage | None:
     if not isinstance(item, dict):
         raise FeedError("an engine entry in the feed is not an object")
     where = f"engine entry {item.get('version')!r}"
     version = _need(item, "version", str, where)
     version_key(version)
     platform = _need(item, "platform", str, where)
-    if platform not in PLATFORMS:
-        raise FeedError(f"the feed's {where} names an unknown platform {platform!r}")
     backend = _need(item, "backend", str, where)
+    label = f"{version} {platform}-{backend}" + (f"-{item['variant']}" if item.get("variant") else "")
+    if platform not in PLATFORMS:
+        _skipping(skipped, f"engine {label}", f"for a platform this Strata does not know ({platform})")
+        return None
     if backend not in BACKEND_MATRIX:
-        raise FeedError(f"the feed's {where} names an unknown backend {backend!r}")
+        _skipping(skipped, f"engine {label}", f"for a backend this Strata does not know ({backend})")
+        return None
     archs = item.get("archs")
     if not isinstance(archs, list) or not all(isinstance(a, str) and a for a in archs) or (backend != "cpu" and not archs):
         raise FeedError(f"the feed's {where} needs a list of archs")
@@ -191,7 +232,8 @@ def _engine_package(item: dict) -> EnginePackage:
         raise FeedError(f"the feed's {where} has an invalid min_driver")
     fmt = _need(item, "format", str, where)
     if fmt not in FORMATS:
-        raise FeedError(f"the feed's {where} uses an unsupported archive format {fmt!r}")
+        _skipping(skipped, f"engine {label}", f"in an archive format this Strata does not know ({fmt})")
+        return None
     size = _need(item, "size", int, where)
     installed = _need(item, "installed_bytes", int, where)
     if size <= 0 or installed <= 0:
@@ -207,20 +249,40 @@ def _engine_package(item: dict) -> EnginePackage:
                          notes=str(item.get("notes") or ""))
 
 
-def _control_package(item: dict, version: str) -> ControlPackage:
+def _control_package(item: dict, version: str, skipped: list | None = None) -> ControlPackage | None:
     where = "control entry"
     platform = _need(item, "platform", str, where)
     if platform not in PLATFORMS:
-        raise FeedError(f"the feed's control entry names an unknown platform {platform!r}")
+        _skipping(skipped, f"Control {version} {platform}", "for a platform this Strata does not know")
+        return None
     fmt = _need(item, "format", str, where)
     if fmt not in FORMATS:
-        raise FeedError(f"the feed's control entry uses an unsupported archive format {fmt!r}")
+        _skipping(skipped, f"Control {version} {platform}", f"in an archive format this Strata does not know ({fmt})")
+        return None
     size, installed = _need(item, "size", int, where), _need(item, "installed_bytes", int, where)
     if size <= 0 or installed <= 0:
         raise FeedError("the feed's control entry declares a size that cannot be a real file")
     return ControlPackage(version=version, platform=platform, url=_need(item, "url", str, where), format=fmt,
                           size=size, sha256=_hex(item.get("sha256"), where), installed_bytes=installed,
                           entry=str(item.get("entry") or "strata.py"))
+
+
+def _drafter_package(item: dict) -> DrafterPackage:
+    if not isinstance(item, dict):
+        raise FeedError("a drafter entry in the feed is not an object")
+    where = f"drafter entry {item.get('name')!r}"
+    name = _need(item, "name", str, where)
+    if "/" in name or "\\" in name or name.startswith("."):
+        raise FeedError(f"the feed's {where} has a name that is not a plain file name")
+    size = _need(item, "size", int, where)
+    if size <= 0:
+        raise FeedError(f"the feed's {where} declares a size that cannot be a real file")
+    backends = item.get("backends")
+    if not isinstance(backends, list) or not backends or not all(isinstance(b, str) and b for b in backends):
+        raise FeedError(f"the feed's {where} needs a list of backends")
+    return DrafterPackage(name=name, version=str(item.get("version") or ""), url=_need(item, "url", str, where), size=size,
+                          sha256=_hex(item.get("sha256"), where), backends=tuple(backends), base=str(item.get("base") or ""),
+                          licence=str(item.get("licence") or ""), notes=str(item.get("notes") or ""))
 
 
 def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
@@ -240,6 +302,7 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     expires = data.get("expires_at")
     if expires is not None:
         _time(expires, "expires_at")
+    skipped: list = []
     app = None
     raw_app = data.get("app")
     if raw_app is not None:
@@ -253,8 +316,11 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
         by_tauri = {v: k for k, v in TAURI_TARGETS.items()}
         for target, entry in platforms.items():
             plat = by_tauri.get(str(target).split("-nsis")[0].split("-msi")[0])
-            if plat is None or not isinstance(entry, dict):
-                raise FeedError(f"the feed's app entry names an unknown platform {target!r}")
+            if plat is None:
+                _skipping(skipped, f"the app for {target}", "a platform this Strata does not know")
+                continue
+            if not isinstance(entry, dict):
+                raise FeedError(f"the feed's app entry for {target!r} is not an object")
             parsed_platforms[plat] = {"url": _need(entry, "url", str, "app entry"),
                                       "signature": _need(entry, "signature", str, "app entry"),
                                       "sha256": _hex(entry.get("sha256"), "app entry"),
@@ -268,13 +334,13 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             raise FeedError("the feed's control member is not an object")
         cver = _need(raw_control, "version", str, "control entry")
         version_key(cver)
-        control = [_control_package(item, cver) for item in (raw_control.get("packages") or [])]
+        control = [c for c in (_control_package(item, cver, skipped) for item in (raw_control.get("packages") or [])) if c is not None]
     engine = []
     raw_engine = data.get("engine")
     if raw_engine is not None:
         if not isinstance(raw_engine, dict) or not isinstance(raw_engine.get("packages"), list):
             raise FeedError("the feed's engine member lists no packages")
-        engine = [_engine_package(item) for item in raw_engine["packages"]]
+        engine = [e for e in (_engine_package(item, skipped) for item in raw_engine["packages"]) if e is not None]
         seen = set()
         for pkg in engine:
             ident = (pkg.version, pkg.platform, pkg.backend, pkg.variant)
@@ -286,15 +352,24 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
     if raw_dsv41 is not None:
         if not isinstance(raw_dsv41, dict) or not isinstance(raw_dsv41.get("packages"), list):
             raise FeedError("the feed's dsv41 member lists no packages")
-        dsv41 = [_engine_package(item) for item in raw_dsv41["packages"]]
+        dsv41 = [e for e in (_engine_package(item, skipped) for item in raw_dsv41["packages"]) if e is not None]
         seen = set()
         for pkg in dsv41:
             ident = (pkg.version, pkg.platform, pkg.backend, pkg.variant)
             if ident in seen:
                 raise FeedError(f"the feed lists DeepSeek engine {pkg.label} twice")
             seen.add(ident)
+    drafters = []
+    raw_drafters = data.get("drafters")
+    if raw_drafters is not None:
+        if not isinstance(raw_drafters, dict) or not isinstance(raw_drafters.get("packages"), list):
+            raise FeedError("the feed's drafters member lists no packages")
+        drafters = [_drafter_package(item) for item in raw_drafters["packages"]]
+        if len({d.name for d in drafters}) != len(drafters):
+            raise FeedError("the feed lists a drafter twice")
     return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
-                control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41))
+                control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41),
+                skipped=tuple(skipped), drafters=tuple(drafters))
 
 
 def _expired_words(expires_at: str, now: dt.datetime, server_now: dt.datetime | None) -> str:
@@ -339,7 +414,18 @@ def verify_and_parse(payload: bytes, signature_bytes: bytes, *, source: str, tru
     return feed
 
 
-def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
+def feed_name(platform: str | None = None) -> str:
+    """The feed file this machine reads from a folder or a release address: ``strata-feed-linux-aarch64.json`` on a Linux ARM64 machine, else
+    ``strata-feed.json``. A source that names its file (``.../x.json``) is used as given, whatever the machine."""
+    if platform is None:
+        try:
+            platform = host_platform()
+        except Exception:                                             # noqa: BLE001 - an unknown OS reads the common feed
+            platform = None
+    return AARCH64_FEED_NAME if platform == "linux-aarch64" else FEED_NAME
+
+
+def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, **guards) -> Feed:
     """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path)."""
     if not trusted:
         raise FeedError("this build trusts no update key (update_keys.json is empty and STRATA_UPDATE_TRUSTED_KEYS is not set), "
@@ -348,12 +434,14 @@ def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
     if transfer.kind_of(source) == "path":
         path = transfer._local_path(source)
         if path.is_dir():
-            location = str(path / FEED_NAME)
+            location = str(path / feed_name())
+            if not (path / feed_name()).is_file() and (path / FEED_NAME).is_file():
+                location = str(path / FEED_NAME)                 # a local folder made for the common feed (a test feed, an offline copy)
     elif transfer.kind_of(source) in ("http", "https") and not source.rsplit("/", 1)[-1].endswith(".json"):
-        location = source.rstrip("/") + "/" + FEED_NAME
+        location = source.rstrip("/") + "/" + feed_name()
     try:
-        payload = transfer.read_small(location)
-        signature = transfer.read_small(location + SIGNATURE_SUFFIX)
+        payload = transfer.read_small(location, timeout=timeout)
+        signature = transfer.read_small(location + SIGNATURE_SUFFIX, timeout=timeout)
     except transfer.TransferError as exc:
         raise FeedError(f"the update feed could not be read: {exc}", 6) from None
     guards.setdefault("server_now", transfer.server_date())
@@ -412,7 +500,8 @@ def select_engine(packages, hardware: dict) -> tuple[EnginePackage | None, list[
     if not fitting:
         return None, reasons
     best = max(fitting, key=lambda p: (version_key(p.version), ec._version_key(p.min_driver.get("nvidia", "0")),
-                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1))
+                                       ec.hip_preference(p.archs) if p.backend == "hip" else 1,
+                                       ec.arch_native(p.archs, hardware.get("cuda_archs") or []) if p.backend == "cuda" else False))
     kept = str(hardware.get("installed_variant") or "")
     if best.backend == "cuda" and kept and best.variant != kept:
         # An update never switches the CUDA build (#3835): a model on the CUDA 12 engine (its card is one CUDA 13 has no code for) must not

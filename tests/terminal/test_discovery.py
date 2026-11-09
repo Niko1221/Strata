@@ -65,6 +65,8 @@ class GuiLayout(unittest.TestCase):
         self.env = {"LOCALAPPDATA": str(base / "local"), "XDG_DATA_HOME": str(base / "local"), "APPDATA": str(base / "roaming"),
                     "XDG_CONFIG_HOME": str(base / "config"), "USERPROFILE": str(base / "home"), "HOME": str(base / "home"),
                     "XDG_STATE_HOME": str(base / "state"), "XDG_DOCUMENTS_DIR": ""}
+        settings = Path(self.env["APPDATA"]) / "Strata" if os.name == "nt" else Path(self.env["XDG_CONFIG_HOME"]) / "strata"
+        self.settings_path = settings / "settings.json"
         patch = mock.patch.dict(os.environ, self.env)
         patch.start()
         self.addCleanup(patch.stop)
@@ -142,7 +144,7 @@ class GuiLayout(unittest.TestCase):
         old = self.base / "T-Strata"
         old.mkdir()
         (old / "strata-qwen-iq3_xxs.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.settings_path
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({"installs": [str(old)]}))
         got = models.list_installed()
@@ -155,7 +157,7 @@ class GuiLayout(unittest.TestCase):
         (old / "strata-x.json").write_text(json.dumps({"exe": "e", "tokenizer": "t", "args": []}))
         app_settings = self.install.parent / "app-settings.json"
         with mock.patch.dict(os.environ, {"STRATA_SETTINGS_FILE": str(app_settings)}):
-            settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+            settings = self.settings_path
             settings.parent.mkdir(parents=True)
             settings.write_text(json.dumps({"installs": [str(old)]}))
             self.assertEqual([m["id"] for m in models.list_installed()["models"]], ["gyro-gyro-s"])
@@ -258,7 +260,7 @@ class GuiLayout(unittest.TestCase):
     def test_an_own_setting_beats_the_apps_folder(self):
         mine = self.base / "mine"
         mine.mkdir()
-        settings = Path(os.environ["APPDATA"]) / "Strata" / "settings.json"
+        settings = self.settings_path
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"data_dir": str(mine)}))
         self.assertEqual(self.catalog().data_dir().resolve(), mine.resolve())

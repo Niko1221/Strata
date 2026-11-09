@@ -12,6 +12,8 @@ import { checkComponentUpdates } from '../server/updates.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const delay = ms => new Promise(r => setTimeout(r, ms));
+/** Wait until `done()` is true, polling every 10 ms for up to `ms` (a busy PC can hold a timer back by far more than a fixed 20 ms sleep). */
+const until = async (done, ms = 5000) => { const end = Date.now() + ms; while (!done() && Date.now() < end) await delay(10); return done(); };
 const bridgeEnv = { STRATA_SHELL_BRIDGE: 'http://127.0.0.1:5555', STRATA_SHELL_TOKEN: 'a'.repeat(32) };
 
 test('a host nobody started has no window mode, no Quit and no updater', () => {
@@ -40,7 +42,8 @@ test('browser mode (chosen): Quit works once and the app updater says why it is 
   assert.equal(ui.updater.unavailable, BROWSER_UPDATE_MESSAGE);
   await assert.rejects(ui.updater.check(), error => error.code === APP_UPDATE_UNAVAILABLE && error.message === BROWSER_UPDATE_MESSAGE);
   assert.equal(ui.quit().status, 202);
-  await delay(20);
+  assert.ok(await until(() => stopped >= 1), 'the shutdown callback ran');
+  await delay(50);   // and only once
   assert.equal(stopped, 1);
 });
 

@@ -4,10 +4,10 @@
 #   cp .env.example .env
 #   docker compose -f docker-compose.intel.yml up -d
 #
-# Images: ghcr.io/niko1221/strata (published from 0.2.1 on). To use one you built yourself: STRATA_IMAGE=strata:0.2.3-<flavor> docker compose up -d
+# Images: ghcr.io/niko1221/strata (published from 0.2.1 on). To use one you built yourself: STRATA_IMAGE=strata:0.2.7-<flavor> docker compose up -d
 services:
   strata:
-    image: ${STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.3-sycl}
+    image: ${STRATA_IMAGE:-ghcr.io/niko1221/strata:0.2.7-sycl}
     container_name: strata
     restart: unless-stopped
     ports:

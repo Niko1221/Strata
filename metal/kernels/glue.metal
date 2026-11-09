@@ -25,6 +25,7 @@ kernel void swiglu_prep(device const float* g [[buffer(0)]], device const float*
     raw[plane] = h * q2s[j & 7];
     raw[2 * plane] = h * p4s[j & 3];
     raw[3 * plane] = (j & 1) ? h * 0.00390625f : h;
+    if (xh16) put_x16(xp, plane, t * a.n + d, j, h);
     v[j] = h;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (j == 0) {
@@ -44,6 +45,26 @@ kernel void moe_combine_sh(device const float* ye [[buffer(0)]], device const in
     for (uint j = 0; j < a.topk; ++j) s += ye[plan[P_TOKENT + t * a.topk + j] * int(a.n_embd) + k];
     const float gs = 1.0f / (1.0f + exp(-sg[t]));
     bo[gid] = fma(gs, ysh[gid], s);
+}
+
+// moe_combine_sh with the ten experts' plan entries and rows loaded together before they are summed (topk 10): the same
+// sum in the same order, one memory latency for the plan and one for the rows instead of ten each.
+kernel void moe_combine_sh2(device const float* ye [[buffer(0)]], device const int* plan [[buffer(1)]],
+                            device const float* ysh [[buffer(2)]], device const float* sg [[buffer(3)]],
+                            device float* bo [[buffer(4)]], constant GlueArgs& a [[buffer(5)]],
+                            uint gid [[thread_position_in_grid]]) {
+    constexpr int TK = 10;
+    const uint t = gid / a.n_embd, k = gid % a.n_embd;
+    if (t >= a.n_tok) return;
+    int e[TK];
+    for (int j = 0; j < TK; ++j) e[j] = plan[P_TOKENT + t * TK + j];
+    const float gs = 1.0f / (1.0f + exp(-sg[t]));
+    const float sh = ysh[gid];
+    float y[TK];
+    for (int j = 0; j < TK; ++j) y[j] = ye[e[j] * int(a.n_embd) + k];
+    float s = 0.0f;
+    for (int j = 0; j < TK; ++j) s += y[j];
+    bo[gid] = fma(gs, sh, s);
 }
 
 // slc_touch: reads n16 16-byte words (a weight range the next kernels will need) so they sit in the SLC; the xor is

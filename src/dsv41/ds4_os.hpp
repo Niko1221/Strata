@@ -6,6 +6,10 @@
 // does it for GLM: no FILE_FLAG_RANDOM_ACCESS - the page cache must keep what it read.)
 #pragma once
 
+#if defined(__APPLE__)
+#include "ds4_os_apple.h"   // the Linux calls the body uses, on macOS
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -22,10 +26,11 @@
 #endif
 #include <windows.h>
 #include <psapi.h>   // (K32QueryWorkingSetEx: kernel32's, no psapi.lib)
-#include <timeapi.h>
-#ifdef _MSC_VER
+#include <timeapi.h>   // (timeBeginPeriod: windows.h with WIN32_LEAN_AND_MEAN does not bring it; winmm.lib below)
+#if defined(_MSC_VER)
 #pragma comment(lib, "winmm.lib")
 #endif
+#include "strata/platform/commit.hpp"
 #else
 #include <fcntl.h>
 #include <pthread.h>
@@ -89,7 +94,13 @@ inline fd_t open_direct(const std::string& path) {
     return h == INVALID_HANDLE_VALUE ? kBadFd : (fd_t) h;
 #else
     const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
-    return fd < 0 ? kBadFd : (fd_t) fd;
+    if (fd < 0) return kBadFd;
+#if defined(__APPLE__)
+    // (O_DIRECT is 0 here: without F_NOCACHE these reads went through the unified buffer cache at 3.4 GB/s; the disk does 10-18 GB/s
+    // unbuffered, and the experts' pages no longer push the CPU lane's hot ones out of the cache)
+    if (std::getenv("DS4_MAC_BUFFERED_READS") == nullptr) fcntl(fd, F_NOCACHE, 1);
+#endif
+    return (fd_t) fd;
 #endif
 }
 /// [off, off + n) through an unbuffered descriptor into dst, a kDirectAlign-aligned buffer of at least
@@ -112,6 +123,36 @@ inline bool pread_direct(fd_t f, void* dst, uint64_t n, uint64_t off) {
     if (ev.h == nullptr) return false;
     const uint64_t a0 = off & ~(kDirectAlign - 1), need = direct_span(off, n), want = (off - a0) + n;
     uint8_t* p = (uint8_t*) dst;
+    {   // DS4_READ_SPLIT (default 1): a read of 2 MB or more goes out as that many overlapped reads at once (a deeper queue for one
+        // expert matrix; on a file with no view the drive does 6.5 GB/s at a queue of 4 against 3.4 at 1)
+        static const int split = std::getenv("DS4_READ_SPLIT") ? std::max(1, std::min(16, std::atoi(std::getenv("DS4_READ_SPLIT")))) : 1;
+        if (split > 1 && need >= (2ull << 20) && need < (1ull << 30)) {
+            const uint64_t seg = (((need + split - 1) / split) + kDirectAlign - 1) & ~(kDirectAlign - 1);
+            struct SOv { OVERLAPPED ov; HANDLE h; uint64_t len; };
+            SOv o[16];
+            int cnt = 0;
+            bool okk = true;
+            for (uint64_t at = 0; at < need && cnt < 16; at += seg, ++cnt) {
+                o[cnt].ov = OVERLAPPED{};
+                o[cnt].len = std::min(seg, need - at);
+                o[cnt].h = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                const uint64_t fat = a0 + at;
+                o[cnt].ov.Offset = (DWORD) (fat & 0xffffffffu);
+                o[cnt].ov.OffsetHigh = (DWORD) (fat >> 32);
+                o[cnt].ov.hEvent = o[cnt].h;
+                if (!ReadFile((HANDLE) f, p + at, (DWORD) o[cnt].len, nullptr, &o[cnt].ov) && GetLastError() != ERROR_IO_PENDING) okk = false;
+            }
+            uint64_t total = 0;
+            for (int i = 0; i < cnt; ++i) {
+                DWORD r = 0;
+                if (!GetOverlappedResult((HANDLE) f, &o[i].ov, &r, TRUE) && GetLastError() != ERROR_HANDLE_EOF) okk = false;
+                total += r;
+                if (r != o[i].len && i + 1 < cnt) okk = false;   // (only the last segment may be short, at the file's end)
+                CloseHandle(o[i].h);
+            }
+            return okk && total >= want;
+        }
+    }
     uint64_t got = 0;
     while (got < need) {
         const DWORD ask = (DWORD) std::min<uint64_t>(need - got, 1ull << 30);   // (a multiple of 4096)
@@ -398,6 +439,62 @@ inline bool in_ram(const void* p, size_t n) {
 #endif
 }
 
+/// (a test of DISK_SKIP_AUTO's switch back) this process's file mappings out of RAM: Linux - its pages unmapped
+/// (madvise DONTNEED) and the files' cached pages dropped (posix_fadvise DONTNEED; clean pages, no root needed);
+/// Windows - the mapped views out of the working set (VirtualUnlock of unlocked pages), then the rest of it
+inline void drop_cached(const std::vector<std::pair<uint8_t*, size_t>>& maps, const std::vector<fd_t>& fds) {
+#if defined(_WIN32)
+    (void) fds;
+    for (const auto& m : maps)
+        if (m.first != nullptr && m.second > 0) VirtualUnlock((LPVOID) m.first, m.second);
+    K32EmptyWorkingSet(GetCurrentProcess());
+#else
+    for (const auto& m : maps)
+        if (m.first != nullptr && m.second > 0) madvise((void*) m.first, m.second, MADV_DONTNEED);
+    for (fd_t f : fds)
+        if (f != kBadFd) posix_fadvise((int) f, 0, 0, POSIX_FADV_DONTNEED);
+#endif
+}
+
+/// Bytes free in the kernel's explicit huge-page pool (HugePages_Free x Hugepagesize); 0 elsewhere or when unreadable.
+/// (MemAvailable does not count a reserved pool, so a budget that must see it - the copy arena on DS4_COPY_HUGETLB -
+/// adds this.)
+inline uint64_t huge_free_bytes() {
+#if defined(_WIN32)
+    return 0;
+#else
+    std::FILE* f = std::fopen("/proc/meminfo", "r");
+    if (f == nullptr) return 0;
+    char line[256];
+    uint64_t pages = 0, size_kb = 0;
+    while (std::fgets(line, sizeof line, f) != nullptr) {
+        unsigned long long v = 0;
+        if (std::sscanf(line, "HugePages_Free: %llu", &v) == 1) pages = v;
+        else if (std::sscanf(line, "Hugepagesize: %llu kB", &v) == 1) size_kb = v;
+    }
+    std::fclose(f);
+    return pages * size_kb * 1024ull;
+#endif
+}
+
+/// Anonymous memory on explicit 2 MB huge pages (MAP_HUGETLB, from the kernel's pool - reserve it first, e.g.
+/// `sysctl vm.nr_hugepages=N`): rounded up to a whole number of huge pages, `*got` its size.  nullptr: the pool is empty
+/// or the kernel cannot.  (Unlike THP, a pin of this memory keeps 2 MB pages: a DMA from it does not need 4 KB
+/// translations, which is what DS4_COPY_PIN's registered arena wanted.)
+inline void* huge_alloc(size_t bytes, size_t* got = nullptr) {
+#if defined(_WIN32) || defined(__APPLE__)   // (macOS has no MAP_HUGETLB)
+    (void) bytes, (void) got;
+    return nullptr;
+#else
+    const size_t hp = (size_t) 2 << 20;
+    const size_t hb = (bytes + hp - 1) / hp * hp;
+    void* m = ::mmap(nullptr, hb, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    if (m == MAP_FAILED) return nullptr;
+    if (got != nullptr) *got = hb;
+    return m;
+#endif
+}
+
 /// Anonymous memory on NUMA node `node` of `nodes` (node < 0 or nodes < 2: wherever the first touch puts it), on huge
 /// pages where the OS gives them; nullptr if it cannot be had.
 inline void* anon_alloc(size_t bytes, int node, int nodes) {
@@ -485,11 +582,18 @@ inline void pin_thread(std::thread& t, int cpu) {
 #endif
 }
 
+/// A physical core: the logical CPUs of it this process may run on (the first one first), and its efficiency class
+/// (Windows' EfficiencyClass - higher is faster; Linux: 1 for a hybrid Intel CPU's performance cores, 0 otherwise).
+struct Core {
+    std::vector<int> cpus;
+    int eff = 0;
+};
+
 #if defined(_WIN32)
-/// Each NUMA node's physical cores (the first logical CPU of each), processor group 0 - Windows' answer to
-/// /sys/devices/system/node; empty if the OS does not say.
-inline std::vector<std::vector<int>> node_cores(bool smt = false) {   // (smt: every logical CPU of a core, not its first)
-    std::vector<std::vector<int>> nodes;
+/// Each NUMA node's physical cores (their logical CPUs the process's affinity allows), processor group 0 - Windows'
+/// answer to /sys/devices/system/node; empty if the OS does not say.
+inline std::vector<std::vector<Core>> node_core_threads() {
+    std::vector<std::vector<Core>> nodes;
     auto query = [](LOGICAL_PROCESSOR_RELATIONSHIP rel, std::vector<uint8_t>& buf) {
         DWORD len = 0;
         GetLogicalProcessorInformationEx(rel, nullptr, &len);
@@ -498,6 +602,9 @@ inline std::vector<std::vector<int>> node_cores(bool smt = false) {   // (smt: e
     };
     std::vector<uint8_t> nb, cb;
     if (!query(RelationNumaNode, nb) || !query(RelationProcessorCore, cb)) return nodes;
+    DWORD_PTR proc_mask = 0, sys_mask = 0;
+    const KAFFINITY allowed = GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask) && proc_mask != 0
+                                  ? (KAFFINITY) proc_mask : ~(KAFFINITY) 0;
     std::vector<KAFFINITY> masks;
     for (size_t o = 0; o < nb.size();) {
         auto* e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) (nb.data() + o);
@@ -508,27 +615,35 @@ inline std::vector<std::vector<int>> node_cores(bool smt = false) {   // (smt: e
     for (size_t o = 0; o < cb.size();) {
         auto* e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) (cb.data() + o);
         if (e->Processor.GroupCount > 0 && e->Processor.GroupMask[0].Group == 0) {
-            const KAFFINITY m = e->Processor.GroupMask[0].Mask;
-            int first = -1;
+            const KAFFINITY m = e->Processor.GroupMask[0].Mask & allowed;
+            Core c;
+            c.eff = (int) e->Processor.EfficiencyClass;
             for (int b = 0; b < 64; ++b)
-                if ((m >> b) & 1) {
-                    first = b;
-                    break;
-                }
-            for (size_t n = 0; n < masks.size() && first >= 0; ++n)
-                if ((masks[n] >> first) & 1) {
-                    nodes[n].push_back(first);
-                    if (smt)
-                        for (int b = first + 1; b < 64; ++b)
-                            if ((m >> b) & 1) nodes[n].push_back(b);
-                }
+                if ((m >> b) & 1) c.cpus.push_back(b);
+            for (size_t n = 0; n < masks.size() && !c.cpus.empty(); ++n)
+                if ((masks[n] >> c.cpus[0]) & 1) nodes[n].push_back(c);
         }
         o += e->Size;
     }
-    nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const std::vector<int>& v) { return v.empty(); }),
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const std::vector<Core>& v) { return v.empty(); }),
                 nodes.end());
-    for (auto& v : nodes) std::sort(v.begin(), v.end());
+    for (auto& v : nodes)
+        std::sort(v.begin(), v.end(), [](const Core& a, const Core& b) { return a.cpus[0] < b.cpus[0]; });
     return nodes;
+}
+/// Each NUMA node's physical cores as the first logical CPU of each (smt: every logical CPU of a core), the shape the
+/// engine's thread placement takes.
+inline std::vector<std::vector<int>> node_cores(bool smt = false) {
+    std::vector<std::vector<int>> out;
+    for (const auto& node : node_core_threads()) {
+        std::vector<int> v;
+        for (const Core& c : node) {
+            if (smt) v.insert(v.end(), c.cpus.begin(), c.cpus.end());
+            else v.push_back(c.cpus[0]);
+        }
+        out.push_back(std::move(v));
+    }
+    return out;
 }
 /// The RAM this process can still get (~0: not known).
 inline uint64_t ram_avail() {
@@ -551,7 +666,8 @@ inline Commit commit() {
     s.dwLength = sizeof(s);
     if (GlobalMemoryStatusEx(&s)) {
         c.limit = (uint64_t) s.ullTotalPageFile;
-        c.avail = (uint64_t) s.ullAvailPageFile;
+        // (+ what a page file Windows manages may still grow by)
+        c.avail = (uint64_t) s.ullAvailPageFile + strata::platform::commit_growth((uint64_t) s.ullTotalPhys);
         c.ram = (uint64_t) s.ullTotalPhys;
     }
 #endif

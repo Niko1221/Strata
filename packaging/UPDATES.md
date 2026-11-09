@@ -37,7 +37,7 @@ Comments are for this document only; actual feed files must be strict JSON.
   "generated_at": "2026-10-20T10:00:00Z", "expires_at": "2027-10-20T10:00:00Z",   // expires_at may be null
   "app": {                                  // exactly Tauri's static updater JSON, plus sha256/size per platform
     "version": "0.2.5", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
-    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.6-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
+    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.9-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
   },
   "control": {"version": "0.1.50", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
                                                   "size": 0, "sha256": "...", "installed_bytes": 0, "entry": "strata.py"}]},
@@ -50,6 +50,9 @@ Comments are for this document only; actual feed files must be strict JSON.
     "manifest_sha256": "...",               // of the package's engine-component.json (it holds every file's hash)
     "installed_bytes": 840893419, "notes": ""}]},
   "dsv41": {"packages": []}                 // optional: the separate DeepSeek engine packages, same entry shape as "engine"
+  "drafters": {"packages": [{               // optional: DFlash2 drafter files Strata hosts (one pinned file each, not an archive)
+    "name": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack", "version": "1", "url": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+    "size": 339694592, "sha256": "4df2e5ab...", "backends": ["metal"], "base": "incoai/Qwen3.8-Flash-Next-DFlash2@a22a1744", "licence": "Apache-2.0"}]}
 }
 ```
 
@@ -57,6 +60,17 @@ The DeepSeek V4.1-Flash engine `strata-dsv41` reaches a PC in one of two ways. T
 (`package_engine.py --require-dsv41`), or it is a separate package in the feed's `dsv41` member, packed with
 `pack-engine --prefix strata-dsv41`. The separate package installs in `<data>/engine-dsv41/` beside the engine, never inside it
 (`strata_control/dsv41_engine.py`), and is fetched when DeepSeek is chosen. `STRATA_DSV41_EXE` points setup at a build of your own.
+
+The `drafters` member lists the tuned DFlash2 drafter (`strata_control/drafting.py` TUNED_NAME: Strata's fine-tuned copy of incoai/Qwen3.8-Flash-Next-DFlash2, Apache-2.0,
+modified by Strata). Control fetches it for the Mac sets that have a measured entry (`SET_DEFAULTS`: UD-Q4_K_XL and UD-IQ4_XS-v31) during setup, `strata launch` and
+`strata drafting fetch`: it reads this signed feed, takes the entry named TUNED_NAME that lists `metal`, and downloads `url` (resumable) into `<data>/dflash2/`. The size and SHA-256
+are pinned in the code too, so the feed can move the file but a feed that lists other bytes is ignored. No feed answer (offline, host down) or no such entry: nothing is said and the
+model keeps the MTP. Make the entry with `feed_tool.py pack-drafter PACK --out RELEASE/drafters --version 1 --backends metal [--url-prefix ""]` (copies the file flat and writes
+`<name>.entry.json`) and pass the folder to `build-feed --drafters RELEASE/drafters`; upload the pack beside the feed in the same release. Older Controls ignore the member.
+
+The member holds two entries (one `pack-drafter` call each, both folders' `.entry.json` files in the same `--drafters` folder): `qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack` (339,694,592 bytes) with
+`--backends metal,cuda,hip`, and `qwen3.8-flash-next-dflash2.strata1.q4_0-bf16sel.pack` (522,458,112 bytes, sha256 34ca17fe...) with `--backends sycl` for the Intel Arc engine, which reads only bf16
+selector codebooks. Control asks the feed for the file name its table entry (`SET_DEFAULTS`) names and for its own backend, so no platform fetches the other's file.
 
 `url` is relative to the feed's own location (or an absolute `https://` address; a loopback `http://` is allowed so a local test
 feed works; a local feed folder may only name files inside itself).
@@ -71,7 +85,7 @@ For a GitHub release the assets are flat: pack with `--url-prefix ""` and upload
    CUDA `archs` against the card (a `compute_NN` PTX entry covers newer cards), HIP `archs` against the card's gfx name,
    `min_driver` against the NVIDIA driver (this is how CUDA 13 beats CUDA 12 on a new driver and CUDA 12 is chosen on an old one),
    `min_runtime` against Control; newest version wins, and equal versions prefer the build that needs the newer driver;
-4. never older than what is installed (an update never downgrades; only `strata components rollback` goes back).
+4. never older than what is installed (an update never downgrades; only `strata components use` / `rollback` go back, to an engine that is already installed).
 
 ### What an engine update does
 
@@ -80,7 +94,8 @@ total size limited to the feed's `installed_bytes`) -> the manifest is the one t
 -> the manifest's own signature verifies -> every file's hash -> fits this PC -> **test-start from the staging folder through the real start
 path** (isolated owner runtime and profile, `component:strata-engine`, an installed model, one-token probe, stop) -> only then rename
 into `components/engine/` and re-resolve to make sure a start now picks it. Any failure leaves `engine/` exactly as it was.
-The previous version is kept (`state.json` `engine.previous`); the one before it is removed. With no model installed yet (first run)
+Every older engine is kept until the person deletes it (Settings > Engine, `strata components remove`); `state.json` `engine.previous` is the one the last
+switch left. A new engine becomes the one in use and clears any pin. With no model installed yet (first run)
 the test is `--version` only, and the report says so.
 
 Not while an engine is serving: the check uses the activity lease `strata serve` and the owner runtime already hold. `--wait SECONDS` waits;
@@ -95,8 +110,16 @@ Saved tuning presets: when the engine identity changed (version, build id, manif
 
     strata update [--check] [--app] [--no-engine] [--no-control] [--feed URL|DIR] [--wait S] [--force] [--model-config RUN.json]
     strata components update            # the same
-    strata components rollback          # back to the previous engine; the next update will not re-offer the version rolled back from (--force does)
+    strata components rollback          # back to the previous engine (an engine switch; nothing is downloaded)
+    strata components engines [--output json]   # every installed engine (Qwen and DeepSeek families), sizes, which one is in use: what Settings > Engine shows
+    strata components use <version|folder|newest>   # switch to an installed engine; `newest` goes back to following updates (no pin)
+    strata components remove <version|folder>       # delete an installed engine; never the one in use or one a running program uses
     strata components engine            # shows "update available (...)" from the last check, no network
+
+An update whose engine is already installed (the person switched to an older one) downloads nothing and makes it the engine in use again.
+A version the person switched away from is never hidden from the update. The DeepSeek engine (`engine-dsv41/`) has its own list and its own choice
+(the `.chosen` file there, read by the app, `strata launch` and setup); an update to a newer DeepSeek engine clears it. The two families never touch
+each other's files or state (`strata_control/engine_library.py`).
 
 Exit codes: 0 done or nothing to do, 5 refused (signature, hash, downgrade, no trusted key, acquiring forbidden),
 6 failed with the old version still in use (network, test start), 7 an engine is serving, 130 stopped.
@@ -131,7 +154,7 @@ All signing happens on the release PC, on the finished files.
 **What is built (per OS)**
 
 * *The installer*, one per OS (0.2.5). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
-  Windows: `Strata-0.2.6-windows-x64-setup.exe`; Linux: `Strata-0.2.6-linux-x86_64.AppImage`; Mac: `Strata-0.2.6-macos-arm64.dmg` for people and
+  Windows: `Strata-0.2.9-windows-x64-setup.exe`; Linux: `Strata-0.2.9-linux-x86_64.AppImage`; Mac: `Strata-0.2.9-macos-arm64.dmg` for people and
   `Strata.app.tar.gz` as the updater archive (the updater cannot install from a dmg). The Windows and Linux files are both the first download and the
   file `latest.json` names; the first start of the app downloads the engine for the card (the first-run card), or installs a file the person already has.
   Why: an app update must not carry an engine, and the right engine depends on the card. Engines come per card from the signed feed
@@ -149,10 +172,10 @@ All signing happens on the release PC, on the finished files.
     # Linux: tauri build --bundles appimage (no engine inside) is the AppImage
     # on the release PC, per updater artifact (Windows setup .exe, Linux .AppImage, Mac Strata.app.tar.gz):
     npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.5 --archive Strata-0.2.6-windows-x64-setup.exe --sig Strata-0.2.6-windows-x64-setup.exe.sig --notes "..."
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.5 --archive Strata-0.2.6-linux-x86_64.AppImage --sig Strata-0.2.6-linux-x86_64.AppImage.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.5 --archive Strata-0.2.9-windows-x64-setup.exe --sig Strata-0.2.9-windows-x64-setup.exe.sig --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.5 --archive Strata-0.2.9-linux-x86_64.AppImage --sig Strata-0.2.9-linux-x86_64.AppImage.sig
     python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.5 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
-    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json [--dsv41 RELEASE/dsv41]
+    python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json [--dsv41 RELEASE/dsv41] [--drafters RELEASE/drafters]
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
 
 `set-app-platform` checks each `.sig` against the public key in `tauri.conf.json` over the exact bytes, so a file signed with another key, or changed after
@@ -178,8 +201,10 @@ was made (a second `sign-and-notarize.sh` run) makes a new archive: sign and add
 `build-feed` also writes `RELEASE/install-manifest.txt`, the file the one-line installers read: one line per Control package,
 `platform version url sha256 size`, taken from the `*.entry.json` files in `RELEASE/control`. The Control package is the Terminal that `install.sh` unpacks (it must hold `bin/strata`).
 `install.sh` unpacks with `tar -xzf` and `install.ps1` with `Expand-Archive`, so `windows-x86_64` must be packed with `--format zip` and the other platforms as `tar.gz`;
-`build-feed` leaves a pack in the wrong format out of the manifest and says so. Pack Control for every platform you want the one-line install to cover (`install.sh` knows `linux-x86_64` and `macos-arm64`, `install.ps1` `windows-x86_64`);
+`build-feed` leaves a pack in the wrong format out of the manifest and says so. Pack Control for every platform you want the one-line install to cover (`install.sh` knows `linux-x86_64`, `linux-aarch64` and `macos-arm64`, `install.ps1` `windows-x86_64`);
 a platform with no line gets "this release has no Terminal for <platform>". Upload `install.sh` and `install.ps1` from `packaging/` unchanged: their built-in address is the release folder.
+
+**Linux ARM64 (DGX Spark) has its own feed file.** A Control up to 0.1.52 refuses a feed that names a platform it does not know (`the feed's control entry names an unknown platform`), so the `linux-aarch64` entries are not in `strata-feed.json`, which every released client reads. They are in `strata-feed-linux-aarch64.json` (+ `.sig`, same format, same key, its own `sequence`, aarch64 entries only), uploaded to the same release. A Linux ARM64 Terminal reads that file by default, from a folder or a release address (`strata_control.feed.feed_name()`); a source that names its own `.json` file is used as given. Until every client skips unknown platforms, each release must publish both files, and the aarch64 file's sequence must never go down.
 
 The feed is hosted as the files of a GitHub release of `Niko1221/Strata`. The built-in address is
 `https://github.com/Niko1221/Strata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`

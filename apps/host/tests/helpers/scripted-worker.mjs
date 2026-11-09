@@ -152,6 +152,23 @@ export async function startScriptedWorker({ port = 0, chunkDelayMs = 40, model =
       send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name: 'web_search', arguments: argsJson } }] });
       return finish('tool_calls', 60);
     }
+    if (directive?.[1] === 'cutwrite' || directive?.[1] === 'cutalways') {
+      // A reply the length limit cuts inside a tool call (AGENT-LOST): some words, then `write` arguments that never close, finish "length".
+      // `cutwrite` is cut once and then, asked to carry on, writes the file in a small call; `cutalways` is cut every time.
+      const nudged = messages.some(m => m.role === 'user' && /cut off by the output limit/.test(text(m)));
+      if (directive[1] === 'cutwrite' && nudged) {
+        if (last.role === 'tool') return say(['Written in parts. The file is complete.']);
+        return toolCall('write', { file_path: (directive[2] ?? '').trim() || 'big.txt', content: 'entry 0001\nentry 0002\n' });
+      }
+      send({ role: 'assistant', content: 'Writing the whole file in one call now. ' });
+      await delay(chunkDelayMs);
+      const file = (directive[2] ?? '').trim() || 'big.txt';
+      send({ tool_calls: [{ index: 0, id: `call_${requests.length}`, type: 'function', function: { name: 'write', arguments: '' } }] });
+      const head = `{"file_path":"${file}","content":"`;
+      for (let i = 0; i < head.length; i += 11) { send({ tool_calls: [{ index: 0, function: { arguments: head.slice(i, i + 11) } }] }); await delay(2); }
+      for (let n = 1; n <= 60; n++) { send({ tool_calls: [{ index: 0, function: { arguments: `entry ${String(n).padStart(4, '0')}: alpha beta gamma delta\\n` } }] }); await delay(2); }
+      return finish('length', 19660);
+    }
     if (directive?.[1] === 'bloat') {
       promptTokens = parseInt((directive[2] ?? '').trim(), 10) || 100;
       send({ role: 'assistant', content: '', reasoning_content: 'Thinking about it for a long time and never getting to the answer.' });

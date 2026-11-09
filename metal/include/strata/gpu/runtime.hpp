@@ -38,6 +38,7 @@ struct DeviceProp {   // the fields the host code reads
     char gcnArchName[256] = {};
     int major = 0, minor = 0, warpSize = 32, multiProcessorCount = 0;
     size_t totalGlobalMem = 0;
+    int integrated = 0;   // the DeepSeek engine reads it (a GPU on the PC's RAM: Strix Halo); 0 here: its rules for that part were not tuned for Apple GPUs
 };
 
 inline constexpr unsigned kHostAllocDefault = 0;

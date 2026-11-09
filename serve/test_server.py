@@ -651,6 +651,24 @@ class ListenProblem(unittest.TestCase):
         self.assertIn("10.9.9.9 is not an address of this PC", text)
         self.assertNotIn("already in use", text)
 
+    def test_denied_text_follows_the_platform_0213_f12(self):
+        """F12: Linux and macOS must not blame Windows port reservations or a firewall rule."""
+        import errno
+        from unittest import mock
+        from serve.server import listen_problem
+        e = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("serve.server.sys.platform", "win32"):
+            win = listen_problem("127.0.0.1", 80, e)
+        self.assertIn("Windows may keep this port for itself", win)
+        self.assertIn("netsh int ipv4 show excludedportrange protocol=tcp", win)
+        for plat in ("linux", "darwin"):
+            with mock.patch("serve.server.sys.platform", plat):
+                other = listen_problem("127.0.0.1", 80, e)
+            self.assertIn("This system does not allow it (on Linux and macOS, ports below 1024 need administrator "
+                          "rights): start this one with a different --port", other)
+            self.assertNotIn("Windows", other)
+            self.assertNotIn("netsh", other)
+
 
 def shutil_rmtree(path):
     import shutil
@@ -1126,7 +1144,7 @@ class ToolCallTagInProse(unittest.TestCase):
 
 
 class ToolCallRecovery(unittest.TestCase):
-    """Opt-in ("tool_call_recovery": true): the model sometimes writes a call in a form next to the template's.  These
+    """On by default in the server since 0.2.8 (config "tool_call_recovery": false turns it off): the model sometimes writes a call in a form next to the template's.  These
     shapes are from a corpus of 1,462 agent turns (Qwen3.8 under Claude Code, signalnine/q27): with the switch on, a
     declared tool's call in one of them is the call; anything else stays content, verbatim."""
     SCHEMA = ToolCallTerminators.SCHEMA
@@ -1254,6 +1272,29 @@ class ToolCallRecoverySwitch(unittest.TestCase):
     def test_switch(self):
         self.assertEqual(self.run_reply(False), [])
         self.assertEqual(self.run_reply(True), [ToolCallRecovery.CALL])
+
+    def test_on_by_default_and_the_config_turns_it_off(self):
+        """0.2.8: a server that is told nothing reads these calls; "tool_call_recovery": false is the off switch."""
+        from serve.server import tool_call_recovery_setting
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertIs(svc.tool_call_recovery, True)
+        self.assertIs(tool_call_recovery_setting({}), True)
+        self.assertIs(tool_call_recovery_setting({"model": "x"}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": True}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": False}), False)
+        for bad in ("false", 0, 1, None, "off"):
+            with self.assertRaises(SystemExit):
+                tool_call_recovery_setting({"tool_call_recovery": bad})
+
+    def test_a_fresh_service_reads_the_call_without_being_told(self):
+        tok = ByteTokenizer()
+        script = "</think>\n\n<function=write>\n" + ToolCallRecovery.PARAMS
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            evs = [x for kind, x in svc.run(tok.encode("hi"), True, ToolCallRecovery.SCHEMA, 3000, {},
+                                            threading.Event()) if kind == "event"]
+        self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [ToolCallRecovery.CALL])
 
 
 class UnfinishedToolCall(unittest.TestCase):
@@ -3808,6 +3849,19 @@ class UsageAndStatus(unittest.TestCase):
         self.assertEqual(last["usage"]["prompt_tokens_details"]["cached_tokens"], ClockedEngine.REUSED)
         self.assertEqual(last["timings"]["cache_n"], ClockedEngine.REUSED)
 
+    def test_responses(self):
+        # /v1/responses carries the same top-level timings as /v1/chat/completions
+        body = {"model": "x", "max_output_tokens": 20, "input": "hi"}
+        status, raw = self.request("/v1/responses", body)
+        self.assertEqual(status, 200)
+        r = json.loads(raw)
+        self.assertEqual(r["timings"]["cache_n"], ClockedEngine.REUSED)
+        self.assertEqual(r["timings"]["predicted_n"], r["usage"]["output_tokens"])
+        status, raw = self.request("/v1/responses", {**body, "stream": True})
+        last = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: {")][-1]
+        self.assertIn(last["type"], ("response.completed", "response.incomplete"))
+        self.assertAlmostEqual(last["timings"]["predicted_per_second"], 50.0, delta=0.1)   # 20 ms a token
+
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
@@ -3954,6 +4008,49 @@ class SharingTheGpu(unittest.TestCase):
         self.assertGreater(time.time() - t0, 10)                    # waited for memory being given back first
         self.svc.free_vram_mib = lambda: 9000
         self.assertEqual(self.chat()[0], 200)
+
+    class _Encoder:
+        """A picture encoder that is a process of its own: it outlives the engine, and holds VRAM while it runs."""
+        elastic = False
+
+        def __init__(self):
+            self.up, self.unloads = True, 0
+
+        def alive(self):
+            return self.up
+
+        def unload(self):
+            self.up = False
+            self.unloads += 1
+
+        def restart(self):
+            self.up = True
+
+    def test_the_servers_own_encoder_is_not_another_program_after_the_engine_died(self):      # #4352
+        self.svc.unload()                                            # the engine is gone ...
+        encoder = self.svc.vision = self._Encoder()                  # ... its picture encoder is not, and holds 6 GB of the card
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000 if encoder.up else 9000
+        self.svc.vram_free_wait_s = 0.2
+        s, b = self.chat()
+        self.assertEqual(s, 200, b)
+        self.assertEqual(encoder.unloads, 1)
+        self.assertTrue(encoder.up, "the load that follows starts the encoder again with the engine")
+
+    def test_a_program_that_is_not_ours_still_refuses_the_load(self):                           # #4352: the rule itself is kept
+        self.svc.unload()
+        encoder = self.svc.vision = self._Encoder()
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000                        # still full after the encoder is gone
+        self.svc.vram_free_wait_s = 0.2
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(encoder.unloads, 1)
+
+    def test_unload_with_a_dead_engine_still_gives_the_encoders_card_back(self):                # #4352
+        self.svc.unload()
+        encoder = self.svc.vision = self._Encoder()
+        self.assertEqual(self.req("/unload", {}), (200, {"status": "not loaded"}))
+        self.assertFalse(encoder.up)
 
     def test_min_free_vram_unreadable_loads(self):
         self.svc.min_free_vram_mib = 8000
@@ -4429,8 +4526,8 @@ class CallingEngine(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
         prompt = self.tok.decode(ids)
-        if prompt.endswith("<function="):
-            text = "search>\n" + self.ARGS
+        if prompt.endswith("<tool_call>\n"):
+            text = "<function=search>\n" + self.ARGS
         elif prompt.endswith("<function=search>\n"):
             text = self.ARGS
         elif prompt.endswith("</think>\n\n"):
@@ -4521,6 +4618,134 @@ class ForcedToolChoice(unittest.TestCase):
                         self.assertIn("Here is the report.", content)
                         self.assertIn("<function=lookup>", content)
 
+    def _undeclared_call_answer(self, name="lookup"):
+        from serve.frontend import CALL_END, CALL_START
+        return ("I will check that.\n" + CALL_START + f"\n<function={name}>\n<parameter=q>\n2+2\n</parameter>\n"
+                "</function>\n" + CALL_END)
+
+    def _rejected_of(self, b, stream):
+        """The strata_rejected_tool_calls of a whole reply or of a streamed one (None when the reply has none)."""
+        if not stream:
+            return b.get("strata_rejected_tool_calls")
+        found = [json.loads(line[6:]).get("strata_rejected_tool_calls") for line in b.splitlines() if line.startswith("data: {")]
+        found = [f for f in found if f]
+        self.assertLessEqual(len(found), 1, "sent once, with the last chunk")
+        return found[0] if found else None
+
+    def test_an_undeclared_call_is_named_in_the_response(self):
+        """#3796: the call stays text and finish_reason stays "stop"; the response also lists the names the model wrote
+        (strata_rejected_tool_calls), so a client can tell this from an ordinary answer and answer the model."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                before = self.svc.totals.get("tool_calls_unread", 0)
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("stop", []), b)
+                self.assertEqual(self._rejected_of(b, stream), [{"name": "execute_gdscript", "reason": "undeclared"}])
+                self.assertEqual(self.svc.totals["tool_calls_unread"], before + 1)         # /metrics counts it
+                if not stream:
+                    self.assertIn("<function=execute_gdscript>", b["choices"][0]["message"]["content"])   # the text is untouched
+
+    def test_undeclared_tool_calls_call_hands_the_call_to_the_client(self):
+        """#4622: "undeclared_tool_calls": "call" returns the well-formed call of an undeclared name as a tool call (the client has its
+        own policy for unknown names); the default ("text") is the test above, unchanged."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        self.svc.undeclared_tool_calls = "call"
+        try:
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    code, b = self.openai(stream=stream)
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("tool_calls", [("execute_gdscript", {"q": "2+2"})]), b)
+                    self.assertIsNone(self._rejected_of(b, stream))
+            # prose that names the format is still text
+            self.says("Write <tool_call> and <function=x> to call a tool.")
+            code, b = self.openai(stream=False)
+            finish, calls, _ = self.call_of(code, b, False)
+            self.assertEqual((finish, calls), ("stop", []), b)
+        finally:
+            self.svc.undeclared_tool_calls = "text"
+
+    def test_undeclared_tool_calls_setting(self):
+        from serve.server import undeclared_tool_calls_setting
+        old = os.environ.pop("STRATA_UNDECLARED_TOOL_CALLS", None)
+        try:
+            self.assertEqual(undeclared_tool_calls_setting({}), "text")
+            self.assertEqual(undeclared_tool_calls_setting({"undeclared_tool_calls": "call"}), "call")
+            os.environ["STRATA_UNDECLARED_TOOL_CALLS"] = "call"
+            self.assertEqual(undeclared_tool_calls_setting({}), "call")
+            self.assertEqual(undeclared_tool_calls_setting({"undeclared_tool_calls": "text"}), "text")   # the config wins
+            for bad in ("yes", True, 1):
+                with self.assertRaises(SystemExit):
+                    undeclared_tool_calls_setting({"undeclared_tool_calls": bad})
+        finally:
+            os.environ.pop("STRATA_UNDECLARED_TOOL_CALLS", None)
+            if old is not None:
+                os.environ["STRATA_UNDECLARED_TOOL_CALLS"] = old
+
+    def test_no_marker_when_nothing_was_rejected(self):
+        """An ordinary answer and a declared call carry no extra field: the API is what it was."""
+        from serve.frontend import CALL_END, CALL_START
+        for label, answer in (("text", "The answer is 4."),
+                              ("declared call", CALL_START + "\n<function=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)):
+            self.says(answer)
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream)
+                    self.call_of(code, b, stream)
+                    self.assertIsNone(self._rejected_of(b, stream))
+                    if stream:
+                        self.assertNotIn("strata_rejected_tool_calls", b)
+
+    def test_a_collapsed_mcp_name_is_a_call_not_a_rejection(self):
+        """#3796: `mcp_playwright_browser_navigate` for the declared `mcp__playwright__browser_navigate`."""
+        from serve.frontend import CALL_END, CALL_START
+        tools = [{"type": "function", "function": {"name": "mcp__playwright__browser_navigate", "description": "open a page",
+                                                   "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}}]
+        self.says(CALL_START + "\n<function=mcp_playwright_browser_navigate>\n<parameter=q>\nx\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream, tools=tools)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("mcp__playwright__browser_navigate", {"q": "x"})]))
+                self.assertIsNone(self._rejected_of(b, stream))
+
+    def test_the_anthropic_reply_names_the_rejected_call_too(self):
+        self.says(self._undeclared_call_answer("bash"))
+        body = {"model": "m", "max_tokens": 400, "messages": [{"role": "user", "content": "2+2?"}],
+                "tools": [{"name": "search", "description": "search", "input_schema": {"type": "object", "properties": {}}}]}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            msg = json.loads(r.read().decode())
+        self.assertEqual(msg["stop_reason"], "end_turn")
+        self.assertEqual(msg["strata_rejected_tool_calls"], [{"name": "bash", "reason": "undeclared"}])
+        self.assertFalse([c for c in msg["content"] if c["type"] == "tool_use"])
+
+    def test_any_model_name_on_the_anthropic_route_is_the_loaded_model(self):
+        """#5312: Claude Desktop sends the model name `claude-5-5-sonnet` and cannot change it; the route serves the loaded model whatever
+        the request calls it, and answers with that model's name (the Desktop app's own gateway is a separate check in apps/host)."""
+        self.says("Hello there.")
+        for name in ("claude-5-5-sonnet", "claude-opus-4-1", "gpt-4o", "nonsense"):
+            for stream in (False, True):
+                with self.subTest(model=name, stream=stream):
+                    body = {"model": name, "max_tokens": 50, "stream": stream, "messages": [{"role": "user", "content": "hi"}],
+                            "tools": [{"name": "search", "description": "search", "input_schema": {"type": "object", "properties": {}}}]}
+                    req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        raw = r.read().decode()
+                        self.assertEqual(r.status, 200)
+                    if stream:
+                        events = [json.loads(l[6:]) for l in raw.splitlines() if l.startswith("data: {")]
+                        self.assertEqual("".join(e["delta"]["text"] for e in events if e["type"] == "content_block_delta"), "Hello there.")
+                        self.assertEqual(events[0]["message"]["model"], self.svc.model)
+                    else:
+                        msg = json.loads(raw)
+                        self.assertEqual(msg["model"], self.svc.model)
+                        self.assertEqual(msg["content"][0]["text"], "Hello there.")
+
     def test_a_call_with_a_dropped_function_keyword_is_still_the_call(self):
         """#3441: `<=search>` for `<function=search>`, as a model under a large tool surface writes it."""
         from serve.frontend import CALL_END, CALL_START
@@ -4541,7 +4766,7 @@ class ForcedToolChoice(unittest.TestCase):
                     self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
                     self.assertEqual(reasoning, CallingEngine.THOUGHT)
                     first, second = self.engine.prompts
-                    opening = "<tool_call>\n<function=" + ("search>\n" if choice == self.NAMED else "")
+                    opening = "<tool_call>\n" + ("<function=search>\n" if choice == self.NAMED else "")
                     # where the thinking ended, after the blank line the template puts before a call
                     self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT + "</think>\n\n" + opening))
 
@@ -4550,7 +4775,7 @@ class ForcedToolChoice(unittest.TestCase):
         thought, calling = 'I will search for "2+2"', self.engine.generate
 
         def generate(ids, max_new, sampling, cancel, embeddings=None):
-            if self.tok.decode(ids).endswith(("<function=", "<function=search>\n")):
+            if self.tok.decode(ids).endswith(("<tool_call>\n", "<function=search>\n")):
                 yield from calling(ids, max_new, sampling, cancel)
                 return
             self.engine.prompts.append(list(ids))
@@ -4563,7 +4788,7 @@ class ForcedToolChoice(unittest.TestCase):
                 finish, calls, reasoning = self.call_of(code, b, stream)
                 self.assertEqual((finish, calls, reasoning), ("tool_calls", [("search", {"q": "2+2"})], thought))
                 first, second = self.engine.prompts
-                self.assertEqual(second, first + self.tok.encode(thought + "</think>\n\n<tool_call>\n<function="))
+                self.assertEqual(second, first + self.tok.encode(thought + "</think>\n\n<tool_call>\n"))
 
     def test_without_thinking_the_prompt_ends_with_the_opening(self):
         for choice in ("required", self.NAMED):
@@ -4574,7 +4799,7 @@ class ForcedToolChoice(unittest.TestCase):
                     finish, calls, reasoning = self.call_of(code, b, stream)
                     self.assertEqual((finish, calls, reasoning), ("tool_calls", [("search", {"q": "2+2"})], ""))
                     self.assertEqual(len(self.engine.prompts), 1)
-                    opening = "<tool_call>\n<function=" + ("search>\n" if choice == self.NAMED else "")
+                    opening = "<tool_call>\n" + ("<function=search>\n" if choice == self.NAMED else "")
                     self.assertTrue(self.tok.decode(self.engine.prompts[0]).endswith("</think>\n\n" + opening))
 
     def test_the_budget_wrap_up_opens_the_call(self):
@@ -4584,7 +4809,7 @@ class ForcedToolChoice(unittest.TestCase):
         self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
         self.assertEqual(reasoning, CallingEngine.THOUGHT[:20] + REASONING_WRAP_UP.split("</think>")[0])
         first, second = self.engine.prompts
-        extra = self.tok.encode(REASONING_WRAP_UP + "<tool_call>\n<function=", parse_special=True)
+        extra = self.tok.encode(REASONING_WRAP_UP + "<tool_call>\n", parse_special=True)
         self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT[:20]) + extra)
 
     def test_auto_absent_and_none_leave_the_tools_to_the_model(self):
@@ -6207,6 +6432,135 @@ class UntimedReads(unittest.TestCase):
         self.assertEqual(v._readline(5.0, "x"), "OK 7 1 1 1\n")
 
 
+class OpenAIChunksTerminal(unittest.TestCase):
+    """#3961: a stream that ends without the run's "done" event (a 200 with one chunk and no finish_reason) is an error, never an empty answer."""
+
+    def chunks(self, events, cancel=None):
+        from serve.server import openai_chunks
+        svc = SimpleNamespace(model_for=lambda req: "m", engine=None, tok=None, end_engine_if_unchanged=lambda born: False)
+        return list(openai_chunks(svc, {}, [1], False, None, 8, cancel or threading.Event(), run=iter(events)))
+
+    def test_a_run_that_stopped_without_its_done_event_is_an_error(self):
+        from serve.frontend import Event
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            with self.assertRaises(EngineDied):
+                self.chunks([("event", Event("content", "hi"))])
+        self.assertIn("without a finish reason", said.getvalue())
+        ended = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                from serve.server import openai_chunks
+                engine = SimpleNamespace(gen=3)
+                svc = SimpleNamespace(model_for=lambda req: "m", engine=engine, tok=None,
+                                      end_engine_if_unchanged=lambda born: ended.append(born))
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([])))
+        self.assertEqual(ended, [3], "the engine process the request ran on is the one to end, so that the next request restarts it")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                self.chunks([])
+
+    def service(self, engine):
+        svc = object.__new__(Service)
+        svc.engine, svc.fifo = engine, threading.Lock()
+        return svc
+
+    class Engine:
+        def __init__(self, gen=1, batch=0):
+            self.gen, self.batch, self.ended_count = gen, batch, 0
+
+        def end_for_restart(self):
+            self.ended_count += 1
+
+    def test_the_lost_runs_engine_is_ended_when_nobody_is_on_it(self):
+        engine = self.Engine(gen=4)
+        svc = self.service(engine)
+        self.assertTrue(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 1)
+        self.assertTrue(svc.fifo.acquire(blocking=False), "the turn is given back")
+
+    def test_the_next_request_admitted_right_after_a_lost_run_is_not_killed(self):          # the race INT3 found
+        engine = self.Engine(gen=4)
+        svc = self.service(engine)
+        svc.fifo.acquire()                                    # the next request has the turn and is generating on the same live engine
+        self.assertFalse(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        svc.fifo.release()
+
+    def test_an_engine_that_was_restarted_since_is_not_the_one_that_lost_the_run(self):
+        engine = self.Engine(gen=5)                           # a restart made a new process (gen 5); the lost run was on gen 4
+        svc = self.service(engine)
+        self.assertFalse(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+
+    def lost_run(self, engine):
+        """The error a no-done run raises on this engine, and whether the engine was ended."""
+        from serve.frontend import Event
+        from serve.server import openai_chunks, died_note
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied) as caught:
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        return caught.exception, died_note(caught.exception)
+
+    def test_batch_slots_share_the_engine_so_it_is_left_alone(self):
+        engine = self.Engine(gen=4, batch=2)
+        self.assertFalse(self.service(engine).end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        error, said = self.lost_run(engine)                  # the engine keeps running, so the error does not promise a restart
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_an_engine_without_a_generation_is_left_alone(self):
+        engine = self.Engine(gen=4)
+        self.assertFalse(self.service(engine).end_engine_if_unchanged(None))
+        self.assertEqual(engine.ended_count, 0)
+        del engine.gen                                        # replicas: no gen
+        error, said = self.lost_run(engine)
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_the_restart_sentence_is_said_only_where_the_engine_was_ended(self):
+        engine = self.Engine(gen=4)
+        error, said = self.lost_run(engine)
+        self.assertEqual(engine.ended_count, 1)
+        self.assertEqual(said, "the engine ended the request without an answer; the next request restarts it")
+        engine = self.Engine(gen=4)                           # another request holds the turn: not ended, no promise
+        svc = self.service(engine)
+        svc.fifo.acquire()
+        from serve.server import died_note
+        error = EngineDied("x")
+        error.restarts = svc.end_engine_if_unchanged(4)
+        self.assertEqual(died_note(error), "x")
+        self.assertEqual(died_note(EngineDied("the engine stopped")), "the engine stopped; the next request restarts it")   # every other EngineDied is as before
+
+    def test_the_whole_race_through_the_stream(self):         # a no-done run, and the next request is on the engine when the check runs
+        from serve.frontend import Event
+        from serve.server import openai_chunks
+        engine = self.Engine(gen=7)
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        svc.fifo.acquire()                                    # (the lost run released its turn; the next request took it)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        self.assertEqual(engine.ended_count, 0, "the request that follows was killed with the lost one")
+        svc.fifo.release()
+
+    def test_a_run_that_is_done_ends_with_its_finish_reason(self):
+        from serve.frontend import Event
+        got = self.chunks([("event", Event("content", "hi")), ("done", {"finish": "stop", "completion_tokens": 1})])
+        self.assertEqual(got[-1]["choices"][0]["finish_reason"], "stop")
+
+    def test_a_cancelled_run_that_stops_early_is_not_an_error(self):
+        gone = threading.Event()
+        gone.set()                                   # the client left: nobody reads the end
+        self.assertEqual(len(self.chunks([], cancel=gone)), 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -6278,3 +6632,4 @@ class PrepareCancelled(unittest.TestCase):
             ids, _, _ = svc.prepare(self.msgs(), None, {}, cancel=threading.Event())
             self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
             svc.embeddings.path.unlink(missing_ok=True)
+

@@ -445,10 +445,9 @@ docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/..:/work" strata-sycl-dev \
    cmake --build /work/strata-v0.1.40.3/build-sycl --target strata -j 8"
 ```
 
-Use the actual `cmake --build` exit status: `sycl/tools/build.sh` currently
-prints `BUILD EXIT 0` but can itself return nonzero because its last failure-
-search pipeline finds no failures. Do not chain tests behind that misleading
-script status.
+Use the actual `cmake --build` exit status. `sycl/tools/build.sh` from 0.2.7 on exits with it; older copies
+printed `BUILD EXIT 0` but could return nonzero because their last failure-search pipeline found no failures.
+Do not chain tests behind the status of an older script.
 
 ## Artifacts and implementation sequence
 

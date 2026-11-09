@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCpuTopology, parseNvidiaReadings, parsePcieThroughput, gpuMemoryTotals } from '../server/device-probes.mjs';
+import { parseCpuTopology, parseNvidiaReadings, parsePcieThroughput, gpuMemoryTotals, pickGpuTemperature, isComputeAdapter } from '../server/device-probes.mjs';
 import { cpuUtilization, diskRate, parseLinuxDiskCounters, parseMacDiskCounters } from '../server/system-telemetry.mjs';
 import { parseEngineMetrics } from '../server/supervisor.mjs';
-import { originalDashboard } from '../server/monitor-dashboard.mjs';
+import { originalDashboard, mergeOwnReading } from '../server/monitor-dashboard.mjs';
 import { gpuMetric, gpuCapacity, gpuReported, shortGpuName, defaultGpuSet, gpuId } from '../src/lib/monitor-hardware.ts';
 import { referencePaths } from '../src/lib/monitor-chart.ts';
 
@@ -116,4 +116,51 @@ test('an RTX 5070 beside the unsupported Radeon iGPU: All GPUs is the RTX alone,
   // alone, or a real AMD card beside it, nothing is dropped
   assert.deepEqual(defaultGpuSet([igpu]).map(g=>g.id),[igpu.id]);
   assert.equal(defaultGpuSet([{...igpu,vramGb:96,unified:true},rtx]).length,2);
+});
+
+// ---- 0.2.8: Monitor readings for AMD cards (#3727) ----
+const amd=(id,index)=>({id,index,unified:false,vramGb:16,name:'AMD Radeon RX 9070 XT',vendor:'amd',backend:'vulkan'});
+const ownReading=(id,extra={})=>({id,source:'sensor',sampledAt:'t0',temperatureC:null,utilizationPct:37,memoryUsedGb:5.5,powerW:null,powerLimitW:null,pcieGen:null,pcieGenMax:null,pcieWidth:null,pcieRxMbs:null,...extra});
+const shell=(own)=>({context:{maxTokens:32768},hardware:{gpus:own,gpuLoad:null},history:[],totals:{},telemetry:{}});
+const rawNoGpu={engine:{max_context:32768},live:{state:'generating'},hardware:{cpu:12},history:{}};
+
+test('Windows AMD, one card, engine running: the engine has no GPU reader, the host load and memory stay (#3727)',()=>{
+  const mapped=originalDashboard(rawNoGpu,{gpus:[amd('dx:1',0)]},shell([ownReading('dx:1')]));
+  assert.equal(mapped.hardware.gpus.length,1);
+  assert.equal(mapped.hardware.gpus[0].utilizationPct,37);
+  assert.equal(mapped.hardware.gpus[0].memoryUsedGb,5.5);
+  assert.equal(mapped.hardware.gpus[0].source,'sensor');
+  assert.equal(mapped.hardware.gpus[0].temperatureC,null,'a value nobody read stays unavailable');
+});
+test('engine numbers win, the host fills only the gaps (fan and clock come from the host)',()=>{
+  const raw={...rawNoGpu,hardware:{gpu_util:80,gpu_mem_used:4*1024**3,gpu_temp:61,gpu_power:200}};
+  const mapped=originalDashboard(raw,{gpus:[amd('a',0)]},shell([ownReading('a',{utilizationPct:10,temperatureC:50,fanPct:35,clockMhz:2400,powerLimitW:300})]));
+  const g=mapped.hardware.gpus[0];
+  assert.equal(g.utilizationPct,80); assert.equal(g.temperatureC,61); assert.equal(g.powerW,200);
+  assert.equal(g.powerLimitW,300); assert.equal(g.fanPct,35); assert.equal(g.clockMhz,2400); assert.equal(g.source,'engine');
+});
+test('a card the host has no reading for keeps the engine reading unchanged',()=>{
+  const e={id:'x',source:'engine',temperatureC:null,utilizationPct:5};
+  assert.equal(mergeOwnReading(e,undefined),e);
+});
+test('the headline aggregates fall back to the host when the engine reports none',()=>{
+  const fb=shell([ownReading('a')]); fb.hardware.gpuTempC=55; fb.hardware.vramUsedGb=5.5;
+  const mapped=originalDashboard(rawNoGpu,{gpus:[amd('a',0)]},fb);
+  assert.equal(mapped.hardware.gpuTempC,55); assert.equal(mapped.hardware.vramUsedGb,5.5);
+});
+test('amdgpu temperature: edge first (what nvtop shows), junction when there is no edge, 0 is no reading',()=>{
+  assert.equal(pickGpuTemperature([{label:'edge',milli:36000},{label:'junction',milli:38000},{label:'mem',milli:56000}]),36);
+  assert.equal(pickGpuTemperature([{label:'mem',milli:56000},{label:'junction',milli:48000}]),48);
+  assert.equal(pickGpuTemperature([{label:'',milli:41000}]),41);
+  assert.equal(pickGpuTemperature([{label:'edge',milli:0},{label:'junction',milli:44000}]),44);
+  assert.equal(pickGpuTemperature([{label:'edge',milli:0}]),null);
+  assert.equal(pickGpuTemperature([{label:'mem',milli:56000}]),null,'a memory sensor alone is not the GPU temperature');
+  assert.equal(pickGpuTemperature([]),null);
+});
+test('a remote-console chip with no memory is not a GPU; an unnamed card with memory and an Intel iGPU are',()=>{
+  assert.equal(isComputeAdapter('unknown',null),false);
+  assert.equal(isComputeAdapter('unknown',0),false);
+  assert.equal(isComputeAdapter('unknown',8*1024**3),true);
+  assert.equal(isComputeAdapter('intel',null),true);
+  assert.equal(isComputeAdapter('amd',34208743424),true);
 });

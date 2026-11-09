@@ -26,6 +26,8 @@ ACCESS_WORDS = {"local": "This computer only", "lan": "My local network", "cloud
 TUNE_MODES = ("quick", "thorough", "skip")
 VISION_MODES = ("off", "on", "gpu", "cpu")
 MTP_MODES = ("on", "off")
+#: strata_control/split_engine.py MODES: the all-cards split engine on NVIDIA and AMD gfx1201 cards (auto = by itself where it is supported, the default)
+SPLIT_MODES = ("auto", "on", "off")
 #: strata_control/drafting.py MODES (tests/terminal/test_drafting.py keeps the two the same)
 DRAFTING_MODES = ("auto", "mtp", "dflash2", "off")
 SPEED_MODES = ("faster", "full")             # DeepSeek: 5 experts per word (Faster) or all 6 (Full quality)
@@ -39,6 +41,17 @@ def faster_default(total_vram_gb: float | None) -> bool:
     # The catalog's vram_gb is already GiB: nvidia-smi's memory.total in MiB / 1024 (setup.py gpus(), tools/strata_mcp.py), an AMD card's bytes / 2**30,
     # Windows registry bytes / 2**30. Compared in whole MiB so a 16 GB card (RTX 4080 / 4060 Ti 16 GB: 16376 MiB = 15.99 GiB) counts as 16 GiB or less.
     return bool(total_vram_gb) and round(float(total_vram_gb) * 1024) <= round(FASTER_VRAM_GIB * 1024)
+
+
+RDNA4_ARCHS = ("gfx1200", "gfx1201")          # Radeon AI PRO R9700, RX 9070 / 9060 (the engine's rdna4())
+
+
+def single_rdna4(cards) -> bool:
+    """Mirrors the engine's single-RDNA4-card rule (src/dsv41/ds4_experts_rule.hpp): exactly one card is used and it is an RDNA4 Radeon, so the CPU lane
+    does most of the experts and `--experts auto` is 5 whatever the card's memory (1 x R9700, 2.25 bpw: decode +16%, agent loop -24%, KL against the
+    original model +0.004).  Two or more RDNA4 cards are the engine's other rule (the cards hold half of the experts), which the screens do not mirror."""
+    cards = list(cards or [])
+    return len(cards) == 1 and str(cards[0].get("vendor") or "").lower() == "amd" and str(cards[0].get("arch") or "").lower().startswith(RDNA4_ARCHS)
 
 
 def speed_words(speed: str, default: bool) -> str:
@@ -78,6 +91,8 @@ def parse_context(text: Any) -> int:
 def context_label(tokens: int | None) -> str:
     if not tokens:
         return "default"
+    if tokens >= 1048576 and tokens % 1048576 == 0:        # DeepSeek-V4.1-Flash reads 1,048,576 positions: "1M"
+        return f"{tokens // 1048576}M"
     if tokens % 1024 == 0:
         return f"{tokens // 1024}K"
     if tokens >= 1000:
@@ -110,6 +125,7 @@ class LaunchSettings:
     parallel: int | None = None                # None = fit to the card
     speed: str | None = None                   # DeepSeek only: None = the default for this PC (faster up to 16 GB of graphics memory); faster | full
     drafting: str | None = None                # None = Auto (recommended): the table in strata_control/drafting.py; mtp | dflash2 | off choose one. Saved in the launch config
+    split_engine: str | None = None            # None = auto (the all-cards split engine runs by itself where it is supported); on | off. Saved in the preset and the launch config
     mtp: str | None = None                     # None = as installed (draft layer on); "off" starts without it (less graphics memory and RAM, slower); "on" overrides an installed "off"
     tune: str = "skip"                         # quick | thorough | skip
     tune_allow_small: bool = False             # the "answer-changing" tick, off by default, as in the app
@@ -159,6 +175,7 @@ class Notice:
     level: str        # "warn" | "error"
     text: str         # plain words: what it means
     next: str = ""    # plain words: what to do
+    after_write: bool = False   # true only once the thing it reports has really been written: the launch says it then (Runner.announce_key_written), not in the plan or before a refusal
 
     def line(self) -> str:
         return self.text + (f" {self.next}" if self.next else "")
@@ -226,8 +243,17 @@ def check_parallel(s: LaunchSettings, *, vram_gb: float | None, fitted: int | No
     return out
 
 
-def check_context(s: LaunchSettings, *, max_fit_tokens: int | None = None) -> list[Notice]:
+def check_context(s: LaunchSettings, *, max_fit_tokens: int | None = None, deepseek: bool = False, pack_limit: int | None = None) -> list[Notice]:
     out: list[Notice] = []
+    if deepseek:                                   # DeepSeek-V4.1-Flash: 8K to 1M, its own words (strata_control/dsv41_context.py), no rope scaling of ours
+        from strata_control import dsv41_context
+        if s.context is not None:
+            why = dsv41_context.problem(int(s.context), pack_limit)
+            if why:
+                out.append(Notice("error", why, "Choose a smaller context."))
+            elif dsv41_context.note(s.context):
+                out.append(Notice("warn", f"{context_label(s.context)}: {dsv41_context.note(s.context)}", ""))
+        return out
     if s.context is not None and s.context > 262144:
         out.append(Notice("warn", f"{context_label(s.context)} is more than the model was trained on (256K).",
                           "Setup adds rope scaling for it (experimental); answers may get less reliable."))
@@ -266,15 +292,27 @@ def settings_from_pairs(pairs: list[str]) -> dict[str, str]:
     return out
 
 
-def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[dict[str, Any], dict[str, str | None]]:
+#: Options whose value is a WORD the engine reads (on, off, auto, none): the word goes through as typed. Making "on" a bare flag
+#: started strata-dsv41 with a lone `--dspark`, which it refuses ("--dspark needs a value", #3959), and "off" removed the flag instead of
+#: switching the drafter off.
+WORD_VALUE_FLAGS = frozenset({"--dspark"})
+
+
+def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str],
+                    word_flags: frozenset[str] = WORD_VALUE_FLAGS) -> tuple[dict[str, Any], dict[str, str | None]]:
     """Turn the Advanced table's values into `tune_knobs.apply_to_argv` changes and environment changes.
 
-    A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value."""
+    A flag without a value (or on/true/yes) is "present"; off/false/no/none removes it; anything else is a value.
+    A word-valued option (WORD_VALUE_FLAGS) keeps its word."""
     args: dict[str, Any] = {}
     env: dict[str, str | None] = {}
     for key, value in extra.items():
         if key.startswith("--"):
             low = value.lower()
+            if key in word_flags and key not in bool_flags:
+                if low:
+                    args[key] = low
+                continue                          # an empty value is no change, as for every option that takes one (#3504)
             if low == "" and key not in bool_flags:
                 continue                          # an empty value for an option that takes one is no change, never a bare flag (#3504)
             if key in bool_flags or low in ("on", "true", "yes", ""):
@@ -312,6 +350,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--mtp {s.mtp}")
         if s.drafting:
             parts.append(f"--drafting {s.drafting}")
+        if s.split_engine:
+            parts.append(f"--split-engine {s.split_engine}")
         if s.speed == "full":
             parts.append("--full-quality")
         elif s.speed == "faster":

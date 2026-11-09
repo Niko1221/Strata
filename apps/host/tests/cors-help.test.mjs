@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { expertParams } from '../server/catalog.mjs';
 
-const languages = ['en', 'de', 'es', 'ja', 'ko', 'pt', 'ru', 'zh'];
+const languages = ['en', 'de', 'es', 'fr', 'ja', 'ko', 'pt', 'ru', 'zh'];
 
-test('the CORS setting explains itself and the explanation exists in all 8 languages', async () => {
+test('the CORS setting explains itself and the explanation exists in all 9 languages', async () => {
   const cors = expertParams().find(p => p.id === 'server.cors');
   assert.match(cors.effect, /does nothing in the app/);
   assert.match(cors.effect, /"cors_origins"/);

@@ -1,4 +1,4 @@
-# Which model? Sizes, versions and what fits
+﻿# Which model? Sizes, versions and what fits
 
 This page helps you choose a model and check that your computer can run it. It covers DeepSeek V4.1-Flash,
 Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [INSTALL.md](INSTALL.md).
@@ -22,7 +22,7 @@ Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [
 **Provider order:** ISTA-DASLab, then Unsloth, then Gyro, then others, using the first compatible pack that fits the
 model and your hardware. ISTA-DASLab is the default recommendation. Gyro saves memory and is slower. Swift 1.5, NVFP4
 and OrcaRouter are other options. An explicit choice by the user always wins. The order applies within a model family:
-Qwen3.6 has Unsloth packs only, and DeepSeek has the IST-DAS sets. The order is a recommendation. It says nothing about which
+Qwen3.6 has Unsloth packs only, and DeepSeek has the ISTA-DAS sets. The order is a recommendation. It says nothing about which
 provider wins a given quality or speed comparison.
 
 Setup may preselect something else: a Swift or Gyro size at a low memory tier, or Unsloth on Strix Halo. Read the plan
@@ -55,11 +55,12 @@ If RAM is short, setup can read experts from the SSD instead ([below](#will-it-f
 DeepSeek V4.1-Flash-1017 runs in the **desktop app** (pick it in the model list) and in the **Terminal** (`strata launch`).
 It uses its own engine, a separate download that the app and `strata launch` fetch for you.
 
-| Set (IST-DAS) | Download | Quality against the original model |
+| Set (ISTA-DAS) | Download | Quality against the original model |
 | --- | ---: | --- |
 | 1.75 bpw | 239 GB | perplexity +21%; code and agent text +8.9% and +10.2%; weaker on plain prose |
 | 2.00 bpw | 257 GB | perplexity +16%; code and agent text +8.5% and +5.9% |
 | 2.25 bpw | 274 GB | perplexity +7.7% to +8.3%; code and agent text +3.5% and +2.5% |
+| ISTA-DAS Coder | 191 GB | ISTA-DAS's coding version: 192 of the 384 experts in every layer kept (72 GB of model instead of 138 GB); numbers against the original model are in [DEEPSEEK41.md](DEEPSEEK41.md#the-ista-das-coder) |
 
 The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
 you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.
@@ -70,9 +71,16 @@ you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lo
 | --- | --- |
 | NVIDIA RTX 30, 40 and 50 series, 12 GB or more | Windows, Linux |
 | AMD Radeon AI PRO R9700 | Linux |
+| AMD Ryzen AI Max (Strix Halo, gfx1151, 128 GB unified; 64 GB or more shared with Windows) | Windows |
+| Apple Silicon Mac, 64 GB or more, macOS 15 or newer (text only, [DEEPSEEK_MAC.md](DEEPSEEK_MAC.md)) | macOS |
 
-Tested on an RTX 3060 (Linux), an RTX 5070 (Windows) and four R9700 cards (Linux). The RTX 30 kernels were also checked
-on an RTX A4000. Windows on RTX 30 and the RX 9070 are built but were not run. Mac and Strix Halo do not run it yet.
+Tested on an RTX 3060 (Linux), an RTX 5070 (Windows), four R9700 cards (Linux) and a Ryzen AI Max+ 395 with 128 GB unified (Windows:
+14 to 16 tokens a second on code with the default Faster mode, 10 to 11 on chat, 78 tokens a second on a 4K prompt and 109 on
+8K). The RTX 30 kernels were also checked on an RTX A4000. Windows on RTX 30 and the RX 9070 are built but were not run. On a
+Mac it was run on an M5 Max with 128 GB ([DEEPSEEK_MAC.md](DEEPSEEK_MAC.md)). Strix Halo on Linux does not run it yet; on Strix Halo Windows the graphics memory is the RAM, so most of the experts are
+read from the SSD and an NVMe drive matters.
+
+RTX 40 cards are covered by the engine packages since 0.2.7 (sm_89 code); we have not run one ourselves, see [DEEPSEEK41.md](DEEPSEEK41.md#the-engine-package) for a user's measurement.
 
 **What you need:** a graphics card with 12 GB or more, 46 GB of RAM at least (64 GB is the tested comfortable size),
 an NVMe SSD, and the disk space above. Setup warns when disk or RAM is short and does not stop you.
@@ -86,9 +94,9 @@ strata launch --family deepseek41 --model ist-das-2.00bpw
 
 **Speed: Faster or Full quality.** The app asks, and the Terminal takes `--speed faster|full` (or `--full-quality`). Faster uses 5 of the
 model's 6 experts per word, a small quality change that is usually not noticeable. It is the default on a PC with 16 GB of graphics
-memory or less. Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
+memory or less, on a Ryzen AI Max, and on a single Radeon RX 9000 / AI PRO R9700 card, and on several of them when together they hold half of the experts (three or more R9700 cards; two hold about 40% of the 2.25 set, so they keep 6). Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
 
-**Measured on:** IST-DAS 2.00 bpw, Strata 0.2.4 (before the Speed choice).
+**Measured on:** ISTA-DAS 2.00 bpw, Strata 0.2.4 (before the Speed choice).
 
 | Hardware | Output | Prompt (8K) |
 | --- | ---: | ---: |
@@ -340,3 +348,4 @@ above setup's RAM estimate for 47 GB and was installed with `--model Q2_0 --yes`
 | **UD-Q6_K_XL** | 54 | 76 | 1,020 |
 | **Q8_0** | 53 to 57 | 66 to 74 | 1,230 to 1,300 |
 | *IQ3_S, same card* | 75 | 95 | - |
+

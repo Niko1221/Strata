@@ -16,6 +16,7 @@ bit-exact run to run). Only ``exact`` is picked on its own; the others need the 
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
@@ -48,6 +49,10 @@ def default_unsteady(ctx: "Context") -> bool:
 BOOL_FLAGS = frozenset({"--kv-grow", "--trim-stage-weights", "--no-host-worker", "--no-pool", "--mmap-experts",
                         "--resident-experts", "--prompt-cache-tail", "--vram-elastic", "--split-skip-if-fits",
                         "--resident-cpu-experts", "--no-hit-poke", "--expert-cache-per-layer", "--batch-mtp"})
+
+#: Flags of BOOL_FLAGS that strata-dsv41 (DeepSeek) reads with a word: ``--mmap-experts on|off|auto`` (src/dsv41/ds4_main.cpp). A bare one there takes the
+#: next argument as its word, or stops the engine ("--mmap-experts needs a value") when it is last. Qwen's engine takes it as a bare switch (#5027).
+DSV41_WORD_FLAGS = frozenset({"--mmap-experts"})
 
 
 # --------------------------------------------------------------------------- the arms
@@ -83,7 +88,7 @@ ARMS: tuple[Arm, ...] = (
         classes=("A", "B", "C"), backends=("cuda", "hip"), needs=("ctx_ge_128k",)),
     # --- prompt speed: the chunk size is exact (10/10) and costs no decode speed on a card with VRAM to spare ------------------
     Arm("prefill_32k", "Larger prompt chunks (faster very long prompts)", "exact", {"--prefill": "auto:32768"},
-        classes=("B",), goals=("coding", "chat"), ram_delta_mib=4096, needs=("vram_ge_24g", "long_prompts"), metric="prompt"),
+        classes=("B",), goals=("coding", "chat"), ram_delta_mib=4096, needs=("vram_ge_24g", "long_prompts", "discrete_gpu"), metric="prompt"),
     # --- class A: RAM-bound resident mode (RTX 3060 / 46 GB): the one measured gain is adapt-async, behind its own switch ------
     Arm("adapt_async", "Learn which experts to keep while you chat, in the background", "nonrepeatable",
         {"--adapt-async": 1}, backends=("cuda",), classes=("A",), needs=("resident_ram", "one_gpu")),
@@ -152,6 +157,7 @@ BOUNDS: dict[str, dict[str, Any]] = {
 #: in plain words. ``when`` names facts from `condition_holds`; empty = always.
 NEVER: tuple[dict[str, Any], ...] = (
     {"env": "STRATA_SH_STREAM", "when": ("gfx12",), "reason": "it halves decode speed on this graphics card"},
+    {"env": "STRATA_SH_STREAM", "when": ("windows_amd_kv_stream",), "reason": "with KV streaming on Windows it made the engine fail on the first request on one RX 6000 PC (#3895)"},
     {"env": "STRATA_RDNA2_SGEMM", "value": "all", "when": ("gfx12",), "reason": "it makes long prompts five times slower"},
     {"env": "STRATA_SELECT_SIMT", "reason": "its gain is below the 3% margin"},
     {"env": "STRATA_HIP_WMMA", "reason": "it changes the numbers (a quality setting)"},
@@ -218,8 +224,10 @@ def condition_holds(name: str, ctx: Context) -> bool:
         "hybrid_cpu": ctx.hybrid_cpu,
         "hybrid_experts": bool(f.get("hybrid_experts")),
         "vram_ge_24g": ctx.vram_mib >= 24000,
+        "discrete_gpu": not (ctx.arch and ctx.arch.split(":")[0] in ("gfx1151", "gfx1150", "gfx1103")),   # an APU's pool is shared with the expert cache
         "vram_le_8g": 0 < ctx.vram_mib <= 8400,
         "gfx12": bool(ctx.arch and ctx.arch.startswith("gfx12")),
+        "windows_amd_kv_stream": ctx.backend == "hip" and sys.platform == "win32" and "--kv-resident" in ctx.base_args,
         "pcie_bound": 0 < ctx.vram_mib < 24000,
         "ram_bound": bool(ctx.ram_gib and ctx.model_gib and ctx.ram_gib - ctx.model_gib < 30),
         "ctx_ge_128k": ctx.context_tokens >= 98304,
@@ -260,7 +268,17 @@ def _prefill_below_auto(value: Any) -> bool:
 def check_setting(args: dict[str, Any], env: dict[str, str | None], ctx: Context) -> list[str]:
     """Reasons (plain words) a setting must not be applied; an empty list means it is inside the rules.
 
-    ``args`` maps flag -> value (True for a present boolean flag); ``env`` maps name -> value."""
+    ``args`` maps flag -> value (True for a present boolean flag); ``env`` maps name -> value. The tuner uses this whole
+    list for what it tries; a saved or imported preset uses `check_setting_parts` (see there)."""
+    never, bounds = check_setting_parts(args, env, ctx)
+    return never + bounds
+
+
+def check_setting_parts(args: dict[str, Any], env: dict[str, str | None], ctx: Context) -> tuple[list[str], list[str]]:
+    """(never, bounds): `never` are the settings measured to be harmful (the never list: slower, unsafe, or changing the
+    numbers); `bounds` are values outside the range the tuner tried (``--spec 5``, ``--pcie-frac 0.6``), which nobody
+    measured as bad. A preset keeps a user's setting that is only outside the tested range, with a warning (#3844); the
+    tuner itself never tries one."""
     problems: list[str] = []
     ctx_tokens = ctx.context_tokens
     default_workers = ctx.facts.get("workers")
@@ -314,6 +332,7 @@ def check_setting(args: dict[str, Any], env: dict[str, str | None], ctx: Context
             hit = n is not None and (n == 0 or n >= 4)
         if hit:
             problems.append(f"{flag} {value}: {rule['reason']}")
+    bound_problems: list[str] = []
     for flag, value in args.items():
         bound = BOUNDS.get(flag)
         if not bound or value is None or value is True:
@@ -321,13 +340,18 @@ def check_setting(args: dict[str, Any], env: dict[str, str | None], ctx: Context
         if bound.get("numeric_only") and _as_number(value) is None:
             continue
         if "choices" in bound and value not in bound["choices"] and str(value) not in [str(c) for c in bound["choices"]]:
-            problems.append(f"{flag} {value}: outside the safe values {list(bound['choices'])}")
+            bound_problems.append(f"{flag} {value}: outside the safe values {list(bound['choices'])}")
         n = _as_number(value)
         if n is not None and "min" in bound and n < bound["min"]:
-            problems.append(f"{flag} {value}: below the safe minimum {bound['min']}")
+            bound_problems.append(f"{flag} {value}: below the safe minimum {bound['min']}")
         if n is not None and "max" in bound and n > bound["max"]:
-            problems.append(f"{flag} {value}: above the safe maximum {bound['max']}")
-    return problems
+            bound_problems.append(f"{flag} {value}: above the safe maximum {bound['max']}")
+    return problems, bound_problems
+
+
+def keep_warnings(bound_problems: Sequence[str]) -> list[str]:
+    """The short warning for each setting that is outside the tested range and is kept (#3844): said, never dropped."""
+    return [f"{p.split(': ', 1)[0]}: not tried by the tuner, kept because it is your setting" for p in bound_problems]
 
 
 def _flags_of(argv: Sequence[str]) -> set[str]:
@@ -461,11 +485,11 @@ def _current(argv: Sequence[str], flag: str) -> str | None:
     return None
 
 
-def _value_count(argv: Sequence[str], i: int) -> int:
+def _value_count(argv: Sequence[str], i: int, bool_flags: frozenset[str] = BOOL_FLAGS) -> int:
     """How many entries after the flag at ``argv[i]`` are its values: none for a bool flag, as many as the option takes
     (``--control-vector-layer-range 4 44`` is two) up to the next ``--option``."""
     flag = argv[i]
-    if flag in BOOL_FLAGS:
+    if flag in bool_flags:
         return 0
     n = 0
     while n < user_args.MULTI_VALUE_FLAGS.get(flag, 1) and i + 1 + n < len(argv) and not str(argv[i + 1 + n]).startswith("--"):
@@ -478,19 +502,20 @@ def signature(args: dict[str, Any], env: dict[str, str | None] | None = None) ->
     return "|".join(parts)
 
 
-def apply_to_argv(argv: Sequence[str], args: dict[str, Any]) -> list[str]:
-    """The user's argv with the candidate's settings put on top (Rule 3: a boolean is present or absent)."""
+def apply_to_argv(argv: Sequence[str], args: dict[str, Any], bool_flags: frozenset[str] = BOOL_FLAGS) -> list[str]:
+    """The user's argv with the candidate's settings put on top (Rule 3: a boolean is present or absent).
+    `bool_flags`: the engine's flags that take no value (strata-dsv41 gives --mmap-experts a word, see DSV41_WORD_FLAGS)."""
     out = list(argv)
     for flag, value in args.items():
         i = 0
         while i < len(out):
             if out[i] == flag:
-                del out[i:i + 1 + _value_count(out, i)]
+                del out[i:i + 1 + _value_count(out, i, bool_flags)]
             else:
                 i += 1
         if value is None or value is False:
             continue
-        if value is True or flag in BOOL_FLAGS:
+        if value is True or flag in bool_flags:
             out.append(flag)
         else:
             out.extend([flag, *user_args.value_tokens(flag, value)])

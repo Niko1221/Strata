@@ -127,9 +127,13 @@ the oneAPI runtime image with the serve pipes attached. Paths in the config's `a
  "sampling": {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.05}}
 ```
 
-With `--stream-experts` any expert left out of VRAM is read from the SSD and computed on the CPU when routed, so the reserve
-matters: on the B70 with Coder IQ1_M a 1,536 MiB reserve left the cache 128 experts short and decode fell to 5-10 tok/s, while
-1,024 MiB fits all 12,288 with 2 GB of VRAM free.
+A native (IQ) pack takes `--spec` 2 at the smallest: the engine refuses `--spec 0` and `--spec 1` on one (it needs `--native SHARD1`, `--spec T`
+with T >= 2 and `--prefill CHUNK`), so speculative decoding cannot be turned off for these packs.
+
+With `--stream-experts` under `STRATA_VERIFY_NO_HOST=1` (the `strata-sycl.sh` default) there is no SSD expert tier: every expert
+must be in VRAM or in the pinned RAM mirror (`STRATA_MIRROR_MIB`), and the engine refuses to start when the two do not cover the model
+("REFUSED: N experts are neither in VRAM nor mirrored"). Raise the mirror or lower `--max-context`. So the reserve matters: on the B70
+with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 
 ## Things that matter on this GPU
 
@@ -510,3 +514,36 @@ a type pun the SYCL compiler does not honour. A prompt that borrowed cache slots
 Level Zero v2). An A750 prompt of 2,744 tokens hung (direct copy out of pageable memory; regression test
 `sycl/tools/test_prompt_deadlock.sh`). The first request after a start returned token 0 on `i915` when the spin bound was too short.
 An A770 JIT build misread memory past 4 GiB into an allocation. The xe driver aliased pages in a 22 GiB arena (NaN at layer 4).
+
+### Mixed-IQ3 decode kernels for Battlemage (PR #4185)
+
+Packed Q2 / IQ4 lookup / IQ3_S sign arithmetic (the build option) and fourteen decode controls. Measured on two Arc Pro B65
+(Qwen3.8-Flash-Next GSQ-RCO IQ3_S, all experts resident, layer split, `--spec 2 --pipeline-windows 2`, int8 KV, AOT bmg-g31): decode
++9.7% on a 4K prompt and +11.1% on a free-form answer against the build without them, same generated tokens, same logprobs to six
+decimals. Prompt speed is unchanged.
+
+* `STRATA_SYCL_IQ_DECODE_FAST` (CMake, default ON; `IQ_DECODE_FAST=OFF` for `sycl/tools/build.sh` and `packaging/build_sycl_linux.sh`):
+  integer arithmetic with the same results as the helpers it replaces. It is the largest part of the gain (+5.9% alone).
+* Runtime controls. Unset: on for a Battlemage device, off for every other device (Arc A-series keeps the earlier kernels).
+  `STRATA_<name>=0` turns a control off, `=1` turns it on whatever the device. Restart after changing one.
+
+| Runtime control | On by default (Battlemage) | Selected work |
+|---|---|---|
+| `STRATA_MMVQ_SHAPE_RPW` | yes | Row reuse for bounded Q4_K/Q5_K projection shapes |
+| `STRATA_IQ3S_GU_ROW_REUSE` | yes | Reuse IQ3_S gate/up row inputs across two rows |
+| `STRATA_IQ2S_GU_ROW_REUSE` | yes | The same for IQ2_S |
+| `STRATA_IQ3XXS_GU_ROW_REUSE` | yes | The same for IQ3_XXS |
+| `STRATA_GR_LO_REUSE` | yes | Reuse the hyper-connection low-rank SiLU output on supported layouts |
+| `STRATA_ATTN_MERGE_ACTIVE` | yes | Merge only the active chunks in bounded batched QSA decode |
+| `STRATA_IQ3S_GU_SLM` | no | Stage native IQ3_S gate/up activations (unreachable while the IQ3_S row reuse is on) |
+| `STRATA_IQ4NL_DOWN_SLM` | no | Stage native IQ4_NL down activations |
+| `STRATA_EXPERT_ROW_E3` | no | Three-entry tails in the IQ2_S / IQ3_XXS row-reuse path |
+| `STRATA_RESIDENT_PLAN_COMPACT` | no | Size the resident routing work-group for the entry count |
+| `STRATA_GR_CACHED_NORM` | no | Reuse the hyper-connection normalized input on supported layouts |
+| `STRATA_GR_REDUCE_ILP` | no | Keep partial loads in flight in the cached-lo hyper-connection reduce |
+| `STRATA_Q6_SHAPE_GRF` | no | Large GRF for bounded Q6_K projection shapes |
+| `STRATA_GDN_QK_REG` | no | Register-broadcast QK for supported Battlemage GDN geometry |
+
+The eight "no" controls measured neutral or slightly slower on that configuration (single-control table in
+`phaseA-tests/pr-priorities/RESULTS-INTEL.md`); they stay available for other models and cards. Unsupported layouts retain their
+existing paths. Explicit projection overrides take precedence over shape selection.

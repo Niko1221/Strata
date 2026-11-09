@@ -675,13 +675,24 @@ class EngineLaunchEnv(unittest.TestCase):
         (eng / "BUILD.json").write_text('{"backend": "hip", "lib_dirs": ["rocm/bin"]}', encoding="utf-8")
         return eng
 
-    def test_engine_env_puts_rocm_bin_first(self):
+    def test_engine_env_puts_rocm_bin_first_on_windows(self):
         with tempfile.TemporaryDirectory() as t:
             eng = self.engine(Path(t))
-            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}):
+            with mock.patch.dict("os.environ", {"PATH": "C:\\Windows"}), \
+                 mock.patch.object(setup.os, "name", "nt"):
                 env = setup.engine_env(eng)
             self.assertEqual(env["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
             self.assertTrue(env["PATH"].endswith("C:\\Windows"))
+
+    def test_engine_env_puts_rocm_bin_first_on_ld_library_path(self):
+        with tempfile.TemporaryDirectory() as t:
+            eng = self.engine(Path(t))
+            with mock.patch.dict("os.environ", {"PATH": "/usr/bin", "LD_LIBRARY_PATH": "/usr/lib"}), \
+                 mock.patch.object(setup.os, "name", "posix"):
+                env = setup.engine_env(eng)
+            self.assertEqual(env["LD_LIBRARY_PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
+            self.assertTrue(env["LD_LIBRARY_PATH"].endswith("/usr/lib"))
+            self.assertEqual(env["PATH"], "/usr/bin")
 
     def test_engine_without_lib_dirs_keeps_the_environment(self):
         with tempfile.TemporaryDirectory() as t:
@@ -696,7 +707,8 @@ class EngineLaunchEnv(unittest.TestCase):
             return mock.Mock(stdout="qwen4exp qwen35moe\n")
         with tempfile.TemporaryDirectory() as t:
             eng = self.engine(Path(t))
-            with mock.patch.object(setup.subprocess, "run", fake_run):
+            with mock.patch.object(setup.subprocess, "run", fake_run), \
+                 mock.patch.object(setup.os, "name", "nt"):
                 names = setup.engine_families(eng)
             self.assertEqual(names, {"qwen4exp", "qwen35moe"})
             self.assertEqual(seen["cmd"][1], "--families")
@@ -712,7 +724,7 @@ class EngineLaunchEnv(unittest.TestCase):
             eng = self.engine(Path(t))
             probe = eng / ("strata-device.exe" if setup.WIN else "strata-device")
             probe.write_text("x")
-            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None):
+            with mock.patch.object(setup.subprocess, "run", fake_run),                     mock.patch.object(setup, "hip_runtime_beside_exe", lambda d: None), mock.patch.object(setup.os, "name", "nt"):
                 found = setup.hip_devices(probe)
             self.assertEqual(found[0]["arch"], "gfx1100")
             self.assertEqual(seen["env"]["PATH"].split(setup.os.pathsep)[0], str(eng / "rocm" / "bin"))
