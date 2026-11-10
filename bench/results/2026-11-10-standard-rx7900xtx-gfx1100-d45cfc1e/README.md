@@ -87,6 +87,12 @@ running, so it could not read the engine options. This section fills both in; pa
 - The runner's protocol ID (`strata-qwen38-thinking-v1-draft.1`) and schema version (1) are the same as in
   v0.2.13's `docs/BENCHMARK_PROTOCOL.md`, so this report matches the current draft protocol. Only the control and
   serving layer come from the fork checkout; the engine and the timings it reports are the official component's.
+- The sampling defaults in `config.json` (`temperature 1.0`, `top_p 0.95`, `top_k 20`) are the defaults of
+  that fork's serving layer, not necessarily upstream main's. They are recorded so the run can be repeated,
+  and the track is `custom` for exactly that reason.
+- Two switches of the engine are set from that fork's RDNA3 tuning note (`RDNA3_SETTINGS.md`, written for a
+  single RX 7900 XTX / gfx1100): `STRATA_SELECT_WMMA=1` and `STRATA_SCORES_THREAD=0`. Both are upstream
+  options; the engine binary itself is the official component.
 - Launch arguments (sanitized): see `run-config-sanitized.json`.
 - Tuning environment that matters for prompt speed: `STRATA_SELECT_WMMA=1` (the block scorer on the matrix cores),
   `STRATA_SCORES_THREAD=0`, `STRATA_PREFILL_AUTO_MAX=32768`, `STRATA_PREFILL_RING=192`, `STRATA_QSA_ROWS=1`.
