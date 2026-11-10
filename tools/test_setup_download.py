@@ -733,7 +733,7 @@ class WholeMarkNeedsThePin(unittest.TestCase):
         shard.write_bytes(b"x" * 8)
         pin = (8, "ab" * 32)                                                  # a pin of this file's size, so the "full length" branch is the one taken
         calls = []
-        with mock.patch.dict(setup.REPO_PINS[self.repo], {self.name: pin}), mock.patch.object(setup, "range_total", return_value=8),                 mock.patch.object(setup, "_urlopen", lambda *a, **k: type("R", (), {"headers": {"Content-Length": "8"}})()),                 mock.patch.object(setup, "verify_sha256", lambda *a, **k: calls.append(a)):
+        with mock.patch.dict(setup.REPO_PINS[self.repo], {self.name: pin}), mock.patch.object(setup, "range_total", return_value=8),                 mock.patch.object(setup, "_urlopen", lambda *a, **k: type("R", (), {"headers": {"Content-Length": "8"}, "__enter__": lambda s: s, "__exit__": lambda s, *e: False, "close": lambda s: None})()),                 mock.patch.object(setup, "verify_sha256", lambda *a, **k: calls.append(a)):
             setup.mark_whole_unless_pinned([shard], self.hf, own=False)
             self.assertFalse(setup.done(shard))
             setup.download(self.hf + self.name, shard)
