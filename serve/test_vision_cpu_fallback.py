@@ -151,8 +151,26 @@ class Fallback(unittest.TestCase):
         error, said = self.start(v)
         self.assertIsNone(error)
         self.assertTrue(v.on_cpu)
-        self.assertIsNone(v.cpu_note)
         self.assertIn("ERR cannot load the vision encoder", said)
+        self.assertEqual(v.cpu_note, "Pictures are read on the processor, which is slower: the picture reader could not start on graphics card 0. "
+                                     "The reason is in the engine's log: " + self.logs[0].name + ".")
+
+    def test_the_card_in_that_sentence_is_the_first_one_the_reader_is_shown(self):
+        v = self.vision("""
+            print("ERR cannot load the vision encoder x.gguf", flush=True)
+            sys.exit(1)
+        """, self.READY, env={"CUDA_VISIBLE_DEVICES": "3,1"})
+        self.start(v)
+        self.assertIn("could not start on graphics card 3. The reason", v.cpu_note)
+
+    def test_on_a_mac_there_is_no_card_number(self):
+        v = self.vision("""
+            print("ERR cannot load the vision encoder x.gguf", flush=True)
+            sys.exit(1)
+        """, self.READY)
+        with mock.patch.object(server.sys, "platform", "darwin"):
+            self.start(v)
+        self.assertTrue(v.cpu_note.startswith("Pictures are read on the processor, which is slower: the picture reader could not start. The reason is in"))
 
     def test_the_cpu_reader_failing_too_ends_it_with_its_own_error(self):
         v = self.vision(self.OOM, """

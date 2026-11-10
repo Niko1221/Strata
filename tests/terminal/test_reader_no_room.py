@@ -107,6 +107,16 @@ class Words(unittest.TestCase):
                          "The picture reader could not start: the graphics card has no room for it (it needs about 0.8 GB; 0.1 GB are free).")
         self.assertIn("the graphics card has no room for the picture reader.", reader_room.on_processor(None))
 
+    def test_the_summary_line_for_any_other_reason(self):
+        self.assertEqual(reader_room.not_started_on_processor(0, "/home/u/engine.log"),
+                         "Pictures are read on the processor, which is slower: the picture reader could not start on graphics card 0. "
+                         "The reason is in the engine's log: /home/u/engine.log.")
+        self.assertEqual(reader_room.not_started_on_processor(None, "/home/u/engine.log"),
+                         "Pictures are read on the processor, which is slower: the picture reader could not start. The reason is in the engine's log: /home/u/engine.log.")
+        self.assertEqual(reader_room.not_started_on_processor(2, None),
+                         "Pictures are read on the processor, which is slower: the picture reader could not start on graphics card 2.")
+        self.assertEqual(reader_room.not_started_on_processor(), "Pictures are read on the processor, which is slower: the picture reader could not start.")
+
     def test_a_card_with_next_to_nothing_free_is_not_called_a_tenth(self):
         self.assertIn("(less than 0.1 GB are free)", reader_room.on_processor(0, None, 10))
         self.assertIn("(less than 0.1 GB are free)", reader_room.on_processor(0, None, 0))

@@ -113,6 +113,14 @@ def on_processor(card: int | None = None, need_mib: float | None = None, free_mi
             "To read them on the card, close the other programs that use it and start again.")
 
 
+def not_started_on_processor(card: int | None = None, log_path: str | None = None) -> str:
+    """The launch goes on and the pictures are read on the processor because the GPU reader did not start for a reason that is not a full card (the summary
+    line; the reason is in the engine log, which is the reader's stderr).  Without the card's number, or the log's path, those words are left out."""
+    where = f" on graphics card {card}" if card is not None else ""
+    why = f" The reason is in the engine's log: {log_path}." if log_path else ""
+    return f"Pictures are read on the processor, which is slower: the picture reader could not start{where}.{why}"
+
+
 def could_not_start(card: int | None = None, need_mib: float | None = None, free_mib: float | None = None) -> tuple[str, str]:
     """(what happened, the next step) when the launch ends because the reader could not start."""
     return (f"The picture reader could not start: {_card(card)} has no room for it{_facts(need_mib, free_mib)}.",
