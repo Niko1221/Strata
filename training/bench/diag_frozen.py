@@ -38,7 +38,12 @@ GGUF = ["/root/gguf/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf
         "/root/gguf/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"]
 PACK = "/root/experts_nf4.bin"
 TOKDIR = "/root/qwen38-gguf"
-DATA = "/mnt/d/Admin/Documents/GitHub/Strata-mezo/examples/training/hard_train.jsonl"
+# Portable: point STRATA_TRAIN_DATA (or STRATA_MEZO) at your own checkout before
+# running this diagnostic. No contributor-specific path is committed.
+DATA = (os.environ.get("STRATA_TRAIN_DATA")
+        or os.path.expandvars("$STRATA_MEZO/examples/training/hard_train.jsonl"))
+if "$" in DATA:
+    raise SystemExit("set STRATA_TRAIN_DATA or STRATA_MEZO to your own data path first")
 
 word, _src = whoami.source(None)
 model, _meta = load_model(GGUF, PACK)
