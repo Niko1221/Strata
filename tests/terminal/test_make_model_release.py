@@ -260,6 +260,23 @@ class Plan(unittest.TestCase):
         self.assertIn("[FILL", notes)
         self.assertFalse((out / "CHECKLIST.md").exists())
 
+    def test_the_private_checklist_by_path_beside_the_repo_templates(self):
+        """--checklist names the internal checklist (outside the repo) and the notes and the model card still come from the repo's default folder."""
+        priv = Path(self.tmp.name) / "private"
+        priv.mkdir()
+        (priv / "my-list.md").write_text("<!-- WORKING DOCUMENT -->\n# Runbook {{model_title}} case {{case}}\n", encoding="utf-8")
+        out = Path(self.tmp.name) / "out-checklist"
+        code, _, err = run(self.base(self.a, "--write", str(out), "--checklist", str(priv / "my-list.md"), "--revision", "abc", "--min-engine", "0.1.58"))
+        self.assertEqual(code, 0, err)
+        self.assertEqual((out / "CHECKLIST.md").read_text(encoding="utf-8"), "<!-- WORKING DOCUMENT -->\n# Runbook Qwen3.6-35B-A3B case A\n")
+        self.assertEqual((out / "RELEASE-NOTES.md").read_text(encoding="utf-8").splitlines()[0],
+                         (M.TEMPLATES / "RELEASE-NOTES.md").read_text(encoding="utf-8").splitlines()[0])      # the repo's notes
+        self.assertTrue((out / "MODEL-CARD.md").is_file())
+        self.assertNotIn("no template CHECKLIST.md", err)
+        code, _, err = run(self.base(self.a, "--write", str(Path(self.tmp.name) / "out-missing"), "--checklist", str(priv / "nope.md"), "--min-engine", "0.1.58"))
+        self.assertNotEqual(code, 0)
+        self.assertIn("--checklist: no file", err)
+
     def test_another_templates_folder_is_still_read(self):
         t = Path(self.tmp.name) / "tpl-other"
         t.mkdir()

@@ -392,6 +392,8 @@ def main(argv=None) -> int:
     ap.add_argument("--with-app", action="store_true", help="plan the app steps (Models page text, installers) too; a case-A feed model needs none")
     ap.add_argument("--templates", type=Path, default=TEMPLATES,
                     help="the folder with the templates: RELEASE-NOTES.md, MODEL-CARD.md and, if there, CHECKLIST.md (default: packaging/templates/model-release)")
+    ap.add_argument("--checklist", type=Path, help="the release checklist template by path (an internal work list, not in the repo); filled as CHECKLIST.md beside the "
+                                                    "notes and the model card, and used instead of a CHECKLIST.md in --templates")
     ap.add_argument("--write", type=Path, metavar="OUTDIR", help="also write the plan, the entry and the filled templates into this new folder")
     ap.add_argument("--json", action="store_true", help="print the plan as JSON")
     ap.add_argument("--execute", action="store_true")
@@ -399,6 +401,8 @@ def main(argv=None) -> int:
     if a.execute:
         print("REFUSED: make_model_release.py is a dry run. It signs, builds and uploads nothing; the steps that need the release key are printed for the owner.")
         return 2
+    if a.checklist is not None and not a.checklist.is_file():
+        raise SystemExit("--checklist: no file %s" % a.checklist)
     report = json.loads(a.intake.read_text(encoding="utf-8"))
     if not 0 <= a.set < len(report["sets"]):
         raise SystemExit("the report has %d set(s)" % len(report["sets"]))
@@ -434,6 +438,8 @@ def main(argv=None) -> int:
         vals = template_values(s, p, a)
         for name in TEMPLATE_NAMES:
             t = a.templates / name if a.templates else None
+            if name == "CHECKLIST.md" and a.checklist is not None:
+                t = a.checklist
             if t is not None and t.is_file():
                 (a.write / name).write_text(fill(t.read_text(encoding="utf-8"), vals), encoding="utf-8")
             else:
