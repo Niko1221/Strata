@@ -651,6 +651,12 @@ class Helpers(unittest.TestCase):
         self.assertEqual(by["UD-Q4_K_XL"]["download_gb"], 22.9)
         self.assertTrue(all(x["images"] and x["engine_min"] == "0.1.45" and x["gpu_options"] is None for x in by.values()))
         self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
+        # #5715: the app's context estimate reads Qwen3.6's own figures from the row (strata_control/own_path_fit.py); other models have none
+        from strata_control import own_path_fit
+        self.assertEqual({m: x["context_fit"] for m, x in by.items()}, {m: own_path_fit.inputs("qwen3.6-35b-a3b", m) for m in by})
+        self.assertEqual(by["UD-Q4_K_XL"]["context_fit"]["bytes_per_token"], 47104)
+        others = [x for f in s.model_table({"ram_gb": 63.7, "gpus": []}) if f["family"] != "qwen36" for x in f["sizes"]]
+        self.assertTrue(others and not any("context_fit" in x for x in others))
         small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
         self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"may run slower"})        # 16 GB, no card: 21 to 36 GB of weights
         self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[:5], ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])      # the Unsloth Flash-Next sizes are untouched (round 0214 adds sizes after them)
