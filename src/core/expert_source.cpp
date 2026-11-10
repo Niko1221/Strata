@@ -3587,7 +3587,8 @@ bool FileExpertSource::pin_cache_complement(
         // they fit, the rest left on the mapped files; Windows commit capacity also limits the allocation (#730).
         uint64_t physical = 0;
         if (!available_memory_bytes(physical, &budget_commit)) {
-            err = "FileExpertSource: cannot determine available memory for --resident-budget-gib";
+            err = budget_automatic_ ? "FileExpertSource: cannot determine available memory for the automatic RAM copy"
+                                    : "FileExpertSource: cannot determine available memory for --resident-budget-gib";
             return false;
         }
         budget_physical = physical;
@@ -4213,7 +4214,8 @@ bool FileExpertSource::pin_cache_complement(
                              "cost 26%%). %s and restart; the line above should read N of N.\n", missing, lendable,
                      100.0 * (double) missing / (double) std::max<long long>(1, lendable),
                      lend ? "Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start)"
-                          : "Raise --resident-budget-gib (the lend region comes after the ranked experts)");
+                          : budget_automatic_ ? "Raise the automatic RAM copy (the lend region comes after the ranked experts)"
+                                              : "Raise --resident-budget-gib (the lend region comes after the ranked experts)");
     }
     if (!stage_lend_regions_.empty()) {
         int64_t offered = 0;

@@ -105,10 +105,11 @@ size_t device_free_bytes() {
         (void) cudaGetLastError();
         static std::atomic<int> said{(int) cudaSuccess};
         if (said.exchange((int) e) != (int) e)
-            // DRAFT wording, pending the coordinator (RESULTS-GH-FIX.md item 4).  The error's text and number:
-            // cudaGetErrorName is not in every build's runtime layer (the Mac's metal_compat, the HIP shim)
-            std::fprintf(stderr, "strata: [DRAFT #5708] the GPU's free memory could not be read (cudaMemGetInfo: %s, error %d); "
-                                 "it is counted as 0 free\n", cudaGetErrorString(e), (int) e);
+            // the error's text and number: cudaGetErrorName is not in every build's runtime layer (the Mac's
+            // metal_compat, the HIP shim)
+            std::fprintf(stderr, "strata: the free graphics memory could not be read (%s, error %d); the expert cache "
+                                 "counts it as none free, so it may start with no GPU slots. If this repeats, restart "
+                                 "the computer.\n", cudaGetErrorString(e), (int) e);
     }
 #if defined(__linux__) && !defined(STRATA_HIP_GFX906)   // (the gfx906 compat layer has no cudaDevAttrIntegrated; that GPU is discrete)
     // per device: a box can mix an integrated GPU (an APU) with a discrete one, and the answer is the CURRENT device's

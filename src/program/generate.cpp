@@ -10534,8 +10534,11 @@ int main(int argc, char** argv) {
                                  "%s keeps them all in RAM\n",
                          (long long) o.prefill_chunk, (long long) (xcache.slots() - lend_from),
                          (long long) src.resident_lent_slots(),
-                         o.resident_budget > 0 ? "A larger --resident-budget-gib (the lend region comes after the ranked experts), or a smaller --prefill,"
-                                               : "A smaller --prefill, or auto,");
+                         o.resident_budget > 0
+                             ? (ram_fallback_resident
+                                    ? "A larger the automatic RAM copy (the lend region comes after the ranked experts), or a smaller --prefill,"
+                                    : "A larger --resident-budget-gib (the lend region comes after the ranked experts), or a smaller --prefill,")
+                             : "A smaller --prefill, or auto,");
         if (resident_ok) {
             // --adapt-async: twice the exchange buffers - the second half bounces the copies in whose source is not
             // page-locked (an asynchronous copy instead of the driver's staged, synchronous one)
@@ -10571,9 +10574,10 @@ int main(int argc, char** argv) {
         } else if (o.resident_budget > 0) {
             // #403: a RAM budget that cannot be kept is not a reason to stop - the experts it would have held are
             // read from the files like the ones outside it (pin_cache_complement leaves nothing half-built)
-            std::fprintf(stderr, "strata generate: WARNING: the RAM budget (--resident-budget-gib) cannot be kept (%s); "
+            std::fprintf(stderr, "strata generate: WARNING: the RAM budget (%s) cannot be kept (%s); "
                                  "every expert the GPU does not hold is read from the model files %s "
-                                 "(--mmap-experts), which is slower\n", err.c_str(),
+                                 "(--mmap-experts), which is slower\n",
+                         ram_fallback_resident ? "the automatic RAM copy" : "--resident-budget-gib", err.c_str(),
                          src.unbuffered() ? "with unbuffered I/O" : "through the OS file cache");
         } else {
             std::fprintf(stderr, "strata generate: CPU expert residency: %s\n", err.c_str());

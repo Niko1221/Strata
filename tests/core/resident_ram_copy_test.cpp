@@ -59,6 +59,8 @@ int main() {
     CHECK(automatic.find("49.49 GiB minus 4 GiB headroom and a 0.25 GiB margin") != std::string::npos);
     CHECK(automatic.find("using 45.24 GiB") != std::string::npos);
     CHECK(!automatic.empty() && automatic.back() == '\n');
+    CHECK(automatic == "strata: the automatic RAM copy of 47.07 GiB does not fit the available RAM (49.49 GiB minus 4 GiB "
+                       "headroom and a 0.25 GiB margin); using 45.24 GiB\n");
 
     if (failed) { std::fprintf(stderr, "resident_ram_copy_test: %d FAILED\n", failed); return 1; }
     std::printf("resident_ram_copy_test: ok\n");

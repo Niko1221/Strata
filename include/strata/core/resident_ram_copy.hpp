@@ -43,10 +43,9 @@ inline std::string resident_clamp_line(ResidentBudgetFrom from, uint64_t budget,
                           (double) clamped / gib, (double) available / gib, limit, (double) headroom / gib);
             break;
         case ResidentBudgetFrom::Automatic:
-            // [DRAFT] placeholder wording, not approved: the owner decides the final text.  It must not name
-            // --resident-budget-gib: on this path no such flag was given.
+            // the owner's wording (11-11).  It must not name --resident-budget-gib: on this path no such flag was given.
             std::snprintf(line, sizeof line,
-                          "strata: [DRAFT] the automatic RAM copy of %.2f GiB does not fit the available %s "
+                          "strata: the automatic RAM copy of %.2f GiB does not fit the available %s "
                           "(%.2f GiB minus %.0f GiB headroom and a 0.25 GiB margin); using %.2f GiB\n",
                           (double) budget / gib, limit, (double) available / gib, (double) headroom / gib,
                           (double) clamped / gib);
