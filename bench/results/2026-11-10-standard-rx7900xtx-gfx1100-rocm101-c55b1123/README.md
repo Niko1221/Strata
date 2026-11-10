@@ -91,5 +91,7 @@ The runner could not read the GPU model (the server was already running); this s
   engine logs `hipBLASLt tuning enabled (43 rows, gfx1100, version 100401)`.
 - Side comparison, same conditions, a fresh ~123K-token prompt, three runs each: 3304.8 vs 3186.7 tok/s (+3.7%) for
   this build against the official component.
-- This build left room for a larger expert cache: 8840 slots / 16.76 GiB against 7841 / 14.87 GiB at the same
-  904-910 MiB free, reproduced across two starts.
+- Expert cache size, as observed: this build took 8840 slots / 16.76 GiB in the two starts of the comparison
+  runs, but a later start of the same binary took 7841 slots / 14.87 GiB (what the official component takes), so
+  the difference depends on the state at start-up and is not a property of the build. It is not part of the
+  comparison above.
