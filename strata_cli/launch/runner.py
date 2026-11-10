@@ -23,6 +23,7 @@ import threading
 import time
 from strata_control import vram_fit
 from strata_control.childenv import quiet_crash_env
+from strata_control import reader_room
 from strata_control import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -2894,6 +2895,32 @@ def engine_log_tail(config: Path | None, limit: int = 65536, since: dict | None 
     return [x.rstrip() for x in data.splitlines() if x.strip()], str(log)
 
 
+def _reader_room_facts(config: Path | None, room: reader_room.NoRoom) -> tuple[int | None, int | None]:
+    """(the card as nvidia-smi numbers it, its free memory in MiB) for a picture reader that found no room; None for what cannot be said.  The reader counts
+    the cards its environment shows it, so its number is looked up in the list the server gave it (the config's cards in the engine's order, or the one card
+    named by vision.cuda_device); the free memory is read after the failure, when the reader is gone, so it is what the reader had."""
+    card = free = None
+    try:
+        cfg = read_config(config) if config else {}
+        vision = cfg.get("vision") or {}
+        if vision.get("cuda_device") is not None:
+            visible = [vision["cuda_device"]]
+        else:
+            from serve import server as _server
+            visible = _server.hip_visible(cfg) if cfg.get("backend") == "hip" else _server.ordered_gpus(cfg)
+        card = reader_room.physical_card(room.device, visible)
+    except Exception:                                    # noqa: BLE001 - the figures are a convenience; the sentence is complete without them
+        card = None
+    if card is not None:
+        try:
+            from strata_control import split_engine as SE
+            cards = SE.probe_cards([card])
+            free = cards[0].free_mib if cards else None
+        except Exception:                                # noqa: BLE001
+            free = None
+    return card, free
+
+
 def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = None, server_log: Path | None = None,
                         shared_memory: bool = False) -> tuple[str, str]:
     """(text, next) for a start that did not reach ready: the stage, the cause line from the engine log, the next step and the log path
@@ -2913,6 +2940,7 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
     # a card that ran out of memory: the engine's own line is the cause (the picture reader's "ggml_cuda_init: ... no CUDA-capable device", which it prints when the
     # cards are full and it runs on the processor, matched "failed" and used to be the last line shown)
     vram_cause = vram_fit.engine_stop_reason(lines)
+    reader = None if vram_cause else reader_room.find(lines)      # the picture reader found no room on its card (ggml prints it, then aborts): not the engine's line, so a search of its own
     cause = vram_cause or next((x for x in reversed(lines) if CAUSE_LINE.search(x) and not x.lstrip().startswith(("strata generate: ", "strata serve: expert"))), None)
     cause = (cause or (lines[-1] if lines else "")).strip()
     cause = re.sub(r"^(\[strata\]\s*)?(\d{4}-\d\d-\d\d[ T][\d:.]+\s*)?", "", cause)[:240]
@@ -2933,6 +2961,10 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
             cause = re.sub(r"^(\[strata\]\s*)?(\d{4}-\d\d-\d\d[ T][\d:.]+\s*)?", "", real.strip())[:240]
         else:
             cause = ""
+    if reader is not None and not hsa:                    # the plain sentence: which card, what the reader needs, what is free, and the next step
+        card, free = _reader_room_facts(config, reader)
+        said, nxt = reader_room.could_not_start(card, reader.need_mib, free)
+        return said, nxt + _log_sentence(log)
     text = stage + (f": {cause}" if cause else ".")
     if not text.endswith((".", "!")):
         text += "."

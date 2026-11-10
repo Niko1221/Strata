@@ -69,6 +69,7 @@ from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
 from strata_control import tls  # noqa: E402
 from strata_control.childenv import quiet_crash_env  # noqa: E402
+from strata_control import reader_room  # noqa: E402
 
 tls.install()       # #3722: image URLs and tool servers over HTTPS are checked against the operating system's certificates
 from strata_control import hipblaslt_tuning  # noqa: E402
@@ -3149,15 +3150,24 @@ def network_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("\\??\\")
 
 
-def vision_log_tail(log=None, limit: int = 16384) -> str:
+def vision_log_size(log=None) -> int:
+    """How long the encoder's stderr file is now (0 when there is none): a start reads only what it wrote after this."""
+    try:
+        name = getattr(log, "name", None)
+        return os.path.getsize(name) if name else 0
+    except (OSError, TypeError):
+        return 0
+
+
+def vision_log_tail(log=None, limit: int = 16384, since: int = 0) -> str:
     """The last `limit` bytes of the encoder's stderr file (`log` is the file object it was started with; "" when there
-    is none or it cannot be read)."""
+    is none or it cannot be read), but nothing from before `since` (the file's size when this start began: a log that several starts share)."""
     try:
         name = getattr(log, "name", None)
         if name:
             with open(name, "rb") as f:
                 f.seek(0, 2)
-                f.seek(max(0, f.tell() - limit))
+                f.seek(max(since, f.tell() - limit))
                 return f.read().decode("utf-8", "replace")
     except (OSError, ValueError):
         pass
@@ -3170,7 +3180,7 @@ _VISION_ARCH_SIGNS = ("device kernel image is invalid", "no kernel image is avai
                       "unsupported gpu architecture", "invalid device function", "unknown gpu architecture")
 
 
-def vision_start_error(line: str, log=None, code: int | None = None, waited: float | None = None, strays=()) -> str:
+def vision_start_error(line: str, log=None, code: int | None = None, waited: float | None = None, strays=(), since: int = 0) -> str:
     """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
     compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
     cause is named instead of leaving the user the first line of a traceback.  `log` is the encoder's stderr file, whose
@@ -3179,7 +3189,7 @@ def vision_start_error(line: str, log=None, code: int | None = None, waited: flo
     kernel-image error, the card/architecture hint come with it.  `waited`: it said nothing for that many seconds.  `strays`: lines it printed on
     its output before it ended that were not an answer (a debugger's, a library's); they are searched for the causes below and named in the message."""
     text = line.strip()
-    tail = vision_log_tail(log)
+    tail = vision_log_tail(log, since=since)
     both = (text + chr(10) + chr(10).join(strays) + chr(10) + tail).lower()
     if "busy or unavailable" in both:
         return ("the vision encoder did not start: the GPU refused a second CUDA context (\"CUDA-capable device(s) "
@@ -3188,6 +3198,13 @@ def vision_start_error(line: str, log=None, code: int | None = None, waited: flo
                 "--format=csv; set it back with: sudo nvidia-smi -c DEFAULT (or run the encoder on another card). "
                 "First line from the encoder: " + (text or "(none)"))
     lines = [x.strip() for x in tail.splitlines() if x.strip()]
+    room = reader_room.find((text + chr(10) + chr(10).join(strays) + chr(10) + tail).splitlines())
+    if room:                                           # a card another program filled: ggml's cudaMalloc line, then an abort the reader cannot answer for
+        asked = (f" (it asked for {room.need_mib:.0f} MiB" + (f" on its card {room.device}" if room.device is not None else "") + ")") if room.need_mib else ""
+        said = [text, *strays, *lines]
+        evidence = (next((x for x in reversed(said) if "malloc failed" in x.lower()), None)
+                    or next((x for x in reversed(said) if "failed to allocate" in x.lower()), text))
+        return "the vision encoder did not start: the graphics card has no room for it" + asked + ". From the encoder: " + evidence.strip()[:300]
     if any(sign in both for sign in _VISION_ARCH_SIGNS):
         evidence = next((x for x in reversed(lines) if any(sign in x.lower() for sign in _VISION_ARCH_SIGNS)), text)
         return ("the vision encoder did not start: it has no code for this graphics card (a kernel-image error: the "
@@ -3213,6 +3230,14 @@ def vision_start_error(line: str, log=None, code: int | None = None, waited: flo
     if extra:
         msg += " (" + "; ".join(extra) + ")"
     return msg
+
+
+class VisionNoRoom(RuntimeError):
+    """The picture reader could not start because its card has no room for it (`room`: strata_control.reader_room.NoRoom)."""
+
+    def __init__(self, message: str, room):
+        super().__init__(message)
+        self.room = room
 
 
 class Vision:
@@ -3328,6 +3353,7 @@ class Vision:
         args, log, env = self.spawn
         self._ensure_dir()
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
+        since = vision_log_size(log)                      # this start's own lines of a log that earlier starts wrote to as well
         self.proc = popen("the image encoder", args, role="vision", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1,
                           env=env, cwd=self.dir)
@@ -3337,7 +3363,7 @@ class Vision:
         except RuntimeError as e:                       # silent for VISION_READY_S: it was ended, and it is not left half-started
             self.proc, self.stopped = None, True
             if VISION_READY_S:
-                raise RuntimeError(vision_start_error("", log, waited=VISION_READY_S, strays=strays)) from None
+                raise RuntimeError(vision_start_error("", log, waited=VISION_READY_S, strays=strays, since=since)) from None
             raise RuntimeError(str(e)) from None
         if not line.startswith("READY"):
             proc, self.proc = self.proc, None
@@ -3350,7 +3376,9 @@ class Vision:
                 pass
             if code is None:
                 code = getattr(proc, "returncode", None)
-            raise RuntimeError(vision_start_error(line, log, code, strays=strays))
+            message = vision_start_error(line, log, code, strays=strays, since=since)
+            room = reader_room.find((line + chr(10) + chr(10).join(strays) + chr(10) + vision_log_tail(log, since=since)).splitlines())
+            raise (VisionNoRoom(message, room) if room else RuntimeError(message))
         self.stopped = False
 
     #: how long a reader that has already ended may still hold its output pipe open (a debugger attached to it, a child it started) before the start is
