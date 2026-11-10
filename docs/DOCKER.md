@@ -304,10 +304,20 @@ library inside the finished image. A package that fails any of these stops the b
 engine inside Docker, makes the package and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only,
 much faster). `.git` is not copied into the build, so the commit comes in as `STRATA_COMMIT`; without it the Terminal stage stops.
 For a GTX 10, P100 or V100 build the CUDA 12 variant: `docker build -t strata:src-cuda12 --build-arg STRATA_COMMIT=$(git rev-parse HEAD)
---build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .`
+--build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .`
 (the build turns on the Pascal / Volta code by itself when an architecture below 75 is listed, and names the package `cuda12` with
 driver 575.51). For AMD and Intel builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result
 with `packaging/package_engine.py` and use `docker/build.sh`.
+
+**DeepSeek from source too.** [Dockerfile.dsv41](../Dockerfile.dsv41) is the same source image with the DeepSeek-V4.1 engine next to
+the Strata engine: the CUDA stage also builds `strata-dsv41` (`-DSTRATA_BUILD_DSV41=ON`) and puts it in the image's own DeepSeek
+engine folder (`/opt/strata/components/engine-dsv41/`, pinned with `STRATA_DSV41_EXE`), so the container never downloads the release's
+DeepSeek engine package - that one is built for RTX 30/40/50, which is no help on a Pascal card. The commands are the same with
+`-f Dockerfile.dsv41`, for example the CUDA 12 variant for a GTX 10 / P100 / V100 / P40:
+`docker build -t strata:dsv41-cuda12 -f Dockerfile.dsv41 --build-arg STRATA_COMMIT=$(git rev-parse HEAD)
+--build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .`
+It serves DeepSeek with `-e FAMILY=deepseek41 -e MODEL=IST-DAS-2.25bpw` (the model is a 274 GB download; the measured P40 numbers are
+in [OLDER_GPUS.md](OLDER_GPUS.md), with the [report](../bench/results/2026-11-10-dsv41-p40-cuda12/README.md), and the model's own page is [DEEPSEEK41.md](DEEPSEEK41.md)).
 
 ## Publishing the images (for maintainers)
 
