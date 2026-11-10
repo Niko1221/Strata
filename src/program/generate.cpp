@@ -10568,8 +10568,11 @@ int main(int argc, char** argv) {
                 std::optional<strata::core::HostMemoryReading> mem;
                 auto admit = [&] {
                     mem = strata::core::sample_host_memory();
+                    // STRATA_PARK_RECYCLE_MIB: the segment pool's bytes serve this snapshot first, so they count as free
+                    // here (the floor check after the capture reads the real figure)
                     return strata::core::conversation_memory_admit(
-                        mem ? std::optional<uint64_t>(mem->available) : std::nullopt, additional, floor);
+                        mem ? std::optional<uint64_t>(mem->available + strata::core::ConversationBuffer::recycled_bytes())
+                            : std::nullopt, additional, floor);
                 };
                 while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
                        conversations.evict_oldest())
@@ -10622,7 +10625,11 @@ int main(int argc, char** argv) {
                         return false;
                     image.stage_images.push_back(std::move(part));
                 }
-                const auto mem_after = strata::core::sample_host_memory();
+                auto mem_after = strata::core::sample_host_memory();
+                // STRATA_PARK_RECYCLE_MIB: under the floor, the segment pool goes back to the OS before the park is given up
+                if (mem_after && mem_after->available < floor + ((uint64_t) 64 << 20) &&
+                    strata::core::ConversationBuffer::recycle_trim((size_t) (floor + ((uint64_t) 512 << 20) - mem_after->available)) > 0)
+                    mem_after = strata::core::sample_host_memory();
                 if (!strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",

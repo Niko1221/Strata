@@ -132,6 +132,26 @@ public:
         return true;
     }
 
+    /// STRATA_PARK_RECYCLE_MIB: give up to `bytes` of the pool back to the OS (RAM under the cache's floor); the bytes freed
+    static size_t recycle_trim(size_t bytes) {
+        Recycler& r = recycler();
+        if (r.cap == 0) return 0;
+        std::vector<void*> out;
+        {
+            std::lock_guard<std::mutex> lk(r.mu);
+            while (!r.free.empty() && out.size() * segment_bytes < bytes) { out.push_back(r.free.back()); r.free.pop_back(); }
+        }
+        for (void* p : out) std::allocator<uint8_t>().deallocate(static_cast<uint8_t*>(p), segment_bytes);
+        return out.size() * segment_bytes;
+    }
+    /// STRATA_PARK_RECYCLE_MIB: the bytes the segment pool holds now (a park takes them before any new RAM)
+    static size_t recycled_bytes() {
+        Recycler& r = recycler();
+        if (r.cap == 0) return 0;
+        std::lock_guard<std::mutex> lk(r.mu);
+        return r.free.size() * segment_bytes;
+    }
+
 private:
     // value-initializes only when asked (resize's explicit fill value): resize_for_overwrite leaves the bytes alone
     // STRATA_PARK_RECYCLE_MIB=N (tuning, opt-in): up to N MiB of freed full 16 MiB segments are kept (already faulted
