@@ -1,41 +1,24 @@
-"""pytest, tools/: setup.py's tests describe Linux and Windows PCs (NVIDIA, AMD, Intel cards). On a Mac, setup.main() goes to the Metal
-installer (`sys.platform == "darwin"`), so every such test ran the Mac flow there instead. On macOS only, setup.py sees "linux" for the
-duration of each test; the Mac tests (test_setup_mac.py) set "darwin" themselves, as they do on Linux and Windows. Only setup.py's own
-view changes (its module-level `sys` is a view of the real one with another platform); the rest of the process still sees darwin."""
+"""pytest, tools/: the tests here describe Linux and Windows PCs on x86 (NVIDIA, AMD and Intel cards; the Spark and the Mac tests say
+so themselves by patching the platform or the CPU). On a Mac every one of them ran the Mac or ARM branch instead: setup.main() goes to
+the Metal installer (`sys.platform == "darwin"`), the hardware tools take the unified-memory path, and an Apple CPU reads as ARM64.
+On macOS only, each test runs as on GitHub's Linux runner: sys.platform "linux", platform.system "Linux" and an x86_64 CPU
+(platform.machine and
+strata_control.sysinfo.machine). Linux and Windows are not touched. A test that wants darwin or arm64 patches it on top, as before."""
+import platform
 import sys
 from unittest import mock
 
 import pytest
 
 
-class _SysView:
-    """The real sys module with its own `platform`; every other read and write goes to sys itself."""
-
-    def __init__(self, real, platform):
-        object.__setattr__(self, "_real", real)
-        object.__setattr__(self, "platform", platform)
-
-    def __getattr__(self, name):
-        return getattr(object.__getattribute__(self, "_real"), name)
-
-    def __setattr__(self, name, value):
-        if name == "platform":
-            object.__setattr__(self, name, value)
-        else:
-            setattr(object.__getattribute__(self, "_real"), name, value)
-
-    def __delattr__(self, name):
-        if name == "platform":
-            object.__setattr__(self, name, "linux")
-        else:
-            delattr(object.__getattribute__(self, "_real"), name)
-
-
 @pytest.fixture(autouse=True)
-def _setup_sees_a_pc_on_macos():
-    setup = sys.modules.get("setup")
-    if sys.platform != "darwin" or setup is None or getattr(setup, "sys", None) is not sys:
+def _a_linux_x86_pc_on_macos():
+    if sys.platform != "darwin":
         yield
         return
-    with mock.patch.object(setup, "sys", _SysView(sys, "linux")):
+    from strata_control import sysinfo
+    with mock.patch.object(sys, "platform", "linux"), \
+            mock.patch.object(platform, "machine", lambda: "x86_64"), \
+            mock.patch.object(platform, "system", lambda: "Linux"), \
+            mock.patch.object(sysinfo, "machine", lambda: "x86_64"):
         yield
