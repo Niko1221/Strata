@@ -254,6 +254,11 @@ def _rgba_pixels(data: bytes, w: int, h: int, cs):
     return out.reshape(h, w, 4)
 
 
+def png_has_alpha(data: bytes) -> bool:
+    """An alpha channel by the IHDR's colour type (4 grey + alpha, 6 RGBA); False for anything unreadable."""
+    return len(data) > 25 and data[:8] == PNG_SIG and data[12:16] == b"IHDR" and data[25] in (4, 6)
+
+
 def flatten_png(data: bytes) -> bytes:
     """An 8-bit RGBA PNG -> the same picture on white as an 8-bit RGB PNG (round(rgb * a + 255 * (1 - a)), a in
     [0, 1]), every chunk other than IHDR / IDAT copied byte for byte.  Any other PNG comes back unchanged.
@@ -447,7 +452,9 @@ class ImageGen:
         figures.update(log_figures(log))
         if job.get("background", "auto") != "transparent":
             t1 = time.monotonic()
-            images = [self._flatten(png) for png in images]
+            flat = [self._flatten(png) for png in images]
+            images = [png for png, _ in flat]
+            job["alpha_kept"] = any(kept for _, kept in flat)     # a picture went out with its alpha after all
             figures["flatten_s"] = round(time.monotonic() - t1, 3)
         self.totals["jobs"] += 1
         self.totals["images"] += job["n"]
@@ -455,13 +462,15 @@ class ImageGen:
         self.last = figures
         return images, figures
 
-    def _flatten(self, png: bytes) -> bytes:
-        """flatten_png, never failing the request: on any error the picture goes out as sd-cli wrote it."""
+    def _flatten(self, png: bytes) -> tuple[bytes, bool]:
+        """flatten_png, never failing the request -> (the picture, whether it still has an alpha channel).  On any
+        error the picture goes out as sd-cli wrote it."""
         try:
-            return flatten_png(png)
+            out = flatten_png(png)
+            return out, png_has_alpha(out)
         except Exception as e:  # noqa: BLE001 - numpy missing, a malformed PNG, ...: the original picture
             self._say(f"image: the picture keeps its transparency (it could not be put on white: {e})")
-            return png
+            return png, png_has_alpha(png)
 
     def store(self, data: bytes) -> str:
         """Keep one PNG for response_format url -> its file name (32 random hex digits: the name is the access)."""
@@ -481,7 +490,8 @@ class ImageGen:
             data.append(item)
         return {"created": int(time.time()), "data": data, "model": self.model,
                 "output_format": "png", "size": f"{job['width']}x{job['height']}", "strata": figures,
-                "background": "transparent" if job.get("background") == "transparent" else "opaque"}
+                "background": "transparent" if job.get("background") == "transparent" or job.get("alpha_kept")
+                else "opaque"}
 
     def status(self) -> dict:
         out = {"enabled": True, "model": self.model, "backend": self.cfg.get("backend"),

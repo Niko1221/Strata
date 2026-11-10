@@ -211,9 +211,13 @@ class Transparency(unittest.TestCase):
             gen = images_api.ImageGen(image_cfg(d))
             said = []
             gen._say = said.append
-            self.assertEqual(gen._flatten(bad), bad)
+            self.assertEqual(gen._flatten(bad), (bad, True))          # RGBA kept: the answer says transparent
             self.assertEqual(len(said), 1)
-            self.assertEqual(gen._flatten(b"not a png"), b"not a png")
+            self.assertIn("keeps its transparency", said[0])
+            self.assertEqual(gen._flatten(b"not a png"), (b"not a png", False))
+            self.assertEqual(gen._flatten(self.src)[1], False)
+            rgb = self.fake.png(512, 512, 7, "a sloth")
+            self.assertEqual(gen._flatten(rgb), (rgb, False))
 
     def test_background_field(self):
         cfg = {}
@@ -451,6 +455,9 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(code, 200, body)                                   # never fails the request
         self.assertEqual(base64.b64decode(body["data"][0]["b64_json"]),
                          fake_sd_cli.rgba_png(512, 512, 5, "a sloth", broken=True))
+        self.assertEqual(body["background"], "transparent")              # the picture kept its alpha
+        code, body = self.post({"prompt": "a fox", "seed": 5, "size": "512x512"})   # an RGB sd-cli picture
+        self.assertEqual(body["background"], "opaque")
 
     def test_bad_request_and_failure(self):
         self.assertEqual(self.post({"prompt": "x", "size": "999x999"})[0], 400)
