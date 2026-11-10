@@ -39,7 +39,7 @@ ENV_APP_VERSION = "STRATA_APP_VERSION"
 
 
 def default_feed() -> str:
-    """DEFAULT_FEED for this machine: a Linux ARM64 machine (the DGX Spark) reads strata-feed-linux-aarch64.json from the same release."""
+    """DEFAULT_FEED for this machine: a Linux ARM64 machine (the DGX Spark or a Jetson AGX Thor) reads strata-feed-linux-aarch64.json from the same release."""
     from strata_control import feed as feedmod
     return DEFAULT_FEED.rsplit("/", 1)[0] + "/" + feedmod.feed_name()
 

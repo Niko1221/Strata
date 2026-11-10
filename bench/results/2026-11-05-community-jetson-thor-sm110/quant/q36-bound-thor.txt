@@ -1,0 +1,2 @@
+quant        expert MB routed MB/tok  dense MB  CPU-only tok/s bound tok/s
+q36-formats       0.82         393.0    2166.6           694.6       106.7

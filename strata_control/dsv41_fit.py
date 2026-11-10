@@ -150,6 +150,9 @@ UMA_MEASURED = ("a Ryzen AI Max+ 395 (Radeon 8060S, 128 GB unified: a 64 GB BIOS
 # A DGX Spark (GB10, Linux, 128 GB unified, no BIOS carve-out): the same one-pool plan.  Measured with the 2.00 bpw set, six experts per word.
 UMA_MEASURED_GB10 = ("an NVIDIA DGX Spark (GB10, 128 GB unified) on Linux with six experts per word: about 17 tokens a second on a first short "
                      "chat and 20-23 once warm; a 1,700-token prompt read at 213-237 tokens a second, a 500-token one at 76")
+# A Jetson AGX Thor (sm_110, L4T, 128 GB unified): the same one-pool plan, but nothing measured on that part yet (#4559).
+UMA_NOT_MEASURED_THOR = ("A Jetson AGX Thor (sm_110) has served one set (the Coder set: its speed cells are in the benchmark report), but this set has no measured speed estimate there yet: "
+                        "the sizes above are exact for a 128 GB unified Thor, the speed for this set is not.")
 
 
 def variant(model: str | None) -> dict | None:
@@ -467,19 +470,23 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
     lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
                  "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
     name = card.get("name") or "the built-in Radeon"
-    if float(card.get("dedicated_gb") or 0.0) > 0 or "GB10" not in str(card.get("name") or ""):
+    if float(card.get("dedicated_gb") or 0.0) > 0 or ("GB10" not in str(card.get("name") or "") and "Thor" not in str(card.get("name") or "")):
         lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
                      f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {dense_gb_v:.1f} GB of "
                      f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for Windows; the other {streamed:.0f} GB are read from the SSD while it answers.")
         if not v.get("unproven_uma"):                   # (these speeds are the 2.00 set's: a set not run there says so below instead)
             lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
-    else:       # a DGX Spark's GB10: one memory for the CPU and the GPU, nothing set aside in a BIOS, Linux
+    else:       # a DGX Spark's GB10 or a Jetson AGX Thor: one memory for the CPU and the GPU, nothing set aside in a BIOS, Linux
         lines.append(f"{name} shares this computer's memory: the CPU and the GPU are one pool of {total:.0f} GB. About "
                      f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {dense_gb_v:.1f} GB of "
                      f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for the system; the other {streamed:.0f} GB are read from the SSD while it answers.")
-        if not v.get("unproven_uma"):
-            lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
-        out["measured"] = "" if v.get("unproven_uma") else UMA_MEASURED_GB10
+        if "Thor" in name:            # the sizes hold on a Thor, its speed is not measured there: say that, never the Spark's numbers
+            lines.append(UMA_NOT_MEASURED_THOR)
+            out["measured"] = ""
+        else:
+            if not v.get("unproven_uma"):
+                lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
+            out["measured"] = "" if v.get("unproven_uma") else UMA_MEASURED_GB10
     if v.get("unproven_uma"):
         lines.append(v["unproven_uma"])
     if streamed > 0.5:

@@ -65,6 +65,27 @@ class GB10Cards(unittest.TestCase):
         self.assertTrue(ec.arch_native(archs, ["sm_121"]))
 
 
+class ThorCards(unittest.TestCase):
+    """The Jetson AGX Thor (sm_110, compute capability 11.0, #4559): the fat aarch64 package carries sm_110 machine code
+    beside the Spark's sm_121; an sm_121-only package never covers a Thor, which is why the release shape changed."""
+
+    def test_the_fat_aarch64_archs_cover_a_thor_and_a_spark(self):
+        archs = ("sm_121", "sm_110", "compute_110")              # spark/build_engine.sh ARCHS="121;110": cubins for both, PTX for the last
+        self.assertTrue(ec.arch_covers(archs, ["sm_110"]))
+        self.assertTrue(ec.arch_covers(archs, ["sm_121"]))
+        self.assertTrue(ec.arch_native(archs, ["sm_110"]))       # machine code for the card itself, not only PTX
+        self.assertFalse(ec.arch_covers(archs, ["sm_100"]))      # sm_110 code and PTX stop at that major
+
+    def test_an_sm_121_only_build_never_covers_a_thor(self):
+        self.assertFalse(ec.arch_covers(("sm_121", "compute_121"), ["sm_110"]))    # the #4559 gap: 12.x code cannot run on 11.0
+        self.assertFalse(ec.arch_native(("sm_121", "compute_121"), ["sm_110"]))
+
+    def test_install_sh_names_the_thor_next_to_the_gb10(self):
+        text = (ROOT / "packaging" / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("*GB10*|*Thor*)", text)
+        self.assertIn("DGX Spark (GB10) and the Jetson AGX Thor", text)
+
+
 class ReleaseTools(unittest.TestCase):
     def test_the_terminal_has_a_pinned_interpreter_for_linux_aarch64(self):
         pin = package_terminal.PYTHON_PINS["linux-aarch64"]
@@ -126,6 +147,17 @@ class GB10DeepSeekPlan(unittest.TestCase):
         self.assertIn("DGX Spark", plan["measured"])
         self.assertIn("one pool of 122 GB", text)
         self.assertGreater(plan["experts_in_vram"], 11000)          # the engine placed 12,163 of 15,744 on the Spark itself
+
+    def test_the_plan_for_a_thor_speaks_of_one_pool_and_says_this_set_has_no_speed_estimate(self):
+        from strata_control import dsv41_fit
+        card = {"index": 0, "name": "NVIDIA Thor", "vram_gb": 115.6, "shared_gb": 115.6, "dedicated_gb": 0.0, "uma": True}
+        plan = dsv41_fit.plan([card], 121.6, 400, 8192, model="IST-DAS-2.00bpw")
+        text = " ".join(plan["lines"])
+        self.assertNotIn("Windows", text)                            # one memory, Linux: the Spark's wording, not the Windows APU's
+        self.assertNotIn("BIOS", text)
+        self.assertIn("Jetson AGX Thor", text)                       # and it says this set has no measured speed estimate there, never the Spark's numbers
+        self.assertIn("no measured speed estimate", text)
+        self.assertEqual(plan["measured"], "")
 
     def test_the_windows_strix_halo_plan_is_unchanged(self):
         from strata_control import dsv41_fit

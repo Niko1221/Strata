@@ -183,6 +183,7 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
     hipblaslt_table = lib.hipblaslt_table
     home = lib.home
     is_gb10 = lib.is_gb10
+    is_thor = lib.is_thor
     is_wsl = lib.is_wsl
     kv_streaming_need_gb = lib.kv_streaming_need_gb
     kv_streaming_ram_gb = lib.kv_streaming_ram_gb
@@ -237,26 +238,27 @@ def config_for(inp: SetupInputs, lib) -> SetupConfig:
            "experts.bin on the SSD as needed")
     elif low_ram:   # the experts from the pack's experts.bin: the ones the GPU does not hold copied into RAM, or mapped
         args += ["--resident-experts" if resident else "--mmap-experts"]
-    elif is_gb10(gpu):
-        # a DGX Spark: the RAM copy of the experts and the GPU's cache are the same memory. Mapped, every expert fits in the cache (NVFP4
+    elif is_gb10(gpu) or is_thor(gpu):
+        # a DGX Spark or a Jetson AGX Thor: the RAM copy of the experts and the GPU's cache are the same memory. Mapped, every expert fits in the cache (NVFP4
         # on a 128 GB GB10: 24576 of 24576 slots, not 13702; chat decode 44.4 against 40.6 tok/s, 16K prompt 1471 against 1397)
         args += ["--mmap-experts"]
         ok("unified memory: the experts are read from the model files in place (--mmap-experts), so the GPU's cache holds them "
            "instead of a second copy in RAM")
-        # the measured settings of this part (docs/DGX_SPARK_LINUX.md): the 32,768-token prompt chunk (auto's 8,192 measured 2-6% slower
-        # here); the draft layer as 4-bit copies (+3.5% decode, 3 paired rounds, answers identical: the drafter's proposals are verified
-        # by the target); one norm per hyper-connection stream in the draft layer (llama.cpp's graph: acceptance 0.60 -> 0.63, decode +4.3%
-        # [1.009, 1.078], 5 of 5 greedy answers identical)
-        if "--prefill" in args:
-            args[args.index("--prefill") + 1] = "auto:32768"
-        if "--mtp" in args:
-            args += ["--mtp-q4", "all", "--mtp-hnorm", "stream"]
-            ok("prompt chunk 32,768 (--prefill auto:32768), the draft layer as 4-bit copies (--mtp-q4 all) and one norm per "
-               "hyper-connection stream in it (--mtp-hnorm stream): measured faster on this part, the answers are unchanged")
-        # the language is the user's choice: the default subset keeps Chinese, Japanese and Korean drafts, the English one measured +3.1%
-        # decode on English prompts here (16 samples a cell, 90% interval [1.018, 1.049])
-        say("  Tip: for English or code only, --draft-vocab en measured +3.1% decode on this part (the default keeps Chinese, Japanese "
-            "and Korean drafts).")
+        if is_gb10(gpu):
+            # the measured settings of this part (docs/DGX_SPARK_LINUX.md): the 32,768-token prompt chunk (auto's 8,192 measured 2-6% slower
+            # here); the draft layer as 4-bit copies (+3.5% decode, 3 paired rounds, answers identical: the drafter's proposals are verified
+            # by the target); one norm per hyper-connection stream in the draft layer (llama.cpp's graph: acceptance 0.60 -> 0.63, decode +4.3%
+            # [1.009, 1.078], 5 of 5 greedy answers identical)
+            if "--prefill" in args:
+                args[args.index("--prefill") + 1] = "auto:32768"
+            if "--mtp" in args:
+                args += ["--mtp-q4", "all", "--mtp-hnorm", "stream"]
+                ok("prompt chunk 32,768 (--prefill auto:32768), the draft layer as 4-bit copies (--mtp-q4 all) and one norm per "
+                   "hyper-connection stream in it (--mtp-hnorm stream): measured faster on this part, the answers are unchanged")
+            # the language is the user's choice: the default subset keeps Chinese, Japanese and Korean drafts, the English one measured +3.1%
+            # decode on English prompts here (16 samples a cell, 90% interval [1.018, 1.049])
+            say("  Tip: for English or code only, --draft-vocab en measured +3.1% decode on this part (the default keeps Chinese, Japanese "
+                "and Korean drafts).")
     disk = None if is_wsl() else rotational_disk(ple)  # #605 (WSL's virtual disk says rotational)
     if disk:
         tensor = None if ready else next((t for t in GGUFFile(ple).tensors if t.name == "per_layer_token_embd.weight"), None)

@@ -79,6 +79,31 @@ std::vector<std::pair<std::string, std::string>> nv_default_env(int major, int m
             // It only changes which drafts are attempted, and every draft is verified, so the answers cannot drift.
             {"STRATA_SPEC_COST", "1"},
         };
+    } else if (mj == 11 && mn == 0) {
+        // Jetson AGX Thor (sm_110: 20 SMs, Blackwell, memory unified with the CPU at one shared bandwidth).  Five of the
+        // Spark's set, each re-measured on this part before it went in (#4559); newer than 0.2.6, so STRATA_DEFAULTS=026
+        // leaves this table out as it does sm_121's, and STRATA_SM110_PERF=0 turns it off.
+        if (off("STRATA_SM110_PERF") || defaults026) return t;
+        t = {
+            // cost-aware MTP windows.  Thor, IQ3_S 32K, balanced pairs: at --spec 4 every case was faster or equal without
+            // it (chats 1.041/1.000/1.014, a 6K-token prompt 1.031), and fixed windows lost at both depths (spec 2 and 6/8
+            // below 4), so the depth stays 4 and the cost rule picks which drafts to attempt.  It changes no arithmetic.
+            {"STRATA_SPEC_COST", "1"},
+            // the hyper-connection read's Q8_0 weights: half the bytes of the bf16 read, opt-in on CUDA and on by default
+            // on RDNA4/Strix.  Thor, drop-one from this stack: the chat median lost 3.1 tok/s (47.5 to 44.4) and a 6K
+            // prompt 60 tok/s of prefill (850 to 790) without it.  Near-tie tokens can flip, as on the AMD parts (KL at
+            // the engine's own CPU-vs-GPU rounding); =0 keeps the bf16 read.
+            {"STRATA_HC_Q8", "1"},
+            // the fused int8 prompt experts.  Thor, drop-one: with it a 6K prompt decoded 36.3 at 850 tok/s of prefill,
+            // without 32.5 at 764.  It rounds differently from MMQ, as on the Spark.
+            {"STRATA_PF_FUSED", "1"},
+            // the hyper-connection read's fused up projection + mix.  Thor, matched pairs: 3-switch to 4-switch the chats
+            // gained 1.8/2.7/1.3 tok/s and a 6K prompt's prefill 56 tok/s.  Bit-identical (parity test upstream).
+            {"STRATA_HC_UPMIX", "1"},
+            // the mixer's input-only QSA/GDN work on graph branches.  Thor, matched pairs: the decode sits inside the
+            // noise (plus or minus 0.6) and a 6K prompt's prefill gained 128 tok/s (851 vs 723), so it is in for the prompt.
+            {"STRATA_SIDE_MIXER", "2"},
+        };
     }
     return t;
 }
@@ -98,12 +123,15 @@ std::vector<std::string> apply_nv_defaults(int major, int minor) {
     if (!set.empty()) {
         const bool sm86 = mj == 8;
         const bool sm121 = mj == 12 && mn == 1;
-        // sm_86 / sm_60: bit-exact switches.  sm_121: the fused prompt path and the FP4-activation NVFP4 prompt round differently from the
-        // paths they replace (24 of 24 greedy answers were identical on the Spark; no KL run), so the line does not say "exact".
+        const bool sm110 = mj == 11 && mn == 0;
+        // sm_86 / sm_60: bit-exact switches.  sm_121 and sm_110: the fused prompt paths, the Q8 hyper-connection read (sm_110) and the
+        // FP4-activation NVFP4 prompt (sm_121) round differently from the paths they replace (24 of 24 greedy answers identical on the
+        // Spark; on the Thor the greedy answers match but for near-tie words, as on the AMD Q8 read), so the line does not say "exact".
         std::fprintf(stderr, "strata: %s: %zu %sspeed switches on by default (%s=0 turns them off%s; a switch you set is kept): ",
-                     sm86 ? "sm_86 (Ampere)" : sm121 ? "sm_121 (GB10)" : "sm_60 (Pascal)", set.size(), sm121 ? "" : "exact ",
-                     sm86 ? "STRATA_SM86_PERF" : sm121 ? "STRATA_SM121_PERF" : "STRATA_SM60_PERF",
-                     sm121 ? ", as does STRATA_DEFAULTS=026" : "");
+                     sm86 ? "sm_86 (Ampere)" : sm121 ? "sm_121 (GB10)" : sm110 ? "sm_110 (Jetson AGX Thor)" : "sm_60 (Pascal)",
+                     set.size(), (sm86 || mj == 6) ? "exact " : "",
+                     sm86 ? "STRATA_SM86_PERF" : sm121 ? "STRATA_SM121_PERF" : sm110 ? "STRATA_SM110_PERF" : "STRATA_SM60_PERF",
+                     (sm121 || sm110) ? ", as does STRATA_DEFAULTS=026" : "");
         for (size_t i = 0; i < set.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", set[i].c_str() + 7);
         std::fprintf(stderr, "\n");
     }

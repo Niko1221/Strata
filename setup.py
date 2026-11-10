@@ -1667,6 +1667,13 @@ def is_gb10(g) -> bool:
     return isinstance(g, dict) and bool(g.get("uma")) and str(g.get("arch")) == "121" and is_arm64() and sys.platform.startswith("linux")
 
 
+def is_thor(g) -> bool:
+    """A Jetson AGX Thor's GPU: sm_110 (compute capability 11.0), on arm64 Linux, with the CPU's memory as its own (L4T R38).
+    The aarch64 engine carries sm_110 machine code for it (#4559).  The per-part settings below were measured on the Spark,
+    so Thor takes --mmap-experts (one memory, the same reason) and the ordinary settings (docs/JETSON_THOR.md)."""
+    return isinstance(g, dict) and bool(g.get("uma")) and str(g.get("arch")) == "110" and is_arm64() and sys.platform.startswith("linux")
+
+
 def cpu_floor(avx2: bool) -> str:
     """The experimental older-CPU build this PC needs (#394 #595 #623): "" with AVX2 (the normal engine), "avx" (Sandy /
     Ivy Bridge, AMD Bulldozer), "none" (SSE4.2 + POPCNT: Nehalem, Westmere), or "unsupported".  STRATA_ISA_FLOOR=avx|
@@ -1765,7 +1772,7 @@ def gpus():
             except ValueError:
                 if not is_arm64():
                     raise   # as before on x86: a card whose memory nvidia-smi does not report is not listed
-                # a DGX Spark (GB10): one memory for the CPU and the GPU, and nvidia-smi gives memory.total as [N/A]. Counted as
+                # a DGX Spark or a Jetson AGX Thor: one memory for the CPU and the GPU, and nvidia-smi gives memory.total as [N/A]. Counted as
                 # Strix Halo's is (amd_apply_uma): the GPU may use all of the RAM but the OS's share, and none of it is extra room
                 # beside the RAM (dedicated_gb 0), so the low-RAM rules do not count it twice
                 shared = max(0.0, ram_gb() - UMA_OS_LEFT_GB)
@@ -5808,7 +5815,7 @@ def get_prebuilt(url_base, gpu, vision, updating=False, toolkit=13) -> Path | No
         say(f"  Updating the ready-made engine ({meta.get('version')} -> {'.'.join(map(str, MIN_ENGINE))} or newer) ...")
         info.replace(eng / "BUILD.json.prev")   # kept for the .previous copy
     if is_arm64() and sys.platform.startswith("linux"):
-        # a DGX Spark: the release has no flat engine zip for it (and the CUDA 12 engine is x86). The signed feed has the linux-aarch64
+        # a DGX Spark or a Jetson AGX Thor: the release has no flat engine zip for it (and the CUDA 12 engine is x86). The signed feed has the linux-aarch64
         # package when the release carries one; without it the caller compiles (spark/build_engine.sh does the same by hand)
         got = engine_from_feed(eng, updating) if int(toolkit) != 12 else None
         if got is None:
@@ -10585,10 +10592,11 @@ def main() -> int:
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
     if is_arm64():
-        # DGX Spark / GB10 (#3622): the engine is the linux-aarch64 package of the signed feed when the release has one, else compiled here
-        # (spark/build_engine.sh). A warning, not a stop.
-        warn("ARM64 CPU (a DGX Spark): the CPU's share of the experts runs on ggml-cpu's NEON kernels. Tested: Qwen3.8-Flash-Next IQ3_S and "
-             "the NVFP4 pack, and DeepSeek-V4.1 2.00 bpw, on one DGX Spark (GB10). The Q2_0 and Gyro packs need the x86 kernels and do not "
+        # DGX Spark / GB10 (#3622) and Jetson AGX Thor (#4559): the engine is the linux-aarch64 package of the signed feed when the release has one, else
+        # compiled here (spark/build_engine.sh). A warning, not a stop.
+        warn("ARM64 CPU (a DGX Spark or a Jetson AGX Thor): the CPU's share of the experts runs on ggml-cpu's NEON kernels. Tested: Qwen3.8-Flash-Next IQ3_S and "
+             "the NVFP4 pack, and DeepSeek-V4.1 2.00 bpw, on one DGX Spark (GB10); the aarch64 engine is built sm_121 + sm_110 and its sm_110 kernels were checked "
+             "on one Jetson AGX Thor (docs/JETSON_THOR.md). The Q2_0 and Gyro packs need the x86 kernels and do not "
              "run on this CPU")
     elif not avx2:
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on

@@ -1,0 +1,8 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 125772 MiB):
+  Device 0: NVIDIA Thor, compute capability 11.0, VMM: yes, VRAM: 125772 MiB
+| model                          |       size |     params | backend    | ngl |  fa |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --: | --------------: | -------------------: |
+| qwen4exp A3B IQ3_S - 3.4375 bpw |  77.86 GiB |   176.94 B | CUDA       |  99 |   0 |     pp2048 @ d8 |        373.81 ± 3.28 |
+| qwen4exp A3B IQ3_S - 3.4375 bpw |  77.86 GiB |   176.94 B | CUDA       |  99 |   0 |      tg128 @ d8 |         21.57 ± 0.05 |
+
+build: 3cf03257f (11062)

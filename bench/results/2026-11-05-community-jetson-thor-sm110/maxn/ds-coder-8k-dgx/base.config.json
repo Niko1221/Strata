@@ -1,0 +1,52 @@
+{
+ "exe": "/home/sedanrobot2/thor-serve/components-tuned/engine-dsv41/0.1.56-linux-aarch64-cuda-cuda13/strata-dsv41",
+ "args": [
+  "--pack",
+  "/home/sedanrobot2/.local/share/strata/Strata-data/packs/deepseek-v4.1-flash-ista-das-coder",
+  "--max-context",
+  "8192",
+  "--eos",
+  "1",
+  "--vision",
+  "off",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--prefill-chunk",
+  "16384"
+ ],
+ "cwd": "/home/sedanrobot2/strata-thor-work",
+ "tokenizer": "/home/sedanrobot2/.local/share/strata/Strata-data/packs/deepseek-v4.1-flash-ista-das-coder/tokenizer",
+ "model_name": "deepseek-v4.1-flash",
+ "arch": "deepseek41",
+ "log": "/home/sedanrobot2/bench-thor/maxn/ds-coder-8k-dgx/base.engine.log",
+ "lib_dirs": [
+  "/home/sedanrobot2/thor-serve/components-tuned/engine-dsv41/0.1.56-linux-aarch64-cuda-cuda13"
+ ],
+ "port": 8095,
+ "engine_ready_s": 3600,
+ "env": {
+  "DS4_ASYNC_T": "4"
+ },
+ "gpu": 0,
+ "gpus_asked": true,
+ "args_written": [
+  "--pack",
+  "/home/sedanrobot2/.local/share/strata/Strata-data/packs/deepseek-v4.1-flash-ista-das-coder",
+  "--max-context",
+  "8192",
+  "--eos",
+  "1",
+  "--vision",
+  "off",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--prefill-chunk",
+  "16384"
+ ],
+ "host": "127.0.0.1",
+ "open_browser": false
+}

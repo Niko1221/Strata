@@ -119,6 +119,17 @@ Prefer the terminal? Install Strata, then run **`strata launch`**.
 
 **Linux / Mac**
 
+What runs on a Thor (one 122 GiB machine, no GPU sizing questions - it all lives in the one pool):
+
+| model | how to run it | measured here |
+| --- | --- | --- |
+| Qwen3.8-Flash-Next (the ARM64-feed packs; `Q2_0` and the Gyro packs need x86 CPU kernels and are not offered to ARM64) | `strata launch --model iq3_s --context 32k` | IQ3_S yes; NVFP4 yes but slower - keep IQ3_S |
+| Qwen3.6-35B-A3B (Unsloth UD packs) | `strata launch --family qwen36 --model ud-q4_k_xl --mtp 3` | UD-Q4_K_XL yes (Q6_K_XL / Q8_0: same path) |
+| DeepSeek-V4.1-Flash-1017 (ISTA-DAS sets) | `strata launch --family deepseek41 --model ista-das-coder` | Coder set yes (191 GB) |
+| picture input | the fat package carries `strata-vision`; these Thor runs used `--vision off` | not measured on Thor yet |
+
+From the command line, a Thor needs nothing extra:
+
 ```sh
 curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
@@ -161,6 +172,75 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
 | **Apple Silicon · M1 or newer** | [Mac setup](docs/MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
 | **NVIDIA DGX Spark · Linux** | [DGX Spark setup](docs/DGX_SPARK_LINUX.md) |
+| **NVIDIA Jetson AGX Thor · Linux (sm_110)** | [Jetson AGX Thor setup](docs/JETSON_THOR.md) |
+
+### Jetson AGX Thor: measured on the machine
+
+The same arm64 CUDA engine package carries machine code for both ARM64 machines: `sm_121` (DGX Spark) and `sm_110`
+(Jetson AGX Thor), with `compute_110` PTX. Measured on one Thor (122 GiB unified, driver 580.00, CUDA 13.0.48,
+engine 0.1.56 built on the machine; standard protocol suite at context 32768, four slots, 120 W DVFS):
+
+| Pack | Decode tok/s (short / 4K / 16K) | Prompt tok/s (4K / 16K) | Four at once | Sanity |
+| --- | ---: | ---: | ---: | :-: |
+| Qwen3.8-Flash-Next IQ3_S | 38.3 / 34.0 / 35.6 | 769 / 1000 | 51-54 tok/s total | 12/12 |
+| Qwen3.6-35B-A3B UD-Q4_K_XL | 50.7 / 37.4 / 20.2 | 1375 / 1221 | ~100.5 tok/s total | 12/12 |
+| Qwen3.8-Flash-Next NVFP4 | 27.1 / 28.9 / 27.5 (64K cells, T=0) | ~704-767 | - | - |
+| DeepSeek-V4.1-Flash-1017, Coder set¹ | 8.8-17.2 (8K and 64K context cells: 512→4096→16K→32K prompts, T=0, locked clocks) | 87.6-356.4 | not swept | smoke² |
+
+¹ served on its own `strata-dsv41` engine package (same fat archs); experts split across the one 122 GiB pool. ² the twelve-check protocol is qwen-specific; arithmetic and long completions were checked by hand.
+
+Against the DGX Spark, same engine family, same benchmark cells (IQ3_S, T=0, Thor at locked clocks):
+
+| cell (tok/s) | Thor | DGX Spark | Thor / Spark |
+| --- | ---: | ---: | ---: |
+| prompt 4K / 16K / 32K | 921 / 1,138 / 950-1,051 | 1,296 / 1,680 / 1,735 | 0.71 / 0.68 / 0.55-0.61 |
+| decode 4K / 16K / 32K | 37.6 / 37.5 / 38.0 | 45.5 / 46.5 / 46.5 | 0.83 / 0.81 / 0.82 |
+
+And the same engine past the guide's sizes ([report longctx/](bench/results/2026-11-05-community-jetson-thor-sm110/longctx/README.md),
+MAXN, T=0): IQ3_S also serves **128K context (2 or 4 slots) and 256K (1 slot)** - decode stays 36-38 tok/s from
+64K through 256K context, prefill ~1.1K tok/s up to a 131K-token prompt (TTFT 119 s), and at long context the
+switches all sit inside noise: the defaults are the setting.
+
+What each setting on the Thor is worth (standard suite, IQ3_S decode short/4K/16K and Qwen3.6 UD-Q4_K_XL). Every row
+is one logged run, named with its session and the terminal commit it recorded; **no two rows share a session**, so
+reading across rows is an observation, not a controlled A/B:
+
+| run (session, recorded commit, clocks) | IQ3_S decode short/4K/16K | IQ3_S prompt 4K/16K | Qwen3.6 decode | Qwen3.6 prompt 4K/16K |
+| --- | ---: | ---: | ---: | ---: |
+| shipped engine (`iq3s-32k` 11-04 @`74b9305a`, `qwen36-32k` 11-05, 120 W DVFS) | 38.3 / 34.0 / 35.6 | 769 / 1,000 | 50.7 / 37.4 / 20.2 | 1,375 / 1,221 |
+| table on (`iq3s-32k-tuned` 11-05 @`ce4350af`, 120 W) | 37.3 / 36.6 / 33.4 | 925 / 1,095 | - (q36 reads no table) | - |
+| table on, 120 W¹ (`normal/iq3s-32k` + `normal/q36-32k` 11-07 @`5819cc0b`) | 41.3 / 35.9 / 36.5 | 973 / 1,128 | 53.7 / 39.3 / 22.5 | 1,420 / 1,272 |
+| table on, clocks locked¹ (`maxn/iq3s-32k` + `maxn/q36-32k` 11-05 @`a1cda07f`) | 47.4 / 40.2 / 40.5 | 1,073 / 1,241 | 59.3 / 43.5 / 25.2 | 1,586 / 1,412 |
+
+¹ sanity 12 of 12 in these runs, and both of them are **nonconforming** for one protocol point only: the running
+model file could not be hashed. The 11-07 run's recorded terminal commit (`5819cc0b`) predates the speed-table
+merge, so that record alone does not establish its table state; the engine binaries of those dates came from the
+bench tree, which does carry the table.
+
+The controlled, within-session comparisons are the paired A/B files (`ab-iq3s-stack/dropone/decide.jsonl` alternate
+arms run by run; `ab-q36-depth*.jsonl` the drafting depths): there the table is a prompt/first-answer win with decode
+mixed. The suite rows above agree in direction and scale, but each sits in its own session and build - the
+percentages quoted from them (prompt +20.3% / +9.5%, TTFT -27%, decode -2.6/+7.6/-6.2; clocks +10-15%) are
+cross-session observations with the strongest control available, not same-session A/B. A clock state cannot share a
+session at all: `nvpmodel` changes the whole machine.
+
+Five speed switches are on for sm_110 by default, each measured on this part (`STRATA_SM110_PERF=0` turns them off):
+end to end that is prompt +20.3% / +9.5% and first answer -27% at 4K, decode mixed, as the table above
+shows (a cross-session pair, labeled as one there). Locking the clocks (`sudo nvpmodel -m 0 && sudo
+jetson_clocks`) buys +10-15% across the board in runs a day apart with the same scripts and the same engine
+package - the cheapest Thor speed-up there is. Full data,
+A/B files and the drafting sweeps (Qwen3.6 at `--mtp 3`, IQ3_S at `--spec 4` + cost rule) are in
+[the benchmark report](bench/results/2026-11-05-community-jetson-thor-sm110/README.md).
+
+From the command line, a Thor needs nothing extra:
+
+```sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+export PATH="$HOME/.local/bin:$PATH"
+strata update                                  # the same feed package, picked for this PC (sm_110)
+strata launch --model iq3_s --context 32k      # or: --family qwen36 --model ud-q4_k_xl
+strata status --url http://127.0.0.1:8080 --json
+```
 
 <a id="using-it"></a>
 

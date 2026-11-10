@@ -25,6 +25,7 @@ install does not need a source checkout or a startup `.bat` file.
 | Apple Silicon Mac, macOS 15 or newer | [Mac guide](MAC.md). Intel Macs are not supported by the Mac package. |
 | AMD Ryzen AI Max / Strix Halo | [Strix Halo guide](STRIX_HALO.md) |
 | NVIDIA DGX Spark (Linux ARM64) | [DGX Spark guide](DGX_SPARK_LINUX.md). Use the Terminal; there is no desktop app for ARM64 Linux. |
+| NVIDIA Jetson AGX Thor (Linux ARM64, sm_110) | [Jetson AGX Thor guide](JETSON_THOR.md). A different chip from the Spark; the ARM64 engine package carries machine code for both. |
 
 Memory and disk needs depend on the **model, quantization, context and enabled features**. Check
 [which model fits](MODELS.md#pick-by-memory); download size is not the same as RAM use. Unified memory counts once.

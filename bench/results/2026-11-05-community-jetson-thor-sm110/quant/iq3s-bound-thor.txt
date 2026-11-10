@@ -1,0 +1,2 @@
+quant        expert MB routed MB/tok  dense MB  CPU-only tok/s bound tok/s
+iq3s-formats      2.05         982.3    4166.3           277.9        53.0
