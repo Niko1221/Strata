@@ -1,0 +1,19 @@
+[
+ ["CimCmdlets Get-CimInstance + Select/ConvertTo-Json (hardware, setup, mcp)", "Get-CimInstance Win32_Processor | Select-Object -First 1 Name | ConvertTo-Json -Compress"],
+ ["CimCmdlets Win32_Process filter (cloudflared, harness, tune)", "@(Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\").Count"],
+ ["Management Get-ChildItem/Get-ItemProperty HKLM (DX adapters)", "@(Get-ChildItem HKLM:\\SOFTWARE\\Microsoft\\DirectX | ForEach-Object { Get-ItemProperty $_.PSPath }).Count"],
+ ["Management Get-Item (powershell-utf8 test)", "(Get-Item -LiteralPath $env:ComSpec).Name"],
+ ["Utility Start-Sleep/Measure-Object (telemetry loops)", "Start-Sleep -Milliseconds 10; (1,2,3 | Measure-Object -Maximum).Maximum"],
+ ["Utility Add-Type assembly + New-Object (fonts)", "Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families.Count"],
+ ["Utility Add-Type C# (disk temperature)", "Add-Type -TypeDefinition 'public static class CigX { public static int A() { return 7; } }'; [CigX]::A()"],
+ ["Utility Add-Type Windows.Forms (folder dialog, snapshot save dialog)", "Add-Type -AssemblyName System.Windows.Forms; 'forms ok'"],
+ ["Storage Get-PhysicalDisk (temperature)", "@(Get-PhysicalDisk).Count"],
+ ["Storage Get-Partition|Get-Disk|Get-PhysicalDisk (bench_facts)", "Get-Partition -DriveLetter C | Get-Disk | Get-PhysicalDisk | Select-Object MediaType | ConvertTo-Json -Compress"],
+ [".NET GetFolderPath (model-directory-default)", "[Environment]::GetFolderPath('MyDocuments')"],
+ ["Utility Get-FileHash (install.ps1, fetch-node.ps1)", "(Get-FileHash -LiteralPath $env:ComSpec).Hash.Length"],
+ ["Archive Expand-Archive autoload (install.ps1)", "Import-Module Microsoft.PowerShell.Archive -ErrorAction Stop; (Get-Command Expand-Archive).Source"],
+ ["Utility Invoke-WebRequest resolve (install.ps1)", "(Get-Command Invoke-WebRequest -ErrorAction Stop).Source"],
+ ["Security Get-Acl (old host test helper)", "(Get-Acl -LiteralPath $env:ComSpec).Sddl.Length"],
+ [".NET File.GetAccessControl (new helper)", "[System.IO.File]::GetAccessControl($env:ComSpec).GetSecurityDescriptorSddlForm('Access').Length"],
+ ["where 5.1 finds Security + what it sees", "(Get-Module -ListAvailable Microsoft.PowerShell.Security | ForEach-Object { $_.Version.ToString() + ' ' + $_.Path }) -join ' ; '; 'PSModulePath=' + $env:PSModulePath; try { Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; 'Security import ok' } catch { 'Security import failed: ' + $_.Exception.Message }"]
+]
