@@ -126,7 +126,7 @@ class Ctx:
                 from strata_control import discovery
                 p = Path(s.model_path).expanduser()
                 first = p if p.is_file() else next(iter(sorted(p.glob("*.gguf"))), None)
-                found = discovery.prepared_beside(first)["data_dir"] if first else None
+                found = discovery.writable_beside(first) if first else None     # not a folder Strata cannot write to, nor a Hugging Face cache
                 if found:
                     return Path(found)
             except OSError:

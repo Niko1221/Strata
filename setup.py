@@ -1214,6 +1214,27 @@ def _kept_mark(path: Path) -> Path | None:
     return ROOT / "marks" / (hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:24] + ".done")
 
 
+_OWN_DIRS: list = []                                   # --gguf-dir: folders of the person's own model files (a Hugging Face cache, a share)
+
+
+def own_files_in(folder) -> None:
+    """Strata writes nothing beside the person's own model files (lane NET item 5): their finish marks are kept in marks/ (_kept_mark)."""
+    try:
+        _OWN_DIRS.append(Path(folder).expanduser().resolve())
+    except OSError:
+        _OWN_DIRS.append(Path(folder).expanduser())
+
+
+def _is_own_file(path: Path) -> bool:
+    if not _OWN_DIRS:
+        return False
+    try:
+        parent = Path(path).expanduser().absolute().parent.resolve()
+    except OSError:
+        return False
+    return any(parent == d for d in _OWN_DIRS)
+
+
 def mark_text(path: Path) -> str | None:
     """The text of the finish mark of `path` (beside it, else the kept one), or None when it has none."""
     for m in (path.with_name(path.name + ".done"), _kept_mark(path)):
@@ -1235,11 +1256,13 @@ def mark(path: Path, text=""):
     in Strata's own folder instead (marks/), so a 110 GB Engram is hashed once, not on every launch; only when that cannot be written either
     does setup say so and go on (the step is repeated on the next run), it does not stop."""
     text = text or time.strftime("%Y-%m-%d %H:%M")
-    try:
-        path.with_name(path.name + ".done").write_text(text, encoding="utf-8")
-        return
-    except OSError as e:
-        beside = e
+    beside: BaseException | str = "a folder of the person's own model files"
+    if not _is_own_file(path):
+        try:
+            path.with_name(path.name + ".done").write_text(text, encoding="utf-8")
+            return
+        except OSError as e:
+            beside = e
     kept = _kept_mark(path)
     try:
         if kept is not None:
@@ -10361,6 +10384,8 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if getattr(a, "gguf_dir", None):                   # the person's own files: their finish marks go to Strata's marks/, never beside them
+        own_files_in(a.gguf_dir)
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in MULTI_FILE_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **MULTI_FILE_FAMILIES}.items()
                                                               if a.model in d["models"]))
