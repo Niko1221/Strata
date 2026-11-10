@@ -12833,6 +12833,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_HC_I8ONLY",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 5195,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "a9f134d481",
+   "first_date": "2026-11-09",
+   "since": null,
+   "last_commit": "a9f134d481",
+   "last_date": "2026-11-09",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "=1 (with STRATA_HC_PERSIST=1 and STRATA_HC_PERSIST_Q8=1, HIP): the bf16 hc down/up projections are not loaded; only their int8 copies are kept (#5475)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_HC_PERSIST",
    "backends": [
     "cuda-hip"
@@ -12881,6 +12914,45 @@
    "status": "opt-in",
    "owner": "kernels/cuda",
    "note": "[reviewed] Documented \"Opt-in for measurement on gfx103x\"; refused on gfx11/12. [docs/AMD_HIP.md:519]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_HC_PERSIST_Q8",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/kernels/cuda/fused_gr.cu",
+     "line": 3746,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "src/program/generate.cpp",
+     "line": 5200,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "1a5274ee04",
+   "first_date": "2026-11-07",
+   "since": null,
+   "last_commit": "a9f134d481",
+   "last_date": "2026-11-09",
+   "status": "opt-in",
+   "owner": "kernels/cuda",
+   "note": "=1 (with STRATA_HC_PERSIST=1, HIP): the persistent hc read takes int8 copies of the verifier's hc weights (Q8_0 grid, fp16 scale per 32 values) (#5475)",
    "retire_after": "",
    "retired_in": ""
   },
@@ -13000,6 +13072,39 @@
    "status": "rollback",
    "owner": "core",
    "note": "[reviewed] Stage-local HC_Q8 retained default-on; =1 restores all-stage Q8 behaviour. [phaseA-tests/round0216/RESULTS-MULTI.md:14]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_HC_Q8_HASH",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/verify.cpp",
+     "line": 970,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "a9f134d481",
+   "first_date": "2026-11-09",
+   "since": null,
+   "last_commit": "a9f134d481",
+   "last_date": "2026-11-09",
+   "status": "research",
+   "owner": "core",
+   "note": "=1 (diagnostic): log a checksum of each read's int8 hc copies (#5475)",
    "retire_after": "",
    "retired_in": ""
   },
