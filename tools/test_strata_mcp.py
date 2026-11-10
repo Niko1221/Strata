@@ -1019,6 +1019,29 @@ class MixedGraphics(unittest.TestCase):
             rec = s.recommend({**hw, "ram_gb": 64.0})
             self.assertEqual((rec["backend"], rec["gpu"]["name"]), ("hip", "AMD Radeon RX 9070 XT"))
 
+    @mock.patch("strata_control.engine_component.status", lambda: {"usable": False})
+    def test_a_windows_strix_halo_reports_the_reserve_setup_writes_for_it(self):
+        """QAGUI-STRIX 11-09 (APP-WIN item 3): the app's Load on a unified-memory chip uses the reserve setup would write (setup_config.UMA_WIN_RESERVE_MIB, G16)
+        when the run config has none; the report carries it on a Windows gfx1151 only, from the same constant."""
+        from strata_control import setup_config
+        s = M.Strata(HERE.parent)
+        S = s.setup_module()
+        strix = [{"index": 0, "name": "AMD Radeon(TM) 8060S Graphics", "vram_gb": 95.8, "arch": "gfx1151", "driver": "32.0.1", "uma": True,
+                  "dedicated_gb": 64.0, "shared_gb": 31.8}]
+        common = (mock.patch.object(S, "gpus", lambda: []), mock.patch.object(S, "amd_problem", lambda g: None),
+                  mock.patch.object(M, "windows_video_controllers", lambda: [{"name": strix[0]["name"], "driver": "32"}]),
+                  mock.patch.object(S, "ram_gb", lambda: 63.6), mock.patch.object(S, "page_file_gb", lambda: 10.0))
+        for win, cards, want in ((True, strix, setup_config.UMA_WIN_RESERVE_MIB), (False, strix, None),
+                                 (True, [{**strix[0], "arch": "gfx1150"}], None), (True, [{**strix[0], "uma": False}], None),
+                                 (True, [{**strix[0], "arch": "gfx1151:sramecc-:xnack-"}], setup_config.UMA_WIN_RESERVE_MIB)):
+            with self.subTest(win=win, arch=cards[0]["arch"], uma=cards[0].get("uma")), mock.patch.object(M, "WIN", win), \
+                    mock.patch.object(S, "amd_gpus", lambda c=cards: [dict(g) for g in c]), \
+                    common[0], common[1], common[2], common[3], common[4]:
+                hw = s._hardware()
+                amd = [g for g in hw["gpus"] if g.get("vendor") == "amd"]
+                self.assertEqual(amd[0].get("setup_reserve_mib"), want)
+        self.assertEqual(setup_config.UMA_WIN_RESERVE_MIB, 700)
+
 
 if __name__ == "__main__":
     unittest.main()

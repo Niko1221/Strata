@@ -1021,6 +1021,19 @@ class Strata:
             mark_display(nv + amd, nvidia_display_active() if nv else {}, windows_desktop_adapters() if WIN and amd else [])
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
+        try:                                            # the reserve setup writes for this chip when a run config names none (strata_control/setup_config.py UMA_WIN_RESERVE_MIB, G16):
+            # the app's Load uses it on a one-card run whose config has no reserve of setup's, so the app and `strata launch` start the same engine line (QAGUI-STRIX 11-09).
+            # The same condition as setup_config.config_for: Windows, the HIP engine (an AMD card), unified memory, gfx1151 exactly (gfx_arch_is: "gfx1151" or "gfx1151:...").
+            if WIN and amd:
+                if str(self.src) not in sys.path:
+                    sys.path.insert(0, str(self.src))
+                from strata_control import setup_config
+                for g in amd:
+                    arch = str(g.get("arch") or "")
+                    if g.get("uma") and (arch == "gfx1151" or arch.startswith("gfx1151:")):
+                        g["setup_reserve_mib"] = setup_config.UMA_WIN_RESERVE_MIB
+        except Exception:                               # noqa: BLE001 - an older Control folder: no field, the app keeps its own floor
+            pass
         arc = []
         if not WIN:                                     # an Intel Arc (Linux, the SYCL engine): only a PC with no usable NVIDIA or AMD card gets one (strata_control/intel_app.py)
             try:
