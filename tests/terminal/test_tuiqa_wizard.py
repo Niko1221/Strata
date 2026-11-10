@@ -19,6 +19,18 @@ from tests.terminal.test_launch_tui import FakeRunner, make_ctx, press, flat, ty
 SIZES = ((120, 40), (80, 24), (60, 20), (40, 15))
 
 
+async def settled(pilot, check, timeout=30.0):
+    """Wait until `check()` stops raising AssertionError (or the query fails because the screen is not there yet); give up after `timeout`."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        try:
+            check()
+            return
+        except Exception:
+            await pilot.pause(0.05)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.home = Home().__enter__()
@@ -43,21 +55,27 @@ class Base(unittest.TestCase):
 
 class SaveChoices(Base):
     def test_the_three_choices_and_the_name_are_on_screen_at_every_size(self):
+        choices = ("Save as a preset and launch", "Launch without saving", "Save the preset and stop here")
+
+        def check(app, size):
+            shown = text_of(app)
+            for choice in choices:
+                self.assertIn(choice, shown, (size, shown))
+            body = app.screen.query_one("#body")
+            menu = app.screen.menu()
+            self.assertLessEqual(menu.region.bottom, body.region.bottom, size)               # the choices are inside the body, not below it
+            self.assertGreaterEqual(menu.region.y, body.region.y, size)
+            name = app.screen.query_one("#name")
+            self.assertLessEqual(name.region.bottom, body.region.bottom, size)
+            self.assertIn("Enter:", flat(app), size)                                           # the footer says which action Enter does
+
         async def case(app, pilot, ctx):
             await press(pilot, *("enter",) * 7, "n", "enter")
             for size in SIZES:
                 await pilot.resize_terminal(*size)
-                await pilot.pause(0.3)
-                shown = text_of(app)
-                for choice in ("Save as a preset and launch", "Launch without saving", "Save the preset and stop here"):
-                    self.assertIn(choice, shown, (size, shown))
-                body = app.screen.query_one("#body")
-                menu = app.screen.menu()
-                self.assertLessEqual(menu.region.bottom, body.region.bottom, size)               # the choices are inside the body, not below it
-                self.assertGreaterEqual(menu.region.y, body.region.y, size)
-                name = app.screen.query_one("#name")
-                self.assertLessEqual(name.region.bottom, body.region.bottom, size)
-                self.assertIn("Enter:", flat(app), size)                                           # the footer says which action Enter does
+                # wait for the layout to settle (a loaded machine redraws late), not for a fixed time; the checks themselves are unchanged
+                await settled(pilot, lambda: check(app, size))
+                check(app, size)
         self.run_app(case)
 
     def test_the_footer_names_the_action_enter_will_do(self):

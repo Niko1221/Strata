@@ -1,4 +1,5 @@
 #include "strata/core/native_dense.hpp"
+#include "strata/core/run_manifest.hpp"
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
@@ -80,6 +81,11 @@ bool hc_q8_env() {
         return false;
 #endif
     }();
+    return on;
+}
+// STRATA_HC_Q8_ALL_STAGES=1: the Q8_0 hyper-connection rows of every layer are copied to every stage (the behaviour before #3559)
+bool hc_q8_stage_local() {
+    static const bool on = [] { const char* v = std::getenv("STRATA_HC_Q8_ALL_STAGES"); return !(v != nullptr && v[0] == '1'); }();
     return on;
 }
 bool hc_q8_name(const std::string& name) {
@@ -164,6 +170,15 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;
 }
+// #4741: a native-eligible projection a pack keeps unquantized (BF16, GGUF type 30; Heretic v2 IQ4_NL has its layer-0 attn_gate so)
+// has no native kernel.  Its siblings are Q8_0, so it is served as Q8_0 made from the file's BF16 values (ggml's rounding), and
+// the dispatchers that need a native projection find one.  The pack's BF16 copy stays where it is.
+bool bf16_as_q8_0(const strata::TensorInfo& tensor, const WeightRef& ref) {
+    return tensor.type == 30 && tensor.name != "blk.1.ple_key.weight" && tensor.shape.size() == 2 &&
+           !ref.quantized() && ref.kind == WeightKind::Bf16InF32 &&
+           ref.ne0 > 0 && ref.ne0 <= INT_MAX && ref.ne1 > 0 && ref.ne1 <= INT_MAX && ref.ne0 % 32 == 0 &&
+           tensor.shape[0] == (uint64_t) ref.ne0 && tensor.shape[1] == (uint64_t) ref.ne1;
+}
 struct DeviceFree { void operator()(void* p) const { if (p) cudaFree(p); } };
 using DevicePtr = std::unique_ptr<void, DeviceFree>;
 struct Pending {
@@ -218,6 +233,10 @@ bool NativeDense::weight_bytes_for(const std::vector<std::string>& shards, Weigh
                     return false;
                 }
                 const auto& ref = found->second;
+                if (bf16_as_q8_0(tensor, ref)) {   // #4741
+                    total += alloc_bytes((uint64_t) ref.ne0 / 32 * 34 * (uint64_t) ref.ne1);
+                    continue;
+                }
                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
                 if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
                 if (!ref.quantized() || tensor.shape.size() != 2 ||
@@ -275,7 +294,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         std::vector<Pending> pending;
         std::set<std::string> seen;
         int max_in = 0;
-        uint64_t total = 0, hc_q8_bytes = 0, allocated = 0;
+        uint64_t total = 0, hc_q8_bytes = 0, allocated = 0, hc_q8_skipped_bytes = 0, hc_q8_skipped = 0;
         uint64_t split_count = 0, split_tensors = 0;
         std::set<uint64_t> split_numbers;
         bool have_architecture = false;
@@ -353,6 +372,24 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
                 auto& ref = found->second;
                 if (ref.native_data) { err = "native dense: override already attached"; return false; }
+                if (bf16_as_q8_0(tensor, ref)) {   // #4741: a BF16 projection of the pack, served as Q8_0
+                    const uint64_t n = (uint64_t) ref.ne0 * (uint64_t) ref.ne1;
+                    const std::vector<uint8_t> q8 = q8_0_of_bf16((const uint16_t*) gguf.tensor_data(tensor), n);
+                    void* allocation = nullptr;
+                    auto status = cudaMalloc(&allocation, q8.size());
+                    DevicePtr data(allocation);
+                    if (status == cudaSuccess) status = cudaMemcpy(data.get(), q8.data(), q8.size(), cudaMemcpyHostToDevice);
+                    if (status != cudaSuccess) {
+                        err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status); return false;
+                    }
+                    max_in = (std::max)(max_in, (int) ref.ne0);
+                    total += q8.size();
+                    allocated += alloc_bytes(q8.size());
+                    std::fprintf(stderr, "native dense: %s is BF16 in the file: served as Q8_0 like its siblings (#4741)\n",
+                                 tensor.name.c_str());
+                    pending.push_back(Pending{&ref, 8, (uint64_t) q8.size(), std::move(data), DevicePtr()});
+                    continue;
+                }
                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
                 // #326: the pack keeps an unquantized (--compat-bf16) key, which the PLE reads from the arena
                 if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
@@ -393,7 +430,18 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                         return false;
                     }
                 }
+                if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: the dense formats as held, and the packed copies
+                    strata::core::manifest::instance().tensors("dense", strata::ggml_type_name((uint32_t) tensor.type), 1, bytes);
+                    if (packed) strata::core::manifest::instance().tensors("dense_packed_copy", "Q8_0", 1, bytes);
+                }
                 pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data), std::move(packed)});
+            }
+            if (strata::core::manifest::enabled()) {
+                const char* v = std::getenv("STRATA_HC_Q8");
+                strata::core::manifest::instance().path("dense", "hc_q8", hc_q8_env(),
+                    hc_q8_env() ? (v != nullptr && v[0] == '1' ? "STRATA_HC_Q8=1" : "architecture default (gfx12 / gfx1151 HIP)")
+                                : (v != nullptr && v[0] != '\0' && std::strcmp(v, "auto") != 0 ? "STRATA_HC_Q8 turned it off"
+                                                                                               : "off by default on this backend"));
             }
             if (hc_q8_env())
                 for (const auto& tensor : gguf.tensors()) {
@@ -402,6 +450,14 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     static const bool q8_inject = [] { const char* v = std::getenv("STRATA_HC_Q8_INJECT"); return v && v[0] == '1'; }();
                     const bool f32_inject = q8_inject && tensor.type == 0 && tensor.name.ends_with("_inject.weight");
                     if ((tensor.type != 8 && !f32_inject) || !hc_q8_name(tensor.name) || tensor.shape.size() != 2) continue;
+                    // a trimmed layer split: another stage's layers are never read here, so their rows are not copied (the upload
+                    // loop above and the bf16 pack path below already filter this way; PR #3559, havok2-htwo).
+                    // STRATA_HC_Q8_ALL_STAGES=1 copies them as before.
+                    if (hc_q8_stage_local() && (outside(tensor.name) || !in_range(tensor.name))) {
+                        hc_q8_skipped_bytes += (uint64_t) tensor.shape[0] / 32 * 34 * (uint64_t) tensor.shape[1];
+                        ++hc_q8_skipped;
+                        continue;
+                    }
                     auto found = table.table_.find(tensor.name);
                     if (found == table.table_.end() || found->second.hc_q8 != nullptr) continue;
                     auto& ref = found->second;
@@ -420,6 +476,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     ref.hc_q8 = p;
                     weights_.push_back(p);
                     hc_q8_bytes += bytes;
+                    strata::core::manifest::instance().tensors("dense_hc_q8_copy", f32_inject ? "F32->Q8_0" : "Q8_0", 1, bytes);
                 }
         }
         if (hc_q8_env()) {
@@ -507,6 +564,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         scratch_ = scratch.release();
         bytes_ = total + hc_q8_bytes;
         allocated_ = allocated;
+        if (hc_q8_skipped != 0 && strata::core::manifest::enabled())   // STRATA_MANIFEST: what the stage filter did not copy
+            strata::core::manifest::instance().tensors("dense_hc_q8_out_of_stage_not_copied", "Q8_0", hc_q8_skipped, hc_q8_skipped_bytes);
         if (hc_q8_env())
             std::fprintf(stderr, "strata: STRATA_HC_Q8=1: %.2f GiB of Q8_0 hyper-connection projections for the verify read\n",
                          (double) hc_q8_bytes / 1073741824.0);
@@ -516,6 +575,17 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         return false;
     }
 }
+bool NativeDense::gguf_carries_q8_hc(const std::vector<std::string>& shards) {
+    try {
+        for (const auto& path : shards) {
+            const strata::GgufFile g(path);
+            for (const auto& tensor : g.tensors())
+                if (tensor.type == 8 && tensor.shape.size() == 2 && hc_q8_name(tensor.name) && !tensor.name.ends_with("_inject.weight")) return true;
+        }
+    } catch (const std::exception&) {}
+    return false;
+}
+
 bool NativeDense::hc_q8_requested() { return hc_q8_env(); }
 
 bool NativeDense::add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip) {

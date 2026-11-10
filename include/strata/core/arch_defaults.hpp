@@ -27,6 +27,15 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch, bool defaults026, bool windows);
 std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gcn_arch);
 
+/// AMD-Q (owner decision 10-31): the CPU prefill share (prefill.cpp, STRATA_PREFILL_CPU_SHARE) is armed by default for single-card serve on gfx12
+/// (R9700 / RX 9070 / RX 9060, gfx1200 / gfx1201), with the CUDA change's limit (share_rules::default_share_limit: staged chunks up to 3,072 tokens).
+/// Measured on an R9700 (p620, IQ3_S, 13,325 of 24,576 experts resident, 30 pool workers): prompt 500 +18.3%, 1K +30.6%, 2K -0.19%, 4K and 8K unchanged;
+/// first-token KL 0.022 at 1K, top-1 29 of 29.  Pure architecture rule: false for gfx11 (Strix Halo gfx1151, 780M gfx1103, RX 7000), every other
+/// family and a CUDA build; STRATA_GFX12_DEFAULTS=0 and STRATA_DEFAULTS=026 (`defaults026`) turn it off, and STRATA_PREFILL_CPU_SHARE=0 / auto /
+/// a number still decide before it.  The caller adds the single-card, no-batch-slot and "experts are missing" conditions.
+bool gfx12_prefill_share_default(const char* gcn_arch, bool defaults026);
+bool gfx12_prefill_share_default(const char* gcn_arch);
+
 /// The integrated Radeons (Phoenix / Hawk Point 780M gfx1103, Strix Point 890M / 880M gfx1150, Strix Halo gfx1151) whose
 /// matrix-core prompt set is offered (opt-in; 021-minipc).  Pure architecture-name test; the caller adds the UMA test.
 bool igpu_prompt_defaults_arch(const char* gcn_arch);
@@ -53,10 +62,48 @@ bool igpu_uma_arena_default(const char* gcn_arch, bool integrated, bool windows,
 /// bits (KL-gated, notes-153-igpu.md); every switch keeps =0 as its off switch and STRATA_IGPU_DEFAULTS=0 turns the set off.
 std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gcn_arch, bool integrated);
 
+/// 0.2.10 (STRIX-2Q): the exact parallel-request stack (checkpoint pool, device slot copies, one-launch slot windows) for a Windows
+/// Strix Halo (gfx1151) that runs batch slots (`--batch` / `--slots` of 2 or more).  Interleaved on the strix box (serve/server.py,
+/// 4 clients, 3 rounds, IQ3_S): 51.7 / 50.7 tok/s without, 55.1 / 54.9 with, TTFT p50 2.55 -> 2.45 s, max chunk gap p95 1.36 -> 1.27 s,
+/// no errors.  Every switch is bit-exact against the plain slots (QUAL-PAR on the Linux CUDA stack).  Not STRATA_BATCH_CONCURRENT_READ.
+/// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
+std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
+
+/// The same nine switches for Linux CUDA (the Qwen engine of generate.cpp) with 2 or more batch slots: what serve/server.py's
+/// PARALLEL_STACK_ENV set for a managed start, now the engine's own so a plain start is the same.  QUAL-PAR: bit-exact against the plain
+/// slots (greedy identity at c=1, first-token KL 0).  `linux_cuda` is false on HIP, Windows, Metal and SYCL builds (empty then).  Each
+/// switch keeps =0 as its off switch; a value the user set is kept.  Silent: the launcher printed nothing for these either.
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots);
+
+/// Sets `parallel_default_env_cuda` in this process's environment where the user has not set the variable; returns the names it set.
+/// Call once, before any engine code reads its switches.
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots);
+
+/// The tensor-core GDN prompt scan and the one-pass conv (QUAL-GDN, l620: prompt +4.4% at 4K, +5.5% at 16K, +5.7% at 32K; first-token KL mean
+/// 0.0019, max 0.0125; owner yes 2026-11-07): STRATA_GDN_TC=1 and STRATA_GDN_CONVL2=2 on Linux CUDA, what serve/server.py's GDN_STACK_CUDA set.
+/// The engine still gates the scan at run time (compute capability 8 or more, one SM per value head, shared memory) and falls back to the old
+/// kernels.  Empty when `linux_cuda` is false (HIP, Windows, Metal, SYCL).  =0 turns each off; a value the user set is kept.  Silent.
+std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda);
+std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda);
+
+/// gfx12 (RDNA4, R9700 / RX 9000) on Linux, when EVERY visible card is gfx12 (the same rule as serve/server.py's GDN_STACK_GFX12): the chunked GDN scan
+/// from the first 64-token chunk instead of from 30,000 tokens (owner yes 2026-11-07).  R9700: +3.5% prompt speed at 4K, +5.5% at 16K, first-token KL mean
+/// 0.0025, 61-task suite 55 vs 56.  STRATA_GDN_CHUNKED=0 turns it off; a value the user set is kept.  Empty elsewhere.  Silent: the engine's own
+/// "prompt chunks of 30,000+ tokens" line is not printed when the variable is set, as with a launcher start.
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12);
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12);
+
+/// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
+/// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
+/// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread
+/// removed it (see STRIX-2Q-RESULTS.md).  The value is STRATA_VERIFY_ASYNC_LAUNCH=1 (same switch as the CUDA instrumented-launch path).
+/// Empty for every other architecture / platform and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
+std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows);
+
 /// Sets `arch_default_env(gcn_arch)` and, when `integrated`, `igpu_default_env(gcn_arch, true)` in this process's
 /// environment where the user has not set the variable, prints one line to stderr per table when it set anything, and
 /// returns the names it set.  `integrated` is true when every visible GPU is an integrated one.  Call once, before any
 /// engine code reads its switches (they are read lazily, at first use).
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false);
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated = false, int batch_slots = 0);
 
 }  // namespace strata::core

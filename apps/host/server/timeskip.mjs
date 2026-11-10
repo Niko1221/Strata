@@ -17,7 +17,8 @@
  * A run is a job, not a request: it outlives the HTTP call that started it. The endpoint returns the
  * run id immediately and the client follows it with `/api/timeskip/status`.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { endTreeThenKill, ownGroup } from './process-tree.mjs';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { timeSkipDir } from './platform-paths.mjs';
@@ -146,10 +147,7 @@ export function timeskipRevisionMessage(request) {
 
 /** End a process and everything it started (the job, the Python it runs, the revision command and its Node). */
 function killTree(child) {
-  try {
-    if (process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-    else child.kill('SIGTERM');
-  } catch { /* already gone */ }
+  endTreeThenKill(child);          // Windows: taskkill /T. Linux and macOS: the job leads its own process group (startDetached), so the group is ended (#4529 #4570)
 }
 
 /** How big a folder is, stopping early once it is clearly too big to copy for a trial. */
@@ -452,7 +450,7 @@ export function createTimeSkip({ repoRoot, python, pythonArgs = [], timeoutMs = 
         '--attempts', String(Math.max(0, Math.min(10, Number(attempts) || 0))), '--output', 'json'];
       if (reviseCommand) args.push('--revise-command', reviseCommand);
       const child = spawn(python, [...pythonArgs, cli, ...args], {
-        cwd: repoRoot, windowsHide: true, env: { ...env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...extraEnv, STRATA_TIMESKIP_DIR: root }, stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: repoRoot, windowsHide: true, detached: ownGroup(), env: { ...env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8', ...extraEnv, STRATA_TIMESKIP_DIR: root }, stdio: ['ignore', 'pipe', 'pipe'],
       });
       let out = '', err = '', closed = null;
       child.stdout.on('data', b => { out += b.toString(); });

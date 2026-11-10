@@ -9,11 +9,12 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const read = rel => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
-const stdin = { contents: "import { createElement } from 'react'; import { renderToStaticMarkup } from 'react-dom/server'; import { PcFitCard } from './src/components/PcFitCard'; export { setTranslationLanguage } from './src/lib/i18n'; export const render = props => renderToStaticMarkup(createElement(PcFitCard, props));", resolveDir: fileURLToPath(new URL('..', import.meta.url)), loader: 'ts' };
+const stdin = { contents: "import { createElement } from 'react'; import { renderToStaticMarkup } from 'react-dom/server'; import { PcFitCard } from './src/components/PcFitCard'; export { setTranslationLanguage, loadCatalog } from './src/lib/i18n'; export const render = props => renderToStaticMarkup(createElement(PcFitCard, props));", resolveDir: fileURLToPath(new URL('..', import.meta.url)), loader: 'ts' };
 const built = await build({ stdin, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json', '.tsx': 'tsx' }, jsx: 'automatic', logLevel: 'silent', banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" } });
 const dir = mkdtempSync(join(tmpdir(), 'strata-card-test-'));
 writeFileSync(join(dir, 'card.mjs'), built.outputFiles[0].text);       // a file, not a data: URL: the bundled react-dom/server needs require()
-const { render, setTranslationLanguage } = await import(pathToFileURL(join(dir, 'card.mjs')).href);
+const { render, setTranslationLanguage, loadCatalog } = await import(pathToFileURL(join(dir, 'card.mjs')).href);
+for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
 rmSync(dir, { recursive: true, force: true });
 const fit = (spillGb, known = true) => ({ memoryGb: 250, vramUseGb: 10, ramUseGb: 240, spillGb, known });
 const card = props => render({ gpuName: 'RTX 5070', ramGb: 64, vramGb: 12, ...props });
@@ -41,10 +42,10 @@ test('a DeepSeek card that does spill keeps its spill line beside the disk line'
 
 test('every other model keeps its card as it was', () => {
   setTranslationLanguage('en');
-  assert.match(card({ fit: fit(0) }), /Fits fully in memory\./);
-  assert.match(card({ fit: fit(0), diskGb: null }), /Fits fully in memory\./);
+  // Owner, 11-01: no "Fits" words, and the SSD warning is said once, under the version picker (a DeepSeek card keeps its own line above).
+  assert.doesNotMatch(card({ fit: fit(0) }), /Fits fully in memory\./);
   assert.doesNotMatch(card({ fit: fit(0) }), /free disk space/);
-  assert.match(card({ fit: fit(30) }), /About 30 GB will be read from the SSD/);
+  assert.doesNotMatch(card({ fit: fit(30) }), /read from the SSD/);
 });
 
 test('the words are in all eight languages with the same slots', () => {
@@ -65,8 +66,9 @@ test('the words are in all eight languages with the same slots', () => {
 
 test('the Models screen passes the set\'s disk to the card, and the version line states it for DeepSeek only', () => {
   const screen = read('../src/components/NativeModels.tsx');
-  assert.match(screen, /<PcFitCard [^>]*diskGb=\{selectedSize\?\.multi_file \? selectedSize\.disk_gb \?\? selectedSize\.download_gb : null\}/);
+  assert.match(screen, /<PcComputer [\s\S]*?diskGb=\{selectedSize\?\.multi_file \? selectedSize\.disk_gb \?\? selectedSize\.download_gb : null\}/);
   const picker = read('../src/components/VersionPicker.tsx');
-  assert.match(picker, /tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(fit\.memoryGb\), Math\.round\(selected\.disk_gb\)\]\)/);
-  assert.match(picker, /: fit \? `\$\{gb\(fit\.memoryGb\)\} RAM \+ VRAM` : ''/, 'every other model keeps its line');
+  assert.match(picker, /v\.multi_file && v\.disk_gb \? tr\("\{0\} RAM \+ VRAM, plus about \{1\} GB of disk", \[gb\(size\), Math\.round\(v\.disk_gb\)\]\)/, 'Details: the disk of the set for DeepSeek');
+  assert.match(picker, /v\.multi_file && v\.disk_gb \? tr\("Needs \{0\} of memory and about \{1\} GB of disk"/, 'plain: the disk for DeepSeek only');
+  assert.match(picker, /: tr\("Needs \{0\} of memory", \[whole\(size\)\]\)/, 'every other model keeps its line');
 });

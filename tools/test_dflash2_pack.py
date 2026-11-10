@@ -123,6 +123,35 @@ class PackWithoutTorch(unittest.TestCase):
         widened = (bf16(self.arrays["fc.weight"]).astype(np.uint32) << 16).view(np.float32)
         self.assertEqual(got, new.quant_q8_0(widened))
 
+    def test_q4_0_blocks_are_ggml_q4_0_and_only_the_matrices_change(self):
+        q8, q4 = self.dir / "q8b.pack", self.dir / "q4.pack"
+        self.pack(q8)
+        new.pack(str(self.dir / "model.safetensors"), str(self.dir / "config.json"), str(q4), say=lambda *_: None, q4=True)
+        rows = {}
+        for path in (q8, q4):
+            data = path.read_bytes()
+            index_len = struct.unpack("<I", data[8:12])[0]
+            rows[path] = (data, 12 + index_len, {l.split()[1]: l.split() for l in data[12:12 + index_len].decode().splitlines() if l.startswith("t ")})
+        d8, b8, t8 = rows[q8]
+        d4, b4, t4 = rows[q4]
+        self.assertEqual(set(t8), set(t4))
+        for name, r in t4.items():
+            dtype4, nbytes4 = r[2], int(r[6])
+            if t8[name][2] == "q8_0":
+                self.assertEqual(dtype4, "q4_0", name)
+                self.assertEqual(nbytes4, int(r[3]) * int(r[4]) // 32 * 18, name)
+            else:   # norms, conv kernels and the codebooks are byte for byte the same
+                self.assertEqual(d4[b4 + int(r[5]): b4 + int(r[5]) + nbytes4], d8[b8 + int(t8[name][5]): b8 + int(t8[name][5]) + int(t8[name][6])], name)
+        # one matrix: dequantize the blocks and check the error is within one step of each block scale (the +8 end is clamped to 7)
+        w = (bf16(self.arrays["fc.weight"]).astype(np.uint32) << 16).view(np.float32)
+        r = t4["fc.weight"]
+        blocks = np.frombuffer(d4[b4 + int(r[5]): b4 + int(r[5]) + int(r[6])], np.uint8).reshape(w.shape[0], w.shape[1] // 32, 18)
+        d = blocks[..., :2].copy().view(np.float16)[..., 0].astype(np.float32)
+        q = np.concatenate([blocks[..., 2:] & 15, blocks[..., 2:] >> 4], axis=-1).astype(np.float32) - 8
+        deq = (q * d[..., None]).reshape(w.shape)
+        step = np.abs(d)[..., None].repeat(32, -1).reshape(w.shape)
+        self.assertTrue(np.all(np.abs(deq - w) <= 1.01 * step + 1e-6))
+
     def test_it_matches_the_torch_version_when_torch_is_here(self):
         try:
             import torch  # noqa: F401

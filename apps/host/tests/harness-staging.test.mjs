@@ -43,6 +43,6 @@ test('missingHarnessImports names a package a plugin imports that is not staged'
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('a staged Harness (STRATA_HARNESS_DIR) has every package its plugins import', { skip: !process.env.STRATA_HARNESS_DIR }, () => {
+test('a staged Harness (STRATA_HARNESS_DIR) has every package its plugins import', { skip: !process.env.STRATA_HARNESS_DIR && 'STRATA_HARNESS_DIR is not set to a built Harness' }, () => {
   assert.deepEqual(missingHarnessImports(process.env.STRATA_HARNESS_DIR), []);
 });

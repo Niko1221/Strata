@@ -6,7 +6,7 @@
  * about 10 GB left for the system; whatever is left is read from the SSD. The same rules setup uses to choose its low-RAM mode
  * (setup.py: low_ram_gpu_gb, LOW_RAM_HEADROOM_GB), so the page and the engine agree.
  */
-export interface FitInput { ram_needed_gb?: number; experts_gb?: number | null; memory_gb?: number; mem_total?: boolean }
+export interface FitInput { ram_needed_gb?: number; experts_gb?: number | null; memory_gb?: number; mem_total?: boolean; /** the weight files without the lookup table, when the catalog states them (DeepSeek: `memory_gb` is the CPU's share) */ fit_gb?: number | null }
 export interface FitHardware { ram_gb?: number | null; vram_gb?: number | null }
 export interface Fit {
   /** RAM + VRAM the version needs (the n-gram table not counted). */
@@ -20,8 +20,14 @@ export interface Fit {
 }
 
 const DENSE_GB = 5, SYSTEM_ROOM_GB = 10, DENSE_EXTRA_GB = 1;
-/** The draft layer (MTP) takes about 1 GB of graphics memory (786 MiB of files + the draft head's ~218 MiB); it comes out of the expert cache while MTP is on (setup.py MTP_VRAM_GB). */
-export const MTP_VRAM_GB = 1;
+export { DENSE_GB };
+/** The draft layer (MTP) takes about 1.08 GB of graphics memory (1082 MiB: the layer 840 + draft head 213 + the rest); it comes out of the expert cache while MTP is on. DFlash2 alone takes 0.89 GB (890 MiB, the MTP layer not loaded beside it): the fit uses the drafter that is chosen
+ *  (phaseA-tests/blackwell/RESULTS-DF2MEM.md section 1; strata_control/drafting.py DRAFTER_GB). */
+export const MTP_VRAM_GB = 1.08;
+export const DFLASH2_VRAM_GB = 0.89;
+/** DFlash2 alone with the converted pack (the selector's codebooks as Q4_0 rows: 715 MiB; strata_control/drafting.py DRAFTER_MIB "dflash2_selq4"). The page passes `dflash2_selq4` when `capabilities.dflash2Selq4` is true. */
+export const DFLASH2_SELQ4_VRAM_GB = 0.72;
+export const DRAFTER_VRAM_GB: Record<string, number> = { mtp: MTP_VRAM_GB, dflash2: DFLASH2_VRAM_GB, dflash2_selq4: DFLASH2_SELQ4_VRAM_GB, off: 0 };
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 export function memoryNeeded(v: FitInput): number {
@@ -33,11 +39,12 @@ export function memoryNeeded(v: FitInput): number {
 /** The conversation cache of Flash-Next: 13 attention layers, bytes per token per layer by cache format, 5.4% over the bare cache
  *  (strata_control/vram_fit.py KV_BYTES, KV_MEASURED_FACTOR; setup.py UD_FIT_KV_BYTES). */
 const KV_BYTES: Record<string, number> = { fp16: 2112, int8: 1056, q4_0: 576, k8v4: 816 };
-const KV_LAYERS = 13, KV_FACTOR = 1.054, BASE_CONTEXT = 32768;
+const KV_LAYERS = 13, KV_FACTOR = 1.054;
+export const BASE_CONTEXT = 32768;
 export function cacheGb(context: number, kv = 'int8'): number {
   return (121 + context * KV_LAYERS * (KV_BYTES[String(kv).toLowerCase()] ?? KV_BYTES.int8) * KV_FACTOR / 2 ** 20) / 1024;   // 121 MiB fixed per session
 }
-export interface CacheChoice { context: number; kv?: string }
+export interface CacheChoice { context: number; kv?: string; /** the drafter this run loads (resolveDrafter in lib/drafting.ts); absent: the MTP, as the `mtp` argument says */ drafter?: string }
 
 export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = true, cache?: CacheChoice | null): Fit {
   const memoryGb = memoryNeeded(v);
@@ -46,11 +53,12 @@ export function fitOn(v: FitInput, hw: FitHardware | null | undefined, mtp = tru
   const ram = Number(hw?.ram_gb), vram = Number(hw?.vram_gb) || 0;
   if (!Number.isFinite(ram) || ram <= 0) return { memoryGb, vramUseGb: 0, ramUseGb: 0, spillGb: 0, known: false };
   const experts = Math.max(0, memoryNeeded(v) - DENSE_EXTRA_GB);
-  const onGpu = Math.max(0, Math.min(experts, vram - denseGb - (mtp && vram > 0 ? MTP_VRAM_GB : 0)));
+  const drafterGb = cache?.drafter !== undefined ? (DRAFTER_VRAM_GB[cache.drafter] ?? 0) : mtp ? MTP_VRAM_GB : 0;
+  const onGpu = Math.max(0, Math.min(experts, vram - denseGb - (vram > 0 ? drafterGb : 0)));
   const ramRoom = Math.max(0, ram - SYSTEM_ROOM_GB);
   const spillGb = Math.max(0, experts - onGpu - ramRoom);
   const inRam = Math.max(0, experts - onGpu - spillGb);
-  const vramUseGb = vram > 0 ? Math.min(vram, denseGb + (mtp ? MTP_VRAM_GB : 0) + onGpu) : 0;
+  const vramUseGb = vram > 0 ? Math.min(vram, denseGb + drafterGb + onGpu) : 0;
   return { memoryGb, vramUseGb: round1(vramUseGb), ramUseGb: round1(inRam + DENSE_EXTRA_GB * (vram > 0 ? 0 : 1)), spillGb: round1(spillGb), known: true };
 }
 
@@ -90,7 +98,7 @@ export function recommendedVersions<V extends { sourceFamily: string; model: str
   type Row = { r: typeof RECOMMENDED[number]; v: V };
   const find = (family: string, model: string) => versions.find(v => v.sourceFamily === family && v.model === model);
   const rows: Row[] = RECOMMENDED.map(r => ({ r, v: find(r.family, r.model) })).filter((x): x is Row => !!x.v);
-  if (!rows.length || !pick?.family || !pick.model) return rows;
+  if (!pick?.family || !pick.model) return rows;
   const chosen = find(pick.family, pick.model);
   if (!chosen) return rows;
   const rest = rows.filter(x => x.v !== chosen);
@@ -101,8 +109,41 @@ export function recommendedVersions<V extends { sourceFamily: string; model: str
   return [...out, ...rest.filter(x => x.v !== gyroM)];
 }
 
+/**
+ * The version list as the menu shows it, for one base model: first the versions to look at (the recommended ones, in the order given, then the ones already
+ * on this computer, each by download size), then every other version by download size. A version is in exactly one of the two, so none is shown twice
+ * and none is lost; the ones in `hidden` (shown elsewhere, as on the first-run page) are left out. `recommended` is one id or several.
+ */
+export function versionGroups<V extends { id: string; download_gb: number }>(versions: V[], hidden: ReadonlySet<string>, downloaded: ReadonlySet<string> | undefined, recommended?: string | readonly string[]): { top: V[]; more: V[] } {
+  const seen = new Set<string>();
+  const list = versions.filter(v => !hidden.has(v.id) && !seen.has(v.id) && !!seen.add(v.id));
+  const bySize = (a: V, b: V) => a.download_gb - b.download_gb;
+  const ids = typeof recommended === 'string' ? [recommended] : [...(recommended ?? [])];
+  const picked = ids.map(id => list.find(v => v.id === id)).filter((v): v is V => !!v);
+  const have = list.filter(v => !ids.includes(v.id) && downloaded?.has(v.id)).sort(bySize);
+  const top = [...picked, ...have];
+  const inTop = new Set(top.map(v => v.id));
+  return { top, more: list.filter(v => !inTop.has(v.id)).sort(bySize) };
+}
+
+/**
+ * What a version is on this computer (owner's one rule, 2026-11-08): its files, WITHOUT the n-gram / PLE / Engram lookup table's file (the download size minus
+ * that file: `fit_gb`, else `memory_gb`), against the graphics memory plus the RAM, nothing taken off either side. They fit: 'fits', and the list says nothing.
+ * They do not: 'ssd', and the list says "may run slower" (part is read from the SSD while it answers). Nothing here refuses anything: no card, or a Mac with
+ * little memory, gets the same two words. (Not enough free disk is a different question; the download says it.)
+ *
+ * `fitOn` (above) still places the experts for the This computer card; `on_this_pc` no longer decides anything here.
+ */
+export type VersionFit = 'fits' | 'ssd' | 'unknown';
+export function versionFit(v: FitInput & { on_this_pc?: string | null }, hw: FitHardware | null | undefined, cache?: CacheChoice | null): VersionFit {
+  const fit = fitOn(v, hw, true, cache);
+  if (!fit.known) return 'unknown';
+  const size = typeof v.fit_gb === 'number' && Number.isFinite(v.fit_gb) ? v.fit_gb : fit.memoryGb;
+  return size <= Number(hw?.ram_gb) + (Number(hw?.vram_gb) || 0) ? 'fits' : 'ssd';
+}
+
 /** A card as the installer's hardware report lists it. */
-export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; uma?: boolean; integrated?: boolean; unified_gb?: number }
+export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; arch?: string; uma?: boolean; integrated?: boolean; unified_gb?: number }
 
 /**
  * The cards a model can be placed on: the ones this engine can drive (strata_control/gpu_fit.py `usable_cards` and `for_vendor`, same rule).

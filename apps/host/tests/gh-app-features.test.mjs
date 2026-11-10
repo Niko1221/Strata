@@ -14,6 +14,7 @@ import { parseNvidiaReadings } from '../server/device-probes.mjs';
 
 const compiled = await build({ stdin: { contents: "export * from './src/lib/attention'; export * from './src/lib/i18n';", resolveDir: process.cwd() }, bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.json': 'json' } });
 const A = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await A.loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
 
 test('temperatures: the hottest processor and drive sensor, nothing invented', () => {
   assert.deepEqual(pickTemperatures([{ name: 'coretemp', temps: [51000, 56000] }, { name: 'nvme', temps: [41850] }, { name: 'amdgpu', temps: [70000] }]), { cpuTempC: 56, ssdTempC: 42 });
@@ -174,7 +175,8 @@ test('the interface size scales the whole page, up to 200 percent, and a saved v
   assert.match(store, /setProperty\('zoom', state\.uiScale === 1 \? '' : String\(state\.uiScale\)\)/);
   assert.match(store, /setProperty\('--st-ui-scale', '1'\)/, 'the token stays at 1 so nothing is scaled twice');
   assert.match(store, /UI_SCALES = \[0\.9, 1, 1\.1, 1\.25, 1\.5, 1\.75, 2\]/);
-  assert.match(store, /\[0\.9, 1, 1\.1, 1\.25, 1\.5, 1\.75, 2\]\.includes\(Number\(parsed\.uiScale\)\)/);
+  assert.match(readFileSync(new URL('../src/lib/default-sizes.ts', import.meta.url), 'utf8'), /UI_SCALE_CHOICES = \[0\.9, 1, 1\.1, 1\.25, 1\.5, 1\.75, 2\]/);
+  assert.match(store, /savedSizes\(parsed, CONTENT_FS_MIN, CONTENT_FS_MAX\)/, 'a saved value is checked');
   const settings = readFileSync(new URL('../src/screens/Settings.tsx', import.meta.url), 'utf8');
   assert.match(settings, /Makes all text, buttons and menus in Strata larger or smaller\./);
 });

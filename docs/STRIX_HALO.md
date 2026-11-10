@@ -4,7 +4,7 @@ This page is for people with a Ryzen AI Max "Strix Halo" PC (Radeon 8060S / 8050
 shared by the CPU and the GPU). Strata runs there through the same HIP backend as the Radeon cards in [AMD_HIP.md](AMD_HIP.md).
 **Status: experimental.**
 
-**DeepSeek V4.1-Flash runs here on Windows** (since 0.2.7): its own engine package is built for gfx1151 and the official IST-DAS
+**DeepSeek V4.1-Flash runs here on Windows** (since 0.2.7): its own engine package is built for gfx1151 and the official ISTA-DAS
 1.75 / 2.00 / 2.25 bpw sets run through it. Measured on the 128 GB box (64 GB BIOS carve-out plus 64 GB seen by Windows) with 2.00 bpw and the default Faster mode, on the
 2026-10-25 build (before the DeepSeek defaults of 0.2.7): answers 15-17 tokens/s on code, 10-11 on chat; a 4K prompt 87 tokens/s, an 8K prompt 125 and a 32K prompt 177.
 On the 0.2.7 build the same box reads a 4K prompt at 214-233 tokens/s; the table below says which number comes from which build. The graphics chip and the CPU share the RAM, so the
@@ -23,8 +23,8 @@ Use the [current release](https://github.com/Niko1221/Strata/releases/latest). Y
 
 | System | What to install | Engine variant |
 | --- | --- | --- |
-| Linux | `Strata-0.2.9-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
-| Windows | `Strata-0.2.9-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
+| Linux | `Strata-0.2.13-linux-x86_64.AppImage` (it downloads the engine on first start), or `strata launch` | `linux-x86_64-hip-halo` |
+| Windows | `Strata-0.2.13-windows-x64-setup.exe` (it downloads the engine on first start), or `strata launch` | `windows-x86_64-hip-rdna3` |
 
 Packaged engines carry the matching hipBLASLt tuning table for gfx1151 and select it on their own. Setup recognizes `gfx1151` and
 PCI ID `1002:1586`; other integrated Radeon chips have separate support limits. Unified memory is counted once. Setup does not
@@ -42,7 +42,7 @@ package is the AMD one built for gfx1151 (`strata-dsv41-...-windows-x86_64-hip-r
 
 | | |
 | --- | --- |
-| Sets | IST-DAS 1.75 bpw (239 GB download), 2.00 bpw (257 GB), 2.25 bpw (274 GB); the n-gram table is shared |
+| Sets | ISTA-DAS 1.75 bpw (239 GB download), 2.00 bpw (257 GB), 2.25 bpw (274 GB); the n-gram table is shared |
 | Memory | one pool of 128 GB (the BIOS carve-out plus the RAM): about 109 GB of the 2.00 set's 132 GB of experts stay in it beside the dense weights and 12 GB kept for Windows; the other 23 GB are read from the SSD |
 | Driver | AMD Adrenalin 26.10.1 (driver 32.0.32015.7029) is the tested version, and the minimum to use: the 2025-03 driver failed at 32K context |
 | Context | 8K default; 32K and 64K work (an 8-hour 32K soak passed) |
