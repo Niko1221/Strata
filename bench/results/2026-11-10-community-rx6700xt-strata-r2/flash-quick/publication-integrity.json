@@ -1,0 +1,55 @@
+{
+  "scope": "Official quick suite and supporting original configuration, full native log, command and provenance. No private comparison data or model weights.",
+  "files": {
+    "cli.log": {
+      "original_sha256": "1c5a61c80030d0408aa36707db98bc45f55b13e3c404813d4f86f2e29a33869a",
+      "published_sha256": "b21931d6acac25f688014d49d1f28f45bb9002a5fdd0d84af6266501f7709c9a",
+      "string_redactions_only": true
+    },
+    "command.json": {
+      "original_sha256": "1fcd56d989db815bdd862c250b6d156644b8e5c97e9477bb89c246d81f1c1958",
+      "published_sha256": "6d0a35b5ef2b54a164d8fbb27e5c2a6787ef871fd580901099235a465bdf5631",
+      "string_redactions_only": true
+    },
+    "config.json": {
+      "original_sha256": "62bc343679351af65c3e6fc92376786e312ce4d7142c4212ed8db84c0f298faa",
+      "published_sha256": "8806e3cb59431f9fa63a20f1f185cb4f1f53c12a83cf97ce392c363dd23787fe",
+      "string_redactions_only": true
+    },
+    "native-engine.log": {
+      "original_sha256": "df8bbcfb88ae836e518e9c8b50f718bb678ba5f5e9333be8a1a556d25eefe866",
+      "published_sha256": "d5c45b8eb3099505223231893dfafc258bf0772ecc533a47fefab1b44420bb87",
+      "string_redactions_only": true
+    },
+    "predeclared-provenance.json": {
+      "original_sha256": "09e0dc2374537215b1a77b9d85dc29f10fd5c94c181d3c0e17b682456b9849b6",
+      "published_sha256": "fbc7d43f9514c175666e416a22f7ed4fed122e7aea4c8a035ed8b031861e696c",
+      "string_redactions_only": true
+    },
+    "receipt.json": {
+      "original_sha256": "06ddc7791e02134282dcf3da61449171ba218b9494a3738e08f60f8f301e7fef",
+      "published_sha256": "06ddc7791e02134282dcf3da61449171ba218b9494a3738e08f60f8f301e7fef",
+      "string_redactions_only": true
+    },
+    "report/2026-11-10-community-unknown-qwen3-8-flash-next-iq2-xs/engine-log-excerpt.txt": {
+      "original_sha256": "c059c56ff6e6d46336b91f098129c3b9fbf0d5c50738622e65d433d9cb44bcdd",
+      "published_sha256": "c059c56ff6e6d46336b91f098129c3b9fbf0d5c50738622e65d433d9cb44bcdd",
+      "string_redactions_only": true
+    },
+    "report/2026-11-10-community-unknown-qwen3-8-flash-next-iq2-xs/README.md": {
+      "original_sha256": "10091d4a44c2e92a9305bcfd74a15bfc5718ceafc548b39d5cb84e58cd43d978",
+      "published_sha256": "077d839537dbcf2e55941a5ed197fa7d8d27fc7fc45919de90b0558ddd572110",
+      "string_redactions_only": false,
+      "prose_corrections": "Physical/guest hardware distinction, actual software/runtime identities, deliberate profile, launch serve mode, warmup/calibration counts, measured cache conditions and full replay links; measurement tables unchanged."
+    },
+    "report/2026-11-10-community-unknown-qwen3-8-flash-next-iq2-xs/results.json": {
+      "original_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+      "published_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+      "string_redactions_only": true
+    }
+  },
+  "measured_results_subtree_unchanged": true,
+  "source_result_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+  "public_result_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+  "report_prose_corrections": true
+}

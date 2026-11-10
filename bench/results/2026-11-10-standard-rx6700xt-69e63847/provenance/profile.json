@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "id": "benchmark-standard-r2",
+  "source_config": "<campaign>/standards-r2/config.json",
+  "overrides": {}
+}

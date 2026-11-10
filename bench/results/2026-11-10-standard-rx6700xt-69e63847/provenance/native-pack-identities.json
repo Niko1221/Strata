@@ -1,0 +1,77 @@
+{
+  "observed_utc": "2026-11-10T14:52:00.333143+00:00",
+  "scope": "All files of actual native IQ2_XS source pack hashed after completed standards and quick runs, with no inference running. File modification times are filesystem observations, not reconstructed pre-run attestations. Generated dense weights remain private.",
+  "files": [
+    {
+      "path": "conversions.json",
+      "sha256": "b0908ca2ee3712d3734aaf778c38f75f4a8a8753edae5fb9429ba6a04fbb2c07",
+      "bytes": 308,
+      "filesystem_mtime_utc": "2026-11-10T05:33:52.392891+00:00"
+    },
+    {
+      "path": "dense.bin",
+      "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13",
+      "bytes": 1538035200,
+      "filesystem_mtime_utc": "2026-11-10T05:33:52.378462+00:00"
+    },
+    {
+      "path": "index.txt",
+      "sha256": "19e781af360ca3b83fd90fe09e757ac9aa2a9dcada26810ddc9e933bdb112091",
+      "bytes": 93686,
+      "filesystem_mtime_utc": "2026-11-10T05:33:52.392462+00:00"
+    },
+    {
+      "path": "native_experts.txt",
+      "sha256": "48df605acb89c7e8c3176a51cec777c2ed344ea439e8f3a37e5ce4f9dcb6946c",
+      "bytes": 3289,
+      "filesystem_mtime_utc": "2026-11-10T05:33:53.662458+00:00"
+    },
+    {
+      "path": "tokenizer/chat_template.jinja",
+      "sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce",
+      "bytes": 9993,
+      "filesystem_mtime_utc": "2026-11-10T05:33:53.608583+00:00"
+    },
+    {
+      "path": "tokenizer/merges.txt",
+      "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332",
+      "bytes": 3353258,
+      "filesystem_mtime_utc": "2026-11-10T05:33:53.222460+00:00"
+    },
+    {
+      "path": "tokenizer/token_type.json",
+      "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+      "bytes": 744960,
+      "filesystem_mtime_utc": "2026-11-10T05:33:53.233187+00:00"
+    },
+    {
+      "path": "tokenizer/tokenizer.json",
+      "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf",
+      "bytes": 541,
+      "filesystem_mtime_utc": "2026-11-10T05:33:53.233439+00:00"
+    },
+    {
+      "path": "tokenizer/vocab.json",
+      "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+      "bytes": 5737005,
+      "filesystem_mtime_utc": "2026-11-10T05:33:53.127460+00:00"
+    }
+  ],
+  "conversion_metadata": {
+    "schema": 1,
+    "tool": "tools/iq_pack.py",
+    "compat_bf16": false,
+    "source_shards": [
+      {
+        "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+        "size": 39225954592
+      },
+      {
+        "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+        "size": 28800138432
+      }
+    ],
+    "tensors": []
+  },
+  "preparation": "Released Strata launch, family qwen/model IQ2_XS/context128k/visionoff into campaign data; same signed engine and exact input GGUF shards as recorded. Separate custom tokenizer copy changes only chat_template.jinja."
+}

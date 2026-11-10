@@ -1,0 +1,109 @@
+{
+  "scope": "Nominal10-second host samples per official CLI process window, including loading, preparation, measured requests and shutdown. Sampled extrema are not continuous peaks; host available RAM is not inference process RSS. No energy-per-token or process paging measurement.",
+  "source_jsonl_sha256": "e7ccb089d36caebe458b1e53777bfef271ac788629edf047f990e38e485052ae",
+  "windows": {
+    "flash": {
+      "process_window": {
+        "started_utc": "2026-11-10T14:30:22.979950+00:00",
+        "completed_utc": "2026-11-10T14:41:56.729572+00:00",
+        "exit_code": 0
+      },
+      "sample_count": 58,
+      "first_sample_utc": "2026-11-10T14:30:33.691722+00:00",
+      "last_sample_utc": "2026-11-10T14:41:48.351676+00:00",
+      "host_available_ram_bytes": {
+        "min": 21957750784,
+        "max": 61144473600
+      },
+      "host_swap_used_bytes": {
+        "min": 12288,
+        "max": 12288
+      },
+      "gpu_vram_used_bytes": {
+        "min": 5025419264,
+        "max": 12012216320
+      },
+      "gpu_temperature_c": {
+        "min": 45.0,
+        "max": 68.0
+      },
+      "gpu_power_w": {
+        "min": 4.0,
+        "max": 213.0
+      },
+      "pool_available_bytes": {
+        "min": 155398669598,
+        "max": 155398669598
+      }
+    },
+    "qwen36": {
+      "process_window": {
+        "started_utc": "2026-11-10T14:42:28.423066+00:00",
+        "completed_utc": "2026-11-10T14:50:26.554885+00:00",
+        "exit_code": 0
+      },
+      "sample_count": 40,
+      "first_sample_utc": "2026-11-10T14:42:35.767635+00:00",
+      "last_sample_utc": "2026-11-10T14:50:18.831803+00:00",
+      "host_available_ram_bytes": {
+        "min": 43704418304,
+        "max": 63978180608
+      },
+      "host_swap_used_bytes": {
+        "min": 12288,
+        "max": 12288
+      },
+      "gpu_vram_used_bytes": {
+        "min": 10416001024,
+        "max": 12313255936
+      },
+      "gpu_temperature_c": {
+        "min": 53.0,
+        "max": 67.0
+      },
+      "gpu_power_w": {
+        "min": 19.0,
+        "max": 213.0
+      },
+      "pool_available_bytes": {
+        "min": 155398669598,
+        "max": 155398669598
+      }
+    },
+    "draft-standard": {
+      "process_window": {
+        "started_utc": "2026-11-10T14:17:47.638426+00:00",
+        "completed_utc": "2026-11-10T14:28:41.727510+00:00",
+        "exit_code": 0,
+        "raw_results_sha256": "2e29246103e62b51e05231911f91eca53a823b1ba59464d3a8da0867e6a66246"
+      },
+      "sample_count": 55,
+      "first_sample_utc": "2026-11-10T14:17:53.282798+00:00",
+      "last_sample_utc": "2026-11-10T14:28:35.368301+00:00",
+      "host_available_ram_bytes": {
+        "min": 24251453440,
+        "max": 64640925696
+      },
+      "host_swap_used_bytes": {
+        "min": 12288,
+        "max": 12288
+      },
+      "gpu_vram_used_bytes": {
+        "min": 16498688,
+        "max": 11954642944
+      },
+      "gpu_temperature_c": {
+        "min": 36.0,
+        "max": 66.0
+      },
+      "gpu_power_w": {
+        "min": 4.0,
+        "max": 214.0
+      },
+      "pool_available_bytes": {
+        "min": 155398669598,
+        "max": 155398669598
+      }
+    }
+  }
+}

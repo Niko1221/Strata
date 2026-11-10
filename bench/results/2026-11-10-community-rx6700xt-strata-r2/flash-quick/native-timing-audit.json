@@ -1,0 +1,372 @@
+{
+  "verdict": "pass",
+  "verified_utc": "2026-11-10T14:43:02.100172+00:00",
+  "scope": "All36 stored official Strata quick records matched uniquely and in actual schedule order against full native log counts, draft counters, durations and rates within recorded precision. Two warmups and two calibration probes remain outside summaries. This is not a full submission-guideline audit.",
+  "result_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+  "native_engine_log_sha256": "df8bbcfb88ae836e518e9c8b50f718bb678ba5f5e9333be8a1a556d25eefe866",
+  "measured_records": 36,
+  "native_lines": 40,
+  "preparation_lines": 4,
+  "matches": [
+    {
+      "stored_index": 0,
+      "native_line": 79,
+      "input_tokens": 51,
+      "read_tokens": 51,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 74,
+      "drafts_offered": 91
+    },
+    {
+      "stored_index": 1,
+      "native_line": 84,
+      "input_tokens": 43,
+      "read_tokens": 43,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 44,
+      "drafts_offered": 57
+    },
+    {
+      "stored_index": 2,
+      "native_line": 90,
+      "input_tokens": 46,
+      "read_tokens": 46,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 44,
+      "drafts_offered": 64
+    },
+    {
+      "stored_index": 3,
+      "native_line": 94,
+      "input_tokens": 51,
+      "read_tokens": 51,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 75,
+      "drafts_offered": 91
+    },
+    {
+      "stored_index": 4,
+      "native_line": 98,
+      "input_tokens": 43,
+      "read_tokens": 43,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 44,
+      "drafts_offered": 56
+    },
+    {
+      "stored_index": 5,
+      "native_line": 102,
+      "input_tokens": 46,
+      "read_tokens": 46,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 43,
+      "drafts_offered": 57
+    },
+    {
+      "stored_index": 6,
+      "native_line": 106,
+      "input_tokens": 51,
+      "read_tokens": 51,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 76,
+      "drafts_offered": 84
+    },
+    {
+      "stored_index": 7,
+      "native_line": 110,
+      "input_tokens": 43,
+      "read_tokens": 43,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 46,
+      "drafts_offered": 60
+    },
+    {
+      "stored_index": 8,
+      "native_line": 114,
+      "input_tokens": 46,
+      "read_tokens": 46,
+      "reused_tokens": 0,
+      "generated_tokens": 100,
+      "drafts_accepted": 43,
+      "drafts_offered": 57
+    },
+    {
+      "stored_index": 9,
+      "native_line": 118,
+      "input_tokens": 4019,
+      "read_tokens": 4019,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 6,
+      "drafts_offered": 7
+    },
+    {
+      "stored_index": 10,
+      "native_line": 122,
+      "input_tokens": 4019,
+      "read_tokens": 4019,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 6,
+      "drafts_offered": 6
+    },
+    {
+      "stored_index": 11,
+      "native_line": 126,
+      "input_tokens": 4019,
+      "read_tokens": 4019,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 5
+    },
+    {
+      "stored_index": 12,
+      "native_line": 130,
+      "input_tokens": 16058,
+      "read_tokens": 16058,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 12
+    },
+    {
+      "stored_index": 13,
+      "native_line": 134,
+      "input_tokens": 16058,
+      "read_tokens": 16058,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 5
+    },
+    {
+      "stored_index": 14,
+      "native_line": 138,
+      "input_tokens": 16058,
+      "read_tokens": 16058,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 5
+    },
+    {
+      "stored_index": 15,
+      "native_line": 142,
+      "input_tokens": 645,
+      "read_tokens": 645,
+      "reused_tokens": 0,
+      "generated_tokens": 19,
+      "drafts_accepted": 11,
+      "drafts_offered": 16
+    },
+    {
+      "stored_index": 16,
+      "native_line": 145,
+      "input_tokens": 2305,
+      "read_tokens": 1642,
+      "reused_tokens": 663,
+      "generated_tokens": 64,
+      "drafts_accepted": 24,
+      "drafts_offered": 29
+    },
+    {
+      "stored_index": 17,
+      "native_line": 148,
+      "input_tokens": 4011,
+      "read_tokens": 1643,
+      "reused_tokens": 2368,
+      "generated_tokens": 64,
+      "drafts_accepted": 37,
+      "drafts_offered": 56
+    },
+    {
+      "stored_index": 18,
+      "native_line": 152,
+      "input_tokens": 5717,
+      "read_tokens": 1643,
+      "reused_tokens": 4074,
+      "generated_tokens": 18,
+      "drafts_accepted": 9,
+      "drafts_offered": 21
+    },
+    {
+      "stored_index": 19,
+      "native_line": 156,
+      "input_tokens": 7376,
+      "read_tokens": 1642,
+      "reused_tokens": 5734,
+      "generated_tokens": 3,
+      "drafts_accepted": 1,
+      "drafts_offered": 5
+    },
+    {
+      "stored_index": 20,
+      "native_line": 159,
+      "input_tokens": 9020,
+      "read_tokens": 1642,
+      "reused_tokens": 7378,
+      "generated_tokens": 3,
+      "drafts_accepted": 1,
+      "drafts_offered": 3
+    },
+    {
+      "stored_index": 21,
+      "native_line": 163,
+      "input_tokens": 645,
+      "read_tokens": 645,
+      "reused_tokens": 0,
+      "generated_tokens": 11,
+      "drafts_accepted": 5,
+      "drafts_offered": 12
+    },
+    {
+      "stored_index": 22,
+      "native_line": 166,
+      "input_tokens": 2297,
+      "read_tokens": 1642,
+      "reused_tokens": 655,
+      "generated_tokens": 64,
+      "drafts_accepted": 27,
+      "drafts_offered": 38
+    },
+    {
+      "stored_index": 23,
+      "native_line": 169,
+      "input_tokens": 4003,
+      "read_tokens": 1643,
+      "reused_tokens": 2360,
+      "generated_tokens": 64,
+      "drafts_accepted": 35,
+      "drafts_offered": 40
+    },
+    {
+      "stored_index": 24,
+      "native_line": 173,
+      "input_tokens": 5709,
+      "read_tokens": 1643,
+      "reused_tokens": 4066,
+      "generated_tokens": 48,
+      "drafts_accepted": 23,
+      "drafts_offered": 31
+    },
+    {
+      "stored_index": 25,
+      "native_line": 177,
+      "input_tokens": 7398,
+      "read_tokens": 1642,
+      "reused_tokens": 5756,
+      "generated_tokens": 37,
+      "drafts_accepted": 19,
+      "drafts_offered": 22
+    },
+    {
+      "stored_index": 26,
+      "native_line": 181,
+      "input_tokens": 9076,
+      "read_tokens": 1642,
+      "reused_tokens": 7434,
+      "generated_tokens": 42,
+      "drafts_accepted": 25,
+      "drafts_offered": 31
+    },
+    {
+      "stored_index": 27,
+      "native_line": 186,
+      "input_tokens": 645,
+      "read_tokens": 645,
+      "reused_tokens": 0,
+      "generated_tokens": 19,
+      "drafts_accepted": 11,
+      "drafts_offered": 17
+    },
+    {
+      "stored_index": 28,
+      "native_line": 189,
+      "input_tokens": 2305,
+      "read_tokens": 1642,
+      "reused_tokens": 663,
+      "generated_tokens": 64,
+      "drafts_accepted": 22,
+      "drafts_offered": 31
+    },
+    {
+      "stored_index": 29,
+      "native_line": 192,
+      "input_tokens": 4011,
+      "read_tokens": 1643,
+      "reused_tokens": 2368,
+      "generated_tokens": 64,
+      "drafts_accepted": 31,
+      "drafts_offered": 41
+    },
+    {
+      "stored_index": 30,
+      "native_line": 196,
+      "input_tokens": 5717,
+      "read_tokens": 1643,
+      "reused_tokens": 4074,
+      "generated_tokens": 22,
+      "drafts_accepted": 14,
+      "drafts_offered": 19
+    },
+    {
+      "stored_index": 31,
+      "native_line": 200,
+      "input_tokens": 7380,
+      "read_tokens": 1642,
+      "reused_tokens": 5738,
+      "generated_tokens": 4,
+      "drafts_accepted": 2,
+      "drafts_offered": 5
+    },
+    {
+      "stored_index": 32,
+      "native_line": 203,
+      "input_tokens": 9025,
+      "read_tokens": 1642,
+      "reused_tokens": 7383,
+      "generated_tokens": 4,
+      "drafts_accepted": 2,
+      "drafts_offered": 4
+    },
+    {
+      "stored_index": 33,
+      "native_line": 208,
+      "input_tokens": 32049,
+      "read_tokens": 32049,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 10
+    },
+    {
+      "stored_index": 34,
+      "native_line": 212,
+      "input_tokens": 32049,
+      "read_tokens": 32049,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 10
+    },
+    {
+      "stored_index": 35,
+      "native_line": 216,
+      "input_tokens": 32049,
+      "read_tokens": 32049,
+      "reused_tokens": 0,
+      "generated_tokens": 24,
+      "drafts_accepted": 5,
+      "drafts_offered": 10
+    }
+  ]
+}

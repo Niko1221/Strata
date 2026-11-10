@@ -1,0 +1,97 @@
+{
+  "created_utc": "2026-11-10T14:15:14.049019+00:00",
+  "purpose": "Prospective metadata declared before loading engine or sending requests; raw official output will remain unmodified.",
+  "protocol": "strata-qwen38-thinking-v1-draft.1",
+  "track": "custom",
+  "model_card": {
+    "repository": "Qwen/Qwen3.8-Flash-Next",
+    "revision": "812d96e10a0dd82b69d749e68693698cf6c36daa",
+    "artifact": "upstream-model-card.md"
+  },
+  "source_content": {
+    "repository": "Qwen/Qwen3.8-Flash-Next",
+    "revision": "34567a4712bc9766c4449e2e98e4468bfa24d915",
+    "evidence": "source-content-history.json",
+    "interpretation": "All 131 weight file LFS identities and computational/tokenizer blobs identical across every published source revision; earliest immutable content snapshot selected. This is a content-identity inference, not recovery of the quantizer private checkout or independent requantization."
+  },
+  "runner_metadata_policy": "No patch or monkeypatch. Preserve hardcoded protocol.model_card_revision null in raw draft output; pinned card supplied here and in predeclared track notes. Protocol activation checklist explicitly identifies this draft null. Final audit must judge applicability; this preparation does not itself establish submission conformance.",
+  "runtime_evidence": "portable-runtime-identity.json",
+  "template_evidence": "template-offline-audit.json",
+  "template_risk": "All 34 renderings match upstream; four theoretical shared-prefix bounds exceed corpus+8. Actual runner cache-count test remains unchanged; preserve any actual nonconformance.",
+  "installed_code": {
+    "COMMIT": {
+      "sha256": "68c25c729337075be14dc94c7a48d7f4ffba1fce72a83e13c8ed5e57b765d30d",
+      "bytes": 41
+    },
+    "strata_cli/bench_standard.py": {
+      "sha256": "740be982d1ca7f134833911f74d7ef7ffbdb429ef0659ac8d1d9b5ba793e4c03",
+      "bytes": 78760
+    },
+    "serve/frontend.py": {
+      "sha256": "04131e517c48b81d04cc65dbdc5ea042a5fc898deef8d3977b3973c3673b1a66",
+      "bytes": 114516
+    },
+    "tools/strata_tokenizer.py": {
+      "sha256": "9717b4eb4ef0b84a59c416ac917b8be66bb6c0bdd521abf08a1dca1d481ed463",
+      "bytes": 29151
+    }
+  },
+  "artifacts": {
+    "command.json": {
+      "sha256": "79dff9f0f527c19421f983e1d2d689377bd1c5f1847097cce4beb22113069262",
+      "bytes": 1323
+    },
+    "config.json": {
+      "sha256": "8d7c4116615a320c5f6e981ca904169b3ccf6df120f48fb9fd9dab2debdfb9aa",
+      "bytes": 1530
+    },
+    "custom-tool-compatible-template.jinja": {
+      "sha256": "1ac5f548a3b93e73fdc484dbd1ff7c7b3f846def10b67a9e6788d981dbbcda7f",
+      "bytes": 10358
+    },
+    "portable-runtime-identity.json": {
+      "sha256": "0ffa17455fd31d622b7422f97a920ee2587cce309bf5da10dc40482e8adf4477",
+      "bytes": 1177
+    },
+    "profiles/benchmark-standard-r2.json": {
+      "sha256": "8969974beb44ea1e55739d6d86e1a20024d5922dedcf5abdcd4b733dbc0ddaa4",
+      "bytes": 151
+    },
+    "source-content-history.json": {
+      "sha256": "4f49837805ff4bb79ae3b32274d97038d842865ec5fd161c6122657f0d56092d",
+      "bytes": 118942
+    },
+    "template-offline-audit.json": {
+      "sha256": "c43393c6da8b9a624f636c66895d352a876867f76bbfbb48a9e0202d26c60998",
+      "bytes": 14788
+    },
+    "tokenizer/chat_template.jinja": {
+      "sha256": "1ac5f548a3b93e73fdc484dbd1ff7c7b3f846def10b67a9e6788d981dbbcda7f",
+      "bytes": 10358
+    },
+    "tokenizer/merges.txt": {
+      "sha256": "4ba698529766c7a2f5052083ea10cdf2485577f5237a332ee291054eb11e3332",
+      "bytes": 3353258
+    },
+    "tokenizer/token_type.json": {
+      "sha256": "5088c8c298fc06af8382ddb3b76c888703ac2634e82263b97eedcc2ad202738b",
+      "bytes": 744960
+    },
+    "tokenizer/tokenizer.json": {
+      "sha256": "c0bd435efbc6c3b28964b47999afe16c4ad268c7c7c4e8cb3af410796a6f30bf",
+      "bytes": 541
+    },
+    "tokenizer/vocab.json": {
+      "sha256": "4ba64f0332abcfb0b600b7df1537d1e836e68009d5fb7cdb77339738dc6365c4",
+      "bytes": 5737005
+    },
+    "upstream-chat-template.jinja": {
+      "sha256": "af16f654968d47d09a6c604e00370b12dbc21f76456f59c9e98b82e84d9f6375",
+      "bytes": 9004
+    },
+    "upstream-model-card.md": {
+      "sha256": "5c151489c5de6ba51318e5e03d9ffb80622f118b37e7af550a6c174c5a9fe104",
+      "bytes": 65087
+    }
+  }
+}

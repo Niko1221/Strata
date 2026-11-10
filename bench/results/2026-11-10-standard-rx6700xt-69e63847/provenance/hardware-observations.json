@@ -1,0 +1,49 @@
+{
+  "observed_utc": "2026-11-10T15:00:53.727488+00:00",
+  "scope": "Read-only host observations after tests; physical hardware and saved benchmark guest allocation. These are not reconstructed pre-run measurements. GPU product label was identified by benchmark owner; PCI/sysfs identities are observed.",
+  "cpu": {
+    "CPU(s):": "12",
+    "Model name:": "AMD Ryzen 5 3600 6-Core Processor",
+    "Thread(s) per core:": "2",
+    "Core(s) per socket:": "6",
+    "Socket(s):": "1"
+  },
+  "installed_ram_bytes": 68719476736,
+  "dimm_sizes_bytes": [
+    17179869184,
+    17179869184,
+    17179869184,
+    17179869184
+  ],
+  "configured_memory_speeds_mt_s": [
+    3200,
+    3200,
+    3200,
+    3200
+  ],
+  "physical_disks": [
+    {
+      "name": "nvme0n1",
+      "model": "INTEL SSDPEKNW010T8",
+      "tran": "nvme",
+      "size": 1024209543168,
+      "type": "disk"
+    }
+  ],
+  "gpu": {
+    "owner_identified_product": "RX 6700 XT",
+    "pci_address": "0000:0b:00.0",
+    "device_index": 0,
+    "vendor": "0x1002",
+    "device": "0x73df",
+    "memory_bytes": 12868124672,
+    "power_limit_w": 211.0
+  },
+  "kernel": "7.0.14-26-pve",
+  "amdgpu_source_version": "B1D135B579C294611EB792D",
+  "benchmark_guest_allocation": {
+    "memory": "57344",
+    "cores": "10",
+    "cpulimit": null
+  }
+}

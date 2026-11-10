@@ -1,0 +1,4 @@
+[strata] 2026-11-10 07:01:23 engine started: <engine-component>/strata --serve --native <model-store>/data/models/qwen36-UD-Q4_K_XL/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 131072 --prefill auto --mtp 2
+strata-q36: <model-store>/data/models/qwen36-UD-Q4_K_XL/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf: 753 tensors (layout checked), 4.40 GiB on the GPU in 4.0 s (the routed experts are placed after the engine's buffers)
+strata-q36: prompt experts on MMQ (int8)
+strata-q36: cudaMalloc(&p, n * 4) failed: out of memory (/data/work-rx6000/src/src/qwen35/q36_engine.cu:1128)

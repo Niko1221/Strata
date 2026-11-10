@@ -1,0 +1,43 @@
+{
+ "exe": "component:strata-engine",
+ "args": [
+  "--native",
+  "<model-store>/data/models/qwen36-UD-Q4_K_XL/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "--max-context",
+  "131072",
+  "--prefill",
+  "auto",
+  "--mtp",
+  "2"
+ ],
+ "cwd": "<terminal>",
+ "tokenizer": "<campaign>/data/packs/qwen36-ud-q4_k_xl/tokenizer",
+ "model_name": "qwen3.6-35b-a3b-ud-q4_k_xl",
+ "arch": "qwen35moe",
+ "log": "<state>/launch/benchmark-host-qwen36-q4xl-128k.engine.log",
+ "lib_dirs": [],
+ "port": 8080,
+ "backend": "hip",
+ "args_written": [
+  "--native",
+  "<model-store>/data/models/qwen36-UD-Q4_K_XL/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "--max-context",
+  "131072",
+  "--prefill",
+  "auto",
+  "--mtp",
+  "2"
+ ],
+ "host": "127.0.0.1",
+ "open_browser": false,
+ "args_derived": [
+  "--native",
+  "<model-store>/data/models/qwen36-UD-Q4_K_XL/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "--max-context",
+  "131072",
+  "--prefill",
+  "auto",
+  "--mtp",
+  "2"
+ ]
+}

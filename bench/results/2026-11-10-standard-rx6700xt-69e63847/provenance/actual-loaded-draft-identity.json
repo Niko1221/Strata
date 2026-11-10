@@ -1,0 +1,8 @@
+{
+  "verified_utc": "2026-11-10T14:29:16.559225+00:00",
+  "observed_runtime_argv": "observed-engine-argv.json",
+  "filename": "qwen3.8-flash-next-dflash2.q4_0-selq4.pack",
+  "sha256": "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd",
+  "bytes": 339694592,
+  "scope": "Actual loaded draft pack path captured from live engine; bytes hashed after standard completed. Earlier read-only pre-run query independently returned same hash. No timing data changed."
+}

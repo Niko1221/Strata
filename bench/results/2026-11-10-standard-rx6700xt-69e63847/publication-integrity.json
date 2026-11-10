@@ -1,0 +1,249 @@
+{
+  "policy": "Immutable owner evidence retained. Public copies redact operational strings. All factual identity/hardware/native-pack metadata corrections are enumerated separately, with original sanitized runner output preserved. Every request record, performance/count/score summary and outcome is unchanged. Candidate only; final publication audit remains separate.",
+  "source_results_sha256": "2e29246103e62b51e05231911f91eca53a823b1ba59464d3a8da0867e6a66246",
+  "files": {
+    "config.json": {
+      "source_sha256": "dce3f7304c4d385e300e7c4640eb0b6c4752e00a1af1125b4c5df189e9898323",
+      "published_sha256": "dce3f7304c4d385e300e7c4640eb0b6c4752e00a1af1125b4c5df189e9898323",
+      "policy": "string redactions only"
+    },
+    "engine.log": {
+      "source_sha256": "4df46ee9af38fbf48de8ba2b37975bc4ef176eb3306f409e73e4f3543c4ffa7b",
+      "published_sha256": "9ce34e7927f17c065c5bee007cf3b4b74aba72ae626675a334a4b5ead1ff4ba2",
+      "policy": "string redactions only"
+    },
+    "outputs.jsonl": {
+      "source_sha256": "eb8a5fd11d8fc545f9429f6db8be53ddb60ec82ffaa6393e3a5b824691f664e7",
+      "published_sha256": "eb8a5fd11d8fc545f9429f6db8be53ddb60ec82ffaa6393e3a5b824691f664e7",
+      "policy": "string redactions only"
+    },
+    "results.json": {
+      "source_sha256": "2e29246103e62b51e05231911f91eca53a823b1ba59464d3a8da0867e6a66246",
+      "published_sha256": "ee6c548d1b359bf7aff7c991d64d2fe9885141bea4e0b7b1c090c1fc87a6c76d",
+      "policy": "String redaction, documented identity metadata corrections and added provenance artifact references; all measured requests/counts/scores/summaries unchanged"
+    },
+    "provenance/chat_template.jinja": {
+      "source_sha256": "1ac5f548a3b93e73fdc484dbd1ff7c7b3f846def10b67a9e6788d981dbbcda7f",
+      "published_sha256": "1ac5f548a3b93e73fdc484dbd1ff7c7b3f846def10b67a9e6788d981dbbcda7f",
+      "policy": "string redactions only"
+    },
+    "provenance/corpus-build.json": {
+      "source_sha256": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2",
+      "published_sha256": "bc6c1f81d86863c3dc36a31f58010701d8ab05180f69f86c6978214409e43af2",
+      "policy": "string redactions only"
+    },
+    "provenance/corpus-manifest.sha256": {
+      "source_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+      "published_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+      "policy": "string redactions only"
+    },
+    "provenance/predeclared.json": {
+      "source_sha256": "386addbec55021e7e4302c9df9670a62f074f345db1793ea08fd9801588c363d",
+      "published_sha256": "e6f5df6a48bffed3d9bc3d2d0fb6351c86cb0419cc06d6602ce5b3f6434675bb",
+      "policy": "string redactions only"
+    },
+    "provenance/source-content-history.json": {
+      "source_sha256": "4f49837805ff4bb79ae3b32274d97038d842865ec5fd161c6122657f0d56092d",
+      "published_sha256": "4f49837805ff4bb79ae3b32274d97038d842865ec5fd161c6122657f0d56092d",
+      "policy": "string redactions only"
+    },
+    "provenance/upstream-chat-template.jinja": {
+      "source_sha256": "af16f654968d47d09a6c604e00370b12dbc21f76456f59c9e98b82e84d9f6375",
+      "published_sha256": "af16f654968d47d09a6c604e00370b12dbc21f76456f59c9e98b82e84d9f6375",
+      "policy": "string redactions only"
+    },
+    "provenance/template-offline-audit.json": {
+      "source_sha256": "c43393c6da8b9a624f636c66895d352a876867f76bbfbb48a9e0202d26c60998",
+      "published_sha256": "c43393c6da8b9a624f636c66895d352a876867f76bbfbb48a9e0202d26c60998",
+      "policy": "string redactions only"
+    },
+    "provenance/portable-runtime-identity.json": {
+      "source_sha256": "0ffa17455fd31d622b7422f97a920ee2587cce309bf5da10dc40482e8adf4477",
+      "published_sha256": "0ffa17455fd31d622b7422f97a920ee2587cce309bf5da10dc40482e8adf4477",
+      "policy": "string redactions only"
+    },
+    "provenance/resolved-engine-plan.json": {
+      "source_sha256": "50898f7e916af731a8e9bcafcdcf13ea7628677ff6644f8353cde0314903412b",
+      "published_sha256": "482b6d4ca8de7cab6109cc47510ee9f8d63197b9cd21b069f4eb6a7574421c28",
+      "policy": "string redactions only"
+    },
+    "provenance/observed-engine-argv.json": {
+      "source_sha256": "5dcdc0243b0d9d42beff991e0d087d7dd9307f514bd9bb4121dbd7cb71bc2b95",
+      "published_sha256": "d660aa17208636615665dbab234c9bd7c17917a3c22606d5280d904328c2e4ad",
+      "policy": "string redactions only"
+    },
+    "provenance/actual-loaded-draft-identity.json": {
+      "source_sha256": "9eecffc8f04f5b31fca1a70c421737a5a4248098ebf227a2ea572697e693f675",
+      "published_sha256": "9eecffc8f04f5b31fca1a70c421737a5a4248098ebf227a2ea572697e693f675",
+      "policy": "string redactions only"
+    },
+    "provenance/execution-audit.json": {
+      "source_sha256": "31c614e3669c7a19f504680c296b0ee99d9175fd921219ae7454a755718ed827",
+      "published_sha256": "31c614e3669c7a19f504680c296b0ee99d9175fd921219ae7454a755718ed827",
+      "policy": "string redactions only"
+    },
+    "provenance/command.json": {
+      "source_sha256": "79dff9f0f527c19421f983e1d2d689377bd1c5f1847097cce4beb22113069262",
+      "published_sha256": "1bfd769b5468486abffbee05410a2f10d59f855bffc12752a0f4da02fe92d2e2",
+      "policy": "string redactions only"
+    },
+    "provenance/run-config.json": {
+      "source_sha256": "8d7c4116615a320c5f6e981ca904169b3ccf6df120f48fb9fd9dab2debdfb9aa",
+      "published_sha256": "37e1dcc9d7d98806545ea6d5d07432f49617af93978bef1c617d55a91c61a264",
+      "policy": "string redactions only"
+    },
+    "provenance/profile.json": {
+      "source_sha256": "8969974beb44ea1e55739d6d86e1a20024d5922dedcf5abdcd4b733dbc0ddaa4",
+      "published_sha256": "76c2c65ae68a3dd18a0dd494fccb2b36caf28fbab18d00095dd5e5a4d037414f",
+      "policy": "string redactions only"
+    }
+  },
+  "metadata_corrections": [
+    {
+      "pointer": "/protocol/model_card_revision",
+      "before": null,
+      "after": "812d96e10a0dd82b69d749e68693698cf6c36daa",
+      "evidence": "provenance/predeclared.json: model_card; declared before engine load"
+    },
+    {
+      "pointer": "/model/files/4",
+      "before": {
+        "path": "qwen3.8-flash-next-dflash2.q4_0.pack",
+        "sha256": "cda40d62d0eb8f37ed6e272142641a1d2f0de4a32f9e14d0416e7a71534849f1"
+      },
+      "after": {
+        "path": "qwen3.8-flash-next-dflash2.q4_0-selq4.pack",
+        "sha256": "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd"
+      },
+      "evidence": "provenance/observed-engine-argv.json plus actual-loaded-draft-identity.json; native startup selector-codebook line"
+    },
+    {
+      "pointer": "/model/files/5",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "conversions.json",
+        "sha256": "b0908ca2ee3712d3734aaf778c38f75f4a8a8753edae5fb9429ba6a04fbb2c07"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/model/files/6",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "dense.bin",
+        "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/model/files/7",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "index.txt",
+        "sha256": "19e781af360ca3b83fd90fe09e757ac9aa2a9dcada26810ddc9e933bdb112091"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/model/files/8",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "native_experts.txt",
+        "sha256": "48df605acb89c7e8c3176a51cec777c2ed344ea439e8f3a37e5ce4f9dcb6946c"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/hardware/gpus/0/name",
+      "before": "AMD Radeon",
+      "after": "AMD Radeon RX 6700 XT",
+      "evidence": "provenance/hardware-observations.json: owner identified model, observed PCI/sysfs identity; no inferred marketing lookup"
+    },
+    {
+      "pointer": "/hardware/gpus/0/memory_bytes",
+      "before": null,
+      "after": 12868124672,
+      "evidence": "provenance/hardware-observations.json: sysfs dedicated VRAM total"
+    },
+    {
+      "pointer": "/hardware/gpus/0/power_limit_w",
+      "before": null,
+      "after": 211.0,
+      "evidence": "provenance/hardware-observations.json: hwmon power cap"
+    },
+    {
+      "pointer": "/hardware/ram_bytes",
+      "before": 60129542144,
+      "after": 68719476736,
+      "evidence": "provenance/hardware-observations.json: sum of four DMI16GiB DIMMs; original56GiB is guest limit, preserved in baseline and extensions"
+    },
+    {
+      "pointer": "/hardware/storage",
+      "before": null,
+      "after": [
+        {
+          "kind": "NVMe SSD",
+          "model": "INTEL SSDPEKNW010T8",
+          "bus": "nvme"
+        }
+      ],
+      "evidence": "provenance/hardware-observations.json: physical NVMe model/bus; models stored on this host thin pool"
+    },
+    {
+      "pointer": "/software/os/version",
+      "before": "7.0.14-26-pve",
+      "after": "13 (trixie)",
+      "evidence": "Original runner OS name states Debian GNU/Linux13; original version field held kernel, now retained under driver identity/extensions"
+    },
+    {
+      "pointer": "/software/drivers",
+      "before": null,
+      "after": [
+        {
+          "name": "linux kernel amdgpu",
+          "version": "7.0.14-26-pve; module srcversion B1D135B579C294611EB792D"
+        }
+      ],
+      "evidence": "Kernel/module build identity, not an independently numbered AMD driver package release; provenance/hardware-observations.json"
+    },
+    {
+      "pointer": "/software/runtime",
+      "before": null,
+      "after": [
+        {
+          "name": "hip",
+          "version": "7.13.26193"
+        }
+      ],
+      "evidence": "provenance/portable-runtime-identity.json: direct signed library hipRuntimeGetVersion/hipDriverGetVersion before this run; integer encoding7*10000000+13*100000+26193"
+    }
+  ],
+  "measurement_invariants_unchanged": true,
+  "reproduction_inputs_added": true,
+  "quantization_lfs_verified": {
+    "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+    "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "primary_metadata_url": "https://huggingface.co/api/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revision/ed59f92082b1e93c0e96d60a8b11aab089b52f09?blobs=true",
+    "files": [
+      {
+        "repository_path": "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+        "filename": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+        "sha256": "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7",
+        "bytes": 39225954592
+      },
+      {
+        "repository_path": "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+        "filename": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+        "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+        "bytes": 28800138432
+      }
+    ],
+    "scope": "Actual runner main-weight SHA256 values equal upstream LFS identities at exact immutable quantization revision."
+  },
+  "authored_report_review": {
+    "before_readme_sha256": "584ca252354f970285a973d17afc38f4e0e94a1323ec74236aad8118025243c6",
+    "after_readme_sha256": "dc3478ab0c3d936be12f482047373292a9df39fbc9c3db525363a876b3a17be2",
+    "changes": "Added required per-case Capped column and latency ranges from unchanged measured summaries; fixed withdrawn-candidate wording and direct replay-input links."
+  },
+  "native_pack_inventory_added": true
+}

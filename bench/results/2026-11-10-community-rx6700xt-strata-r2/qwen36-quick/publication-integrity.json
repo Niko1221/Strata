@@ -1,0 +1,55 @@
+{
+  "scope": "Official quick suite and supporting original configuration, full native log, command and provenance. No private comparison data or model weights.",
+  "files": {
+    "cli.log": {
+      "original_sha256": "fb9a4ff4a9ffa16fd8d9445cec66bee6a781b4ca26a9658301e090a93eedc295",
+      "published_sha256": "55acbddf5187d1b41e6cb1a2a52eeab248e2275eff4e0d49dbad269230c96cb8",
+      "string_redactions_only": true
+    },
+    "command.json": {
+      "original_sha256": "d51bf6aa70d6c72b6b6bfe3651cff1df94b249549251dc11c452b85813811fce",
+      "published_sha256": "b3902cc12dfdb49fa43d33231d94435094483bfc013db22cb0b5d1b806bba90d",
+      "string_redactions_only": true
+    },
+    "config.json": {
+      "original_sha256": "a8e4df3ceb174453f5e9d505567550cbd95f4f191efae2a981fcf004bede6b50",
+      "published_sha256": "25d1179c9a409cc7004988e6db7a1a6ae1143c5bda715a7f3c2cd3b7440a126f",
+      "string_redactions_only": true
+    },
+    "native-engine.log": {
+      "original_sha256": "e49d7f25a21a934b8c53c2271006ecd21df6a02afdff7496e5ca71ba528372d0",
+      "published_sha256": "5f3df91cae97f30e9e5031e93ce718ca5eedc3e8f956b00f419a13ba6f29db2b",
+      "string_redactions_only": true
+    },
+    "predeclared-provenance.json": {
+      "original_sha256": "cf3507c4970f8029f35ec1949667794ad5bee48223e7a4ccbe81f4b229b16b8e",
+      "published_sha256": "5089d4816a3fae5412455a7b5e97b466f85ef1f332d20770b8dc0fe105901e0d",
+      "string_redactions_only": true
+    },
+    "receipt.json": {
+      "original_sha256": "dcd0d218b7c0ea06e873b098831b781742a9cb90b6fd4f6635d5e3558f6333fb",
+      "published_sha256": "dcd0d218b7c0ea06e873b098831b781742a9cb90b6fd4f6635d5e3558f6333fb",
+      "string_redactions_only": true
+    },
+    "report/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl/engine-log-excerpt.txt": {
+      "original_sha256": "f5410256e18f9473e564da772d0dc90fec19b0cfb7e261612df7de89ea4f147d",
+      "published_sha256": "f5410256e18f9473e564da772d0dc90fec19b0cfb7e261612df7de89ea4f147d",
+      "string_redactions_only": true
+    },
+    "report/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl/README.md": {
+      "original_sha256": "4d5ca281d73926c296bddbd04c38ed44672d34e30db4eb4bb404a367509f489d",
+      "published_sha256": "21fc9b215449b010081c5bb9591180d2a2ecd0b240137e02d4162271778423f4",
+      "string_redactions_only": false,
+      "prose_corrections": "Physical/guest hardware distinction, actual software/runtime identities, deliberate profile, launch serve mode, warmup/calibration counts, measured cache conditions and full replay links; measurement tables unchanged."
+    },
+    "report/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl/results.json": {
+      "original_sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d",
+      "published_sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d",
+      "string_redactions_only": true
+    }
+  },
+  "measured_results_subtree_unchanged": true,
+  "source_result_sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d",
+  "public_result_sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d",
+  "report_prose_corrections": true
+}
