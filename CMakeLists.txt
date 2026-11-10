@@ -435,6 +435,9 @@ if(STRATA_NATIVE_EXPERTS)
   # the NVFP4 AVX-512 and AVX2 rows vs ggml-cpu's vec_dot, and their speed (CPU only; optional arg: a pack's experts.bin)
   add_executable(nvfp4_avx512_parity src/kernels/cpu/nvfp4_avx512_parity.cpp)
   target_link_libraries(nvfp4_avx512_parity PRIVATE strata_kernels_cpu)
+  if(STRATA_ISA_FLOOR)   # ggml-cpu without AVX2 / FMA: its dot is not the AVX2 one, so no bit-equality check (cmake/backends/cpu.cmake)
+    target_compile_definitions(nvfp4_avx512_parity PRIVATE STRATA_TEST_GGML_WITHOUT_AVX2=1)
+  endif()
   add_test(NAME nvfp4_cpu_parity COMMAND nvfp4_avx512_parity)   # random blocks; the AVX2 rows bit-equal to ggml's
   set_tests_properties(nvfp4_cpu_parity PROPERTIES TIMEOUT 120)
   if(STRATA_ENABLE_CUDA)   # the NVFP4 decode kernels vs ggml's reference
