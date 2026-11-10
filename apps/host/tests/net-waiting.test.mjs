@@ -27,6 +27,18 @@ test('the waiting line exists in all nine languages with both placeholders', () 
   }
 });
 
+test('the first-run screen takes the waiting line in place of the stage text, only while setup waits', async () => {
+  const eta = await bundle('../src/lib/download-eta.ts');
+  const i18n = await bundle('../src/lib/i18n.ts');
+  assert.equal(eta.waitingText({ phase: 'waiting', label: 'Waiting for github.com to answer (5 s so far)' }), 'Waiting for github.com to answer (5 s so far)');
+  assert.equal(eta.waitingText({ phase: 'download', label: 'Getting the model files' }), undefined);
+  assert.equal(eta.waitingText(undefined), undefined);
+  const src = readFileSync(here('../src/components/GuidedSetup.tsx'), 'utf8');
+  assert.match(src, /<strong className="onboard-download-status">\{tr\(waitingText\(installJob\?\.result\?\.install\) \?\? \(progress \? stageText/,
+    'the same element as the stage text: no new element, no new style');
+  void i18n;
+});
+
 test('setup\'s English label is translated with the host and the seconds kept', async () => {
   const i18n = await bundle('../src/lib/i18n.ts');
   await i18n.setTranslationLanguage('de');
