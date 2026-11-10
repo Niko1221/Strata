@@ -15,35 +15,10 @@ import urllib.request
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, MockEngine, Service, StrataEngine, serve
-
-
-class ResidentEngine(StrataEngine):
-    def __init__(self, tok):
-        self.reply = MockEngine(tok, "Hello.", max_context=4096)
-        self.max_context, self.info, self.last = 4096, {}, {}
-        self.loaded, self.starts, self.closes = False, 0, 0
-        self.unloaded = True
-        self.progress = None
-
-    def alive(self):
-        return self.loaded
-
-    def exit_code(self):
-        return None
-
-    def restart(self):
-        self.loaded = True
-        self.starts += 1
-        self.unloaded = False
-
-    def close(self):
-        self.loaded = False
-        self.closes += 1
-
-    def unload(self):
-        self.close()
-        self.unloaded = True
+from serve.server import ByteTokenizer, Service, serve
+# The lifecycle suite already owns this stub, and its generate() lets the ordinary inference API run
+# against it.  Reusing it keeps one definition and lets us assert that inference survives a session.
+from serve.test_lifecycle import ResidentEngine
 
 
 FAKE_ENGINE = textwrap.dedent("""
@@ -159,6 +134,42 @@ class TrainingApi(unittest.TestCase):
         self.assertEqual((code, body["status"], body["was_active"]), (200, "closed", False))
         code, body = self.post("/load", {})
         self.assertEqual((code, body["status"]), (200, "loaded"))
+
+    def test_inference_api_works_before_and_after_a_session(self):
+        """The ordinary OpenAI/Anthropic paths are untouched outside a session (CONTRIBUTING.md: preserve
+        existing behavior).  A session refuses them with 409; after it closes and the serving engine is
+        back, the same requests must return the same model answer - not just a 200 from /load."""
+        chat = {"model": "x", "max_tokens": 20, "messages": [{"role": "user", "content": "hello"}]}
+        paths = (("/v1/chat/completions", chat), ("/v1/messages", chat))
+
+        def reply_text(body):
+            """The mock's scripted reply is a thinking turn: OpenAI puts it in reasoning_content,
+            Anthropic in a thinking block.  Compare the model's words, not the per-request envelope."""
+            if "choices" in body:
+                msg = body["choices"][0]["message"]
+                return (msg.get("content") or "") + (msg.get("reasoning_content") or "")
+            return "".join(p.get("text") or p.get("thinking") or "" for p in body.get("content", []))
+
+        self.assertEqual(self.post("/load", {})[0], 200)
+        for path, payload in paths:
+            code, body = self.post(path, payload)
+            self.assertEqual(code, 200, (path, body))
+            self.assertEqual(reply_text(body), "Hello.", (path, body))
+
+        code, body = self.post("/v1/training/session", {"op": "open", "argv": self.argv})
+        self.assertEqual(code, 200, body)
+        self.addCleanup(self.post, "/v1/training/session", {"op": "close"})
+        for path, payload in paths:
+            code, body = self.post(path, payload)
+            self.assertEqual(code, 409, (path, body))
+            self.assertEqual(body["error"]["type"], "training_session_active")
+
+        self.assertEqual(self.post("/v1/training/session", {"op": "close"})[0], 200)
+        self.assertEqual(self.post("/load", {})[0], 200)     # the serving engine starts again
+        for path, payload in paths:
+            code, body = self.post(path, payload)
+            self.assertEqual(code, 200, (path, body))
+            self.assertEqual(reply_text(body), "Hello.", (path, body))
 
     def test_open_rejects_bad_argv(self):
         for argv in (None, [], "strata", [""], [1, 2]):
