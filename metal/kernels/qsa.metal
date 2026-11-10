@@ -19,13 +19,33 @@
 //
 // RoPE: cos/sin from a host table [pos][32] (double precision, as build_rope_table).
 
+// QH, QKV: query heads and kv heads of the model (Flash-Next 24 / 2); the host prelude (geo.h) defines GEO_QH / GEO_QKV for another shape
+#ifdef GEO_QH
+#define QH GEO_QH
+#else
 #define QH 24
+#endif
+#ifdef GEO_QKV
+#define QKV GEO_QKV
+#else
 #define QKV 2
+#endif
 #define QD 256
 #define QROT 64
 #define IH 4
 #define ID 128
+// the threadgroup of qsa_prep that does the indexer keys: after the q, k, v and indexer-q groups (Flash-Next 24 + 4 + 4)
+#if defined(GEO_QH) || defined(GEO_QKV)
+#define QSA_KEYS_ROW (QH + 2 * QKV + IH)
+#else
+#define QSA_KEYS_ROW 32
+#endif
+// QBUDGET: the selection budget in cells, indexer top_k + 3 (Flash-Next 2048 + 3); GEO_BUD from the host prelude for another top_k
+#ifdef GEO_BUD
+#define QBUDGET GEO_BUD
+#else
 #define QBUDGET 2051
+#endif
 #define QCH 64
 
 #ifndef STRATA_XH16_DECL
@@ -102,8 +122,8 @@ static inline float norm_rope(float x, float xhi_unused, device const float* g, 
     return o;
 }
 
-// grid (32 rows + 1, n_tok): rows 0..23 q heads, 24..25 k heads, 26..27 v heads, 28..31 indexer q heads;
-// threadgroup 32 (x = 32, y = 0) is the indexer-key threadgroup.  256 threads.
+// grid (QH + 2 QKV + IH + 1, n_tok): rows 0..QH-1 q heads, then the k heads, the v heads, the indexer q heads (Flash-Next: 24 / 2 / 2 / 4);
+// threadgroup QH + 2 QKV + IH (32; y = 0) is the indexer-key threadgroup.  256 threads.
 kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float* kcur [[buffer(1)]],
                      device const float* vcur [[buffer(2)]], device const float* iqraw [[buffer(3)]],
                      device const float* ikraw [[buffer(4)]], device const float* qn [[buffer(5)]],
@@ -121,7 +141,7 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
     threadgroup float row[256];
     threadgroup float amax[8];
     const int r = int(tg.x);
-    if (r == 32) {
+    if (r == QSA_KEYS_ROW) {
         // the indexer keys, every window token in order (only threadgroup (32, 0) works)
         if (tg.y != 0) return;
         for (int t = 0; t < int(a.n_tok); ++t) {

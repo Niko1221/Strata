@@ -146,15 +146,10 @@ class Config(unittest.TestCase):
         self.assertEqual(big[big.index("--spec") + 1], "3")
         self.assertNotIn("--spec-min-p", big)
 
-    def test_fp16_decode_is_set_for_a_resident_iq3_s_or_q2_0_only(self):
-        # the 61-task suite (phaseA-tests/mac-q/RESULTS.md section 30) passed the same tasks with STRATA_METAL_F16=1 as with =0
-        self.assertEqual(M._fit.engine_env("IQ3_S", False), {"STRATA_METAL_F16": "1"})
-        self.assertEqual(M._fit.engine_env("Q2_0", False), {"STRATA_METAL_F16": "1"})
-        self.assertEqual(M._fit.engine_env("iq3_s", False), {"STRATA_METAL_F16": "1"})
-        self.assertEqual(M._fit.engine_env("IQ3_S", True), {})            # streaming: the windows are not fp16
-        self.assertEqual(M._fit.engine_env("UD-Q4_K_XL", False), {})      # not measured
-        self.assertEqual(M._fit.engine_env("IQ3_XXS", False), {})
-        self.assertEqual(M._fit.engine_env("", False), {})
+    def test_fp16_decode_is_the_engines_own_default(self):
+        # STRATA_METAL_F16 for a resident IQ3_S / Q2_0 pack is decided by the engine (metal window.cpp f16_auto_for); setup writes nothing for it
+        self.assertFalse(hasattr(M._fit, "engine_env"))
+        self.assertFalse(hasattr(M._fit, "F16_MODELS"))
 
     def test_config_is_a_model_config_with_the_metal_backend(self):
         cfg = M.mac_config(Path("/r/build-metal/strata"), ["--pack", "x"], Path("/p"), "qwen3.8-flash-next-q2_0",
@@ -553,7 +548,7 @@ class MacAppUnsloth(unittest.TestCase):
         setup.mark(native)
         rc, ran = self.install(model)
         self.assertEqual(rc, 0)
-        self.assertEqual([r[1].rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])
+        self.assertEqual([str(r[1]).replace("\\", "/").rsplit("/", 1)[-1] for r in ran], ["iq_pack.py"])      # (the path is C:\...\iq_pack.py on Windows)
 
     def test_a_running_engine_stops_the_repack_before_anything_is_written(self):
         self.shards("UD-IQ1_M")

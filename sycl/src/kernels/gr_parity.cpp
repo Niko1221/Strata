@@ -25,6 +25,7 @@
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/native_mmvq.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -354,7 +355,7 @@ int scalar_activation_contract() {
 int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const uint16_t* d_up,
                            const uint16_t* d_inject, float eps) {
     using namespace strata::kernels;
-    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC, T = kFusedGrMaxT;
+    constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, LR = strata::core::kCompiledGeometry.hc_lr, D = N * HC, T = kFusedGrMaxT;   // the compiled shape (Q4-SYCL; Flash-Next: 2560 / 4 / 320)
     std::mt19937 rng(0x6f8a);
     std::normal_distribution<float> normal(0.0f, 0.3f);
     std::vector<float> r((size_t) T * D), bo((size_t) T * N), inj((size_t) T * HC);
@@ -1144,7 +1145,7 @@ int main(int argc, char** argv) {
     // ---- THE REAL DIMENSIONS. Exercise all activation/projection variants at n_embd=2560, hc=4, hc_lr=320.
     // Workspace sizing and every full weight row must agree with the model geometry.
     {
-        const long long rn = 2560, rhc = 4, rlr = 320, rdim = rhc * rn;
+        const long long rn = strata::core::kCompiledGeometry.n_embd, rhc = strata::core::kCompiledGeometry.hc, rlr = strata::core::kCompiledGeometry.hc_lr, rdim = rhc * rn;   // the compiled shape
         std::mt19937 rrng(99);
         std::normal_distribution<float> rg(0.0f, 1.0f);
         auto rbf16 = [&](size_t n, float sigma) {
@@ -1265,8 +1266,8 @@ int main(int argc, char** argv) {
             reference(rR, rnorm, rdown, rup, rinj, eps, rn, rhc, rlr, precision, wm, wi);
             const double rm = rel_diff(wm, gm), ri = rel_diff(wi, gi);
             const bool ok = rm <= 1e-4 && ri <= 1e-4;
-            std::printf("\n  real dims 2560/4/320 %s %s (mixed %.3e, inject %.3e)\n",
-                        activation_mode_name(mode), ok ? "pass" : "*** FAIL ***", rm, ri);
+            std::printf("\n  real dims %lld/%lld/%lld %s %s (mixed %.3e, inject %.3e)\n",
+                        rn, rhc, rlr, activation_mode_name(mode), ok ? "pass" : "*** FAIL ***", rm, ri);
             if (!ok) ++bad;
         }
         bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps);

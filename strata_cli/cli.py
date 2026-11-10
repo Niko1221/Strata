@@ -39,7 +39,6 @@ class _VersionAction(argparse.Action):
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="strata", description="Strata serving and terminal clients")
-    import strata_cli
     ap.add_argument("--version", action=_VersionAction, nargs=0,
                     help="print the version and the interpreter this terminal runs on")
     sp = ap.add_subparsers(dest="command", required=True)
@@ -2043,6 +2042,8 @@ def _components_engine(a: argparse.Namespace) -> int:
         print(f"engine            {report['engine']['exe']}  (version {report['engine']['version']})")
     else:
         print(report["notice"], file=sys.stderr)
+    for row in report.get("shapes") or []:             # the engines of model shapes, only on a PC that has one (strata_control/shape_engine.py)
+        print(f"engine for {row['shape']}  " + (f"{row['engine']['exe']}  (version {row['engine']['version']})" if row["usable"] else str(row.get("notice"))))
     notice = engine_component.cached_notice(root)
     if notice:
         print(notice)

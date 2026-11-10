@@ -11,7 +11,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 from strata_control import atomic as _atomic_mod
 from pathlib import Path
 from typing import Any
@@ -174,7 +173,7 @@ def _hw_hash(identity: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------- tune auto
 
 def auto(a: argparse.Namespace) -> int:
-    from strata_control import autotune, engine_component, presets, tune_knobs, tune_machine, tuning
+    from strata_control import autotune, engine_component, presets, tuning
     from strata_control.tune_session import WorkerSession
 
     machine = a.output == "json"
@@ -291,7 +290,7 @@ def _human_result(r: dict[str, Any], saved: dict[str, Any] | None) -> str:
 # --------------------------------------------------------------------------- presets
 
 def presets_command(a: argparse.Namespace) -> int:
-    from strata_control import autotune, presets, tune_knobs
+    from strata_control import presets
 
     machine = a.output == "json"
     cmd = a.presets_command

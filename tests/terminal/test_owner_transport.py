@@ -6,7 +6,7 @@ listener and the state-file validation are ordinary Python and can be tested any
 platform branch is not left unverified until someone has a Windows machine.
 
 What is NOT tested here, and cannot be, is whether a Windows named pipe with an owner-only ACL
-behaves as intended — because that implementation does not exist yet. `docs/work/IMPLEMENTATION_STATUS.md`
+behaves as intended — because that implementation does not exist yet. `history/docs/work/IMPLEMENTATION_STATUS.md`
 records that as the honest difference between the platforms rather than pretending the loopback
 transport is equivalent to it.
 """
