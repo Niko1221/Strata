@@ -4,11 +4,11 @@
  "why": "重测。旧 bench_limits.json 的 bwd 行大面积不可复现：ce 4608 记 81.9 s，而重测 ce 5120（更长）只要 20.5 s；dpo 两点记 49.8 -> 53.9 s（T 翻倍时间几乎不涨，物理上不成立）；dpo 5120 重测116.9 s，方向相反。旧 bwd 那一轮排在两次 mezo OOM 之后，疑被分配器残留状态污染。只有 ce 9728 的结论同向（旧 914.7 s，重测更慢、连一次都没跑完）。",
  "config": {
   "gguf": [
-   "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-   "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
+   "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+   "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
   ],
-  "pack": "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/experts_nf4.bin",
-  "tokenizer": "/mnt/d/Admin/Documents/GitHub/Strata-data/packs/swift-iq3_xxs",
+  "pack": "$STRATA_DATA/models/swift-IQ3_XXS/experts_nf4.bin",
+  "tokenizer": "$STRATA_DATA/packs/swift-iq3_xxs",
   "algos": "ce,dpo,grpo",
   "modes": "bwd",
   "group": 2,

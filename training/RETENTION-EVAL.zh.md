@@ -414,7 +414,7 @@ chosen 与模型 ref 差 561 nats）打掉已会题，且 `dpo_fixed` 仍有 −
 ## 6. 复现
 
 ```bash
-cd D:/Admin/Documents/GitHub/Strata/.workbuddy/tmp/aimo3/retention
+cd $STRATA_WORK/retention
 export PYTHONUTF8=0 PYTHONPATH=     # Windows venv 用普通 cp313
 
 # 0. 造与训练后表同规格的 B=0 对照（rank16 / 96 张量 / 25.51 MiB）

@@ -1,16 +1,16 @@
 {
-  "exe": "/root/build-mezo-wsl/strata",
+  "exe": "$STRATA_ENGINE_DIR/strata",
   "args": [
     "--pack",
-    "/mnt/d/Admin/Documents/GitHub/Strata-data/packs/swift-iq3_xxs",
+    "$STRATA_DATA/packs/swift-iq3_xxs",
     "--native",
-    "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "--ple-gguf",
-    "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
     "--expert-cache",
     "auto",
     "--expert-profile",
-    "/mnt/d/Admin/Documents/GitHub/Strata/data/expert-profile.bin",
+    "$STRATA_ROOT/data/expert-profile.bin",
     "--prefill",
     "8192",
     "--spec",
@@ -24,10 +24,10 @@
     "--serve",
     "--no-prefill-borrow",
     "--lora",
-    "/mnt/d/Admin/Documents/GitHub/Strata-mezo/examples/training/lora_hard_dpo.gguf"
+    "$STRATA_MEZO/examples/training/lora_hard_dpo.gguf"
   ],
-  "cwd": "/root/build-mezo-wsl",
-  "log": "/mnt/d/Admin/Documents/GitHub/Strata-prtrain/examples/training/bench_iface_serve.log",
-  "tokenizer": "/mnt/d/Admin/Documents/GitHub/Strata-data/packs/swift-iq3_xxs/tokenizer",
+  "cwd": "$STRATA_ENGINE_DIR",
+  "log": "$STRATA_TRAIN/examples/training/bench_iface_serve.log",
+  "tokenizer": "$STRATA_DATA/packs/swift-iq3_xxs/tokenizer",
   "model_name": "strata"
 }

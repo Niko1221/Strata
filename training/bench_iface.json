@@ -3,17 +3,17 @@
     "arm": "pipe",
     "load_s": 100.4719877243042,
     "cmd": [
-      "/root/build-mezo-wsl/strata",
+      "$STRATA_ENGINE_DIR/strata",
       "--pack",
-      "/mnt/d/Admin/Documents/GitHub/Strata-data/packs/swift-iq3_xxs",
+      "$STRATA_DATA/packs/swift-iq3_xxs",
       "--native",
-      "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
       "--ple-gguf",
-      "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
       "--expert-cache",
       "auto",
       "--expert-profile",
-      "/mnt/d/Admin/Documents/GitHub/Strata/data/expert-profile.bin",
+      "$STRATA_ROOT/data/expert-profile.bin",
       "--prefill",
       "8192",
       "--spec",
@@ -27,7 +27,7 @@
       "--serve",
       "--no-prefill-borrow",
       "--lora",
-      "/mnt/d/Admin/Documents/GitHub/Strata-mezo/examples/training/lora_hard_dpo.gguf"
+      "$STRATA_MEZO/examples/training/lora_hard_dpo.gguf"
     ],
     "engine": {
       "kv": "int8",
@@ -97,12 +97,12 @@
       "--engine",
       "strata",
       "--config",
-      "/mnt/d/Admin/Documents/GitHub/Strata-prtrain/examples/training/bench_iface_serve.json",
+      "$STRATA_TRAIN/examples/training/bench_iface_serve.json",
       "--port",
       "18077",
       "--no-api-key"
     ],
-    "config": "/mnt/d/Admin/Documents/GitHub/Strata-prtrain/examples/training/bench_iface_serve.json",
+    "config": "$STRATA_TRAIN/examples/training/bench_iface_serve.json",
     "base": "http://127.0.0.1:18077",
     "engine": {
       "kv": "fp16",
