@@ -67,6 +67,17 @@ class SpawnEnvironments(unittest.TestCase):
         self.assertEqual(server.vision_env({"vision": {"cuda_device": 1}}, env)[NO_BACKTRACE], "1")     # the copy for a reader on its own card
         self.assertEqual(server.child_env({}, offline=True)[NO_BACKTRACE], "1")
 
+    def test_the_training_session_bridge(self):
+        import serve.server as server
+        env = server.train_bridge_env()
+        self.assertEqual(env[NO_BACKTRACE], "1")
+        self.assertIsNot(env, os.environ)             # a copy: the bridge never changes this process's environment
+
+    def test_the_developer_switch_reaches_the_training_bridge(self):
+        import serve.server as server
+        with mock.patch.dict(os.environ, {DEVELOPER_SWITCH: "1"}):
+            self.assertNotIn(NO_BACKTRACE, server.train_bridge_env())
+
     def test_the_developer_switch_reaches_the_engine_environment(self):
         import serve.server as server
         with mock.patch.dict(os.environ, {DEVELOPER_SWITCH: "1"}):
@@ -142,7 +153,7 @@ class EntryPointsSetItForEveryChild(unittest.TestCase):
 # listed here (and, when it starts a Strata program - the engine, the picture reader, sd-cli, setup, a worker - it builds its environment with
 # quiet_crash_env or inherits the one an entry point set).
 STRATA_PROGRAMS = {
-    "serve/server.py": 7,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands
+    "serve/server.py": 8,              # the engine, the picture reader (env from child_env / vision_env), the strata-device probe, before_load commands, the training session's engine (train_bridge_env)
     "serve/images.py": 1,              # sd-cli (image_env)
     "serve/lifeline.py": 4,            # the wrapper every child goes through (ps, a watcher); no program of ours of its own
     "strata_control/runtime.py": 4,    # the runtime host (inherits) and the server (quiet_crash_env on its environment); taskkill
