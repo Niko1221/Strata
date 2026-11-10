@@ -6102,7 +6102,7 @@ class Service:
         if images or videos:
             if self.offline and any(src.startswith(("http://", "https://"))
                                     for src in images + [v for v, _ in videos]):
-                raise ValueError("offline mode cannot download an image or video URL; send it as data: instead")
+                raise ValueError("offline mode cannot download an image URL or a video URL; send it as data: instead")
             if self.vision is None:
                 if self.family == "deepseek41":
                     raise ValueError("this server was started without pictures for DeepSeek (--vision off, or a pack made without the "
