@@ -1,4 +1,5 @@
 705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da  .gitattributes
+e027cf8ebf80d6dcdacced8a4dbd1c440e2436fb1868ec851db4061cb67bb787  .gitignore
 e84e81e9e882472291fbeae7f2b6af6b493289ed0c5acb05e29052e86ab871b5  engine-build-provenance.json
 c059c56ff6e6d46336b91f098129c3b9fbf0d5c50738622e65d433d9cb44bcdd  flash-quick/2026-11-10-community-unknown-qwen3-8-flash-next-iq2-xs/engine-log-excerpt.txt
 93240b81806f32f9459d8b7e810faa8ee7ac3d762587e61b9bba8a99118459c0  flash-quick/2026-11-10-community-unknown-qwen3-8-flash-next-iq2-xs/README.md
@@ -10,4 +11,4 @@ f5410256e18f9473e564da772d0dc90fec19b0cfb7e261612df7de89ea4f147d  qwen36-quick/2
 cdac80e43a6d60fbf58125b641dea6426649caf2a839f9e424c0046e3d250413  qwen36-quick/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl/README.md
 773ac2fa32eef5b6d5fa5d8b05b1624d1c8a54b37d362818f59f01b7206a40e8  qwen36-quick/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl/results.json
 9702778ad78a0206506f50131565f1d9eda676294a0b1dd61ca06170890230c2  qwen36-quick/published-config.json
-5cecb3437c226c34aab25419121e697f183bfd9b135b2956e08ddbb55031c58a  README.md
+9448417b24ca757af83c1df28d006e23bb62c1aaa996296d49177eb05a367456  README.md

@@ -1,0 +1,23 @@
+{
+  "verdict": "pass",
+  "protocol_id": "strata-qwen38-thinking-v1-draft.1",
+  "fixture_manifest_sha256": "e75eff8b9feea04f745520b392c4c17d97aefc1ba185e222aa6740efa8f68407",
+  "requests_checked": 22,
+  "required_measured": 21,
+  "fresh_engine_prior_requests": 0,
+  "preserved_caps": {
+    "warmup": 128,
+    "performance": 512,
+    "sanity": 2048
+  },
+  "checks": [
+    "Exact fixture order, messages and tools",
+    "Every saved request setting matched unmodified payload builder, including thinking/sampling/seed/cap",
+    "No earlier engine requests",
+    "All fixture files verified against bundle manifest"
+  ],
+  "limits": [
+    "Model-card/source/tokenizer immutable provenance is incomplete as stated in missing fields.",
+    "This verifies implemented draft workload, not maintainer approval or upstream template-equivalence activation work."
+  ]
+}
