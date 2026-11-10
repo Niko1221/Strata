@@ -900,7 +900,7 @@ class MacCatalog(unittest.TestCase):
         self.assertEqual(plain["disk_needed_gb"], round(plain["download_gb"] + 8))     # no repack for a GSQ-RCO file
         self.assertEqual(args[:6], ["--yes", "--no-start", "--family", "unsloth", "--model", "UD-IQ1_M"])
         s.disk_free = lambda p: 100.0
-        with tempfile.TemporaryDirectory() as t:
+        with tempfile.TemporaryDirectory(dir=real_home) as t:              # (the same reason as above)
             target = Path(t) / "Strata-data"
             target.mkdir()
             short, _ = M.Tools(s).install_plan("unsloth", "UD-IQ1_M", None, "no", "int8", 0, None, None, "auto", None, str(target))
