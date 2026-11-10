@@ -885,7 +885,13 @@ class MacCatalog(unittest.TestCase):
         s, hw = self.hw(128)
         s.hardware = lambda fresh=False: hw
         s.disk_free = lambda p: 1000.0
-        with tempfile.TemporaryDirectory() as t:
+        # a person's data folder, not the system's temp folder: on macOS that is under /var/folders, which the tool refuses as a system folder.
+        # The account's own home from the user database: the test's fake root may point HOME at a temp folder
+        real_home = None
+        if sys.platform == "darwin":
+            import pwd
+            real_home = pwd.getpwuid(os.getuid()).pw_dir
+        with tempfile.TemporaryDirectory(dir=real_home) as t:
             target = Path(t) / "Strata-data"
             target.mkdir()
             plan, args = M.Tools(s).install_plan("unsloth", "UD-IQ1_M", None, "no", "int8", 0, None, None, "auto", None, str(target))
