@@ -6251,12 +6251,52 @@ def fresh_if_other_generator(bdir: Path, generator: str = "Ninja") -> bool:
     return True
 
 
+def cmake_cache_entries(bdir: Path) -> dict:
+    """The entries of a build folder's CMakeCache.txt as {name: value} (the type dropped); {} when it was never configured."""
+    out = {}
+    try:
+        text = (Path(bdir) / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        if line and not line.startswith(("#", "//")) and "=" in line:
+            key, value = line.split("=", 1)
+            out[key.split(":", 1)[0].strip()] = value.strip()
+    return out
+
+
+CUDA_CACHE_GLOBS = ("CUDA_*", "CUDAToolkit_*")      # FindCUDAToolkit's cached library paths and toolkit folders
+
+
+def toolkit_change_undefs(bdir: Path, defs) -> list:
+    """#5717: FindCUDAToolkit keeps the library paths of the toolkit a folder was first configured with (CUDA_cudart_LIBRARY
+    and about 60 more); a new -DCUDAToolkit_ROOT does not search them again, so after a CUDA update that removed the old
+    toolkit, ninja stopped on the old libcudart.so.  When the toolkit changed - another CUDAToolkit_ROOT than the cached one,
+    or a cached CUDA path that is gone - the configure drops those entries (-U, before the new -D) and CMake detects the CUDA
+    compiler again; the compiled objects stay, so only what changed is rebuilt.  [] for an unchanged or a new folder."""
+    cache = cmake_cache_entries(bdir)
+    if not cache:
+        return []
+    want = next((str(d).split("=", 1)[1] for d in defs if str(d).startswith("-DCUDAToolkit_ROOT=")), None)
+    had = cache.get("CUDAToolkit_ROOT")
+    moved = bool(want and had) and Path(had) != Path(want)
+    gone = any(not Path(part).exists()
+               for name, value in cache.items() if name.startswith(("CUDA_", "CUDAToolkit_"))
+               for part in value.split(";")
+               if part and not part.endswith("-NOTFOUND") and Path(part).is_absolute())
+    if not (moved or gone):
+        return []
+    for f in (Path(bdir) / "CMakeFiles").glob("*/CMakeCUDACompiler.cmake"):
+        f.unlink(missing_ok=True)
+    return [f"-U{g}" for g in CUDA_CACHE_GLOBS]
+
+
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     acquisition.require("a compile (cmake)")
     cmake, ninja = ensure_build_tools()
     fresh_if_other_generator(bdir)
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
-            "-DCMAKE_BUILD_TYPE=Release", *defs]
+            *toolkit_change_undefs(bdir, defs), "-DCMAKE_BUILD_TYPE=Release", *defs]
     build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
     # the same command then gets past it (issue #45); a second attempt only compiles what is still missing.
