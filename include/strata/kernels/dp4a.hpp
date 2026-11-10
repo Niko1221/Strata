@@ -43,11 +43,12 @@ __device__ __forceinline__ int strata_dp4a(const int a, const int b, const int c
 #endif
 
 /// Yield the thread while a doorbell flag is being polled.  The length of the pause is a backoff hint, not a
-/// contract, and only pre-Volta CUDA has no `__nanosleep` at all.
+/// contract, and pre-Volta CUDA has no `__nanosleep` at all.  Only nvcc and hipcc declare the name: any other
+/// build of these sources (a host C++ pass of the kernel files, the Metal one among them) spins like sm_6x.
 __device__ __forceinline__ void strata_spin_pause() {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
     // sm_6x: the loop spins.  Every call site is a single-thread doorbell wait, so nothing else is delayed.
-#else
+#elif defined(__CUDACC__) || defined(__HIPCC__) || defined(STRATA_HIP_GFX906)
     __nanosleep(100);
 #endif
 }
