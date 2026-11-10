@@ -44,6 +44,14 @@ class BlackHole:
         self.sock.close()
 
 
+#: "fails at once" for a refused connection. Windows itself reports a refused loopback port only after 2.03-2.04 s (measured on the owner PC: it tries the
+#: connection again first), longer than the scaled test windows, so there the refused-port tests use windows of 3 / 6 s, a waiting-line delay of 3 s and
+#: a limit of 4 s; on Linux and macOS the refusal is immediate (0.4 / 0.8 s windows, 0.5 s). Either way far under the rule's 12 s / 44 s windows.
+AT_ONCE_S = 4.0 if os.name == "nt" else 0.5
+REFUSED_WINDOW = (3.0, 6.0) if os.name == "nt" else (0.4, 0.8)
+REFUSED_WAIT_LINE_S = 3.0 if os.name == "nt" else 0.5
+
+
 def refused_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -242,8 +250,8 @@ class ClearFailuresAreImmediate(Base):
         port = refused_port()
         t0 = time.monotonic()
         with self.assertRaises(N.NetFailure) as cm:
-            self.open(f"http://127.0.0.1:{port}/f", wait_after=0.5)
-        self.assertLess(time.monotonic() - t0, 0.5)
+            self.open(f"http://127.0.0.1:{port}/f", limits=REFUSED_WINDOW, wait_after=REFUSED_WAIT_LINE_S)
+        self.assertLess(time.monotonic() - t0, AT_ONCE_S)
         self.assertEqual(cm.exception.kind, "offline")
         self.assertFalse(self.memory.failed_recently("127.0.0.1"))
         self.assertIn("This computer could not connect to 127.0.0.1 (it looks offline)", cm.exception.headline("the model files"))

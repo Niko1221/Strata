@@ -16,7 +16,7 @@ from strata_cli.launch import cmd
 from strata_cli.launch.runner import Event, LaunchError, Runner, capital
 from strata_control import netpolicy, progress_words
 from tests.terminal.test_flow2_022 import Base as FlowBase
-from tests.terminal.test_netpolicy import BlackHole, Server, ok_body, refused_port
+from tests.terminal.test_netpolicy import AT_ONCE_S, REFUSED_WAIT_LINE_S, REFUSED_WINDOW, BlackHole, Server, ok_body, refused_port
 
 
 def scaled():
@@ -94,9 +94,10 @@ class SetupDownloadWaits(unittest.TestCase):
 
     def test_a_refusing_port_fails_at_once_with_no_waiting_line(self):
         port = refused_port()
-        code, out, took = self.download(f"http://127.0.0.1:{port}/m/model-00001-of-00002.gguf")
+        with mock.patch.object(netpolicy, "CONNECT_LIMITS", REFUSED_WINDOW), mock.patch.object(netpolicy, "WAIT_LINE_AFTER_S", REFUSED_WAIT_LINE_S):
+            code, out, took = self.download(f"http://127.0.0.1:{port}/m/model-00001-of-00002.gguf")
         self.assertEqual(code, 1)
-        self.assertLess(took, 0.5)
+        self.assertLess(took, AT_ONCE_S)
         self.assertNotIn("Waiting for", out)
         self.assertIn("[X]  This computer could not connect to 127.0.0.1 (it looks offline), so the model files could not be downloaded.", out)
 
@@ -143,7 +144,9 @@ class LaunchShowsTheWait(FlowBase):
         texts = [x for _t, x in seen]
         self.assertIn("Waiting for huggingface.co to answer (5 s so far)", texts)
         self.assertIn("Waiting for huggingface.co to answer (15 s so far)", texts)
-        self.assertLess(seen[0][0], 0.2)                                 # the step's own sentence at once, before setup says anything
+        # the step's own sentence comes first, before setup has said anything (an order, not a stopwatch: a slow or loaded machine only moves both)
+        self.assertFalse(seen[0][1].startswith("Waiting for"), seen[0])
+        self.assertLess(seen[0][0], next(t for t, x in seen if x.startswith("Waiting for")))
         self.assertIn("The model could not be installed. huggingface.co did not answer within 44 seconds, so the model files could not "
                       "be downloaded.", err.text)
         self.assertIn("Check that this computer can open https://huggingface.co", err.next)

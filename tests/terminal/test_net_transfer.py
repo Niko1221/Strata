@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from strata_control import feed, netpolicy, transfer
-from tests.terminal.test_netpolicy import BlackHole, Server, refused_port
+from tests.terminal.test_netpolicy import AT_ONCE_S, REFUSED_WINDOW, BlackHole, Server, refused_port
 
 BODY = bytes(range(256)) * 40          # 10,240 bytes
 SHA = hashlib.sha256(BODY).hexdigest()
@@ -94,9 +94,9 @@ class TransferRule(Scaled):
 
     def test_a_refused_port_fails_at_once(self):
         t0 = time.monotonic()
-        with self.assertRaises(transfer.Unreachable) as cm:
+        with mock.patch.object(netpolicy, "CONNECT_LIMITS", REFUSED_WINDOW), self.assertRaises(transfer.Unreachable) as cm:
             self.fetch(f"http://127.0.0.1:{refused_port()}/e.tar.gz")
-        self.assertLess(time.monotonic() - t0, 0.5)
+        self.assertLess(time.monotonic() - t0, AT_ONCE_S)
         self.assertEqual(cm.exception.failure.kind, "offline")
 
     def test_a_working_download(self):
@@ -183,7 +183,7 @@ class FeedRule(Scaled):
         t0 = time.monotonic()
         with self.assertRaises(feed.FeedError) as cm:
             feed.fetch(f"http://127.0.0.1:{refused_port()}/strata-feed.json", {"k": b"x" * 32}, timeout=30)
-        self.assertLess(time.monotonic() - t0, 0.5)                 # no wait and no retry for an offline user (owner 11-01)
+        self.assertLess(time.monotonic() - t0, AT_ONCE_S)           # no wait and no retry for an offline user (owner 11-01)
         self.assertEqual(str(cm.exception), "this computer could not connect to 127.0.0.1 (it looks offline), so the update check could not run. "
                                             "Strata keeps working with what is installed.")
 
