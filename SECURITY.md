@@ -76,7 +76,7 @@ The Terminal installs with one line:
 
 ```sh
 curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
 Piping a script into a shell runs whatever the server sends, so it deserves the same care as running any downloaded program.

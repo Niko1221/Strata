@@ -1,6 +1,6 @@
 # Strata Terminal: one-line installer for Windows (PowerShell 5.1 or newer).
 #
-#     irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+#     irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 #
 # What it does, in order (and nothing else):
 #   1. finds out which computer this is (Windows, processor, graphics card);

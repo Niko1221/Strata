@@ -121,7 +121,7 @@ curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strat
 **Windows PowerShell**
 
 ```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
 在 Windows 上，安装后请打开一个新的终端。然后运行：

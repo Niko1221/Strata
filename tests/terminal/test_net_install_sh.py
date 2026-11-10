@@ -70,6 +70,41 @@ class InstallFetch(unittest.TestCase):
         self.assertGreater(took, 70)
 
 
+class DocumentedLines(unittest.TestCase):
+    """W12 and the Windows line (owner 11-10): the documented install lines carry their limits; no copy of the old lines is left (old release notes
+    are history and keep theirs)."""
+    OLD = ("curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh",
+           "curl -fsSLO https://github.com/Niko1221/Strata/releases/latest/download/install.sh",
+           "irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex")
+
+    def files(self):
+        for p in ROOT.rglob("*"):
+            rel = p.relative_to(ROOT).as_posix()
+            if p.suffix.lower() not in (".md", ".ps1", ".sh", ".txt", ".json", ".ts", ".tsx", ".mjs", ".py", ".html") or not p.is_file():
+                continue
+            if rel.startswith(("node_modules/", ".git/", "history/")) or "/node_modules/" in rel or "release-notes-" in p.name:
+                continue
+            if p.resolve() == Path(__file__).resolve():
+                continue
+            yield rel, p
+
+    def test_no_old_line_is_left(self):
+        left = []
+        for rel, p in self.files():
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            left += [rel for old in self.OLD if old in text]
+        self.assertEqual(left, [])
+
+    def test_the_readme_lines(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh "
+                      "-o install.sh && sh install.sh", text)
+        self.assertIn("irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex", text)
+
+
 class InstallPs1Text(unittest.TestCase):
     """Item 6: packaging/install.ps1 under the same rule (its real run is on Windows, through the coordinator)."""
 
