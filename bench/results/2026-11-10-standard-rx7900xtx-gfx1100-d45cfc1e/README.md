@@ -75,7 +75,11 @@ The runner could not read the hardware model over the API (`GPU: AMD Radeon` abo
 running, so it could not read the engine options. This section fills both in; paths are redacted.
 
 - GPU: AMD Radeon RX 7900 XTX, 24 GiB (gfx1100), PCIe 4.0 x16; three active display outputs.
-- Runtime: ROCm 10.1 (HIP 7.16.26385, clang 24, hipBLASLt 1.4.1 = 100401) at `/opt/rocm/core-10.1`.
+- Runtime: the engine is the portable component and loads its own HIP stack (`RUNPATH=$ORIGIN`):
+  `libamdhip64.so.7`, `libhsa-runtime64.so.1`, `librocblas.so.5` and `libhipblaslt.so.1` come from the component
+  directory, and `BUILD.json` states `portable: true` with `hipblaslt_version: 100200` (the engine's own line reads
+  `hipBLASLt tuning enabled (26 rows, gfx1100, version 100200)`). A system ROCm 10.1.0 is installed on the box but
+  the engine does not load it; it serves the source build and the tools (hipcc, rocminfo).
 - Engine: `0.1.59-linux-x86_64-hip-rx7900` from the signed feed (release v0.2.13, upstream commit d2f0964).
 - Control repository: `7df6538d` (a third-party RDNA3 fork of this project); the engine binary is the official component.
 - Launch arguments (sanitized): see `run-config-sanitized.json`.
