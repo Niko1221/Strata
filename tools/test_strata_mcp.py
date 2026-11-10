@@ -393,18 +393,10 @@ class Validation(FakeRoot):
 
 
 # ------------------------------------------------------------------------------------------------ install
-def _mac_zombie(test):
-    """macOS has no /proc: proc_identity falls back to os.kill(pid, 0), which succeeds for an ended child that was not reaped yet (a
-    zombie), so a finished install job reads as running there. A product bug (reported 11-10 for 0.2.14); expected to fail on macOS
-    until it is fixed, and then reported as an unexpected success."""
-    return unittest.expectedFailure(test) if sys.platform == "darwin" else test
-
-
 class Install(FakeRoot):
     def wait_job(self):
         self.assertTrue(wait_for(lambda: not self.strata.install_job()["running"], 60))
 
-    @_mac_zombie
     def test_plan_then_install(self):
         res, err = self.call("strata_install", {})
         self.assertFalse(err)
@@ -429,7 +421,6 @@ class Install(FakeRoot):
         st, _ = self.call("strata_status", {"hardware": False})
         self.assertEqual([m["model"] for m in st["installed"]["models"]], ["q2_0"])
 
-    @_mac_zombie
     def test_progress_while_running_and_cancel(self):
         (self.root / "slow").write_text("")
         res, err = self.call("strata_install", {"family": "coder", "confirm": True})
@@ -447,7 +438,6 @@ class Install(FakeRoot):
         self.assertIn("stopped", res["summary"])
         self.assertFalse(self.strata.install_job()["running"])
 
-    @_mac_zombie
     def test_failure_is_reported(self):
         (self.root / "fail").write_text("")
         self.call("strata_install", {"model": "Q2_0", "confirm": True})
