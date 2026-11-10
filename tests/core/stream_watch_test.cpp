@@ -36,17 +36,18 @@ std::string report_text() {
 int main() {
     CHECK(report_text().empty());                                        // nothing watched: no line
     {
-        WatchedStream a("the prompt path's compute stream", (void*) 1, 0);
+        WatchedStream a("the prompt's GPU work", (void*) 1, 0);
         CHECK(stream_watch().count() == 1);
         {
-            WatchedStream b("the prompt path's compute stream", (void*) 2, 1);
-            WatchedStream c("a third stream", (void*) 3, 0);
+            WatchedStream b("the prompt's GPU work", (void*) 2, 1);
+            WatchedStream c("the prompt's GPU work", (void*) 3, 0);
             const std::string t = report_text();
             std::printf("%s", t.c_str());
-            CHECK(t.find("(GPU 0): its work is finished") != std::string::npos);
-            CHECK(t.find("(GPU 1): its work is still running on the GPU") != std::string::npos);
-            CHECK(t.find("the query failed: invalid resource handle") != std::string::npos);
-            CHECK(stream_watch().count() == 3);
+            CHECK(t.find("  the prompt's GPU work (GPU 0) had finished, but the engine was still waiting for it\n")
+                  != std::string::npos);
+            CHECK(t.find("  the prompt's GPU work (GPU 1) was still running\n") != std::string::npos);
+            CHECK(t.find("  the state of the prompt's GPU work could not be read: invalid resource handle\n")
+                  != std::string::npos);            CHECK(stream_watch().count() == 3);
         }
         CHECK(stream_watch().count() == 1);                              // b and c left with their scopes
         const std::string t = report_text();

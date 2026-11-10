@@ -118,8 +118,9 @@ def start_contained(args, **kw):
     resumed = isinstance(pid, int) and pid > 0 and _resume(pid)   # (a stand-in wrapping a real process is resumed too)
     if real and not resumed:
         _end(proc)
-        # PLACEHOLDER wording, pending review (RESULTS-GH-FIX.md robust item 6)
-        raise OSError(f"the process started for {args[0] if args else '?'} could not be resumed")
+        program = args[0] if args else "?"
+        raise OSError(f"Windows started {program} but did not let it run, so Strata stopped it. "
+                      "Start it again; if this keeps happening, restart the computer.")
     return proc
 
 

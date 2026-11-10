@@ -39,7 +39,7 @@ public:
         return n;
     }
     /// One line per watched stream; `query(stream, device, why)` must not block (cudaStreamQuery).  Nothing when
-    /// no stream is watched (the stall is elsewhere).  The lines' wording is a DRAFT (RESULTS-GH-FIX.md, robust 3).
+    /// no stream is watched (the stall is elsewhere).  `what` names the work ("the prompt's GPU work", prefill.cpp).
     template <class Query>
     void report(std::FILE* f, Query&& query) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -47,10 +47,12 @@ public:
             if (!s.used) continue;
             std::string why;
             const StreamState st = query(s.stream, s.device, why);
-            std::fprintf(f, "  [DRAFT] %s (GPU %d): %s\n", s.what, s.device,
-                         st == StreamState::finished ? "its work is finished (a host still waiting on it was not woken)"
-                         : st == StreamState::working ? "its work is still running on the GPU"
-                                                      : ("the query failed: " + why).c_str());
+            if (st == StreamState::finished)
+                std::fprintf(f, "  %s (GPU %d) had finished, but the engine was still waiting for it\n", s.what, s.device);
+            else if (st == StreamState::working)
+                std::fprintf(f, "  %s (GPU %d) was still running\n", s.what, s.device);
+            else
+                std::fprintf(f, "  the state of %s could not be read: %s\n", s.what, why.c_str());
         }
     }
 
