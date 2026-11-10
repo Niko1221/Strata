@@ -161,12 +161,12 @@ class HuggingFacePins(unittest.TestCase):
             raise not_found(req.full_url)
 
         try:
-            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": ""}):
+            with mock.patch.object(mtp_fetch.netpolicy, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": ""}):
                 with self.assertRaises(SystemExit) as stop:
                     mtp_fetch.resolve_repo()
                 self.assertIn("no longer on Hugging Face", str(stop.exception))
                 self.assertEqual(mtp_fetch.REPO, pinned)
-            with mock.patch.object(mtp_fetch.urllib.request, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": "1"}),                     contextlib.redirect_stderr(io.StringIO()) as err:
+            with mock.patch.object(mtp_fetch.netpolicy, "urlopen", urlopen),                     mock.patch.dict(mtp_fetch.os.environ, {"STRATA_ALLOW_UNPINNED": "1"}),                     contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(mtp_fetch.resolve_repo(), "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/main/")
             self.assertIn("STRATA_ALLOW_UNPINNED=1", err.getvalue())
         finally:

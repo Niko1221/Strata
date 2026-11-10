@@ -1171,11 +1171,22 @@ def fetch_mtp(mtp: Path, env: dict, tries: int = 3):
     it is run again, and each run continues where the last one stopped.  The progress lines it prints are what the app shows."""
     cmd = [sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)]
     env = {**env, "STRATA_SOURCE": model_source()}
+    def on_disk() -> int:
+        try:
+            return sum(f.stat().st_size for f in Path(mtp).rglob("*") if f.is_file())
+        except OSError:
+            return 0
     for n in range(1, tries + 1):
+        before = on_disk()
         r = run(cmd, env=env, check=False)
         rc = 0 if r is None else r.returncode              # (a test double answers None)
         if rc == 0:
             return
+        if rc == 4:                                        # tools/mtp_fetch.py NO_ANSWER: its [X] lines above name the host and the next step
+            say("\nSetup stopped. Fix the item above and run it again - everything already done is kept and skipped.")
+            sys.exit(1)
+        if r is not None and on_disk() <= before:          # the network rule: run again only when the last run moved bytes
+            break
         if n < tries:
             warn(f"the draft layer's download stopped (exit {rc}); trying again, it continues where it stopped "
                  f"({n + 1} of {tries})")
@@ -2619,7 +2630,7 @@ DL_RUN = 4                      # pieces one request asks for (4 x 32 MiB): a ne
                                 # in TCP slow start (measured: 8 connections 66 MB/s with a request per piece, 73 with 128 MiB)
 DL_MIN_PARALLEL = 256 << 20     # smaller files are one stream
 DL_CHUNK_TRIES = 5              # tries per request (1, 2, 4, 8 s apart) before the round is given up and run again
-DL_ROUNDS = 30                  # rounds (10 s apart) before the download is given up, like the 30 tries of one stream
+DL_ROUNDS = 30                  # rounds in a row without a new byte (10 s apart) before the download is given up; and 5 minutes without one (netpolicy)
 DL_BACKOFF = 1.0                # seconds before the second try of a request, doubled each time (tests set 0)
 DL_SAVE_EVERY = 5.0             # seconds between writes of the progress file
 
@@ -3090,10 +3101,20 @@ def parallel_download(url: str, part: Path, total: int, label: str, conns: int, 
             last_save = now
             _save_pieces(part, total, st.snapshot())
 
+    # the network rule: rounds go on while bytes keep coming (no cap on how many); DL_ROUNDS rounds in a row without a new byte, or 5 minutes
+    # without one, end it
+    clock = netpolicy.StallClock()
+    idle_rounds, before = 0, -1
     try:
-        for rnd in range(DL_ROUNDS):
+        while True:
             todo = [i for i in range(st.n) if i not in st.done]
             if not todo:
+                break
+            now_have = st.have()
+            clock.progress(now_have)
+            idle_rounds = 0 if now_have > before else idle_rounds + 1
+            before = now_have
+            if clock.expired() or idle_rounds >= DL_ROUNDS:
                 break
             st.abort_round.clear()
             st.errors.clear()
@@ -3133,6 +3154,8 @@ def parallel_download(url: str, part: Path, total: int, label: str, conns: int, 
     if len(st.done) < st.n:
         _save_pieces(part, total, st.snapshot())
         have = st.have()
+        if clock.expired():                             # no new byte for 5 minutes (W6)
+            fail(*clock.words(netpolicy.what_words(label), have, total))
         fail(f"could not finish downloading {name}: {have:,} of {total:,} bytes",
              "check your internet connection and run it again (the download resumes where it stopped)")
     try:
@@ -3263,8 +3286,17 @@ def download_single(url: str, part: Path, total: int, label: str):
     """One stream with a Range resume from the size of `part` (the way every download worked before parallel pieces).
     A resumed answer is used only when it is a 206 that starts at the byte asked for; anything else starts the file over."""
     _single_ready(part)
-    for attempt in range(30):
+    # the network rule: tried again while bytes keep coming (no cap on how often); 30 tries in a row without a new byte, or 5 minutes without one, end it
+    clock = netpolicy.StallClock()
+    idle, before = 0, -1
+    while True:
         have = part.stat().st_size if part.exists() else 0
+        clock.progress(have)
+        idle, before = (0 if have > before else idle + 1), have
+        if clock.expired():
+            fail(*clock.words(netpolicy.what_words(label), have, total))
+        if idle >= 30:
+            break
         if total and have >= total:                    # stopped after the last byte, before the rename: nothing to
             break                                      # ask for (a range past the end is a 416, retried 30 times)
         try:
@@ -8570,7 +8602,8 @@ def feed_models_setup(feed: str | None = None, fetch: bool = True) -> None:
             source = update_cmd._feed_source(argparse.Namespace(feed=feed), home())
         except Exception:                              # noqa: BLE001 - no feed address: the cached list only
             source = None
-    loaded = feed_models.load(source, fetch=source is not None)
+    # the read is optional (the last verified list stays): no failure sentence, but a server that does not answer is named after 5 s (W1)
+    loaded = feed_models.load(source, fetch=source is not None, say=lambda line: say(f"  {line} ..."))
     if loaded.models:
         feed_models.apply(_SetupTables(), loaded.models, feed_engine_families())
 
