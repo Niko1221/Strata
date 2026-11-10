@@ -4,6 +4,7 @@
 // Measured standalone on the A770 (64 experts, gamma-distributed rows, vs per-expert oneMKL): down 6.1x at mean 40
 // rows, 2.8x at 160, 1.75x at 320; gate/up 3.0x / 1.46x / 0.79x (oneMKL wins above ~250 rows: the caller picks).
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <sycl/ext/oneapi/matrix/matrix.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <cstdlib>
@@ -44,7 +45,7 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
     const int nb = N / BN;
 #ifndef STRATA_NO_DG2_XMX
     constexpr int TN = kSgW;
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         sycl::local_accessor<half, 1> sa(BM * LDA, h), sb(BN * LDB, h);
         auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
         h.parallel_for<Name>(sycl::nd_range<2>({(size_t) ntiles, (size_t) nb * WG}, {1, (size_t) WG}), props,
@@ -150,7 +151,11 @@ int mode() {
     // sub-group 16 (Xe2, Battlemage).
     static const int v = [] {
         const char* e = std::getenv("STRATA_PF_XMX");
-        const int want = e ? std::atoi(e) : 0;
+        // 0.1.48 (owner approved 2026-10-18): mode 2 (the fused grouped XMX launch) is the default on Arc Alchemist (A-series): A750 prompts +30..39% (4K), +32..35% (1-2K tokens),
+        // first-token KL 0.002 against a 0.0005 floor, HumanEval / reasoning / agent / CJK / needles inside the run-to-run spread; Battlemage is
+        // 7-11% slower with it, so it stays off there.  STRATA_PF_XMX=0 turns it off, 1 is the dequantize + grouped XMX variant.
+        const bool alchemist = strata::intel_gpu_gen(strata::q_of(nullptr)->get_device()) == strata::IntelGpuGen::Alchemist;
+        const int want = e ? std::atoi(e) : alchemist ? 2 : 0;
         if (want == 0) return 0;
 #ifdef STRATA_NO_DG2_XMX
         std::fprintf(stderr, "STRATA_PF_XMX ignored: this build is AOT for a device without the sub-group 8 XMX kernels\n");

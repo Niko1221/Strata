@@ -108,12 +108,23 @@ def parse_request(req: dict, cfg: dict) -> dict:
     return {"prompt": prompt, "width": w, "height": h, "n": n, "steps": steps, "seed": seed, "response_format": fmt}
 
 
-def sd_cli_args(cfg: dict, job: dict, out_pattern: str) -> list[str]:
+def write_prompt(work: Path, prompt: str) -> Path:
+    """The job's prompt as a file for sd-cli's --prompt-file, readable by this user only (#4202).  Not on the command line:
+    every local account can read a process's arguments (ps, /proc/<pid>/cmdline).  Written as UTF-8 without newline
+    translation and read back by sd-cli as raw bytes, so the prompt is unchanged."""
+    path = work / "prompt.txt"
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8", newline="") as f:
+        f.write(prompt)
+    return path
+
+
+def sd_cli_args(cfg: dict, job: dict, out_pattern: str, prompt_file: str) -> list[str]:
     """The sd-cli command for one job: the model card's stable-diffusion.cpp command (8 steps, CFG 1, euler, Turbo's
-    sigmas, --diffusion-fa from the config's args), the size, seed and batch count, and the config's other args."""
+    sigmas, --diffusion-fa from the config's args), the prompt from `prompt_file` (write_prompt), the size, seed and
+    batch count, and the config's other args."""
     cmd = [str(cfg["exe"]),
            "--diffusion-model", str(cfg["diffusion_model"]), "--vae", str(cfg["vae"]), "--llm", str(cfg["llm"]),
-           "-p", job["prompt"],
+           "--prompt-file", prompt_file,
            "--steps", str(job["steps"]), "--cfg-scale", "1.0", "--sampling-method", "euler",
            "-W", str(job["width"]), "-H", str(job["height"])]
     if job["steps"] == TURBO_STEPS:
@@ -141,7 +152,8 @@ def image_env(cfg: dict, base: dict | None = None) -> dict:
         var = {"cuda": "CUDA_VISIBLE_DEVICES", "hip": "HIP_VISIBLE_DEVICES",
                "vulkan": "GGML_VK_VISIBLE_DEVICES"}.get(cfg.get("backend"))
         if var:
-            env[var] = str(gpu)
+            # one card is "1"; a list ([1, 0], "1,0") is every one of them, in order - str() of a list is not a device list
+            env[var] = ",".join(str(x).strip() for x in gpu if str(x).strip() != "") if isinstance(gpu, (list, tuple)) else str(gpu)
             if var == "CUDA_VISIBLE_DEVICES":
                 env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     for k, v in (cfg.get("env") or {}).items():
@@ -222,7 +234,15 @@ class ImageGen:
         the GPU turn.  ImageJobFailed when sd-cli fails, times out or is cancelled."""
         work = Path(tempfile.mkdtemp(prefix="job-", dir=self.dir))
         pattern = str(work / "img_%d.png")
-        cmd = sd_cli_args(self.cfg, job, pattern)
+        try:
+            cmd = sd_cli_args(self.cfg, job, pattern, str(write_prompt(work, job["prompt"])))
+        except BaseException:                       # the prompt file was not made: nothing else is in the folder yet
+            for p in work.iterdir():
+                with contextlib.suppress(OSError):
+                    p.unlink()
+            with contextlib.suppress(OSError):
+                work.rmdir()
+            raise
         timeout = float(self.cfg.get("timeout_s") or 3600)
         logf = work / "sd-cli.log"
         t0 = time.monotonic()
@@ -230,16 +250,12 @@ class ImageGen:
         with self.lock:
             with open(logf, "w", encoding="utf-8", errors="replace") as lf:
                 try:
-                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                            stdin=subprocess.DEVNULL, env=image_env(self.cfg),
-                                            cwd=str(work), text=True, errors="replace", bufsize=1)
+                    from serve import lifeline
+                    proc = lifeline.popen(cmd, "image", stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          stdin=subprocess.DEVNULL, env=image_env(self.cfg),
+                                          cwd=str(work), text=True, errors="replace", bufsize=1)
                 except OSError as e:
                     raise ImageJobFailed(f"sd-cli did not start ({cmd[0]}): {e}") from e
-                try:
-                    from serve.winjob import contain
-                    contain(proc)                 # ends with the server (Windows)
-                except Exception:
-                    pass
                 why = None
 
                 def pump():

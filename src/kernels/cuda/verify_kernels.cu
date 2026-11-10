@@ -3,10 +3,15 @@
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/bw_dense_defaults.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
+#define STRATA_Q81_FASTMATH_DIV 1   // #3948: the q8_1 stores divide as native_mmvq.cu (--use_fast_math) does, see q8_1_finite.hpp
 #include "strata/kernels/q8_1_finite.hpp"   // #606: q8_1_ds
+#include "strata/kernels/window_start.hpp"  // KVA: the draft layer's window floor
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/gfx_arch.hpp"   // #3264: the gfx12 test of the multi-block head ops
 #include "strata/kernels/pdl.hpp"
 
 #include <cuda_fp16.h>
@@ -90,12 +95,12 @@ __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __
     hist[c * 3 + 2] = seq[2];
 }
 
-template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+template <int MAX_T = kVerifyNarrowT, bool EXACT_T = false>
 __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
                                                           const float* __restrict__ ssm_a, float* __restrict__ gate,
-                                                          float* __restrict__ beta, int n, int h_v, int T) {
+                                                          float* __restrict__ beta, int n, int h_v, int T, int fast = 0) {
     const int row = bx * 2 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (row >= 2 * h_v) return;
     const bool is_beta = row >= h_v;
@@ -104,6 +109,33 @@ __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restric
     float acc[MAX_T];
 #pragma unroll
     for (int t = 0; t < MAX_T; ++t) acc[t] = 0.0f;
+    if (fast != 0 && n == 2560) {
+        // BW-DENSE (STRATA_SMALL_UNR bit 1): the same ten passes (j = lane + 32 jj, all < n / 8 = 320) with a constant trip count, so the
+        // compiler can issue the weight and activation loads of several passes before the first FMA chain; the same FMAs in the same
+        // order (pass ascending, token inside): bitwise the loop below.
+#pragma unroll
+        for (int jj = 0; jj < 10; ++jj) {
+            const int j = lane + 32 * jj;
+            const uint4 wv = __ldg(w4 + j);
+            const float w0 = __uint_as_float(wv.x << 16), w1 = __uint_as_float(wv.x & 0xffff0000u);
+            const float w2 = __uint_as_float(wv.y << 16), w3 = __uint_as_float(wv.y & 0xffff0000u);
+            const float w4f = __uint_as_float(wv.z << 16), w5 = __uint_as_float(wv.z & 0xffff0000u);
+            const float w6 = __uint_as_float(wv.w << 16), w7 = __uint_as_float(wv.w & 0xffff0000u);
+#pragma unroll
+            for (int t = 0; t < MAX_T; ++t) {
+                if (!EXACT_T && t >= T) break;
+                const float* xt = x + (size_t) t * n;
+                const float4 xa = __ldg(reinterpret_cast<const float4*>(xt + j * 8));
+                const float4 xb = __ldg(reinterpret_cast<const float4*>(xt + j * 8 + 4));
+                float a = acc[t];
+                a = fmaf(w0, xa.x, a); a = fmaf(w1, xa.y, a);
+                a = fmaf(w2, xa.z, a); a = fmaf(w3, xa.w, a);
+                a = fmaf(w4f, xb.x, a); a = fmaf(w5, xb.y, a);
+                a = fmaf(w6, xb.z, a); a = fmaf(w7, xb.w, a);
+                acc[t] = a;
+            }
+        }
+    } else
     for (int j = lane; j < n / 8; j += 32) {
         const uint4 wv = __ldg(w4 + j);
         const float w0 = __uint_as_float(wv.x << 16), w1 = __uint_as_float(wv.x & 0xffff0000u);
@@ -141,13 +173,13 @@ __device__ __forceinline__ void gdn_ab_body(const int bx, const float* __restric
     }
 }
 
-template <int MAX_T = kVerifyMaxT, bool EXACT_T = false>
+template <int MAX_T = kVerifyNarrowT, bool EXACT_T = false>
 __global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
                                                           const float* __restrict__ ssm_a, float* __restrict__ gate,
-                                                          float* __restrict__ beta, int n, int h_v, int T) {
-    gdn_ab_body<MAX_T, EXACT_T>(blockIdx.x, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T);
+                                                          float* __restrict__ beta, int n, int h_v, int T, int fast) {
+    gdn_ab_body<MAX_T, EXACT_T>(blockIdx.x, x, wa, wb, dt, ssm_a, gate, beta, n, h_v, T, fast);
 }
 
 // 143-amdk (STRATA_FUSE_CONVAB): the conv + L2 norm and the a/b projections in ONE launch.  They read different inputs (the qkv
@@ -276,7 +308,7 @@ __device__ __forceinline__ void gdn_q8_1_store(GdnQ81* __restrict__ xq, size_t i
     for (int o = 16; o > 0; o >>= 1) amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, o));
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
-    const float d = q8_1_finite(amax / 127.0f);   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit
+    const float d = q8_1_finite(q81_div(amax, 127.0f));   // #606: as native_quantize_q8_1_kernel - finite blocks bit for bit (#3948: and its division)
     const int8_t q = q8_1_quant(xi, d, amax);
     xq[idx / 32].qs[idx % 32] = q;
     if (idx % 32 == 0) xq[idx / 32].ds = q8_1_ds(d, sum);   // #606: clamped (the QFUSE path bypassed the finite helper)
@@ -580,6 +612,29 @@ __global__ void broadcast_streams_kernel(const float* __restrict__ x, float* __r
     R[(size_t) t * n * hc + i] = x[(size_t) t * n + i % n];
 }
 
+__global__ void hc_mean_streams_kernel(const float* __restrict__ R, float* __restrict__ out, int64_t n, int hc) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float s = 0.0f;
+    for (int c = 0; c < hc; ++c) s += R[(size_t) c * n + i];
+    out[i] = s / (float) hc;
+}
+
+__global__ void route_marginal_stats_kernel(const int32_t* __restrict__ ids, int n, int k, unsigned long long* acc) {
+    const int r = threadIdx.x;
+    if (r >= n) return;
+    int fresh = 0;
+    for (int j = 0; j < k; ++j) {
+        const int32_t e = ids[r * k + j];
+        bool seen = false;
+        for (int j2 = 0; j2 < j && !seen; ++j2) seen = ids[r * k + j2] == e;
+        for (int r2 = 0; r2 < r && !seen; ++r2)
+            for (int j2 = 0; j2 < k && !seen; ++j2) seen = ids[r2 * k + j2] == e;
+        if (!seen) ++fresh;
+    }
+    atomicAdd(acc + r, (unsigned long long) fresh);
+}
+
 __global__ void copy_indexed_kernel(float* __restrict__ dst, const float* __restrict__ src, int64_t stride,
                                     const int32_t* __restrict__ index, int64_t n) {
     const int idx = *index;
@@ -589,12 +644,18 @@ __global__ void copy_indexed_kernel(float* __restrict__ dst, const float* __rest
 }
 
 __global__ void fetch_blobs_kernel(const unsigned long long* __restrict__ src, const int32_t* __restrict__ n,
-                                   uint4* __restrict__ dst, long long per) {
+                                   uint4* __restrict__ dst, long long per, const unsigned long long* __restrict__ dst2) {
     const long long total = (long long) *n * per;
+    long long kd = -1;
+    uint4* d = nullptr;
     for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total;
          i += (long long) gridDim.x * blockDim.x) {
         const long long k = i / per, off = i - k * per;
-        dst[i] = ((const uint4*) src[k])[off];
+        if (k != kd) {   // the blob's target, read once per blob a thread visits
+            kd = k;
+            d = dst2 != nullptr && dst2[k] != 0 ? (uint4*) dst2[k] : dst + k * per;
+        }
+        d[off] = ((const uint4*) src[k])[off];
     }
 }
 
@@ -602,9 +663,10 @@ __global__ void res_patch_kernel(int32_t* __restrict__ table, const volatile int
     for (int k = blockIdx.x * blockDim.x + threadIdx.x; k < n; k += gridDim.x * blockDim.x) table[pairs[2 * k]] = pairs[2 * k + 1];
 }
 
-__global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes) {
+__global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes,
+                                   const unsigned long long* dst2) {
     const int k = threadIdx.x;
-    if (k < *n) ptr[k] = base + (unsigned long long) k * (unsigned long long) bytes;
+    if (k < *n) ptr[k] = dst2 != nullptr && dst2[k] != 0 ? dst2[k] : base + (unsigned long long) k * (unsigned long long) bytes;
 }
 
 __global__ void add_streams_broadcast_kernel(const float* __restrict__ h, const float* __restrict__ e,
@@ -645,6 +707,9 @@ __global__ void row_top_prob_kernel(const float* __restrict__ logits, int n_voca
     const float* l = logits + (size_t) t * n_vocab;
     const float m = l[ids[t]];
     float s = 0.0f;
+#if defined(__HIPCC__)
+#pragma unroll 8
+#endif
     for (int i = threadIdx.x; i < n_vocab; i += blockDim.x) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = s;
@@ -690,11 +755,15 @@ __global__ void force_token_kernel(int32_t* tok, const int32_t* force, int j) {
 
 }  // namespace
 
-void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream) {
+void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream,
+                 const unsigned long long* dst2) {
     if (cap <= 0) return;
     if (blob_bytes % 16 != 0) { std::fprintf(stderr, "fetch_blobs: blob size must be a multiple of 16\n"); std::exit(1); }
-    fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (blob_bytes / 16));
+    fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (blob_bytes / 16), dst2);
     check("fetch_blobs");
+}
+void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream) {
+    fetch_blobs(src, n, dst, blob_bytes, cap, stream, nullptr);
 }
 
 void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream) {
@@ -703,9 +772,14 @@ void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream) {
     check("res_patch");
 }
 
-void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream) {
-    rebase_ptrs_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(ptr, n, (unsigned long long) base, (long long) blob_bytes);
+void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream,
+                 const unsigned long long* dst2) {
+    rebase_ptrs_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(ptr, n, (unsigned long long) base, (long long) blob_bytes,
+                                                             dst2);
     check("rebase_ptrs");
+}
+void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream) {
+    rebase_ptrs(ptr, n, base, blob_bytes, stream, nullptr);
 }
 
 void add_streams_broadcast(const float* h, const float* e, float* R, int64_t n_embd, int hc, int n_tok, void* stream) {
@@ -771,10 +845,14 @@ void row_top_prob(const float* logits, int n_rows, int n_vocab, const int32_t* i
     check("row_top_prob");
 }
 
-#if !defined(__HIPCC__)   // warp-32 kernels: an AMD card keeps the one-block row_top_prob and sampler_greedy_kernel
+#if !defined(STRATA_HIP_GFX906)   // wave32 kernels (CUDA and RDNA HIP; wave64 gfx906 keeps the one-block kernels)
 namespace {
 
+#if defined(__HIPCC__)
+constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 32;   // RDNA HIP (#3264): single-warp blocks, no block barrier
+#else
 constexpr int kArgMaxBlocks = 128, kArgThreads = 256, kTopBlocks = 8;
+#endif
 
 // the larger value, on equality the lower index: sampler_greedy_kernel's order
 __device__ __forceinline__ void arg_take(float ov, int oi, float& bv, int& bi) {
@@ -869,15 +947,16 @@ __global__ void row_top_prob_split_kernel(const float* __restrict__ logits, int 
     const float m = l[ids[row]];
     const int vt = (int) (blockIdx.x * blockDim.x + threadIdx.x);
     float s = 0.0f;
+#if defined(__HIPCC__)
+#pragma unroll 8
+#endif
     for (int i = vt; i < n_vocab; i += 1024) s += __expf(l[i] - m);
     for (int o = 16; o > 0; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
     if ((threadIdx.x & 31) == 0) parts[vt >> 5] = s;
     __threadfence();
-    __syncthreads();
-    __shared__ bool last;
-    if (threadIdx.x == 0) last = atomicAdd(&rows[row].counter, 1u) == (unsigned) (gridDim.x - 1);
-    __syncthreads();
-    if (!last || threadIdx.x != 0) return;
+    if (blockDim.x > 32) __syncthreads();
+    if (threadIdx.x != 0) return;
+    if (atomicAdd(&rows[row].counter, 1u) != (unsigned) (gridDim.x - 1)) return;
     __threadfence();
     float tot = 0.0f;
     for (int w = 0; w < 32; ++w) tot += ((volatile const float*) parts)[w];
@@ -944,29 +1023,61 @@ void logits_nonfinite_rows(const float* logits, int n_rows, int n, uint32_t* fla
 }
 
 bool multi_block_head_ops() {
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
     return false;
 #else
-    static const bool on = [] {
+    static const int env = [] {
         const char* v = std::getenv("STRATA_MULTI_BLOCK_ARGMAX");
-        return v == nullptr || std::atoi(v) != 0;
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
     }();
-    return on;
+    if (env == 0) return false;
+#if defined(__HIPCC__)
+    static int arch[64] = {};   // 0 unknown, 1 gfx12 (RDNA4: the only HIP target #3264 was run on), 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName)) ? 1 : 2;
+    }
+    return arch[dev] == 1;
+#else
+    return true;
+#endif
 #endif
 }
 
 bool argmax_rows_wanted() {
-#if defined(__HIPCC__)
+#if defined(STRATA_HIP_GFX906)
     return false;
 #else
-    // sm_80 to sm_89: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
+    static const int env = [] {
+        const char* v = std::getenv("STRATA_ARGMAX_ROWS");
+        return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
+    }();
+    if (env >= 0) return env != 0 && multi_block_head_ops();
+#if defined(__HIPCC__)
+    static int arch[64] = {};   // 0 unknown, 1 gfx12 (RDNA4), 2 other
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return false;
+    if (arch[dev] == 0) {
+        cudaDeviceProp p{};
+        arch[dev] = (cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName)) ? 1 : 2;
+    }
+    return arch[dev] == 1 && multi_block_head_ops();
+#else
+    // sm_80 to sm_89, and sm_7x with STRATA_ARGMAX_ROWS_SM70=1: sample_tokens' greedy pick there is the one-block kernel (sm_90+ has the cluster kernel)
     static const bool want = [] {
         int dev = 0, major = 0;
         if (cudaGetDevice(&dev) != cudaSuccess || cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess)
             return false;
+        if (major == 7) {   // STRATA_ARGMAX_ROWS_SM70=1: opt-in on Volta (measured on sm_70 only)
+            const char* e = std::getenv("STRATA_ARGMAX_ROWS_SM70");
+            return e != nullptr && std::atoi(e) != 0;
+        }
         return major == 8;
     }();
     return want && multi_block_head_ops();
+#endif
 #endif
 }
 
@@ -987,6 +1098,30 @@ __global__ void window_ids_kernel(int32_t* steps, int window, int32_t* ids, long
 void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, void* stream) {
     window_ids_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride);
     check("window_ids");
+}
+
+namespace {
+// window_ids with a floor read from (mapped) memory when the kernel RUNS: the captured graph keeps the pointer, the
+// value changes between sessions.  A floor of 0 gives window_ids' selection exactly (strata::kernels::window_start).
+__global__ void window_ids_floor_kernel(int32_t* steps, int window, int32_t* ids, long long stride,
+                                        const volatile int32_t* floor_cell) {
+    const int q = blockIdx.y;
+    int32_t* st = steps + q * 4;
+    const int n_kv = st[1];
+    const int start = strata::kernels::window_start(n_kv, window, *floor_cell);
+    const int width = n_kv - start;
+    for (int j = blockIdx.x * blockDim.x + threadIdx.x; j < width; j += gridDim.x * blockDim.x)
+        ids[q * stride + j] = start + j;
+    __syncthreads();
+    if (blockIdx.x == 0 && threadIdx.x == 0) st[3] = width;
+}
+}  // namespace
+
+void window_ids_floor(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_stride, const int32_t* floor_cell,
+                      void* stream) {
+    window_ids_floor_kernel<<<dim3(8, (unsigned) n), 256, 0, (cudaStream_t) stream>>>(steps, window, ids, (long long) ids_stride,
+                                                                                    floor_cell);
+    check("window_ids_floor");
 }
 
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
@@ -1026,6 +1161,7 @@ void gdn_conv_ab_multi(const float* history, const float* qkv, const float* conv
         case 4: gdn_conv_ab_kernel<4, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 5: gdn_conv_ab_kernel<5, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         case 6: gdn_conv_ab_kernel<6, true><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 7: case 8: gdn_conv_ab_kernel<kVerifyNarrowT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
         default: gdn_conv_ab_kernel<kVerifyMaxT, false><<<grid, S, 0, st>>>(conv_blocks, hist, qkv, conv_w, h, channels, qk_heads, eps, t_begin, commit, x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
     }
     check("gdn_conv_ab_multi");
@@ -1047,7 +1183,8 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
         const char* dbg = std::getenv("STRATA_DBG_GDN");
         return (sp && sp[0] == '1') || (cs && cs[0] == '0') || (dbg && dbg[0] == '1');
     }();
-    if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyMaxT || n_keep == nullptr ||
+    // n_max: the window's rows (kVerifyLongT with --lookup-max-t; both kernels loop over the kept rows, no per-row arrays)
+    if (per_layer || n_layers <= 0 || n_layers > 65535 || n_max < 1 || n_max > kVerifyLongT || n_keep == nullptr ||
         h_v <= 0 || h_k <= 0 || h_v % h_k != 0)
         return false;
     cudaStream_t st = (cudaStream_t) stream;
@@ -1060,6 +1197,26 @@ bool gdn_commit_layers(float* state, int64_t state_stride, int64_t conv_off, con
     return true;
 }
 
+// BW-DENSE STRATA_SMALL_UNR bit 1: see gdn_ab_body (bw_dense_defaults.hpp: on for a 12.0 card, else off; the variable wins)
+static int gdn_ab_fast() {
+    static int per_dev[64];   // 0 unknown, else bit + 1
+    const char* e = std::getenv("STRATA_SMALL_UNR");
+    if (e != nullptr) return (std::atoi(e) >> 1) & 1;
+#if defined(__HIPCC__)
+    return 0;
+#else
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return 0; }
+    if (!per_dev[dev]) {
+        int ma = 0, mi = 0;
+        const bool ok = cudaDeviceGetAttribute(&ma, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                        cudaDeviceGetAttribute(&mi, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        if (!ok) cudaGetLastError();
+        per_dev[dev] = 1 + (ok ? ((strata::small_unr_default(ma, mi) >> 1) & 1) : 0);
+    }
+    return per_dev[dev] - 1;
+#endif
+}
 void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream) {
     if (n_embd % 8 != 0 || n_tok < 1 || n_tok > kVerifyMaxT) {
@@ -1069,13 +1226,14 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
     const unsigned blocks = (unsigned) ((2 * h_v + 1) / 2);
     cudaStream_t st = (cudaStream_t) stream;
     switch (n_tok) {
-        case 1: gdn_ab_multi_kernel<1, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 2: gdn_ab_multi_kernel<2, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 3: gdn_ab_multi_kernel<3, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 4: gdn_ab_multi_kernel<4, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 5: gdn_ab_multi_kernel<5, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        case 6: gdn_ab_multi_kernel<6, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
-        default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok); break;
+        case 1: gdn_ab_multi_kernel<1, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 2: gdn_ab_multi_kernel<2, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 3: gdn_ab_multi_kernel<3, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 4: gdn_ab_multi_kernel<4, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 5: gdn_ab_multi_kernel<5, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 6: gdn_ab_multi_kernel<6, true><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        case 7: case 8: gdn_ab_multi_kernel<kVerifyNarrowT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
+        default: gdn_ab_multi_kernel<kVerifyMaxT, false><<<blocks, 64, 0, st>>>(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, gdn_ab_fast()); break;
     }
     check("gdn_ab_multi");
 }
@@ -1108,19 +1266,25 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
                          const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin, void* xq_out) {
     GdnQ81* const xq = static_cast<GdnQ81*>(xq_out);   // S26: non-null = also the outputs' q8_1 (STRATA_QFUSE)
+    // n_tok: up to kVerifyLongT (a long window's second token group replays the state from its first token); the
+    // default kernels loop over the tokens, the STRATA_GDN_SPLIT ones hold kVerifyMaxT per thread
+    static const bool split = [] { const char* v = std::getenv("STRATA_GDN_SPLIT"); return v && v[0] == '1'; }();
     if (!state || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k || n_tok < 1 ||
-        n_tok > kVerifyMaxT) {
+        n_tok > (split ? kVerifyMaxT : kVerifyLongT)) {
         std::fprintf(stderr, "gdn_step_norm_multi: invalid arguments\n");
         std::exit(1);
     }
-    static const bool split = [] { const char* v = std::getenv("STRATA_GDN_SPLIT"); return v && v[0] == '1'; }();
     // S26: the split runs where it is faster (gfx1151 harness, h_v 48: the commit 8-19% per call; a window of 2+ rows
     // 3-13%; one row: no gain, the old kernel stays) - bitwise equal in every case
     if (split && (t_out_begin >= n_tok || n_tok - t_out_begin >= 2)) {
         const dim3 grid((unsigned) h_v, S / GS_COLS), block(GS_COLS, RG);
         if (t_out_begin >= n_tok) {   // no outputs (the commit): the state only
-            gdn_state_replay_kernel<kVerifyMaxT><<<grid, block, 0, (cudaStream_t) stream>>>(
-                state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
+            if (n_tok > kVerifyNarrowT)
+                gdn_state_replay_kernel<kVerifyMaxT><<<grid, block, 0, (cudaStream_t) stream>>>(
+                    state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
+            else
+                gdn_state_replay_kernel<kVerifyNarrowT><<<grid, block, 0, (cudaStream_t) stream>>>(
+                    state, h, conv_channels, gate, beta, h_k, h_v, n_tok, n_keep);
         } else {
             gdn_step_split_kernel<true><<<grid, block, 0, (cudaStream_t) stream>>>(
                 state, h, conv_channels, gate, beta, y, h_k, h_v, n_tok, n_keep, t_out_begin);
@@ -1248,20 +1412,25 @@ void handoff_publish(float* dst, const float* a, int64_t na, const float* b, int
 }
 
 namespace {
-// one thread per window entry: up to kVerifyMaxT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of
-// 7+ tokens lost its last entries)
-constexpr int kResidentPlanMax = 128;
+// one thread per window entry: up to kVerifyNarrowT tokens x 10 routed experts (80), so 128 (#646 had 64: a window of
+// 7+ tokens lost its last entries).  A window of 9..16 rows (up to 160 entries) runs the same kernel on 256 threads;
+// one block size per window class, so a narrow window launches exactly the 128-thread kernel it always did.
+constexpr int kResidentPlanNarrow = 128;
+constexpr int kResidentPlanMax = kVerifyMaxT > kVerifyNarrowT ? 256 : kResidentPlanNarrow;
+static_assert(kVerifyNarrowT * 10 <= kResidentPlanNarrow, "resident_plan: one thread per entry");
 static_assert(kVerifyMaxT * 10 <= kResidentPlanMax, "resident_plan: one thread per entry");
-// the parallel scan keeps one partial sum per warp in s_wsum[4] and packs (entries << 16 | groups) in an int
-static_assert(kResidentPlanMax <= 128 && kResidentPlanMax % 32 == 0, "resident_plan: at most 4 warps");
+// the parallel scan keeps one partial sum per warp in s_wsum[NT / 32] and packs (entries << 16 | groups) in an int
+static_assert(kResidentPlanMax <= 256 && kResidentPlanMax % 32 == 0, "resident_plan: at most 8 warps");
 static_assert(kResidentPlanMax < 32768, "resident_plan: the packed entry count must stay below 2^15");
-__global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
+template <int NT>
+__global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
                                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off,
                                      long long blob, int32_t* __restrict__ pl, long long capx, uint32_t* skip,
                                      uint32_t ring, volatile uint32_t* plan_err) {
-    __shared__ int32_t s_ids[kResidentPlanMax];
-    __shared__ int32_t s_excl[kResidentPlanMax];
-    __shared__ int32_t s_wsum[4];
+    constexpr int NW = NT / 32;
+    __shared__ int32_t s_ids[NT];
+    __shared__ int32_t s_excl[NT];
+    __shared__ int32_t s_wsum[NW];
     __shared__ int s_bad;
     const int tid = threadIdx.x;
     if (tid == 0) s_bad = 0;
@@ -1325,7 +1494,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
     if (is_first) {
         int tot = s_excl[tid];
 #pragma unroll
-        for (int w = 0; w < 4; ++w) {
+        for (int w = 0; w < NW; ++w) {
             if (w < warp) tot += s_wsum[w];
         }
         const int grp_idx = tot & 0xffff;
@@ -1337,7 +1506,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
-        for (int w = 0; w < 4; ++w) {
+        for (int w = 0; w < NW; ++w) {
             if (w < fj_warp) fj_tot += s_wsum[w];
         }
         const int out_idx = (fj_tot >> 16) + rank_in_group;
@@ -1345,7 +1514,14 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
         tok[out_idx] = tid / k;
     }
     if (tid == 0) {
-        const int groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;
+        int groups;
+        if constexpr (NW == 4) groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;   // (the 128-thread kernel as it was)
+        else {
+            groups = 0;
+#pragma unroll
+            for (int w = 0; w < NW; ++w) groups += s_wsum[w];
+            groups &= 0xffff;
+        }
         start[groups] = n;
         start2[0] = n;
         counts[0] = groups;
@@ -1443,8 +1619,18 @@ __global__ void copy_or_zero_kernel(float4* __restrict__ dst, const volatile flo
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
-    resident_plan_kernel<<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+    if (n_entries > kResidentPlanNarrow) {   // a 9..16-row window (kResidentPlanMax == 256 only in a wide build)
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+            resident_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
                                                               blob, plan, capx, skip, ring, plan_err);
+        else {
+            std::fprintf(stderr, "resident_plan: %d entries, at most %d\n", n_entries, kResidentPlanMax);
+            std::exit(1);
+        }
+    } else {
+        resident_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
+                                                              blob, plan, capx, skip, ring, plan_err);
+    }
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
@@ -1508,6 +1694,16 @@ void broadcast_streams(const float* x, float* R, int64_t n_embd, int hc, int n_t
     broadcast_streams_kernel<<<dim3((unsigned) ((n_embd * hc + 255) / 256), (unsigned) n_tok), 256, 0,
                                (cudaStream_t) stream>>>(x, R, n_embd, hc);
     check("broadcast_streams");
+}
+
+void hc_mean_streams(const float* R, float* out, int64_t n_embd, int hc, void* stream) {
+    hc_mean_streams_kernel<<<(unsigned) ((n_embd + 255) / 256), 256, 0, (cudaStream_t) stream>>>(R, out, n_embd, hc);
+    check("hc_mean_streams");
+}
+
+void route_marginal_stats(const int32_t* ids, int n, int k, unsigned long long* acc, void* stream) {
+    route_marginal_stats_kernel<<<1, 32, 0, (cudaStream_t) stream>>>(ids, n, k, acc);
+    check("route_marginal_stats");
 }
 
 void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* index, int64_t n, void* stream) {
@@ -1587,10 +1783,16 @@ bool pdl_supported() {
     if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
     int s = state[dev].load(std::memory_order_relaxed);
     if (s == 0) {
-        static const bool env_on = [] { const char* v = std::getenv("STRATA_DF_PDL"); return v != nullptr && std::atoi(v) != 0; }();   // opt-in until the A/B says otherwise
-        int major = 0;
+        // STRATA_DF_PDL: 1 / 2 = on for every window graph, 0 = off; unset = on for a compute capability 12.0 card (STRATA_SM120_PERF=0 turns
+        // that off), where the verifier asks for it for the all-resident graph only (BW-MEASURE, E21: +0.3..+0.5% decode there, bit-identical;
+        // -1.6% .. -4.5% in the doorbell graph of a partly resident cache)
+        static const int env_mode = [] { const char* v = std::getenv("STRATA_DF_PDL"); return v == nullptr ? -1 : (std::atoi(v) != 0 ? 1 : 0); }();
+        int major = 0, minor = 0;
         cudaFuncAttributes fa{};
-        const bool on = env_on && cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+        const bool on_attr = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                             cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) == cudaSuccess;
+        const bool env_on = env_mode == 1 || (env_mode < 0 && on_attr && strata::sm120_default(major, minor));
+        const bool on = env_on && on_attr &&
                         strata::cc_major_of(major) >= 9 &&
                         cudaFuncGetAttributes(&fa, gpu_stamp_kernel<true>) == cudaSuccess && fa.ptxVersion >= 90 &&
                         fa.binaryVersion >= 90;

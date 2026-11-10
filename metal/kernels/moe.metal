@@ -22,6 +22,15 @@
 #define P_TOKENT (P_EW + P_MAXE)
 #define P_INTS (P_TOKENT + P_MAXE)
 
+// experts per token (Flash-Next 10); the host prelude (engine/geo.h) defines GEO_TOPK for another shape
+#ifndef ROUTE_K
+#ifdef GEO_TOPK
+#define ROUTE_K GEO_TOPK
+#else
+#define ROUTE_K 10
+#endif
+#endif
+
 // Expert e's matrices: gate at W + gate_off + e * gu_stride, up at W + up_off + e * gu_stride, down at
 // W + down_off + e * d_stride (a pack's blobs: gate_off 0, strides = the blob; a GGUF: the three tensors).
 struct MoeArgs {
@@ -113,51 +122,58 @@ kernel void moe_plan(device const int* ids [[buffer(0)]], device const float* w 
 // token t exactly as native_router.cu (pinned llama.cpp topk-moe): softmax over the 512 logits, top 10 by
 // probability (equal values: the lower expert index), weights = p / max(sum of the selected, 2^-14), the sum taken
 // by winning lane in selection order and reduced with the same xor tree.
+// One token's routing by one simdgroup: softmax over NL * 32 logits (512: NL 16; the 256-expert Coder: NL 8), top 10, weights.
+// `l` the token's logits, `ids` / `w` its 10 outputs.  NL = 16 is the original code token for token.
+template <int NL>
+static inline void route_tok(device const float* l, device int* ids, device float* w, ushort lane) {
+    float v[NL];
+    for (int i = 0; i < NL; ++i) v[i] = l[lane + 32 * i];
+    float mx = -INFINITY;
+    for (int i = 0; i < NL; ++i) mx = max(mx, v[i]);
+    for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
+    float sum = 0.0f;
+    for (int i = 0; i < NL; ++i) {
+        v[i] = exp(v[i] - mx);
+        sum += v[i];
+    }
+    for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
+    const float rcp = 1.0f / sum;
+    for (int i = 0; i < NL; ++i) {
+        v[i] *= rcp;
+        if (isnan(v[i])) v[i] = -FLT_MAX;
+    }
+    float selected = 0.0f, ssum = 0.0f;
+    for (int rank = 0; rank < ROUTE_K; ++rank) {
+        float best = v[0];
+        int ex = lane;
+        for (int i = 1; i < NL; ++i)
+            if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
+        for (ushort m = 16; m > 0; m >>= 1) {
+            const float ob = simd_shuffle_xor(best, m);
+            const int oe = simd_shuffle_xor(ex, m);
+            if (ob > best || (ob == best && oe < ex)) { best = ob; ex = oe; }
+        }
+        if ((ex & 31) == lane) {
+            v[ex / 32] = -INFINITY;
+            ids[rank] = ex;
+            ssum += best;
+        }
+        if (rank == lane) selected = best;
+    }
+    for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
+    ssum = max(ssum, 6.103515625e-5f);
+    const float inv = 1.0f / ssum;
+    if (lane < ROUTE_K) w[lane] = selected * inv;
+}
+
 kernel void moe_route(device const float* logits [[buffer(0)]], device int* ids [[buffer(1)]],
                       device float* w [[buffer(2)]], device int* plan [[buffer(3)]], constant MoeArgs& a [[buffer(4)]],
                       ushort tid [[thread_position_in_threadgroup]], ushort nth [[threads_per_threadgroup]],
                       ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     threadgroup int s_grp[32], s_ent[32];
     if (sg < a.n_tok) {
-        device const float* l = logits + sg * 512;
-        float v[16];
-        for (int i = 0; i < 16; ++i) v[i] = l[lane + 32 * i];
-        float mx = -INFINITY;
-        for (int i = 0; i < 16; ++i) mx = max(mx, v[i]);
-        for (ushort m = 16; m > 0; m >>= 1) mx = max(mx, simd_shuffle_xor(mx, m));
-        float sum = 0.0f;
-        for (int i = 0; i < 16; ++i) {
-            v[i] = exp(v[i] - mx);
-            sum += v[i];
-        }
-        for (ushort m = 16; m > 0; m >>= 1) sum += simd_shuffle_xor(sum, m);
-        const float rcp = 1.0f / sum;
-        for (int i = 0; i < 16; ++i) {
-            v[i] *= rcp;
-            if (isnan(v[i])) v[i] = -FLT_MAX;
-        }
-        float selected = 0.0f, ssum = 0.0f;
-        for (int rank = 0; rank < 10; ++rank) {
-            float best = v[0];
-            int ex = lane;
-            for (int i = 1; i < 16; ++i)
-                if (v[i] > best) { best = v[i]; ex = lane + 32 * i; }
-            for (ushort m = 16; m > 0; m >>= 1) {
-                const float ob = simd_shuffle_xor(best, m);
-                const int oe = simd_shuffle_xor(ex, m);
-                if (ob > best || (ob == best && oe < ex)) { best = ob; ex = oe; }
-            }
-            if ((ex & 31) == lane) {
-                v[ex / 32] = -INFINITY;
-                ids[sg * 10 + rank] = ex;
-                ssum += best;
-            }
-            if (rank == lane) selected = best;
-        }
-        for (ushort m = 16; m > 0; m >>= 1) ssum += simd_shuffle_xor(ssum, m);
-        ssum = max(ssum, 6.103515625e-5f);
-        const float inv = 1.0f / ssum;
-        if (lane < 10) w[sg * 10 + lane] = selected * inv;
+        if (a.n_expert == 256) route_tok<8>(logits + sg * 512, ids + sg * ROUTE_K, w + sg * ROUTE_K, lane);
+        else route_tok<16>(logits + sg * 512, ids + sg * ROUTE_K, w + sg * ROUTE_K, lane);
     }
     threadgroup_barrier(mem_flags::mem_device);
     plan_body(ids, w, plan, a, tid, nth, sg, lane, s_grp, s_ent);
@@ -305,6 +321,108 @@ kernel void moe_down(device const uchar* W [[buffer(0)]], device const float* h 
     }
 }
 
+// ---- down experts in the K-quants (Q3_K / Q4_K / Q5_K / Q6_K) - the 256-wide block types a UD file carries at expert
+// widths that divide by 256 (512, 1024: Qwen3.6's UD-Q4_K_XL has Q5_K / Q6_K downs).  Their decoders read the codes in place
+// (the mask trick of units.metal), so the activations must be pre-scaled and need per-16 sums: for the gate/up that is the
+// host's xprep planes; the down's h is the raw f32 rows moe_gu wrote, so XD<F> forms the same slices from the raw row here
+// (the scaling of xprep: x * 2^-(8 (i % 4)) for Q4_K / Q5_K, x * 2^-(8 (i % 2)) for Q6_K / Q3_K, both exact; the sums of 16
+// raw values).  New kernels moe_down_<type>_<L>_<R>_<S> under the names the host already builds; nothing existing changes.
+static inline void xd16(device const float* p, thread float* xs, thread float& sum, int kind) {
+    float s = 0.0f;
+    for (int j = 0; j < 16; ++j) {
+        const float v = p[j];
+        s += v;
+        xs[j] = kind == 4 ? v * (j & 3 ? (j & 3) == 1 ? 0.00390625f : (j & 3) == 2 ? 1.52587890625e-05f : 5.9604644775390625e-08f : 1.0f)
+                          : ((j & 1) ? v * 0.00390625f : v);
+    }
+    sum = s;
+}
+template <int F> struct XD;
+template <> struct XD<T_Q4_K> {
+    static inline void load(device const float* h, int u, thread float* xs, thread float* xsum) {
+        const int p0 = 256 * (u >> 3) + 64 * ((u >> 1) & 3) + 16 * (u & 1);
+        xd16(h + p0, xs, xsum[0], 4);
+        xd16(h + p0 + 32, xs + 16, xsum[1], 4);
+    }
+};
+template <> struct XD<T_Q5_K> {
+    static inline void load(device const float* h, int u, thread float* xs, thread float* xsum) { XD<T_Q4_K>::load(h, u, xs, xsum); }
+};
+template <> struct XD<T_Q6_K> {
+    static inline void load(device const float* h, int u, thread float* xs, thread float* xsum) {
+        const int p0 = 256 * (u >> 3) + 128 * ((u >> 2) & 1) + 32 * (u & 1) + 16 * ((u >> 1) & 1);
+        xd16(h + p0, xs, xsum[0], 2);
+        xd16(h + p0 + 64, xs + 16, xsum[1], 2);
+    }
+};
+template <> struct XD<T_Q3_K> {
+    static inline void load(device const float* h, int u, thread float* xs, thread float* xsum) {
+        xd16(h + 32 * u, xs, xsum[0], 2);
+        xd16(h + 32 * u + 16, xs + 16, xsum[1], 2);
+    }
+};
+
+template <int F, int LPR, int NR, int NE>
+static inline void dn_body_k(device const uchar* d0, device const float* h, device float* ye, device const int* plan, int c,
+                             int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    float ac[NR][NE];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) ac[r][t] = 0.0f;
+    const int U = int(a.n_ff) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        float q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec<F>::run(d0 + r * a.d_row, u, q[r], sc[r], tab);
+        for (int t = 0; t < NE; ++t) {
+            float xs[UNIT], xsum[2];
+            XD<F>::load(h + (c + t) * int(a.n_ff), u, xs, xsum);
+            for (int r = 0; r < NR; ++r) ac[r][t] += unit_combine<UNIT>(q[r], sc[r], xs, xsum);
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) {
+            const float v = lane_sum<LPR>(ac[r][t]);
+            if (li == 0) ye[(c + t) * int(a.n_embd) + row0 + r] = as_type<float>(plan[P_EW + c + t]) * v;
+        }
+}
+
+// same arguments and plan walk as moe_down (buffer 5, the prepared sums, is unused: the sums are formed from h)
+template <int F, int LPR, int NR, int SG>
+kernel void moe_down_k(device const uchar* W [[buffer(0)]], device const float* h [[buffer(1)]],
+                       device float* ye [[buffer(2)]], device const int* plan [[buffer(3)]],
+                       constant MoeArgs& a [[buffer(4)]], device const float* hs16 [[buffer(5)]],
+                       device const uint* smap [[buffer(6)]], device const uchar* W1 [[buffer(7)]],
+                       device const uchar* W2 [[buffer(8)]], device const uchar* W3 [[buffer(9)]],
+                       uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                       ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int g = int(tg.y);
+    if (g >= plan[P_NG]) return;
+    const int li = lane % LPR;
+    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
+    const ulong ex = (ulong)plan[P_GEXP + g];
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    device const uchar* d0 = (kArena ? arena_slot(smap[ex], W, W1, W2, W3) : W + ex * a.d_stride) + a.down_off + (ulong)row0 * a.d_row;
+    switch (ne) {
+        case 1: dn_body_k<F, LPR, NR, 1>(d0, h, ye, plan, c, row0, li, a, tab); break;
+        case 2: dn_body_k<F, LPR, NR, 2>(d0, h, ye, plan, c, row0, li, a, tab); break;
+        case 3: dn_body_k<F, LPR, NR, 3>(d0, h, ye, plan, c, row0, li, a, tab); break;
+        case 4: dn_body_k<F, LPR, NR, 4>(d0, h, ye, plan, c, row0, li, a, tab); break;
+        default:
+            for (int k = 0; k < ne; k += 4) {
+                const int m = min(4, ne - k);
+                if (m == 4) dn_body_k<F, LPR, NR, 4>(d0, h, ye, plan, c + k, row0, li, a, tab);
+                else if (m == 3) dn_body_k<F, LPR, NR, 3>(d0, h, ye, plan, c + k, row0, li, a, tab);
+                else if (m == 2) dn_body_k<F, LPR, NR, 2>(d0, h, ye, plan, c + k, row0, li, a, tab);
+                else dn_body_k<F, LPR, NR, 1>(d0, h, ye, plan, c + k, row0, li, a, tab);
+            }
+    }
+}
+
 kernel void moe_combine(device const float* ye [[buffer(0)]], device float* y [[buffer(1)]],
                         device const int* plan [[buffer(2)]], constant MoeArgs& a [[buffer(3)]],
                         uint gid [[thread_position_in_grid]]) {
@@ -331,6 +449,150 @@ GU_SET(T_IQ3_S)
 GU_SET(T_IQ4_XS)   // the IQ3_S pack's gate/up in one layer
 GU_SET(T_Q4_K) GU_SET(T_Q5_K) GU_SET(T_Q6_K) GU_SET(T_Q8_0)   // the UD-Q4/5/6_K_XL packs
 DN_SET(T_Q5_1) DN_SET(T_Q8_0)
+DN_SET(T_Q5_0)   // the UD-IQ2_XS / Q2_K_XL / Q3_K_XL / IQ4_XS packs' down experts (generic Dec: d * (code - 16))
 DN_SET(T_Q2_0)
 DN_SET(T_Q2_0R)
 DN_SET(T_IQ4_NL)
+// UD files at expert widths divisible by 256: IQ4_XS / IQ3_S downs read raw h like the gate/up's raw-kind formats (the generic
+// X / Dec); the K-quants take moe_down_k (XD above).  Same host names, moe_down_<type>_<L>_<R>_<S>.
+#ifdef STRATA_KQ_DOWN   // the host defines it when a layer's down is one of these types (window.cpp kq_down_prelude): today's sets compile exactly what they did
+DN_SET(T_IQ4_XS) DN_SET(T_IQ3_S)
+#define DNK(F, L, R, S) template [[host_name("moe_down_" #F "_" #L "_" #R "_" #S)]] kernel decltype(moe_down_k<F, L, R, S>) moe_down_k<F, L, R, S>;
+#define DNK_SET(F) DNK(F, 8, 1, 4) DNK(F, 8, 2, 4) DNK(F, 8, 4, 4) DNK(F, 8, 1, 8) DNK(F, 8, 2, 8) DNK(F, 4, 1, 4) DNK(F, 4, 2, 4)                    DNK(F, 4, 4, 4) DNK(F, 16, 1, 4) DNK(F, 16, 2, 4) DNK(F, 32, 1, 4) DNK(F, 2, 2, 4)
+DNK_SET(T_Q4_K) DNK_SET(T_Q5_K) DNK_SET(T_Q6_K) DNK_SET(T_Q3_K)
+#endif   // STRATA_KQ_DOWN
+// Gyro (agentionai's trellis experts): TQK6 / TQ2_T gate/up, TQK7 / TQ2_T down (the CUDA engine's STRATA_GU_FMTS / D_FMTS)
+GU_SET(T_TQK6) GU_SET(T_TQ2T)
+DN_SET(T_TQK7) DN_SET(T_TQ2T)
+
+#ifdef STRATA_METAL_F16   // window.cpp compiles it in only under STRATA_METAL_F16=1
+// ---- the fp16 path (STRATA_METAL_F16): x from the window's half plane, h also as half for the down
+template <int F, int LPR, int NR, int NE>
+static inline void gu_body16(device const uchar* g0, device const uchar* u0, device const half* x,
+                             device const float* xs16, device float* h, device half* h16, device const int* etok, int c,
+                             int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    float ag[NR][NE], au[NR][NE];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) ag[r][t] = au[r][t] = 0.0f;
+    const int U = int(a.n_embd) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        half qg[NR][UNIT], qu[NR][UNIT];
+        float4 cg[NR], cu[NR];
+        for (int r = 0; r < NR; ++r) {
+            Dec16<F>::run(g0 + r * a.gu_row, u, qg[r], cg[r], tab);
+            Dec16<F>::run(u0 + r * a.gu_row, u, qu[r], cu[r], tab);
+        }
+        for (int t = 0; t < NE; ++t) {
+            const int tok = etok[t];
+            half xs[UNIT];
+            float xsum[2];
+            X16<F>::load(x + tok * int(a.n_embd), xs16 + tok * int(a.n_embd / 16), u, xs, xsum);
+            for (int r = 0; r < NR; ++r) {
+                ag[r][t] += unit_combine16<UNIT>(qg[r], cg[r], xs, xsum);
+                au[r][t] += unit_combine16<UNIT>(qu[r], cu[r], xs, xsum);
+            }
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) {
+            const float gv = lane_sum<LPR>(ag[r][t]), uv = lane_sum<LPR>(au[r][t]);
+            const float hv = gv / (1.0f + exp(-gv)) * uv;
+            if (li == 0) {
+                h[(c + t) * int(a.n_ff) + row0 + r] = hv;
+                h16[(c + t) * int(a.n_ff) + row0 + r] = half(hv);
+            }
+        }
+}
+
+template <int F, int LPR, int NR, int SG>
+kernel void moe_gu16(device const uchar* W [[buffer(0)]], device const half* x [[buffer(1)]],
+                     device float* h [[buffer(2)]], device const int* plan [[buffer(3)]],
+                     constant MoeArgs& a [[buffer(4)]], device const float* xs16 [[buffer(5)]],
+                     device half* h16 [[buffer(6)]],
+                     uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                     ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int g = int(tg.y);
+    if (g >= plan[P_NG]) return;
+    const int li = lane % LPR;
+    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
+    const ulong ex = (ulong)plan[P_GEXP + g];
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    device const int* etok = plan + P_ETOK + c;
+    device const uchar* E = W + ex * a.gu_stride;
+    device const uchar* g0 = E + a.gate_off + (ulong)row0 * a.gu_row;
+    device const uchar* u0 = E + a.up_off + (ulong)row0 * a.gu_row;
+    for (int k = 0; k < ne; k += 4) {
+        const int m = min(4, ne - k);
+        if (m == 4) gu_body16<F, LPR, NR, 4>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+        else if (m == 3) gu_body16<F, LPR, NR, 3>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+        else if (m == 2) gu_body16<F, LPR, NR, 2>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+        else gu_body16<F, LPR, NR, 1>(g0, u0, x, xs16, h, h16, etok + k, c + k, row0, li, a, tab);
+    }
+}
+
+template <int F, int LPR, int NR, int NE>
+static inline void dn_body16(device const uchar* d0, device const half* h16, device float* ye, device const int* plan,
+                             int c, int row0, int li, constant MoeArgs& a, threadgroup const uint* tab) {
+    constexpr int UNIT = fmt<F>::UNIT;
+    float ac[NR][NE];
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) ac[r][t] = 0.0f;
+    const int U = int(a.n_ff) / UNIT;
+    for (int u = li; u < U; u += LPR) {
+        half q[NR][UNIT];
+        float4 sc[NR];
+        for (int r = 0; r < NR; ++r) Dec16<F>::run(d0 + r * a.d_row, u, q[r], sc[r], tab);
+        for (int t = 0; t < NE; ++t) {
+            half xs[UNIT];
+            float xsum[2];
+            X16<F>::load(h16 + (c + t) * int(a.n_ff), nullptr, u, xs, xsum);
+            for (int r = 0; r < NR; ++r) ac[r][t] += unit_combine16<UNIT>(q[r], sc[r], xs, xsum);
+        }
+    }
+    for (int r = 0; r < NR; ++r)
+        for (int t = 0; t < NE; ++t) {
+            const float v = lane_sum<LPR>(ac[r][t]);
+            if (li == 0) ye[(c + t) * int(a.n_embd) + row0 + r] = as_type<float>(plan[P_EW + c + t]) * v;
+        }
+}
+
+template <int F, int LPR, int NR, int SG>
+kernel void moe_down16(device const uchar* W [[buffer(0)]], device const half* h16 [[buffer(1)]],
+                       device float* ye [[buffer(2)]], device const int* plan [[buffer(3)]],
+                       constant MoeArgs& a [[buffer(4)]],
+                       uint3 tg [[threadgroup_position_in_grid]], ushort sg [[simdgroup_index_in_threadgroup]],
+                       ushort lane [[thread_index_in_simdgroup]], ushort tid [[thread_index_in_threadgroup]]) {
+    constexpr int RG = 32 / LPR;
+    threadgroup uint tab[fmt<F>::TAB];
+    load_tab<F>(tab, tid, SG * 32);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const int g = int(tg.y);
+    if (g >= plan[P_NG]) return;
+    const int li = lane % LPR;
+    const int row0 = ((int(tg.x) * SG + sg) * RG + lane / LPR) * NR;
+    const ulong ex = (ulong)plan[P_GEXP + g];
+    const int c = plan[P_GSTART + g], ne = plan[P_GSTART + g + 1] - c;
+    device const uchar* d0 = W + a.down_off + ex * a.d_stride + (ulong)row0 * a.d_row;
+    for (int k = 0; k < ne; k += 4) {
+        const int m = min(4, ne - k);
+        if (m == 4) dn_body16<F, LPR, NR, 4>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+        else if (m == 3) dn_body16<F, LPR, NR, 3>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+        else if (m == 2) dn_body16<F, LPR, NR, 2>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+        else dn_body16<F, LPR, NR, 1>(d0, h16, ye, plan, c + k, row0, li, a, tab);
+    }
+}
+#define GU16_(F, L, R, S) template [[host_name("moe_gu16_" #F "_" #L "_" #R "_" #S)]] kernel decltype(moe_gu16<F, L, R, S>) moe_gu16<F, L, R, S>;
+#define DN16_(F, L, R, S) template [[host_name("moe_down16_" #F "_" #L "_" #R "_" #S)]] kernel decltype(moe_down16<F, L, R, S>) moe_down16<F, L, R, S>;
+#define GU16(F, L, R, S) GU16_(F, L, R, S)   // F expanded to its number before the name is made
+#define DN16(F, L, R, S) DN16_(F, L, R, S)
+GU16(T_Q2_0, 32, 1, 4) GU16(T_Q2_0, 32, 2, 4) GU16(T_Q2_0, 32, 4, 4) GU16(T_Q2_0, 32, 2, 2) GU16(T_Q2_0, 32, 2, 8)
+GU16(T_Q2_0, 32, 1, 8) GU16(T_Q2_0, 16, 1, 4) GU16(T_Q2_0, 16, 2, 4) GU16(T_Q2_0, 8, 1, 4) GU16(T_Q2_0, 8, 2, 4) GU16(T_Q2_0, 8, 1, 2)
+DN16(T_Q2_0R, 8, 1, 4) DN16(T_Q2_0R, 8, 2, 4) DN16(T_Q2_0R, 8, 4, 4) DN16(T_Q2_0R, 4, 1, 4) DN16(T_Q2_0R, 4, 2, 4)
+DN16(T_Q2_0R, 4, 4, 4) DN16(T_Q2_0R, 8, 1, 8) DN16(T_Q2_0R, 8, 2, 8) DN16(T_Q2_0R, 16, 1, 4) DN16(T_Q2_0R, 16, 2, 4)
+DN16(T_Q2_0R, 32, 1, 4) DN16(T_Q2_0R, 2, 2, 4)
+#endif   // STRATA_METAL_F16

@@ -1,6 +1,6 @@
-// src/kernels/cpu/native_expert.cpp - plan v0.3 P6: native (GGUF-form) experts on the CPU through ggml-cpu.
-// See the header.  Nothing here is Strata arithmetic: the activation quantizers and the row dot products are
-// ggml-cpu's, so an IQ expert computes what llama.cpp's CPU backend computes for it.
+// Native (GGUF-form) experts: ggml activation quantizers and format-specific CPU row kernels.
+// Default keeps the existing dispatch. WindowInvariant preserves that dispatch's single-token arithmetic
+// while retaining shared weight decoding where the grouped kernel gives the same result.
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/iq_avx512.hpp"
@@ -10,20 +10,226 @@
 #include "strata/kernels/cpu/nvfp4_avx2.hpp"
 #include "strata/kernels/cpu/nvfp4_avx512.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
+#include "strata/kernels/cpu/tq_cpu.hpp"
 
 #include "ggml.h"
 #include "ggml-cpu.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <string>
+#include <vector>
 
 namespace strata::kernels::cpu {
 namespace {
 
 const ggml_type_traits_cpu* traits(int type) { return ggml_get_type_traits_cpu((ggml_type) type); }
+
+// Do the trellis rows take Strata's own kernels (tq_cpu.hpp)?  Always, unless STRATA_NO_TQ_KERNELS=1 asks for ggml-cpu's
+// vec_dot AND this ggml has the type (the agentionai fork; an upstream ggml does not, and must never be asked about it).
+bool tq_rows_own(int type) {
+    if (!tq_supported(type)) return false;
+    if (tq_kernels_enabled()) return true;
+    return type >= (int) GGML_TYPE_COUNT || traits(type) == nullptr || traits(type)->vec_dot == nullptr;
+}
+
+// Window-invariant arithmetic (NativeArithmetic::WindowInvariant): the reference rows below reproduce ggml-cpu's one-token dot bit for bit
+// only if that ggml was built to sum the same way (contraction of the scalar tail into an FMA, for one, depends on the build). So each
+// reference is checked once against the linked ggml on synthetic blocks, odd block counts included, and a mismatch sends the invariant
+// path to ggml's own one-token dot per token (slower, never different).
+bool iq4nl_reference_ok() {
+    static const bool ok = [] {
+        const ggml_type_traits_cpu* tr = traits(GGML_TYPE_IQ4_NL);
+        const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_0);
+        if (tr == nullptr || tr->vec_dot == nullptr || t8 == nullptr || t8->from_float == nullptr) return false;
+        uint32_t seed = 4242u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (const int n : {64, 96, 160, 640}) {   // even and odd numbers of blocks: the odd one ends in the scalar tail
+            constexpr int rows = 16;
+            const size_t rb = ggml_row_size(GGML_TYPE_IQ4_NL, (int64_t) n), nb = (size_t) n / 32, bb = rb / nb;
+            std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(GGML_TYPE_Q8_0, (int64_t) n));
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+            std::vector<float> x((size_t) n);
+            for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+            t8->from_float(x.data(), act.data(), n);
+            std::vector<float> got((size_t) rows), want((size_t) rows);
+            const void* hp[1] = {act.data()};
+            float* op[1] = {got.data()};
+            iq4nl_reference_rows(w.data(), rb, n, hp, 1, op, 0, rows);
+            for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+            if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {
+                std::fprintf(stderr, "strata: the window-invariant IQ4_NL rows differ from this ggml-cpu's dot (n=%d): its dot runs per token instead\n", n);
+                return false;
+            }
+        }
+        return true;
+    }();
+    return ok;
+}
+
+// The same check for the AVX-512 accumulation of IQ3_XXS / IQ3_S / IQ2_S gate/up rows (types 18, 21, 22), SwiGLU included.
+bool iq512_reference_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_K);
+    if (tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr) {
+        constexpr int n = 2560, rows = 24;
+        const size_t rb = ggml_row_size((ggml_type) type, n), nb = (size_t) n / 256, bb = rb / nb;
+        std::vector<uint8_t> w((size_t) 2 * rows * rb), act(ggml_row_size(GGML_TYPE_Q8_K, n));
+        uint32_t seed = 777u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < 2 * rows; ++r)
+            for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+        std::vector<float> x(n);
+        for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+        t8->from_float(x.data(), act.data(), n);
+        std::vector<float> got((size_t) rows), want((size_t) rows);
+        const void* ap[1] = {act.data()};
+        float* fp[1] = {got.data()};
+        iq512_reference_gu_rows(type, w.data(), rb, (size_t) rows * rb, n, ap, 1, fp, 0, rows);
+        for (int r = 0; r < rows; ++r) {
+            float g = 0.f, u = 0.f;
+            tr->vec_dot(n, &g, 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+            tr->vec_dot(n, &u, 0, w.data() + (size_t) rows * rb + (size_t) r * rb, 0, act.data(), 0, 1);
+            want[(size_t) r] = (g / (1.f + std::exp(-g))) * u;
+        }
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+        if (!ok) std::fprintf(stderr, "strata: the window-invariant 512-bit rows of type %d differ from this ggml-cpu's dot: its dot runs per token instead\n", type);
+    }
+    memo[type] = ok;
+    return ok;
+}
+
+// 0.2.5: the 512-bit exact rows (iq512x_rows) take one token of an IQ3_XXS / IQ3_S expert only if this build's ggml-cpu dot gives
+// the same bits on synthetic blocks of that type (a ggml built for AVX-512 may carry another summation order): checked once a type.
+bool x512_one_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_K);
+    if (tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr && iq512x_supported(type)) {
+        constexpr int n = 2560, rows = 24;
+        const size_t rb = ggml_row_size((ggml_type) type, n), nb = (size_t) n / 256, bb = rb / nb;
+        std::vector<uint8_t> w((size_t) rows * rb), act(ggml_row_size(GGML_TYPE_Q8_K, n));
+        uint32_t seed = 12345u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < rows; ++r)
+            for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }   // d = ~0.1 (f16)
+        std::vector<float> x(n);
+        for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+        t8->from_float(x.data(), act.data(), n);
+        std::vector<float> got((size_t) rows), want((size_t) rows);
+        const void* ap[1] = {act.data()};
+        float* op[1] = {got.data()};
+        iq512x_rows(type, w.data(), rb, n, ap, 1, op, 0, rows);
+        for (int r = 0; r < rows; ++r) tr->vec_dot(n, &want[(size_t) r], 0, w.data() + (size_t) r * rb, 0, act.data(), 0, 1);
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+        if (!ok) std::fprintf(stderr, "strata: the 512-bit exact one-token rows of type %d differ from this ggml-cpu's dot: not used\n", type);
+    }
+    memo[type] = ok;
+    return ok;
+}
+
+// 0.2.12: the 512-bit Q5_0 down rows (q50_512_down_rows) take the type only if, on synthetic blocks (even and odd block counts, three tokens), they
+// give the bits of ggml-cpu's dot on this build.
+// The same check for the fused gate/up rows (iq512_fused_gu_rows) of an i-quant type: ggml-cpu's dot, SwiGLU included, bit for bit.
+bool iq512f_ok(int type) {
+    static std::mutex mu;
+    static std::map<int, bool> memo;
+    std::lock_guard<std::mutex> lk(mu);
+    if (const auto it = memo.find(type); it != memo.end()) return it->second;
+    bool ok = false;
+    const ggml_type_traits_cpu* tr = traits(type);
+    const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_K);
+    if (tr != nullptr && tr->vec_dot != nullptr && t8 != nullptr && t8->from_float != nullptr && iq512f_supported(type)) {
+        constexpr int n = 2560, rows = 24, nt = 3;
+        const size_t rb = ggml_row_size((ggml_type) type, n), nb = (size_t) n / 256, bb = rb / nb;
+        std::vector<uint8_t> w((size_t) 2 * rows * rb);
+        uint32_t seed = 4711u + (uint32_t) type;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (auto& b : w) b = (uint8_t) rnd();
+        for (int r = 0; r < 2 * rows; ++r)
+            for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+        std::vector<std::vector<uint8_t>> act(nt, std::vector<uint8_t>(ggml_row_size(GGML_TYPE_Q8_K, n)));
+        const void* ap[nt];
+        for (int t = 0; t < nt; ++t) {
+            std::vector<float> x(n);
+            for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+            t8->from_float(x.data(), act[(size_t) t].data(), n);
+            ap[t] = act[(size_t) t].data();
+        }
+        std::vector<float> got((size_t) nt * rows), want((size_t) nt * rows);
+        float* fp[nt];
+        for (int t = 0; t < nt; ++t) fp[t] = &got[(size_t) t * rows];
+        iq512_fused_gu_rows(type, w.data(), rb, (size_t) rows * rb, n, ap, nt, fp, 0, rows);
+        for (int t = 0; t < nt; ++t)
+            for (int r = 0; r < rows; ++r) {
+                float g = 0.f, u = 0.f;
+                tr->vec_dot(n, &g, 0, w.data() + (size_t) r * rb, 0, ap[t], 0, 1);
+                tr->vec_dot(n, &u, 0, w.data() + (size_t) rows * rb + (size_t) r * rb, 0, ap[t], 0, 1);
+                want[(size_t) t * rows + r] = (g / (1.f + std::exp(-g))) * u;
+            }
+        ok = std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) == 0;
+        if (!ok) std::fprintf(stderr, "strata: the fused 512-bit gate/up rows of type %d differ from this ggml-cpu's dot: not used\n", type);
+    }
+    memo[type] = ok;
+    return ok;
+}
+
+bool q50_512_ok() {
+    static const bool ok = [] {
+        const ggml_type_traits_cpu* tr = traits(GGML_TYPE_Q5_0);
+        const ggml_type_traits_cpu* t8 = traits(GGML_TYPE_Q8_0);
+        if (!cpu_vnni_ok() || tr == nullptr || tr->vec_dot == nullptr || t8 == nullptr || t8->from_float == nullptr) return false;
+        uint32_t seed = 31337u;
+        auto rnd = [&seed] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        for (const int n : {96, 640}) {
+            constexpr int rows = 16, nt = 3;
+            const size_t rb = ggml_row_size(GGML_TYPE_Q5_0, (int64_t) n), nb = (size_t) n / 32, bb = rb / nb;
+            std::vector<uint8_t> w((size_t) rows * rb);
+            for (auto& b : w) b = (uint8_t) rnd();
+            for (int r = 0; r < rows; ++r)
+                for (size_t k = 0; k < nb; ++k) { uint8_t* d = &w[(size_t) r * rb + k * bb]; d[0] = 0x66; d[1] = 0x2e; }
+            std::vector<std::vector<uint8_t>> act(nt, std::vector<uint8_t>(ggml_row_size(GGML_TYPE_Q8_0, n)));
+            const void* hp[nt];
+            for (int t = 0; t < nt; ++t) {
+                std::vector<float> x((size_t) n);
+                for (auto& v : x) v = ((float) (rnd() % 2001) - 1000.f) * 0.001f;
+                t8->from_float(x.data(), act[(size_t) t].data(), n);
+                hp[t] = act[(size_t) t].data();
+            }
+            std::vector<float> got((size_t) nt * rows), want((size_t) nt * rows);
+            float* gp[nt];
+            for (int t = 0; t < nt; ++t) gp[t] = &got[(size_t) t * rows];
+            q50_512_down_rows(w.data(), rb, n, hp, nt, gp, 0, rows);
+            for (int r = 0; r < rows; ++r)
+                for (int t = 0; t < nt; ++t) tr->vec_dot(n, &want[(size_t) t * rows + r], 0, w.data() + (size_t) r * rb, 0, hp[t], 0, 1);
+            if (std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {
+                std::fprintf(stderr, "strata: the 512-bit Q5_0 down rows differ from this ggml-cpu's dot: not used\n");
+                return false;
+            }
+        }
+        return true;
+    }();
+    return ok;
+}
 
 void init_once() {
     static std::once_flag once;
@@ -50,31 +256,39 @@ bool kq256_supported(int type) noexcept { return type == 12 || type == 7 || type
 
 bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& f, std::string& err) {
     init_once();
-    const ggml_type_traits_cpu* tg = traits(gu_type);
-    const ggml_type_traits_cpu* td = traits(d_type);
-    if (tg == nullptr || tg->vec_dot == nullptr || td == nullptr || td->vec_dot == nullptr) {
-        err = "native experts: ggml-cpu has no dot product for type " + std::to_string(tg && tg->vec_dot ? d_type : gu_type);
+    // The trellis types (Gyro, ggml types 144-146) are not in a ggml built from upstream (and an upstream ggml indexes its
+    // type table by the id, so asking it about 144 reads past the table): their geometry and activation format (Q8_0)
+    // are known here, and their rows run on tq_cpu.hpp.
+    const bool tq_g = tq_supported(gu_type), tq_d = tq_supported(d_type);
+    const ggml_type_traits_cpu* tg = tq_g ? nullptr : traits(gu_type);
+    const ggml_type_traits_cpu* td = tq_d ? nullptr : traits(d_type);
+    if ((!tq_g && (tg == nullptr || tg->vec_dot == nullptr)) || (!tq_d && (td == nullptr || td->vec_dot == nullptr))) {
+        err = "native experts: ggml-cpu has no dot product for type " +
+              std::to_string(!tq_g && !(tg && tg->vec_dot) ? gu_type : d_type);
         return false;
     }
-    const ggml_type_traits_cpu* ag = traits(tg->vec_dot_type);
-    const ggml_type_traits_cpu* ad = traits(td->vec_dot_type);
+    const ggml_type vdt_g = tq_g ? GGML_TYPE_Q8_0 : tg->vec_dot_type;
+    const ggml_type vdt_d = tq_d ? GGML_TYPE_Q8_0 : td->vec_dot_type;
+    const ggml_type_traits_cpu* ag = traits(vdt_g);
+    const ggml_type_traits_cpu* ad = traits(vdt_d);
     if (ag == nullptr || ag->from_float == nullptr || ad == nullptr || ad->from_float == nullptr) {
         err = "native experts: ggml-cpu cannot quantize an activation for this layer";
         return false;
     }
-    if (n_embd % ggml_blck_size((ggml_type) gu_type) || n_ff % ggml_blck_size((ggml_type) d_type) ||
-        n_embd % ggml_blck_size(tg->vec_dot_type) || n_ff % ggml_blck_size(td->vec_dot_type)) {
+    if ((tq_g ? n_embd % kTqBlock : n_embd % ggml_blck_size((ggml_type) gu_type)) ||
+        (tq_d ? n_ff % kTqBlock : n_ff % ggml_blck_size((ggml_type) d_type)) ||
+        n_embd % ggml_blck_size(vdt_g) || n_ff % ggml_blck_size(vdt_d)) {
         err = "native experts: expert geometry is not whole blocks";
         return false;
     }
     f.gu_type = gu_type;
     f.d_type = d_type;
-    f.gu_act = (int) tg->vec_dot_type;
-    f.d_act = (int) td->vec_dot_type;
+    f.gu_act = (int) vdt_g;
+    f.d_act = (int) vdt_d;
     f.n_embd = n_embd;
     f.n_ff = n_ff;
-    f.gu_row = ggml_row_size((ggml_type) gu_type, n_embd);
-    f.d_row = ggml_row_size((ggml_type) d_type, n_ff);
+    f.gu_row = tq_g ? (size_t) (n_embd / kTqBlock) * tq_block_bytes(gu_type) : ggml_row_size((ggml_type) gu_type, n_embd);
+    f.d_row = tq_d ? (size_t) (n_ff / kTqBlock) * tq_block_bytes(d_type) : ggml_row_size((ggml_type) d_type, n_ff);
     f.up_off = f.gu_row * (size_t) n_ff;
     f.down_off = 2 * f.up_off;
     f.bytes = f.down_off + f.d_row * (size_t) n_embd;
@@ -84,8 +298,8 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
         f.tail_off = f.bytes;
         f.bytes += kNvfp4Tail;
     }
-    f.act_bytes = ggml_row_size(tg->vec_dot_type, n_embd);
-    f.h_bytes = ggml_row_size(td->vec_dot_type, n_ff);
+    f.act_bytes = ggml_row_size(vdt_g, n_embd);
+    f.h_bytes = ggml_row_size(vdt_d, n_ff);
     if (f.act_bytes > kNativeActBytes || f.h_bytes > kNativeHBytes) {
         err = "native experts: activation larger than the pool's buffers";
         return false;
@@ -110,13 +324,109 @@ bool q8k_avx1(int type) {
 }
 }  // namespace
 
+// STRATA_ACT_DUMP=<prefix> (research, off by default): the second moments of the vectors that enter the CPU experts, in the
+// basis the experts use (after the Hadamard rotation of a folded layer): per layer the gate/up input (the token's hidden
+// state, once per token) and the down input (the SwiGLU output, once per routed expert).  STRATA_ACT_DUMP_LAYERS=10,20 picks
+// the layers (default none), STRATA_ACT_DUMP_COV=1 adds the full covariance.  Files <prefix>_L<l>_<gu|dn>.bin: int64 n,
+// int64 count, double sum x^2 [n], (double sum x x^T [n*n]); rewritten every 2000 records and at exit.
+namespace {
+struct ActAcc {
+    int64_t n = 0, count = 0;
+    std::vector<double> sq, cov;
+};
+struct ActDump {
+    bool on = false, cov = false;
+    std::string prefix;
+    std::vector<int> layers;
+    std::map<std::pair<int, int>, ActAcc> acc;
+    std::mutex mu;
+    int64_t records = 0;
+    ActDump() {
+        const char* p = std::getenv("STRATA_ACT_DUMP");
+        if (p == nullptr || *p == 0) return;
+        prefix = p;
+        cov = std::getenv("STRATA_ACT_DUMP_COV") != nullptr && std::atoi(std::getenv("STRATA_ACT_DUMP_COV")) != 0;
+        if (const char* l = std::getenv("STRATA_ACT_DUMP_LAYERS")) {
+            std::string s(l);
+            size_t at = 0;
+            while (at < s.size()) {
+                layers.push_back(std::atoi(s.c_str() + at));
+                const size_t c = s.find(',', at);
+                if (c == std::string::npos) break;
+                at = c + 1;
+            }
+        }
+        on = !layers.empty();
+        if (on) std::atexit([] { act_dump_flush(); });
+    }
+    static void act_dump_flush();
+};
+ActDump& act_dump() {
+    static ActDump* d = new ActDump;   // never destroyed: the atexit flush must still find it
+    return *d;
+}
+void ActDump::act_dump_flush() {
+    ActDump& d = act_dump();
+    std::lock_guard<std::mutex> lk(d.mu);
+    for (auto& kv : d.acc) {
+        const std::string path = d.prefix + "_L" + std::to_string(kv.first.first) + (kv.first.second ? "_dn.bin" : "_gu.bin");
+        FILE* f = std::fopen((path + ".tmp").c_str(), "wb");
+        if (!f) continue;
+        std::fwrite(&kv.second.n, 8, 1, f);
+        std::fwrite(&kv.second.count, 8, 1, f);
+        std::fwrite(kv.second.sq.data(), 8, kv.second.sq.size(), f);
+        if (!kv.second.cov.empty()) std::fwrite(kv.second.cov.data(), 8, kv.second.cov.size(), f);
+        std::fclose(f);
+        std::rename((path + ".tmp").c_str(), path.c_str());
+    }
+}
+void act_dump_record(int layer, int kind, const float* v, int64_t n) {
+    ActDump& d = act_dump();
+    if (std::find(d.layers.begin(), d.layers.end(), layer) == d.layers.end()) return;
+    std::lock_guard<std::mutex> lk(d.mu);
+    ActAcc& a = d.acc[{layer, kind}];
+    if (a.n == 0) {
+        a.n = n;
+        a.sq.assign((size_t) n, 0.0);
+        if (d.cov) a.cov.assign((size_t) n * (size_t) n, 0.0);
+    }
+    for (int64_t i = 0; i < n; ++i) a.sq[(size_t) i] += (double) v[i] * v[i];
+    if (d.cov)
+        for (int64_t i = 0; i < n; ++i) {
+            double* row = a.cov.data() + (size_t) i * (size_t) n;
+            const double vi = v[i];
+            for (int64_t j = 0; j < n; ++j) row[j] += vi * v[j];
+        }
+    ++a.count;
+    if (++d.records % (d.cov ? 400000 : 2000) == 0) {
+        d.mu.unlock();
+        ActDump::act_dump_flush();
+        d.mu.lock();
+    }
+}
+}  // namespace
+
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
+    if (f.had_gu) {   // Hadamard-folded gate/up: quantize H (s * x), never x itself (hadamard.hpp)
+        thread_local std::vector<float> tmp;
+        tmp.assign(x, x + f.n_embd);
+        hadamard_rotate(tmp.data(), (int) f.n_embd, f.had_block, f.gu_signs);
+        x = tmp.data();
+    }
+    if (act_dump().on) act_dump_record(f.layer, 0, x, f.n_embd);
     if (q8k_avx2(f.gu_act)) { q8k_quant_avx2(x, dst, f.n_embd); return; }
     if (q8k_avx1(f.gu_act)) { q8k_quant_avx1(x, dst, f.n_embd); return; }
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
 }
 
 void native_quant_h(const NativeFmt& f, const float* h, void* dst) {
+    if (f.had_d) {
+        thread_local std::vector<float> tmp;
+        tmp.assign(h, h + f.n_ff);
+        hadamard_rotate(tmp.data(), (int) f.n_ff, f.had_block, f.d_signs);
+        h = tmp.data();
+    }
+    if (act_dump().on) act_dump_record(f.layer, 1, h, f.n_ff);
     if (q8k_avx2(f.d_act)) { q8k_quant_avx2(h, dst, f.n_ff); return; }
     if (q8k_avx1(f.d_act)) { q8k_quant_avx1(h, dst, f.n_ff); return; }
     traits(f.d_act)->from_float(h, dst, f.n_ff);
@@ -141,14 +451,16 @@ int native_gu_mt_min(int gu_type) {
     return iq3s_one && gu_type == 21 ? 1 : mt_min;
 }
 
-void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
+template <NativeArithmetic Arithmetic>
+void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1) {
     // the multi-token kernels decode the weights once for all tokens: 2.0-2.4x ggml-cpu at three tokens, no faster
     // at one (all are bound by the codebook lookups, ~5 GB/s per core), measured by native_expert_parity.  AVX-512
     // first, then the AVX-2 one (Zen 2/3, Intel 12th-14th gen).  STRATA_NO_IQ512 drops an AVX-512 CPU to the
     // AVX-2 kernel, STRATA_NO_IQ256 drops the AVX-2 kernel; ggml-cpu's single-token vec_dot is reached only with
     // both set (and on a CPU without AVX-512, STRATA_NO_IQ512 changes nothing).
-    static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
+    // 0.2.12 (PR 5120): AVX-512 F/DQ/BW/VL + VNNI is what iq_avx512.cpp runs on (its object holds no VBMI instruction); VBMI is not required.
+    static const bool avx512 = cpu_vnni_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
     // STRATA_NO_IQ256 drops the AVX-2 kernel.  cpu_avx2_ok() is ALSO required: iq_avx2.cpp and kq_avx2.cpp
     // are compiled /arch:AVX2 and use AVX2 and FMA3, so calling them on a CPU without either is an
     // illegal instruction, not a slow path.  The gate sat next to `avx512` above, which does test
@@ -181,30 +493,103 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         iq256_gu_rows_exact_one(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act[0], ff[0], r0, r1);
         return;
     }
+    // 0.2.5 (AVX-512 CPUs where a gather is cheap: Intel Sapphire Rapids and later): ONE token of an IQ3_XXS / IQ3_S expert on the
+    // 512-bit exact rows, ggml-cpu's single-token AVX2 dot bit for bit with the grid words gathered: 1.3x ggml's dot on a Xeon 8468
+    // (x512_bench), the same output.  Where the multi-token rule (#152) already sends one token to the multi-token kernel
+    // (STRATA_IQ_MT_MIN=1) that stays; STRATA_NO_IQ512X1=1 turns this off; the first use checks the bits against this ggml.
+    static const bool x512_one = avx512 && iq512_gather_on() && std::getenv("STRATA_NO_IQ512X1") == nullptr;
+    if (x512_one && nt == 1 && nt < native_gu_mt_min(f.gu_type) && f.tail_off == 0 && (f.gu_type == 18 || f.gu_type == 21) &&
+        x512_one_ok(f.gu_type)) {
+        const int n1 = (int) f.n_embd;
+        float g[64], u[64];
+        float* gp[1] = {g};
+        float* up[1] = {u};
+        for (int c0 = r0; c0 < r1; c0 += 64) {
+            const int c1 = std::min(r1, c0 + 64);
+            iq512x_rows(f.gu_type, blob + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, gp, 0, c1 - c0);
+            iq512x_rows(f.gu_type, blob + f.up_off + (size_t) c0 * f.gu_row, f.gu_row, n1, act, 1, up, 0, c1 - c0);
+            for (int r = c0; r < c1; ++r) ff[0][r] = (g[r - c0] / (1.f + std::exp(-g[r - c0]))) * u[r - c0];
+        }
+        return;
+    }
+    // 0.2.12: IQ4_XS on an AVX-512 CPU used to run on ggml-cpu's dot for every token (the 256-bit kernel below is AVX2-only).  The 512-bit rows sum
+    // as that dot sums (the integer lanes, the f16 scale times y.d, eight float lanes, its hsum), so each token's row is ggml's bit for bit
+    // at any number of tokens, checked once against this ggml.  STRATA_NO_IQ4XS512=1 keeps ggml's dot; STRATA_IQ4XS512_MIN=N: from N tokens on.
+    static const bool iq4xs512 = avx512 && std::getenv("STRATA_NO_IQ4XS512") == nullptr;
+    static const int iq4xs512_min = [] { const char* e = std::getenv("STRATA_IQ4XS512_MIN"); return e ? std::atoi(e) : 1; }();
+    if (iq4xs512 && f.gu_type == 23 && nt >= iq4xs512_min && f.tail_off == 0 && iq512_reference_ok(23)) {
+        iq512_reference_gu_rows(23, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
+    // 0.2.12, OPT-IN (N): STRATA_IQ512_FUSED_MAX=M (default 0 = off) sums the gate and up rows of an IQ3_XXS / IQ3_S / IQ2_S expert (types
+    // STRATA_IQ512_FUSED_TYPES, default 18,21,22) for 2..M tokens in ggml-cpu's order, in one pass over the activations (iq512_fused_gu_rows, checked
+    // once against this ggml).  Each token's rows are then what ggml's one-token dot gives it, whatever the group, instead of the 16-lane sums of the
+    // default rows: different rounding (N), measured 1.27-1.34x the default rows at 2-3 tokens on Zen 4 and a loss at one token (so one token keeps ggml's dot).
+    static const int fused_max = [] { const char* e = std::getenv("STRATA_IQ512_FUSED_MAX"); return e ? std::atoi(e) : 0; }();
+    if (fused_max >= 2 && avx512 && nt >= 2 && nt <= fused_max && f.tail_off == 0 && f.gu_type > 0 && f.gu_type < 32) {
+        static const unsigned fused_types = [] {
+            unsigned m = 0;
+            const char* e = std::getenv("STRATA_IQ512_FUSED_TYPES");
+            const std::string v = e != nullptr && e[0] != '\0' ? e : "18,21,22";
+            size_t at = 0;
+            while (at < v.size()) {
+                const int t = std::atoi(v.c_str() + at);
+                if (t > 0 && t < 32) m |= 1u << t;
+                const size_t c = v.find(',', at);
+                if (c == std::string::npos) break;
+                at = c + 1;
+            }
+            return m;
+        }();
+        if (((fused_types >> f.gu_type) & 1u) && iq512f_supported(f.gu_type) && iq512f_ok(f.gu_type)) {
+            iq512_fused_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+            return;
+        }
+    }
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
+    const bool singleton_iq = Arithmetic == NativeArithmetic::WindowInvariant && mt_min > 1;
     // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
     // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();
-    if (kq && f.gu_type == 12 && nt >= 2) {   // one token: ggml's own dot below (the same bits, less overhead)
+    // KQ matches the ggml AVX2/FMA dot; other builds keep their own singleton arithmetic.
+    if (kq && f.gu_type == 12 && nt >= 2 &&
+        (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // one token: ggml's own dot below (the same bits, less overhead)
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
+    // The trellis types (TQ2_T / TQK6 / TQK7): Strata's own kernels (tq_cpu.hpp), for every group size - they decode
+    // a block once for all the tokens and give each token the same bits whatever the group (no #152 rule needed).
+    if (tq_rows_own(f.gu_type)) {
+        tq_gu_rows(tq_isa(), f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
     // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps ggml-cpu for
     // it, as before (its rows would round differently).  Each kernel only for the formats it implements: falling
     // through an empty switch would leave ff unwritten instead of falling back to ggml-cpu.
-    static const bool cpu512 = cpu_avx512_ok();
+    static const bool cpu512 = cpu_vnni_ok();
     if (nt >= mt_min && (iq512_supported(f.gu_type) || (!cpu512 && iq256_supported(f.gu_type)))) {
-        if (avx512 && iq512_supported(f.gu_type)) {
-            iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            return;
-        }
-        if (avx2 && iq256_supported(f.gu_type)) {
-            iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
-            return;
+        if (singleton_iq) {
+#if defined(__x86_64__) || defined(_M_X64)
+            if (avx512 && ggml_cpu_has_avx2() && ggml_cpu_has_fma() &&
+                (f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22) && iq512_reference_ok(f.gu_type)) {
+                iq512_reference_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+                return;
+            }
+#endif
+            // Otherwise use the singleton dot below, keeping its row-major weight reuse across tokens.
+        } else {
+            if (avx512 && iq512_supported(f.gu_type)) {
+                iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+                return;
+            }
+            if (avx2 && iq256_supported(f.gu_type)) {
+                iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+                return;
+            }
         }
     }
-    if (avx1 && nt >= mt_min && iq128_supported(f.gu_type)) {
+    if (!singleton_iq && avx1 && nt >= mt_min && iq128_supported(f.gu_type)) {
         iq128_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
@@ -247,7 +632,8 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     }
 }
 
-void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
+template <NativeArithmetic Arithmetic>
+void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1) {
     // IQ4_NL down rows: the AVX-2 multi-token kernel decodes the nibbles and absolutises the weights once per
     // block instead of once per token; ggml-cpu's dot is single-token.  STRATA_NO_IQ4NL falls back to it.
@@ -257,13 +643,34 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
     // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.
-    if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8)) {   // Q5_1 / Q8_0 down: bit-exact, any group size
+    if (tq_rows_own(f.d_type)) {   // the trellis types, as in native_gu_rows
+        tq_rows(tq_isa(), f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8) &&
+        (Arithmetic == NativeArithmetic::Default || (ggml_cpu_has_avx2() && ggml_cpu_has_fma()))) {   // Q5_1 / Q8_0 down: bit-exact, any group size
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
-    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
-        iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+    // 0.2.12: Q5_0 down rows (ggml-cpu's dot, once a token) in 512-bit lanes, the same bits (q50_512_ok checks that on first use): the weights
+    // of a block pair are decoded once for all the tokens.  STRATA_NO_Q50_512=1 keeps ggml's dot; STRATA_Q50_512_MIN=N: from N tokens on (default 2).
+    static const bool q50_512 = cpu_vnni_ok() && std::getenv("STRATA_NO_Q50_512") == nullptr;
+    static const int q50_min = [] { const char* e = std::getenv("STRATA_Q50_512_MIN"); return e ? std::atoi(e) : 2; }();
+    if (q50_512 && f.d_type == 6 && nt >= q50_min && f.tail_off == 0 && q50_512_ok()) {
+        q50_512_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
+    }
+    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
+        if (Arithmetic == NativeArithmetic::Default || mt_min <= 1) {
+            iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            return;
+        }
+#if defined(__x86_64__) || defined(_M_X64)
+        if (ggml_cpu_has_avx2() && ggml_cpu_has_fma() && iq4nl_reference_ok()) {
+            iq4nl_reference_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+            return;
+        }
+#endif
     }
     // the older-CPU tier: IQ4_NL and Q2_0 down rows in 128-bit (ggml-cpu's dots for both are scalar here)
     static const bool avx1 = !cpu_avx2_ok() && cpu_avx1_ok() && std::getenv("STRATA_NO_IQ128") == nullptr;
@@ -293,6 +700,28 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
             out[t][r] = s * sd;
         }
     }
+}
+
+// Keep one dispatch implementation: only width-sensitive IQ kernels need a different arithmetic path.
+// Already invariant kernels (including NVFP4) retain their shared decoding and scale handling.
+void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
+                    float* const* ff, int r0, int r1) {
+    native_gu_rows_impl<NativeArithmetic::Default>(f, blob, act, nt, ff, r0, r1);
+}
+
+void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                      float* const* out, int r0, int r1) {
+    native_down_rows_impl<NativeArithmetic::Default>(f, blob, hq, nt, out, r0, r1);
+}
+
+void native_gu_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt,
+                              float* const* ff, int r0, int r1) {
+    native_gu_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, act, nt, ff, r0, r1);
+}
+
+void native_down_rows_invariant(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt,
+                                float* const* out, int r0, int r1) {
+    native_down_rows_impl<NativeArithmetic::WindowInvariant>(f, blob, hq, nt, out, r0, r1);
 }
 
 }  // namespace strata::kernels::cpu

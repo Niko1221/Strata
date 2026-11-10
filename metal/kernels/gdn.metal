@@ -13,7 +13,28 @@
 // the fold of m accepted tokens is the same kernel with GDN_NTOK = m and commit).  The conv history is read from
 // `hist` and the committed one written to `hist_out` (ping-pong: the q/k channels are shared by three threadgroups).
 
+#ifndef STRATA_XH16_DECL
+#define STRATA_XH16_DECL
+// STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
+// [3][plane] halves - raw (IQ4_XS), x * 4^-(i % 4) (Q2_0), x * 2^-8 at odd i (the K-quants); idx = t * n + d, jj = d % 16
+constant bool XH16 [[function_constant(25)]];
+constant bool xh16 = is_function_constant_defined(XH16) && XH16;
+static inline void put_x16(device float* xp, uint plane, uint idx, uint jj, float v) {
+    device half* xh = (device half*)(xp + 4 * plane + plane / 16);
+    const float q2b[4] = {1.0f, 0.25f, 0.0625f, 0.015625f};
+    xh[idx] = half(v);
+    xh[plane + idx] = half(v * q2b[jj & 3]);
+    xh[2 * plane + idx] = half((jj & 1) ? v * 0.00390625f : v);
+}
+#endif
+
 constant int GDN_NTOK [[function_constant(2)]];
+// GDN_ROWS (function constant 31, with GDN_NTOK = 1): the grid is (h_v, rows) and row y is a DIFFERENT sequence (a batch slot) with its own
+// state and conv history; rinfo as in qsa.metal (header [5] state stride, [6] history stride per slot and parity; row y at [8 + 4 y] =
+// {slot, cell, history parity, 0}).  hist / hist_out are then one buffer (hist), the parities side by side per slot.  The inputs and the
+// output are row y of the window's arrays.  Off: exactly the plain kernel.
+constant bool GDN_ROWS_C [[function_constant(31)]];
+constant bool gdn_rows = is_function_constant_defined(GDN_ROWS_C) && GDN_ROWS_C;
 
 struct GdnArgs {
     uint h_k;        // 16
@@ -40,6 +61,7 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
                      device const float* ssm_a [[buffer(8)]], device const float* gamma [[buffer(9)]],
                      device float* y [[buffer(10)]], constant GdnArgs& a [[buffer(11)]],
                      device float* hist_out [[buffer(12)]],
+                     device const uint* rinfo [[buffer(13), function_constant(gdn_rows)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
     constexpr int S = 128;
@@ -53,6 +75,13 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
     const int cb = sg & 3, ib = sg >> 2;
     const int j = 32 * cb + lane, i0 = RPT * ib;
     const float scale = 1.0f / sqrt(float(S));
+    const int row0 = gdn_rows ? int(tg.y) : 0;
+    if (gdn_rows) {
+        const ulong sl = rinfo[8 + 4 * row0], par = rinfo[8 + 4 * row0 + 2];
+        state += sl * rinfo[5];
+        hist_out = hist + (sl * 2 + (1 - par)) * rinfo[6];
+        hist += (sl * 2 + par) * rinfo[6];
+    }
 
     // the channel this thread convolves: 0..127 q of head hk, 128..255 k of head hk, 256..383 v of head h
     int ch = -1;
@@ -70,9 +99,10 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
     const int commit_at = a.commit == 1u ? GDN_NTOK : (a.commit >> 8) ? int(a.commit & 0xFFu) : 0;
     for (int t = 0; t < GDN_NTOK; ++t) {
         // conv + SiLU
+        const int tr = t + row0;
         float cv = 0.0f;
         if (ch >= 0) {
-            const float in = qkv[t * int(a.channels) + ch];
+            const float in = qkv[tr * int(a.channels) + ch];
             const float vals[4] = {hst[0], hst[1], hst[2], in};
             float s = 0.0f;
             for (int k = 0; k < 4; ++k) s = fma(vals[k], cw[k], s);
@@ -86,12 +116,12 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
         const float ssq = simd_sum(cv * cv);
         if (lane == 0) part[sg] = ssq;
         if (tid == 0) {
-            const float v = alpha[t * hv + h] + dt[h];
+            const float v = alpha[tr * hv + h] + dt[h];
             // log1p(e^v) (Kahan: log(u) * e / (u - 1), u = 1 + e; exact where 1 + e rounds to 1)
             const float e = exp(v), u = 1.0f + e;
             const float sp = v > 20.0f ? v : (u == 1.0f ? e : log(u) * e / (u - 1.0f));
             gb[0] = exp(sp * ssm_a[h]);
-            gb[1] = 1.0f / (1.0f + exp(-beta[t * hv + h]));
+            gb[1] = 1.0f / (1.0f + exp(-beta[tr * hv + h]));
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         if (tid < 256) {
@@ -132,18 +162,19 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
         if (ib == 0) {
             const float tot = (part[0] + part[1]) + (part[2] + part[3]);
             const float rs = rsqrt(tot / float(S) + a.eps);
-            const float zz = z[t * hv * S + h * S + j];
+            const float zz = z[tr * hv * S + h * S + j];
             const float yv = ((rs * o) * gamma[j]) * (1.0f / (1.0f + exp(-zz)));
-            y[t * hv * S + h * S + j] = yv;
+            y[tr * hv * S + h * S + j] = yv;
             if (a.plane) {
                 const float q2s[8] = {1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 0.0009765625f, 0.000244140625f,
                                       0.00006103515625f};
                 const float p4s[4] = {1.0f, 0.00390625f, 1.52587890625e-05f, 5.9604644775390625e-08f};
-                device float* raw = y + t * hv * S + h * S + j;
+                device float* raw = y + tr * hv * S + h * S + j;
                 const int jj = j & 15;
                 raw[a.plane] = yv * q2s[jj & 7];
                 raw[2 * a.plane] = yv * p4s[jj & 3];
                 raw[3 * a.plane] = (jj & 1) ? yv * 0.00390625f : yv;
+                if (xh16) put_x16(y, a.plane, t * hv * S + h * S + j, jj, yv);
                 ys[j] = yv;
             }
         }
@@ -161,7 +192,7 @@ kernel void gdn_step_t(device float* state [[buffer(0)]], device float* hist [[b
         if (a.plane && ib == 0 && (j & 15) == 0) {
             float s0 = 0.0f, s1 = 0.0f;
             for (int k = 0; k < 16; k += 2) { s0 += ys[j + k]; s1 += ys[j + k + 1]; }
-            y[4 * a.plane + t * (hv * S / 16) + (h * S + j) / 16] = s0 + s1;
+            y[4 * a.plane + tr * (hv * S / 16) + (h * S + j) / 16] = s0 + s1;
         }
     }
 }

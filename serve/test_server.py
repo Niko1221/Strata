@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate, literal_tags, mark_think_literals, unmark_think_literals  # noqa: E402
-from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
+from serve.server import (ANSWER_RESERVE_MIN, CTX_SLACK, ByteTokenizer, EngineDied, EngineNonFinite, GpuBusy, MockEngine,  # noqa: E402
                           PP_DONE_TAIL, Service,
                           StrataEngine, api_key_of, engine_args, key_matches, layer_split_value, prompt_progress,
                           prompt_tokens_seen,
@@ -74,7 +74,8 @@ class MaxTokens(unittest.TestCase):
             return s, b, u.get("prompt_tokens"), u.get("completion_tokens")
         s, b = self.post("/v1/messages", {"model": "m", "messages": msgs, **budget})
         u = b.get("usage", {})
-        return s, b, u.get("input_tokens"), u.get("output_tokens")
+        prompt = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        return s, b, prompt if u else None, u.get("output_tokens")
 
     def test_anthropic_thinks_only_when_asked(self):
         # #278: Anthropic's thinking is opt-in; "thinking", an effort or a reasoning_budget_tokens (#123) asks for it
@@ -137,14 +138,84 @@ class MaxTokens(unittest.TestCase):
                 self.assertEqual(self.engine.last_max_new, want)
                 self.assertEqual(ct, want)
 
-    def test_explicit_budget_over_the_context_is_rejected(self):
-        for api in ("openai", "anthropic"):
+    def responses(self, text="hi", **budget):
+        """-> (status, body, prompt tokens, completion tokens) for /v1/responses."""
+        s, b = self.post("/v1/responses", {"model": "m", "input": text, **budget})
+        u = b.get("usage", {}) if isinstance(b, dict) else {}
+        return s, b, u.get("input_tokens"), u.get("output_tokens")
+
+    def call_any(self, api, text="hi", **budget):
+        """The three dialects; `budget` is given in the chat/messages spelling (max_tokens)."""
+        if api == "responses":
+            if "max_tokens" in budget:
+                budget["max_output_tokens"] = budget.pop("max_tokens")
+            return self.responses(text, **budget)
+        return self.call(api, text, **budget)
+
+    def test_explicit_budget_over_the_context_is_shortened_to_the_room_left(self):
+        # Claude Code asks for max_tokens 32000 on every request: a prompt that fits must be answered, with the output
+        # cap cut to what the context has left (less CTX_SLACK), not refused.
+        for api in ("openai", "anthropic", "responses"):
             with self.subTest(api=api):
-                s, b, _, _ = self.call(api, max_tokens=CTX)
-                self.assertEqual(s, 400)
-                self.assertIn("exceeds the context", b["error"]["message"])
-                self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
-                self.assertRegex(b["error"]["message"], r"at most \d+ here")
+                s, b, pt, ct = self.call_any(api, max_tokens=CTX)
+                self.assertEqual(s, 200, b)
+                self.assertEqual(self.engine.last_max_new, CTX - CTX_SLACK - pt)
+                self.assertLessEqual(pt + ct, CTX - CTX_SLACK)
+
+    def test_budget_that_fits_exactly_or_less_is_untouched(self):
+        for api in ("openai", "anthropic", "responses"):
+            _, _, pt, _ = self.call_any(api, max_tokens=1)
+            room = CTX - CTX_SLACK - pt
+            for budget in (50, room):
+                with self.subTest(api=api, budget=budget):
+                    s, b, _, _ = self.call_any(api, max_tokens=budget)
+                    self.assertEqual(s, 200, b)
+                    self.assertEqual(self.engine.last_max_new, budget)       # exactly what the client asked for
+            with self.subTest(api=api, budget="room + 1"):
+                s, b, _, _ = self.call_any(api, max_tokens=room + 1)
+                self.assertEqual(s, 200, b)
+                self.assertEqual(self.engine.last_max_new, room)             # one over: cut by one
+
+    def test_a_prompt_that_alone_does_not_fit_is_still_a_400(self):
+        _, _, pt0, _ = self.call("openai", max_tokens=1)
+        overhead = pt0 - len("hi")
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                s, b, _, _ = self.call_any(api, text="y" * (CTX - overhead + 50), max_tokens=CTX)
+                self.assertEqual(s, 400, b)
+                self.assertIn("exceeds the context window", b["error"]["message"])
+                self.assertIn("no room to answer", b["error"]["message"])
+                self.assertIn("never truncated", b["error"]["message"])
+
+    def test_thinking_budget_follows_the_shortened_cap(self):
+        # answer_room: thinking gets 3/4 of the cap; with the cap cut to the room left the budget is cut with it
+        import contextlib
+        import io
+        for api in ("openai", "anthropic", "responses"):
+            with self.subTest(api=api):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    s, b, pt, _ = self.call_any(api, max_tokens=CTX)
+                self.assertEqual(s, 200, b)
+                room = CTX - CTX_SLACK - pt
+                text = out.getvalue()
+                self.assertIn(f"shortened to {room}", text)
+                if api != "anthropic":          # Anthropic thinks only when asked (#278)
+                    cap = room - min(max(ANSWER_RESERVE_MIN, room // 4), room // 2)
+                    self.assertIn(f"thinking limited to {cap} of max_tokens {room}", text)
+
+    def test_strict_mode_keeps_the_llama_cpp_400(self):
+        self.svc.fit_max_tokens = False
+        try:
+            for api in ("openai", "anthropic", "responses"):
+                with self.subTest(api=api):
+                    s, b, _, _ = self.call_any(api, max_tokens=CTX)
+                    self.assertEqual(s, 400)
+                    self.assertIn("exceeds the context", b["error"]["message"])
+                    self.assertIn("\"fit_max_tokens\": true", b["error"]["message"])     # #545: says how to get past it
+                    self.assertRegex(b["error"]["message"], r"at most \d+ here")
+        finally:
+            self.svc.fit_max_tokens = True
 
     def test_unset_budget_with_a_near_full_prompt(self):
         _, _, pt0, _ = self.call("openai", max_tokens=1)
@@ -579,6 +650,24 @@ class ListenProblem(unittest.TestCase):
         text = listen_problem("10.9.9.9", 8080, OSError(errno.EADDRNOTAVAIL, "cannot assign"))
         self.assertIn("10.9.9.9 is not an address of this PC", text)
         self.assertNotIn("already in use", text)
+
+    def test_denied_text_follows_the_platform_0213_f12(self):
+        """F12: Linux and macOS must not blame Windows port reservations or a firewall rule."""
+        import errno
+        from unittest import mock
+        from serve.server import listen_problem
+        e = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("serve.server.sys.platform", "win32"):
+            win = listen_problem("127.0.0.1", 80, e)
+        self.assertIn("Windows may keep this port for itself", win)
+        self.assertIn("netsh int ipv4 show excludedportrange protocol=tcp", win)
+        for plat in ("linux", "darwin"):
+            with mock.patch("serve.server.sys.platform", plat):
+                other = listen_problem("127.0.0.1", 80, e)
+            self.assertIn("This system does not allow it (on Linux and macOS, ports below 1024 need administrator "
+                          "rights): start this one with a different --port", other)
+            self.assertNotIn("Windows", other)
+            self.assertNotIn("netsh", other)
 
 
 def shutil_rmtree(path):
@@ -1055,7 +1144,7 @@ class ToolCallTagInProse(unittest.TestCase):
 
 
 class ToolCallRecovery(unittest.TestCase):
-    """Opt-in ("tool_call_recovery": true): the model sometimes writes a call in a form next to the template's.  These
+    """On by default in the server since 0.2.8 (config "tool_call_recovery": false turns it off): the model sometimes writes a call in a form next to the template's.  These
     shapes are from a corpus of 1,462 agent turns (Qwen3.8 under Claude Code, signalnine/q27): with the switch on, a
     declared tool's call in one of them is the call; anything else stays content, verbatim."""
     SCHEMA = ToolCallTerminators.SCHEMA
@@ -1116,9 +1205,10 @@ class ToolCallRecovery(unittest.TestCase):
 
     def test_bare_function_without_the_wrapper(self):
         # corpus 395efd4c / 6e71eed4 (x5 each): <function=...> with no <tool_call> around it
-        self.check(f"Writing it now.\n\n<function=write>\n{self.PARAMS}", [("write", self.CALL)], "Writing it now.")
-        self.check(f"<function=write>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")   # stray closer
-        self.check(f"<function=write>\n{self.PARAMS}\nDone.", [("write", self.CALL)], "Done.")
+        for name in ("write", " write ", "\twrite\t"):
+            self.check(f"Writing it now.\n\n<function={name}>\n{self.PARAMS}", [("write", self.CALL)], "Writing it now.")
+            self.check(f"<function={name}>\n{self.PARAMS}\n</tool_call>", [("write", self.CALL)], "")   # stray closer
+            self.check(f"<function={name}>\n{self.PARAMS}\nDone.", [("write", self.CALL)], "Done.")
 
     def test_two_calls_in_one_wrapper(self):
         # corpus 0912870b / 51b155c9: a batch inside one <tool_call> - the second call's parameters were merged into
@@ -1137,6 +1227,9 @@ class ToolCallRecovery(unittest.TestCase):
         self.check(inline, [], inline)
         unknown = "<function=format_disk>\n<parameter=x>\n1\n</parameter>\n</function>"
         self.check(unknown, [], unknown)
+        for text in (fenced, inline, unknown):
+            padded = text.replace("<function=write>", "<function= write >").replace("<function=format_disk>", "<function= format_disk >")
+            self.check(padded, [], padded)
 
 
 class ToolCallRecoveryOff(unittest.TestCase):
@@ -1179,6 +1272,29 @@ class ToolCallRecoverySwitch(unittest.TestCase):
     def test_switch(self):
         self.assertEqual(self.run_reply(False), [])
         self.assertEqual(self.run_reply(True), [ToolCallRecovery.CALL])
+
+    def test_on_by_default_and_the_config_turns_it_off(self):
+        """0.2.8: a server that is told nothing reads these calls; "tool_call_recovery": false is the off switch."""
+        from serve.server import tool_call_recovery_setting
+        tok = ByteTokenizer()
+        svc = Service(MockEngine(tok, "x", max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        self.assertIs(svc.tool_call_recovery, True)
+        self.assertIs(tool_call_recovery_setting({}), True)
+        self.assertIs(tool_call_recovery_setting({"model": "x"}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": True}), True)
+        self.assertIs(tool_call_recovery_setting({"tool_call_recovery": False}), False)
+        for bad in ("false", 0, 1, None, "off"):
+            with self.assertRaises(SystemExit):
+                tool_call_recovery_setting({"tool_call_recovery": bad})
+
+    def test_a_fresh_service_reads_the_call_without_being_told(self):
+        tok = ByteTokenizer()
+        script = "</think>\n\n<function=write>\n" + ToolCallRecovery.PARAMS
+        svc = Service(MockEngine(tok, script, max_context=CTX), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            evs = [x for kind, x in svc.run(tok.encode("hi"), True, ToolCallRecovery.SCHEMA, 3000, {},
+                                            threading.Event()) if kind == "event"]
+        self.assertEqual([e.call.arguments for e in evs if e.kind == "tool_call"], [ToolCallRecovery.CALL])
 
 
 class UnfinishedToolCall(unittest.TestCase):
@@ -1258,12 +1374,28 @@ class UnfinishedToolCall(unittest.TestCase):
             ("anthropic", False): ("end_turn", []),                      # call out: it has no arguments to give
             ("anthropic", True): ("end_turn", cut)})
 
+    def test_quoted_incomplete_wrapper_is_not_a_call(self):
+        text = "Format: " + self.WHOLE[len("</think>\n\n"):].removesuffix("</tool_call>") + "and then I explain it."
+        answers = self.answers("</think>\n\n" + text)
+        for api, stop in (("openai", "stop"), ("anthropic", "end_turn")):
+            self.assertEqual(answers[api, False], (stop, []))
+            self.assertEqual(answers[api, True][0], stop)
+            with self.assertRaises(ValueError):
+                json.loads(answers[api, True][1])
+
     def test_a_call_cut_at_the_token_limit(self):
         """The same cut by max_tokens: "length" / "max_tokens", and the whole (non-streamed) answers leave the call
         out in both APIs."""
-        a = self.answers(self.CUT + "rest of the file, never reached" * 40, max_tokens=len(self.CUT))
-        self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
-        self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+        cases = ((self.CUT + "rest of the file, never reached" * 40, len(self.CUT)),
+                 (self.WHOLE, len(self.WHOLE) - len("</tool_call>")))
+        for script, limit in cases:
+            with self.subTest(limit=limit):
+                a = self.answers(script, max_tokens=limit)
+                self.assertEqual((a["openai", False], a["anthropic", False]), (("length", []), ("max_tokens", [])))
+                self.assertEqual((a["openai", True][0], a["anthropic", True][0]), ("length", "max_tokens"))
+                for api in ("openai", "anthropic"):
+                    with self.assertRaises(ValueError):
+                        json.loads(a[api, True][1])
 
     def test_collect_keeps_calls_whose_arguments_parse(self):
         from serve.server import openai_collect
@@ -1655,6 +1787,19 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(plain.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_VISIBLE_DEVICES"))
         self.assertEqual(plain.get("CUDA_DEVICE_ORDER"), os.environ.get("CUDA_DEVICE_ORDER"))
 
+    def test_card_note_ties_the_engines_numbering_to_the_persons(self):
+        """The engine counts the cards it is given from 0, so GPU 1 reads "GPU 0 / CUDA0" in its log: one line says which is which."""
+        from serve.server import card_note, child_env
+        one = {"gpu": 1, "args": []}
+        self.assertIn("GPU 1", card_note(one, child_env(one)))
+        self.assertIn("GPU 0 / CUDA0", card_note(one, child_env(one)))
+        both = {"gpu": [1, 0], "args": [], "gpu_order": "as_given"}
+        line = card_note(both, child_env(both))
+        self.assertIn("GPU 1, then GPU 0", line)
+        self.assertIn("CUDA0, CUDA1", line)
+        for same in ({"gpu": 0, "args": []}, {"gpu": [0, 1], "args": [], "gpu_order": "as_given"}, {"args": []}, {"gpu": 1, "backend": "hip"}):
+            self.assertIsNone(card_note(same, child_env(same)), same)       # the numbers agree, or no card was chosen, or AMD (its own numbering)
+
     def test_card_order(self):
         """#1352: with an auto layer split the faster card (SMs x clock) goes last; ties, a manual split, a
         measurement we lack, HIP and "gpu_order": "as_given" keep the config's order."""
@@ -1688,6 +1833,71 @@ class GpuChoice(unittest.TestCase):
         self.assertEqual(child_env({"gpu": [0, 2], "args": [], "gpu_order": "as_given"})["CUDA_VISIBLE_DEVICES"], "0,2")
         self.assertIsNone(hip_speed_scores([0], root="/nonexistent/kfd"))
 
+    def test_igpu_is_never_the_last_stage(self):
+        """Strix Halo (gfx1151, BIOS carve-out up to 96 GB) beside an R9700 (gfx1201, 32 GB): the #1576 memory guard used to keep the
+        iGPU LAST (head, draft layer, verify).  Built-in graphics goes first, the cards with memory of their own follow."""
+        from serve.server import ordered_gpus
+        cfg = {"gpu": [0, 1], "backend": "hip", "args": []}
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        speeds = {0: 80 * 2900.0, 1: 128 * 2350.0}
+        self.assertEqual(ordered_gpus(cfg, speeds, {0: 65536, 1: 32768}, arch), [0, 1])           # carve-out 64 GB > 32 GB: still first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, {0: 65536, 1: 32768}, arch), [0, 1])   # given R9700 first: iGPU moves first
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0]}, speeds, None, arch), [0, 1])
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "gpu_order": "as_given"}, speeds, None, arch), [1, 0])   # the person's order stays
+        self.assertEqual(ordered_gpus({**cfg, "gpu": [1, 0], "layer_split": "24"}, speeds, None, arch), [1, 0])
+        # two cards of their own plus the iGPU: iGPU first, then the two by speed (faster last)
+        three = {"gpu": [1, 0, 2], "backend": "hip", "args": []}
+        arch3 = {0: "gfx1151", 1: "gfx1201", 2: "gfx1100"}
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 20.0}, None, arch3), [0, 2, 1])
+        self.assertEqual(ordered_gpus(three, {0: 10.0, 1: 30.0, 2: 30.0}, None, arch3), [0, 1, 2])   # equal cards keep their order
+        # no integrated chip, or only integrated chips: the old rule
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 1.0, 1: 2.0}, None, {0: "gfx1201", 1: "gfx1201"}), [0, 1])
+        self.assertEqual(ordered_gpus({"gpu": [0, 1], "backend": "hip", "args": []}, {0: 2.0, 1: 1.0}, None, {0: "gfx1151", 1: "gfx1151"}), [1, 0])
+
+    def test_igpu_split_warning(self):
+        from serve.server import igpu_split_warning
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        line = igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, arch)
+        self.assertIn("GPU 0 is built-in graphics", line)
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1]}, arch))              # one card
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0]}, arch))
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [1, 2]}, {1: "gfx1201", 2: "gfx1201"}))
+        self.assertIsNone(igpu_split_warning({"backend": "cuda", "gpu": [0, 1]}, arch))          # NVIDIA: not this rule
+        self.assertIsNone(igpu_split_warning({"backend": "hip", "gpu": [0, 1]}, {0: "gfx1151", 1: "gfx1103"}))   # only integrated chips
+
+    def test_kfd_archs_and_engine_nice(self):
+        import tempfile
+        from serve.server import engine_nice, hip_gpu_archs
+        with tempfile.TemporaryDirectory() as d:
+            for n, simd, ver in ((0, 0, 0), (1, 80, 110501), (2, 128, 120001)):
+                os.makedirs(os.path.join(d, str(n)))
+                with open(os.path.join(d, str(n), "properties"), "w") as f:
+                    f.write(f"simd_count {simd}\nmax_engine_clk_fcompute 2000\ngfx_target_version {ver}\n")
+            self.assertEqual(hip_gpu_archs(root=d), {0: "gfx1151", 1: "gfx1201"})
+        self.assertIsNone(hip_gpu_archs(root="/nonexistent/kfd"))
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        self.assertEqual(engine_nice({}, arch, "linux"), 5)                            # built-in Radeon on the PC
+        self.assertEqual(engine_nice({}, {0: "gfx1201"}, "linux"), 0)                  # cards only: unchanged
+        self.assertEqual(engine_nice({}, arch, "win32"), 0)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "0"}, arch, "linux"), 0)   # the off switch
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "9"}, {0: "gfx1201"}, "linux"), 9)
+        self.assertEqual(engine_nice({"STRATA_ENGINE_NICE": "x"}, arch, "linux"), 0)
+
+    def test_picture_reader_not_on_the_igpu(self):
+        """The picture reader runs on the first visible card; with a split that starts on the iGPU it must use a card of its own."""
+        from serve.server import vision_env
+        arch = {0: "gfx1151", 1: "gfx1201"}
+        cfg = {"backend": "hip", "gpu": [0, 1], "vision": {"exe": "v"}}
+        env = {"HIP_VISIBLE_DEVICES": "0,1", "PATH": "x"}
+        self.assertEqual(vision_env(cfg, env, arch)["HIP_VISIBLE_DEVICES"], "1")
+        self.assertEqual(env["HIP_VISIBLE_DEVICES"], "0,1")                            # the engine's own environment is not touched
+        self.assertEqual(vision_env({**cfg, "vision": {"exe": "v", "cuda_device": 0}}, env, arch)["HIP_VISIBLE_DEVICES"], "0")   # asked: kept
+        for e in ({"HIP_VISIBLE_DEVICES": "1"}, {"HIP_VISIBLE_DEVICES": "0"}, {}):
+            self.assertIs(vision_env(cfg, e, arch), e)                                 # one card: unchanged
+        two = {"HIP_VISIBLE_DEVICES": "0,1"}
+        self.assertIs(vision_env(cfg, two, {0: "gfx1201", 1: "gfx1201"}), two)         # no integrated chip
+        self.assertIs(vision_env(cfg, two, {0: "gfx1151", 1: "gfx1103"}), two)         # nothing with memory of its own
+
     def test_kfd_scores(self):
         """AMD on Linux: the GPU nodes of the KFD topology, SIMDs x clock, node order = the config's index."""
         import tempfile
@@ -1700,6 +1910,66 @@ class GpuChoice(unittest.TestCase):
             sc = hip_speed_scores([0, 1, 2], root=d)
             self.assertEqual(sc, {0: 128 * 2350.0, 1: 64 * 2000.0, 2: 128 * 2350.0})
             self.assertIsNone(hip_speed_scores([0, 1, 2, 3], root=d))      # a card the topology does not have
+
+    DEVICES_MINI_PC = (
+        "device 0: AMD Radeon 760M Graphics\n  arch gfx1103, 8.0 GiB, wave32\n  cannot run: GPU 0 (AMD Radeon 760M Graphics, gfx1103) is not an "
+        "architecture this Strata engine was compiled for (gfx1200,gfx1201); compile it\n"
+        "device 1: AMD Radeon RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n")
+
+    def test_automatic_card_skips_what_the_engine_cannot_run(self):
+        """#3203: a mini PC's Radeon 760M is HIP's device 0 and has no code in the engine; Automatic must run on the card behind it."""
+        from serve.server import hip_auto_devices, parse_hip_devices, pick_hip_devices
+        devices = parse_hip_devices(self.DEVICES_MINI_PC)
+        self.assertEqual([(d["index"], d["arch"], d["integrated"], bool(d["cannot_run"])) for d in devices],
+                         [(0, "gfx1103", True, True), (1, "gfx1201", False, False)])
+        self.assertEqual(pick_hip_devices(devices), ([1], None))
+        # an integrated chip that does have code loses to a card of its own; the card of its own wins even when it is device 1
+        both = parse_hip_devices("device 0: Radeon 890M\n  arch gfx1150, 16.0 GiB, wave32\ndevice 1: RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n")
+        self.assertEqual(pick_hip_devices(both), ([1], None))
+        # an integrated chip alone stays the choice; device 0 already right: nothing is changed
+        self.assertEqual(pick_hip_devices(parse_hip_devices("device 0: Radeon 8060S\n  arch gfx1151, 64.0 GiB, wave32\n")), (None, None))
+        self.assertEqual(pick_hip_devices(parse_hip_devices("device 0: R9700\n  arch gfx1201, 31.9 GiB, wave32\ndevice 1: R9700\n  arch gfx1201, 31.9 GiB, wave32\n")), (None, None))
+        self.assertEqual(pick_hip_devices([]), (None, None))
+        # the engine's own flag for an integrated chip is honoured as well
+        flagged = parse_hip_devices("device 0: X\n  arch gfx1300, 8.0 GiB, wave32, integrated\ndevice 1: Y\n  arch gfx1201, 4.0 GiB, wave32\n")
+        self.assertEqual(pick_hip_devices(flagged), ([1], None))
+        # nothing runnable: the plain line names the cards, what the engine is built for and, for the RX 6800 XT, that no package exists
+        nothing = parse_hip_devices(
+            "device 0: AMD Radeon 760M Graphics\n  arch gfx1103, 8.0 GiB, wave32\n  cannot run: x is not an architecture this Strata engine was compiled for "
+            "(gfx1200,gfx1201); y\ndevice 1: AMD Radeon RX 6800 XT\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: z compiled for (gfx1200,gfx1201); y\n")
+        picked, problem = pick_hip_devices(nothing)
+        self.assertIsNone(picked)
+        self.assertIn("none of this computer's graphics cards has code in this Strata engine (it is built for gfx1200,gfx1201)", problem)
+        self.assertIn("AMD Radeon RX 6800 XT (gfx1030)", problem)
+        self.assertIn("760M Graphics (gfx1103, integrated)", problem)
+        # through the engine's own program, and never over a card the config or the environment names
+        with tempfile.TemporaryDirectory() as d:
+            exe = Path(d) / ("strata.exe" if os.name == "nt" else "strata")
+            probe = Path(d) / ("strata-device.exe" if os.name == "nt" else "strata-device")
+            exe.write_text("")
+            probe.write_text("")
+            cfg = {"backend": "hip", "exe": str(exe), "args": []}
+            done = SimpleNamespace(returncode=0, stdout=self.DEVICES_MINI_PC)
+            with mock.patch("serve.server.subprocess.run", return_value=done) as run, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(hip_auto_devices(cfg, {}), [1])
+                self.assertEqual(run.call_args[0][0], [str(probe), "--list-devices"])
+                self.assertIn("automatic GPU choice: GPU 1", out.getvalue())
+            with mock.patch("serve.server.subprocess.run", return_value=done) as run:
+                self.assertIsNone(hip_auto_devices({**cfg, "gpu": 0}, {}))
+                self.assertIsNone(hip_auto_devices({**cfg, "hip_ordinal": 2}, {}))
+                self.assertIsNone(hip_auto_devices(cfg, {"HIP_VISIBLE_DEVICES": "0"}))
+                self.assertIsNone(hip_auto_devices({**cfg, "backend": "cuda"}, {}))
+                run.assert_not_called()
+            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="")):
+                self.assertIsNone(hip_auto_devices(cfg, {}))                         # a probe that fails changes nothing
+            with mock.patch("serve.server.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout=(
+                            "device 0: A\n  arch gfx1030, 16.0 GiB, wave32\n  cannot run: compiled for (gfx1200)\n"))):
+                with self.assertRaises(SystemExit) as stop:
+                    hip_auto_devices(cfg, {})
+                self.assertIn("none of this computer's graphics cards", str(stop.exception))
+            exe.unlink()
+            probe.unlink()
+            self.assertIsNone(hip_auto_devices(cfg, {}))                            # no probe next to the engine: as before
 
     def test_vision_device(self):
         # #408: the image encoder on its own card; the engine's environment stays as it was
@@ -1715,14 +1985,19 @@ class GpuChoice(unittest.TestCase):
 
     def test_hip_ordinal(self):
         """#325: on Windows the HIP ordinal setup resolved wins over the config's "gpu" (an iGPU takes HIP's 0)."""
+        from unittest import mock
+        from serve import server
         from serve.server import child_env
-        self.assertEqual(child_env({"backend": "hip", "gpu": 1})["HIP_VISIBLE_DEVICES"], "1")       # Linux: KFD order
-        self.assertEqual(child_env({"backend": "hip", "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
-        self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
-        self.assertEqual(child_env({"backend": "hip", "gpu": [1, 0], "hip_ordinal": 2})["HIP_VISIBLE_DEVICES"],
-                         "1,0")                                          # a layer split keeps its list
-        self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": "x"})["HIP_VISIBLE_DEVICES"], "0")
-        plain = child_env({"backend": "hip"})
+        # not the cards of the box running the test (p2006's 780M is in KFD: the layer split put the iGPU first, a plain HIP config got
+        # the automatic card list)
+        with mock.patch.object(server, "hip_gpu_archs", lambda *a, **k: {}), mock.patch.object(server, "hip_auto_devices", lambda cfg, env: None):
+            self.assertEqual(child_env({"backend": "hip", "gpu": 1})["HIP_VISIBLE_DEVICES"], "1")       # Linux: KFD order
+            self.assertEqual(child_env({"backend": "hip", "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
+            self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": 1})["HIP_VISIBLE_DEVICES"], "1")
+            self.assertEqual(child_env({"backend": "hip", "gpu": [1, 0], "hip_ordinal": 2})["HIP_VISIBLE_DEVICES"],
+                             "1,0")                                          # a layer split keeps its list
+            self.assertEqual(child_env({"backend": "hip", "gpu": 0, "hip_ordinal": "x"})["HIP_VISIBLE_DEVICES"], "0")
+            plain = child_env({"backend": "hip"})
         self.assertEqual(plain.get("HIP_VISIBLE_DEVICES"), os.environ.get("HIP_VISIBLE_DEVICES"))
 
 
@@ -3579,10 +3854,25 @@ class UsageAndStatus(unittest.TestCase):
         self.assertEqual(last["usage"]["prompt_tokens_details"]["cached_tokens"], ClockedEngine.REUSED)
         self.assertEqual(last["timings"]["cache_n"], ClockedEngine.REUSED)
 
+    def test_responses(self):
+        # /v1/responses carries the same top-level timings as /v1/chat/completions
+        body = {"model": "x", "max_output_tokens": 20, "input": "hi"}
+        status, raw = self.request("/v1/responses", body)
+        self.assertEqual(status, 200)
+        r = json.loads(raw)
+        self.assertEqual(r["timings"]["cache_n"], ClockedEngine.REUSED)
+        self.assertEqual(r["timings"]["predicted_n"], r["usage"]["output_tokens"])
+        status, raw = self.request("/v1/responses", {**body, "stream": True})
+        last = [json.loads(line[6:]) for line in raw.decode().splitlines() if line.startswith("data: {")][-1]
+        self.assertIn(last["type"], ("response.completed", "response.incomplete"))
+        self.assertAlmostEqual(last["timings"]["predicted_per_second"], 50.0, delta=0.1)   # 20 ms a token
+
     def test_anthropic(self):
         u = self.chat("/v1/messages")["usage"]
         self.assertEqual(u["cache_read_input_tokens"], ClockedEngine.REUSED)
-        self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], len(self.engine.last_prompt))
+        self.assertEqual(u["input_tokens"], 1)                     # what was read now is kept: written to the cache
+        self.assertEqual(u["input_tokens"] + u["cache_creation_input_tokens"] + u["cache_read_input_tokens"],
+                         len(self.engine.last_prompt))
         self.assertGreater(u["output_tokens"], 0)
 
     def test_v1_status(self):
@@ -3723,6 +4013,49 @@ class SharingTheGpu(unittest.TestCase):
         self.assertGreater(time.time() - t0, 10)                    # waited for memory being given back first
         self.svc.free_vram_mib = lambda: 9000
         self.assertEqual(self.chat()[0], 200)
+
+    class _Encoder:
+        """A picture encoder that is a process of its own: it outlives the engine, and holds VRAM while it runs."""
+        elastic = False
+
+        def __init__(self):
+            self.up, self.unloads = True, 0
+
+        def alive(self):
+            return self.up
+
+        def unload(self):
+            self.up = False
+            self.unloads += 1
+
+        def restart(self):
+            self.up = True
+
+    def test_the_servers_own_encoder_is_not_another_program_after_the_engine_died(self):      # #4352
+        self.svc.unload()                                            # the engine is gone ...
+        encoder = self.svc.vision = self._Encoder()                  # ... its picture encoder is not, and holds 6 GB of the card
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000 if encoder.up else 9000
+        self.svc.vram_free_wait_s = 0.2
+        s, b = self.chat()
+        self.assertEqual(s, 200, b)
+        self.assertEqual(encoder.unloads, 1)
+        self.assertTrue(encoder.up, "the load that follows starts the encoder again with the engine")
+
+    def test_a_program_that_is_not_ours_still_refuses_the_load(self):                           # #4352: the rule itself is kept
+        self.svc.unload()
+        encoder = self.svc.vision = self._Encoder()
+        self.svc.min_free_vram_mib = 8000
+        self.svc.free_vram_mib = lambda: 2000                        # still full after the encoder is gone
+        self.svc.vram_free_wait_s = 0.2
+        self.assertEqual(self.chat()[0], 503)
+        self.assertEqual(encoder.unloads, 1)
+
+    def test_unload_with_a_dead_engine_still_gives_the_encoders_card_back(self):                # #4352
+        self.svc.unload()
+        encoder = self.svc.vision = self._Encoder()
+        self.assertEqual(self.req("/unload", {}), (200, {"status": "not loaded"}))
+        self.assertFalse(encoder.up)
 
     def test_min_free_vram_unreadable_loads(self):
         self.svc.min_free_vram_mib = 8000
@@ -3998,6 +4331,17 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(b["usage"]["completion_tokens"], 20 + len(extra) + len(ThinkingEngine.ANSWER) + 1)
         self.assertEqual(b["usage"]["prompt_tokens"], len(first))
 
+    def test_llama_cpp_thinking_budget_tokens_is_the_same_budget(self):
+        """llama.cpp's name (pi-llama-cpp sends it): the same wrap-up; reasoning_budget_tokens wins when both are set."""
+        from serve.server import REASONING_WRAP_UP
+        wrap = REASONING_WRAP_UP.split("</think>")[0]
+        code, b = self.openai(thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:20] + wrap)
+        code, b = self.openai(reasoning_budget_tokens=10, thinking_budget_tokens=20)
+        self.assertEqual(code, 200, b)
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT[:10] + wrap)
+
     def test_a_stop_string_is_found_in_the_answer_after_the_wrap_up(self):
         """#454: the continuation after the thinking budget is cut at a stop string too."""
         code, b = self.openai(reasoning_budget_tokens=20, stop=["answer is"])
@@ -4187,8 +4531,8 @@ class CallingEngine(MockEngine):
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.prompts.append(list(ids))
         prompt = self.tok.decode(ids)
-        if prompt.endswith("<function="):
-            text = "search>\n" + self.ARGS
+        if prompt.endswith("<tool_call>\n"):
+            text = "<function=search>\n" + self.ARGS
         elif prompt.endswith("<function=search>\n"):
             text = self.ARGS
         elif prompt.endswith("</think>\n\n"):
@@ -4254,6 +4598,169 @@ class ForcedToolChoice(unittest.TestCase):
             finish = c["choices"][0]["finish_reason"] or finish
         return finish, [(names[i], json.loads(args[i])) for i in sorted(names)], reasoning
 
+    def says(self, answer):
+        """The engine answers `answer` after an empty thought."""
+        def generate(ids, max_new, sampling, cancel, embeddings=None):
+            self.engine.prompts.append(list(ids))
+            yield from self.tok.encode("</think>\n\n" + answer) + self.tok.encode("<|im_end|>", parse_special=True)
+        self.engine.generate = generate
+
+    def test_a_call_the_request_never_offered_stays_text(self):
+        """#3075: the model goes on writing the format it was shown; a request that offered no such tool gets text."""
+        from serve.frontend import CALL_END, CALL_START
+        answer = ("I will check that.\n" + CALL_START + "\n<function=lookup>\n<parameter=q>\n2+2\n</parameter>\n"
+                  "</function>\n" + CALL_END + "\nHere is the report.")
+        self.says(answer)
+        for label, extra in {"nothing declared": {"tools": []}, "tool_choice none": {"tool_choice": "none"},
+                             "other tools": {}}.items():
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream, **extra)
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("stop", []), b)
+                    if not stream:
+                        content = b["choices"][0]["message"]["content"] or ""
+                        self.assertIn("Here is the report.", content)
+                        self.assertIn("<function=lookup>", content)
+
+    def _undeclared_call_answer(self, name="lookup"):
+        from serve.frontend import CALL_END, CALL_START
+        return ("I will check that.\n" + CALL_START + f"\n<function={name}>\n<parameter=q>\n2+2\n</parameter>\n"
+                "</function>\n" + CALL_END)
+
+    def _rejected_of(self, b, stream):
+        """The strata_rejected_tool_calls of a whole reply or of a streamed one (None when the reply has none)."""
+        if not stream:
+            return b.get("strata_rejected_tool_calls")
+        found = [json.loads(line[6:]).get("strata_rejected_tool_calls") for line in b.splitlines() if line.startswith("data: {")]
+        found = [f for f in found if f]
+        self.assertLessEqual(len(found), 1, "sent once, with the last chunk")
+        return found[0] if found else None
+
+    def test_an_undeclared_call_is_named_in_the_response(self):
+        """#3796: the call stays text and finish_reason stays "stop"; the response also lists the names the model wrote
+        (strata_rejected_tool_calls), so a client can tell this from an ordinary answer and answer the model."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                before = self.svc.totals.get("tool_calls_unread", 0)
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("stop", []), b)
+                self.assertEqual(self._rejected_of(b, stream), [{"name": "execute_gdscript", "reason": "undeclared"}])
+                self.assertEqual(self.svc.totals["tool_calls_unread"], before + 1)         # /metrics counts it
+                if not stream:
+                    self.assertIn("<function=execute_gdscript>", b["choices"][0]["message"]["content"])   # the text is untouched
+
+    def test_undeclared_tool_calls_call_hands_the_call_to_the_client(self):
+        """#4622: "undeclared_tool_calls": "call" returns the well-formed call of an undeclared name as a tool call (the client has its
+        own policy for unknown names); the default ("text") is the test above, unchanged."""
+        self.says(self._undeclared_call_answer("execute_gdscript"))
+        self.svc.undeclared_tool_calls = "call"
+        try:
+            for stream in (False, True):
+                with self.subTest(stream=stream):
+                    code, b = self.openai(stream=stream)
+                    finish, calls, _ = self.call_of(code, b, stream)
+                    self.assertEqual((finish, calls), ("tool_calls", [("execute_gdscript", {"q": "2+2"})]), b)
+                    self.assertIsNone(self._rejected_of(b, stream))
+            # prose that names the format is still text
+            self.says("Write <tool_call> and <function=x> to call a tool.")
+            code, b = self.openai(stream=False)
+            finish, calls, _ = self.call_of(code, b, False)
+            self.assertEqual((finish, calls), ("stop", []), b)
+        finally:
+            self.svc.undeclared_tool_calls = "text"
+
+    def test_undeclared_tool_calls_setting(self):
+        from serve.server import undeclared_tool_calls_setting
+        old = os.environ.pop("STRATA_UNDECLARED_TOOL_CALLS", None)
+        try:
+            self.assertEqual(undeclared_tool_calls_setting({}), "text")
+            self.assertEqual(undeclared_tool_calls_setting({"undeclared_tool_calls": "call"}), "call")
+            os.environ["STRATA_UNDECLARED_TOOL_CALLS"] = "call"
+            self.assertEqual(undeclared_tool_calls_setting({}), "call")
+            self.assertEqual(undeclared_tool_calls_setting({"undeclared_tool_calls": "text"}), "text")   # the config wins
+            for bad in ("yes", True, 1):
+                with self.assertRaises(SystemExit):
+                    undeclared_tool_calls_setting({"undeclared_tool_calls": bad})
+        finally:
+            os.environ.pop("STRATA_UNDECLARED_TOOL_CALLS", None)
+            if old is not None:
+                os.environ["STRATA_UNDECLARED_TOOL_CALLS"] = old
+
+    def test_no_marker_when_nothing_was_rejected(self):
+        """An ordinary answer and a declared call carry no extra field: the API is what it was."""
+        from serve.frontend import CALL_END, CALL_START
+        for label, answer in (("text", "The answer is 4."),
+                              ("declared call", CALL_START + "\n<function=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)):
+            self.says(answer)
+            for stream in (False, True):
+                with self.subTest(case=label, stream=stream):
+                    code, b = self.openai(stream=stream)
+                    self.call_of(code, b, stream)
+                    self.assertIsNone(self._rejected_of(b, stream))
+                    if stream:
+                        self.assertNotIn("strata_rejected_tool_calls", b)
+
+    def test_a_collapsed_mcp_name_is_a_call_not_a_rejection(self):
+        """#3796: `mcp_playwright_browser_navigate` for the declared `mcp__playwright__browser_navigate`."""
+        from serve.frontend import CALL_END, CALL_START
+        tools = [{"type": "function", "function": {"name": "mcp__playwright__browser_navigate", "description": "open a page",
+                                                   "parameters": {"type": "object", "properties": {"q": {"type": "string"}}}}}]
+        self.says(CALL_START + "\n<function=mcp_playwright_browser_navigate>\n<parameter=q>\nx\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream, tools=tools)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("mcp__playwright__browser_navigate", {"q": "x"})]))
+                self.assertIsNone(self._rejected_of(b, stream))
+
+    def test_the_anthropic_reply_names_the_rejected_call_too(self):
+        self.says(self._undeclared_call_answer("bash"))
+        body = {"model": "m", "max_tokens": 400, "messages": [{"role": "user", "content": "2+2?"}],
+                "tools": [{"name": "search", "description": "search", "input_schema": {"type": "object", "properties": {}}}]}
+        req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            msg = json.loads(r.read().decode())
+        self.assertEqual(msg["stop_reason"], "end_turn")
+        self.assertEqual(msg["strata_rejected_tool_calls"], [{"name": "bash", "reason": "undeclared"}])
+        self.assertFalse([c for c in msg["content"] if c["type"] == "tool_use"])
+
+    def test_any_model_name_on_the_anthropic_route_is_the_loaded_model(self):
+        """#5312: Claude Desktop sends the model name `claude-5-5-sonnet` and cannot change it; the route serves the loaded model whatever
+        the request calls it, and answers with that model's name (the Desktop app's own gateway is a separate check in apps/host)."""
+        self.says("Hello there.")
+        for name in ("claude-5-5-sonnet", "claude-opus-4-1", "gpt-4o", "nonsense"):
+            for stream in (False, True):
+                with self.subTest(model=name, stream=stream):
+                    body = {"model": name, "max_tokens": 50, "stream": stream, "messages": [{"role": "user", "content": "hi"}],
+                            "tools": [{"name": "search", "description": "search", "input_schema": {"type": "object", "properties": {}}}]}
+                    req = urllib.request.Request(self.base + "/v1/messages", data=json.dumps(body).encode(),
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=30) as r:
+                        raw = r.read().decode()
+                        self.assertEqual(r.status, 200)
+                    if stream:
+                        events = [json.loads(l[6:]) for l in raw.splitlines() if l.startswith("data: {")]
+                        self.assertEqual("".join(e["delta"]["text"] for e in events if e["type"] == "content_block_delta"), "Hello there.")
+                        self.assertEqual(events[0]["message"]["model"], self.svc.model)
+                    else:
+                        msg = json.loads(raw)
+                        self.assertEqual(msg["model"], self.svc.model)
+                        self.assertEqual(msg["content"][0]["text"], "Hello there.")
+
+    def test_a_call_with_a_dropped_function_keyword_is_still_the_call(self):
+        """#3441: `<=search>` for `<function=search>`, as a model under a large tool surface writes it."""
+        from serve.frontend import CALL_END, CALL_START
+        self.says(CALL_START + "\n<=search>\n<parameter=q>\n2+2\n</parameter>\n</function>\n" + CALL_END)
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                code, b = self.openai(stream=stream)
+                finish, calls, _ = self.call_of(code, b, stream)
+                self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]), b)
+
     def test_required_and_named_after_the_thinking(self):
         for choice in ("required", self.NAMED):
             for stream in (False, True):
@@ -4264,7 +4771,7 @@ class ForcedToolChoice(unittest.TestCase):
                     self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
                     self.assertEqual(reasoning, CallingEngine.THOUGHT)
                     first, second = self.engine.prompts
-                    opening = "<tool_call>\n<function=" + ("search>\n" if choice == self.NAMED else "")
+                    opening = "<tool_call>\n" + ("<function=search>\n" if choice == self.NAMED else "")
                     # where the thinking ended, after the blank line the template puts before a call
                     self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT + "</think>\n\n" + opening))
 
@@ -4273,7 +4780,7 @@ class ForcedToolChoice(unittest.TestCase):
         thought, calling = 'I will search for "2+2"', self.engine.generate
 
         def generate(ids, max_new, sampling, cancel, embeddings=None):
-            if self.tok.decode(ids).endswith(("<function=", "<function=search>\n")):
+            if self.tok.decode(ids).endswith(("<tool_call>\n", "<function=search>\n")):
                 yield from calling(ids, max_new, sampling, cancel)
                 return
             self.engine.prompts.append(list(ids))
@@ -4286,7 +4793,7 @@ class ForcedToolChoice(unittest.TestCase):
                 finish, calls, reasoning = self.call_of(code, b, stream)
                 self.assertEqual((finish, calls, reasoning), ("tool_calls", [("search", {"q": "2+2"})], thought))
                 first, second = self.engine.prompts
-                self.assertEqual(second, first + self.tok.encode(thought + "</think>\n\n<tool_call>\n<function="))
+                self.assertEqual(second, first + self.tok.encode(thought + "</think>\n\n<tool_call>\n"))
 
     def test_without_thinking_the_prompt_ends_with_the_opening(self):
         for choice in ("required", self.NAMED):
@@ -4297,7 +4804,7 @@ class ForcedToolChoice(unittest.TestCase):
                     finish, calls, reasoning = self.call_of(code, b, stream)
                     self.assertEqual((finish, calls, reasoning), ("tool_calls", [("search", {"q": "2+2"})], ""))
                     self.assertEqual(len(self.engine.prompts), 1)
-                    opening = "<tool_call>\n<function=" + ("search>\n" if choice == self.NAMED else "")
+                    opening = "<tool_call>\n" + ("<function=search>\n" if choice == self.NAMED else "")
                     self.assertTrue(self.tok.decode(self.engine.prompts[0]).endswith("</think>\n\n" + opening))
 
     def test_the_budget_wrap_up_opens_the_call(self):
@@ -4307,7 +4814,7 @@ class ForcedToolChoice(unittest.TestCase):
         self.assertEqual((finish, calls), ("tool_calls", [("search", {"q": "2+2"})]))
         self.assertEqual(reasoning, CallingEngine.THOUGHT[:20] + REASONING_WRAP_UP.split("</think>")[0])
         first, second = self.engine.prompts
-        extra = self.tok.encode(REASONING_WRAP_UP + "<tool_call>\n<function=", parse_special=True)
+        extra = self.tok.encode(REASONING_WRAP_UP + "<tool_call>\n", parse_special=True)
         self.assertEqual(second, first + self.tok.encode(CallingEngine.THOUGHT[:20]) + extra)
 
     def test_auto_absent_and_none_leave_the_tools_to_the_model(self):
@@ -4914,6 +5421,29 @@ class SilentEngine(unittest.TestCase):
                 f.write("strata verify trace: dump\n" * 1500)
             engine.proc.poll.return_value = -6
             self.assertIn("a hang it caught", engine.death_note())
+
+    def test_death_note_names_a_finite_rttime_limit_on_signal_9(self):
+        # #3238: a hard RLIMIT_RTTIME of 0 (PipeWire without rtkit) kills with -9 and no OOM; say so, not "out of RAM"
+        import sys
+        import tempfile
+        from unittest import mock
+        engine = self.bare(0.3)
+        fake = mock.MagicMock()
+        fake.RLIMIT_RTTIME = 15
+        fake.RLIM_INFINITY = -1
+        fake.getrlimit.return_value = (0, 0)
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(sys.modules, {"resource": fake}):
+            engine.log_path = os.path.join(d, "e.log")
+            open(engine.log_path, "w").close()
+            engine.proc.poll.return_value = -9
+            note = engine.death_note()
+            self.assertIn("RLIMIT_RTTIME", note)
+            self.assertIn("rtkit", note)
+            fake.getrlimit.return_value = (-1, -1)               # unlimited: the old RAM hint stays
+            self.assertIn("running out of RAM", engine.death_note())
+            fake.getrlimit.return_value = (0, 0)
+            engine.proc.poll.return_value = -11                  # another signal: not this cause
+            self.assertIn("running out of RAM", engine.death_note())
 
     def test_prompt_chunks_set_the_wait(self):
         # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size
@@ -5532,7 +6062,7 @@ class VisionArgs(unittest.TestCase):
             seen.append(args)
             return Proc()
 
-        with mock.patch.object(server.subprocess, "Popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server.subprocess, "Popen", popen):
             server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf", **cfg})
         return seen[0]
 
@@ -5648,7 +6178,7 @@ class LazyVision(unittest.TestCase):
             started.append(p)
             return p
 
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             v = server.Vision({"exe": "strata-vision", "mmproj": "m.gguf", "model": "t.gguf"}, lazy=True)
             self.addCleanup(lambda: shutil.rmtree(v.dir, ignore_errors=True))
             return v, started, popen
@@ -5661,7 +6191,7 @@ class LazyVision(unittest.TestCase):
     def test_restart_starts_it_and_close_ends_it(self):
         import serve.server as server
         v, started, popen = self.make()
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             v.restart()
         self.assertTrue(v.alive())
         self.assertEqual(len(started), 1)
@@ -5683,7 +6213,7 @@ class LazyVision(unittest.TestCase):
                     return 0
             started.append(P)
             return P()
-        with mock.patch.object(server, "popen", popen), mock.patch.object(server, "contain"):
+        with mock.patch.object(server, "popen", popen):
             with self.assertRaises(RuntimeError):
                 v.restart()
         self.assertTrue(started[-1].killed)
@@ -5891,7 +6421,7 @@ class UntimedReads(unittest.TestCase):
         v.spawn = (["strata-vision"], None, None)
         v.dir = Path(tempfile.mkdtemp(prefix="strata-vision-test-"))
         try:
-            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "contain"),                     mock.patch.object(server, "VISION_READY_S", 0.3):
+            with mock.patch.object(server, "popen", lambda *a, **k: proc), mock.patch.object(server, "VISION_READY_S", 0.3):
                 with self.assertRaises(RuntimeError) as cm:
                     v._start()
             self.assertIn("did not start", str(cm.exception))
@@ -5905,6 +6435,135 @@ class UntimedReads(unittest.TestCase):
         v = server.Vision.__new__(server.Vision)
         v.proc = SimpleNamespace(stdout=SimpleNamespace(readline=lambda: "OK 7 1 1 1\n"))
         self.assertEqual(v._readline(5.0, "x"), "OK 7 1 1 1\n")
+
+
+class OpenAIChunksTerminal(unittest.TestCase):
+    """#3961: a stream that ends without the run's "done" event (a 200 with one chunk and no finish_reason) is an error, never an empty answer."""
+
+    def chunks(self, events, cancel=None):
+        from serve.server import openai_chunks
+        svc = SimpleNamespace(model_for=lambda req: "m", engine=None, tok=None, end_engine_if_unchanged=lambda born: False)
+        return list(openai_chunks(svc, {}, [1], False, None, 8, cancel or threading.Event(), run=iter(events)))
+
+    def test_a_run_that_stopped_without_its_done_event_is_an_error(self):
+        from serve.frontend import Event
+        with contextlib.redirect_stdout(io.StringIO()) as said:
+            with self.assertRaises(EngineDied):
+                self.chunks([("event", Event("content", "hi"))])
+        self.assertIn("without a finish reason", said.getvalue())
+        ended = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                from serve.server import openai_chunks
+                engine = SimpleNamespace(gen=3)
+                svc = SimpleNamespace(model_for=lambda req: "m", engine=engine, tok=None,
+                                      end_engine_if_unchanged=lambda born: ended.append(born))
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([])))
+        self.assertEqual(ended, [3], "the engine process the request ran on is the one to end, so that the next request restarts it")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                self.chunks([])
+
+    def service(self, engine):
+        svc = object.__new__(Service)
+        svc.engine, svc.fifo = engine, threading.Lock()
+        return svc
+
+    class Engine:
+        def __init__(self, gen=1, batch=0):
+            self.gen, self.batch, self.ended_count = gen, batch, 0
+
+        def end_for_restart(self):
+            self.ended_count += 1
+
+    def test_the_lost_runs_engine_is_ended_when_nobody_is_on_it(self):
+        engine = self.Engine(gen=4)
+        svc = self.service(engine)
+        self.assertTrue(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 1)
+        self.assertTrue(svc.fifo.acquire(blocking=False), "the turn is given back")
+
+    def test_the_next_request_admitted_right_after_a_lost_run_is_not_killed(self):          # the race INT3 found
+        engine = self.Engine(gen=4)
+        svc = self.service(engine)
+        svc.fifo.acquire()                                    # the next request has the turn and is generating on the same live engine
+        self.assertFalse(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        svc.fifo.release()
+
+    def test_an_engine_that_was_restarted_since_is_not_the_one_that_lost_the_run(self):
+        engine = self.Engine(gen=5)                           # a restart made a new process (gen 5); the lost run was on gen 4
+        svc = self.service(engine)
+        self.assertFalse(svc.end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+
+    def lost_run(self, engine):
+        """The error a no-done run raises on this engine, and whether the engine was ended."""
+        from serve.frontend import Event
+        from serve.server import openai_chunks, died_note
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied) as caught:
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        return caught.exception, died_note(caught.exception)
+
+    def test_batch_slots_share_the_engine_so_it_is_left_alone(self):
+        engine = self.Engine(gen=4, batch=2)
+        self.assertFalse(self.service(engine).end_engine_if_unchanged(4))
+        self.assertEqual(engine.ended_count, 0)
+        error, said = self.lost_run(engine)                  # the engine keeps running, so the error does not promise a restart
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_an_engine_without_a_generation_is_left_alone(self):
+        engine = self.Engine(gen=4)
+        self.assertFalse(self.service(engine).end_engine_if_unchanged(None))
+        self.assertEqual(engine.ended_count, 0)
+        del engine.gen                                        # replicas: no gen
+        error, said = self.lost_run(engine)
+        self.assertEqual(said, "the engine ended the request without an answer")
+        self.assertEqual(engine.ended_count, 0)
+
+    def test_the_restart_sentence_is_said_only_where_the_engine_was_ended(self):
+        engine = self.Engine(gen=4)
+        error, said = self.lost_run(engine)
+        self.assertEqual(engine.ended_count, 1)
+        self.assertEqual(said, "the engine ended the request without an answer; the next request restarts it")
+        engine = self.Engine(gen=4)                           # another request holds the turn: not ended, no promise
+        svc = self.service(engine)
+        svc.fifo.acquire()
+        from serve.server import died_note
+        error = EngineDied("x")
+        error.restarts = svc.end_engine_if_unchanged(4)
+        self.assertEqual(died_note(error), "x")
+        self.assertEqual(died_note(EngineDied("the engine stopped")), "the engine stopped; the next request restarts it")   # every other EngineDied is as before
+
+    def test_the_whole_race_through_the_stream(self):         # a no-done run, and the next request is on the engine when the check runs
+        from serve.frontend import Event
+        from serve.server import openai_chunks
+        engine = self.Engine(gen=7)
+        svc = self.service(engine)
+        svc.model_for = lambda req: "m"
+        svc.tok = None
+        svc.fifo.acquire()                                    # (the lost run released its turn; the next request took it)
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(EngineDied):
+                list(openai_chunks(svc, {}, [1], False, None, 8, threading.Event(), run=iter([("event", Event("content", "hi"))])))
+        self.assertEqual(engine.ended_count, 0, "the request that follows was killed with the lost one")
+        svc.fifo.release()
+
+    def test_a_run_that_is_done_ends_with_its_finish_reason(self):
+        from serve.frontend import Event
+        got = self.chunks([("event", Event("content", "hi")), ("done", {"finish": "stop", "completion_tokens": 1})])
+        self.assertEqual(got[-1]["choices"][0]["finish_reason"], "stop")
+
+    def test_a_cancelled_run_that_stops_early_is_not_an_error(self):
+        gone = threading.Event()
+        gone.set()                                   # the client left: nobody reads the end
+        self.assertEqual(len(self.chunks([], cancel=gone)), 1)
+
 
 
 if __name__ == "__main__":
@@ -5978,3 +6637,4 @@ class PrepareCancelled(unittest.TestCase):
             ids, _, _ = svc.prepare(self.msgs(), None, {}, cancel=threading.Event())
             self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
             svc.embeddings.path.unlink(missing_ok=True)
+

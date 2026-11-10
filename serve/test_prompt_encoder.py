@@ -116,6 +116,7 @@ class Served(unittest.TestCase):
 
     def test_a_refused_prompt_is_not_kept(self):
         svc = self.service(max_context=4096)
+        svc.fit_max_tokens = False   # the strict mode refuses an over-long max_tokens (the default now shortens it)
         msgs = [{"role": "user", "content": "kept " * 20}]
         svc.prepare(msgs, None, {}, 16)
         refused = msgs + [{"role": "assistant", "content": "a"}, {"role": "user", "content": "more " * 20}]

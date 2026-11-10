@@ -15,7 +15,7 @@ from __future__ import annotations
 import collections
 import ctypes
 import os
-import platform
+from strata_control import sysinfo
 import re
 import subprocess
 import sys
@@ -423,6 +423,48 @@ def free_vram_mib(index=0, amd=False):
 
 
 # ------------------------------------------------------------------------------------------------ CPU / RAM
+def _cpu_topology(root: str = "/sys/devices/system"):
+    """(sockets, NUMA nodes) of this computer: how many CPU packages it has and how many memory nodes (None where it cannot be read).
+    Linux reads /sys, Windows asks GetLogicalProcessorInformationEx / GetNumaHighestNodeNumber, macOS asks sysctl (Apple silicon and every Mac
+    sold so far: one package, no NUMA)."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            needed = ctypes.c_ulong(0)
+            kernel32.GetLogicalProcessorInformationEx(3, None, ctypes.byref(needed))          # RelationProcessorPackage
+            buf = ctypes.create_string_buffer(needed.value)
+            sockets = None
+            if needed.value and kernel32.GetLogicalProcessorInformationEx(3, buf, ctypes.byref(needed)):
+                sockets, offset = 0, 0
+                while offset + 8 <= needed.value:
+                    relationship = int.from_bytes(buf.raw[offset:offset + 4], "little")
+                    size = int.from_bytes(buf.raw[offset + 4:offset + 8], "little")
+                    if size <= 0:
+                        break
+                    sockets += 1 if relationship == 3 else 0
+                    offset += size
+            high = ctypes.c_ulong(0)
+            numa = high.value + 1 if kernel32.GetNumaHighestNodeNumber(ctypes.byref(high)) else None
+            return (sockets or None), numa
+        if sys.platform == "darwin":
+            import subprocess
+            out = subprocess.run(["sysctl", "-n", "hw.packages"], capture_output=True, text=True, timeout=5).stdout.strip()
+            return (int(out) if out.isdigit() else 1), None
+        import glob
+        packages = set()
+        for f in glob.glob(os.path.join(root, "cpu", "cpu[0-9]*", "topology", "physical_package_id")):
+            try:
+                with open(f, encoding="utf-8") as fh:
+                    packages.add(fh.read().strip())
+            except OSError:
+                continue
+        nodes = len(glob.glob(os.path.join(root, "node", "node[0-9]*")))
+        return (len(packages) or None), (nodes or None)
+    except Exception:                                        # noqa: BLE001 - a missing figure is shown as missing, never guessed
+        return None, None
+
+
 def _cpu_name():
     if os.name == "nt":
         try:
@@ -432,10 +474,11 @@ def _cpu_name():
         except OSError:
             pass
     elif os.path.exists("/proc/cpuinfo"):
-        for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):
-            if line.startswith("model name"):
-                return line.split(":", 1)[1].strip()
-    return platform.processor() or None
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    return sysinfo.processor() or None
 
 
 class _CpuRamFallback:
@@ -451,7 +494,8 @@ class _CpuRamFallback:
                 return idle.value, kern.value + user.value           # kernel time includes idle
             return None
         try:
-            f = [int(x) for x in open("/proc/stat").readline().split()[1:]]
+            with open("/proc/stat") as fh:
+                f = [int(x) for x in fh.readline().split()[1:]]
             return f[3] + f[4], sum(f)
         except (OSError, ValueError):
             return None
@@ -478,7 +522,8 @@ class _CpuRamFallback:
                 return m.ullTotalPhys - m.ullAvailPhys, m.ullTotalPhys
             return None, None
         try:
-            info = dict(line.split(":", 1) for line in open("/proc/meminfo"))
+            with open("/proc/meminfo") as fh:
+                info = dict(line.split(":", 1) for line in fh)
             total = int(info["MemTotal"].split()[0]) * 1024
             avail = int(info["MemAvailable"].split()[0]) * 1024
             return total - avail, total
@@ -534,11 +579,14 @@ class Telemetry:
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
+            "sockets": _cpu_topology()[0],
+            "numa_nodes": _cpu_topology()[1],
             "psutil": self.ps is not None,
         }
         self._disk_prev = None
         self._stop = threading.Event()
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
 
     def _disk(self):
         if not self.ps:
@@ -571,9 +619,9 @@ class Telemetry:
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
-                s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
+                s["gpus"] = [{"index": i, "name": reader.name(), "util": r.get("util"), "mem_used": r.get("mem_used"),
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
-                             for i, r in reads]
+                             for (i, r), (_, reader) in zip(reads, self.gpus)]
             s.update({f"gpu_{k}": v for k, v in g.items()})
         if self.ps:
             try:
@@ -598,8 +646,23 @@ class Telemetry:
         self._stop.set()
 
     def _loop(self):
+        """One sample a second, for as long as the server lives.
+
+        A failing sample must not end the thread: on a machine where the GPU/psutil source is not readable
+        (a CI runner, a container without NVML) the first exception used to kill the sampler outright, so
+        `GET /metrics` silently stopped updating and `test_responses.NoLeakedSampler` saw "the server did
+        not start its hardware sampler" - the thread had started and died between two readings.
+        """
+        complained = False
         while not self._stop.is_set():
-            s = self.sample()
+            try:
+                s = self.sample()
+            except Exception as e:                    # noqa: BLE001 - a monitor must outlive its source
+                if not complained:                    # once, not once a second
+                    print(f"[strata] metrics: a sample failed ({e}); the sampler keeps trying", flush=True)
+                    complained = True
+                self._stop.wait(1.0)
+                continue
             with self.lock:
                 self.now = s
                 for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",

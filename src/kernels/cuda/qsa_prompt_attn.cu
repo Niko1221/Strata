@@ -1,7 +1,10 @@
 // src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
 #include "strata/core/emulate.hpp"
+#include "strata/core/sm120_series.hpp"
+#include "strata/core/defaults_026.hpp"
 #include "strata/core/sm75_series.hpp"
 #include "strata/core/geometry.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 #include <cstdlib>
 #include <cstring>
 #include "strata/kernels/qsa_prompt_attn.hpp"
@@ -14,7 +17,10 @@
 #include <algorithm>
 #include <cmath>
 
+#include <atomic>
 #include <cstdio>
+#include <vector>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
@@ -23,7 +29,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;           // head_dim
-constexpr int G = 12;             // query heads per KV head
+constexpr int G = strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv;   // query heads per KV head (12 for Flash-Next); the tiles pad the rows to 16, so G <= 16
+static_assert(G >= 1 && G <= 16, "qsa_prompt_attn: query heads per KV head must be 1..16 (one M16 tile)");
 static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, "qsa_prompt_attn is compiled for core/geometry.hpp");
 #ifndef D1_CH
 #define D1_CH 32
@@ -1505,7 +1512,7 @@ struct Smem70 {
     float alpha[16];
     float lsum[16];
     float mrow[16];
-    long long row[CH];
+    long long row[2][CH];        // double-buffered pool rows: the next chunk's lookups hide under p.v
 };
 
 template <int KV_MODE>
@@ -1556,40 +1563,54 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
 #pragma unroll
             for (int i = 0; i < 8; ++i) acc[rb][nt][i] = 0.0f;
 
-    for (int c0 = 0; c0 < n; c0 += CH) {
-        const int nh = min(CH, n - c0);
-        if (t < CH) {
-            long long r = -1;
-            if (t < nh) {
-                const int cell = ids[c0 + t];
-                const long long page = (long long) p.page_table[cell / page_size];
-                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
-            }
-            S.row[t] = r;
+    // the pool rows of a chunk: -1 past the selection and for a page the KV streaming left non-resident (the
+    // decode kernel masks those, so this kernel does too).  Chunk 0's rows fill one buffer here; every later
+    // chunk's lookups fill the other just before the previous p.v, where their global latency hides.
+    int rbuf = 0;
+    if (t < CH) {
+        long long r = -1;
+        if (t < min(CH, n)) {
+            const int cell = ids[t];
+            const long long page = (long long) p.page_table[cell / page_size];
+            r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
-        __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v, s
+        S.row[0][t] = r;
+    }
+    for (int c0 = 0; c0 < n; c0 += CH, rbuf ^= 1) {
+        const int nh = min(CH, n - c0);
+        __syncthreads();   // rows ready; the previous chunk's p.v is done with k, v
         // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
         // and their scales
         {
             constexpr int KPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::KElem) / 16;   // per K row
-            for (int i = t; i < CH * KPIECES; i += THREADS) {
-                const int c = i / KPIECES, pc = i % KPIECES;
-                const long long r = S.row[c];
-                uint4 kx = make_uint4(0, 0, 0, 0);
+            constexpr int KPT = (CH * KPIECES + THREADS - 1) / THREADS;
+            static_assert((CH * KPIECES) % THREADS == 0, "the staging pieces divide evenly");
+            // issue every global load of a thread before any of its stores: they then overlap each other instead
+            // of paying the HBM latency one at a time
+            uint4 kx[KPT];
+            int kc[KPT], kp[KPT];
+#pragma unroll
+            for (int s = 0; s < KPT; ++s) {
+                const int i = t + s * THREADS;
+                kc[s] = i / KPIECES; kp[s] = i % KPIECES;
+                const long long r = S.row[rbuf][kc[s]];
+                kx[s] = make_uint4(0, 0, 0, 0);
                 if (r >= 0) {
                     if constexpr (KV_MODE == 0)
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + pc);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_pool + r * HD) + kp[s]);
                     else   // modes 1 and 3: the K side is INT8
-                        kx = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + pc);
+                        kx[s] = __ldg(reinterpret_cast<const uint4*>(p.k_q + r * HD) + kp[s]);
                 }
-                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[c][0]) + pc * 16) = kx;
             }
+#pragma unroll
+            for (int s = 0; s < KPT; ++s)
+                *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.k[kc[s]][0]) + kp[s] * 16) = kx[s];
             if constexpr (KV_MODE == 3) {   // V: dequantize the row's q4_0 blocks straight into the fp16 V row
                 constexpr int BLKS = HD / QK4_0;
                 constexpr int BYTES = BLKS * (int) sizeof(block_q4_0);
                 for (int i = t; i < CH * BLKS; i += THREADS) {
                     const int c = i / BLKS, b = i % BLKS;
-                    const long long r = S.row[c];
+                    const long long r = S.row[rbuf][c];
 #pragma unroll
                     for (int j = 0; j < QK4_0; ++j) S.v[c][b * QK4_0 + j] = __half(0);
                     if (r >= 0) {
@@ -1605,22 +1626,30 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                 }
             } else {
                 constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16;   // per V row
-                for (int i = t; i < CH * VPIECES; i += THREADS) {
-                    const int c = i / VPIECES, pc = i % VPIECES;
-                    const long long r = S.row[c];
-                    uint4 vx = make_uint4(0, 0, 0, 0);
+                constexpr int VPT = (CH * VPIECES + THREADS - 1) / THREADS;
+                static_assert((CH * VPIECES) % THREADS == 0, "the staging pieces divide evenly");
+                uint4 vx[VPT];
+                int vc[VPT], vp[VPT];
+#pragma unroll
+                for (int s = 0; s < VPT; ++s) {
+                    const int i = t + s * THREADS;
+                    vc[s] = i / VPIECES; vp[s] = i % VPIECES;
+                    const long long r = S.row[rbuf][vc[s]];
+                    vx[s] = make_uint4(0, 0, 0, 0);
                     if (r >= 0) {
                         if constexpr (KV_MODE == 1)
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + pc);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_q + r * HD) + vp[s]);
                         else
-                            vx = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + pc);
+                            vx[s] = __ldg(reinterpret_cast<const uint4*>(p.v_pool + r * HD) + vp[s]);
                     }
-                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
                 }
+#pragma unroll
+                for (int s = 0; s < VPT; ++s)
+                    *reinterpret_cast<uint4*>(reinterpret_cast<unsigned char*>(&S.v[vc[s]][0]) + vp[s] * 16) = vx[s];
             }
             for (int i = t; i < CH * 4; i += THREADS) {
                 const int c = i / 4, g = i % 4;
-                const long long r = S.row[c];
+                const long long r = S.row[rbuf][c];
                 float a = 0.0f, b = 0.0f;
                 if (r >= 0) {
                     if constexpr (KV_MODE == 1) {
@@ -1783,6 +1812,17 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
                         acc[rb][nt][i] = fmaf(acc[rb][nt][i], a_[(i >> 1) & 1], (tmp[rb][nt][i] + tmpl[rb][nt][i]) * vdown);
             }
         }
+        // the next chunk's pool rows, into the other buffer: the two global lookups per cell hide under p.v
+        if (c0 + CH < n && t < CH) {
+            long long r = -1;
+            const int idx = c0 + CH + t;
+            if (idx < n) {
+                const int cell = ids[idx];
+                const long long page = (long long) p.page_table[cell / page_size];
+                r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            }
+            S.row[rbuf ^ 1][t] = r;
+        }
     }
     __syncthreads();
 #pragma unroll
@@ -1878,17 +1918,22 @@ typedef _Float16 wh8 __attribute__((ext_vector_type(PA_KL)));
 typedef float wf8 __attribute__((ext_vector_type(8)));
 constexpr int WCH = 32;          // cells per chunk (two 16-cell tiles)
 constexpr int WVS = 80;          // staged V row stride in bytes (64 codes, 16-byte aligned, banks spread)
-struct alignas(16) SmemW {
-    float part[4][16][WCH + 1];  // q.k per dim group
-    float p[16][WCH + 1];
+// TR (STRATA_PA_TRIM, experiment): rows = G (12) instead of 16 in part and p. The WMMA's rows 12..15 are zero queries whose scores
+// nothing reads; the kernel never stores or reads them then, and the 12 real rows see the same values in the same order.
+// Less LDS a block = more blocks resident (LDS, not VGPRs, limits the occupancy here: 5 waves a SIMD).
+template <int R, int VS = WVS>
+struct alignas(16) SmemWT {
+    float part[4][R][WCH + 1];   // q.k per dim group
+    float p[R][WCH + 1];
     float vs[4][WCH];            // V scale per (group, cell)
     int valid[WCH];              // the cell has a resident pool row
-    uint8_t v[4][WCH][WVS];      // per wave: the chunk's V codes of its group, one row per cell
+    uint8_t v[4][WCH][VS];       // per wave: the chunk's V codes of its group, one row per cell
     float qmax[4];
     float alpha[16];
     float lsum[16];
     float mrow[16];
 };
+using SmemW = SmemWT<16>;
 
 __device__ __forceinline__ wf8 wmma_f16(wh8 a, wh8 b, wf8 c) {
 #if STRATA_PA_WMMA && STRATA_PA_GFX11
@@ -1911,14 +1956,23 @@ __device__ __forceinline__ wh8 i8_to_h(const uint32_t* x) {   // PA_KL codes, ex
 // SPLIT = true (default): q and p carried as FP16 hi + lo pairs (two WMMAs each: FP32-level). S23 (opt-in
 // STRATA_PA_FAST=1): SPLIT = false, one FP16 image each - half the matrix work, rounding-level (FP16 attention as the
 // usual flash-attention kernels), quality-gated
-template <bool SPLIT>
-__global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
+// GATE = true (STRATA_QSA_FUSE_GATE): the attention output gate of the QSA layer in the epilogue - o16[qi * ld16 + h * HD + d] =
+// half(a * (1 / (1 + expf(-qf[qi * n_head * 2 * HD + h * 2 * HD + HD + d])))) with a the value `attn` would have held: the
+// expressions of the prefill's gate_attn_kernel, so the FP16 image is the same bits and `attn` is neither written nor read back.
+// RPF (STRATA_PA_RPF, experiment): chunk ci + 1's id and page-table reads are issued before chunk ci's compute.  The kernel
+// body is shared by prompt_attn_wmma_kernel and the VGPR-capped copies prompt_attn_wmma_nv<N> (STRATA_PA_NV, experiment:
+// amdgpu_num_vgpr(N) needs a literal, so one stamped kernel per cap).  They only move loads and registers around: the
+// arithmetic, its order and the output bits are the same.
+template <bool SPLIT, bool GATE, bool RPF, int TR>
+__device__ __forceinline__ void prompt_attn_wmma_body(const float* __restrict__ q, QsaAttnPools p,
                                                                    const int32_t* __restrict__ ids,
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
                                                                    int page_size, float scale_log2,
-                                                                   float* __restrict__ attn, int cap) {
+                                                                   float* __restrict__ attn, int cap,
+                                                                   const float* __restrict__ qf,
+                                                                   uint16_t* __restrict__ o16, int64_t ld16) {
 #if STRATA_PA_WMMA
-    __shared__ SmemW S;
+    __shared__ SmemWT<TR ? G : 16, TR >= 2 ? 72 : WVS> S;
     const int qi = blockIdx.x, kvh = blockIdx.y;
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
@@ -2024,8 +2078,16 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     auto chunk = [&](const Chunk& cd) {
         // stage this wave's V slice and scale
         {
-            uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
-            dst[0] = cd.v[0]; dst[1] = cd.v[1]; dst[2] = cd.v[2]; dst[3] = cd.v[3];
+            if constexpr (TR >= 2) {   // 72-byte rows (8-byte aligned): 1,024 bytes less LDS a block
+                uint2* dst = reinterpret_cast<uint2*>(&S.v[warp][lane][0]);
+                dst[0] = make_uint2(cd.v[0].x, cd.v[0].y); dst[1] = make_uint2(cd.v[0].z, cd.v[0].w);
+                dst[2] = make_uint2(cd.v[1].x, cd.v[1].y); dst[3] = make_uint2(cd.v[1].z, cd.v[1].w);
+                dst[4] = make_uint2(cd.v[2].x, cd.v[2].y); dst[5] = make_uint2(cd.v[2].z, cd.v[2].w);
+                dst[6] = make_uint2(cd.v[3].x, cd.v[3].y); dst[7] = make_uint2(cd.v[3].z, cd.v[3].w);
+            } else {
+                uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
+                dst[0] = cd.v[0]; dst[1] = cd.v[1]; dst[2] = cd.v[2]; dst[3] = cd.v[3];
+            }
             S.vs[warp][lane] = cd.vsc;
             if (warp == 0) S.valid[lane] = cd.row >= 0;
         }
@@ -2040,11 +2102,11 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                 if constexpr (SPLIT) s = wmma_f16(ql[kk], b, s);
             }
 #pragma unroll
-            for (int i = 0; i < 8; ++i) S.part[warp][PA_ROW(i, half)][nt * 16 + col] = s[i] * cd.ksc[nt];
+            for (int i = 0; i < 8; ++i) if (!TR || PA_ROW(i, half) < G) S.part[warp][PA_ROW(i, half)][nt * 16 + col] = s[i] * cd.ksc[nt];
         }
         __syncthreads();
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
-        {
+        if (!TR || t < G * 8) {   // (TR: the 4th wave has only the padding rows 12..15 and skips: a whole wave, so the shuffles stay uniform)
             const int r = t >> 3, sub = t & 7;
             float x[4], mx = -INFINITY;
 #pragma unroll
@@ -2091,7 +2153,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                 wh8 ah, al;
 #pragma unroll
                 for (int i = 0; i < PA_KL; ++i) {
-                    const float pv = S.p[col][cb + i] * (S.vs[warp][cb + i] * vup);
+                    const float pv = (!TR || col < G ? S.p[col][cb + i] : 0.0f) * (S.vs[warp][cb + i] * vup);
                     const _Float16 hi = (_Float16) pv;
                     ah[i] = hi;
                     al[i] = (_Float16) (pv - (float) hi);
@@ -2119,10 +2181,20 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     };
     // all of a chunk's reads are issued before its compute (they were interleaved with the q.k WMMAs and the V
     // staging): 32K context, 2,048 queries, gfx1151, STRATA_PA_FAST=1: 12.49 -> 11.27 ms; the same bits
-    for (int ci = 0; ci < n_chunks; ++ci) {
-        Chunk d;
-        fetch(row_of(ci), d);
-        chunk(d);
+    if constexpr (RPF) {
+        long long nrow = n_chunks > 0 ? row_of(0) : -1;
+        for (int ci = 0; ci < n_chunks; ++ci) {
+            Chunk d;
+            fetch(nrow, d);
+            if (ci + 1 < n_chunks) nrow = row_of(ci + 1);
+            chunk(d);
+        }
+    } else {
+        for (int ci = 0; ci < n_chunks; ++ci) {
+            Chunk d;
+            fetch(row_of(ci), d);
+            chunk(d);
+        }
     }
     float inv[8];
 #pragma unroll
@@ -2135,59 +2207,167 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
             const int row = PA_ROW(i, half);
-            if (row < G) attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+            if (row < G) {
+                if constexpr (GATE) {
+                    const int h = kvh * G + row, d = dim0 + j * 16 + col;
+                    const float a = acc[j][i] * inv[i];
+                    o16[(size_t) qi * ld16 + (size_t) h * HD + d] =
+                        __half_as_ushort(__float2half_rn(a * (1.0f / (1.0f + expf(-qf[(size_t) qi * n_head * 2 * HD + (size_t) h * 2 * HD + HD + d])))));
+                } else {
+                    attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+                }
+            }
         }
 #else
     __builtin_trap();
 #endif
 }
+template <bool SPLIT, bool GATE = false, bool RPF = false, int TR = 0>
+__global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
+                                                                   const int32_t* __restrict__ ids,
+                                                                   const int32_t* __restrict__ steps, int n_kv_heads,
+                                                                   int page_size, float scale_log2,
+                                                                   float* __restrict__ attn, int cap,
+                                                                   const float* __restrict__ qf = nullptr,
+                                                                   uint16_t* __restrict__ o16 = nullptr, int64_t ld16 = 0) {
+    prompt_attn_wmma_body<SPLIT, GATE, RPF, TR>(q, p, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16);
+}
 
-// gfx12 (RDNA4) and gfx11 (RDNA3 / RDNA3.5), only on request: the output differs from the default kernel's in its
-// last bits
-bool hip_wmma_usable() {
-    static const bool want = [] {
+// gfx12 (RDNA4): on by default on Linux (148-amd; STRATA_HIP_WMMA=0 turns it off; Windows: opt-in with =1 until tested there).  gfx11 (RDNA3 / RDNA3.5): only on request
+// (STRATA_HIP_WMMA=1).  STRATA_HIP_WMMA=auto (151-amd) takes the matrix-core kernel on a gfx12 card for a batch of
+// STRATA_HIP_WMMA_MIN_Q (64) or more queries and keeps the FP32 kernel for smaller calls.  The output differs from the
+// old kernel's in its last bits (FP32-level accuracy, another summation order): teacher-forced KL against the old kernel
+// 0.0003 (28 prompts) / 0.0014 (8 long documents) on an R9700.  A launch that fails switches the path off for the rest of
+// the process (the caller then runs the FP32 kernel) instead of ending it.
+int hip_wmma_mode_env() {   // -1 unset (the arch default), 0 off, 1 forced, 2 auto
+    static const int mode = [] {
         const char* e = std::getenv("STRATA_HIP_WMMA");
-        return e != nullptr && e[0] == '1';
+        if (e == nullptr || e[0] == '\0') return -1;
+        if (e[0] == '1') return 1;
+        if (!std::strcmp(e, "auto")) return 2;
+        return 0;
     }();
-    if (!want) return false;
-    static int arch[64] = {};   // 0 unknown, 1 gfx11 / gfx12, 2 other
-    int dev = 0;
-    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
+    return mode;
+}
+std::atomic<bool> g_wmma_failed{false};
+// the device's class: 1 gfx11 matrix-core part, 2 gfx12 (RDNA4), 3 anything else
+int hip_wmma_arch(int dev) {
+    static int arch[64] = {};
+    if (dev < 0 || dev >= 64) return 3;
     if (arch[dev] == 0) {
         hipDeviceProp_t prop{};
-        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
-        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 || strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName)
-                        ? 1 : 2;
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return 3; }
+        arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 2
+                    : strata::kernels::gfx_arch_is_gfx11_wmma(prop.gcnArchName) ? 1 : 3;
+        const int mode = hip_wmma_mode_env();
         static bool told = false;
-        if (!told) {
+        if (!told && (mode >= 1 || arch[dev] == 2)) {
             told = true;
-            std::fprintf(stderr, "strata: STRATA_HIP_WMMA: the prompt attention on matrix cores %s (%s)\n",
-                         arch[dev] == 1 ? "on" : "unavailable", prop.gcnArchName);
+            const bool on = (arch[dev] == 2 && (mode >= 1 || strata::core::kGfx12PromptDefaultsOn)) || (arch[dev] == 1 && mode >= 1);
+            if (mode >= 1 || on)
+                std::fprintf(stderr, "strata: %sthe prompt attention on matrix cores %s (%s)%s\n", mode >= 1 ? "STRATA_HIP_WMMA: " : "",
+                             !on ? "unavailable" : (mode == 2 ? "chosen per call" : "on"), prop.gcnArchName,
+                             mode >= 1 ? "" : " by default; STRATA_HIP_WMMA=0 turns it off");
+            else
+                std::fprintf(stderr, "strata: the prompt attention on matrix cores is off by default on Windows (opt-in until tested on Windows); "
+                                     "STRATA_HIP_WMMA=1 turns it on (%s)\n", prop.gcnArchName);
         }
     }
-    return arch[dev] == 1;
+    return arch[dev];
+}
+// auto: where the matrix-core kernel beats the FP32 one.  Measured on the R9700 (gfx1201) only; the gfx11 parts take
+// it only when forced with =1.
+bool hip_wmma_auto_pick(int arch, int64_t n_q, int64_t cap) {
+    if (arch != 2) return false;
+    static const int64_t min_q = [] { const char* e = std::getenv("STRATA_HIP_WMMA_MIN_Q"); return e ? (int64_t) std::atoll(e) : (int64_t) 64; }();
+    static const int64_t min_cap = [] { const char* e = std::getenv("STRATA_HIP_WMMA_MIN_CAP"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
+    return n_q >= min_q && cap >= min_cap;
+}
+bool hip_wmma_usable(int64_t n_q, int64_t cap) {
+    const int mode = hip_wmma_mode_env();
+    if (mode == 0 || g_wmma_failed.load(std::memory_order_relaxed)) return false;
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    const int arch = hip_wmma_arch(dev);
+    if (arch == 3) return false;
+    if (mode == 1) return true;
+    if (mode == 2) return hip_wmma_auto_pick(arch, n_q, cap);
+    return arch == 2 && strata::core::kGfx12PromptDefaultsOn;   // unset: the gfx12 default (Linux; Windows is opt-in until tested there)
+}
+
+// STRATA_PA_TRIM (0 off, 1 padding rows out of LDS, 2 also 72-byte V rows; default PA_TRIM_DEFAULT) and STRATA_PA_RPF (0/1; default on):
+// the kernel's LDS and load-order variants.  The same arithmetic in the same order: the output bits are the same (the
+// checksum of hip_prompt_attn_wmma is equal across them), only the blocks resident a WGP and the load timing change.
+constexpr int PA_TRIM_DEFAULT = 2;
+template <bool SPLIT, bool GATE>
+void pa_launch(dim3 grid, cudaStream_t st, const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+               int n_kv_heads, int page_size, float scale_log2, float* attn, int cap, const float* qf, uint16_t* o16, int64_t ld16) {
+    static const int trim = [] { const char* e = std::getenv("STRATA_PA_TRIM"); return e != nullptr && e[0] != '\0' ? std::atoi(e) : PA_TRIM_DEFAULT; }();
+    static const bool rpf = [] { const char* e = std::getenv("STRATA_PA_RPF"); return !(e != nullptr && e[0] == '0'); }();
+#define STRATA_PA_L(R, T) prompt_attn_wmma_kernel<SPLIT, GATE, R, T><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, n_kv_heads, page_size, scale_log2, attn, cap, qf, o16, ld16)
+    if (trim >= 2) { if (rpf) STRATA_PA_L(true, 2); else STRATA_PA_L(false, 2); }
+    else if (trim == 1) { if (rpf) STRATA_PA_L(true, 1); else STRATA_PA_L(false, 1); }
+    else { if (rpf) STRATA_PA_L(true, 0); else STRATA_PA_L(false, 0); }
+#undef STRATA_PA_L
 }
 
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
-                 const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
+                 const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st, const float* gate_qf = nullptr,
+                 uint16_t* gate_o16 = nullptr, int64_t gate_ld = 0) {
+    {   // STRATA_QSA_STAT=1 (diagnostic): how much consecutive queries' selections overlap (the row-union attention's sharing factor)
+        static const bool stat_on = std::getenv("STRATA_QSA_STAT") != nullptr;
+        static int stat_calls = 0;
+        if (stat_on && n_q >= 2048 && stat_calls < 4) {
+            ++stat_calls;
+            cudaStreamSynchronize(st);
+            std::vector<int32_t> h((size_t) (n_q * cap)), hs((size_t) (n_q * kStepCount));
+            cudaMemcpy(h.data(), ids, h.size() * 4, cudaMemcpyDeviceToHost);
+            cudaMemcpy(hs.data(), steps, hs.size() * 4, cudaMemcpyDeviceToHost);
+            for (int R : {4, 8, 16, 32}) {
+                double mean_n = 0, mean_u = 0; int64_t groups = 0;
+                for (int64_t g0 = n_q / 2; g0 + R <= n_q; g0 += 4 * R) {   // the second half of the chunk (longer contexts)
+                    std::vector<int32_t> all;
+                    int64_t sum_n = 0;
+                    for (int r = 0; r < R; ++r) {
+                        const int n = hs[(size_t) (g0 + r) * kStepCount + kStepWidth];
+                        sum_n += n;
+                        all.insert(all.end(), h.begin() + (size_t) (g0 + r) * cap, h.begin() + (size_t) (g0 + r) * cap + n);
+                    }
+                    std::sort(all.begin(), all.end());
+                    const int64_t u = std::unique(all.begin(), all.end()) - all.begin();
+                    mean_n += (double) sum_n / R; mean_u += (double) u; ++groups;
+                }
+                if (groups) std::fprintf(stderr, "strata qsa stat: call %d n_q %lld cap %lld rows/group %d: mean selection %.0f, mean union %.0f (x%.2f; K/V reads per row %.2fx lower)\n",
+                                         stat_calls, (long long) n_q, (long long) cap, R, mean_n / groups, mean_u / groups, mean_u / mean_n, R * mean_n / mean_u);
+            }
+        }
+    }
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
         static const bool fast = [] { const char* e = std::getenv("STRATA_PA_FAST"); return e != nullptr && e[0] == '1'; }();
         static const int64_t min_t = [] { const char* e = std::getenv("STRATA_PF_SWITCH_MIN_T"); return e ? (int64_t) std::atoll(e) : (int64_t) 0; }();
-        if (fast && n_q >= min_t)
-            prompt_attn_wmma_kernel<false><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
-                q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
-                (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
+        const dim3 grid((unsigned) nb, (unsigned) s.n_head_kv);
+        const float* qq = q + q0 * s.n_head * HD;
+        const int32_t* idq = ids + q0 * cap;
+        const int32_t* stq = steps + q0 * kStepCount;
+        if (gate_qf != nullptr) {   // STRATA_QSA_FUSE_GATE: the gated FP16 image straight from the epilogue (the same SPLIT choice)
+            const float* qfq = gate_qf + (size_t) q0 * s.n_head * 2 * HD;
+            uint16_t* o16q = gate_o16 + (size_t) q0 * gate_ld;
+            if (fast && n_q >= min_t)
+                pa_launch<false, true>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
+            else
+                pa_launch<true, true>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, nullptr, (int) cap, qfq, o16q, gate_ld);
+        } else if (fast && n_q >= min_t)
+            pa_launch<false, false>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap, nullptr, nullptr, 0);
         else
-            prompt_attn_wmma_kernel<true><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
-                q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
-                (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
+            pa_launch<true, false>(grid, st, qq, pools, idq, stq, (int) s.n_head_kv, (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap, nullptr, nullptr, 0);
     }
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
-        std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s\n", cudaGetErrorString(e));
-        std::exit(1);
+        std::fprintf(stderr, "qsa_prompt_attn_batch (wmma): %s; the FP32 prompt attention runs from here on\n", cudaGetErrorString(e));
+        g_wmma_failed.store(true);
+        return false;
     }
     return true;
 }
@@ -2250,6 +2430,43 @@ bool qsa_decode_attn_split(const float* q, const QsaAttnPools& pools, const int3
 #endif
 }
 void qsa_prompt_attn_set_imma(int on) { g_pa_imma = on < 0 ? -1 : (on ? 1 : 0); }
+bool qsa_prompt_attn_matrix_cores_requested() {
+#if defined(__HIPCC__)
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    const int mode = hip_wmma_mode_env(), arch = hip_wmma_arch(dev);
+    return mode != 0 && arch != 3 && !g_wmma_failed.load(std::memory_order_relaxed) && (mode >= 1 || (arch == 2 && strata::core::kGfx12PromptDefaultsOn));
+#else
+    return false;
+#endif
+}
+
+bool qsa_prompt_attn_matrix_cores_gfx12() {
+#if defined(__HIPCC__)
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    return qsa_prompt_attn_matrix_cores_requested() && hip_wmma_arch(dev) == 2;
+#else
+    return false;
+#endif
+}
+
+bool qsa_hip_wmma_active() { return qsa_prompt_attn_matrix_cores_requested(); }
+
+bool qsa_prompt_attn_batch_gated(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                                 int64_t cap, const QsaShapes& s, const float* qf, uint16_t* o16, int64_t ld16, int64_t n_q,
+                                 void* stream) {
+#if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    if (n_q <= 0 || qf == nullptr || o16 == nullptr || ld16 < s.n_head * HD) return false;
+    if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
+        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
+        return launch_wmma(q, pools, ids, steps, cap, s, nullptr, n_q, (cudaStream_t) stream, qf, o16, ld16);
+#else
+    (void) q; (void) pools; (void) ids; (void) steps; (void) cap; (void) s; (void) qf; (void) o16; (void) ld16; (void) n_q; (void) stream;
+#endif
+    return false;
+}
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
@@ -2272,10 +2489,13 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                 cudaGetLastError();
                 return false;
             }
-            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card that has the Turing MMA (sm_75
+            // and newer), as RTX 20 runs them.  A card below sm_75 has no m16n8k8: its builds hold a __trap() in those
+            // kernels, so forcing them there killed the engine ("prefill copy_i32: unspecified launch failure" on a
+            // Tesla P100); such a card ignores the switch and keeps the kernel it runs without it.
             const char* w = std::getenv("STRATA_QSA_WARP");
-            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 75
-                      : 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+            const int real_cc = 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) && real_cc >= 75 ? 75 : real_cc;
         }
         if (cc[dev] < 70) return false;
         volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (STRATA_PA_VOLTA); STRATA_QSA_WARP=1 still forces the old one
@@ -2288,7 +2508,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
-        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable())
+        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable(n_q, cap))
         return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
     return false;
 #endif
@@ -2331,12 +2551,16 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             if (pf_env == 1 || (pf_env < 0 && t75 && strata::sm75_series())) return launch<1, true>(q, pools, ids, steps, cap, s, attn, n_q, st);
             return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         }
-        // STRATA_PROMPT_ATTN_IMMA=1 (opt-in, sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel)
+        // STRATA_PROMPT_ATTN_IMMA (sm_80+): both products on INT8 tensor cores (prompt_attn_i8v3_kernel).  ON by default since 0.2.7 on every
+        // card that has them (Ampere and newer, CUDA builds; not Turing, Volta or Pascal, which have no int8 m16n8k32 MMA this kernel needs):
+        // +1.6% / +1.8% prompt at 8K / 16K on the RTX PRO 5000 (sm_120) and +1.1% / +1.3% at 8K / 16K on 2x RTX A4000 (sm_86), decode unchanged,
+        // 5 pairs each; another summation order (~1e-7), so a near-tie can flip a prompt's first token.  Sm_80, 8.9, 9.0 and the datacentre
+        // Blackwells run the same kernel unmeasured.  STRATA_PROMPT_ATTN_IMMA=0 is the off switch (the v2 i8 kernel of 0.2.6), =1 as the default.
         if (g_pa_imma < 0) {
             const char* v = std::getenv("STRATA_PROMPT_ATTN_IMMA");
-            g_pa_imma = v != nullptr && v[0] == '1' ? 1 : 0;
+            g_pa_imma = v == nullptr ? 2 : (v[0] == '1' ? 1 : 0);   // 2: the default (on where the kernel can run)
         }
-        if (g_pa_imma == 1 && !turing) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (!turing && (g_pa_imma == 1 || (g_pa_imma == 2 && strata::prompt_attn_imma_default(false, 80, strata::qwen_defaults_026())))) return launch_i8v3(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (!pools.k_pool || !pools.v_pool) return false;

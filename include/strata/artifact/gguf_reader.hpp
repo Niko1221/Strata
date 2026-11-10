@@ -115,6 +115,21 @@ inline const char* ggml_type_name(uint32_t t) {
         return "Q1_0";
     case 42:
         return "Q2_0";
+    // Agention's llama.cpp fork: the APR trellis expert types (docs/GYRO.md)
+    case 143:
+        return "PTQ1_0";
+    case 144:
+        return "TQ2_T";
+    case 145:
+        return "TQK6";
+    case 146:
+        return "TQK7";
+    case 147:
+        return "TQP5";
+    case 148:
+        return "TQP6";
+    case 149:
+        return "TQP7";
     default:
         return "?";
     }
@@ -224,6 +239,37 @@ inline bool block_geometry(uint32_t t, int& elems, int& bytes) {
     case 42:
         elems = 64;
         bytes = 18;
+        return true;
+    // APR trellis types: 128 values = fp16 scale + 32 steps of K bits (K = 8 TQ2_T, 6 TQK6, 7 TQK7);
+    // PTQ1_0 = 26 B of base-3 digits + fp16 scale
+    case 143:
+        elems = 128;
+        bytes = 28;
+        return true;
+    case 144:
+        elems = 128;
+        bytes = 34;
+        return true;
+    case 145:
+        elems = 128;
+        bytes = 26;
+        return true;
+    case 146:
+        elems = 128;
+        bytes = 30;
+        return true;
+    // Gyro-L pair trellis: 128 values = fp16 scale + 64 steps of K bits, 2 weights per step (8*K bytes)
+    case 147:
+        elems = 128;
+        bytes = 42;
+        return true;
+    case 148:
+        elems = 128;
+        bytes = 50;
+        return true;
+    case 149:
+        elems = 128;
+        bytes = 58;
         return true;
     default:
         return false;

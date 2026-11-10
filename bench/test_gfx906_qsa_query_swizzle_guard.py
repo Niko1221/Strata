@@ -18,7 +18,7 @@ source = (ROOT / "src/kernels/cuda/qsa_decode_attn.cu").read_text()
 start = source.index("bool query_swizzle_gfx906_device() {")
 end = source.index("\n}\n", start) + 3
 guard = source[start:end]
-dispatch = re.search(r"^    const bool use_query_swizzle = .*;", source, re.MULTILINE)
+dispatch = re.search(r"^    const bool use_query_swizzle = [^;]*;", source, re.MULTILINE)
 if dispatch is None or "if (use_query_swizzle) {" not in source:
     raise RuntimeError("production query-swizzle dispatch changed; update the test")
 
@@ -118,7 +118,7 @@ int main() {
 '''
 
 program = prefix + guard + "\nbool active(bool query_swizzle, bool lane_cell, int kv_mode) {\n"
-program += dispatch.group(0) + "\n    return use_query_swizzle;\n}\n" + tests
+program += "    const int kernel = -1;  // the environment's choice (launch_chunks_batch)\n" + dispatch.group(0) + "\n    return use_query_swizzle;\n}\n" + tests
 with tempfile.TemporaryDirectory(prefix="qsa-swizzle-guard-") as directory:
     cpp = Path(directory) / "guard_test.cpp"
     binary = Path(directory) / "guard_test"

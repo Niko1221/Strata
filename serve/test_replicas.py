@@ -4,13 +4,15 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.replicas import BLOCK, ReplicaConfigError, ReplicaEngine, Router, cpu_sets, gpu_groups, replica_cfg
+from serve.replicas import (BLOCK, ReplicaConfigError, ReplicaEngine, Router, cpu_sets, gpu_groups, remove_arena,
+                            replica_cfg, shared_arena_plan, sweep_stale_arenas)
 from serve.server import ByteTokenizer, Service, StrataEngine, serve
 from serve.test_parallel import FAKE_BATCH
 
@@ -80,6 +82,9 @@ class FakeEngine:
     def alive(self):
         return self.up
 
+    def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+        yield 7
+
 
 class RouteChoice(unittest.TestCase):
     def test_least_loaded_then_affinity(self):
@@ -142,6 +147,15 @@ class RouteChoice(unittest.TestCase):
     def test_batch_is_the_sum(self):
         self.assertEqual(ReplicaEngine([FakeEngine(4), FakeEngine(4)]).batch, 8)
         self.assertEqual(ReplicaEngine([FakeEngine(0), FakeEngine(0)]).batch, 2)
+
+    def test_selected_replica_is_reported_for_solo_requests_too(self):
+        engine = ReplicaEngine([FakeEngine(), FakeEngine()])
+        engine.inflight[0] = 1
+        cancel = threading.Event()
+        selected = []
+        cancel._strata_replica_selected = selected.append
+        self.assertEqual(list(engine.generate([1, 2], 1, {}, cancel)), [7])
+        self.assertEqual(selected, [1])
 
 
 class ReplicaService(unittest.TestCase):
@@ -215,6 +229,61 @@ class ReplicaService(unittest.TestCase):
         self.assertEqual([r["replica"] for r in m["live"]["replicas"]], [0, 1])
         self.assertEqual(m["engine"]["replicas"], 2)
 
+    def test_terminal_telemetry_correlates_second_replica_without_global_sample_claim(self):
+        self.start()
+        self.svc.replica_gpu_groups = [[0, 1], [2, 3]]
+        second = self.engine.engines[1]
+        request_id = "abcdef012345"
+        second.slot_live[1] = {"request_id": request_id, "state": "reading", "prompt_tokens": 100,
+                               "prompt_read": 12, "generated": 0, "started": time.time(), "first_token": None}
+        first = self.engine.engines[0]
+        first.terminal_batch_sample = {"windows": 2, "processed_rows": 8, "active_rows": 4,
+                                       "elapsed_ms": 1000, "observed_monotonic": time.monotonic()}
+        second.terminal_batch_sample = {"windows": 2, "processed_rows": 6, "active_rows": 4,
+                                        "elapsed_ms": 1000, "observed_monotonic": time.monotonic()}
+        first.terminal_stage_sample = {"elapsed_us": 1_000_000, "in_flight_us": [800_000, 600_000],
+                                       "observed_monotonic": time.monotonic()}
+        second.terminal_stage_sample = {"elapsed_us": 1_000_000, "in_flight_us": [700_000, 500_000],
+                                        "observed_monotonic": time.monotonic()}
+        self.svc.backend = "cuda"
+        for child, cards in ((first, [0, 1]), (second, [2, 3])):
+            child.spawn = (*child.spawn[:4], {"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                                              "CUDA_VISIBLE_DEVICES": ",".join(map(str, cards))},
+                           *child.spawn[5:])
+            child.terminal_stages = [
+                {"stage": 0, "layer_start": 0, "layer_end": 19, "engine_ordinal": 0},
+                {"stage": 1, "layer_start": 20, "layer_end": 39, "engine_ordinal": 1}]
+        with self.svc.status_lock:
+            self.svc.terminal_requests[request_id] = {"id": request_id, "state": "waiting",
+                                                       "queued_at": time.time(), "admitted_at": time.time(),
+                                                       "prompt_tokens": 100}
+        with urllib.request.urlopen(self.base + "/v1/telemetry", timeout=10) as response:
+            snapshot = json.load(response)
+        slot = snapshot["work"]["slots"][5]
+        self.assertEqual((slot["slot"], slot["replica"], slot["group"], slot["request_id"]),
+                         (5, 1, 1, request_id))
+        request = snapshot["work"]["requests"][0]
+        self.assertEqual((request["slot"], request["replica"], request["group"], request["state"]),
+                         (5, 1, 1, "reading"))
+        self.assertEqual(snapshot["work"]["groups"], 2)
+        self.assertIsNone(snapshot["work"]["effective_rows_window"])
+        self.assertEqual([(row["replica"], row["batch_sample_rows"], row["batch_sample_active_rows"])
+                          for row in snapshot["work"]["replica_batches"]], [(0, 8, 4), (1, 6, 4)])
+        self.assertEqual([(row["replica"], row["stage_in_flight_us"])
+                          for row in snapshot["work"]["replica_stage_samples"]],
+                         [(0, [800_000, 600_000]), (1, [700_000, 500_000])])
+        self.assertNotIn("stage_in_flight_us", snapshot["work"])
+        self.assertEqual(snapshot["topology"]["stages"], [])
+        self.assertEqual(snapshot["topology"]["replica_stages"][1]["stages"][1]["device_index"], 3)
+        self.assertEqual(snapshot["topology"]["replica_devices"],
+                         [{"replica": 0, "devices": [0, 1]}, {"replica": 1, "devices": [2, 3]}])
+        second.spawn = (*second.spawn[:4], {"CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+                                            "CUDA_VISIBLE_DEVICES": "9,3"}, *second.spawn[5:])
+        with urllib.request.urlopen(self.base + "/v1/telemetry", timeout=10) as response:
+            mismatch = json.load(response)
+        self.assertIsNone(mismatch["topology"]["replica_stages"][1]["stages"][0]["device_index"])
+        self.assertEqual(mismatch["topology"]["replica_stages"][1]["stages"][1]["device_index"], 3)
+
     def test_engines_without_slots_run_one_each_at_once(self):
         self.start(slots=0)
         out = self.burst(["a" * 40, "b" * 40])
@@ -239,6 +308,130 @@ class ReplicaService(unittest.TestCase):
         for i in range(3):
             self.assertIn("ok, done.", self.chat(f"after the loss {i}"))
         self.assertEqual(self.served()[1], 3)
+
+
+class SharedArena(unittest.TestCase):
+    """The opt-in shared expert arena of the replicas (shared_arena_plan): when it is used, when it is not, what a stale
+    file means."""
+    CFG = {"replica_shared_arena": True, "args": ["--pack", "/p"], "gpu": [0, 1]}
+
+    def plan(self, cfg=None, n=2, tmp=None, **kw):
+        return shared_arena_plan(cfg or self.CFG, n, shm=tmp, platform=kw.pop("platform", "linux"),
+                                 environ=kw.pop("environ", {}), free_bytes=kw.pop("free_bytes", 100 << 30),
+                                 use_memfd=kw.pop("use_memfd", False), **kw)
+
+    def test_off_by_default_and_for_one_engine(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self.plan({"args": []}, tmp=d), (None, ""))
+            self.assertEqual(self.plan(n=1, tmp=d), (None, ""))
+            self.assertEqual(self.plan({"args": []}, tmp=d, environ={"STRATA_REPLICA_SHARED_ARENA": "0"}), (None, ""))
+
+    def test_on_by_config_or_environment(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, note = self.plan(tmp=d)
+            self.assertTrue(path and path.startswith(d) and path.endswith(".bin"), path)
+            self.assertIn("once", note)
+            path2, _ = self.plan({"args": []}, tmp=d, environ={"STRATA_REPLICA_SHARED_ARENA": "1"})
+            self.assertTrue(path2)
+            self.assertEqual(path, path2)      # (one server: one file)
+
+    def test_windows_gets_a_named_section(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, note = self.plan(tmp=d, platform="win32")
+            self.assertTrue(path and path.startswith("win:Local") and "strata-replicas-" in path, path)
+            self.assertIn("Windows section", note)
+            remove_arena(path)                 # (nothing to remove: harmless)
+
+    def test_only_where_there_is_an_arena_to_share(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(self.plan(tmp=d, platform="darwin")[0])
+            for flag in ("--mmap-experts", "--resident-experts", "--resident-budget-gib", "--shared-expert-arena"):
+                self.assertIsNone(self.plan({**self.CFG, "args": ["--pack", "/p", flag]}, tmp=d)[0], flag)
+            self.assertIsNone(self.plan({**self.CFG, "replicas": [{"gpus": [0], "args": ["--mmap-experts"]}, {"gpus": [1]}]}, tmp=d)[0])
+            self.assertIsNone(self.plan({**self.CFG, "arch": "deepseek41"}, tmp=d)[0])
+
+    def test_no_room_or_no_shm_says_so_and_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, note = self.plan(tmp=d, free_bytes=2 << 30)
+            self.assertIsNone(path)
+            self.assertIn("2.0 GiB free", note)
+            path, note = self.plan(tmp=d + "/nope")
+            self.assertIsNone(path)
+            self.assertIn("not usable", note)
+
+    def test_a_stale_file_goes_a_live_one_stays(self):
+        with tempfile.TemporaryDirectory() as d:
+            uid = __import__("os").getuid() if hasattr(__import__("os"), "getuid") else 0
+            dead = Path(d) / f"strata-replicas-{uid}-2999999.bin"
+            live = Path(d) / f"strata-replicas-{uid}-{__import__('os').getpid()}.bin"
+            other = Path(d) / f"strata-replicas-{uid + 1}-2999999.bin"
+            junk = Path(d) / "strata-replicas-x.bin"
+            for f in (dead, live, other, junk):
+                f.write_bytes(b"x")
+            with mock.patch("serve.replicas._pid_alive", side_effect=lambda pid: pid != 2999999):
+                gone = sweep_stale_arenas(d, uid)
+            self.assertEqual(gone, [dead.name])
+            self.assertFalse(dead.exists())
+            self.assertTrue(live.exists() and other.exists() and junk.exists())
+
+    @unittest.skipUnless(hasattr(__import__("os"), "memfd_create") and sys.platform.startswith("linux"), "Linux memfd")
+    def test_a_memfd_is_not_limited_by_dev_shm_and_is_closed_at_the_end(self):
+        import os
+        path, note = shared_arena_plan(self.CFG, 2, platform="linux", environ={}, free_bytes=100 << 30, use_memfd=True)
+        self.assertTrue(path and path.startswith(f"/proc/{os.getpid()}/fd/"), path)
+        fd = int(path.rsplit("/", 1)[1])
+        os.ftruncate(fd, 1 << 20)
+        self.assertEqual(os.fstat(fd).st_size, 1 << 20)
+        with open(path, "r+b") as other:          # (how an engine opens it)
+            other.seek(100)
+            other.write(b"x")
+        remove_arena(path)
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+        remove_arena(path)                         # (twice: harmless)
+
+    @unittest.skipUnless(hasattr(__import__("os"), "memfd_create") and sys.platform.startswith("linux"), "Linux memfd")
+    def test_a_memfd_arena_warns_when_the_engines_will_not_all_fit(self):
+        cfg = {**self.CFG, "model_name": "qwen3.8-flash-next-iq3_s"}
+        path, note = shared_arena_plan(cfg, 2, platform="linux", environ={}, free_bytes=57 << 30, use_memfd=True)
+        try:
+            self.assertTrue(path)
+            self.assertIn("WARNING", note)
+            self.assertIn("may not fit", note)
+        finally:
+            remove_arena(path)
+        path, note = shared_arena_plan(cfg, 2, platform="linux", environ={}, free_bytes=120 << 30, use_memfd=True)
+        try:
+            self.assertNotIn("WARNING", note)
+        finally:
+            remove_arena(path)
+
+    def test_a_memfd_needs_free_ram(self):
+        path, note = shared_arena_plan(self.CFG, 2, platform="linux", environ={}, free_bytes=2 << 30, use_memfd=True)
+        self.assertIsNone(path)
+        self.assertIn("2.0 GiB of RAM", note)
+
+    def test_removing_twice_or_nothing_is_harmless(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "a.bin"
+            f.write_bytes(b"x")
+            remove_arena(str(f))
+            remove_arena(str(f))
+            remove_arena(None)
+            self.assertFalse(f.exists())
+
+    def test_the_replica_engine_unlinks_the_file_at_close(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "a.bin"
+            f.write_bytes(b"x")
+
+            class E:
+                def close(self):
+                    pass
+            r = ReplicaEngine([E(), E()])
+            r.__dict__["arena_file"] = str(f)
+            r.close()
+            self.assertFalse(f.exists())
 
 
 if __name__ == "__main__":

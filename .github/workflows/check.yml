@@ -1,0 +1,211 @@
+name: Checks
+
+# The fast checks (tools/check), one job per step so a failure names its step: the CPU CMake preset, the Python suites, the host's
+# typecheck / test / build.  No GPU, no model and no download of weights.  The config snapshot has its own workflow (snapshot.yml)
+# and the backend compile checks theirs (backends.yml).  Run the same thing by hand:  python tools/check --only <step>
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/check.yml
+      - tools/check
+      - requirements*.txt
+      - CMakeLists.txt
+      - CMakePresets.json
+      - cmake/**
+      - src/**
+      - include/**
+      - bench/micro/**
+      - third_party/**
+      - tests/**
+      - serve/**
+      - strata.py
+      - setup.py
+      - strata_cli/**
+      - strata_control/**
+      - tools/**
+      - packaging/**
+      - docker/**
+      - apps/host/**
+      - apps/desktop/**
+      - metal/**
+      - sycl/**
+  pull_request:
+    paths:
+      - .github/workflows/check.yml
+      - tools/check
+      - requirements*.txt
+      - CMakeLists.txt
+      - CMakePresets.json
+      - cmake/**
+      - src/**
+      - include/**
+      - bench/micro/**
+      - third_party/**
+      - tests/**
+      - serve/**
+      - strata.py
+      - setup.py
+      - strata_cli/**
+      - strata_control/**
+      - tools/**
+      - packaging/**
+      - docker/**
+      - apps/host/**
+      - apps/desktop/**
+      - metal/**
+      - sycl/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux / ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: cpu CMake preset, only: cmake-cpu }
+          - { name: Python tests/, only: py-tests }
+          - { name: Python serve/, only: py-serve }
+          - { name: Python tools/, only: py-tools }
+          - { name: host typecheck + test + build, only: "host-typecheck,host-test,host-build" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v4
+        if: ${{ startsWith(matrix.only, 'host') }}
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/host/package-lock.json
+      - name: Python packages
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-build.txt
+      - name: tools/check
+        run: python tools/check --only "${{ matrix.only }}" --keep --scratch "$RUNNER_TEMP/check" --json "$RUNNER_TEMP/check/result.json"
+      - name: Logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-linux-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/check/*.log
+            ${{ runner.temp }}/check/result.json
+          retention-days: 7
+
+  windows:
+    name: Windows / ${{ matrix.name }}
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: cpu CMake preset (MSVC), only: cmake-cpu }
+          - { name: Python tests/, only: py-tests }
+          - { name: Python serve/, only: py-serve }
+          - { name: Python tools/, only: py-tools }
+          - { name: host typecheck + test + build, only: "host-typecheck,host-test,host-build" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v4
+        if: ${{ startsWith(matrix.only, 'host') }}
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/host/package-lock.json
+      - name: Python packages
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt -r requirements-build.txt
+      # Diagnostic, not a check: what a Windows PowerShell 5.1 child returns when its parent runs under PowerShell 7 (a user who starts
+      # the app or `strata` from a PowerShell 7 window). The tests drop PowerShell 7's PSModulePath entries; the product does not yet.
+      - name: PowerShell 7 parent (diagnostic)
+        if: ${{ startsWith(matrix.only, 'host') }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          STRATA_HOME: ${{ runner.temp }}\ps7-probe
+        run: |
+          "PSModulePath: $env:PSModulePath"
+          "--- powershell.exe Get-CimInstance | Select-Object (as hardware.mjs)"
+          powershell.exe -NoProfile -NonInteractive -Command "Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID | ConvertTo-Json -Compress"
+          "exit $LASTEXITCODE"
+          "--- the host's hardware probe (apps/host/server/hardware.mjs detect)"
+          node -e "import('./apps/host/server/hardware.mjs').then(m => m.detect({ force: true })).then(h => console.log(JSON.stringify({ cpu: h.cpu, gpus: h.gpus })), e => console.log('ERROR', e && e.stack))"
+          "--- setup.py cpu_info (powershell Get-CimInstance Win32_Processor)"
+          python -c "import setup; print(repr(setup.cpu_info()))"
+      # tools/check finds Visual Studio's compiler itself (vcvars64.bat); bash is Git for Windows' (the tester-README tests need it)
+      - name: tools/check
+        run: python tools/check --only "${{ matrix.only }}" --keep --scratch "$env:RUNNER_TEMP\check" --json "$env:RUNNER_TEMP\check\result.json"
+      - name: Logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-windows-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}\check\*.log
+            ${{ runner.temp }}\check\result.json
+          retention-days: 7
+
+  macos:
+    # Cheap and useful (the audit found the host and Python fixtures reading the Mac's own paths), but this job has not run on a
+    # Mac runner yet: it reports and does not block until its first green run.
+    name: macOS / ${{ matrix.name }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Python tools/, only: py-tools }
+          - { name: host typecheck + test + build, only: "host-typecheck,host-test,host-build" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - uses: actions/setup-node@v4
+        if: ${{ startsWith(matrix.only, 'host') }}
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/host/package-lock.json
+      - name: Python packages
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: tools/check
+        run: python tools/check --only "${{ matrix.only }}" --keep --scratch "$RUNNER_TEMP/check" --json "$RUNNER_TEMP/check/result.json"
+      - name: Logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-macos-${{ strategy.job-index }}
+          path: |
+            ${{ runner.temp }}/check/*.log
+            ${{ runner.temp }}/check/result.json
+          retention-days: 7

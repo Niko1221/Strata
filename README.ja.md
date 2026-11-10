@@ -1,229 +1,206 @@
-<h1 align="center">Strata</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
+    <img src="apps/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
+  </picture>
+</p>
 
-[English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+<h3 align="center">あなた自身のパソコンで、高性能な AI を。</h3>
+<p align="center">チャット、コーディング、画像の処理を、すべてローカルで。</p>
 
-<p align="center"><b>1,250 億パラメータの AI モデルを、手元のゲーミング PC で動かす</b><br>
-NVIDIA または AMD のグラフィックカード（12 GB 以上） · Windows または Linux · 無料・オープンソース</p>
+<p align="center">
+  <a href="#モデル">モデル</a> · <a href="#インストール"><b>インストール</b></a> ·
+  <a href="#ハードウェア">ハードウェア</a> · <a href="#ツール">ツール</a> ·
+  <a href="#ヘルプ">ヘルプ</a> · <a href="#strata-を支援する">支援</a>
+</p>
 
-<p align="center"><a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4"><img src="docs/media/pagoda-preview.webp" width="720" alt="Strata で生成した、五重塔のある庭。ボクセルで表現され、ブラウザーで動作している"></a><br>
-<sub>五重塔のある庭をボクセルで表現。RTX 5070 で動かした Strata（IQ3_S、コンテキスト長 128K）に、1 回のプロンプトで作成を依頼 ·
-<a href="https://github.com/Niko1221/Strata/releases/download/v0.1.10/Pagoda.mp4">動画を見る（全編 49 秒）</a></sub></p>
+<p align="center">
+  <a href="https://github.com/Niko1221/Strata/releases/latest"><img src="https://img.shields.io/github/v/release/Niko1221/Strata?label=download&color=0ab887" alt="Strata をダウンロード"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Niko1221/Strata" alt="MIT ライセンス"></a>
+  <a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor-EA4AAA?logo=githubsponsors&logoColor=fff" alt="GitHub Sponsors で Strata を支援する"></a>
+  <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Buy Me a Coffee で Strata を支援する"></a>
+</p>
 
-Strata を使うと、**[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** を一般的な PC で動かせます。
-通常はサーバーを必要とする大規模で高性能な AI モデルで、チャットやコードの生成、画像の読み取りができます。
-アプリやコーディングエージェントとも連携でき、データは PC の外に送信されません。
+<p align="center"><sub><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <b>日本語</b> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
 
-## どのくらい速い？
+**無料でオープンソース。自分の環境で動かせます。** デスクトップで、またはお好みのコーディングツールと一緒に Strata を使えます。アカウントは不要です。
 
-一般的なゲーミング PC 2 台で速度を測定しました。英語の場合、1 トークンはおよそ ¾ 語に相当します。
+## モデル
 
-- **生成速度：** 短いチャットで回答を生成する速度です。毎秒 60 トークンなら、人が読むよりも速く文章が表示されます。
-- **プロンプトの読み込み：** 入力した内容を読み込む速度です。ここでは、文書やコード、チャット履歴など 32K トークン分を読み込ませています。
+まず **ISTA-DASLab** をおすすめします。次に **Unsloth** などの提供元です。メモリに収まる互換モデルがある場合に選べます。
 
-<table>
-<tr><th>NVIDIA: RTX 5070 (12 GB), Ryzen 5 7600, 64 GB RAM</th><th>AMD: RX 9070 XT (16 GB), Ryzen 9 3900X, 47 GB RAM</th></tr>
-<tr><td>
+<details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.8-Flash-Next</b></summary>
 
-| モデルサイズ | 生成速度 | プロンプトの読み込み |
-| --- | ---: | ---: |
-| **Q2_0** | 94 tokens/s | 2,650 tokens/s |
-| **IQ2_XS** | 79 tokens/s | 2,090 tokens/s |
-| **IQ3_XXS** | 62 tokens/s | 1,750 tokens/s |
-| **IQ3_S** | 53 tokens/s | 1,620 tokens/s |
-| **Coder** | 55 tokens/s | 2,180 tokens/s |
-
-</td><td>
-
-| モデルサイズ | 生成速度 | プロンプトの読み込み |
-| --- | ---: | ---: |
-| **Q2_0** | 60 tokens/s | 1,160 tokens/s |
-| **IQ2_XS** | 52 tokens/s | 1,110 tokens/s |
-| **Coder** | 44 tokens/s | 1,420 tokens/s |
-
-</td></tr>
-</table>
-
-NVIDIA の測定には、Q2_0 のみエンジン 0.1.36、それ以外は 0.1.26 を使用しています（回答 4K、プロンプト 32K）。測定結果の詳細は
-[DETAILS.md](docs/DETAILS.md#speed-measured) をご覧ください。VRAM の容量が大きいカードほど高速で、RTX 3090（24 GB）なら
-毎秒およそ 100-140 トークンの生成速度が見込めます。長いチャットや他のカードでの性能については、[モデルごとの速度](docs/MODELS.md#how-fast-is-each-size)や
-[コミュニティの測定結果](docs/COMMUNITY_BENCHMARKS.md)を参照してください。
-
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a><br>
-<sub>Strata は無料で使えます。お使いの PC で快適に動いたら、コーヒー 1 杯分のご支援が開発を続ける励みになります。</sub></p>
-
-## 必要なもの
-
-| | |
+| 提供元 | 選択肢 |
 | --- | --- |
-| **グラフィックカード** | **NVIDIA** GeForce RTX 20、30、40、50 シリーズ、または **AMD** Radeon RX 7900 XT / XTX、RX 7800 XT / 7700 XT、RX 9060 XT、RX 9070 / 9070 XT、Radeon AI PRO R9700、RX 6800 / 6900 シリーズ。**VRAM 12 GB 以上**が必要です。 |
-| **RAM** | 32 GB 以上。[利用できるモデル](#どのモデルを選べばいい)は RAM の容量によって異なります。64 GB あれば、どのサイズも利用できます。 |
-| **ディスク** | 約 80 GB の空き容量。SSD を使うと初回の起動が大幅に速くなるため、おすすめです。 |
-| **OS** | Windows 10 / 11 または Linux。NVIDIA または AMD の最新のグラフィックドライバーも必要です。 |
+| **ISTA-DASLab · おすすめ** | Q2\_0, IQ2\_XS, IQ3\_XXS, IQ3\_S。[Coder: IQ1\_M](docs/MODELS.md#coder)（コーディング向け）。 |
+| **Unsloth** | UD-IQ4\_XS, UD-Q4\_K\_XL, UD-Q5\_K\_XL, UD-Q6\_K\_XL, Q8\_0 |
+| **Gyro · agentionai** | [Gyro-S, Gyro-M](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF)。メモリ使用量は少ないですが、動作は遅くなります。 |
+| **その他の選択肢** | [Swift 1.5](docs/MODELS.md#swift-15), [NVFP4](docs/NVFP4.md), [OrcaRouter](docs/ORCA.md) |
 
-その他の必要なソフトウェアは、インストーラーが用意します。2 枚または 3 枚のカードにモデルを分散させることもできます（[マルチ GPU](docs/MULTI_GPU.md)）。
+[サイズ、必要なメモリ、互換性を比べる](docs/MODELS.md)。
 
-以下のハードウェアにも試験的に対応しています。いずれもコミュニティのメンバーが手元のマシンで実装・テストしたものです。
+</details>
 
-- **旧世代のグラフィックカード**（Tesla P40 / V100、GTX 10、Radeon VII / MI50、RX 6700 XT、RX 5500 XT）：[旧世代 GPU の対応状況](docs/OLDER_GPUS.md)。
-- **Intel Arc**（Linux でソースからビルド）：[Intel Arc の対応状況](docs/INTEL_ARC.md)。
-- **AMD Ryzen AI Max（Strix Halo）**（Linux でソースからビルド）：[Strix Halo の対応状況](docs/STRIX_HALO.md)。
-- **AVX2 非対応の旧世代 CPU**：動作しますが、速度は遅くなります。[旧世代 CPU の対応状況](docs/INSTALL.md#older-cpus-experimental)を参照してください。
+<details>
+<summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
-必要な環境の一覧は、[docs/INSTALL.md](docs/INSTALL.md#what-you-need)をご覧ください。
+**Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0。現在、このモデルで文書化されているパックです。
+
+[モデルガイドと互換性](docs/QWEN36.md)。
+
+</details>
+
+<details>
+<summary><img src="docs/media/models/deepseek.svg" width="22" alt="" align="middle"> &nbsp;<b>DeepSeekV4.1-Flash-1017</b></summary>
+
+**デスクトップアプリ**と**ターミナル**で使えます。メモリに収まらない分は SSD から読み込むため、空きディスク容量がたくさん必要です。
+
+| セット（ISTA-DAS） | ダウンロード | 必要な空き容量 |
+| --- | ---: | ---: |
+| 1.75 bpw | 239 GB | 約245 GB |
+| 2.00 bpw | 257 GB | 約265 GB |
+| 2.25 bpw | 274 GB | 約280 GB |
+
+NVIDIA RTX 30・40・50 シリーズ（Windows と Linux）、AMD Radeon AI PRO R9700（Linux）、AMD Ryzen AI Max — Strix Halo（Windows）、メモリ 64 GB 以上の Apple シリコン搭載 Mac（[Mac](docs/DEEPSEEK_MAC.md)）で動きます。セットアップがファイルと DeepSeek エンジンをダウンロードし、モデルを起動します。
+
+```sh
+strata launch --family deepseek41 --model ist-das-2.00bpw --plan
+```
+
+Strata 0.2.5 で 2.00 bpw のセットを使って測定しました。「出力」は回答の速さ、「プロンプト」は Strata が入力を読み込む速さです。
+
+| ハードウェア | 出力 | プロンプト |
+| --- | ---: | ---: |
+| RTX 5070 12 GB, 64 GB RAM | 4〜6 トークン/秒 | 約 110 トークン/秒 (4K) |
+| RTX 3060 12 GB, 46 GB RAM | 9〜11 トークン/秒 | 約 155 トークン/秒 (4K) |
+| 1x Radeon AI PRO R9700, 251 GB RAM | 21〜25 トークン/秒 | 320〜360 トークン/秒 (8K) |
+| 4x Radeon AI PRO R9700 | 74〜77 トークン/秒 | 400〜450 トークン/秒 (8K) |
+
+[メモリ、ディスク、詳細](docs/DEEPSEEK41.md) · [リリースノート](https://github.com/Niko1221/Strata/releases)
+
+</details>
+
+<a id="the-other-sizes"></a>
+
+どれが動くかわからない場合は、[お使いのパソコンに合うモデルを選ぶ](docs/MODELS.md#pick-by-memory)。
 
 ## インストール
 
-### AI にセットアップしてもらう
+<a id="option-a-the-strata-app"></a>
 
-Claude Code、Cursor、Codex、GitHub Copilot などの AI コーディングアシスタントを使っている場合は、次の文を貼り付けてください。
+### デスクトップアプリ
 
-```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+**[Windows、Linux、Mac 用の Strata をダウンロード →](https://github.com/Niko1221/Strata/releases/latest)**
+
+アプリをインストールし、モデルを選んで、チャットを始めましょう。インストーラーはシステムごとに1つです。初回起動時に、アプリがお使いのグラフィックスカード用のエンジンをダウンロードします。[インストーラーのヘルプ](docs/INSTALL.md#the-app)。
+
+<sub>ファイル: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
+
+<p align="center">
+  <img src="docs/media/app-chat.png" width="900" alt="チャットとライブのコードプレビューを並べて表示した Strata デスクトップアプリ">
+  <br><sub>チャット、ファイル、ライブプレビューを1つのウィンドウで。</sub>
+</p>
+
+<a id="option-b-the-terminal-one-line"></a>
+
+### ターミナルアプリ
+
+ターミナルのほうが好みですか？ Strata をインストールして、**`strata launch`** を実行します。
+
+<details open>
+<summary><b>インストールコマンド</b></summary>
+
+**Linux / Mac**
+
+```sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
-AI がグラフィックカード、RAM、ディスクを確認して、PC に合ったモデルを選びます。インストールと起動を行い、
-アプリとの接続方法も案内します。また、Strata の [MCP サーバー](docs/MCP_SERVER.md) を使えば、
-AI ツールから Strata のインストール・起動・停止を行えます。
+**Windows PowerShell**
 
-### 自分でやる
-
-[Strata をダウンロード](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip)して展開します（`git clone` でも構いません）。
-**Windows：** **`START-HERE.bat`** をダブルクリックします。**Linux：** Strata フォルダーで **`./setup.sh`** を実行します。
-
-**Mac（Apple シリコン、M1〜M5、macOS 15 以降）：** まず一度だけ Apple の Command Line Tools をインストールします（ターミナルで `xcode-select --install`。Xcode 本体は不要です）。次に Strata フォルダーでターミナルを開き、**`./setup.sh`** を実行します。Mac 用エンジンをお使いの Mac 上でビルドし（約 7 分）、同じ質問をしてからモデルをダウンロードして起動します。次回からは `./setup.sh` ですぐに起動します。どのサイズが Mac に合うかと速度：[docs/MAC.md](docs/MAC.md)。
-
-NVIDIA でも AMD でも手順は同じです。インストーラーがカードを検出し、対応するエンジンを用意します。
-続いて、次の項目を設定します。
-
-- 使用するモデルとサイズ
-- コンテキストの長さ（モデルが覚えておけるテキストの量）
-- 画像を読み取る機能を使うかどうか
-
-各項目で Enter を押すと、推奨設定が選ばれます。設定が終わるとモデル（約 70 GB）をダウンロードし、起動します。
-ダウンロードが途中で止まった場合は、もう一度実行すると続きから再開できます。起動が完了すると、ブラウザーで
-`http://127.0.0.1:8080` が開き、Strata の画面が表示されます。
-
-> **モデルの起動中は、1-3 分ほど PC の動作が遅くなったり、応答しなくなったりすることがあります**（初回は特に時間がかかります）。
-> Strata が 35-55 GB のデータを RAM に読み込み、その一部をグラフィックカード用に固定（ピン留め）しているためです。
-> 正常な動作なので、ウィンドウに表示される処理状況を確認しながら、閉じずにお待ちください。
-
-**次回からは** `START-HERE.bat`（または `./setup.sh`）を実行するだけですぐに起動できます。2 回目以降は、ダウンロード済みのファイルを再度取得する必要はありません。
-モデルを停止するにはウィンドウを閉じてください。`UPDATE.bat`（`./update.sh`）を使うと、Strata を起動せずに更新できます。
-更新方法や Docker、複数のカードの使い方、ファイルの保存先、各種オプションについては、[docs/INSTALL.md](docs/INSTALL.md)をご覧ください。
-
-## どのモデルを選べばいい
-
-インストーラーが RAM の容量に合ったモデルをおすすめします。同じモデルでも、圧縮率によって複数のサイズが用意されています。
-サイズが小さいほど高速に動作し、大きいほど回答の品質が少し高くなります。
-
-| RAM | おすすめのモデル | 選ぶ理由 |
-| --- | --- | --- |
-| **32 GB** | **Coder** | 32 GB で動作するコーディング向けモデル（24 GB のカードがあれば Q2_0 と IQ2_XS も動作） |
-| **48 GB** | **IQ2_XS**（速度優先なら Q2_0） | これより大きいサイズはメモリに収まらない |
-| **64 GB** | **IQ2_XS**（おすすめ）、または IQ3_XXS / IQ3_S | どのサイズも利用可能。IQ3_S は回答の品質が最も高い一方、速度は最も遅い |
-| **96 GB 以上** | **IQ3_S**、または Unsloth の UD-IQ4_XS（約 4-bit） | 他のアプリを開いたままでも、最大サイズのモデルを動かせるだけの余裕がある |
-
-- **[Coder](docs/MODELS.md#coder)：** エキスパートを半分に減らしたコーディング向けモデルです。SWE-bench Verified ではフルモデルのスコアの
-  91% を達成しており（開発者による測定）、32 GB の RAM で動作します。ただし、コード以外の用途では性能が劣り、中国語などの CJK 言語の処理も苦手です（#438）。
-  こうした用途には、すべてのエキスパートを残した Q2_0、IQ2_XS、IQ3_S を選んでください。
-- **[Swift 1.5](docs/MODELS.md#swift-15)：** 回答前の思考時間が大幅に短くなるようファインチューニングしたモデルです。
-  回答の品質をほぼ保ったまま、より短い時間で答えが返ってきます。
-- **[Unsloth UD-IQ4_XS](docs/MODELS.md#unsloth-ud-iq4_xs)：** Unsloth による約 4-bit のモデルです。回答の品質は IQ3_S と UD-Q4_K_XL の中間です。
-  ダウンロード容量は 94 GB です。RAM が約 80 GB 未満の場合、回答の生成中にモデルの一部を SSD から読み込むため、速度が落ちます（NVMe SSD を使うと改善します）。
-- **[Unsloth UD-Q4_K_XL / UD-Q5_K_XL / UD-Q6_K_XL / Q8_0](docs/MODELS.md#unsloths-files-ud-iq4_xs-to-q8_0)：** 4〜8 ビットで、フルモデルにより近いモデルです
-  （次のトークンが Q8_0 と一致する割合は 93〜95%）。すべてのエキスパートが RAM に収まる場合（UD-Q4_K_XL で約 88 GB、
-  Q8_0 で約 136 GB）は高速です。RAM が足りない場合は回答の生成中に一部を SSD から読み込むため、大幅に遅くなります
-  （RAM が 64 GB の PC で UD-Q4_K_XL は毎秒 7-8.5 トークン程度）。
-- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)：** 手動でのセットアップが必要です。
-  インストーラーのメニューからは選べません。
-
-各サイズのダウンロード情報や必要なメモリ容量は、[docs/MODELS.md](docs/MODELS.md)をご覧ください。後から別のモデルを追加する場合は、
-`SETUP.bat`（Linux：`./setup.sh --setup`）を実行してください。
-
-## 使い方
-
-<p align="center"><img src="docs/media/runpagoda.png" width="900" alt="Strata の Monitor タブ（左）と、コードを生成するコーディングエージェント（右）"><br>
-<sub>動画に登場する五重塔の庭を作成中の画面。左が Strata の <b>Monitor</b>、右がコードを生成しているコーディングエージェント</sub></p>
-
-- **ブラウザーで使う：** `http://127.0.0.1:8080` を開きます。チャット用の **Chat**、モデルや GPU/CPU/RAM の状態をリアルタイムで確認できる **Monitor**、
-  設定や接続先のアドレスを確認できる **About** の各タブがあります。
-- **アプリやコーディングエージェントと連携する：** 「OpenAI-compatible」プロバイダーを追加し、ベース URL に
-  **`http://127.0.0.1:8080/v1`** を指定します。API キーとモデル名には任意の値を指定できます。
-  - Anthropic API を使うアプリ：`http://127.0.0.1:8080/v1/messages`（Claude Code では
-    `ANTHROPIC_BASE_URL=http://127.0.0.1:8080` を設定）。
-  - Codex CLI など、OpenAI Responses API を使うアプリ：`/v1/responses`
-    （[設定方法](docs/DETAILS.md#the-responses-api-and-codex-cli)）。
-- **思考（Thinking）の設定：** チャットのメニュー、または連携先アプリの「reasoning effort」で **off、low、medium、high** から選びます。
-  off が最も速く、難しい質問には high が向いています。
-- **画像を読み取る：** セットアップ時に「Images?」で yes を選びます。その後、チャットの **Picture** ボタンをクリックするか、連携先のアプリで画像を添付してください。
-  AMD のカードを使う場合、Linux では CPU で画像を読み取ります。Windows ではまだ画像の読み取りに対応していません。
-- **スマートフォンや別の PC から使う：** `START-HERE.bat --setup --host 0.0.0.0 --api-key <secret>` で起動します。API キーは必ず設定してください。
-- **リクエストは 1 つずつ：** 標準設定では 1 つずつ処理し、それ以外のリクエストは順番を待ちます。同時に処理するには、
-  `"parallel": 2` を設定してください（[BATCHING.md](docs/BATCHING.md)）。12 GB のカードでは、リクエストごとの回答速度が落ちます。
-- **長いプロンプトを送る：** チャットの最初のメッセージは全文を読み込むため、30,000 トークンあたり約 1 分かかります。
-  2 通目以降は数秒で応答が始まります。
-
-[チャットの保存場所](docs/INSTALL.md#where-things-are-stored)や[API の詳細](docs/DETAILS.md#using-it)も参照してください。
-
-### オプション：モデル全体が RAM に収まる場合、GPU 1 枚でさらに高速化
-
-2 つのオプトイン設定です（RubenTorney 氏による #1904 と #1905）。GPU を 1 枚使い、RAM にすべてのエキスパートが収まる場合（Strata の arena モード。例：64 GB の PC で Q2_0 や IQ3_XXS）に効果があります。Strata のデータフォルダーにある設定ファイル `strata-<model>.json`（[場所](docs/INSTALL.md#where-things-are-stored)）を開き、次を追加します：
-
-- **生成の高速化：** `"args"` リストに `"--adapt-async", "1"`。エキスパートキャッシュの更新が回答を止めずに補助スレッドで行われます。RTX 5070（Windows、Q2_0）での実測：生成 +4〜5%、コードや長文では +7〜10%。回答はデフォルトとわずかに異なる場合があります（実行ごとには同じです）。
-- **Windows でのプロンプト読み込みの高速化：** `"env"` ブロックに `"STRATA_PIN_BY_NEED": "1"`。Windows はGPU 用に RAM の約半分しか固定できないため、この設定で GPU が本当に必要とするエキスパートから先に固定します。RTX 5070 での実測：プロンプト読み込み +4.4%。
-
-```json
-"args": [ ..., "--adapt-async", "1" ],
-"env": { "STRATA_PIN_BY_NEED": "1" }
+```powershell
+irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
-変更後は Strata を再起動してください（`START-HERE.bat` または `./setup.sh`）。元に戻すには、2 つの項目を削除します。
+Windows では、インストール後に新しいターミナルを開きます。そのあと:
 
-## うまくいかないとき
+```sh
+strata launch
+```
 
-- **初回起動時に PC が応答しなくなる。** モデルの読み込み中は、一時的に応答しなくなることがあります。ウィンドウを閉じずにお待ちください。
-  10 分たっても応答しない場合は、PC を再起動して他のアプリを閉じてからやり直すか、モデルのサイズを小さくしてください。
-- **ダウンロードやインストールが途中で止まる。** `START-HERE.bat`（または `./setup.sh`）をもう一度実行してください。
-  中断したところから再開できます。
-- **動作が極端に遅く、ディスクのアクセスランプが点滅し続ける。または「the engine stopped unexpectedly」と表示される。** RAM の空き容量が不足しています。
-  ブラウザーなど、RAM を多く使う他のアプリを閉じるか、小さいモデル（Q2_0 または IQ2_XS）を選んでください。
-- **ポート 8080 が使用中と表示される。** Strata がすでに起動しています。起動済みのウィンドウを探してください。
+画面の案内に従って、モデルをダウンロードして起動します。[ターミナルガイド](docs/TERMINAL_LAUNCH.md)。
 
-その他の問題と対処方法は、[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)をご覧ください。解決しない場合は
-[Issue](https://github.com/Niko1221/Strata/issues) を作成し、Strata フォルダー内の `strata-<model>.log` を添付してください。
-セキュリティ上の問題は、[SECURITY.md](SECURITY.md)の手順に従って非公開で報告してください。
+</details>
 
-## しくみ
+<p align="center">
+  <img src="docs/media/terminal-monitor.png" width="900" alt="モデルの動作、速度、メモリ、最近のリクエストを表示する Strata ターミナルアプリ">
+  <br><sub>動作中のモデルとハードウェアの状態を確認できます。</sub>
+</p>
 
-この規模のモデルは通常、数百ギガバイトの GPU メモリを搭載したサーバーで動かします。一方、手元のグラフィックカードのメモリは
-12-24 GB 程度です。Strata は **PC 全体で処理を分担する** ことで、こうした環境でもモデルを動かせるようにしています。
-台所で、よく使うものは調理台に置き、それ以外は食品庫にしまっておくような仕組みです。
+<a id="build-from-source"></a>
 
-<p align="center"><img src="docs/media/how-it-works.svg" width="860" alt="24,576 個のエキスパートのうち、よく使うものをグラフィックカードに配置。全エキスパートは RAM に、ルックアップテーブルは SSD に保持"></p>
+[ソースからビルド](docs/SOURCE_INSTALL.md) · [Docker](docs/DOCKER.md) · [インストールガイド（全文）](docs/INSTALL.md)
 
-- **モデルは「エキスパート」と呼ばれる 24,576 個の小さな処理単位から構成されています。** 1 語の生成に必要なのは、このうち 10 個だけです。
-- **グラフィックカード** に、使用頻度の高い数千個のエキスパートを置きます。**RAM** にはすべてのエキスパートを保持し、
-  **CPU** が残りの処理を並行して担当します。**SSD** には大きなルックアップテーブルを保存します。
+<a id="what-you-need"></a>
 
-<p align="center"><img src="docs/media/guess-and-check.svg" width="860" alt="小さな補助モデルが次の数語を予測し、大きなモデルがまとめて検証。正しい予測だけを採用する"></p>
+## ハードウェア
 
-- **予測してから検証：** 小さな補助モデルが次の数語を予測し、大きなモデルがまとめて検証します。
-  回答を変えずに、生成速度を 1.6-1.8 倍に高められます。
-- **長いテキストはまとめて読み込みます**（一度に最大 8,192 トークン）。読み込み速度は毎秒 1,000 トークンを超えます。
+| 対応ハードウェア | ガイド |
+| --- | --- |
+| **NVIDIA GeForce RTX 20 / 30 / 40 / 50 シリーズ** | [NVIDIA のセットアップ](docs/INSTALL.md#what-you-need) |
+| **AMD Radeon RX 7700 / 7800 / 7900、RX 9060 / 9070、AI PRO R9700** | [AMD のセットアップ](docs/AMD_HIP.md) |
+| **AMD Radeon RX 6800 / 6900 · 試験的** | [RX 6000 のセットアップ](docs/AMD_HIP.md#rdna2-gfx1030) |
+| **Intel Arc · Linux** | [Intel のセットアップ](docs/INTEL_ARC.md) |
+| **Apple Silicon · M1 以降** | [Mac のセットアップ](docs/MAC.md) |
+| **AMD Ryzen AI Max · Strix Halo** | [Strix Halo のセットアップ](docs/STRIX_HALO.md) |
 
-仕組みについては、[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)で詳しく説明しています。各処理の詳細や測定値は、
-[技術資料](docs/DETAILS.md#how-it-works)と[論文](docs/paper/Strata-Paper.pdf)をご覧ください。
+<a id="using-it"></a>
 
-## クレジットとライセンス
+## ツール
 
-使用しているモデルは、Qwen チームが開発した [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next) です。
-[ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)、UkisAI（Swift 1.5）、Unsloth が提供する圧縮版を利用しています。
-Strata は [llama.cpp / ggml](https://github.com/ggml-org/llama.cpp) の一部も使用しています。クレジットの一覧は
-[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#credits)をご覧ください。Strata は [MIT License](LICENSE) で公開されていますが、一部の構成要素と
-各モデルには、それぞれ別のライセンスが適用されます（[ライセンスの詳細](docs/HOW_IT_WORKS.md#license)）。
+**Claude Code · Codex CLI · OpenCode · oh-my-pi · pi.dev · Hermes Agent · OpenClaw**。OpenAI 互換と Anthropic 互換の API を通じて、ほかのツールも使えます。
+
+**`strata connect`** を実行すると、お使いのツールの設定方法が表示されます。[接続ガイド](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect)。
+
+<a id="guides"></a>
+<a id="how-fast-is-it"></a>
+<a id="how-does-it-work"></a>
+<a id="something-went-wrong"></a>
+
+## ヘルプ
+
+[すべてのガイド](docs) · [トラブルシューティング](docs/TROUBLESHOOTING.md) · [不具合を報告](https://github.com/Niko1221/Strata/issues/new/choose) ·
+[ベンチマーク](docs/COMMUNITY_BENCHMARKS.md) · [仕組み](docs/HOW_IT_WORKS.md) · [貢献する](CONTRIBUTING.md)
 
 ## Strata を支援する
 
-Strata は無料で使えるオープンソースソフトウェアです。役に立ったら、開発へのご支援をお願いします。
+**ローカル AI をみんなに開かれたものに。** GitHub でのスポンサーやコーヒー1杯が、開発と、より多くのハードウェアでのテストの支えになります。
 
-<p align="center"><a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50"></a></p>
+<a href="https://github.com/sponsors/Niko1221"><img src="https://img.shields.io/badge/Sponsor_on_GitHub-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors: Strata を支援する" height="48"></a>
+<a href="https://buymeacoffee.com/strataengine"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee: Strata を支援する" height="48"></a>
+
+### いつも支えてくださる方々
+
+Strata を支えてくださるすべての方に感謝します。
+
+<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
+<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
+<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
+<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
+<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
+<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
+<!-- supporters:end -->
+
+[MIT ライセンス](LICENSE) · [クレジットとモデルのライセンス](docs/HOW_IT_WORKS.md#credits) · [プライバシー](docs/SAFETY.md)
+
+<a id="option-c-let-your-ai-set-it-up"></a>
+
+<sub>AI ツールと自動リーダー向け: <a href="AGENTS.md">技術リファレンス</a> · <a href="docs/AI_SETUP.md">セットアップ手順</a></sub>
+
+**スポンサー、ハードウェア提携、共同開発のご相談:** [niko.veit@outlook.com](mailto:niko.veit@outlook.com).

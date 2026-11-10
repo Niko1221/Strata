@@ -29,6 +29,9 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/sm75_series.hpp"
+#include "strata/core/sm120_series.hpp"
+#include "strata/core/dispatch_stats.hpp"
+#include "strata/core/defaults_026.hpp"
 #include "s26_tsum.cuh"
 #if !defined(__HIPCC__)
 #include "q8_1_il.cuh"
@@ -650,6 +653,66 @@ __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __res
     }
     return d * sumf;
 }
+#if !defined(__HIPCC__)   // CUDA only: the native_mmvq_il_pf_kernel family below (itself CUDA only) is the only user
+// q6_q8_dot_impl with the two scales already in registers (the interleaved kernels' hoisted loads, P1): the same
+// expression in the same order
+__device__ __forceinline__ float q6_q8_dot_sc(int vl, int vh, const int* __restrict__ u, int sc0, int sc1, float d,
+                                            const float* __restrict__ d8) {
+    float sumf = 0.0f;
+    const int scs[2] = {sc0, sc1};
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const int sc = scs[i];
+        const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
+        const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+        const int vi = __vsubss4(vil | vih, 0x20202020);
+        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
+    }
+    return d * sumf;
+}
+
+// P1: loads the compiler may not sink into a later branch (it moved the Q6_K scale and d loads of the hoisted group
+// into the dot sections, where each one is a dependent L1 round trip); the same ld.global.nc the __restrict__ loads use
+__device__ __forceinline__ int ldg_nc_u16(const void* p) { unsigned v; asm volatile("ld.global.nc.u16 %0, [%1];" : "=r"(v) : "l"(p)); return int(v); }
+__device__ __forceinline__ int ldg_nc_s8(const void* p) { int v; asm volatile("ld.global.nc.s8 %0, [%1];" : "=r"(v) : "l"(p)); return v; }
+__device__ __forceinline__ int ldg_nc_u8(const void* p) { unsigned v; asm volatile("ld.global.nc.u8 %0, [%1];" : "=r"(v) : "l"(p)); return int(v); }
+__device__ __forceinline__ int ldg_nc_s32(const void* p) { int v; asm volatile("ld.global.nc.s32 %0, [%1];" : "=r"(v) : "l"(p)); return v; }
+__device__ __forceinline__ int ldg_nc_b2(const void* p, int i32) {   // load_int_b2 pinned: two u16, little-endian
+    const auto* x = static_cast<const uint16_t*>(p) + 2 * i32;
+    return ldg_nc_u16(x) | (ldg_nc_u16(x + 1) << 16);
+}
+// P1: base + k * stride as one IMAD.WIDE.U32 (an asm so the front end does not share k * stride between pointers and
+// turn each into a 64-bit add pair)
+__device__ __forceinline__ const void* madw(const void* base, int k, int stride) {
+    const void* r;
+    asm("mad.wide.u32 %0, %1, %2, %3;" : "=l"(r) : "r"(k), "r"(stride), "l"(base));
+    return r;
+}
+// P2: (float) p for |p| < 2^22 as an add on the FMA pipe instead of the quarter-rate I2F: p + 1.5 * 2^23
+// as float bits is exactly 1.5 * 2^23 + p (unit ulp), and the subtraction is exact (Sterbenz), so the value is the
+// conversion's, +0 included
+__device__ __forceinline__ float i2f_small(int p_plus_magic) { return __int_as_float(p_plus_magic) - 12582912.0f; }
+constexpr int kI2fMagic = 0x4B400000;
+// P2: __vsubss4(x, 0x20202020) for bytes of x in [0, 63] (Q6_K's codes, so nothing saturates): x | 0x80 is x + 0x80 per
+// byte, minus 0x20 never borrows (0x60..0x9f), and the xor takes the 0x80 back: the same int8 bytes, 2 instructions
+// instead of ptxas's 8 for the saturating subtract sm_80 lacks
+__device__ __forceinline__ int sub32_bytes(int x) { return (x + 0x60606060) ^ 0x80808080; }
+// q6_q8_dot_sc with P2's integer forms: the dp4a inputs are the same 32-bit values, (dp * sc) the same int, and
+// i2f_small its exact float (|dp * sc| <= 4 * 32 * 127 * 128 = 2.1M < 2^22), so every FFMA sees the bits q6_q8_dot_impl's does
+__device__ __forceinline__ float q6_q8_dot_fast(int vl, int vh, const int* __restrict__ u, int sc0, int sc1, float d,
+                                              const float* __restrict__ d8) {
+    float sumf = 0.0f;
+    const int scs[2] = {sc0, sc1};
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
+        const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+        const int vi = sub32_bytes(vil | vih);
+        sumf += d8[i] * i2f_small(STRATA_DP4A(vi, u[i], 0) * scs[i] + kI2fMagic);
+    }
+    return d * sumf;
+}
+#endif  // !__HIPCC__
 
 __device__ __forceinline__ float q6_q8_dot(const Q6KBlock* __restrict__ w,
                                           const Q81Block* __restrict__ x, int iqs) {
@@ -826,7 +889,11 @@ __global__ void native_small_mmvq_kernel(const Weight* __restrict__ w,
 // row) value is accumulated over kbx in the same order, summed across warps in the same order and reduced with
 // the same warp tree as the ncols = 1 kernel, so every column is BITWISE equal to a single-column call on that
 // column (checked by bench/micro/native_mmvq_multi.cpp). The ncols = 1 kernels are untouched.
-constexpr int MAX_NCOLS = 8;
+// Columns one launch takes: 8, the 0.2.7 limit, or 16 where windows are wide (window_limits.hpp: the cases 9..16 are
+// compiled only then, so an engine built with STRATA_WINDOW_MAX_T=8 has exactly the kernels it had).  A window has one
+// column per row.  The wide launches read every weight once for all their columns; running 16 columns as two 8-column
+// passes (native_mmvq below does it for more than MAX_NCOLS) reads the dense weights twice and measured slower than 8 rows.
+constexpr int MAX_NCOLS = STRATA_VERIFY_MAX_T > 8 ? STRATA_VERIFY_MAX_T : 8;
 
 // Each format splits its dot product into `load` (everything that depends only on the weight block: codes,
 // unpacked scales, block scale) and `apply` (the activation loads and the original *_impl expression). `load` runs
@@ -835,6 +902,7 @@ constexpr int MAX_NCOLS = 8;
 // every column bitwise equal to it.
 struct Q5KTraits {
     using Block = Q5KBlock;
+    [[maybe_unused]] static constexpr int TYPE = 13;   // ggml type
     static constexpr int DIV = QK, T = QI / VDR, KBY = QK / Q8K, BPI = VDR * WARPS * WARP / QI;
     __device__ static int kqs(int tid) { return VDR * (tid % (QI / VDR)); }
     struct W { int vl[2], vh[2]; uint16_t aux[2]; half2 dm; int bq8_offset; };
@@ -876,6 +944,7 @@ struct Q5KTraits {
 };
 struct Q4KTraits {
     using Block = Q4KBlock;
+    [[maybe_unused]] static constexpr int TYPE = 12;   // ggml type
     static constexpr int DIV = QK, T = QI / VDR, KBY = QK / Q8K, BPI = VDR * WARPS * WARP / QI;
     __device__ static int kqs(int tid) { return VDR * (tid % (QI / VDR)); }
     struct W { int v[2]; uint16_t aux[2]; half2 dm; int bq8_offset; };
@@ -946,6 +1015,7 @@ struct Q20Traits {
 };
 struct Q3KTraits {
     using Block = Q3KBlock;
+    [[maybe_unused]] static constexpr int TYPE = 11;   // ggml type
     static constexpr int DIV = 256, T = 16, KBY = 8, BPI = WARPS * WARP / 16;
     __device__ static int kqs(int tid) { return tid % 16; }
     struct W { int vl, vh; float d; const uint8_t* scales; int scale_offset, bq8_offset; };
@@ -972,6 +1042,7 @@ struct Q3KTraits {
 };
 struct Q6KTraits {
     using Block = Q6KBlock;
+    [[maybe_unused]] static constexpr int TYPE = 14;   // ggml type
     static constexpr int DIV = 256, T = 32, KBY = 8, BPI = WARPS * WARP / 32;
     __device__ static int kqs(int tid) { return tid % 32; }
     struct W { int vl, vh; float d; const int8_t* scales; int bq8_offset; };
@@ -999,6 +1070,7 @@ struct Q6KTraits {
 };
 struct IQ4XSTraits {
     using Block = IQ4XSBlock;
+    [[maybe_unused]] static constexpr int TYPE = 23;   // ggml type
     static constexpr int DIV = 256, T = 8, KBY = 8, BPI = 4 * WARPS * WARP / 32;
     __device__ static int kqs(int tid) { return 4 * (tid % 8); }
     struct W { int2 v[4]; int ls; float dw; };
@@ -1156,7 +1228,9 @@ struct SmallTraits<IQ4NLBlock, 4> {
 // equal to ncols = 1 only to float rounding (the cross-warp reduction groups partial sums differently).
 bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
 // B6 STRATA_B6_MMVQ_ROWS (lab, default 0 = off): see native_mmvq_set_b6_rows
-int g_b6_rows = [] { const char* v = std::getenv("STRATA_B6_MMVQ_ROWS"); return v ? std::atoi(v) : 0; }();
+// read at first use (not at load): a per-architecture default set at start (nv_defaults.hpp) must be seen
+int g_b6_rows = -1;
+int b6_rows_mode() { if (g_b6_rows < 0) { const char* v = std::getenv("STRATA_B6_MMVQ_ROWS"); g_b6_rows = v ? std::atoi(v) : 0; } return g_b6_rows; }
 
 // S26 STRATA_TSUM=1 (TS): warp 0's NCOLS x ROWS sums as one transposed butterfly (s26_tsum.cuh), bitwise the same
 static bool s26_tsum_on() {
@@ -1456,8 +1530,8 @@ bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in
     if constexpr (!B6X<F>::ok) {
         return false;
     } else {
-        if (g_b6_rows <= 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
-        const int rows = g_b6_rows == 1 ? 2 : g_b6_rows;
+        if (b6_rows_mode() <= 0 || !g_multi_exact || s26_tsum_on() || n_in / F::DIV < 1) return false;
+        const int rows = b6_rows_mode() == 1 ? 2 : b6_rows_mode();
         const dim3 threads(WARP, WARPS);
         if (rows == 2)
             b6_mmvq_rows_kernel<F, NCOLS, 2><<<unsigned((n_out + 1) / 2), threads, 0, s>>>(w, x, y, n_in, n_out);
@@ -1514,7 +1588,19 @@ void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, i
         case 6: launch_multi_n<F, 6>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 7: launch_multi_n<F, 7>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 8: launch_multi_n<F, 8>(weights, x_q8_1, y, n_in, n_out, s); break;
-        default: throw std::invalid_argument("native MMVQ multi-column launch requires 2 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: launch_multi_n<F, 9>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 10: launch_multi_n<F, 10>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 11: launch_multi_n<F, 11>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 12: launch_multi_n<F, 12>(weights, x_q8_1, y, n_in, n_out, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: launch_multi_n<F, 13>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 14: launch_multi_n<F, 14>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 15: launch_multi_n<F, 15>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 16: launch_multi_n<F, 16>(weights, x_q8_1, y, n_in, n_out, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ multi-column launch requires 2 <= ncols <= MAX_NCOLS");
     }
 }
 
@@ -1554,10 +1640,141 @@ struct IlIQ4XS {
             out[c] = d * sumi;
         }
     }
+    // P1 (native_mmvq_il_pf_kernel): the block's bytes as loaded, the table lookup and the scale decode deferred to
+    // applyr so the loads of a whole group issue before any of them is consumed; the same integers and floats as apply
+    static constexpr bool HAS_PF = true;
+    struct RP { const uint8_t *qs, *sl, *blk; };   // a row's blocks for this lane: its qs ints, its scales_l byte, the block
+    __device__ static RP rowptrs(const F::Block* __restrict__ row, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(row);
+        return {b + 8 + 4 * iqs, b + 4 + iqs / 8, b};
+    }
+    struct WR { int q[4]; int sl, sh, d; };
+    // the pointers of block kbx (RP::at), and the loads of block kbx + dv from them (dv a compile-time offset, so the
+    // group's loads share one pointer set and differ by an immediate)
+    __device__ static RP at(const RP& rp, int kbx) {
+        constexpr int S = int(sizeof(F::Block));
+        return {static_cast<const uint8_t*>(madw(rp.qs, kbx, S)), static_cast<const uint8_t*>(madw(rp.sl, kbx, S)),
+                static_cast<const uint8_t*>(madw(rp.blk, kbx, S))};
+    }
+    __device__ static WR loadr(const RP& rp, int dv) {
+        constexpr int S = int(sizeof(F::Block));
+        const auto* qs = reinterpret_cast<const int*>(rp.qs + dv * S);
+        WR r;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) r.q[j] = ldg_nc_s32(qs + j);
+        r.sl = ldg_nc_u8(rp.sl + dv * S);
+        r.sh = ldg_nc_u16(rp.blk + dv * S + 2);
+        r.d = ldg_nc_u16(rp.blk + dv * S);
+        return r;
+    }
+    // the activations: position-major (every int of the 8 at a stride of nb), so the kernel's block pointers are not used
+    __device__ static int xb(int) { return 0; }
+    __device__ static int xp(int) { return 0; }
+    template <int NC, bool FAST, class X>
+    __device__ static void applyr(const WR& rr, const X& x, const int*, const float*, int kby, int iqs, float (&out)[NC]) {
+        F::W r;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) r.v[j] = iq4_table_lookup(rr.q[j]);
+        r.ls = ((rr.sl >> (iqs & 0x04)) & 0x0f) | (((rr.sh >> (iqs / 2)) & 0x03) << 4);
+        r.dw = __half2float(__ushort_as_half((unsigned short) rr.d));
+        if constexpr (!FAST) {
+            apply<NC>(r, x, kby, iqs, out);
+        } else {
+            // P2: sumi (|sumi| <= 32 * 127 * 127 = 516K < 2^22) through i2f_small, then times (float)(ls - 32): the product
+            // |sumi * (ls - 32)| < 2^24 is exact in fp32, so it is the float of the int apply() converts; the same d * sumi
+            const int b = kby + iqs / 4;
+            int u0[4][NC], u1[4][NC];
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                x.u(b, j, u0[j]);
+                x.u(b, j + 4, u1[j]);
+            }
+            float d8[NC];
+            x.scales(b, d8);
+            const float fls = float(r.ls - 32);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                int sumi = 0;
+#pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    sumi = STRATA_DP4A(r.v[j].x, u0[j][c], sumi);
+                    sumi = STRATA_DP4A(r.v[j].y, u1[j][c], sumi);
+                }
+                const float fsumi = i2f_small(sumi + kI2fMagic) * fls;
+                const float d = r.dw * d8[c];
+                out[c] = d * fsumi;
+            }
+        }
+    }
 };
 struct IlQ4K {
     using F = Q4KTraits;
     static constexpr bool PM = false;
+    static constexpr bool HAS_PF = true;   // P1: F::W holds every byte of the block already (no pointer into it)
+    struct RP { const uint8_t *qs, *sc, *blk; int iqs; };   // this lane's ql ints, its scale words, the block (dm)
+    __device__ static RP rowptrs(const F::Block* __restrict__ row, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(row);
+        const int bq8_offset = 2 * ((iqs / 2) / 4), jm = (bq8_offset / 2) & 1;
+        return {b + 16 + 16 * bq8_offset + 4 * ((iqs / 2) % 4), b + 4 + 2 * jm, b, iqs};
+    }
+    using WR = F::W;
+    __device__ static RP at(const RP& rp, int kbx) {
+        constexpr int S = int(sizeof(F::Block));
+        return {static_cast<const uint8_t*>(madw(rp.qs, kbx, S)), static_cast<const uint8_t*>(madw(rp.sc, kbx, S)),
+                static_cast<const uint8_t*>(madw(rp.blk, kbx, S)), rp.iqs};
+    }
+    __device__ static WR loadr(const RP& rp, int dv) {   // F::load's bytes and aux arithmetic, block dv past rp's
+        constexpr int S = int(sizeof(F::Block));
+        const auto* ql = reinterpret_cast<const int*>(rp.qs + dv * S);
+        const auto* sc = rp.sc + dv * S;
+        WR r;
+        r.bq8_offset = 2 * ((rp.iqs / 2) / 4);
+        r.v[0] = ldg_nc_s32(ql);
+        r.v[1] = ldg_nc_s32(ql + 4);
+        const uint32_t s0 = ldg_nc_u16(sc), s2 = ldg_nc_u16(sc + 4), s4 = ldg_nc_u16(sc + 8);
+        const int dm = ldg_nc_s32(rp.blk + dv * S);
+        const int j = r.bq8_offset / 2;
+        const uint32_t hi = uint32_t(-int32_t(j >= 2));
+        r.aux[0] = uint16_t(((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
+        r.aux[1] = uint16_t(((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
+        { half2 h; std::memcpy(&h, &dm, 4); r.dm = h; }
+        return r;
+    }
+    __device__ static int xb(int iqs) { return 2 * ((iqs / 2) / 4); }   // the lane's q8_1 block and int within a 256-chunk
+    __device__ static int xp(int iqs) { return (iqs / 2) % 4; }
+    template <int NC, bool FAST, class X>
+    __device__ static void applyr(const WR& r, const X& x, const int* qb, const float* db, int kby, int iqs, float (&out)[NC]) {
+        if constexpr (!FAST) {
+            apply<NC>(r, x, kby, iqs, out);
+        } else {   // P2: q4_q8_dot_impl with (dot1 * sc), (dot2 * m) through i2f_small (|dot1 * sc| <= 15240 * 63, |dot2 * m| <= 1016 * 63)
+            int u[4][NC];
+            float d8[2][NC];
+#pragma unroll
+            for (int i = 0; i < 2; ++i) {
+                x.qat(qb + i * X::QB, u[2 * i]);
+                x.qat(qb + i * X::QB + x.qp(4), u[2 * i + 1]);
+                x.dat(db + i * X::DB, d8[i]);
+            }
+            const uint8_t* sc = reinterpret_cast<const uint8_t*>(r.aux);
+            const uint8_t* m = sc + 2;
+            const float2 dm4f = __half22float2(r.dm);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float sumf_d = 0.0f;
+                float sumf_m = 0.0f;
+#pragma unroll
+                for (int i = 0; i < 2; ++i) {
+                    const int v0i = (r.v[0] >> (4 * i)) & 0x0f0f0f0f;
+                    const int v1i = (r.v[1] >> (4 * i)) & 0x0f0f0f0f;
+                    const int dot1 = STRATA_DP4A(v1i, u[2 * i + 1][c], STRATA_DP4A(v0i, u[2 * i][c], 0));
+                    const int dot2 = STRATA_DP4A(0x01010101, u[2 * i + 1][c], STRATA_DP4A(0x01010101, u[2 * i][c], 0));
+                    sumf_d += d8[i][c] * i2f_small(dot1 * sc[i] + kI2fMagic);
+                    sumf_m += d8[i][c] * i2f_small(dot2 * m[i] + kI2fMagic);
+                }
+                out[c] = dm4f.x * sumf_d - dm4f.y * sumf_m;
+            }
+        }
+    }
     template <int NC, class X>
     __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
         int u[4][NC];
@@ -1581,6 +1798,78 @@ struct IlQ4K {
 struct IlQ5K {
     using F = Q5KTraits;
     static constexpr bool PM = false;
+    static constexpr bool HAS_PF = true;   // P1: as IlQ4K
+    struct RP { const uint8_t *qs, *qh, *sc, *blk; int iqs; };
+    __device__ static RP rowptrs(const F::Block* __restrict__ row, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(row);
+        const int bq8_offset = 2 * ((iqs / 2) / 4), jm = (bq8_offset / 2) & 1;
+        return {b + 48 + 16 * bq8_offset + 4 * ((iqs / 2) % 4), b + 16 + 4 * ((iqs / 2) % 4), b + 4 + 2 * jm, b, iqs};
+    }
+    using WR = F::W;
+    __device__ static RP at(const RP& rp, int kbx) {
+        constexpr int S = int(sizeof(F::Block));
+        return {static_cast<const uint8_t*>(madw(rp.qs, kbx, S)), static_cast<const uint8_t*>(madw(rp.qh, kbx, S)),
+                static_cast<const uint8_t*>(madw(rp.sc, kbx, S)), static_cast<const uint8_t*>(madw(rp.blk, kbx, S)), rp.iqs};
+    }
+    __device__ static WR loadr(const RP& rp, int dv) {   // F::load's bytes and aux arithmetic, block dv past rp's
+        constexpr int S = int(sizeof(F::Block));
+        const auto* ql = reinterpret_cast<const int*>(rp.qs + dv * S);
+        const auto* qh = reinterpret_cast<const int*>(rp.qh + dv * S);
+        const auto* sc = rp.sc + dv * S;
+        WR r;
+        r.bq8_offset = 2 * ((rp.iqs / 2) / 4);
+        r.vl[0] = ldg_nc_s32(ql);
+        r.vl[1] = ldg_nc_s32(ql + 4);
+        r.vh[0] = ldg_nc_s32(qh) >> r.bq8_offset;
+        r.vh[1] = ldg_nc_s32(qh + 4) >> r.bq8_offset;
+        const uint32_t s0 = ldg_nc_u16(sc), s2 = ldg_nc_u16(sc + 4), s4 = ldg_nc_u16(sc + 8);
+        const int dm = ldg_nc_s32(rp.blk + dv * S);
+        const int j = r.bq8_offset / 2;
+        const uint32_t hi = uint32_t(-int32_t(j >= 2));
+        r.aux[0] = uint16_t(((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
+        r.aux[1] = uint16_t(((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
+        { half2 h; std::memcpy(&h, &dm, 4); r.dm = h; }
+        return r;
+    }
+    __device__ static int xb(int iqs) { return 2 * ((iqs / 2) / 4); }
+    __device__ static int xp(int iqs) { return (iqs / 2) % 4; }
+    template <int NC, bool FAST, class X>
+    __device__ static void applyr(const WR& r, const X& x, const int* qb, const float* db, int kby, int iqs, float (&out)[NC]) {
+        if constexpr (!FAST) {
+            apply<NC>(r, x, kby, iqs, out);
+        } else {   // P2: q5_q8_dot_impl with (dot1 * sc), (dot2 * m) through i2f_small (|dot1 * sc| <= 31496 * 63 < 2^22)
+            int u[4][NC];
+            float d8[2][NC];
+#pragma unroll
+            for (int i = 0; i < 2; ++i) {
+                x.qat(qb + i * X::QB, u[2 * i]);
+                x.qat(qb + i * X::QB + x.qp(4), u[2 * i + 1]);
+                x.dat(db + i * X::DB, d8[i]);
+            }
+            const uint8_t* sc = reinterpret_cast<const uint8_t*>(r.aux);
+            const uint8_t* m = sc + 2;
+            const float2 dm5f = __half22float2(r.dm);
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float sumf_d = 0.0f;
+                float sumf_m = 0.0f;
+#pragma unroll
+                for (int i = 0; i < 2; ++i) {
+                    const int vl0i = (r.vl[0] >> (4 * i)) & 0x0f0f0f0f;
+                    const int vl1i = (r.vl[1] >> (4 * i)) & 0x0f0f0f0f;
+                    const int vh0i = ((r.vh[0] >> i) << 4) & 0x10101010;
+                    const int vh1i = ((r.vh[1] >> i) << 4) & 0x10101010;
+                    const int v0i = vl0i | vh0i;
+                    const int v1i = vl1i | vh1i;
+                    const int dot1 = STRATA_DP4A(v0i, u[2 * i][c], STRATA_DP4A(v1i, u[2 * i + 1][c], 0));
+                    const int dot2 = STRATA_DP4A(0x01010101, u[2 * i][c], STRATA_DP4A(0x01010101, u[2 * i + 1][c], 0));
+                    sumf_d += d8[i][c] * i2f_small(dot1 * sc[i] + kI2fMagic);
+                    sumf_m += d8[i][c] * i2f_small(dot2 * m[i] + kI2fMagic);
+                }
+                out[c] = dm5f.x * sumf_d - dm5f.y * sumf_m;
+            }
+        }
+    }
     template <int NC, class X>
     __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
         int u[4][NC];
@@ -1606,6 +1895,7 @@ struct IlQ5K {
 struct IlQ3K {
     using F = Q3KTraits;
     static constexpr bool PM = false;
+    static constexpr bool HAS_PF = false;   // the Q2_0 pack's type: keeps native_mmvq_il_kernel (F::W points into the block)
     template <int NC, class X>
     __device__ static void apply(const F::W& r, const X& x, int kby, int iqs, float (&out)[NC]) {
         int u[4][NC];
@@ -1660,9 +1950,213 @@ struct IlQ6K {
             out[c] = q6_q8_dot_impl(r.vl, r.vh, uc, r.scales, r.d, dc);
         }
     }
+    // P1: the two scale bytes loaded with the rest (F::W keeps a pointer into the block, which would put their loads
+    // in the compute phase); q6_q8_dot_sc is q6_q8_dot_impl's expression
+    static constexpr bool HAS_PF = true;
+    // a row's four lane-adjusted byte pointers (ql, qh, scales, d): a block's loads are then one IMAD.WIDE each from kbx
+    struct RP { const uint8_t *ql, *qh, *sc, *d; };
+    __device__ static RP rowptrs(const F::Block* __restrict__ row, int iqs) {
+        const auto* b = reinterpret_cast<const uint8_t*>(row);
+        const int scale_offset = 8 * (iqs / 16) + (iqs % 16) / 4;
+        return {b + 4 * iqs, b + 128 + 4 * (8 * (iqs / 16) + iqs % 8), b + 192 + scale_offset, b + 208};   // load_int_b2's int iqs
+    }
+    struct WR { int vl, vh, sc0, sc1, d; };
+    __device__ static RP at(const RP& rp, int kbx) {
+        constexpr int S = int(sizeof(F::Block));
+        return {static_cast<const uint8_t*>(madw(rp.ql, kbx, S)), static_cast<const uint8_t*>(madw(rp.qh, kbx, S)),
+                static_cast<const uint8_t*>(madw(rp.sc, kbx, S)), static_cast<const uint8_t*>(madw(rp.d, kbx, S))};
+    }
+    __device__ static WR loadr(const RP& rp, int dv) {   // block dv past rp's: immediates off its four pointers
+        constexpr int S = int(sizeof(F::Block));
+        WR r;
+        r.vl = ldg_nc_b2(rp.ql + dv * S, 0);
+        r.vh = ldg_nc_b2(rp.qh + dv * S, 0);
+        r.sc0 = ldg_nc_s8(rp.sc + dv * S);
+        r.sc1 = ldg_nc_s8(rp.sc + dv * S + 4);
+        r.d = ldg_nc_u16(rp.d + dv * S);
+        return r;
+    }
+    __device__ static int xb(int iqs) { return 4 * (iqs / 16) + (iqs % 16) / 8; }
+    __device__ static int xp(int iqs) { return iqs % 8; }
+    template <int NC, bool FAST, class X>
+    __device__ static void applyr(const WR& r, const X& x, const int* qb, const float* db, int kby, int iqs, float (&out)[NC]) {
+        const int vh = r.vh >> (2 * ((iqs % 16) / 8));
+        int u[2][NC];
+        float d8[2][NC];
+#pragma unroll
+        for (int i = 0; i < 2; ++i) {
+            x.qat(qb + 2 * i * X::QB, u[i]);
+            x.dat(db + 2 * i * X::DB, d8[i]);
+        }
+        const float d = __half2float(__ushort_as_half((unsigned short) r.d));
+#pragma unroll
+        for (int c = 0; c < NC; ++c) {
+            const int uc[2] = {u[0][c], u[1][c]};
+            const float dc[2] = {d8[0][c], d8[1][c]};
+            out[c] = FAST ? q6_q8_dot_fast(r.vl, vh, uc, r.sc0, r.sc1, d, dc) : q6_q8_dot_sc(r.vl, vh, uc, r.sc0, r.sc1, d, dc);
+        }
+    }
 };
 
-template <typename I, int NC, int R>
+// P1: native_mmvq_il_kernel with every weight load of a group (the 4 virtual warps x R rows) issued
+// before any of the group's dots - the four `if (kbx < bpr)` sections of the kernel below each sit behind their own
+// branch, so a warp had one 2-row x 1-block group in flight (ncu: 432 GB/s on the qkv Q6_K matrix).  The addresses are
+// clamped to the row's last block (a tail re-reads it; its dot is skipped), and with DB the next group's loads are
+// issued before this group's dots (two register sets, ping-pong, no copies).  The per-lane accumulation order is the
+// kernel below's: acc[v] += block(4m + v) in ascending m, ((acc0 + acc1) + acc2) + acc3, warp_sum - the same bits.
+// STRATA_MMVQ_IL_PF=1: hoisted group loads (4 blocks a SM); =3: + P2's exact integer forms (the traits' applyr<FAST>);
+// =4: as 3 at 5 blocks a SM; =2 / =5: as 3 / 4 with the ring (DB 2: a section's registers reloaded with the next group's
+// blocks right after its dots); unset / 0: the kernel below.
+template <typename I, int NC, int R, int DB, int MINB, bool FAST>
+__launch_bounds__(4 * WARP, MINB)
+__global__ void native_mmvq_il_pf_kernel(const typename I::F::Block* __restrict__ w, const int* __restrict__ xq,
+                                         const float* __restrict__ xd, float* __restrict__ y, int n_in, int n_out) {
+    using F = typename I::F;
+    using WR = typename I::WR;
+    constexpr int SUB = WARP / F::T;   // weight blocks a chunk covers
+    const int lane = int(threadIdx.x) & (WARP - 1);
+    const auto x = q8_1_cols<NC, I::PM>(xq, xd, n_in / Q8K);
+    using X = std::remove_const_t<decltype(x)>;
+    const int bpr = n_in / F::DIV;
+    const int kqs = F::kqs(lane);
+    const int sub = lane / F::T;
+    const int nm = (bpr + SUB - 1) / SUB;
+    for (int grp = int(blockIdx.x) * 4 + (int(threadIdx.x) >> 5); grp * R < n_out; grp += int(gridDim.x) * 4) {
+        const int row0 = grp * R;
+        typename I::RP wr[R];
+#pragma unroll
+        for (int i = 0; i < R; ++i) wr[i] = I::rowptrs(w + std::size_t(min(row0 + i, n_out - 1)) * bpr, kqs);   // a partial last group recomputes its last row
+        float acc[4][R][NC];
+#pragma unroll
+        for (int v = 0; v < 4; ++v)
+#pragma unroll
+            for (int i = 0; i < R; ++i)
+#pragma unroll
+                for (int c = 0; c < NC; ++c) acc[v][i][c] = 0.0f;
+        // the groups whose four chunks are whole blocks for every lane run with no branch at all (ptxas sinks a load
+        // whose only use sits behind a branch into it, which is what put the scale loads back into the dot sections);
+        // the tail group clamps its loads and predicates its dots
+        const int m_full = bpr / SUB;
+        // a full group's 4 x R blocks: one pointer set per row at the group's first block, the other three at immediates
+        // (v * SUB blocks on); a clamped (tail) group addresses each block on its own
+        auto load_group = [&](int m0, bool clamp, WR (&wv)[4][R]) {
+            if (!clamp) {
+#pragma unroll
+                for (int i = 0; i < R; ++i) {
+                    const typename I::RP p0 = I::at(wr[i], SUB * m0 + sub);
+#pragma unroll
+                    for (int v = 0; v < 4; ++v) wv[v][i] = I::loadr(p0, v * SUB);
+                }
+            } else {
+#pragma unroll
+                for (int v = 0; v < 4; ++v) {
+                    const int kbx = min(SUB * (m0 + v) + sub, bpr - 1);
+#pragma unroll
+                    for (int i = 0; i < R; ++i) wv[v][i] = I::loadr(I::at(wr[i], kbx), 0);
+                }
+            }
+        };
+        // the lane's activation ints and scales of the group's first chunk; a section's are an immediate on
+        const int* xq0 = x.qbase(I::xb(kqs) + sub * F::KBY, I::xp(kqs));
+        const float* xd0 = x.dbase(I::xb(kqs) + sub * F::KBY);
+        auto dot_group = [&](int m0, bool pred, const WR (&wv)[4][R]) {
+            const int* qg = static_cast<const int*>(madw(xq0, SUB * m0 * F::KBY, X::QB * 4));
+            const float* dg = static_cast<const float*>(madw(xd0, SUB * m0 * F::KBY, X::DB * 4));
+#pragma unroll
+            for (int v = 0; v < 4; ++v) {
+                const int kbx = SUB * (m0 + v) + sub;
+                if (!pred || kbx < bpr) {
+#pragma unroll
+                    for (int i = 0; i < R; ++i) {
+                        float o[NC];
+                        I::template applyr<NC, FAST>(wv[v][i], x, qg + v * SUB * F::KBY * X::QB, dg + v * SUB * F::KBY * X::DB,
+                                                     kbx * F::KBY, kqs, o);
+#pragma unroll
+                        for (int c = 0; c < NC; ++c) acc[v][i][c] += o[c];
+                    }
+                }
+            }
+        };
+        int m0 = 0;
+        if constexpr (DB == 0) {
+            for (; m0 + 4 <= m_full; m0 += 4) {
+                WR wv[4][R];
+                load_group(m0, false, wv);
+                dot_group(m0, false, wv);
+            }
+        } else if constexpr (DB == 2) {
+            // a ring: after a section's dots its registers take the next group's blocks of that section, so the warp
+            // always has about a group's worth of loads in flight at the register cost of one group (the loads sit
+            // behind a uniform branch whose consumers are in the next iteration, so nothing can sink)
+            WR wv[4][R];
+            if (m0 + 4 <= m_full) load_group(0, false, wv);
+            for (; m0 + 4 <= m_full; m0 += 4) {
+                const bool more = m0 + 8 <= m_full;
+                typename I::RP pn[R];
+                if (more) {
+#pragma unroll
+                    for (int i = 0; i < R; ++i) pn[i] = I::at(wr[i], SUB * (m0 + 4) + sub);
+                }
+                const int* qg = static_cast<const int*>(madw(xq0, SUB * m0 * F::KBY, X::QB * 4));
+                const float* dg = static_cast<const float*>(madw(xd0, SUB * m0 * F::KBY, X::DB * 4));
+#pragma unroll
+                for (int v = 0; v < 4; ++v) {
+                    const int kbx = SUB * (m0 + v) + sub;
+#pragma unroll
+                    for (int i = 0; i < R; ++i) {
+                        float o[NC];
+                        I::template applyr<NC, FAST>(wv[v][i], x, qg + v * SUB * F::KBY * X::QB, dg + v * SUB * F::KBY * X::DB,
+                                                     kbx * F::KBY, kqs, o);
+#pragma unroll
+                        for (int c = 0; c < NC; ++c) acc[v][i][c] += o[c];
+                    }
+                    if (more) {
+#pragma unroll
+                        for (int i = 0; i < R; ++i) wv[v][i] = I::loadr(pn[i], v * SUB);
+                    }
+                }
+            }
+        } else {   // two register sets: a group's loads issue before the previous group's dots; no branch inside the loop
+            WR wa[4][R], wb[4][R];
+            if (m0 + 4 <= m_full) load_group(0, false, wa);
+            for (; m0 + 12 <= m_full; m0 += 8) {
+                load_group(m0 + 4, false, wb);
+                dot_group(m0, false, wa);
+                load_group(m0 + 8, false, wa);
+                dot_group(m0 + 4, false, wb);
+            }
+            if (m0 + 8 <= m_full) {
+                load_group(m0 + 4, false, wb);
+                dot_group(m0, false, wa);
+                dot_group(m0 + 4, false, wb);
+                m0 += 8;
+            } else if (m0 + 4 <= m_full) {
+                dot_group(m0, false, wa);
+                m0 += 4;
+            }
+        }
+        if (m0 < nm) {
+            WR wv[4][R];
+            load_group(m0, true, wv);
+            dot_group(m0, true, wv);
+        }
+#pragma unroll
+        for (int i = 0; i < R; ++i)
+#pragma unroll
+            for (int c = 0; c < NC; ++c) {
+                float s = acc[0][i][c];
+                s += acc[1][i][c];
+                s += acc[2][i][c];
+                s += acc[3][i][c];
+                s = warp_sum(s);
+                if (lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
+            }
+    }
+}
+
+// NOUT < NC (BW-NEXT, STRATA_IL_PAD): the kernel of NC columns computes a column that is not wanted and stores only the first NOUT; each column's value is
+// its own sum, so the stored ones are bitwise those of the NOUT-column kernel.  5 columns of IQ4_XS run as 6 (the 5-column instantiation is 15-40% slower).
+template <typename I, int NC, int R, int NOUT = NC>
 __launch_bounds__(4 * WARP)
 __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w, const int* __restrict__ xq,
                                       const float* __restrict__ xd, float* __restrict__ y, int n_in, int n_out) {
@@ -1710,36 +2204,92 @@ __global__ void native_mmvq_il_kernel(const typename I::F::Block* __restrict__ w
                 s += acc[2][i][c];
                 s += acc[3][i][c];
                 s = warp_sum(s);
-                if (lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
+                if (c < NOUT && lane == 0 && row0 + i < n_out) y[std::size_t(c) * n_out + row0 + i] = s;
             }
     }
 }
 
+int g_il_pf = -1;   // native_mmvq_il_pf (tests, benchmarks): the variant for every launch; -1: STRATA_MMVQ_IL_PF
+int il_pf_env() {
+    static const int env = [] { const char* v = std::getenv("STRATA_MMVQ_IL_PF"); return v ? std::atoi(v) : 0; }();
+    return env;
+}
+int il_pf_table(int type, int ncols, int n_out);   // the sm_80 table below: pf << 4 | rows, 0 = today's kernel and table
+// the variant of one launch (g_il_pf, else STRATA_MMVQ_IL_PF: 0 / unset today's kernel, 1 the measured table, 2-6 that
+// variant for every type and shape), and with the table its rows a warp (0: the rows table's)
+int il_pf_for(int type, int ncols, int n_out, int* rows) {
+    *rows = 0;
+    if (g_il_pf >= 0) return g_il_pf;
+    const int env = il_pf_env();
+    if (env != 1) return env;
+    const int t = il_pf_table(type, ncols, n_out);
+    *rows = t & 15;
+    return t >> 4;
+}
+// one (type, columns, rows) launch: today's kernel, or the variant il_pf_for names for a type that has them
+template <typename I, int NC, int R, int NOUT = NC>
+void launch_il_one(unsigned blocks, const typename I::F::Block* w, const int* xq, const float* xd, float* y, int n_in, int n_out,
+                   cudaStream_t s, int pf) {
+    if constexpr (I::HAS_PF && NOUT == NC) {
+        switch (pf) {
+        case 6: native_mmvq_il_pf_kernel<I, NC, R, 0, 4, false><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
+        case 2: native_mmvq_il_pf_kernel<I, NC, R, 2, 4, true><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
+        case 3: native_mmvq_il_pf_kernel<I, NC, R, 0, 4, true><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
+        case 4: native_mmvq_il_pf_kernel<I, NC, R, 0, 5, true><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
+        case 5: native_mmvq_il_pf_kernel<I, NC, R, 2, 5, true><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); return;
+        default: break;
+        }
+    }
+    native_mmvq_il_kernel<I, NC, R, NOUT><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out);
+}
+
+// STRATA_IL_PAD (bit 0: IQ4_XS 5 columns as 6; default on, 0 off): bitwise, see native_mmvq_il_kernel
+int il_pad() {
+    static const int v = [] { const char* e = std::getenv("STRATA_IL_PAD"); return e != nullptr ? std::atoi(e) : 1; }();
+    return v;
+}
+
 template <typename I, int R>
-void launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+void launch_il(const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s, int pf) {
     const auto* w = static_cast<const typename I::F::Block*>(weights);
     const unsigned blocks = unsigned(((n_out + R - 1) / R + 3) / 4);
     if (ncols == 1) {   // 143-dense: one column reads the plain q8_1 blocks (x_il is then the caller's x_q8_1)
-        native_mmvq_il_kernel<I, 1, R><<<blocks, 4 * WARP, 0, s>>>(w, static_cast<const int*>(x_il), nullptr, y, n_in, n_out);
+        launch_il_one<I, 1, R>(blocks, w, static_cast<const int*>(x_il), nullptr, y, n_in, n_out, s, pf);
         return;
     }
     const Q81IlParts parts = q8_1_il_parts(x_il, n_in, ncols);
     const int* xq = I::PM ? parts.pm : parts.bm;
     const float* xd = parts.d;
     switch (ncols) {
-#define STRATA_IL_CASE(N) case N: native_mmvq_il_kernel<I, N, R><<<blocks, 4 * WARP, 0, s>>>(w, xq, xd, y, n_in, n_out); break;
+#define STRATA_IL_CASE(N) case N: launch_il_one<I, N, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf); break;
         STRATA_IL_CASE(2) STRATA_IL_CASE(3) STRATA_IL_CASE(4)
 #undef STRATA_IL_CASE
-        default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 4");
+        // 147-verify: 5..8 columns (the cp = 8 copy) at 1 or 2 rows a warp; launch_il_rows maps 4 rows to 2 there
+#define STRATA_IL_CASE(N) case N: if constexpr (R <= 2) launch_il_one<I, N, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf); break;
+        STRATA_IL_CASE(6) STRATA_IL_CASE(7) STRATA_IL_CASE(8)
+#undef STRATA_IL_CASE
+    case 5:
+        if constexpr (R <= 2) {
+            if constexpr (std::is_same_v<I, IlIQ4XS>) {
+                if ((il_pad() & 1) != 0) { launch_il_one<I, 6, R, 5>(blocks, w, xq, xd, y, n_in, n_out, s, 0); break; }
+            }
+            launch_il_one<I, 5, R>(blocks, w, xq, xd, y, n_in, n_out, s, pf);
+        }
+        break;
+        default: throw std::invalid_argument("native_mmvq_il requires 1 <= ncols <= 8");
     }
 }
 
 template <typename I>
 void launch_il_rows(int r, const void* weights, const void* x_il, float* y, int n_in, int n_out, int ncols, cudaStream_t s) {
+    int pf_rows = 0;
+    const int pf = il_pf_for(I::F::TYPE, ncols, n_out, &pf_rows);
+    if (pf_rows != 0) r = pf_rows;   // the pf table measured its rows with its kernel
+    if (ncols > 4 && r == 4) r = 2;   // 5..8 columns: 1 or 2 rows a warp
     switch (r) {
-    case 1: launch_il<I, 1>(weights, x_il, y, n_in, n_out, ncols, s); break;
-    case 4: launch_il<I, 4>(weights, x_il, y, n_in, n_out, ncols, s); break;
-    default: launch_il<I, 2>(weights, x_il, y, n_in, n_out, ncols, s); break;
+    case 1: launch_il<I, 1>(weights, x_il, y, n_in, n_out, ncols, s, pf); break;
+    case 4: launch_il<I, 4>(weights, x_il, y, n_in, n_out, ncols, s, pf); break;
+    default: launch_il<I, 2>(weights, x_il, y, n_in, n_out, ncols, s, pf); break;
     }
 }
 
@@ -1790,7 +2340,7 @@ void validate_shape(int n_in, int ncols, int block_elems = Q8K) {
     if (n_in <= 0 || n_in % block_elems != 0) {
         throw std::invalid_argument("native MMVQ requires n_in > 0 and divisible by its block element count");
     }
-    if (ncols < 1 || ncols > MAX_NCOLS) throw std::invalid_argument("native MMVQ requires 1 <= ncols <= 8");
+    if (ncols < 1 || ncols > MAX_NCOLS) throw std::invalid_argument("native MMVQ requires 1 <= ncols <= MAX_NCOLS");
 }
 void validate_pointer(const void* p) {
     if (!p || reinterpret_cast<std::uintptr_t>(p) % 4 != 0) {
@@ -1869,7 +2419,19 @@ void wave_launch(const void* weights, const void* x_q8_1, float* y, int n_in, in
         case 6: wave_launch_n<F, 6>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 7: wave_launch_n<F, 7>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 8: wave_launch_n<F, 8>(weights, x_q8_1, y, n_in, n_out, s); break;
-        default: throw std::invalid_argument("native MMVQ (wave) requires 1 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: wave_launch_n<F, 9>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 10: wave_launch_n<F, 10>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 11: wave_launch_n<F, 11>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 12: wave_launch_n<F, 12>(weights, x_q8_1, y, n_in, n_out, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: wave_launch_n<F, 13>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 14: wave_launch_n<F, 14>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 15: wave_launch_n<F, 15>(weights, x_q8_1, y, n_in, n_out, s); break;
+        case 16: wave_launch_n<F, 16>(weights, x_q8_1, y, n_in, n_out, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ (wave) requires 1 <= ncols <= MAX_NCOLS");
     }
 }
 #define STRATA_WAVE_MMVQ(...) \
@@ -1919,6 +2481,25 @@ void small_f32(const void* weights, const float* x, void* scratch_q8_1,
     native_quantize_q8_1(x, scratch_q8_1, n_in, ncols, stream);
     small_mmvq<Weight, Qi>(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
+
+// STRATA_Q8_SM60=1 (opt-in, written for Pascal GP100): every Q8_0 dense matrix and the head get the packed planes
+// below and run q8sm60::kernel on them (q8_sm60.cuh) instead of the exact kernels.
+bool q8_sm60_on() {
+#if defined(__HIPCC__)
+    return false;   // a CUDA kernel for one NVIDIA chip: HIP builds never compile it
+#else
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_Q8_SM60");
+        const bool yes = v && v[0] == '1' && v[1] == '\0';
+        if (yes) std::fprintf(stderr, "strata q8 sm60: Q8_0 decode GEMVs on the Pascal kernel (STRATA_Q8_SM60=1)\n");
+        return yes;
+    }();
+    return on;
+#endif
+}
+#if !defined(__HIPCC__)
+#include "q8_sm60.cuh"
+#endif
 
 // ============================ STRATA_Q8_PACKED=1: the packed Q8_0 decode layout (opt-in) ============================
 //
@@ -2019,8 +2600,38 @@ void q8_packed_launch(const Q8Packed& w, const Q81Block* x, float* y, cudaStream
                                                                                     persist ? grid : w.n_out);
 }
 
+bool q8_packed_shape(int n_in, int n_out) {   // the shapes native_q8_0_packed_kernel was measured on
+    return n_in > 0 && n_in % 32 == 0 && n_in / 32 >= 2 * WARPS * WARP / 8 && n_in <= Q8P_PERSIST_MAX_IN &&
+           n_out >= 2048;
+}
+
 bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     auto& registry = q8_packed_registry();
+#if !defined(__HIPCC__)
+    if (q8_sm60_on() && !registry.empty()) {
+        const auto found = registry.find(weights);
+        if (found != registry.end() && found->second.n_in == n_in && found->second.n_out == n_out) {
+            validate_pointer(x_q8_1);
+            validate_pointer(y);
+            validate_stream(stream);
+            // (the kernel takes at most q8sm60::MAX_COLS columns; a 9..16-row window is run in passes, each column bitwise
+            // the one-column result, as native_mmvq does for more than MAX_NCOLS)
+            bool all = true;
+            for (int j = 0; all && j < ncols; j += q8sm60::MAX_COLS) {
+                const int nj = ncols - j < q8sm60::MAX_COLS ? ncols - j : q8sm60::MAX_COLS;
+                all = q8sm60::launch(found->second.qs, found->second.d,
+                                     static_cast<const Q81Block*>(x_q8_1) + std::size_t(j) * std::size_t(n_in / Q8K),
+                                     y + std::size_t(j) * std::size_t(n_out), n_in, n_out, nj, static_cast<cudaStream_t>(stream));
+            }
+            if (all) {
+                launch_check();
+                return true;
+            }
+            // a shape the Pascal kernel declines: the exact packed kernel only where it was measured, else the GGUF layout
+            if (!q8_packed_shape(n_in, n_out)) return false;
+        }
+    }
+#endif
     if (registry.empty() || (ncols > 1 && !g_multi_exact)) return false;   // packed = the EXACT layout only
     const auto found = registry.find(weights);
     if (found == registry.end() || found->second.n_in != n_in || found->second.n_out != n_out) return false;
@@ -2039,7 +2650,19 @@ bool q8_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
         case 6: q8_packed_launch<6>(found->second, x, y, s); break;
         case 7: q8_packed_launch<7>(found->second, x, y, s); break;
         case 8: q8_packed_launch<8>(found->second, x, y, s); break;
-        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: q8_packed_launch<9>(found->second, x, y, s); break;
+        case 10: q8_packed_launch<10>(found->second, x, y, s); break;
+        case 11: q8_packed_launch<11>(found->second, x, y, s); break;
+        case 12: q8_packed_launch<12>(found->second, x, y, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: q8_packed_launch<13>(found->second, x, y, s); break;
+        case 14: q8_packed_launch<14>(found->second, x, y, s); break;
+        case 15: q8_packed_launch<15>(found->second, x, y, s); break;
+        case 16: q8_packed_launch<16>(found->second, x, y, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= MAX_NCOLS");
     }
     launch_check();
     return true;
@@ -2174,7 +2797,19 @@ bool q6_packed_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in,
         case 6: q6_packed_launch<6>(found->second, x, y, s); break;
         case 7: q6_packed_launch<7>(found->second, x, y, s); break;
         case 8: q6_packed_launch<8>(found->second, x, y, s); break;
-        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= 8");
+#if STRATA_VERIFY_MAX_T > 8
+        case 9: q6_packed_launch<9>(found->second, x, y, s); break;
+        case 10: q6_packed_launch<10>(found->second, x, y, s); break;
+        case 11: q6_packed_launch<11>(found->second, x, y, s); break;
+        case 12: q6_packed_launch<12>(found->second, x, y, s); break;
+#if STRATA_VERIFY_MAX_T > 12
+        case 13: q6_packed_launch<13>(found->second, x, y, s); break;
+        case 14: q6_packed_launch<14>(found->second, x, y, s); break;
+        case 15: q6_packed_launch<15>(found->second, x, y, s); break;
+        case 16: q6_packed_launch<16>(found->second, x, y, s); break;
+#endif
+#endif
+        default: throw std::invalid_argument("native MMVQ requires 1 <= ncols <= MAX_NCOLS");
     }
     launch_check();
     return true;
@@ -2186,12 +2821,73 @@ bool native_q8_0_packed_enabled() {
         const char* v = std::getenv("STRATA_Q8_PACKED");
         return v && v[0] == '1' && v[1] == '\0';
     }();
-    return enabled;
+    return enabled || q8_sm60_on();
 }
 
 bool native_q8_0_packed_eligible(int n_in, int n_out) {
-    return n_in > 0 && n_in % 32 == 0 && n_in / 32 >= 2 * WARPS * WARP / 8 && n_in <= Q8P_PERSIST_MAX_IN &&
-           n_out >= 2048;
+    if (q8_sm60_on()) return n_in >= 128 && n_in % 32 == 0 && n_out > 0;   // the Pascal kernel takes any of them
+    return q8_packed_shape(n_in, n_out);
+}
+
+namespace {
+// packed copies made here (the head), freed by release; null: packed in place (release only unregisters it)
+std::unordered_map<const void*, void*>& q8_sm60_owned() {
+    static std::unordered_map<const void*, void*> owned;
+    return owned;
+}
+bool q8_sm60_pack_impl(const void* weights, int n_in, int n_out, const char* what, bool quiet);
+} // namespace
+
+bool native_q8_0_sm60_pack(const void* weights, int n_in, int n_out, const char* what) {
+    return q8_sm60_pack_impl(weights, n_in, n_out, what, false);
+}
+bool native_q8_0_sm60_pack_quiet(const void* weights, int n_in, int n_out, const char* what) {
+    return q8_sm60_pack_impl(weights, n_in, n_out, what, true);
+}
+
+namespace {
+bool q8_sm60_pack_impl(const void* weights, int n_in, int n_out, const char* what, bool quiet) {
+#if defined(__HIPCC__)
+    (void) weights; (void) n_in; (void) n_out; (void) what; (void) quiet;
+    return false;
+#else
+    if (!q8_sm60_on() || !weights || !native_q8_0_packed_eligible(n_in, n_out)) return false;
+    if (q8_packed_registry().count(weights)) return true;
+    const std::size_t count = std::size_t(n_in / 32) * std::size_t(n_out);
+    const std::size_t bytes = count * 34;
+    void* packed = nullptr;
+    if (cudaMalloc(&packed, bytes) != cudaSuccess) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: no VRAM for the packed %s (%.0f MiB); it keeps the GGUF layout\n", what,
+                     double(bytes) / 1048576.0);
+        return false;
+    }
+    auto* qs = static_cast<int8_t*>(packed);
+    auto* d = reinterpret_cast<half*>(qs + std::size_t(n_in) * n_out);
+    q8sm60::pack_kernel<<<unsigned((count + 255) / 256), 256>>>(static_cast<const Q80Block*>(weights), qs, d, count);
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        cudaGetLastError();
+        cudaFree(packed);
+        std::fprintf(stderr, "strata q8 sm60: packing the %s failed; it keeps the GGUF layout\n", what);
+        return false;
+    }
+    q8_packed_registry()[weights] = Q8Packed{qs, d, n_in, n_out};
+    q8_sm60_owned()[weights] = packed;
+    if (!quiet)
+        std::fprintf(stderr, "strata q8 sm60: packed %s (%d x %d, %.0f MiB more VRAM)\n", what, n_out, n_in,
+                     double(bytes) / 1048576.0);
+    return true;
+#endif
+}
+} // namespace
+
+void native_q8_0_sm60_release(const void* weights) {
+    auto& owned = q8_sm60_owned();
+    const auto it = owned.find(weights);
+    if (it == owned.end()) return;
+    q8_packed_registry().erase(weights);
+    if (it->second) cudaFree(it->second);
+    owned.erase(it);
 }
 
 void native_q8_0_pack_host(const void* gguf_blocks, void* out, int n_in, int n_out) {
@@ -2215,6 +2911,40 @@ void native_q8_0_packed_register(const void* gguf_weights, const void* packed, i
 }
 
 void native_q8_0_packed_unregister(const void* gguf_weights) { q8_packed_registry().erase(gguf_weights); }
+
+bool native_q8_0_sm60_pack_in_place(void* weights, int n_in, int n_out, const char* what) {
+#if defined(__HIPCC__)
+    (void) weights; (void) n_in; (void) n_out; (void) what;
+    return false;
+#else
+    if (!q8_sm60_on() || !weights || !native_q8_0_packed_eligible(n_in, n_out)) return false;
+    if (q8_packed_registry().count(weights)) return true;
+    // The GGUF blocks are gone afterwards, so only where q8_packed_mmvq can never fall back to the GGUF-layout kernels
+    // (every column count fits the kernel's shared-memory planes) and its 16-byte weight loads stay aligned
+    if (q8sm60::smem_bytes(q8sm60::MAX_COLS, n_in) > q8sm60::MAX_SMEM || reinterpret_cast<std::uintptr_t>(weights) % 16 != 0)
+        return native_q8_0_sm60_pack(weights, n_in, n_out, what);
+    const std::size_t bytes = std::size_t(n_in / 32) * std::size_t(n_out) * 34;   // both layouts: 34 bytes per 32
+    std::vector<uint8_t> blocks(bytes), planes(bytes);
+    if (cudaMemcpy(blocks.data(), weights, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: reading the %s failed; it keeps the GGUF layout\n", what);
+        return false;
+    }
+    native_q8_0_pack_host(blocks.data(), planes.data(), n_in, n_out);
+    if (cudaMemcpy(weights, planes.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaGetLastError();
+        // a partial write leaves neither layout: put the blocks back
+        const bool restored = cudaMemcpy(weights, blocks.data(), bytes, cudaMemcpyHostToDevice) == cudaSuccess;
+        cudaGetLastError();
+        std::fprintf(stderr, "strata q8 sm60: writing the packed %s failed; %s\n", what,
+                     restored ? "it keeps the GGUF layout" : "its GGUF blocks could not be restored either");
+        return false;
+    }
+    native_q8_0_packed_register(weights, weights, n_in, n_out);
+    q8_sm60_owned()[weights] = nullptr;
+    return true;   // the caller says what it packed
+#endif
+}
 
 bool native_q6_k_packed_enabled() {
     static const bool enabled = [] {
@@ -2346,7 +3076,7 @@ void native_q6_k_unpack(const void* weights) {
 void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 bool native_mmvq_multi_exact() { return g_multi_exact; }
 void native_mmvq_set_b6_rows(int mode) { g_b6_rows = mode; }
-int native_mmvq_b6_rows() { return g_b6_rows; }
+int native_mmvq_b6_rows() { return b6_rows_mode(); }
 
 std::size_t native_q8_1_bytes(int n_in, int ncols) {
     validate_shape(n_in, ncols);
@@ -2823,6 +3553,20 @@ std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
 
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream) {
+    // more columns than one launch takes: ceil(ncols / MAX_NCOLS) passes over the same weights.  Every column of a
+    // multi-column pass is bitwise the single-column result (bench/micro/native_mmvq_multi.cpp), so the split changes no
+    // arithmetic.  Column j starts at activation block j * (n_in / Q8K) and writes y + j * n_out.  (Never reached by a
+    // window of up to 16 rows in a wide build, nor of up to 8 in a narrow one: a guard for a caller that asks for more.)
+    if (ncols > MAX_NCOLS) {
+        const std::size_t col_blocks = std::size_t(n_in / Q8K);
+        for (int j = 0; j < ncols; j += MAX_NCOLS) {
+            const int nj = (ncols - j < MAX_NCOLS) ? (ncols - j) : MAX_NCOLS;
+            native_mmvq(ggml_type, weights, static_cast<const Q81Block*>(x_q8_1) + std::size_t(j) * col_blocks,
+                        y + std::size_t(j) * std::size_t(n_out), n_in, n_out, nj, stream);
+        }
+        return;
+    }
+    strata::dispatch::kernel(strata::dispatch::kDense, 0, ggml_type, n_in, n_out, ncols);   // BW-MEASURE: the multi-column MMVQ kernels
     switch (ggml_type) {
     case 2: native_q4_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 6: native_q5_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
@@ -2866,7 +3610,7 @@ void native_quantize_q8_1_il(const float* x, void* x_q8_1, void* x_il, int n_in,
 
 void native_q8_1_interleave(const void* x_q8_1, void* x_il, int n_in, int ncols, void* stream) {
     validate_shape(n_in, ncols);
-    if (ncols < 2 || ncols > 4) throw std::invalid_argument("native_q8_1_interleave requires 2 <= ncols <= 4");
+    if (ncols < 2 || ncols > 8) throw std::invalid_argument("native_q8_1_interleave requires 2 <= ncols <= 8");
     validate_pointer(x_q8_1);
     validate_pointer(x_il);
     validate_stream(stream);
@@ -2894,10 +3638,9 @@ constexpr IlRows kIlRowsShared[] = {   // sm_86 + sm_120, and the fallback for e
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
 };
 // Per-architecture tables (P10).  A card whose compute capability (major * 10 + minor) is listed here uses its own table;
-// every other sm_80+ card uses kIlRowsShared.  sm_89 (Ada) has none yet: nobody measured it (we have no such card), so
-// it takes the shared table, which sits between the measured sm_86 and sm_120.  To add one, run
+// every other sm_80+ card uses kIlRowsShared.  sm_89 (Ada) has an opt-in table (kIlRows_89, below; STRATA_MMVQ_IL_89=1).  To add one, run
 // `mmvq_il_parity --bench --emit-table` on the card (docs/MMVQ_IL_TABLE.md), paste the printed block as a
-// `constexpr IlRows kIlRows_89[]` and add {89, kIlRows_89, sizeof(kIlRows_89) / sizeof(IlRows)} below.  Each choice
+// `constexpr IlRows kIlRows_<cc>[]` and add {<cc>, kIlRows_<cc>, sizeof(kIlRows_<cc>) / sizeof(IlRows)} below.  Each choice
 // is bitwise the same output, so a table is only speed.  Without a rebuild: STRATA_MMVQ_IL_ROWS (see il_env_rows).
 // Volta (sm_70): read off mmvq_il_parity --bench on a V100-SXM2-32GB (two runs, mean), the same rule - per cell the
 // rows count whose every measured shape takes at least 3% off native_mmvq's time (e.g. the Q5_K head at 3 columns
@@ -2938,6 +3681,52 @@ constexpr IlRows kIlRows_86[] = {
     {14, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 2}, {0, 0, 1, 1, 1}}},   // Q6_K
     {11, {{1, 2, 2, 2, 2}, {1, 1, 1, 2, 2}, {1, 1, 1, 1, 1}}},   // Q3_K (two runs; 2560x10240 at 4 columns 120 -> 70 us)
 };
+// RTX PRO 5000 Blackwell (sm_120), 147-verify: read off mmvq_il_parity --bench --emit-table with the engine's shapes, the
+// same 3% rule; it takes the interleaved kernels in more cells than the shared table (e.g. the Q5_K head at 2 columns
+// 507 -> 367 us, IQ4_XS 2560x10240 at 3 columns 20.7 -> 14.9 us).  Bitwise equal to native_mmvq.
+constexpr IlRows kIlRows_120[] = {
+    {23, {{0, 1, 2, 2, 2}, {0, 4, 4, 4, 4}, {0, 2, 2, 4, 2}}},   // IQ4_XS
+    {12, {{0, 0, 2, 1, 1}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 1, 2, 1, 1}, {0, 1, 4, 2, 4}, {0, 1, 2, 1, 2}}},   // Q5_K
+    {14, {{0, 0, 2, 1, 1}, {0, 0, 4, 2, 4}, {0, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{0, 1, 2, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 2, 2, 2}}},   // Q3_K
+};
+// Ada (sm_89): the cells where two cards agree.  mmvq_il_parity --bench --emit-table was run on an RTX 4070 (46 SMs,
+// #3453) and on an RTX 4080 (48 SMs, same issue); a cell is kept only where both runs give the same rows count, else 0
+// (the plain kernel), so a card that disagrees never gets a split it did not measure.  The 5-8 column table of that
+// issue is not taken: the 4080 reproduced the 2-4 column table byte for byte in four runs, and the 5-8 column table
+// changed in 10-14 of 20 entries between runs.  Bitwise equal to native_mmvq, so the table is only speed.
+// mmvq_il_parity's check_tables rebuilds the table from the two source runs and compares.
+constexpr IlRows kIlRows_89[] = {
+    {23, {{0, 0, 0, 0, 0}, {0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}, {0, 0, 1, 1, 1}}},   // Q4_K
+    {13, {{0, 0, 1, 1, 0}, {0, 0, 1, 1, 0}, {0, 0, 1, 0, 0}}},   // Q5_K
+    {14, {{0, 0, 0, 0, 0}, {0, 0, 1, 0, 0}, {0, 0, 0, 1, 1}}},   // Q6_K
+    {11, {{0, 0, 1, 0, 1}, {0, 1, 1, 1, 1}, {0, 1, 1, 1, 1}}},   // Q3_K
+};
+// sm_80: read off mmvq_il_parity --bench --emit-table on a CMP 170HX (GA100, 70 SMs, HBM2e 1.5 TB/s), the same 3% rule;
+// bitwise equal to native_mmvq (the tool checks every case).
+constexpr IlRows kIlRows_80[] = {
+    {23, {{0, 2, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 2, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 4, 4, 4}, {0, 0, 2, 2, 2}, {0, 0, 2, 2, 2}}},   // Q4_K
+    {13, {{0, 0, 2, 2, 4}, {0, 0, 2, 2, 2}, {0, 0, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 2, 4, 2, 2}}},   // Q6_K
+    {11, {{1, 2, 2, 2, 2}, {1, 1, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q3_K
+};
+// sm_80 P1/P2: the hoisted-load / exact-integer kernel variant and its rows a warp per cell, pf << 4 | rows
+// (0x32 = variant 3 at 2 rows a warp; 0 = today's kernel with kIlRows_80), read off mmvq_il_parity --bench --emit-table
+// --pf 0,3,4 on the CMP 170HX with the same 3% rule against native_mmvq; STRATA_MMVQ_IL_PF=1 takes it.  Every variant is
+// bitwise native_mmvq (the tool checks every case, T 1-8, rows 1/2/4, each variant).
+struct IlPf { int type; uint8_t v[3][5]; };
+struct IlPf58 { int type; uint8_t v[4][5]; };
+// Only Q6_K: the same variants are bitwise and measured for Q4_K / Q5_K / IQ4_XS too, but there they tie today's kernel
+// within the run-to-run noise (their emitted cells flip between 0 and a variant), so those types keep kIlRows_80.
+constexpr IlPf kIlPf_80[] = {
+    {14, {{0x31, 0x42, 0x32, 0x42, 0x42}, {0x31, 0x41, 0x32, 0x32, 0x41}, {0x31, 0x41, 0x32, 0x32, 0x32}}},   // Q6_K
+};
+constexpr IlPf58 kIlPf58_80[] = {   // (rows 4 runs as 2 at 5+ columns, so the emitted 0x34 cells are written 0x32)
+    {14, {{0x31, 0x42, 0x32, 0x32, 0x32}, {0x31, 0x31, 0x32, 0x32, 0x32}, {0x31, 0x31, 0x02, 0x32, 0x02}, {0x31, 0x31, 0x31, 0x31, 0x31}}},   // Q6_K
+};
 // Turing (sm_75): read off mmvq_il_parity --bench --emit-table on an RTX 2080 Ti 22 GB (SM 1650 MHz), the same 3% rule.
 // The plain multi-column kernels are bound by dp4a throughput on Turing from 2 columns on (IQ4_XS 2560x10240 at 4
 // columns 81.1 -> 37.4 us, the Q5_K head 1671 -> 1045 us); bitwise equal to native_mmvq.  No one-column table here:
@@ -2949,10 +3738,39 @@ constexpr IlRows kIlRows_75[] = {
     {14, {{0, 0, 1, 2, 1}, {0, 2, 2, 4, 4}, {0, 4, 4, 4, 4}}},   // Q6_K
     {11, {{1, 2, 4, 4, 4}, {1, 2, 4, 4, 4}, {1, 2, 2, 2, 2}}},   // Q3_K
 };
+// 147-verify: 5-8 columns (a verify window of 5+ rows) by n_out class, per architecture; 0 = native_mmvq's kernels.  Every
+// choice is bitwise native_mmvq's output (mmvq_il_parity, T 1-8), so a table is only speed.  Measured on an RTX PRO 5000
+// Blackwell (sm_120) with mmvq_il_parity --bench --emit-table; other cards have no table yet and keep native_mmvq's
+// kernels at 5+ columns.  STRATA_MMVQ_IL_WIDE=0 turns the 5-8 column path off.
+struct IlRows58 { int type; uint8_t r[4][5]; };
+constexpr IlRows58 kIlRows58_120[] = {   // 4 = 2 rows a warp here (launch_il_rows)
+    {23, {{0, 4, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 4, 2, 4, 2}, {0, 4, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 4, 4, 4}, {0, 4, 4, 4, 4}, {0, 2, 2, 2, 2}, {0, 4, 2, 4, 4}}},   // Q4_K
+    {13, {{0, 2, 2, 2, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 2, 4, 2, 2}}},   // Q5_K
+    {14, {{0, 2, 4, 4, 4}, {0, 4, 2, 4, 2}, {0, 2, 4, 2, 2}, {0, 4, 4, 4, 2}}},   // Q6_K
+    {11, {{0, 2, 4, 2, 4}, {0, 2, 2, 4, 4}, {0, 2, 2, 2, 4}, {0, 4, 2, 2, 2}}},   // Q3_K
+};
+constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
+    {23, {{0, 4, 4, 2, 2}, {0, 2, 4, 4, 4}, {0, 2, 4, 1, 1}, {1, 4, 1, 1, 1}}},   // IQ4_XS
+    {12, {{0, 0, 4, 2, 2}, {0, 2, 4, 2, 2}, {0, 2, 4, 4, 4}, {0, 2, 2, 4, 4}}},   // Q4_K
+    {13, {{0, 0, 4, 2, 2}, {0, 4, 2, 2, 2}, {0, 4, 4, 2, 4}, {0, 2, 4, 4, 2}}},   // Q5_K
+    {14, {{0, 0, 4, 2, 4}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 0, 4, 2, 4}}},   // Q6_K
+    {11, {{0, 0, 4, 2, 4}, {0, 0, 4, 1, 4}, {0, 0, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q3_K
+};
+struct Il58Arch { int cc; const IlRows58* t; size_t n; };
+constexpr Il58Arch kIl58Arch[] = {
+    {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
+    {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
+    {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
+};
 // One column: rows a warp by n_out class, 0 = native_mmvq's single-column kernels (STRATA_MMVQ_IL_T1=0 turns this off).
 struct Il1Rows { int type; uint8_t r[5]; };
 constexpr Il1Rows kIl1Rows_86[] = {
     {11, {0, 1, 1, 1, 1}},   // Q3_K: 2560x10240 60 -> 43 us, 6144x2560 30 -> 26 us on the A4000
+};
+// Ada (sm_89): the RTX 4070 and the RTX 4080 runs gave the same one-column row (only Q3_K takes the interleaved kernel)
+constexpr Il1Rows kIl1Rows_89[] = {
+    {11, {0, 0, 1, 1, 1}},   // Q3_K
 };
 // Tesla P40 (sm_61), the same three runs: IQ4_XS 2560x10240 102 -> 58 us, the Q5_K head 1754 -> 1507 us
 constexpr Il1Rows kIl1Rows_61[] = {
@@ -2960,10 +3778,18 @@ constexpr Il1Rows kIl1Rows_61[] = {
     {13, {0, 0, 0, 2, 2}},   // Q5_K
     {11, {0, 0, 2, 2, 2}},   // Q3_K
 };
+constexpr Il1Rows kIl1Rows_80[] = {   // CMP 170HX, as kIlRows_80
+    {23, {0, 0, 1, 4, 1}},   // IQ4_XS
+    {12, {0, 0, 2, 2, 2}},   // Q4_K
+    {13, {0, 0, 0, 4, 1}},   // Q5_K
+    {11, {0, 0, 2, 2, 2}},   // Q3_K
+};
 struct Il1Arch { int cc; const Il1Rows* t; size_t n; };
 constexpr Il1Arch kIl1Arch[] = {
+    {80, kIl1Rows_80, sizeof(kIl1Rows_80) / sizeof(Il1Rows)},
     {61, kIl1Rows_61, sizeof(kIl1Rows_61) / sizeof(Il1Rows)},
     {86, kIl1Rows_86, sizeof(kIl1Rows_86) / sizeof(Il1Rows)},
+    {89, kIl1Rows_89, sizeof(kIl1Rows_89) / sizeof(Il1Rows)},   // Ada: the RTX 4070 and 4080 agree
 };
 bool il_env_on(const char* name) {
     const char* v = std::getenv(name);
@@ -2971,13 +3797,26 @@ bool il_env_on(const char* name) {
 }
 bool il_t1_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_T1"); return on; }
 bool il_q3k_on() { static const bool on = il_env_on("STRATA_MMVQ_IL_Q3K"); return on; }
+// #3453: sm_89's own tables (kIlRows_89 / kIl1Rows_89) are ON by default on compute capability 8.9 only (owner decision, 0.2.7; no sm_89 card
+// has run mmvq_il_parity or an end-to-end A/B for us, the reporter tests and reports back).  STRATA_MMVQ_IL_89=0 gives an Ada card what it
+// answered before (the shared table, no one-column row) and so does STRATA_DEFAULTS=026; STRATA_MMVQ_IL_89=1 wins over that master switch
+// (sm120_series.hpp mmvq_il_89_resolve).  Cached once; the lookup runs on the host once a launch.
+bool il_89_opt_in() {
+    static const bool on = strata::mmvq_il_89_resolve(std::getenv("STRATA_MMVQ_IL_89"), false, 89, strata::qwen_defaults_026());
+    return on;
+}
 struct IlArch { int cc; const IlRows* t; size_t n; };
 constexpr IlArch kIlArch[] = {
     {60, kIlRows_60, sizeof(kIlRows_60) / sizeof(IlRows)},   // Pascal GP100: measured on a Tesla P100
     {61, kIlRows_61, sizeof(kIlRows_61) / sizeof(IlRows)},   // Pascal with dp4a: measured on a Tesla P40
     {75, kIlRows_75, sizeof(kIlRows_75) / sizeof(IlRows)},   // Turing: measured on an RTX 2080 Ti
     {70, kIlRows_70, sizeof(kIlRows_70) / sizeof(IlRows)},   // Volta: PR 1401, measured on a V100-SXM2
+    {80, kIlRows_80, sizeof(kIlRows_80) / sizeof(IlRows)},   // sm_80: measured on a CMP 170HX
     {86, kIlRows_86, sizeof(kIlRows_86) / sizeof(IlRows)},   // 143-dense: RTX A4000 with the real shapes (Q3_K added)
+    {89, kIlRows_89, sizeof(kIlRows_89) / sizeof(IlRows)},   // Ada: the cells where an RTX 4070 and an RTX 4080 agree
+    // 147-verify: RTX PRO 5000 Blackwell (110 SMs).  Only 12.0 cards with 80+ SMs (il_cc's 1201) take it: the shared table
+    // was measured on an RTX 5070 (48 SMs) and stays that card's
+    {1201, kIlRows_120, sizeof(kIlRows_120) / sizeof(IlRows)},
 };
 // STRATA_MMVQ_IL_ROWS="type:ncols:r0,r1,r2,r3,r4;..." overrides single rows of the table for every card (type = ggml
 // type 23/12/13/14, ncols 2-4, r* = rows a warp 0/1/2/4 for the five n_out classes).  Parsed once.
@@ -3014,14 +3853,24 @@ const std::vector<IlEnvRow>& il_env_rows() {
 // The rows a warp for a card of compute capability `cc` (major * 10 + minor); 0: native_mmvq's kernels.  Pure, so a test
 // can check every architecture's table without that card.
 int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 4) return 0;
+    if (ncols < 1 || ncols > 8) return 0;
     const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
+    if (ncols > 4) {   // 147-verify: 5..8 columns, only where a card measured its table
+        static const bool wide = il_env_on("STRATA_MMVQ_IL_WIDE");
+        if (!wide) return 0;
+        if (type == 11 && !il_q3k_on()) return 0;
+        for (const Il58Arch& a : kIl58Arch)
+            if (a.cc == cc)
+                for (size_t i = 0; i < a.n; ++i)
+                    if (a.t[i].type == type) return a.t[i].r[ncols - 5][cls];
+        return 0;
+    }
     for (const IlEnvRow& e : il_env_rows())
         if (e.type == type && e.ncols == ncols) return e.r[cls];
     if (ncols == 1) {   // 143-dense: one column (the plain q8_1 blocks, no interleaved copy); STRATA_MMVQ_IL_T1=0 turns it off
         if (!il_t1_on()) return 0;
         for (const Il1Arch& a : kIl1Arch)
-            if (a.cc == cc)
+            if (a.cc == cc && (cc != 89 || il_89_opt_in()))
                 for (size_t i = 0; i < a.n; ++i)
                     if (a.t[i].type == type) return a.t[i].r[cls];
         return 0;
@@ -3029,8 +3878,9 @@ int native_mmvq_il_rows_for(int cc, int type, int ncols, int n_out) {
     if (type == 11 && !il_q3k_on()) return 0;   // STRATA_MMVQ_IL_Q3K=0: Q3_K keeps native_mmvq's kernels
     const IlRows* t = kIlRowsShared;
     size_t n = sizeof(kIlRowsShared) / sizeof(IlRows);
+    static const bool own120 = il_env_on("STRATA_MMVQ_IL_120");   // 147-verify: =0 gives a big 12.0 card the shared table again
     for (const IlArch& a : kIlArch)
-        if (a.cc == cc && a.t != nullptr) { t = a.t; n = a.n; }
+        if (a.cc == cc && a.t != nullptr && (cc != 1201 || own120) && (cc != 89 || il_89_opt_in())) { t = a.t; n = a.n; }
     for (size_t i = 0; i < n; ++i)
         if (t[i].type == type) return t[i].r[ncols - 2][cls];
     return 0;
@@ -3045,13 +3895,34 @@ int il_cc() {
         if (cudaDeviceGetAttribute(&maj, cudaDevAttrComputeCapabilityMajor, dev) != cudaSuccess ||
             cudaDeviceGetAttribute(&mnr, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { cudaGetLastError(); return 0; }
         cc[dev] = maj * 10 + mnr;
+        // 147-verify: a 12.0 card with 80+ SMs (RTX PRO 5000 / 6000, RTX 5080 / 5090) answers 1201, its own table's key;
+        // a smaller one (RTX 5070: 48 SMs) keeps 120 and the shared table it was measured into
+        int sms = 0;
+        if (cc[dev] == 120 && cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) == cudaSuccess && sms >= 80)
+            cc[dev] = 1201;
+        // STRATA_MMVQ_IL_SM80=0: an sm_80 card takes the shared table as before kIlRows_80 (A/B)
+        if (cc[dev] == 80 && !strata::sm80_default_on(std::getenv("STRATA_MMVQ_IL_SM80"), strata::qwen_defaults_026())) cc[dev] = 81;   // =0 or STRATA_DEFAULTS=026
+        cudaGetLastError();
     }
     return cc[dev];
 }
 int il_rows(int type, int ncols, int n_out) { return native_mmvq_il_rows_for(il_cc(), type, ncols, n_out); }
+int il_pf_table(int type, int ncols, int n_out) {
+    if (il_cc() != 80 || ncols < 2 || ncols > 8) return 0;   // only the CMP 170HX measured one
+    const int cls = n_out < 2048 ? 0 : n_out < 4096 ? 1 : n_out < 8192 ? 2 : n_out < 12288 ? 3 : 4;
+    if (ncols <= 4) {
+        for (const IlPf& t : kIlPf_80)
+            if (t.type == type) return t.v[ncols - 2][cls];
+    } else {
+        for (const IlPf58& t : kIlPf58_80)
+            if (t.type == type) return t.v[ncols - 5][cls];
+    }
+    return 0;
+}
 int g_tune_rows = 0;   // native_mmvq_il_tune (tests, benchmarks): rows a warp for every shape (0: the table)
 }  // namespace
 void native_mmvq_il_tune(int rows) { g_tune_rows = rows; }
+void native_mmvq_il_pf(int pf) { g_il_pf = pf; }
 
 namespace {
 // sm_80 and newer (measured on sm_86 and sm_120), Volta (sm_70) and Pascal (sm_60, sm_61), each with its own table
@@ -3083,7 +3954,7 @@ bool il_arch_ok() {
 }  // namespace
 
 bool native_mmvq_il_supported(int ggml_type, int ncols, int n_out) {
-    if (ncols < 1 || ncols > 4 || !g_multi_exact || !il_arch_ok()) return false;
+    if (ncols < 1 || ncols > 8 || !g_multi_exact || !il_arch_ok()) return false;
     return (g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out)) != 0 &&
            (ggml_type == 23 || ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 11);
 }
@@ -3095,6 +3966,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
         return;
     }
     const int r = g_tune_rows ? g_tune_rows : il_rows(ggml_type, ncols, n_out);
+    strata::dispatch::kernel(strata::dispatch::kDense, 10 + r, ggml_type, n_in, n_out, ncols);   // BW-MEASURE: the interleaved MMVQ, r rows a warp
     validate_shape(n_in, ncols, QK);
     validate_pointer(weights);
     if (ncols == 1) x_il = x_q8_1;   // one column: the plain blocks, no interleaved copy
@@ -3127,6 +3999,7 @@ void native_mmvq_il(int ggml_type, const void* weights, const void* x_q8_1, cons
     native_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream);
 }
 void native_mmvq_il_tune(int) {}
+void native_mmvq_il_pf(int) {}
 #endif  // !__HIPCC__
 
 } // namespace strata::kernels

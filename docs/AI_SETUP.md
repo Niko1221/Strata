@@ -1,200 +1,172 @@
-# Installing Strata for a user (instructions for AI agents)
+# Set up Strata for a user
 
-This page is written for an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...) that a user asked to
-set up Strata on their PC. Strata runs the Qwen3.8-Flash-Next model locally on one NVIDIA or AMD graphics card plus
-system RAM, and serves an OpenAI- and Anthropic-compatible API on `http://127.0.0.1:8080`. The human-oriented
-version of everything below is [INSTALL.md](INSTALL.md).
+Use this guide when a user asks an AI agent to install Strata (version 0.2.13). There are two release routes. Pick
+one; do not start from a source checkout.
 
-Work through the steps in order. Tell the user what you are doing in plain words; they may not be technical.
+- **The Terminal and `strata launch`** (below). This is the route for an agent that has a shell.
+- **The desktop app.** One installer per system: `Strata-0.2.13-windows-x64-setup.exe`,
+  `Strata-0.2.13-linux-x86_64.AppImage`, `Strata-0.2.13-macos-arm64.dmg`, from the
+  [latest release](https://github.com/Niko1221/Strata/releases/latest). The Windows and Linux installers carry no
+  engine: on first start the app shows the engine for the user's graphics card and downloads it, or installs a file the
+  user already has ("I already have the file"). Details: [INSTALL.md](INSTALL.md).
 
-## 0. Ground rules
+Model availability, provider preference and API details are in [AI_REFERENCE.md](AI_REFERENCE.md).
 
-- **Never expose the server without an API key.** Keep the default `--host 127.0.0.1`. Only if the user asks for
-  access from other devices, use `--host 0.0.0.0` **together with** `--api-key <a long random secret>`, and give the
-  user the key. Never put a tunnel or port forward in front of a server without a key.
-- Do not change the user's system beyond what setup does (setup installs Python for the user account if needed,
-  and everything else inside the Strata folder and its `Strata-data` folder). Ask before installing drivers.
-- The model download is ~70 GB (94 GB for Unsloth's UD-IQ4_XS, 111 GB for UD-Q4_K_XL). Confirm the user is fine with that before you
-  start, especially on a metered connection.
-- Setup is long-running (an hour or more on a slow connection). Run it in the background or with a long timeout and
-  poll its output; do not kill it because it is quiet for a while. It is resumable: running the same command again
-  continues where it stopped.
+## 1. Check the computer and the requested model
 
-## 1. Check the PC
+- Check OS, CPU architecture, graphics cards, driver, available RAM/VRAM and free disk space.
+- Use the [hardware guides](INSTALL.md#what-you-need). Linux and Windows packages are x86-64; Mac packages are
+  Apple Silicon and need macOS 15 or newer. Older GPUs, Intel Arc and low-memory machines have specific limits.
+- Model support is separate from hardware support. <!-- cap:summary:qwen36 -->Qwen3.6-35B-A3B runs in the desktop app and in the Terminal. Hardware: NVIDIA on Windows; NVIDIA on Linux; AMD on Windows; AMD on Linux. Package present but not tested: NVIDIA DGX Spark. Does not run on: Intel Arc on Linux, Apple silicon. Per-hardware limits and measurements: [CAPABILITIES.md](CAPABILITIES.md#qwen36).<!-- /cap -->
+  <!-- cap:summary:deepseek41 -->DeepSeekV4.1-Flash-1017 runs in the desktop app and in the Terminal. Hardware: NVIDIA on Windows (RTX 30, 40 and 50); NVIDIA on Linux (RTX 30, 40 and 50); NVIDIA DGX Spark (GB10); AMD on Windows (Ryzen AI Max / Strix Halo, gfx1151); AMD on Linux (Radeon AI PRO R9700); Apple silicon (64 GB or more, macOS 15 or newer). Does not run on: Intel Arc on Linux. Per-hardware limits and measurements: [CAPABILITIES.md](CAPABILITIES.md#deepseek41).<!-- /cap -->
+  DeepSeekV4.1-Flash-1017 (`--family deepseek41`) has three sets: 1.75 bpw (239 GB of disk),
+  2.00 bpw (257 GB) and 2.25 bpw (274 GB), and for a 12 GB card it needs 46 to 64 GB of RAM. The context is 8K.
+  `--speed faster|full` (or `--full-quality`) chooses how many experts it uses per word; Faster is the default on a
+  PC with 16 GB of graphics memory or less. Print the plan first:
+  `strata launch --plan --family deepseek41 --model ist-das-2.00bpw`.
+- Check the **chosen pack's** memory and disk needs. Do not reuse a Flash-Next estimate for every family.
+  Unified memory is one pool, not RAM plus VRAM. A completed download does not establish that a model can run.
+- Keep the default local-only access. Share the server over a network only when the user asks; recommend an API key
+  beyond localhost and explain any deliberate use of `--no-api-key`.
+- Explain substantial downloads and follow the user's existing authorization and network/storage constraints.
+  Do not install drivers or system build tools as an unannounced side effect of a normal Terminal install.
 
-The quickest way is setup's own check, which prints the GPU(s), driver, RAM, CPU, free disk and whether this PC can run
-Strata, and installs nothing except Python and the `.venv` it needs to run (step 2 gets the repository first):
+## 2. Install the Terminal
 
-```
-Windows:  START-HERE.bat --check
-Linux:    ./setup.sh --check
-```
+The installer downloads a private Python runtime and Control, verifies the release checksums and signed feed, and
+installs into the user's home folder. The engine and model are acquired during launch.
 
-To check by hand:
+**Linux / Mac:**
 
-| What | Windows (PowerShell) | Linux |
-| --- | --- | --- |
-| OS | `[Environment]::OSVersion` | `cat /etc/os-release` |
-| NVIDIA GPU, VRAM, driver | `nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv` | the same |
-| AMD GPU | `Get-CimInstance Win32_VideoController \| Select-Object Name, AdapterRAM` (AdapterRAM is capped at 4 GB; trust the model name) | `lspci \| grep -i -E 'vga\|display'`; VRAM: `cat /sys/class/drm/card*/device/mem_info_vram_total` (bytes); `rocm-smi` only if ROCm is installed |
-| RAM | `(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB` | `free -g` |
-| Free disk | `Get-PSDrive -PSProvider FileSystem` | `df -h .` |
-
-Requirements (details: [INSTALL.md](INSTALL.md#what-you-need)):
-
-- **GPU:** NVIDIA RTX 20, 30, 40 or 50 series, or AMD Radeon RX 7900 XT / XTX, RX 7800 XT / 7700 XT, RX 9060 XT,
-  RX 9070 / 9070 XT, Radeon AI PRO R9700, RX 6800 / 6900 series; 12 GB of VRAM or more (an NVIDIA card with 8 GB runs,
-  slowly). GTX 10 series and older, and integrated GPUs, are not supported; Pascal / Volta cards (P40, V100) and some
-  older AMD cards have experimental paths the user opts into ([OLDER_GPUS.md](OLDER_GPUS.md)).
-- **Driver:** NVIDIA 580 or newer. AMD on Linux: the kernel's amdgpu driver; on Windows: a current AMD Adrenalin
-  driver. If the driver is missing or too old, tell the user to update it (NVIDIA App / nvidia.com/drivers, or AMD
-  Software) and restart; do not install drivers yourself unless they ask.
-- **RAM:** 32 GB or more (see step 3). **Disk:** ~80 GB free, ideally on an NVMe SSD. **CPU:** x86-64 with AVX2. Without AVX2 (Xeon E5 v1/v2 and older) setup still installs, as an experimental and slow build it compiles on the PC (10-20 minutes): tell the user that before starting ([INSTALL.md](INSTALL.md#older-cpus-experimental)).
-- **OS:** Windows 10/11 or Linux (Ubuntu 22.04/24.04 and Debian 12/13 are fully automatic; Debian 13 gets the oldest CUDA 13 its NVIDIA repo has, currently 13.1).
-
-If the PC does not meet them, say which part is missing and stop.
-
-## 2. Get Strata
-
-```
-git clone https://github.com/Niko1221/Strata.git
+```sh
+curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
 ```
 
-Without git: download https://github.com/Niko1221/Strata/archive/refs/heads/main.zip and unzip it. Pick a drive with
-enough free space: the model files go to a `Strata-data` folder **next to** the Strata folder (or `--data-dir <path>`
-on another drive).
+**Windows PowerShell:**
 
-## 3. Pick the model
-
-By the PC's RAM (ask the user whether they mainly want it for code - then the Coder is a good pick at any RAM size):
-
-| RAM | `--family` / `--model` | Notes |
-| --- | --- | --- |
-| 32 GB | `--family coder` (size IQ1_M) | for code; with a 24 GB card Q2_0 and IQ2_XS also run (setup picks the low-RAM mode) |
-| 48 GB | `--family qwen --model IQ2_XS` | or `Q2_0` (fastest) |
-| 64 GB | `--family qwen --model IQ2_XS` (recommended) | `IQ3_XXS` / `IQ3_S` are slower and a bit better |
-| 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-IQ4_XS` (~4-bit, 94 GB, part of the experts read from the SSD under ~80 GB of RAM); `--model UD-Q4_K_XL` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
-
-`--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
-`qwen`. With `--yes` and no `--model`, setup picks the recommended size for the RAM itself. More: [MODELS.md](MODELS.md).
-
-## 4. Run setup without questions
-
-From the Strata folder (Windows: in `cmd`, or `cmd /c START-HERE.bat ...` from PowerShell):
-
-```
-Windows:  START-HERE.bat --yes --family qwen --model IQ2_XS --no-start
-Linux:    ./setup.sh --yes --family qwen --model IQ2_XS --no-start
+```powershell
+irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
 ```
 
-The flags (all of them: `START-HERE.bat --help`):
+Open a new terminal on Windows. On Linux and Mac, use the full executable path printed by the installer if
+`~/.local/bin` is not on PATH. Confirm with `strata --version` and `strata launch --help`.
+Do not search for `START-HERE.bat` in the installed app or Terminal: it is not part of them.
 
-| Flag | Meaning |
+## 3. Select a compatible pack and inspect the plan
+
+Keep the user's model and provider choice. Otherwise prefer **ISTA-DASLab → Unsloth → Gyro → others**, when a pack
+fits the selected model and computer. This is the maintainer's recommendation policy; current executable defaults
+can differ. Gyro is a memory-saving fallback, currently slower, not a general speed recommendation.
+
+| Choice | Explicit launch selection |
 | --- | --- |
-| `--yes` | take the recommended answer to every question (no prompts) |
-| `--family qwen\|swift\|coder\|unsloth` | the model version |
-| `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-IQ4_XS\|UD-Q4_K_XL` | the size (the Coder is IQ1_M, Unsloth UD-IQ4_XS or UD-Q4_K_XL) |
-| `--context N` | context in tokens; default by VRAM: 32768 under 14 GB, 65536 under 20 GB, else 131072 |
-| `--vision yes\|no\|gpu\|cpu` | read pictures; `--yes` leaves images off. AMD cards: `cpu` |
-| `--gpu N` / `--gpus 0,1` / `--gpus all` | one card, or several sharing the model (default: the card with the most VRAM) |
-| `--backend cuda\|hip` | NVIDIA or AMD engine; chosen by itself on a PC with only one kind of card |
-| `--data-dir PATH` | where the 70-120 GB of model files go |
-| `--port N` | the server port (default 8080) |
-| `--host H --api-key K` | listen beyond this PC; **only together with a key** |
-| `--no-start` | install only, do not start the server |
-| `--setup` | install another model or change settings of an installed one |
-| `--check` | only check the PC |
+| ISTA-DASLab Flash-Next | `--family qwen --model q2_0` (or a compatible IQ2_XS / IQ3_XXS / IQ3_S pack) |
+| ISTA-DASLab Coder | `--family coder --model IQ1_M` |
+| Unsloth Flash-Next | `--family unsloth --model UD-Q4_K_XL` (check the pack's backend limits) |
+| Gyro Flash-Next | `--family gyro --model Gyro-S` |
+| Unsloth Qwen3.6 | `--family qwen36 --model UD-Q4_K_XL` |
 
-`--no-start` is recommended for agents: the server runs in the foreground until its window is closed, which would
-block your shell. Start it separately in step 6.
+These are choices, not an instruction to install every row. The full list and memory estimates are in
+[MODELS.md](MODELS.md). For example, inspect the ISTA-DASLab Q2_0 plan:
 
-Notes:
-- **Linux:** setup uses `sudo apt` (or dnf/pacman) to install Python with venv if it is missing, and on AMD may need
-  `build-essential` and `git`. You cannot type the user's password: if a `sudo` step is needed, ask the user to run it
-  (e.g. `sudo apt install python3-venv build-essential git`) and then rerun setup.
-- **AMD on Linux:** setup installs ROCm into `.venv` (~10 GB, no sudo) unless a system ROCm 7 exists, and compiles the
-  engine for the card (10-20 minutes, once).
-- **AMD on Windows (new in 0.1.34):** setup downloads the ready-made AMD engine (~550 MB, ROCm included) - nothing
-  is compiled and only the AMD driver is needed. Before the model download it runs `engine\strata-device.exe
-  --list-devices`; if that does not list the card, the driver is the problem (tell the user to update AMD Software).
-  One card per model and no images on Windows for now. It is new: ask the user to report how it runs (docs/AMD_HIP.md).
-- **NVIDIA with no ready-made engine for the card:** setup offers to install build tools and compile (20-40 minutes);
-  `--yes` accepts.
-
-## 5. While it downloads, tell the user
-
-- It downloads about 70 GB from Hugging Face; how long depends on their connection (at 100 Mbit/s roughly 1.5-2
-  hours). It can be stopped and continues where it left off.
-- Then it prepares the model for their PC (a few minutes) and, on AMD on Linux, compiles the engine.
-- **When the model starts, the PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
-  loads 35-55 GB into RAM and locks part of it for the graphics card. That is normal; they should not close the window.
-- Nothing leaves their PC: the model runs locally.
-
-## 6. Start the server
-
-Setup prints the start script it wrote (`start script: run-<model>.bat`). The name is the family tag plus the size,
-lower case: `run-iq2_xs`, `run-swift-iq2_xs`, `run-coder-iq1_m`, `run-unsloth-ud-iq4_xs`.
-
-```
-Windows (PowerShell):  Start-Process -FilePath ".\run-iq2_xs.bat"            (opens its own window)
-Linux:                 nohup ./run-iq2_xs.sh > strata-server.out 2>&1 &
+```sh
+strata launch --family qwen --model q2_0 --context 32k --plan --output json
 ```
 
-Or `START-HERE.bat` / `./setup.sh` without flags, which starts the installed model (it asks which one when several are
-installed; add `--yes` to take the first). The server opens the user's browser on `http://127.0.0.1:8080` when it is
-ready. Closing its window (or stopping the process) stops the model.
+Check the resolved family, model, storage folder, context, picture reader and missing downloads. If the plan names
+an unavailable backend, do not continue as though compatibility were confirmed. Intel Arc has a released Linux
+engine, but model preparation still has special requirements: [INTEL_ARC.md](INTEL_ARC.md).
 
-## 7. Verify
+## 4. Start it
 
-The HTTP server answers once the model is loaded (30-90 s on later starts, a few minutes the first time). Poll:
+After the plan matches the user's computer and requested setup:
 
-```
-curl http://127.0.0.1:8080/health
-```
-
-It returns `{"status": "ok", "model": ..., "max_context": ..., "images": ..., "api_key": ..., "loaded": true, ...}`.
-Then:
-
-```
-curl http://127.0.0.1:8080/v1/models
-curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\": \"strata\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in five words.\"}], \"max_tokens\": 64, \"reasoning_effort\": \"none\"}"
+```sh
+strata launch --family qwen --model q2_0 --context 32k --yes --no-tui
 ```
 
-With an API key, add `-H "Authorization: Bearer <key>"`. The server window prints a `ready: http://127.0.0.1:8080/v1`
-line when it is ready; the engine log is `strata-<model>.log` in the Strata folder.
+`--no-tui` prints the address and returns after startup while the server continues in the background. Keep the
+launch process alive during model acquisition; large downloads and preparation can take a long time. Poll progress
+and logs rather than promising a universal startup time. Repeating an interrupted launch resumes completed work.
 
-## 8. Connect the user's apps
+Useful options:
 
-- **Browser:** `http://127.0.0.1:8080` - Chat, a live Monitor, and About (settings and addresses).
-- **Any OpenAI-compatible app or agent:** base URL `http://127.0.0.1:8080/v1`, any API key (or the configured one),
-  any model name.
-- **Anthropic-compatible apps:** `http://127.0.0.1:8080/v1/messages`.
-- **Codex CLI and other Responses API apps:** `http://127.0.0.1:8080/v1/responses` (stateless; Codex's
-  `config.toml`: [DETAILS.md](DETAILS.md#the-responses-api-and-codex-cli)).
-- **Claude Code:** `ANTHROPIC_BASE_URL=http://127.0.0.1:8080`, `ANTHROPIC_MODEL` set to a Claude model name it knows
-  (Strata ignores the name), and any `ANTHROPIC_AUTH_TOKEN` (or the configured key).
-- **Thinking level:** `"reasoning_effort": "none" | "low" | "medium" | "high"` (default high).
-- Strata answers one request at a time; `"parallel": N` in the model's config (or setup `--parallel N`) decodes up to
-  N together ([BATCHING.md](BATCHING.md)). API details: [DETAILS.md](DETAILS.md#using-it).
-
-## 9. When something fails
-
-| Symptom | What to do |
+| Option | Meaning |
 | --- | --- |
-| `the NVIDIA driver is too old` | The user updates the driver (NVIDIA App or nvidia.com/drivers) and restarts; rerun setup. |
-| Download or install stopped | Rerun the same setup command; it continues. |
-| `port 8080 is already in use` | Strata is already running (check `/health`), or use `--port 8081`. |
-| Very slow, disk busy, or "the engine stopped unexpectedly" | Not enough free RAM: close programs, or set up a smaller size (`--setup --model Q2_0` or IQ2_XS). |
-| `ExpertCache: cudaMalloc(...) failed: out of memory` with free VRAM (Windows) | The page file is off or tiny: set a fixed size (Custom size, the same initial and maximum size, e.g. 65536 MB) and restart; a page file Windows grows on demand ("System managed") may not grow in time (#60). |
-| `prompt ... exceeds the context` | Rerun setup with `--setup --context <bigger>`. |
-| No AMD GPU found (Linux) | The amdgpu driver lists no GPU; check the card and driver. Integrated GPUs are not supported. |
-| Python or build tools could not be installed | Install what the message names (links are printed), then rerun. |
+| `--model-path PATH` | Use existing supported model files; a matching filename alone does not prove compatibility |
+| `--data-dir PATH` | Folder for new downloads; existing files stay put unless `--move-data` is also given |
+| `--vision on\|off\|gpu\|cpu` | Picture reading, subject to model and packaged-reader support |
+| `--gpu 0,1` | Selected GPUs; do not use source setup's `--gpus` spelling here |
+| `--parallel N` | Requested concurrent slots, 1–8; check what actually fits and starts. DeepSeek is one at a time unless you ask |
+| `--save-preset NAME` | Keep these launch choices for later |
+| `--open` | Open the server's browser page after it starts |
+| `--restart` | Replace an already running launch with different settings; interrupts active answers |
 
-More: [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and the [full table](DETAILS.md#troubleshooting). If it still fails,
-collect `strata-<model>.log` and the setup output, and suggest an issue at https://github.com/Niko1221/Strata/issues.
+`--yes` does not authorize a restart by itself. When a model is already running, inspect its state before using
+`--restart` or `--stop`. Use `strata launch --help` for the installed release's full list.
 
-## Alternative: the MCP server
+## 5. Verify the running service
 
-Strata also has an MCP server, so an AI tool can check, install, start and stop Strata through tool calls
-(`strata_status`, `strata_models`, `strata_install`, `strata_start`, `strata_stop`, `strata_logs`) instead of the
-shell commands above. See [MCP_SERVER.md](MCP_SERVER.md).
+```sh
+strata launch --status
+strata doctor --live
+```
+
+Check the printed address and model, then query `/health` and `/v1/models` at that address. With the default port:
+
+**Linux / Mac:**
+
+```sh
+curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/v1/models
+```
+
+**Windows PowerShell:**
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/health
+Invoke-RestMethod http://127.0.0.1:8080/v1/models
+```
+
+Use the configured credential for protected endpoints. Confirm the model is loaded, then send a real request or
+run the relevant tool check below. **Exit code 0 alone is insufficient:** launch can finish after downloading a model
+without starting it when no usable engine is available. Report that as downloaded, not installed and verified.
+
+## 6. Connect a tool
+
+```sh
+strata connect
+strata connect opencode
+strata connect opencode --check --output json
+```
+
+The first command lists adapters; the second prints settings; the third sends a prompt and tool-call check. Use the
+adapter the user actually needs. `--write` changes that tool's configuration and keeps a backup; use it within the
+user's authorization. Printed configuration and a previous vendor test are not a successful current-server check.
+
+- OpenAI-compatible clients: use the printed server address plus `/v1`.
+- Anthropic-compatible clients: use the server root; the client adds `/v1/messages`.
+- Use the actual API key when enabled. Tool identifiers and limits: [connection guide](TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
+- Flash-Next's template defaults to thinking on with `xhigh` effort; `high` maps to `xhigh`. Requests, shared Chat
+  settings and run-config settings can override defaults. Do not assert a sampling configuration without inspecting it.
+
+## 7. Handoff, update or stop
+
+Tell the user which model is running, where its files are, its address, how the tool check went, and any limitations.
+
+```sh
+strata launch --preset NAME
+strata launch --status
+strata launch --stop
+strata update --check
+```
+
+Stop active models before `strata update`. Very old Terminals require rerunning the installer; see
+[updating](INSTALL.md#updating). Show credentials only to the intended user; redact them from shared logs and reports.
+
+## 8. Source-only and unsupported setups
+
+A source build is a separate workflow: [SOURCE_INSTALL.md](SOURCE_INSTALL.md). `START-HERE.bat`, `SETUP.bat`,
+`UPDATE.bat`, `setup.sh` and generated `run-<model>` scripts belong to that workflow. Do not pass their flags to
+`strata launch`, promise a source build will support an unknown model, or describe a source-only command as an
+installed-app command. If a required backend or artifact is missing, say exactly what is missing.

@@ -44,6 +44,16 @@ struct ExpertLayout {
 /// Plan v0.3 P6: whether this CPU (and its OS) runs the AVX-512 kernels (F, BW, VL, VNNI, VBMI).  Probed in a
 /// file compiled without AVX-512, so asking is safe everywhere; STRATA_FORCE_AVX2=1 answers no (for tests).
 bool cpu_avx512_ok();
+/// The same probes with VBMI required only (the multishift unpack and other byte-permute shuffles): a CPU may run
+/// every other feature the kernels use and miss it (Cascade Lake Xeon).
+bool cpu_vbmi_ok();
+/// AVX-512F + BW + VL + VNNI, VBMI NOT required: the dpbusd row dots, the q8 quantizer and the dq/bw arithmetic
+/// need no byte-permute shuffles (the q2 unpack's op has a substitute in expert.cpp).  A CPU this answers yes on
+/// used to run every expert through the AVX-2 fallback.
+bool cpu_vnni_ok();
+/// Scattered pieces: the copy above is a declaration only (defined in expert.cpp, the AVX-512 TU, because it reads
+/// its STRATA_CPU_YMM switch): whether the 512-bit q2 row dot may run at all (VNNI and not the YMM env).
+bool q2_rows_512_ok();
 /// Whether this CPU runs AVX-512F + AVX-512BW + AVX-512VL + AVX-512DQ (e.g. Skylake-X i9-9920X) for iq_avx512.cpp.
 bool cpu_avx512bw_ok();
 /// Whether this CPU (and its OS) runs the AVX2 kernels (AVX, AVX2, FMA, F16C): the floor of every expert kernel
@@ -96,6 +106,8 @@ const ExpertLayout& expert_layout();
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
-inline constexpr int kExpertLayoutVersion = 4;
+/// v5 = v4 plus `hadamard.txt` beside it: Hadamard-folded experts (hadamard.hpp), written only for such models,
+/// so an engine that cannot rotate the activations refuses the pack instead of running it wrong.
+inline constexpr int kExpertLayoutVersion = 5;
 
 }  // namespace strata::kernels::cpu

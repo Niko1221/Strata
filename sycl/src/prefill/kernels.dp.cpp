@@ -1,6 +1,7 @@
 // src/prefill/kernels.cu - see include/strata/prefill/kernels.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/kernels.hpp"
@@ -19,11 +20,16 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "strata/core/geometry.hpp"
+
 namespace strata::prefill {
 namespace {
 
-constexpr int N = 2560, HC = 4, D = N * HC, LR = 320;
-constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
+constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
+constexpr int NHQ = strata::core::kCompiledGeometry.n_head, NKVH = strata::core::kCompiledGeometry.n_head_kv;   // query heads (24) and KV heads (2), head width 256
+constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
+constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
@@ -1699,7 +1705,7 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
         v[i] *= rcp; if (sycl::isnan(v[i])) v[i] = -FLT_MAX;
     }
     float selected = 0.0f, selected_sum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < KU; ++rank) {
         float best = v[0];
         int ex = lane;
 #pragma unroll
@@ -1725,11 +1731,11 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
         }
         if ((ex & 31) == lane) { v[ex / 32] = -INFINITY; selected_sum += best; }
-        if (lane == 0) ids[t * 10 + rank] = ex;
+        if (lane == 0) ids[t * KU + rank] = ex;
         if (rank == lane) selected = best;
     }
     selected_sum = sycl::fmax(warp_sum(selected_sum), 6.103515625e-5f);
-    if (lane < 10) wout[t * 10 + lane] = selected / selected_sum;
+    if (lane < KU) wout[t * KU + lane] = selected / selected_sum;
 }
 // Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
 template <bool HALF>
@@ -1780,9 +1786,9 @@ __dpct_inline__ void swiglu_il_kernel(const float *__restrict__ gu,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= n * 640) return;
-    const int64_t r = i / 640, k = i % 640;
-    const float g = gu[r * 1280 + 2 * k], u = gu[r * 1280 + 2 * k + 1];
+    if (i >= n * FFC) return;
+    const int64_t r = i / FFC, k = i % FFC;
+    const float g = gu[r * (2 * FFC) + 2 * k], u = gu[r * (2 * FFC) + 2 * k + 1];
     h16[i] = hf_sat(g / (1.0f + sycl::native::exp(-g)) * u);
 }
 __dpct_inline__ void swiglu_pair_kernel(const float *__restrict__ g,
@@ -1792,7 +1798,7 @@ __dpct_inline__ void swiglu_pair_kernel(const float *__restrict__ g,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= n * 640) return;
+    if (i >= n * FFC) return;
     const float a = g[i];
     h16[i] = hf_sat(a / (1.0f + sycl::native::exp(-a)) * u[i]);
 }
@@ -1824,9 +1830,9 @@ __dpct_inline__ void moe_combine_kernel(const float *__restrict__ Dm,
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k)
-        s = sycl::fma((float)(w[t * 10 + k]),
-                      (float)(Dm[(int64_t)slot[t * 10 + k] * N + d]), s);
+    for (int k = 0; k < KU; ++k)
+        s = sycl::fma((float)(w[t * KU + k]),
+                      (float)(Dm[(int64_t)slot[t * KU + k] * N + d]), s);
     bo[i] = s + shared[i] * sigm(sg[t]);
 }
 
@@ -1849,16 +1855,16 @@ __dpct_inline__ void moe_combine4_kernel(
     if (i >= T * (N / 4)) return;
     const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
     sycl::float4 s = sycl::float4(0.0f, 0.0f, 0.0f, 0.0f);
-    sycl::float4 v[10];
-    float ww[10];
+    sycl::float4 v[KU];
+    float ww[KU];
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        ww[k] = w[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        ww[k] = w[t * KU + k];
         v[k] = *reinterpret_cast<const sycl::float4 *>(
-            Dm + (int64_t)slot[t * 10 + k] * N + d);
+            Dm + (int64_t)slot[t * KU + k] * N + d);
     }
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
+    for (int k = 0; k < KU; ++k) {
         s.x() = sycl::fma(ww[k], v[k].x(), s.x());
             s.y() = sycl::fma(ww[k], v[k].y(), s.y());
         s.z() = sycl::fma(ww[k], v[k].z(), s.z());
@@ -1926,9 +1932,9 @@ __dpct_inline__ void split_q_kernel(const float *__restrict__ qf,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    q[i] = qf[t * 24 * 512 + h * 512 + d];
+    if (i >= T * NHQ * 256) return;
+    const int64_t t = i / (NHQ * 256), h = (i / 256) % NHQ, d = i % 256;
+    q[i] = qf[t * NHQ * 512 + h * 512 + d];
 }
 __dpct_inline__ void gate_attn_kernel(const float *__restrict__ a,
                                       const float *__restrict__ qf,
@@ -1938,11 +1944,11 @@ __dpct_inline__ void gate_attn_kernel(const float *__restrict__ a,
     const int64_t i =
         (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
         item_ct1.get_local_id(2);
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
+    if (i >= T * NHQ * 256) return;
+    const int64_t t = i / (NHQ * 256), h = (i / 256) % NHQ, d = i % 256;
     o16[t * ld16 + h * 256 + d] =
         hf(a[i] * (1.0f / (1.0f + sycl::native::exp(
-                                      -qf[t * 24 * 512 + h * 512 + 256 + d]))));
+                                      -qf[t * NHQ * 512 + h * 512 + 256 + d]))));
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
@@ -1959,7 +1965,7 @@ kv_append_kernel(const float *__restrict__ K, const float *__restrict__ V,
     const int kvh = item_ct1.get_group(1), g = item_ct1.get_group(0) >> 1;
     const bool is_v = (item_ct1.get_group(0) & 1) != 0;
     const int d = g * 64 + item_ct1.get_local_id(2);
-    const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
+    const float x = (is_v ? V : K)[t * (NKVH * 256) + kvh * 256 + d];
     const int64_t pos = pos0 + t;
     const int64_t page = table[pos / page_size];
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
@@ -2177,7 +2183,7 @@ void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const in
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 strata::kernels::KvHostPools
                     host_host_strata_kernels_KvHostPools_ct11 =
@@ -2222,8 +2228,8 @@ void to_f16(const float* x, uint16_t* y, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class to_f16_kernel_c8575f>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class to_f16_kernel_c8575f>>(
                 sycl::nd_range<3>(sycl::range(1, 1,
                                               (unsigned)((n + 255) / 256 < 4096
                                                              ? (n + 255) / 256
@@ -2242,8 +2248,8 @@ void round_f16(const float* x, float* y, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class round_f16_kernel_877aa1>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class round_f16_kernel_877aa1>>(
                 sycl::nd_range<3>(sycl::range(1, 1,
                                               (unsigned)((n + 255) / 256 < 4096
                                                              ? (n + 255) / 256
@@ -2262,8 +2268,8 @@ void to_bf16(const float* x, uint16_t* y, int64_t n, void* stream, uint16_t* ylo
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class to_bf16_kernel_44d81a>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class to_bf16_kernel_44d81a>>(
                 sycl::nd_range<3>(sycl::range(1, 1,
                                               (unsigned)((n + 255) / 256 < 4096
                                                              ? (n + 255) / 256
@@ -2283,8 +2289,8 @@ void gr_norm(const float* R, const float* w_norm, float eps, float* xn, uint16_t
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gr_norm_kernel_f38542>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gr_norm_kernel_f38542>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)(T * HC)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2302,7 +2308,7 @@ void gr_norm_rs(const float* R, const float* w_norm, float eps, float* rs, uint1
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto ldx_ldx_D_ct6 = ldx > 0 ? ldx : D;
 
@@ -2327,8 +2333,8 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gr_mix_r_kernel_a64dc1>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gr_mix_r_kernel_a64dc1>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * N)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2366,7 +2372,7 @@ void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_l
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto ldx_ldx_D_ct9 = ldx > 0 ? ldx : D;
 
@@ -2393,7 +2399,7 @@ void gr_write_cvec_norm_rs(float* R, const float* bo, const float* inj, int64_t 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto ldx_ldx_D_ct13 = ldx > 0 ? ldx : D;
 
@@ -2419,7 +2425,7 @@ void gr_silu(const float* lo, uint16_t* lo16, int64_t T, void* stream, uint16_t*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto T_LR_ct3 = T * LR;
 
@@ -2440,8 +2446,8 @@ void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gr_mix_kernel_d9dd98>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gr_mix_kernel_d9dd98>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * N)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2457,8 +2463,8 @@ void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gr_write_kernel_b96cec>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gr_write_kernel_b96cec>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * D)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2473,8 +2479,8 @@ void gr_broadcast(const float* e, float* R, int64_t T, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gr_broadcast_kernel_3dedc6>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gr_broadcast_kernel_3dedc6>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * D)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2489,8 +2495,8 @@ void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_gates_kernel_e66d35>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_gates_kernel_e66d35>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * HV)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2506,8 +2512,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_conv_kernel_df787b>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_conv_kernel_df787b>>(
                 sycl::nd_range<3>(sycl::range(1, 1, C / 128) *
                                       sycl::range(1, 1, 128),
                                   sycl::range(1, 1, 128)),
@@ -2521,8 +2527,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                strata::q_of(stream)
-                    ->parallel_for<
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                    ->template parallel_for<
                         dpct_kernel_name<class gdn_conv_l2_kernel_8e7204>>(
                         sycl::nd_range<3>(
                             sycl::range(
@@ -2541,8 +2547,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                strata::q_of(stream)
-                    ->parallel_for<
+                strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                    ->template parallel_for<
                         dpct_kernel_name<class gdn_conv_hist_kernel_e391a1>>(
                         sycl::nd_range<3>(sycl::range(1, 1, C / 128) *
                                               sycl::range(1, 1, 128),
@@ -2558,8 +2564,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class gdn_conv_tiled_kernel_532f01>>(
                     sycl::nd_range<3>(
                         sycl::range(1,
@@ -2575,8 +2581,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class gdn_conv_hist_kernel_e391a2>>(
                     sycl::nd_range<3>(sycl::range(1, 1, C / 128) *
                                           sycl::range(1, 1, 128),
@@ -2590,8 +2596,8 @@ void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, i
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_l2_kernel_d82250>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_l2_kernel_d82250>>(
                 sycl::nd_range<3>(sycl::range(1, (unsigned)T, 2 * HK) *
                                       sycl::range(1, 1, S),
                                   sycl::range(1, 1, S)),
@@ -2682,8 +2688,8 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gdn_rec_kernel_923fed>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gdn_rec_kernel_923fed>>(
                 sycl::nd_range<3>(sycl::range(1, 1, HV) * sycl::range(1, RG, S),
                                   sycl::range(1, RG, S)),
                 exp_props,
@@ -2703,8 +2709,8 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class gdn_rec_kh_kernel_c88399>>(
                     sycl::nd_range<3>(sycl::range(1, 1, HK * NCB) *
                                           sycl::range(1, RG, CB),
@@ -2719,8 +2725,8 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class gdn_rec_cols_pipe_kernel_c6cea3>>(
                     sycl::nd_range<3>(sycl::range(1, 1, HV * NCB) *
                                           sycl::range(1, RG, CB),
@@ -2732,8 +2738,8 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class gdn_rec_cols_kernel_496541>>(
                     sycl::nd_range<3>(sycl::range(1, 1, HV * NCB) *
                                           sycl::range(1, RG, CB),
@@ -2746,8 +2752,8 @@ void gdn_recurrence_variant(int variant, float* state, const float* h, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class gdn_out_norm_kernel_43e92c>>(
                     sycl::nd_range<3>(sycl::range(1, HV, (unsigned)T) *
                                           sycl::range(1, 1, S),
@@ -2777,8 +2783,8 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class route_kernel_ceb296,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class route_kernel_ceb296,
                                             dpct_kernel_scalar<16>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)((T + 7) / 8)) *
                                       sycl::range(1, 1, 256),
@@ -2793,8 +2799,8 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class route_kernel_4c3133,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class route_kernel_4c3133,
                                             dpct_kernel_scalar<8>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)((T + 7) / 8)) *
                                       sycl::range(1, 1, 256),
@@ -2805,7 +2811,7 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
                         route_kernel<8>(logits, ids, weights, T);
                     });
     } else
-        strata::kernels::router_top10(logits, (int) T, (int) n_expert, 10, ids, weights, stream);
+        strata::kernels::router_top10(logits, (int) T, (int) n_expert, KU, ids, weights, stream);
     check("route");
 }
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
@@ -2813,8 +2819,8 @@ void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* s
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class blob_dequant_kernel_252bb1,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class blob_dequant_kernel_252bb1,
                                             dpct_kernel_scalar<false>>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, blocks_for(1280LL * 640 + 2560LL * 160)) *
@@ -2831,8 +2837,8 @@ void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, voi
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class blob_dequant_kernel_1d812a,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class blob_dequant_kernel_1d812a,
                                             dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, blocks_for(1280LL * 640 + 2560LL * 160)) *
@@ -2850,9 +2856,9 @@ void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream)
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class swiglu_il_kernel_98d495>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * 640)) *
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class swiglu_il_kernel_98d495>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * FFC)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -2866,9 +2872,9 @@ void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class swiglu_pair_kernel_ab28da>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * 640)) *
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class swiglu_pair_kernel_ab28da>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n * FFC)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -2912,8 +2918,8 @@ void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class copy_f4_kernel_bb4110>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class copy_f4_kernel_bb4110>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)b) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -2932,8 +2938,8 @@ void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class copy_i32_kernel_1c95ea>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class copy_i32_kernel_1c95ea>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)(b < 256 ? b : 256)) *
                         sycl::range(1, 1, 256),
@@ -2950,8 +2956,8 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class gather_rows16_kernel_d9d697>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class gather_rows16_kernel_d9d697>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, blocks_for(n * (width / 8))) *
                         sycl::range(1, 1, 256),
@@ -2971,8 +2977,8 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class moe_combine4_kernel_1c986f>>(
                     sycl::nd_range<3>(
                         sycl::range(1, 1, blocks_for(T * (N / 4))) *
@@ -2993,8 +2999,8 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class moe_combine_kernel_60f865>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class moe_combine_kernel_60f865>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * N)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -3010,8 +3016,8 @@ void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class rms_rows_kernel_c88408>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class rms_rows_kernel_c88408>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)rows) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -3039,7 +3045,7 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto strata_kernels_mrope_table_ct11 =
                     strata::kernels::mrope_table();
@@ -3060,7 +3066,7 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
                 auto strata_kernels_mrope_table_ct11 =
                     strata::kernels::mrope_table();
@@ -3085,9 +3091,9 @@ void split_q(const float* q_full, float* q, int64_t T, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class split_q_kernel_83c16c>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * 24 * 256)) *
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class split_q_kernel_83c16c>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks_for(T * NHQ * 256)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -3101,14 +3107,14 @@ void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
             ->submit([&](sycl::handler &cgh) {
-                auto ld16_ld16_ct4 = ld16 > 0 ? ld16 : 24 * 256;
+                auto ld16_ld16_ct4 = ld16 > 0 ? ld16 : NHQ * 256;
 
                 cgh.parallel_for<
                     dpct_kernel_name<class gate_attn_kernel_3fc329>>(
                     sycl::nd_range<3>(
-                        sycl::range(1, 1, blocks_for(T * 24 * 256)) *
+                        sycl::range(1, 1, blocks_for(T * NHQ * 256)) *
                             sycl::range(1, 1, 256),
                         sycl::range(1, 1, 256)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {

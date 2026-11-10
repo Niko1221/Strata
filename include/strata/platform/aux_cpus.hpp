@@ -19,6 +19,7 @@
 // do not link each other.  No output of the engine depends on where a thread runs.
 #pragma once
 
+#include "strata/platform/thread_name.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>

@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,9 +21,10 @@ import calibrate as CAL  # noqa: E402
 
 
 class FakeEngine:
-    """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`."""
+    """Speed = f(pcie_frac, spec_min_p, workers): the GEN line's tune keys arrive as `strata_tune`.
+    `dies`: setting values whose engine exits during its first generation (the #267 class, mid-measurement)."""
 
-    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None, read=None, reads=None):
+    def __init__(self, args, speed, info_workers=6, starts=None, adapt=None, read=None, reads=None, dies=()):
         self.args = list(args)
         self.read, self.reads = read, reads      # prompt read speed = read(prefill_pipe); the values it read with
         self.adapt_bonus = (adapt or {}).get(CAL.arg_value(args, "--adapt-swaps"), 1.0)
@@ -32,10 +34,16 @@ class FakeEngine:
         self.speed = speed
         self.last = {}
         self.proc = None
+        self.dies = CAL.arg_value(args, "--adapt-swaps") in dies or CAL.arg_value(args, "--pool-workers") in dies
+        self.dead = False
         if starts is not None:
             starts.append(list(args))
 
     def generate(self, ids, max_new, sampling, cancel):
+        if self.dies and not self.dead:
+            self.dead = True
+            raise RuntimeError("the engine exited: ERR verify: the adaptive tier's copies for layer 47 never landed"
+                               " (the copy stream itself is not drained); restart the engine")
         tune = sampling.get("strata_tune") or {}
         rate = self.speed(tune.get("pcie_frac", 0.55), tune.get("spec_min_p", self.info["spec_min_p"]), self.workers)
         rate *= self.adapt_bonus
@@ -53,9 +61,10 @@ BASE = ["--pack", "p", "--spec", "4", "--spec-min-p", "0.5", "--max-context", "8
 
 
 class Calibrate(unittest.TestCase):
-    def run_with(self, speed, workers=6, base=BASE, adapt=None, read=None, reads=None):
+    def run_with(self, speed, workers=6, base=BASE, adapt=None, read=None, reads=None, dies=()):
         starts = []
-        res = CAL.measure(base, [[1, 2, 3]] * 3, lambda a: FakeEngine(a, speed, workers, starts, adapt, read, reads),
+        res = CAL.measure(base, [[1, 2, 3]] * 3,
+                          lambda a: FakeEngine(a, speed, workers, starts, adapt, read, reads, dies),
                           say=lambda *_: None, long_prompt=lambda i, n: [1] * n)
         return res, starts
 
@@ -124,6 +133,53 @@ class Calibrate(unittest.TestCase):
         res, _ = self.run_with(lambda f, p, w: 50.0)
         self.assertEqual(res["settings"], {})
 
+    def test_measure_reports_bounded_stages_and_stops_between_samples(self):
+        events = []
+        stopped = threading.Event()
+
+        def progress(stage, completed, total):
+            events.append((stage, completed, total))
+            if stage == "pcie_share" and completed == 1:
+                stopped.set()
+
+        with self.assertRaises(CAL.CalibrationCancelled):
+            CAL.measure(BASE, [[1, 2, 3]] * 3,
+                        lambda args: FakeEngine(args, lambda *_: 50.0),
+                        say=lambda *_: None, progress=progress, cancel_event=stopped)
+        self.assertIn(("loading", 1, 1), events)
+        self.assertIn(("pcie_share", 1, len(CAL.PCIE_FRACS) * CAL.SWEEP_ROUNDS), events)
+        self.assertNotIn("draft_floor", [stage for stage, _, _ in events])
+
+    def test_active_generation_receives_shared_cancel_event(self):
+        stopped = threading.Event()
+        seen = []
+
+        class Engine:
+            def generate(self, ids, max_new, sampling, cancel):
+                seen.append(cancel)
+                cancel.set()
+                yield None
+
+        session = CAL.Session(Engine(), [[1, 2, 3]], stopped)
+        with self.assertRaises(CAL.CalibrationCancelled):
+            session.rate()
+        self.assertEqual(seen, [stopped])
+
+    def test_successful_sweep_covers_every_progress_stage(self):
+        events = []
+        CAL.measure(BASE, [[1, 2, 3]] * 3,
+                    lambda args: FakeEngine(args, lambda *_: 50.0),
+                    say=lambda *_: None, progress=lambda *item: events.append(item))
+        stages = list(dict.fromkeys(stage for stage, _, _ in events))
+        self.assertEqual(stages, ["loading", "pcie_share", "draft_floor", "confirmation",
+                                  "cpu_workers", "expert_tier"])
+        for stage in stages:
+            readings = [(done, total) for current, done, total in events if current == stage]
+            self.assertEqual(readings[0][0], 0)
+            self.assertEqual(readings[-1][0], readings[-1][1])
+            self.assertTrue(all(before[0] <= after[0] and before[1] == after[1]
+                                for before, after in zip(readings, readings[1:])))
+
     def test_small_gain_is_noise(self):
         # 2% better at pcie 0.35: below MIN_GAIN, so the default stays
         res, _ = self.run_with(lambda f, p, w: 51.0 if abs(f - 0.35) < 1e-6 else 50.0)
@@ -185,6 +241,22 @@ class Calibrate(unittest.TestCase):
         self.assertEqual(CAL.arg_value(a, "--adapt-swaps"), "160")
         self.assertIsNone(CAL.arg_value(CAL.apply(a, {}), "--adapt-swaps"))   # an old calibration's tier goes
 
+    def test_engine_death_during_tier_measurement_drops_only_that_candidate(self):
+        # the 160-swap candidate's engine dies during its own measurement (the adaptive gate's #267 livelock):
+        # that candidate loses, 80 (10% faster) is still chosen, and the run returns with the earlier results
+        res, _ = self.run_with(lambda f, p, w: 50.0, adapt={"80": 1.10}, dies=("160",))
+        self.assertEqual(res["settings"].get("--adapt-swaps"), "80")
+        self.assertEqual(list(res["report"]["adapt"]), ["default", "1/80/0.97"])
+        self.assertIn("the expert tier 1/160/0.97", res["report"]["failed_starts"])
+
+    def test_engine_death_during_a_worker_measurement_keeps_the_run(self):
+        # 4 workers' engine dies mid-measurement: 3 and 2 are still measured, the default count stays, the tier runs
+        res, _ = self.run_with(lambda f, p, w: 50.0, workers=6, dies=("4",))
+        self.assertNotIn("--pool-workers", res["settings"])
+        self.assertEqual(sorted(int(k.split()[0]) for k in res["report"]["workers"]), [2, 3, 6])
+        self.assertIn("4 workers", res["report"]["failed_starts"])
+        self.assertEqual(list(res["report"]["adapt"]), ["default", "1/80/0.97", "1/160/0.97"])
+
     def test_old_calibration_is_the_baseline_reset(self):
         # a config tuned earlier: the measurement starts from the product defaults, not from those values
         base = CAL.apply(BASE, {"--pcie-frac": "0.20", "--pool-workers": "3", "--spec-min-p": "0.70"})
@@ -227,6 +299,18 @@ class Calibrate(unittest.TestCase):
             return FakeEngine(args, lambda f, p, w: 50.0, 6)
         res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None, hip=True)
         self.assertEqual(res["env"], {})
+        self.assertIn(f"{CAL.SH_STREAM}=1", res["report"]["failed_starts"])
+
+    def test_engine_death_during_a_fork_measurement_keeps_the_run(self):
+        # the forked engine exits mid-measurement (#267's class): that candidate loses, the run returns
+        def start(args, env=None):
+            e = FakeEngine(args, lambda f, p, w: 50.0, 6)
+            if (env or {}).get(CAL.SH_STREAM) == "1":
+                e.dies = True
+            return e
+        res = CAL.measure(BASE, [[1, 2, 3]] * 3, start, say=lambda *_: None, hip=True)
+        self.assertEqual(res["env"], {})
+        self.assertEqual(list(res["report"]["sh_stream"]), ["0"])
         self.assertIn(f"{CAL.SH_STREAM}=1", res["report"]["failed_starts"])
 
     def test_apply_env(self):
@@ -394,7 +478,7 @@ class SetupIntegration(unittest.TestCase):
         self.assertNotIn("an earlier start", out.getvalue())
         out = io.StringIO()
         with mock.patch.object(self.S, "ROOT", Path(self.tmp.name)), \
-                mock.patch.object(self.S, "data_folder", lambda d: (Path(self.tmp.name) / "data", [])), \
+                mock.patch.object(self.S, "data_folder", lambda d, *a, **k: (Path(self.tmp.name) / "data", [])), \
                 mock.patch.object(self.S, "update_installed_engine", lambda *a: None), \
                 mock.patch.object(sys, "argv", ["setup.py", "--calibrate", "--no-start"]), \
                 contextlib.redirect_stdout(out):
