@@ -33,6 +33,12 @@ slot, and does not promote or hand a request back to `GEN`. Without the flag, ex
 With MTP, a lone request keeps its normal multi-token window in its slot. With several active requests,
 `--batch-mtp` enables at most one proposal per slot; without it, those windows use target tokens only.
 
+Add `--batch-mtp-multistep` alongside `--unified-slots --batch-mtp` to use multi-step native MTP with concurrent
+requests too. Each slot may offer up to `--spec` minus one drafts, capped by `--mtp-max-t`, confidence
+(`--spec-min-p`) and its remaining output/context budget. A slot's current token and proposals stay together;
+groups that do not fit the verification window rotate into the next one. The switch is off by default and
+uses the fixed-slot single-GPU CUDA/HIP path. DFlash2 keeps its own block-proposal scheduling.
+
 With `--vision`, each physical session keeps its own image-position table. Prefill, verification, the indexer
 and MTP use that session's positions. Changing another slot between pictures and text leaves its neighbours'
 tables intact.

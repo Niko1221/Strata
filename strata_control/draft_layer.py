@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 #: engine options that exist only because of the draft layer: flag -> takes a value
-MTP_FLAGS = {"--mtp": True, "--spec-min-p": True, "--batch-mtp": False}
+MTP_FLAGS = {"--mtp": True, "--spec-min-p": True, "--batch-mtp": False, "--batch-mtp-multistep": False}
 
 
 def is_off(cfg: dict[str, Any] | None) -> bool:

@@ -867,6 +867,7 @@ struct Options {
     bool batch_groups_auto = false;   ///< --batch-groups auto (#417 stage 1): one group per stage of a layer split, if it divides --batch
     bool batch_mtp = false;      ///< --batch-mtp / STRATA_BATCH_MTP=1 (opt-in): one MTP proposal per batch slot
     bool unified_slots = false; ///< --unified-slots: a single-GPU request keeps its physical session from prefill to finish
+    bool batch_mtp_multistep = false;   ///< --batch-mtp-multistep: multi-step native MTP in concurrent fixed slots
     std::string spec_oracle;
     int spec_corrupt = 0;
     /// Benchmarks and A/B checks (eddoursul's fork, F19): the run emits this continuation (token ids) instead of
@@ -1134,6 +1135,8 @@ void usage() {
                  "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
                  "  --unified-slots      --serve --batch (opt-in, single GPU): keep each request in its physical\n"
                  "                       session through prefill and decode; one request uses the single-sequence kernels\n"
+                 "  --batch-mtp-multistep  --unified-slots --batch-mtp (opt-in): concurrent slots verify up to\n"
+                 "                       --spec minus one native MTP drafts, bounded by --mtp-max-t and --spec-min-p\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
                  "  --pipeline-windows N --serve with a layer split on two GPUs (on by default for 2+ stages on AMD gfx12;\n"
                  "                       STRATA_PIPELINE_AUTO=0 or N=0 turns it off): one conversation's verify windows\n"
@@ -3623,6 +3626,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--batch-mtp") o.batch_mtp = true;
         else if (a == "--unified-slots") o.unified_slots = true;
+        else if (a == "--batch-mtp-multistep") o.batch_mtp_multistep = true;
         else if (a == "--spec-oracle") o.spec_oracle = next("--spec-oracle");
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--spec-follow") o.spec_follow = next("--spec-follow");
@@ -7344,6 +7348,10 @@ int main(int argc, char** argv) {
     const int slot_mtp_max_t = std::min<int>(strata::kernels::kVerifyNarrowT,
                                             o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec);
     const bool fixed_drafts = unified_slots && !o.mtp.empty() && !fixed_df2;
+    const bool batch_mtp_multistep = o.batch_mtp_multistep && fixed_drafts && batch_mtp;
+    if (o.batch_mtp_multistep && !batch_mtp_multistep)
+        std::fprintf(stderr, "strata generate: WARNING: --batch-mtp-multistep is off: it needs "
+                             "--unified-slots --batch-mtp with native MTP\n");
     if (!o.mtp.empty() && (batch_mtp || fixed_drafts) && !fixed_df2 && (!batch_df2_wanted || fixed_drafts)) {
         const strata::core::OnDevice on_slot_mtp(mtp.device());
         // Each MTP owner borrows its target session's length, rotary layout and PLE history.
@@ -14744,7 +14752,7 @@ int main(int argc, char** argv) {
             const int active_count = (int) std::count_if(bs.begin(), bs.end(), [](const BSlot& sl) { return sl.active; });
             const bool window_df2 = batch_df2 || (fixed_df2 && active_count == 1);
             const bool window_mtp = window_df2 || (!fixed_df2 && (batch_mtp || (fixed_drafts && active_count == 1)));
-            const bool multistep_window = unified_slots && active_count == 1;
+            const bool multistep_window = unified_slots && (active_count == 1 || batch_mtp_multistep);
             bool window_cvec = unified_slots && strata::kernels::cvec_enabled();
             if (unified_slots && strata::kernels::cvec().loaded())
                 for (int j = 0; j < (int) bs.size(); ++j) {
@@ -14947,6 +14955,7 @@ int main(int argc, char** argv) {
             for (int a = 0; a < A; ++a) {
                 bt_rows += keep[active[a]];
                 bt_accepted += keep[active[a]] - 1;
+                if (batch_mtp_multistep) bt_tokens += nrow[a] - 1;
             }
             std::vector<int> df2_launched;   // batch DFlash2: slots whose draft graph is queued
             std::array<int, strata::kernels::kVerifyMaxT> drafting;
@@ -15048,7 +15057,7 @@ int main(int argc, char** argv) {
                     const bool alone = unified_slots && std::count_if(bs.begin(), bs.end(),
                         [](const BSlot& owner) { return owner.active; }) == 1;
                     drafting[t] = sl.active && (batch_mtp || alone) ? slot_draft_limit(sl) : 0;
-                    if (!alone) drafting[t] = std::min(drafting[t], 1);
+                    if (!alone && !batch_mtp_multistep) drafting[t] = std::min(drafting[t], 1);
                     d.set_max_drafts(drafting[t]);
                     if (!d.set_draft_sampling(ver.slot_sampling(b), err)) {
                         std::printf("ERR batch MTP sampling: %s\n", err.c_str());
@@ -15191,10 +15200,12 @@ int main(int argc, char** argv) {
                                  (long long) dr, (long long) cu, (long long) cr, cm, cu > 0 ? cm / (double) cu : 0.0);
                 }
 #endif
-                if (batch_mtp)   // each slot-window offers one proposal and yields 1 + (accepted) tokens
+                if (batch_mtp) {
+                    const int64_t offered = batch_mtp_multistep ? bt_tokens : bt_rows - bt_accepted;
                     std::fprintf(stderr, "strata batch: MTP proposals accepted %lld of %lld (%.1f%%)\n",
-                                 (long long) bt_accepted, (long long) (bt_rows - bt_accepted),
-                                 100.0 * (double) bt_accepted / (double) std::max<int64_t>(bt_rows - bt_accepted, 1));
+                                 (long long) bt_accepted, (long long) offered,
+                                 100.0 * (double) bt_accepted / (double) std::max<int64_t>(offered, 1));
+                }
                 bt_run = bt_commit = bt_emit = bt_adapt_wait = 0;
                 bt_windows = bt_rows = bt_tokens = bt_accepted = bt_adapt_rounds = bt_adapt_swaps = 0;
             }
@@ -20075,7 +20086,7 @@ int main(int argc, char** argv) {
                     mtp.set_draft_history(live.data() + from, (int64_t) live.size() - from, sl.x);
                     const bool alone = std::count_if(bs.begin(), bs.end(), [](const BSlot& owner) { return owner.active; }) == 1;
                     int depth = cont && (batch_mtp || alone) ? slot_draft_limit(sl) : 0;
-                    if (!alone) depth = std::min(depth, 1);
+                    if (!alone && !batch_mtp_multistep) depth = std::min(depth, 1);
                     mtp.set_max_drafts(depth);
                     sl.proposal = {};
                     const bool measure = mtp.prob() && strata::core::spec_gate_pick();
