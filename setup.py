@@ -1077,6 +1077,34 @@ def fail(msg, hint=None):
     sys.exit(1)
 
 
+def keep_awake_for_setup():
+    """The system stays awake for the whole setup: the model download, the build and the serving session can take
+    hours, and a PC that sleeps through them loses the transfer.  The server holds its own state while it runs (the
+    config's "keep_awake"); this covers the time before it starts.  Windows (SetThreadExecutionState), Linux
+    (systemd-inhibit) and macOS (caffeinate); a system with no way to hold it just goes on.  Best effort: it never
+    stops a setup.  STRATA_KEEP_AWAKE=0 turns it off."""
+    global _KEEP_AWAKE, _KEEP_AWAKE_TRIED
+    if _KEEP_AWAKE_TRIED:
+        return _KEEP_AWAKE
+    _KEEP_AWAKE_TRIED = True
+    if os.environ.get("STRATA_KEEP_AWAKE", "").strip() == "0":
+        return None
+    try:
+        from serve.keepawake import KeepAwake
+        # the server's own line says "while the server runs"; here the hold starts before the server exists
+        _KEEP_AWAKE = KeepAwake.create(True, say=lambda *_a, **_k: None, session=True, label="keep_awake")
+    except Exception as e:                                  # noqa: BLE001 - a setup never stops for this
+        say(f"[strata] keep_awake: not set up ({e})")
+        _KEEP_AWAKE = None
+    if _KEEP_AWAKE is not None:
+        say("[strata] keep_awake: the system stays awake while setup runs (STRATA_KEEP_AWAKE=0 turns it off)")
+    return _KEEP_AWAKE
+
+
+_KEEP_AWAKE = None
+_KEEP_AWAKE_TRIED = False
+
+
 def flush_typed_ahead() -> None:
     """#841: keys pressed while setup was busy (a download, a build) are not answers to the next question: Enter pressed
     to "wake" a slow step answered "Go on anyway?" with its default.  Dropped before a question is asked, on a terminal
@@ -10142,6 +10170,7 @@ def mac_dsv41_setup(a) -> int:
 
 
 def main() -> int:
+    keep_awake_for_setup()
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()

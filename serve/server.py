@@ -10236,8 +10236,14 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
               f"{icfg.get('backend') or '?'} (POST /v1/images/generations; GPU policy {svc.images.policy})", flush=True)
     if cfg.get("prevent_sleep") is not None and not isinstance(cfg["prevent_sleep"], bool):
         raise SystemExit(f"[strata] config \"prevent_sleep\" must be true or false, not {cfg['prevent_sleep']!r}")
+    if cfg.get("keep_awake") is not None and not isinstance(cfg["keep_awake"], bool):
+        raise SystemExit(f'[strata] config "keep_awake" must be true or false, not {cfg["keep_awake"]!r}')
     from serve.keepawake import KeepAwake
-    svc.keep_awake = KeepAwake.create(cfg.get("prevent_sleep") is True)      # #1727: opt-in, Windows only
+    # #1727 "prevent_sleep": opt-in, while a request runs or waits.  "keep_awake": the same state held for the whole
+    # serving session (the server's start to its exit), so the PC never sleeps away from a loaded model.
+    _session_ka = cfg.get("keep_awake") is True
+    svc.keep_awake = KeepAwake.create(cfg.get("prevent_sleep") is True or _session_ka, session=_session_ka,
+                                      label="keep_awake" if _session_ka else "prevent_sleep")
     if cfg.get("reasoning_effort") is not None:         # #1641: the thinking level of requests that name none
         try:
             svc.config_effort = clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}).get("reasoning_effort")
