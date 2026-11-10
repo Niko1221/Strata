@@ -448,6 +448,52 @@ class ClientGone(Exception):
     waiting for its turn): nothing is left to answer."""
 
 
+class Turn:
+    """The engine's single turn (Service.fifo): a Lock that also counts who is waiting for it.  A picture whose client
+    left is read to the end only while nobody waits (Service._encode_stop): a follow-up or a retry that sends the same
+    picture then finds it read, and any other request gets the turn at once instead of after the whole encode."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._count = threading.Lock()
+        self._waiting = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        if self._lock.acquire(blocking=False):
+            return True
+        if not blocking:
+            return False
+        with self.waiting_for_it():
+            return self._lock.acquire(timeout=timeout)
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self.release()
+
+    @contextlib.contextmanager
+    def waiting_for_it(self):
+        """The caller counts as waiting while inside (for a loop that polls acquire(blocking=False))."""
+        with self._count:
+            self._waiting += 1
+        try:
+            yield
+        finally:
+            with self._count:
+                self._waiting -= 1
+
+    def waiting(self) -> int:
+        return self._waiting
+
+
 class ModelBusy(RuntimeError):
     """Explicit model controls must not interrupt active or queued requests."""
 
@@ -3347,9 +3393,11 @@ class Vision:
             raise RuntimeError(vision_start_error(line, log, code))
         self.stopped = False
 
-    def _readline(self, timeout: float, what: str) -> str:
+    def _readline(self, timeout: float, what: str, stop=None) -> str:
         """One line from the encoder, waiting at most `timeout` s (#1317).  On a timeout the encoder is killed, so the
-        next request starts a fresh one, and the read raises RuntimeError instead of holding the request turn."""
+        next request starts a fresh one, and the read raises RuntimeError instead of holding the request turn.
+        `stop` (a picture's encode): asked every 0.1 s; when it says True the encoder is killed the same way (mtmd
+        cannot stop in the middle of a picture) and the read raises ClientGone."""
         proc = self.proc
         got: queue.Queue = queue.Queue()
 
@@ -3359,15 +3407,27 @@ class Vision:
             except (OSError, ValueError):               # killed under the read
                 got.put("")
 
-        threading.Thread(target=read, daemon=True).start()
-        try:
-            return got.get(timeout=timeout)
-        except queue.Empty:
+        def kill():
             try:
                 proc.kill()
-            except OSError:
+                proc.wait(timeout=5)                    # its threads stop now, not some time after the turn is given on
+            except (OSError, AttributeError, subprocess.TimeoutExpired):
                 pass
-            raise RuntimeError(f"{what}: it said nothing for {timeout:.0f} s") from None
+
+        threading.Thread(target=read, daemon=True).start()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                return got.get(timeout=left if stop is None else 0.1 if left is None else min(0.1, left))
+            except queue.Empty:
+                pass
+            if deadline is not None and time.monotonic() >= deadline:
+                kill()
+                raise RuntimeError(f"{what}: it said nothing for {timeout:.0f} s") from None
+            if stop is not None and stop():
+                kill()
+                raise ClientGone()
 
     def alive(self) -> bool:
         return self.proc is not None and not self.stopped and self.proc.poll() is None
@@ -3378,6 +3438,45 @@ class Vision:
         self.stopped = True
         if self.elastic and self.on_cpu:                # the next start tries the card again
             self.spawn, self.fallback, self.on_cpu = self.gpu_spawn, self.cpu_spawn, False
+
+    @staticmethod
+    def raw_key(source) -> str | None:
+        """The hash of a picture's bytes as the request sent them (no conversion, so it is cheap); None for a URL or a
+        picture that cannot be read.  What a request waiting for the turn names as wanted (`wanting`)."""
+        if isinstance(source, str) and source.startswith(("http://", "https://")):
+            return None
+        try:
+            data = source if isinstance(source, bytes) else Vision.load(source)
+        except (ValueError, OSError):
+            return None
+        return hashlib.sha256(data).hexdigest()[:32]
+
+    def _wanted(self):
+        """(lock, Counter of raw keys): the pictures that requests waiting for the turn will need."""
+        w = self.__dict__.get("_wanted_by")
+        return w if w is not None else self.__dict__.setdefault("_wanted_by", (threading.Lock(), collections.Counter()))
+
+    @contextlib.contextmanager
+    def wanting(self, sources):
+        """While a request waits for the turn: its pictures count as wanted, so an encode of one of them whose own client
+        left is read to the end for this request instead of being stopped (Service._encode_stop)."""
+        keys = [k for k in map(self.raw_key, sources) if k]
+        lock, wanted = self._wanted()
+        with lock:
+            wanted.update(keys)
+        try:
+            yield
+        finally:
+            with lock:
+                wanted.subtract(keys)
+                for k in keys:
+                    if wanted[k] <= 0:
+                        del wanted[k]
+
+    def is_wanted(self, raw_key: str) -> bool:
+        lock, wanted = self._wanted()
+        with lock:
+            return wanted.get(raw_key, 0) > 0
 
     def all_cached(self, sources: list) -> bool:
         """Every picture of `sources` was encoded already (a conversation sends its pictures with each turn): no reader has to run."""
@@ -3484,22 +3583,30 @@ class Vision:
         im.save(out, format="PNG")
         return out.getvalue()
 
-    def encode_all(self, sources: list, cancel=None) -> list[tuple[Path, int]]:
+    def encode_all(self, sources: list, cancel=None, stop=None) -> list[tuple[Path, int]]:
         """encode() for every image of one request: the files of this request's earlier images are never evicted to
         make room for a later one (#1072: with more than 64 unique images the first was deleted before the request
-        had read it).  `cancel` (#1999): a request whose client left does not encode its next pictures."""
+        had read it).  `cancel` (#1999): a request whose client left does not encode its next pictures.  `stop`: see
+        encode()."""
         out: list[tuple[Path, int]] = []
+        more = {"stop": stop} if stop is not None else {}
         for src in sources:
             if cancel is not None and cancel.is_set():
                 raise ClientGone()
-            out.append(self.encode(src, keep=[p for p, _ in out]))
+            out.append(self.encode(src, keep=[p for p, _ in out], **more))
+        if cancel is not None and cancel.is_set():          # it left during the last one (read to the end and kept)
+            raise ClientGone()
         return out
 
-    def encode(self, source: str | bytes, keep=()) -> tuple[Path, int]:
+    def encode(self, source: str | bytes, keep=(), stop=None) -> tuple[Path, int]:
         """-> (embeddings file, number of image tokens).  `source`: what load() reads, or the image's bytes.
-        `keep`: files the caller still needs (never evicted by this call)."""
-        data = self.normalize(source if isinstance(source, bytes) else self.load(source))
+        `keep`: files the caller still needs (never evicted by this call).  `stop(raw_key)`: asked every 0.1 s while
+        the encoder reads the picture; True ends the encoder in the middle of it (the next request starts it again)
+        and raises ClientGone."""
+        raw = source if isinstance(source, bytes) else self.load(source)
+        data = self.normalize(raw)
         key = hashlib.sha256(data).hexdigest()[:32]
+        rkey = hashlib.sha256(raw).hexdigest()[:32] if stop is not None else None
         with self.lock:
             self._ensure_dir()
             if key in self.cache:
@@ -3513,10 +3620,26 @@ class Vision:
                 self.proc.stdin.write(f"ENC {img.name} {out.name}\n")      # relative to the encoder's cwd (#480)
                 self.proc.stdin.flush()
                 try:
-                    line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
+                    line = self._readline(VISION_ENCODE_S, "the image could not be read",
+                                          (lambda: stop(rkey)) if stop is not None else None).strip()
                 except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
                     self.stopped = True                   # alive() is False, so the next request starts it again
                     raise ValueError(str(e)) from None
+                except ClientGone:                        # stopped in the middle of the picture: the same
+                    self.stopped = True
+                    out.unlink(missing_ok=True)           # a half-written file is not this picture's
+                    if not getattr(self, "elastic", False):
+                        # a resident encoder starts again now, in this turn, so the next request finds it running (an
+                        # elastic one starts with the next picture)
+                        t0 = time.monotonic()
+                        try:
+                            self.restart()
+                            print(f"[strata] images: the image encoder was started again in {time.monotonic() - t0:.1f} s",
+                                  flush=True)
+                        except Exception as e:  # noqa: BLE001 - the next picture tries again (Service._vision_up)
+                            print(f"[strata] images: the image encoder did not start again ({e}); the next picture "
+                                  "tries again", flush=True)
+                    raise
             finally:                                                   # #352: also when the encoder's pipe is gone
                 img.unlink(missing_ok=True)
             if not line.startswith("OK"):
@@ -4738,7 +4861,7 @@ class Service:
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
         self.keep_awake = None                        # #1727 (opt-in): serve.keepawake.KeepAwake, the config's "prevent_sleep"
-        self.fifo = threading.Lock()
+        self.fifo = Turn()                            # a Lock that knows whether anyone waits for it
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
@@ -5108,9 +5231,20 @@ class Service:
         """The image turn's start for an elastic encoder that is not running (the caller holds self.fifo): the expert
         cache first keeps the encoder's elastic_mib of VRAM free on top of the reserve, then the encoder starts (load and
         warm-up, a few seconds).  If the cache cannot shrink (an engine without --vram-elastic, the resident low-RAM mode)
-        the encoder starts anyway, as a non-elastic one would."""
+        the encoder starts anyway, as a non-elastic one would.  A resident encoder (not elastic) that was ended while
+        the engine runs (a picture whose client left was stopped for another request, #1317's timeout) starts again
+        here, in the image turn, instead of meeting the picture as a dead process."""
         v = self.vision
-        if not getattr(v, "elastic", False) or v.alive():
+        if not getattr(v, "elastic", False):
+            if self._vision_down() and self.loaded():
+                t0 = time.time()
+                try:
+                    v.restart()
+                except Exception as e:      # a 503, as when it fails to start with the engine
+                    raise EngineDied(f"the image encoder failed to start: {e}") from e
+                print(f"[strata] images: the image encoder was started again in {time.time() - t0:.1f} s", flush=True)
+            return
+        if v.alive():
             return
         if hasattr(self.engine, "vram") and self.loaded() and not self.vision_no_shrink:
             try:
@@ -5432,11 +5566,13 @@ class Service:
         """#1997: unload(), but a running or queued request is waited for (up to wait_s) instead of answering "busy":
         a peer server that needs this GPU can then free the card on the server's terms.  "busy" after wait_s."""
         deadline = time.monotonic() + max(0.0, wait_s)
-        while True:
-            r = self.unload()
-            if r != "busy" or time.monotonic() >= deadline:
-                return r
-            time.sleep(0.25)
+        # counted as waiting for the turn: a picture whose client left is not read to the end for this
+        with getattr(self.fifo, "waiting_for_it", contextlib.nullcontext)():
+            while True:
+                r = self.unload()
+                if r != "busy" or time.monotonic() >= deadline:
+                    return r
+                time.sleep(0.25)
 
     def unload(self, idle_for: float | None = None) -> str:
         """Stop the engine between requests: "unloaded", "not loaded", "busy" (a request is running or waiting, or
@@ -5777,19 +5913,52 @@ class Service:
             self.tok.encode(prompt, parse_special=True)
 
     @contextlib.contextmanager
-    def _turn(self, cancel=None):
+    def _turn(self, cancel=None, wants=()):
         """The engine's single turn (self.fifo) for an image encode.  #1999: a client that leaves while this request
-        waits for it gives its place up (ClientGone), as a queued generation does (#1619)."""
-        if cancel is None:
-            self.fifo.acquire()
-        else:
-            while not self.fifo.acquire(timeout=0.25):
-                if cancel.is_set():
-                    raise ClientGone()
+        waits for it gives its place up (ClientGone), as a queued generation does (#1619).  `wants`: the request's
+        pictures, wanted while it waits (Vision.wanting): an encode of one of them whose client left goes on for it."""
+        if not self.fifo.acquire(blocking=False):
+            wanting = self.vision.wanting(wants) if wants and hasattr(self.vision, "wanting") else contextlib.nullcontext()
+            with wanting:
+                if cancel is None:
+                    self.fifo.acquire()
+                else:
+                    while not self.fifo.acquire(timeout=0.25):
+                        if cancel.is_set():
+                            raise ClientGone()
         try:
             yield
         finally:
             self.fifo.release()
+
+    def _encode_stop(self, cancel):
+        """Vision.encode's `stop` for a request: a picture's encode whose client left (`cancel`) ends - the encoder is
+        killed, and the next request starts it again (~1 s on the CPU) - as soon as another request waits for the turn
+        and none of the waiting requests sends this picture.  While nobody waits, the picture is read to the end and
+        kept, so a follow-up question about it (a client sends the picture again with it) or a retry finds it read.
+        Before, it was always read to the end, and every request waited for it: a text question sent after a stopped
+        1440p picture waited 74 s (16 CPU threads).  None without `cancel`, or when the turn cannot say who waits."""
+        if cancel is None or not hasattr(self.fifo, "waiting"):
+            return None
+
+        def stop(raw_key):
+            if not cancel.is_set():
+                return False
+            if stop.left_at is None:
+                stop.left_at = time.monotonic()
+            if self.vision.is_wanted(raw_key):
+                stop.kept = "a waiting request sends the same picture"
+                return False
+            if self.fifo.waiting() == 0:
+                stop.kept = "no other request waited; it is kept for a follow-up"
+                return False
+            stop.kept = None
+            print(f"[strata] images: a picture's client left and another request waits for the turn: its encode was "
+                  f"stopped {time.monotonic() - stop.left_at:.1f} s after the client left (the encoder starts again "
+                  "with the next request)", flush=True)
+            return True
+        stop.left_at, stop.kept = None, None
+        return stop
 
     def _note_unreadable_tool_images(self, messages, cancel=None):
         """A picture a tool returned (Claude Code's Read of an image file) that this server cannot read - it has no
@@ -5815,9 +5984,10 @@ class Service:
                             raise ValueError("offline mode cannot download an image URL")
                         if src.startswith(("http://", "https://")):
                             src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
-                        with self._turn(cancel):  # the encoder takes its turn with the requests (see below)
+                        stop = self._encode_stop(cancel) if hasattr(self.vision, "encode_all") else None
+                        with self._turn(cancel, wants=[src]):  # the encoder takes its turn with the requests (see below)
                             self._vision_up()         # an elastic encoder is not running until a picture needs it
-                            self.vision.encode(src)
+                            self.vision.encode(src, stop=stop) if stop else self.vision.encode(src)
                     except (ValueError, OSError, RuntimeError) as e:    # RuntimeError: the encoder did not start
                         why = str(e)
                 if why is not None:
@@ -5893,12 +6063,18 @@ class Service:
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self._turn(cancel):
+            stop = self._encode_stop(cancel) if hasattr(self.vision, "encode_all") else None
+            with self._turn(cancel, wants=images):
                 if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
                     self._vision_up()
                 try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
+                    encoded = (self.vision.encode_all(images, cancel, **({"stop": stop} if stop else {}))
+                               if hasattr(self.vision, "encode_all") else [self.vision.encode(src) for src in images])
+                except ClientGone:
+                    if stop is not None and stop.kept:
+                        print(f"[strata] images: a picture whose client left was read to the end "
+                              f"({time.monotonic() - stop.left_at:.1f} s after it left): {stop.kept}", flush=True)
+                    raise
                 finally:
                     self.last_image_at = time.time()
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
