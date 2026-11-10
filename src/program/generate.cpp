@@ -15068,7 +15068,8 @@ int main(int argc, char** argv) {
                     d.set_draft_history(sl.ids.data() + from, (int64_t) sl.ids.size() - from, sl.x);
                     const bool ok = drafting[t] > 0
                         ? d.chain_launch(keep[b], outb + first[t], pos[first[t]], keep[b] - 1,
-                                         nullptr, 0, drafting[t], 0, err, true)
+                                         nullptr, 0, drafting[t], 0, err, true,
+                                         batch_mtp_multistep ? sl.spec_min_p : 0.0f)
                         : d.prefill(slot_mtp_rows[(size_t) b].get(), outb + first[t],
                                     keep[b], pos[first[t]], err, false);
                     if (!ok) {
@@ -15093,6 +15094,22 @@ int main(int argc, char** argv) {
                     sl.draft_ready = true;
                 }
             }
+            if (batch_mtp_multistep) {
+                bool pending;
+                do {
+                    pending = false;
+                    for (int t = 0; t < A; ++t) {
+                        auto& d = *slot_mtp[(size_t) active[t]];
+                        if (drafting[t] <= 0 || !d.chain_live()) continue;
+                        const int ready = d.chain_poll(err);
+                        if (ready < 0) {
+                            std::printf("ERR batch MTP slot %d: %s\n", active[t], err.c_str());
+                            return false;
+                        }
+                        pending = pending || ready == 0;
+                    }
+                } while (pending);
+            }
             if (fixed_drafts) for (int t = 0; t < A; ++t) {
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
@@ -15104,12 +15121,13 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 if (drafting[t] > 0) {
-                    std::copy_n(d.chain_tok(), drafting[t], sl.draft.data());
-                    std::copy_n(d.chain_prob(), drafting[t], sl.dprob.data());
-                    sl.n_drafts = drafting[t];
+                    const auto generation = d.chain_result();
+                    std::copy_n(d.chain_tok(), generation.generated, sl.draft.data());
+                    std::copy_n(d.chain_prob(), generation.generated, sl.dprob.data());
+                    sl.n_drafts = generation.generated;
                     if (d.prob() && strata::core::spec_gate_pick()) {
                         if (!strata::core::gated::make_packet(sl.proposal, d.spec_q(), sl.draft.data(), sl.dprob.data(),
-                                drafting[t], drafting[t], slot_mtp_max_t, (int) ver.vocab(), sl.spec_min_p, false, {})) {
+                                generation.generated, generation.budget, slot_mtp_max_t, (int) ver.vocab(), sl.spec_min_p, false, {})) {
                             std::printf("ERR batch MTP proposal: %s\n", sl.proposal.error);
                             return false;
                         }
@@ -20094,7 +20112,7 @@ int main(int argc, char** argv) {
                     const float* last_R = ver.final_R(first_row);
                     const bool ok = depth > 0
                         ? mtp.draft_first(1, last_R, sl.x, sl.p - 1, sl.draft.data(), err,
-                                          sl.dprob.data(), measure ? 0.0f : (float) req_spec_min_p,
+                                          sl.dprob.data(), measure && !batch_mtp_multistep ? 0.0f : (float) req_spec_min_p,
                                           &sl.n_drafts, &generation)
                         : mtp.prefill(last_R, &sl.x, 1, sl.p - 1, err);
                     if (!ok) {

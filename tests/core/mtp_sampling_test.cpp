@@ -5,6 +5,7 @@
 #include "strata/core/mtp.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/coupled_draft.hpp"
+#include "strata/core/gated_proposal.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/core/spec_prob.hpp"
 
@@ -95,6 +96,115 @@ struct MtpSamplingFixture {
         for (size_t s = 0; s < v.slot_spec_q_.size(); ++s)
             require(v.slot_spec_q_[s] == nullptr && v.slot_spec_nq_[s] == 0 && !v.slot_spec_measure_[s],
                     "slot proposal pointer/count/measure consumed once");
+    }
+    static void chains(int device) {
+        // Deterministic device-to-host graph outputs exercise the production chain scheduler,
+        // including the failed q row. A per-step receipt detects work queued after confidence failed.
+        struct Output { int32_t token; float score; std::array<int32_t, kSpecQStride> q; };
+        std::array<Output, 6> outputs;
+        Output* source = nullptr;
+        int32_t* ran = nullptr;
+        check(cudaMalloc(&source, sizeof(outputs)), "chain fixture device outputs");
+        check(cudaHostAlloc((void**) &ran, 6 * sizeof(int32_t), cudaHostAllocMapped), "chain receipts");
+        {
+            ModelGeometry geometry;
+            geometry.n_head = 1;
+            std::array<MtpDrafter, 2> owners;
+            for (int b = 0; b < 2; ++b) {
+                auto& d = owners[b];
+                d.device_ = device; d.g_ = &geometry; d.max_t_ = 4; d.force_on_ = true;
+                d.coupled_active_ = b == 1;
+                check(cudaStreamCreateWithFlags(&d.cs_, cudaStreamNonBlocking), "chain owner stream");
+                check(cudaEventCreateWithFlags(&d.ev_chain_, cudaEventDisableTiming), "chain completion");
+                auto host = [&](void** p, size_t bytes) { check(cudaHostAlloc(p, bytes, cudaHostAllocMapped), "chain staging"); };
+                host((void**) &d.h_tok_, 4 * sizeof(int32_t));
+                host((void**) &d.h_step_, 32 * sizeof(int32_t));
+                host((void**) &d.h_pos_, 8 * sizeof(int32_t));
+                host((void**) &d.h_row_, 2 * sizeof(int32_t));
+                host((void**) &d.h_force_, 16 * sizeof(int32_t));
+                host((void**) &d.h_out_, 8 * sizeof(int32_t));
+                host((void**) &d.h_prob_, 8 * sizeof(float));
+                host((void**) &d.h_q_, 3 * kSpecQStride * sizeof(int32_t));
+                for (int j = 0; j < 3; ++j) {
+                    check(cudaEventCreateWithFlags(&d.ev_step_[j], cudaEventDisableTiming), "chain early output");
+                    check(cudaStreamBeginCapture(d.cs_, cudaStreamCaptureModeThreadLocal), "capture chain fixture");
+                    const auto* row = source + b * 3 + j;
+                    check(cudaMemcpyAsync(d.h_out_ + j, &row->token, sizeof(int32_t), cudaMemcpyDeviceToHost, d.cs_), "chain token");
+                    check(cudaMemcpyAsync(d.h_prob_ + j, &row->score, sizeof(float), cudaMemcpyDeviceToHost, d.cs_), "chain score");
+                    check(cudaMemcpyAsync(d.h_q_ + j * kSpecQStride, row->q.data(), sizeof(row->q), cudaMemcpyDeviceToHost, d.cs_), "chain q");
+                    check(cudaMemcpyAsync(ran + b * 3 + j, &row->token, sizeof(int32_t), cudaMemcpyDeviceToHost, d.cs_), "chain receipt");
+                    cudaGraph_t graph = nullptr;
+                    cudaGraphExec_t exec = nullptr;
+                    check(cudaStreamEndCapture(d.cs_, &graph), "finish chain fixture");
+                    check(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "instantiate chain fixture");
+                    check(cudaGraphDestroy(graph), "release chain fixture graph");
+                    if (j == 0) (b ? d.round_exec_c_ : d.round_exec_)[1] = exec;
+                    else (b ? d.step_exec_c_ : d.step_exec_)[j] = exec;
+                }
+            }
+            const float scores[4][6] = {{.25f, .75f, .75f, .75f, .5f, .25f},
+                                         {.75f, .25f, .75f, .75f, .5f, .75f},
+                                         {.25f, .75f, .75f, .75f, .5f, .25f},
+                                         {.25f, .75f, .75f, .75f, .5f, .75f}};
+            const int generated[4][2] = {{1, 3}, {2, 3}, {3, 3}, {1, 1}};
+            const int offers[4][2] = {{0, 2}, {1, 3}, {3, 3}, {0, 1}};
+            const int32_t token = 0;
+            std::string err;
+            for (int test = 0; test < 4; ++test) {
+                const float threshold = test == 2 ? 0.0f : 0.5f;
+                const int budget = test == 3 ? 1 : 3;
+                std::fill_n(ran, 6, 0);
+                for (int i = 0; i < 6; ++i) {
+                    auto& o = outputs[i];
+                    o.token = i + 1; o.score = scores[test][i]; o.q.fill(-1);
+                    o.q[0] = o.token;
+                    std::memcpy(o.q.data() + kSpecQEntries, &o.score, sizeof(float));
+                    // The greedy owner's low-confidence winner is a four-way tie.
+                    if (i < 3 && o.score == .25f) {
+                        for (int k = 1; k < 4; ++k) {
+                            o.q[k] = o.token + k;
+                            std::memcpy(o.q.data() + kSpecQEntries + k, &o.score, sizeof(float));
+                        }
+                    } else {
+                        o.q[1] = 7;
+                        const float rest = 1.0f - o.score;
+                        std::memcpy(o.q.data() + kSpecQEntries + 1, &rest, sizeof(float));
+                    }
+                }
+                check(cudaMemcpy(source, outputs.data(), sizeof(outputs), cudaMemcpyHostToDevice), "stage chain fixture");
+                for (auto& d : owners)
+                    require(d.chain_launch(1, &token, 10, 0, nullptr, 0, budget, 3, err, true, threshold), err.c_str());
+                for (auto& d : owners) {
+                    require(d.idle(err), err.c_str());
+                    require(d.chain_outputs_ready(err) == (threshold > 0 ? 1 : budget), "only submitted early events are readable");
+                }
+                bool pending;
+                do {
+                    pending = false;
+                    for (auto& d : owners) if (d.chain_live()) {
+                        const int ready = d.chain_poll(err);
+                        require(ready >= 0, err.c_str());
+                        pending = pending || ready == 0;
+                    }
+                } while (pending);
+                for (int b = 0; b < 2; ++b) {
+                    auto& d = owners[b];
+                    require(d.idle(err), err.c_str());
+                    const auto result = d.chain_result();
+                    require(result.generated == generated[test][b] && result.budget == budget, "actual attempts retain original budget");
+                    for (int j = 0; j < 3; ++j)
+                        require(ran[b * 3 + j] == (j < result.generated ? outputs[b * 3 + j].token : 0), "no graph executes after failed confidence");
+                    gated::Packet packet;
+                    const bool built = gated::make_packet(packet, d.spec_q(), d.chain_tok(), d.chain_prob(),
+                            result.generated, result.budget, 4, kVocab, threshold, false, {});
+                    require(built, packet.error);
+                    require(packet.offers == offers[test][b] && packet.null_tail == (offers[test][b] < result.generated),
+                            "failed attempt remains NULL rather than a budget bonus");
+                }
+            }
+        }
+        check(cudaFreeHost(ran), "free chain receipts");
+        check(cudaFree(source), "free chain fixture outputs");
     }
     static void verdicts(int device, const ModelGeometry& g, bool unavailable) {
         Verifier v;
@@ -240,6 +350,7 @@ int main(int argc, char** argv) {
     const float* owned_bias = nullptr;
     const char* one_block = std::getenv("STRATA_SAMPLER_ONE_BLOCK");
     MtpSamplingFixture::verdicts(drafter_device, g, one_block && std::atoi(one_block) != 0);
+    MtpSamplingFixture::chains(drafter_device);
     {
         Verifier last, first;
         MtpSamplingFixture::init_source(last, source_device, g);

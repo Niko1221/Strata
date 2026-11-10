@@ -188,8 +188,10 @@ public:
     /// own pick, and step j (1 <= j <= n_force) takes force[j - 1] as its input token instead of output j - 1.
     /// `n_early`: an event after each of the first `n_early` outputs (chain_outputs_ready).
     /// `coupled` enables the request's sampled chain when active; false preserves the existing greedy chain.
+    /// Positive min_p lets chain_poll enqueue each next step only after the preceding score passes it.
+    /// The failing attempt stays materialized; chain_result() is valid after successful completion.
     bool chain_launch(int T, const int32_t* tokens, int64_t p, int a, const int32_t* force, int n_force, int n_out,
-                      int n_early, std::string& err, bool coupled = false);
+                      int n_early, std::string& err, bool coupled = false, float min_p = 0.0f);
     /// 1: every output is in chain_tok()/chain_prob(); 0: still running; -1: an error.
     int chain_poll(std::string& err);
     /// How many of the chain's first outputs (up to `n_early`; all of them once the chain is done) have landed in
@@ -197,6 +199,7 @@ public:
     /// spec_min_p ends it), so the next launch need not wait for all of them.
     int chain_outputs_ready(std::string& err);
     bool chain_live() const { return chain_live_; }
+    DraftResult chain_result() const { return {chain_n_, chain_budget_}; }
     const int32_t* chain_tok() const { return chain_tok_; }
     const float* chain_prob() const { return chain_prob_; }
 
@@ -300,12 +303,13 @@ private:
     std::vector<float> lg_host_;
     // --pipeline-windows 2 (chain_launch)
     bool stage_source_R(int T, std::string& err);   ///< set_source_R's rows into the bound buffer
-    bool force_on_ = false, chain_live_ = false;
+    bool force_on_ = false, chain_live_ = false, chain_coupled_ = false;
     const float* src_R_ = nullptr;
     int32_t *h_force_ = nullptr, *m_force_ = nullptr;   ///< the forced tokens (mapped), -1 = the step's own pick
     cudaEvent_t ev_chain_ = nullptr;
     cudaEvent_t ev_step_[8] = {};                       ///< after each of the first n_early outputs
-    int steps_seen_ = 0, chain_n_ = 0, chain_early_ = 0;
+    int steps_seen_ = 0, chain_n_ = 0, chain_early_ = 0, chain_budget_ = 0;
+    float chain_min_p_ = 0.0f;
     int32_t chain_tok_[8] = {};
     float chain_prob_[8] = {};
     int64_t n_vocab_ = 0;
