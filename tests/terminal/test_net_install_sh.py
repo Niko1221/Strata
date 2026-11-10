@@ -70,5 +70,27 @@ class InstallFetch(unittest.TestCase):
         self.assertGreater(took, 70)
 
 
+class InstallPs1Text(unittest.TestCase):
+    """Item 6: packaging/install.ps1 under the same rule (its real run is on Windows, through the coordinator)."""
+
+    def setUp(self):
+        self.ps1 = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+
+    def test_every_download_goes_through_fetch_with_the_limits(self):
+        self.assertNotIn("Invoke-WebRequest", self.ps1)
+        self.assertNotIn("Invoke-RestMethod", self.ps1)
+        self.assertEqual(len(re.findall(r"\bFetch \"\$feed/", self.ps1)), 3)
+        for text in ("$req.Timeout = 15000", "$req.ReadWriteTimeout = 60000", "Start-Sleep -Seconds 2", "$try -lt 2 -and $timedOut",
+                     "[Net.WebExceptionStatus]::Timeout", "$ProgressPreference = 'SilentlyContinue'", "DefaultNetworkCredentials"):
+            self.assertIn(text, self.ps1)
+        self.assertNotIn("TimeoutSec", self.ps1.split("& {", 1)[1])     # no total cap inside the script (PowerShell 7 would cut a slow download)
+
+    def test_the_messages(self):
+        self.assertIn("did not answer (or this computer is offline), so the installer could not start. Check that this computer can open "
+                      "https://$feedHost, then run the same line again. Nothing was installed.", self.ps1)
+        self.assertIn("the download stopped: $feedHost did not answer, or no data came for 60 seconds. Run the same line again; nothing was installed.",
+                      self.ps1)
+
+
 if __name__ == "__main__":
     unittest.main()
