@@ -161,6 +161,22 @@ def image_env(cfg: dict, base: dict | None = None) -> dict:
     return env
 
 
+TIMING = re.compile(r"(get_learned_condition|sampling|decode_first_stage) completed, taking ([0-9]+(?:\.[0-9]+)?) ?(ms|s)\b")
+
+
+def log_figures(log: str) -> dict:
+    """The job's stage times from sd-cli's log: text_encode_ms, sampling_s, vae_decode_s (the last of each line).
+    stable-diffusion.cpp 2988060 (the pinned commit) prints seconds for all three ("taking 0.70s"); the "N ms" form is
+    read as well."""
+    out = {}
+    for stage, num, unit in TIMING.findall(log):
+        secs = float(num) / 1000 if unit == "ms" else float(num)
+        key, val = {"get_learned_condition": ("text_encode_ms", secs * 1000), "sampling": ("sampling_s", secs),
+                    "decode_first_stage": ("vae_decode_s", secs)}[stage]
+        out[key] = round(val, 3)
+    return out
+
+
 def need_mib(cfg: dict, width: int, height: int) -> int:
     """The GPU memory an image job is planned with: the three model files plus the working buffers (about 2 GiB plus
     4 GiB per megapixel at Turbo's settings; the 780M baseline peaked 7.4 GB over the weights at 1024x1024 on HIP);
@@ -300,12 +316,7 @@ class ImageGen:
         figures = {"seconds": round(secs, 2), "steps": job["steps"], "n": job["n"],
                    "size": f"{job['width']}x{job['height']}", "seed": job["seed"],
                    "backend": self.cfg.get("backend"), "quant": self.cfg.get("quant")}
-        for key, pat in (("text_encode_ms", r"get_learned_condition completed, taking ([0-9.]+) ?ms"),
-                         ("sampling_s", r"sampling completed, taking ([0-9.]+) ?s"),
-                         ("vae_decode_s", r"decode_first_stage completed, taking ([0-9.]+) ?s")):
-            m = re.findall(pat, log)
-            if m:
-                figures[key] = float(m[-1])
+        figures.update(log_figures(log))
         self.totals["jobs"] += 1
         self.totals["images"] += job["n"]
         self.totals["seconds"] += secs

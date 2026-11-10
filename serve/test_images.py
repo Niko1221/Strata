@@ -129,6 +129,24 @@ class Command(unittest.TestCase):
                 images_api.ImageGen(image_cfg(d, gpu_policy="sometimes"))
 
 
+class LogFigures(unittest.TestCase):
+    def test_seconds_as_the_pinned_sd_cpp_prints_them(self):
+        log = ("[I] get_learned_condition completed, taking 0.70s --- image.cpp:529\n"
+               "[I] sampling completed, taking 19.27s --- image.cpp:899\n"
+               "[I] decode_first_stage completed, taking 3.40s --- image.cpp:624\n")
+        self.assertEqual(images_api.log_figures(log),
+                         {"text_encode_ms": 700.0, "sampling_s": 19.27, "vae_decode_s": 3.4})
+
+    def test_milliseconds_form(self):
+        log = "[INFO ] get_learned_condition completed, taking 12 ms\n[INFO ] sampling completed, taking 80ms\n"
+        self.assertEqual(images_api.log_figures(log), {"text_encode_ms": 12.0, "sampling_s": 0.08})
+
+    def test_the_last_line_counts_and_other_lines_are_ignored(self):
+        log = ("generating 1 latent images completed, taking 19.27s\n"
+               "[I] sampling completed, taking 1.00s\n[I] sampling completed, taking 2.50s\n")
+        self.assertEqual(images_api.log_figures(log), {"sampling_s": 2.5})
+
+
 class FakeEngine:
     """An engine with the parts the GPU turn uses: alive/unload/restart, vram (elastic) and session files."""
 
@@ -295,6 +313,8 @@ class OverHttp(unittest.TestCase):
         self.assertEqual(body["size"], "512x768")
         self.assertEqual(body["strata"]["steps"], 8)
         self.assertEqual(body["strata"]["sampling_s"], 0.08)
+        self.assertEqual(body["strata"]["text_encode_ms"], 700.0)   # was never filled: sd.cpp prints seconds
+        self.assertEqual(body["strata"]["vae_decode_s"], 0.02)
         self.assertEqual(body["strata"]["gpu_policy"], "keep")
         self.assertEqual(self.svc.images.totals["images"], 2)
         self.assertEqual([p.name for p in Path(self.svc.images.dir).iterdir()], [])   # nothing left behind

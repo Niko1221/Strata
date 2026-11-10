@@ -43,7 +43,8 @@ def main(argv):
     steps = int(a.get("--steps", 20))
     for s in range(1, steps + 1):
         print(f"  |{'=' * s}| {s}/{steps} - 0.01s/it", flush=True)
-    print("[INFO ] get_learned_condition completed, taking 12 ms", flush=True)
+    # stable-diffusion.cpp 2988060 prints seconds here (pipeline/image.cpp: "taking %.2fs")
+    print("[I] get_learned_condition completed, taking 0.70s --- image.cpp:529", flush=True)
     print("[INFO ] sampling completed, taking 0.08s", flush=True)
     print("[INFO ] decode_first_stage completed, taking 0.02s", flush=True)
     w, h, seed, n = int(a["-W"]), int(a["-H"]), int(a["-s"]), int(a.get("-b", 1))
