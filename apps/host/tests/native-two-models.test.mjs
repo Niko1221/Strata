@@ -62,8 +62,8 @@ test('card names use the GPU numbering of the other screens, and the fit figures
   assert.match(models, /const keptModels = expert && multiple/);
   assert.match(models, /inUse=\{keptModels\.length \?/);
   const card = await readFile(new URL('../src/components/PcFitCard.tsx', import.meta.url), 'utf8');
-  assert.match(card, /total=\{freeVram\}/);
-  assert.match(card, /total=\{freeRam\}/);
+  assert.match(card, /vramGb > 0 \? <FreeMeter label="Graphics memory" total=\{live\.vramTotalGb \?\? vramGb\} free=\{live\.freeVramGb\}/);
+  assert.match(card, /<FreeMeter label="RAM" total=\{ramGb\} free=\{live\.freeRamGb\}/);
   // the arithmetic itself
   const text = 'fits: needs 44 GB of the 273 GB available.';
   const gone = Math.round(14 + 27);

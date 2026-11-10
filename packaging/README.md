@@ -1,7 +1,7 @@
 # Strata packaging: targets, recipes and locks
 
 This page is for developers who build the desktop app, the Terminal archive and the engine packages. To install Strata, use
-[docs/INSTALL.md](../docs/INSTALL.md). It describes the current release (app and Terminal 0.2.5, Control and engines 0.1.50).
+[docs/INSTALL.md](../docs/INSTALL.md). It describes the current release (app and Terminal 0.2.13, Control and engines 0.1.59).
 How packages are signed and published is in [UPDATES.md](UPDATES.md), and the package format is in [ENGINE-COMPONENT.md](ENGINE-COMPONENT.md).
 
 Release assets show what was published; the platform guides and retained reports show what was tested. A published package does not
@@ -30,6 +30,7 @@ Each row is an OS, CPU ABI and backend. A row is `qualified` only after the acce
 | `windows-x86_64-hip` | NSIS `.exe` (Tauri) | `tools/hip/build_windows.bat` | Published. Strix Halo inference is recorded in [STRIX_HALO.md](../docs/STRIX_HALO.md). This does not qualify every discrete Radeon card ([AMD_HIP.md](../docs/AMD_HIP.md)). |
 | `linux-x86_64-cuda` | AppImage (Tauri) | `packaging/build_cuda_linux.sh`, built in a glibc 2.35 chroot | `cuda13` built and tested on RTX 3060 and RTX A4000 (app in the browser, a real model, a picture). `cuda12` built. |
 | `linux-x86_64-hip` | AppImage (Tauri) | `packaging/build_hip_linux.sh` | `rx9070` (gfx1200 / gfx1201) built and tested on a Radeon AI PRO R9700. `rx7900` (gfx1100 / 1101 / 1102) built, not run on an RX 7000 card. `rx6000` (gfx1030 / 1031) built, not tested on a real RX 6000 card. |
+| `linux-aarch64-cuda` | none (no AppImage for arm64) | `packaging/build_cuda_linux_aarch64.sh`, built on the DGX Spark (`cuda13`, `sm_121`) | Engine packages (Qwen with `strata-dsv41` inside, and the separate DeepSeek one) and the Terminal archive built and tested on one DGX Spark ([DGX_SPARK_LINUX.md](../docs/DGX_SPARK_LINUX.md)). Not tried on any other arm64 machine. |
 | `linux-x86_64-sycl` | none | `packaging/build_sycl_linux.sh` (one JIT package for Alchemist and Battlemage) | Engine package built and tested on an Arc A750. Battlemage is supported and untested by us. |
 | `windows-x86_64-sycl` | none | none | Gated. No native Windows SYCL path exists upstream. |
 | `macos-x86_64-*` | none | none | Unsupported. The macOS engine is Apple Silicon only. |
@@ -126,7 +127,7 @@ separate, explicit action. `apps/host/tests/no-acquire.test.mjs` fails on any ou
 
 ## The Terminal archive
 
-The Terminal bundles a private Python and its dependencies for `windows-x86_64`, `linux-x86_64` and `darwin-arm64`
+The Terminal bundles a private Python and its dependencies for `windows-x86_64`, `linux-x86_64`, `linux-aarch64` (DGX Spark) and `darwin-arm64`
 (`package_terminal.py --target ...`, built on the target OS).
 
 - The interpreter is python-build-standalone CPython 3.12.15, digest-checked at build time.
@@ -143,7 +144,7 @@ The Terminal bundles a private Python and its dependencies for `windows-x86_64`,
 1. The app launches and the window serves the supplied UI from the host's origin.
 2. The owner transport works: one owner per installation, a second client attaches, a stale owner can be recovered, and no client can stop a process it does not own.
 3. Real inference on a supported pack, with the engine build hash and the model hashes recorded.
-4. `docs/work/QUALIFICATION-KIT.md` run end to end, with raw evidence kept.
+4. A qualification run on that platform, with raw evidence kept. The Mac-first run in October 2026 is the earlier example: [history/docs/work/QUALIFICATION-KIT.md](../history/docs/work/QUALIFICATION-KIT.md).
 
 ## Release checks and gaps
 

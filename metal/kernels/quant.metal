@@ -10,6 +10,21 @@
 // Blocks start at 2-byte aligned addresses (18, 66, 74, 82, 98, 110 bytes), so every multi-byte field is read as
 // ushorts.
 
+#ifndef STRATA_XH16_DECL
+#define STRATA_XH16_DECL
+// STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
+// [3][plane] halves - raw (IQ4_XS), x * 4^-(i % 4) (Q2_0), x * 2^-8 at odd i (the K-quants); idx = t * n + d, jj = d % 16
+constant bool XH16 [[function_constant(25)]];
+constant bool xh16 = is_function_constant_defined(XH16) && XH16;
+static inline void put_x16(device float* xp, uint plane, uint idx, uint jj, float v) {
+    device half* xh = (device half*)(xp + 4 * plane + plane / 16);
+    const float q2b[4] = {1.0f, 0.25f, 0.0625f, 0.015625f};
+    xh[idx] = half(v);
+    xh[plane + idx] = half(v * q2b[jj & 3]);
+    xh[2 * plane + idx] = half((jj & 1) ? v * 0.00390625f : v);
+}
+#endif
+
 #define T_Q4_0 2
 #define T_Q3_K 11
 #define T_BF16 30
@@ -25,6 +40,8 @@
 #define T_IQ3_XXS 18
 #define T_IQ4_NL 20
 #define T_IQ3_S 21
+#define T_IQ1_S 19   // Unsloth UD-IQ1_S / UD-IQ1_M experts (50-byte blocks)
+#define T_IQ1_M 29   // the 2.00 bpw pack's 1.75-bit type
 #define T_IQ2_S 22
 #define T_IQ4_XS 23
 #define T_Q2_0 42
@@ -39,6 +56,8 @@ template <> struct fmt<T_Q2_0>    { enum { QK = 64,  BB = 18,  UNIT = 16, TAB = 
 template <> struct fmt<T_Q2_0R>   { enum { QK = 64,  BB = 18,  UNIT = 16, TAB = 1 }; };
 template <> struct fmt<T_IQ3_XXS> { enum { QK = 256, BB = 98,  UNIT = 16, TAB = 256 + 32 }; };
 template <> struct fmt<T_IQ2_XXS> { enum { QK = 256, BB = 66,  UNIT = 16, TAB = 512 + 32 }; };
+template <> struct fmt<T_IQ1_M> { enum { QK = 256, BB = 56, UNIT = 16, TAB = 1 }; };
+template <> struct fmt<T_IQ1_S> { enum { QK = 256, BB = 50, UNIT = 16, TAB = 1 }; };
 template <> struct fmt<T_IQ2_XS>  { enum { QK = 256, BB = 74,  UNIT = 16, TAB = 1024 + 32 }; };
 template <> struct fmt<T_IQ2_S>   { enum { QK = 256, BB = 82,  UNIT = 16, TAB = 2048 + 32 }; };
 template <> struct fmt<T_IQ3_S>   { enum { QK = 256, BB = 110, UNIT = 16, TAB = 512 + 32 }; };
@@ -389,6 +408,9 @@ template <> inline void load_tab<T_IQ2_XS>(threadgroup uint* tab, ushort tid, us
     for (int i = tid; i < 512; i += nth) { tab[2 * i] = uint(iq2xs_grid[i]); tab[2 * i + 1] = uint(iq2xs_grid[i] >> 32); }
     load_signs(tab, 1024, tid, nth);
 }
+// IQ1_M: no threadgroup table - the tile reads iq1s_grid from the constants (the w4 helper in moe_mm.metal)
+template <> inline void load_tab<T_IQ1_M>(threadgroup uint*, ushort, ushort) {}
+template <> inline void load_tab<T_IQ1_S>(threadgroup uint*, ushort, ushort) {}   // (same: iq1s_grid from the constants)
 template <> inline void load_tab<T_IQ2_S>(threadgroup uint* tab, ushort tid, ushort nth) {
     if (ctab) return;
     for (int i = tid; i < 1024; i += nth) { tab[2 * i] = uint(iq2s_grid[i]); tab[2 * i + 1] = uint(iq2s_grid[i] >> 32); }

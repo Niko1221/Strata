@@ -1,6 +1,7 @@
 // src/kernels/cuda/fused_gr.cu - see include/strata/kernels/fused_gr.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <mutex>
+#include "strata/kprof.hpp"
 #include "strata/core/geometry.hpp"
 #include <unordered_map>
 #include <sycl/sycl.hpp>
@@ -24,18 +25,22 @@
 namespace strata::kernels {
 namespace {
 
-constexpr int N = 2560;         // n_embd
-constexpr int HC = 4;           // streams
+constexpr int N = strata::core::kCompiledGeometry.n_embd;         // 2560 in Flash-Next
+constexpr int HC = strata::core::kCompiledGeometry.hc;           // streams
 constexpr int D = N * HC;       // 10240
-constexpr int LR = 320;         // hc_lr
-static_assert(N == strata::core::kCompiledGeometry.n_embd && HC == strata::core::kCompiledGeometry.hc && LR == strata::core::kCompiledGeometry.hc_lr, "fused_gr is compiled for core/geometry.hpp");
+constexpr int LR = strata::core::kCompiledGeometry.hc_lr;         // 320
+static_assert(N % 512 == 0 && LR % 64 == 0 && LR >= 256 && LR <= 512, "fused_gr: n_embd must be a multiple of 512 and hc_lr one of 256..512 in steps of 64 (the lane rule `lane < LR / 8 - 32` and the 128-column slices)");
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
 #if defined(__HIPCC__)
-constexpr int TILE = 1280;             // eight-token tile fits gfx1100's 64 KiB LDS limit
+constexpr int TILE = N / 2;            // eight-token tile fits gfx1100's 64 KiB LDS limit
 #else
-constexpr int TILE = 2560;             // xn floats per token staged at a time: 320 chunks of 8, 10 per lane
+constexpr int TILE = N;                // xn floats per token staged at a time: 320 chunks of 8, 10 per lane (Flash-Next)
 #endif
+// The single-token down kernel keeps the whole normalised hidden row (D floats) in work-group local memory: static while that
+// fits 48 KB (Flash-Next: 40 KB).  Beyond it (hidden 3072 and up) fused_gr_read takes the multi-token read of one token, which is
+// bitwise the same read (the sliced / split kernels need 4 KB of local memory) and the default path anyway.
+constexpr bool kDownXnTooBig = (size_t) D * 4 + 512 > 48 * 1024;
 constexpr int TQ = TILE / 8 / 32;      // uint4 weight chunks per lane per tile
 // SYCL port: the down kernel's 41 work-groups filled 15% of the B70's threads (metrics 2026-09-30); each row's
 // D = 4 tiles are split over DOWN_SPLIT work-groups that write partial sums, summed in a fixed order by the up
@@ -87,7 +92,7 @@ the code, or use smaller sub-group size to avoid high register pressure.
 */
 __dpct_inline__ void gr_down_kernel(FusedGrArgs a) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-auto &xn = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
+auto &xn = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[kDownXnTooBig ? 1 : D]>(
     sycl::ext::oneapi::this_work_item::get_work_group<3>());
     auto &part =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS][HC]>(
@@ -252,7 +257,42 @@ struct GrMulti {
     float* part;   ///< [DOWN_SPLIT][kFusedGrMaxT][LR] partial row sums of the down kernel
     int nsplit = DOWN_SPLIT;   ///< SYCL port: splits the up kernel sums (1 after the sliced down kernel's reduce)
     float* part2 = nullptr;    ///< SYCL port: [GRS_SLICES][kFusedGrMaxT][LR + HC] slice partials of the sliced kernel
+    bool cached_norm = false;
+    bool cached_lo = false;
 };
+
+bool gr_overlap(const void* a, size_t as, const void* b, size_t bs) {
+    if (!a || !b || !as || !bs) return false;
+    const uintptr_t av = reinterpret_cast<uintptr_t>(a), bv = reinterpret_cast<uintptr_t>(b);
+    return av <= bv ? bv - av < as : av - bv < bs;
+}
+
+bool gr_reuse_safe(const FusedGrArgs* a, int T, const float* xn) {
+    for (int k = 0; k < T; ++k) {
+        const std::pair<const void*, size_t> spans[] = {
+            {a[k].R, D * sizeof(float)}, {a[k].R_out, D * sizeof(float)},
+            {a[k].bo_prev, N * sizeof(float)}, {a[k].inj_prev, HC * sizeof(float)},
+            {a[k].w_norm, D * sizeof(float)}, {a[k].w_down, size_t(LR) * D * sizeof(uint16_t)},
+            {a[k].w_up, size_t(D) * LR * sizeof(uint16_t)},
+            {a[k].w_inject, size_t(HC) * D * sizeof(uint16_t)},
+            {a[k].rs, HC * sizeof(float)}, {a[k].inject_out, HC * sizeof(float)},
+            {a[k].mixed, N * sizeof(float)},
+        };
+        if (gr_overlap(xn, size_t(T) * D * sizeof(float), a[k].lo, LR * sizeof(float)))
+            return false;
+        for (const auto& span : spans) {
+            if (gr_overlap(xn, size_t(T) * D * sizeof(float), span.first, span.second))
+                return false;
+            for (int j = 0; j < T; ++j)
+                if (gr_overlap(a[j].lo, LR * sizeof(float), span.first, span.second))
+                    return false;
+        }
+        for (int j = 0; j < k; ++j)
+            if (gr_overlap(a[j].lo, LR * sizeof(float), a[k].lo, LR * sizeof(float)))
+                return false;
+    }
+    return true;
+}
 
 // SYCL port (Arc): a RUNTIME index into the by-value kernel argument (m.a[k]) makes IGC copy the whole GrMulti
 // (~1.2 KB) into every work-item's private scratch - unitrace: ~40 KB private per SIMD32 thread on the A770 for
@@ -596,7 +636,7 @@ __dpct_inline__ void gr_down_sliced_kernel(GrMulti m, float* tile) {
     }
 }
 static_assert(GRS_SLICES % 8 == 0, "the 8-at-a-time reduce reads whole groups of 8 slices");
-template <bool MORE = false>
+template <bool MORE = false, bool REUSE_LO = false>
 __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
     auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = (int) item.get_global_id(2);
@@ -619,8 +659,15 @@ __dpct_inline__ void gr_down_reduce_kernel(GrMulti m) {
     } else {
         for (int sl = 0; sl < GRS_SLICES; ++sl) x += m.part2[((size_t) sl * kFusedGrMaxT + k) * GRS_ROWS + r];
     }
-    if (r < LR) m.part[(size_t) k * LR + r] = x;   // split 0
-    else GR_PICK(m, k, inject_out)[r - LR] = x;
+    if (r < LR) {
+        m.part[(size_t) k * LR + r] = x;   // split 0
+        if constexpr (REUSE_LO) {
+            float v = 0.0f;
+            v += x;
+            v /= (float) HC;
+            GR_PICK(m, k, lo)[r] = v / (1.0f + sycl::native::exp(-v));
+        }
+    } else GR_PICK(m, k, inject_out)[r - LR] = x;
 }
 // Large-GRF mode (256 registers per thread instead of 128) for the sliced down kernel and the multi-token up kernel.
 // On the A770 the up kernel spills ~3.4 KB per thread at 128 (unitrace). Large GRF halves the threads an Xe core keeps
@@ -681,7 +728,7 @@ Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
 // COLS: columns per block (UPM_COLS, or UPM_COLS_MORE with LO_ONCE under gr_more_groups)
-template <int COLS = UPM_COLS, bool ILP = false, bool LO_ONCE = false>   // columns per block: 16 (the original), 8 or 4 - each row's dot, butterfly and the per-column
+template <int COLS = UPM_COLS, bool ILP = false, bool LO_ONCE = false, bool REUSE = false>
 __dpct_inline__ void gr_up_multi_kernel(GrMulti m) {   // stream sum unchanged, so the same bits; more blocks, fewer serial rows per warp
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -696,6 +743,12 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
 #pragma unroll
     for (int i = t; i < T * LR; i += THREADS) {   // the down kernel's partial sums, in split order, then silu
         const int k = i / LR, r = i % LR;
+        if constexpr (REUSE) {
+            if (m.cached_lo) {
+                lo[k][r] = GR_PICK(m, k, lo)[r];
+                continue;
+            }
+        }
         float x = 0.0f;
 #pragma unroll
         for (int sp = 0; sp < DOWN_SPLIT; ++sp) if (sp < m.nsplit) x += m.part[((size_t) sp * kFusedGrMaxT + k) * LR + r];
@@ -740,9 +793,11 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         float rv = 0.0f, wn = 0.0f, rsc = 0.0f, bo = 0.0f, ip = 0.0f;
         bool apply = false;
         if (lane < T) {
-            rv = pR[i];
-            wn = pWn[i];
-            rsc = pRs[c];
+            if (!REUSE || !m.cached_norm || pApply) rv = pR[i];
+            if (!REUSE || !m.cached_norm) {
+                wn = pWn[i];
+                rsc = pRs[c];
+            }
             apply = pApply;
             if (apply) { bo = pBo[d0 + dd]; ip = pIp[c]; }
         }
@@ -781,7 +836,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
                 rv = sycl::fma(bo, 2.0f * sigmoidf_(ip / (float)HC), rv);
                 pRout[i] = rv;
             }
-            const float x = rv * wn * rsc;
+            const float x = REUSE && m.cached_norm ? m.xn[(size_t) lane * D + i] : rv * wn * rsc;
             g[lane][c][dd] = x * sigmoidf_(mine);
         }
     }
@@ -803,7 +858,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
 // gr_more_groups launches (BIG: large GRF, as gr_large_grf)
 template <bool BIG>
 void launch_gr_down_more(dpct::queue_ptr st, const GrMulti& m) {
-    st->submit([&](sycl::handler& cgh) {
+    strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& cgh) {
         sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * GRS_COLS), cgh);
         const sycl::nd_range<3> nr(sycl::range(1, 1, GRS_SLICES * GRS_RB) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
         auto body = [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
@@ -816,7 +871,7 @@ void launch_gr_down_more(dpct::queue_ptr st, const GrMulti& m) {
             cgh.parallel_for<dpct_kernel_name<class gr_down_sliced_more, dpct_kernel_scalar<0>>>(nr, body);
     });
     const unsigned nred = unsigned((m.T * GRS_ROWS + 127) / 128);
-    st->parallel_for<dpct_kernel_name<class gr_down_reduce_more, dpct_kernel_scalar<BIG ? 1 : 0>>>(
+    strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_reduce_more, dpct_kernel_scalar<BIG ? 1 : 0>>>(
         sycl::nd_range<3>(sycl::range(1, 1, nred) * sycl::range(1, 1, 128), sycl::range(1, 1, 128)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel<true>(m); });
 }
@@ -825,11 +880,11 @@ void launch_gr_up_more(dpct::queue_ptr st, const GrMulti& m) {
     const sycl::nd_range<3> nr(sycl::range(1, 1, UPM_BLOCKS_MORE) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
     auto body = [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<UPM_COLS_MORE, false, true>(m); };
     if constexpr (BIG)
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_more, dpct_kernel_scalar<1>>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_multi_more, dpct_kernel_scalar<1>>>(
             nr, sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
                                                             sycl::ext::intel::experimental::grf_size<256>}, body);
     else
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_more, dpct_kernel_scalar<0>>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_multi_more, dpct_kernel_scalar<0>>>(
             nr, sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync}, body);
 }
 
@@ -850,18 +905,27 @@ template <int C>
 void launch_gr_up_cols(dpct::queue_ptr st, const GrMulti& m, bool grf) {
     auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
     const sycl::nd_range<3> r(sycl::range(1, 1, N / C) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
+    if constexpr (C == UPM_COLS) {
+        if (m.cached_norm || m.cached_lo) {
+            st->parallel_for<dpct_kernel_name<class gr_up_multi_reuse>>(r, exp_props,
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_up_multi_kernel<C, false, false, true>(m);
+                });
+            return;
+        }
+    }
     if (grf) {   // Arc A-series: large-GRF mode (256 regs/thread); at 128 this kernel spills ~3.4 KB/thread on the A770
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols_grf256, dpct_kernel_scalar<C>>>(r,
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_multi_cols_grf256, dpct_kernel_scalar<C>>>(r,
             sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync,
                                                         sycl::ext::intel::experimental::grf_size<256>},
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C>(m); });
         return;
     }
     if (gr_up_ilp())
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols_ilp, dpct_kernel_scalar<C>>>(r, exp_props,
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_multi_cols_ilp, dpct_kernel_scalar<C>>>(r, exp_props,
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C, true>(m); });
     else
-        st->parallel_for<dpct_kernel_name<class gr_up_multi_cols, dpct_kernel_scalar<C>>>(r, exp_props,
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_multi_cols, dpct_kernel_scalar<C>>>(r, exp_props,
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_up_multi_kernel<C>(m); });
 }
 inline void launch_gr_up_multi(dpct::queue_ptr st, const GrMulti& m, bool grf = false) {
@@ -1151,10 +1215,10 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
 //    accumulates its chunks lane + 32 q in ascending order, as in the plain read with either tile.  Before sm_80
 //    (and on HIP) the staging is a plain copy: the same bits, only not asynchronous.
 constexpr int kHcPlain = 1, kHcSplit = 2, kHcStaged = 3;
-constexpr int H_TILE = 1280;                          // staged tile: half a stream = 160 chunks of 8, 5 per lane
+constexpr int H_TILE = N / 2;                         // staged tile: half a stream = 160 chunks of 8, 5 per lane (1280 for Flash-Next)
 constexpr int HQ = H_TILE / 8 / 32;
 constexpr int N_HTILES = D / H_TILE;                  // 8
-static_assert(N % H_TILE == 0, "a staged tile never straddles two streams");
+static_assert(N % H_TILE == 0 && N % 512 == 0, "a staged tile never straddles two streams");
 static_assert(H_TILE % 256 == 0, "a staged tile holds whole rounds of 32 chunks: the plain read's lane order");
 
 /*
@@ -1437,7 +1501,7 @@ int down_chunk(bool staged, int* tile_out) {
     int dev = 0;
     dev = dpct::get_current_device_id();
     if (dev < 0 || dev >= 64) {
-        *tile_out = 2560;
+        *tile_out = N;
         return kFusedGrMaxT;
     }
     if (!attr[dev]) {
@@ -1463,7 +1527,7 @@ int down_chunk(bool staged, int* tile_out) {
         cc_min = dpct::get_device(dev).get_minor_version();
         const bool small_tile = strata::cc_major_of(cc_maj) * 10 + strata::cc_minor_of(cc_min) == 75;
 #endif
-        const int tv = small_tile ? 1280 : 2560;
+        const int tv = small_tile ? (N / 2) : N;
         tile[dev] = tv;
         int want = (int) (kFusedGrMaxT * tv * sizeof(float));
         if (optin > 0 && want > optin) want = optin;
@@ -1510,7 +1574,7 @@ int down_chunk(bool staged, int* tile_out) {
         chunk_staged[dev] = capacity_staged < 1 ? 1 : (capacity_staged > kFusedGrMaxT ? kFusedGrMaxT : capacity_staged);
         attr[dev] = true;
     }
-    *tile_out = tile[dev] ? tile[dev] : 2560;
+    *tile_out = tile[dev] ? tile[dev] : N;
     return staged ? chunk_staged[dev] : chunk[dev];
 }
 
@@ -1525,7 +1589,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class gr_norm_split_kernel_200589>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_norm_split_kernel_200589>>(
             sycl::nd_range<3>(sycl::range(1, HC, (unsigned)n_tok) *
                                   sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
@@ -1537,7 +1601,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class gr_norm_multi_kernel_2f4d93>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_norm_multi_kernel_2f4d93>>(
             sycl::nd_range<3>(sycl::range(1, 1, n_tok) *
                                   sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
@@ -1548,7 +1612,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
     }
     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0, (void*) st);
     const bool staged = variant >= kHcStaged;
-    int tv = 2560;
+    int tv = N;
     const int chunk_tok = down_chunk(staged, &tv);
     /*
     DPCT1083: The size of local memory in the migrated code may be different
@@ -1578,7 +1642,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                st->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(smem), cgh);
 
@@ -1602,7 +1666,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                st->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(smem), cgh);
 
@@ -1626,25 +1690,25 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                             });
                 });
             }
-        } else if (tv == 1280) {
+        } else if (tv == (N / 2)) {
             if (max4) {
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                st->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(smem), cgh);
 
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_4a9670,
-                        dpct_kernel_scalar<1280>, dpct_kernel_scalar<4>>>(
+                        dpct_kernel_scalar<(N / 2)>, dpct_kernel_scalar<4>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<1280, 4>(
+                                gr_down_multi_kernel<(N / 2), 4>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1655,7 +1719,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                st->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(smem), cgh);
 
@@ -1665,14 +1729,14 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                     */
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_6a749c,
-                        dpct_kernel_scalar<1280>, dpct_kernel_scalar<1280>>>(
+                        dpct_kernel_scalar<(N / 2)>, dpct_kernel_scalar<(N / 2)>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<1280>(
+                                gr_down_multi_kernel<(N / 2)>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1685,20 +1749,20 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                st->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(smem), cgh);
 
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_2d8885,
-                        dpct_kernel_scalar<2560>, dpct_kernel_scalar<4>>>(
+                        dpct_kernel_scalar<N>, dpct_kernel_scalar<4>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<2560, 4>(
+                                gr_down_multi_kernel<N, 4>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1709,7 +1773,7 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                st->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range(smem), cgh);
 
@@ -1719,14 +1783,14 @@ void launch_multi(const GrMulti &m, int variant, dpct::queue_ptr st,
                     */
                     cgh.parallel_for<dpct_kernel_name<
                         class gr_down_multi_kernel_df2ead,
-                        dpct_kernel_scalar<2560>, dpct_kernel_scalar<2560>>>(
+                        dpct_kernel_scalar<N>, dpct_kernel_scalar<N>>>(
                         sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                               sycl::range(1, 1, THREADS),
                                           sycl::range(1, 1, THREADS)),
                         exp_props,
                         [=](sycl::nd_item<3> item_ct1)
                             [[sycl::reqd_sub_group_size(32)]] {
-                                gr_down_multi_kernel<2560>(
+                                gr_down_multi_kernel<N>(
                                     c, dpct_local_acc_ct1
                                            .get_multi_ptr<
                                                sycl::access::decorated::no>()
@@ -1835,7 +1899,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(sm), cgh);
 
@@ -1858,7 +1922,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(sm), cgh);
 
@@ -1883,7 +1947,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<dpct_kernel_name<class gr_up_v3_kernel_6e945c,
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_v3_kernel_6e945c,
                                               dpct_kernel_scalar<2>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, UPM_BLOCKS) *
                                       sycl::range(1, 1, THREADS),
@@ -1897,7 +1961,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<dpct_kernel_name<class gr_up_v3_kernel_716779,
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_v3_kernel_716779,
                                               dpct_kernel_scalar<1>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, UPM_BLOCKS) *
                                       sycl::range(1, 1, THREADS),
@@ -1918,16 +1982,31 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         return false;   // SYCL port: never writes the q8_1 images (STRATA_QFUSE is not supported here)
     }
     m.part = down_partials(st);
+    static const bool reuse_norm = strata::bm_default_on("STRATA_GR_CACHED_NORM", st->get_device(), false);
+    static const bool reuse_lo = strata::bm_default_on("STRATA_GR_LO_REUSE", st->get_device());
+    if ((reuse_norm || reuse_lo) && gr_norm_split() && gr_down_sliced() &&
+        !gr_more_groups(st) && !gr_large_grf(st) && !gr_up_ilp() && gr_up_cols() == UPM_COLS &&
+        strata::intel_gpu_gen(st->get_device()) == strata::IntelGpuGen::Battlemage &&
+        gr_reuse_safe(a, n_tok, xn_scratch)) {
+        m.cached_norm = reuse_norm;
+        m.cached_lo = reuse_lo;
+        static const bool note = [] {
+            std::fprintf(stderr, "strata: GR reuse enabled: normalized activation %d, low-rank SiLU %d\n",
+                         (int) reuse_norm, (int) reuse_lo);
+            return true;
+        }();
+        (void) note;
+    }
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
         if (gr_norm_split())
-            st->parallel_for<dpct_kernel_name<class gr_norm_split_k>>(
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_norm_split_k>>(
                 sycl::nd_range<3>(sycl::range(1, 1, n_tok * HC) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_norm_split_port_kernel(m); });
         else
-        st->parallel_for<dpct_kernel_name<class gr_norm_multi_kernel_2f4d92>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_norm_multi_kernel_2f4d92>>(
             sycl::nd_range<3>(sycl::range(1, 1, n_tok) *
                                   sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
@@ -1962,7 +2041,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
         m.part2 = slice_partials(st);
         m.nsplit = 1;
         const bool big = gr_large_grf(st);
-        st->submit([&](sycl::handler& cgh) {
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& cgh) {
             sycl::local_accessor<float, 1> tl(sycl::range<1>((size_t) kFusedGrMaxT * GRS_COLS), cgh);
             const sycl::nd_range<3> nr(sycl::range(1, 1, GRS_SLICES) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS));
             if (big)
@@ -1978,18 +2057,33 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
                     });
         });
         const unsigned nred = unsigned((n_tok * GRS_ROWS + 127) / 128);
-        st->parallel_for<dpct_kernel_name<class gr_down_reduce_k>>(
-            sycl::nd_range<3>(sycl::range(1, 1, nred) * sycl::range(1, 1, 128), sycl::range(1, 1, 128)),
-            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel(m); });
+        const sycl::nd_range<3> nr(sycl::range(1, 1, nred) * sycl::range(1, 1, 128),
+                                    sycl::range(1, 1, 128));
+        if (m.cached_lo) {
+            static const bool reduce_ilp = strata::bm_default_on("STRATA_GR_REDUCE_ILP", st->get_device(), false);
+            if (reduce_ilp) {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_reduce_lo_ilp>>(nr,
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        gr_down_reduce_kernel<true, true>(m);
+                    });
+            } else {
+                strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_reduce_lo>>(nr,
+                    [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                        gr_down_reduce_kernel<false, true>(m);
+                    });
+            }
+        } else
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_reduce_k>>(nr,
+                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_reduce_kernel(m); });
     } else if (gr_down_direct()) {
-        st->parallel_for<dpct_kernel_name<class gr_down_multi_direct>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_multi_direct>>(
             sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS * DOWN_SPLIT + 1) * sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { gr_down_multi_direct_kernel(m); });
     } else if (chunk_tok >= n_tok) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
-        st->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                 sycl::range((size_t)n_tok * TILE * sizeof(float)), cgh);
             cgh.parallel_for<
@@ -2016,7 +2110,7 @@ bool fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
             c.part = m.part;
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
-            st->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(st, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range((size_t)ct * TILE * sizeof(float)), cgh);
                 cgh.parallel_for<
@@ -2070,7 +2164,7 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
     // window's token would differ in its last bits from this kernel's. The header promises "every token's outputs
     // are bitwise fused_gr_read(a[t])" (gr_parity checks it): with those paths on, the single read IS the multi read
     // of one token (each token's sums run in the same order whatever the window size).
-    if (gr_down_sliced() || gr_norm_split() || gr_down_direct()) {
+    if (kDownXnTooBig || gr_down_sliced() || gr_norm_split() || gr_down_direct()) {
         static std::mutex mu;
         static std::unordered_map<sycl::queue*, float*> xn;
         float* scratch;
@@ -2087,7 +2181,7 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class gr_down_kernel_a5fa71>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_down_kernel_a5fa71>>(
             sycl::nd_range<3>(sycl::range(1, 1, DOWN_BLOCKS + 1) *
                                   sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
@@ -2100,7 +2194,7 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class gr_up_kernel_fe3258>>(
+        strata::kprof::kp(st, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class gr_up_kernel_fe3258>>(
             sycl::nd_range<3>(sycl::range(1, 1, UP_BLOCKS) *
                                   sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),

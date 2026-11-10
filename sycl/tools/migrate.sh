@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CUDA -> SYCL migration of the Strata engine with SYCLomatic (dpct), run inside strata-sycl-dev.
-#   sycl/migrate.sh [repo] [out]      repo defaults to the Strata_B70 checkout beside this dir
+#   sycl/tools/migrate.sh [repo] [out]      repo defaults to the Strata_B70 checkout beside this dir
 # Writes a compilation database first (there is no nvcc here, so CMake cannot make one), then migrates every
 # CUDA-touching source into <out> mirroring the tree. Files dpct leaves alone are not copied - the port's
 # CMake falls back to the original for those, so the diff against upstream stays the port itself.

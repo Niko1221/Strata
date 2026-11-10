@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -41,6 +40,15 @@ class Target:
     @property
     def input_limit(self) -> int:
         return max(1024, self.context - OUTPUT_CAP)
+
+    @property
+    def output_cap(self) -> int:
+        """The longest reply a config lets the app ask for: the tested 4,096 up to the tested window, then an eighth of the window (16,384 at 128K).
+        Thinking counts against it, and an app asks its compaction summary for exactly this much: at 4,096 on a wide window the summary ended at the
+        limit and OpenCode failed the step ("Compaction summary reached the output token limit", #5006); a whole file written in one tool call was
+        cut off the same way (PR #4230). The input limit and the compaction point stay as tested (compaction fires long before the input limit, and the
+        server fits each request's cap to the room its prompt leaves)."""
+        return max(OUTPUT_CAP, self.context // 8)
 
 
 def compact_at(t: Target) -> int:
@@ -97,7 +105,7 @@ def opencode_file(t: Target) -> str:
                "provider": {"strata": {"npm": "@ai-sdk/openai-compatible", "name": "Strata (local)",
                                        "options": {"baseURL": t.base, "apiKey": t.key},
                                        "models": {t.model: {"name": "Qwen3.8-Flash-Next (local)", "tool_call": True, "reasoning": True,
-                                                            "limit": {"context": t.context, "input": t.input_limit, "output": OUTPUT_CAP}}}}}})
+                                                            "limit": {"context": t.context, "input": t.input_limit, "output": t.output_cap}}}}}})
 
 
 def codex_file(t: Target) -> str:
@@ -113,7 +121,7 @@ def claude_env(t: Target) -> dict[str, str]:
             "ANTHROPIC_SMALL_FAST_MODEL": t.model, "ANTHROPIC_DEFAULT_SONNET_MODEL": t.model, "ANTHROPIC_DEFAULT_OPUS_MODEL": t.model,
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": t.model, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_AUTOUPDATER": "1",
             "DISABLE_TELEMETRY": "1", "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(t.context),
-            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(OUTPUT_CAP)} | ({"CLAUDE_CODE_SIMPLE": "1"} if t.context <= 40960 else {})
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(t.output_cap)} | ({"CLAUDE_CODE_SIMPLE": "1"} if t.context <= 40960 else {})
 
 
 def claude_file(t: Target) -> str:
@@ -123,7 +131,7 @@ def claude_file(t: Target) -> str:
 def omp_models(t: Target) -> str:
     return ("providers:\n  strata:\n    baseUrl: " + t.base + "\n    api: openai-completions\n    auth: none\n    compat:\n"
             "      supportsDeveloperRole: false\n    models:\n      - id: " + t.model + "\n        name: Qwen3.8-Flash-Next (Strata, local)\n"
-            "        reasoning: true\n        input: [text]\n        contextWindow: " + str(t.context) + "\n        maxTokens: " + str(OUTPUT_CAP) +
+            "        reasoning: true\n        input: [text]\n        contextWindow: " + str(t.context) + "\n        maxTokens: " + str(t.output_cap) +
             "\n        thinking:\n          mode: effort\n          efforts: [minimal, low, medium, high]\n          defaultLevel: medium\n"
             "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}\n")
 
@@ -137,7 +145,7 @@ def pi_models(t: Target) -> str:
     return _j({"providers": {"strata": {"baseUrl": t.base, "api": "openai-completions", "apiKey": t.key,
                                         "compat": {"supportsDeveloperRole": False, "supportsReasoningEffort": False},
                                         "models": [{"id": t.model, "name": "Qwen3.8-Flash-Next (Strata, local)", "reasoning": True,
-                                                    "input": ["text"], "contextWindow": t.context, "maxTokens": OUTPUT_CAP,
+                                                    "input": ["text"], "contextWindow": t.context, "maxTokens": t.output_cap,
                                                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}})
 
 
@@ -155,7 +163,7 @@ def openclaw_file(t: Target) -> str:
     return _j({"models": {"mode": "merge", "providers": {"strata": {
         "baseUrl": t.base, "apiKey": t.key, "api": "openai-completions",
         "models": [{"id": t.model, "name": f"{t.model} (Strata)", "contextWindow": t.context,
-                    "contextTokens": int(t.context * 23192 / 32768), "maxTokens": OUTPUT_CAP, "reasoning": True, "input": ["text"],
+                    "contextTokens": int(t.context * 23192 / 32768), "maxTokens": t.output_cap, "reasoning": True, "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}}]}}},
         "agents": {"defaults": {"model": {"primary": f"strata/{t.model}"},
                                 "compaction": {"enabled": True, "notifyUser": True, "keepRecentTokens": 4000}}}})
@@ -177,8 +185,8 @@ def _limits_codex(t: Target) -> list[str]:
 
 def _limits_claude(t: Target) -> list[str]:
     out = ["ANTHROPIC_BASE_URL is the server address %s without /v1: Claude Code adds /v1/messages itself (with /v1 in it the requests go to /v1/v1/messages)." % t.url,
-           "Set CLAUDE_CODE_MAX_CONTEXT_TOKENS to the served context (%d here) and CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096: without them Claude Code "
-           "assumes a 100K window and never compacts, or compacts on every turn." % t.context,
+           "Set CLAUDE_CODE_MAX_CONTEXT_TOKENS to the served context (%d here) and CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d: without them Claude Code "
+           "assumes a 100K window and never compacts, or compacts on every turn." % (t.context, t.output_cap),
            "No Anthropic login or credential is used; the token is only checked by your own server.",
            "The notice [claude-code:unrecognized_model] on stderr is harmless."]
     if t.context <= 40960:
@@ -299,7 +307,9 @@ def write_file(spec: dict, *, backup: bool = True) -> dict:
     if existed and spec.get("merge") and spec["kind"] == "json":
         try:
             old = json.loads(path.read_text(encoding="utf-8-sig"))
-            text = json.dumps(_merge(old, json.loads(text)), indent=2)
+            merged = _merge(old, json.loads(text))
+            _keep_output_cap(old, merged)
+            text = json.dumps(merged, indent=2)
         except ValueError:
             pass                                    # an old file that is not JSON is replaced (a backup was made)
     path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
@@ -309,6 +319,25 @@ def write_file(spec: dict, *, backup: bool = True) -> dict:
         pass
     return {"path": str(path), "backup": str(bak) if bak else None,
             "action": "merged" if existed and spec.get("merge") and spec["kind"] == "json" else ("replaced" if existed else "created")}
+
+
+def _keep_output_cap(old, merged) -> None:
+    """The output cap in a config being rewritten (in place on `merged`): a value the person set stays, so does a larger one from a newer Strata. The value
+    older Strata versions wrote on every window (OUTPUT_CAP, 4,096) is the generated default and is replaced, or the files written before #5006 would keep
+    the cap that breaks compaction for ever. OpenCode's limit.output and Claude Code's CLAUDE_CODE_MAX_OUTPUT_TOKENS."""
+    if not (isinstance(old, dict) and isinstance(merged, dict)):
+        return
+    models = ((old.get("provider") or {}).get("strata") or {}).get("models")
+    new_models = ((merged.get("provider") or {}).get("strata") or {}).get("models")
+    if isinstance(models, dict) and isinstance(new_models, dict):
+        for name, entry in models.items():
+            was = ((entry or {}).get("limit") or {}).get("output") if isinstance(entry, dict) else None
+            limit = (new_models.get(name) or {}).get("limit") if isinstance(new_models.get(name), dict) else None
+            if isinstance(was, int) and not isinstance(was, bool) and was != OUTPUT_CAP and isinstance(limit, dict):
+                limit["output"] = was
+    was_env = (old.get("env") or {}).get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") if isinstance(old.get("env"), dict) else None
+    if isinstance(merged.get("env"), dict) and was_env is not None and str(was_env) != str(OUTPUT_CAP):
+        merged["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = was_env
 
 
 def _merge(old, new):

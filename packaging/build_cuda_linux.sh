@@ -31,9 +31,12 @@ esac
 real=""; for a in $(echo "$archs" | tr ';,' '  '); do real="$real;${a}-real"; done; real=${real#;}
 last=$(echo "$archs" | tr ';,' '  ' | awk '{print $NF}')
 cd "$repo"
+# STRATA_CMAKE_EXTRA: more configure arguments for the engine build, e.g. the model shape of a new family:
+#   STRATA_CMAKE_EXTRA="-DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp"   (or -DSTRATA_GEOMETRY=<name>)
+# shellcheck disable=SC2086
 cmake -G Ninja -S . -B "$build" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
     -DSTRATA_EXPERIMENTAL_SM60=$sm60 -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_MMQ_KQUANTS=ON \
-    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" -DSTRATA_GGML_DIR="$repo/third_party/llama.cpp"
+    "-DCMAKE_CUDA_ARCHITECTURES=${real};${last}-virtual" -DSTRATA_GGML_DIR="$repo/third_party/llama.cpp" ${STRATA_CMAKE_EXTRA:-}
 cmake --build "$build" --target strata strata_kq -j "$(nproc)"
 
 # The picture reader is built for the SAME architectures as the engine (#3669: a reader reused from an older build had no sm_60, and on

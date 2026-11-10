@@ -11,10 +11,13 @@ export interface AppMode {
 
 const NONE: AppMode = { mode: null, reason: null, canQuit: false, appUpdate: 'unavailable' };
 let loading: Promise<AppMode> | null = null;
+let known: AppMode | null = null;
+/** The answer if it has already arrived (a click handler that must act at once uses it), otherwise null. */
+export const appModeKnown = (): AppMode | null => known;
 
 /** Asked once per page load; an older host without the route (404) or a failed call means "not the app": nothing extra is shown. */
 export function loadAppMode(): Promise<AppMode> {
-  loading ??= api.get<AppMode>('/api/app/mode').catch(() => NONE);
+  loading ??= api.get<AppMode>('/api/app/mode').catch(() => NONE).then(m => (known = m));
   return loading;
 }
 

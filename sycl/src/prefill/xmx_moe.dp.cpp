@@ -4,6 +4,7 @@
 // Measured standalone on the A770 (64 experts, gamma-distributed rows, vs per-expert oneMKL): down 6.1x at mean 40
 // rows, 2.8x at 160, 1.75x at 320; gate/up 3.0x / 1.46x / 0.79x (oneMKL wins above ~250 rows: the caller picks).
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <sycl/ext/oneapi/matrix/matrix.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <cstdlib>
@@ -44,7 +45,7 @@ void launch(sycl::queue& q, const half* X, float* Y, const Grp& gp, int ntiles, 
     const int nb = N / BN;
 #ifndef STRATA_NO_DG2_XMX
     constexpr int TN = kSgW;
-    q.submit([&](sycl::handler& h) {
+    strata::kprof::kp(&q, __FILE__, __func__, __LINE__)->submit([&](sycl::handler& h) {
         sycl::local_accessor<half, 1> sa(BM * LDA, h), sb(BN * LDB, h);
         auto props = sycl::ext::oneapi::experimental::properties{sycl::ext::intel::experimental::grf_size<256>};
         h.parallel_for<Name>(sycl::nd_range<2>({(size_t) ntiles, (size_t) nb * WG}, {1, (size_t) WG}), props,

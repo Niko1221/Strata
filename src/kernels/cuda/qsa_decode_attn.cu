@@ -21,7 +21,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;          // head_dim
-constexpr int G = 12;            // query heads per KV head (24 / 2)
+constexpr int G = strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv;   // query heads per KV head (12 for Flash-Next; 1..16, a multiple of 4)
+static_assert(G % 4 == 0 && G <= 16, "qsa_decode_attn: query heads per KV head must be 4, 8, 12 or 16 (float4 probability rows, the 16-lane score reduce)");
 static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, "qsa_decode_attn is compiled for core/geometry.hpp");
 constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;
@@ -87,6 +88,47 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
         else load8_q8(p, value, row, d0, out);
     } else load8_q4(p, value, row, d0, out);
 }
+
+// One cell's G probabilities (G/4 broadcast float4 loads) into the G accumulators: every accumulator takes one fmaf,
+// so the sums are the per-head loop's, bit for bit, for any G.
+template <int GG> __device__ __forceinline__ void fold_cell(float (&acc)[GG], const float* w, float v) {
+    const float4* w4 = reinterpret_cast<const float4*>(w);
+    if constexpr (GG == 12) {   // Flash-Next: the expressions this replaced, so its device code is unchanged
+        const float4 w0 = w4[0], w1 = w4[1], w2 = w4[2];
+        acc[0] = fmaf(w0.x, v, acc[0]);  acc[1] = fmaf(w0.y, v, acc[1]);
+        acc[2] = fmaf(w0.z, v, acc[2]);  acc[3] = fmaf(w0.w, v, acc[3]);
+        acc[4] = fmaf(w1.x, v, acc[4]);  acc[5] = fmaf(w1.y, v, acc[5]);
+        acc[6] = fmaf(w1.z, v, acc[6]);  acc[7] = fmaf(w1.w, v, acc[7]);
+        acc[8] = fmaf(w2.x, v, acc[8]);  acc[9] = fmaf(w2.y, v, acc[9]);
+        acc[10] = fmaf(w2.z, v, acc[10]); acc[11] = fmaf(w2.w, v, acc[11]);
+        return;
+    }
+#pragma unroll
+    for (int i = 0; i < GG / 4; ++i) {
+        const float4 x = w4[i];
+        acc[4 * i + 0] = fmaf(x.x, v, acc[4 * i + 0]);
+        acc[4 * i + 1] = fmaf(x.y, v, acc[4 * i + 1]);
+        acc[4 * i + 2] = fmaf(x.z, v, acc[4 * i + 2]);
+        acc[4 * i + 3] = fmaf(x.w, v, acc[4 * i + 3]);
+    }
+}
+
+// the q8_v3 kernel's value loop: Flash-Next (12 heads per KV head) keeps the expressions this kernel always had (its device code is
+// unchanged); any other G folds the cell with fold_cell.  A template, so the branch not taken is not instantiated (G is not 12 in a
+// non-Flash-Next build, and the 12-element initialiser below would not compile).
+template <int GG> __device__ __forceinline__ void fold_cell_v3(float (&acc)[GG], const float* w, float v) {
+    if constexpr (GG == 12) {
+        const float4 p0 = *reinterpret_cast<const float4*>(&w[0]);
+        const float4 p1 = *reinterpret_cast<const float4*>(&w[4]);
+        const float4 p2 = *reinterpret_cast<const float4*>(&w[8]);
+        const float pr[GG] = {p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w, p2.x, p2.y, p2.z, p2.w};
+#pragma unroll
+        for (int h = 0; h < GG; ++h) acc[h] = fmaf(pr[h], v, acc[h]);
+    } else {
+        fold_cell<GG>(acc, w, v);
+    }
+}
+
 
 // Exact-intent score reduce-scatter: the same butterfly pairs as twelve warp_sum calls,
 // with 16 shuffle exchanges instead of 60. Used only by the opt-in gfx906 INT8
@@ -425,12 +467,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_q8_v3_kernel(const float* 
         if (srow[c] < 0) continue;   // masked above, weight 0
         const float sc = __half2float(__ushort_as_half(p.v_scale[srow[c] * (HD / KV_Q8_GROUP) + t / KV_Q8_GROUP]));
         const float v = (float) p.v_q[srow[c] * HD + t] * sc;
-        const float4 p0 = *reinterpret_cast<const float4*>(&spt[c][0]);
-        const float4 p1 = *reinterpret_cast<const float4*>(&spt[c][4]);
-        const float4 p2 = *reinterpret_cast<const float4*>(&spt[c][8]);
-        const float pr[G] = {p0.x, p0.y, p0.z, p0.w, p1.x, p1.y, p1.z, p1.w, p2.x, p2.y, p2.z, p2.w};
-#pragma unroll
-        for (int h = 0; h < G; ++h) acc[h] = fmaf(pr[h], v, acc[h]);
+        fold_cell_v3<G>(acc, &spt[c][0], v);
     }
 #pragma unroll
     for (int h = 0; h < G; ++h) part_acc[((size_t) slot * G + h) * HD + t] = acc[h];
@@ -665,14 +702,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
     // One cell's 12 weights (three broadcast float4 loads) into the 12 accumulators; the cells are folded in
     // ascending order, so the sums are the plain loop's, bit for bit.
     const auto fold = [&](int c, float v) {
-        const float4* w4 = reinterpret_cast<const float4*>(spt[c]);
-        const float4 w0 = w4[0], w1 = w4[1], w2 = w4[2];
-        acc[0] = fmaf(w0.x, v, acc[0]);  acc[1] = fmaf(w0.y, v, acc[1]);
-        acc[2] = fmaf(w0.z, v, acc[2]);  acc[3] = fmaf(w0.w, v, acc[3]);
-        acc[4] = fmaf(w1.x, v, acc[4]);  acc[5] = fmaf(w1.y, v, acc[5]);
-        acc[6] = fmaf(w1.z, v, acc[6]);  acc[7] = fmaf(w1.w, v, acc[7]);
-        acc[8] = fmaf(w2.x, v, acc[8]);  acc[9] = fmaf(w2.y, v, acc[9]);
-        acc[10] = fmaf(w2.z, v, acc[10]); acc[11] = fmaf(w2.w, v, acc[11]);
+        fold_cell<G>(acc, spt[c], v);
     };
     int c = 0;
     // four cells at a time with their V loads issued together (the loop was one dependent load chain per cell);

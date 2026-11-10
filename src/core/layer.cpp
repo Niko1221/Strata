@@ -768,7 +768,21 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
 
 void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0; }
 int64_t qsa_kv_resident() { return g_kv_resident; }
-int64_t qsa_kv_resident_min() { return 20480; }
+// The least KV window a streamed session keeps in VRAM (cells): 4096 (was 20480; a window of 4096 and of 8192 gave the same tokens as 20480 with the cache fixed and route tail
+// skip off, 2 requests at 128K, 20K- and 8K-token prompts; setup still writes 32768, fit_start walks 20480 / 8192 / 4096 only on a card that is short).  STRATA_KV_RESIDENT_MIN=N overrides (the
+// selection reads at most idx_top_k + idx_block - 1 cells per row, so a window of a few thousand cells holds it; the pool must hold the blocks of every row of a verify window).
+int64_t qsa_kv_resident_min() {
+    static const int64_t v = [] {
+        const char* e = std::getenv("STRATA_KV_RESIDENT_MIN");
+        const long long n = e != nullptr ? std::atoll(e) : 0;
+        #if defined(STRATA_GPU_METAL)
+        return n >= 1024 ? (int64_t) n : (int64_t) 20480;   // a Mac keeps the old floor: its pool is the host's RAM (strata/core/spill_gate.hpp)
+#else
+        return n >= 1024 ? (int64_t) n : (int64_t) 4096;
+#endif
+    }();
+    return v;
+}
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {

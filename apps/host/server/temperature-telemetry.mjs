@@ -10,8 +10,11 @@
  * macOS: none.
  */
 import { readFile, readdir } from 'node:fs/promises';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { dirname, join } from 'node:path';
 import { createPowerShellLoop, endWithHost } from './windows-poll.mjs';
+import { stateRoot } from './platform-paths.mjs';
 
 const CPU_SENSORS = new Set(['coretemp', 'k10temp', 'zenpower', 'cpu_thermal', 'cpu-thermal']);
 const DISK_SENSORS = new Set(['nvme', 'drivetemp']);
@@ -82,28 +85,66 @@ while($true){
   if($c.Count -gt 0){ $max=($c | Measure-Object Temperature -Maximum).Maximum }
   else {
     if(-not $compiled){ Add-Type -TypeDefinition $cs; $compiled=$true }
-    foreach($n in 0..15){ $v=[StrataDiskTemp]::Read($n); if($v -gt $max){ $max=$v } }
+    # only drives Windows names as NVMe, one at a time: a RAID, SATA, USB or unknown drive is never asked (a driver stack that stalls on this query
+    # froze whole PCs, #4661)
+    foreach($d in @(Get-PhysicalDisk | Where-Object { $_.BusType -eq 'NVMe' })){ $v=[StrataDiskTemp]::Read([int]$d.DeviceId); if($v -gt $max){ $max=$v } }
   }
   if($max -gt 0){ [Console]::Out.WriteLine('ssd '+$max) } else { [Console]::Out.WriteLine('ssd -') }
   [Console]::Out.Flush()
   Start-Sleep -Seconds 30
 }`;
 
-export function createWindowsSsdReader({ spawnFn = spawn, maxStarts = 2, now = Date.now, intervalSec = 30 } = {}) {
-  let latest = null;
+/** How long the first pass of the reader may take before it is given up for good (a healthy pass takes a second or two). */
+export const FIRST_PASS_MS = 45_000;
+
+/** The marker file the reader leaves before it asks the drives and removes after its first answer. */
+export const sentinelPath = (env = process.env, platform = process.platform) => join(stateRoot(env, platform), 'drive-temperature.probe');
+
+/**
+ * `sentinel`: { exists(), write(), remove() }. The reader leaves the marker before it first asks a drive and removes it when the first answer has come. A host
+ * that is still there with a marker at its next start died, or the PC did, in the middle of the question: the reader stays off from then on (the line is left
+ * out of the Monitor; deleting the file brings it back). It never asks again after a first pass that took longer than FIRST_PASS_MS either.
+ */
+export function createWindowsSsdReader({ spawnFn = spawn, maxStarts = 2, now = Date.now, intervalSec = 30, sentinel = null, firstPassMs = FIRST_PASS_MS } = {}) {
+  let latest = null, off = false, startedAt = null;
   const loop = createPowerShellLoop({
     script: WINDOWS_SCRIPT, spawnFn, maxStarts,
     onLine: line => {
       const parsed = parseSsdLine(line);
       if (parsed === undefined) return false;
       latest = { value: parsed, at: now() };
+      if (sentinel) { try { sentinel.remove(); } catch { /* best effort */ } }
       return true;
     },
   });
   return {
-    read() { loop.start(); return latest && now() - latest.at < 4 * intervalSec * 1000 ? latest.value : null; },
+    read() {
+      if (off) return null;
+      if (startedAt === null) {
+        if (sentinel) {
+          try { if (sentinel.exists()) { off = true; return null; } sentinel.write(); } catch { off = true; return null; }   // cannot leave the marker: do not ask
+        }
+        startedAt = now();
+      } else if (latest === null && now() - startedAt > firstPassMs) {
+        off = true;                                    // the first pass is stuck: ended, and the marker stays
+        loop.stop();
+        return null;
+      }
+      loop.start();
+      return latest && now() - latest.at < 4 * intervalSec * 1000 ? latest.value : null;
+    },
     stop() { loop.stop(); },
     get starts() { return loop.starts; },
+    get off() { return off; },
+  };
+}
+
+/** The real marker file under Strata's state folder. */
+export function fileSentinel(path = sentinelPath()) {
+  return {
+    exists: () => existsSync(path),
+    write: () => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, String(Date.now())); },
+    remove: () => rmSync(path, { force: true }),
   };
 }
 
@@ -117,8 +158,13 @@ export async function readTemperatures({ platform = process.platform, now = Date
     return linuxCache.value;
   }
   if (platform === 'win32') {
-    windowsReader ??= endWithHost(createWindowsSsdReader());
+    windowsReader ??= endWithHost(createWindowsSsdReader({ sentinel: fileSentinel() }));
     return { cpuTempC: null, ssdTempC: windowsReader.read() };
   }
   return { cpuTempC: null, ssdTempC: null };
+}
+
+/** Ends the Windows drive-temperature loop (the Monitor has not been open for a while); the next read starts it again. */
+export function stopTemperatures() {
+  if (windowsReader) { windowsReader.stop(); windowsReader = null; }
 }

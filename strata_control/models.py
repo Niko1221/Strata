@@ -19,6 +19,7 @@ import json
 import os
 import re
 import stat
+import sys
 from pathlib import Path
 
 from strata_control import discovery
@@ -37,6 +38,9 @@ SHARD = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf\Z", re.I)
 SUPPORTED_SELECTIONS = frozenset({"qwen/Q2_0", "qwen/IQ2_XS", "qwen/IQ3_XXS", "qwen/IQ3_S",
                                    "swift/IQ2_XS", "swift/IQ3_XXS", "swift/IQ3_S", "coder/IQ1_M",
                                    "unsloth/UD-IQ4_XS", "unsloth/UD-Q4_K_XL", "unsloth/UD-Q5_K_XL", "unsloth/UD-Q6_K_XL",
+                                   # round 0214: Unsloth's v3.1 sets (revision d9620119); the v3.1 UD-IQ4_XS has its own name, its Hub file names are UD-IQ4_XS's with four shards
+                                   "unsloth/UD-IQ1_M", "unsloth/UD-Q2_0", "unsloth/UD-IQ2_XS", "unsloth/UD-Q2_K_XL", "unsloth/UD-IQ3_XXS",
+                                   "unsloth/UD-Q3_K_XL", "unsloth/UD-IQ4_XS-v31",
                                    "unsloth/Q8_0", "gyro/Gyro-S", "gyro/Gyro-M"})
 
 
@@ -329,13 +333,15 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
         return None
     first = shards[0]
     cfg = discovery.run_config_for(first, discovery.places(here=ROOT))
-    beside = discovery.prepared_beside(first)
+    beside = discovery.prepared_beside(first, discovery.remembered_data_dirs())     # the data folder in use too: a model folder outside it must not hide the draft layer setup wrote there
     if cfg is None and not any(beside.get(k) for k in ("pack", "mtp", "mmproj")):
         return {"config": None, "data_dir": str(beside["data_dir"]) if beside.get("data_dir") else None, "pack": None, "mtp": None, "mmproj": None}
     return {"config": str(cfg) if cfg else None, **{k: (str(v) if v else None) for k, v in beside.items()}}
 
 
 ISSUE_WORDS = {
+    "not_on_this_mac": "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do",
+    "not_on_this_spark": "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were",
     "multiple_model_groups": "the folder holds more than one model",
     "incomplete_or_invalid_shard_set": "some parts of the model are missing",
     "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",
@@ -364,6 +370,11 @@ _REASON_WORDS = (
     ("unsupported_architecture", "this model type is not supported by the Strata engine (add it as a Custom model API with llama-server instead)"),
     ("symlink", "this is a shortcut (symbolic link) that cannot be followed"),
 )
+
+
+def _not_here(model: str) -> str | None:
+    from strata_control import dsv41_fit
+    return dsv41_fit.not_here(model)
 
 
 def plain_issue(code: str) -> str:
@@ -470,6 +481,9 @@ SKIP_DIRS = frozenset({"packs", "mtp", "engine", "node_modules", "windows", "pro
                        "$recycle.bin", "system volume information", "appdata"})
 
 
+DRAFT_LAYER = re.compile(r"mtp[-_][a-z0-9_.-]*\.gguf")
+
+
 def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
     """(model files, picture-reader file names, cut) of one folder. A link to a file counts (it is followed when read); a name that
     only ends in .gguf but is a folder does not."""
@@ -491,6 +505,8 @@ def _list_gguf(folder: Path) -> tuple[list[Path], list[str], bool]:
                 if low.startswith("mmproj"):
                     readers.append(entry.name)
                     continue
+                if DRAFT_LAYER.fullmatch(low):
+                    continue                          # Strata's own draft layer (mtp-q2_0.gguf) is not a second model (#4693)
                 if len(shards) >= MAX_LISTED:
                     cut = True
                     break
@@ -622,7 +638,7 @@ def _dsv41_files(folder: Path) -> dict[str, int]:
 
 
 def _dsv41_plan(path: Path, details) -> dict | None:
-    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the IST-DAS 1.75 / 2.00 / 2.25 shards, under their
+    """The preview of a folder (or one file) of an official DeepSeek-V4.1-Flash set: the ISTA-DAS 1.75 / 2.00 / 2.25 shards, under their
     official names or the first release's, with or without the n-gram table (Engram). Recognised from the pinned names and sizes
     (strata_control/dsv41_sets.py); None when nothing here is a DeepSeek file, so every other preview is exactly what it was."""
     from strata_control import dsv41_sets
@@ -667,12 +683,21 @@ def _dsv41_plan(path: Path, details) -> dict | None:
         candidate = {"family": dsv41_sets.FAMILY, "model": row["model"], "basis": "known_names_and_sizes", "expected_expert_types": [],
                      "expected_tensor_count": None,
                      "setup_args_hint": ["--family", dsv41_sets.FAMILY, "--model", row["model"], "--gguf-dir", str(place)]}
+        line = _not_here(row["model"])
+        if line:       # recommend, never force: say what does work and stop before anything is copied or packed (Mac: no Metal IQ1_S kernel; DGX Spark: never run)
+            issues.append("not_on_this_mac" if sys.platform == "darwin" else "not_on_this_spark")
+            candidate = None
+            messages.append(line)
         messages.append(f"This is DeepSeek-V4.1-Flash, {row['label']}: all {len(row['present'])} model files are here"
                         + (", and the n-gram table." if row["engram"] else "."))
         if not row["engram"]:
             messages.append("The n-gram table (111 GB) is not in this folder: setup downloads it, or put engram-IQ4_NL.gguf beside the model files.")
         if row["legacy"]:
             messages.append("These are the file names of the first release; Strata uses them as they are.")
+        if row.get("layout") == "six":
+            messages.append("These are ISTA-DASLab's six-shard files of 27 October 2026 (the Engram is the sixth part); Strata uses them as they are.")
+        if row.get("newer_first"):
+            messages.append("The first part is the version ISTA-DASLab re-published on 26 October 2026 (a larger chat template); Strata uses it as it is.")
         messages.append("Strata checks the files once when it sets them up (about 5 minutes on a fast drive); nothing is copied or downloaded for them.")
     sizes = _dsv41_files(place)
     wanted = list(row["present"]) + ([row["engram"]] if row["engram"] else [])
@@ -710,7 +735,7 @@ def plan_import(raw_path: str) -> dict:
         details = path.stat()
     except OSError:
         raise ProfileError("model import path does not exist (or is a link to something that is gone)", 5) from None
-    official_deepseek = _dsv41_plan(path, details)         # IST-DAS sets under their official or first-release names
+    official_deepseek = _dsv41_plan(path, details)         # ISTA-DAS sets under their official or first-release names
     if official_deepseek is not None:
         return official_deepseek
     notes: list[str] = []

@@ -19,6 +19,7 @@
 //     blocks: the partial sums go to a per-stream scratch and the LAST block of an output block adds them up in
 //     split order (deterministic) and runs the output rotation.
 #if !defined(STRATA_USE_HIP)   // (AMD runs exl3.cu's kernels; EXL3 does not run there anyway)
+#include "../ds4_launch.h"   // strata_ds4_launch: <<<>>> on CUDA and HIP, a dispatch on Metal
 #include "strata/dsv41/exl3.hpp"
 
 #include <cuda_fp16.h>
@@ -658,22 +659,22 @@ bool dispatch(int K, int cb, A&&... args) {
 }
 
 template <int K, int cb> struct RunMv {
-    static void run(const KBatch& b, int blocks, cudaStream_t s) { mv_kernel<K, cb><<<blocks, kThreads, 0, s>>>(b); }
+    static void run(const KBatch& b, int blocks, cudaStream_t s) { strata_ds4_launch(mv_kernel<K, cb>, blocks, kThreads, 0, s, b); }
 };
 template <int K, int cb> struct RunMvN {
     static void run(const KBatch& b, int blocks, cudaStream_t s) {
-        mv_n_kernel<K, cb><<<blocks, kThreads, smem_n_bytes(K), s>>>(b);
+        strata_ds4_launch(mv_n_kernel<K, cb>, blocks, kThreads, smem_n_bytes(K), s, b);
     }
 };
 template <int K, int cb> struct RunWin {
     static void run(const KWin& a, int groups, cudaStream_t s) {
-        win_gu_kernel<K, cb><<<dim3((unsigned) (a.n_ff / kCols), (unsigned) groups), kThreads, smem_n_bytes(K), s>>>(a);
+        strata_ds4_launch(win_gu_kernel<K, cb>, dim3((unsigned) (a.n_ff / kCols), (unsigned) groups), kThreads, smem_n_bytes(K), s, a);
     }
 };
 template <int K, int cb> struct RunWinDown {
     static void run(const KWin& a, int groups, cudaStream_t s) {
-        win_down_kernel<K, cb><<<dim3((unsigned) (a.n_embd / kCols), (unsigned) groups), kThreads, smem_n_bytes(K),
-                                 s>>>(a);
+        strata_ds4_launch(win_down_kernel<K, cb>, dim3((unsigned) (a.n_embd / kCols), (unsigned) groups), kThreads, smem_n_bytes(K),
+                                 s, a);
     }
 };
 template <int K, int cb> struct AllowSmemN {
@@ -686,12 +687,12 @@ template <int K, int cb> struct AllowSmemN {
 };
 template <int K, int cb> struct RunGU {
     static void run(const KMoe& a, cudaStream_t s) {
-        moe_gate_up_kernel<K, cb><<<dim3((unsigned) (a.n_ff / kCols), (unsigned) a.k), kThreads, 0, s>>>(a);
+        strata_ds4_launch(moe_gate_up_kernel<K, cb>, dim3((unsigned) (a.n_ff / kCols), (unsigned) a.k), kThreads, 0, s, a);
     }
 };
 template <int K, int cb> struct RunDown {
     static void run(const KMoe& a, cudaStream_t s) {
-        moe_down_kernel<K, cb><<<dim3((unsigned) (a.n_embd / kCols), (unsigned) a.k), kThreads, 0, s>>>(a);
+        strata_ds4_launch(moe_down_kernel<K, cb>, dim3((unsigned) (a.n_embd / kCols), (unsigned) a.k), kThreads, 0, s, a);
     }
 };
 // ---------------------------------------------------------------- per-stream scratch
@@ -958,7 +959,7 @@ bool win_experts(const WinArgs& a, cudaStream_t s) {
     if (!dispatch<RunWin>(a.lay.K[0], a.lay.cb, w, groups, s) ||
         !dispatch<RunWinDown>(a.lay.K[2], a.lay.cb, w, groups, s))
         return false;
-    win_combine_kernel<<<dim3((unsigned) (a.n_embd / kCols), (unsigned) a.T), kCols, 0, s>>>(w);
+    strata_ds4_launch(win_combine_kernel, dim3((unsigned) (a.n_embd / kCols), (unsigned) a.T), kCols, 0, s, w);
     launch_check("win_experts");
     return true;
 }
