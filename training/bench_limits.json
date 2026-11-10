@@ -1,11 +1,11 @@
 {
   "config": {
     "gguf": [
-      "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
-      "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
+      "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "$STRATA_DATA/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf"
     ],
-    "pack": "/mnt/d/Admin/Documents/GitHub/Strata-data/models/swift-IQ3_XXS/experts_nf4.bin",
-    "tokenizer": "/mnt/d/Admin/Documents/GitHub/Strata-data/packs/swift-iq3_xxs",
+    "pack": "$STRATA_DATA/models/swift-IQ3_XXS/experts_nf4.bin",
+    "tokenizer": "$STRATA_DATA/packs/swift-iq3_xxs",
     "seqlens": "49152,52736",
     "algos": "ce",
     "modes": "mezo",
