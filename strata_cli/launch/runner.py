@@ -2318,10 +2318,19 @@ class Runner:
         except Exception:                                    # noqa: BLE001 - the line is a convenience
             return
         self.report_split_fallback(info)
+        self.report_vision(info)
         note = str(info.get("drafting_note") or "")
         if note:
             self.notices.append(note)
             self.emit("start", note, None)
+
+    def report_vision(self, info: dict) -> None:
+        """The server read pictures on the processor because the card had no room for the picture reader: its /metrics carries the sentence (vision_note;
+        strata_control/reader_room.py), and the summary shows it."""
+        note = str(info.get("vision_note") or "")
+        if note and note not in self.notices:
+            self.notices.append(note)
+            self.emit("start", note, None, level="warn")
 
     def report_split_fallback(self, info: dict) -> None:
         """The server started the normal layer split because the all-cards split engine would not come up (its metrics say split_fallback; serve/server.py
