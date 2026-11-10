@@ -9,8 +9,8 @@ static inline void route_body(device const float* logits, device int* ids, devic
                               constant MoeArgs& a, ushort tid, ushort nth, ushort sg, ushort lane, threadgroup int* s_grp,
                               threadgroup int* s_ent) {
     if (sg < a.n_tok) {   // (route_tok: moe.metal; 512 experts: NL 16, the 256-expert Coder: NL 8)
-        if (a.n_expert == 256) route_tok<8>(logits + sg * 512, ids + sg * 10, w + sg * 10, lane);
-        else route_tok<16>(logits + sg * 512, ids + sg * 10, w + sg * 10, lane);
+        if (a.n_expert == 256) route_tok<8>(logits + sg * 512, ids + sg * ROUTE_K, w + sg * ROUTE_K, lane);
+        else route_tok<16>(logits + sg * 512, ids + sg * ROUTE_K, w + sg * ROUTE_K, lane);
     }
     threadgroup_barrier(mem_flags::mem_device);
     plan_body(ids, w, plan, a, tid, nth, sg, lane, s_grp, s_ent);

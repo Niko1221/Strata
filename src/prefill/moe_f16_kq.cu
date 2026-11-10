@@ -41,7 +41,7 @@ namespace {
 using namespace f16;
 
 constexpr int T_Q4_K = GGML_TYPE_Q4_K, T_Q5_K = GGML_TYPE_Q5_K;
-constexpr int GU_NS = 2560 / 64, D_NS = 640 / 64;   // stages of 64 values
+constexpr int GU_NS = kMoeEmbd / 64, D_NS = kMoeFF / 64;   // stages of 64 values (the compiled geometry's: 40 and 10 for Flash-Next)
 constexpr int FEAT = 64;                             // features (gate rows = up rows) per gate/up item
 
 // Byte i of the 16-byte K-quant block header (d, dmin, scales[12]).
@@ -213,7 +213,7 @@ __global__ void __launch_bounds__(THREADS) gate_up_kernel(const Batch b, const N
 #endif
 }
 
-// Q5_1 down: 128 of the 2560 output rows against a tile's (or pair's) H rows, K = 640 in 10 stages; the routed rows'
+// Q5_1 down: 128 of the kMoeEmbd output rows against a tile's (or pair's) H rows, K = kMoeFF in kMoeFF / 64 stages; the routed rows'
 // FP32 outputs in `dm` (native_w11_kernel<T_Q5_1, false>'s).
 template <int BN, bool D16 = false>
 __global__ void __launch_bounds__(THREADS) down_kernel(const Batch b, const NativeGeom geo, const int32_t* __restrict__ ts,

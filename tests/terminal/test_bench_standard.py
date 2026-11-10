@@ -691,6 +691,9 @@ class RunTests(StandardBase):
 
     def test_a_round_total_is_null_when_a_counted_request_has_no_token_count(self):
         self.server.script["concurrency-r2-c3"] = {"usage": False}
+        # the first round must last a measurable time: Windows' monotonic clock moves in ~15.6 ms ticks, and a fast PC (a CI runner) can finish
+        # the stub round inside one tick (wall 0 s, so no rate)
+        self.server.script["concurrency-r1-c1"] = {"first_delay": 0.05}
         doc, _ = self.run_standard(optional_concurrency=True)
         second = doc["concurrency_rounds"][1]
         self.assertIsNone(second["output_tokens"])
@@ -969,6 +972,9 @@ class EngineProcessTests(unittest.TestCase):
 
             def wait(self, timeout=None):
                 return 0
+
+            def kill(self):                       # stop_engine's last step on Windows, when taskkill (mocked below) left the process running
+                pass
         seen = {}
 
         def popen(command, **kwargs):

@@ -1,5 +1,5 @@
 """Does a Q8_0 drafter (the matrices block-quantized like ggml Q8_0) keep the acceptance? Walk over two prompts, block 4 and 8."""
-import json, sys, time
+import json, sys
 from pathlib import Path
 import numpy as np
 import torch
