@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 from strata_control import vram_fit
+from strata_control.childenv import quiet_crash_env
 from strata_control import atomic as _atomic_mod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -694,7 +695,7 @@ class Runner:
         return "launch-" + self.name
 
     def _env(self) -> dict[str, str]:
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        env = quiet_crash_env(dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8"))   # no debugger on a user's machine
         env.pop("STRATA_NO_ACQUIRE", None)                  # launch is the explicit step that may download
         if self.components_dir:
             env["STRATA_COMPONENTS_DIR"] = self.components_dir
