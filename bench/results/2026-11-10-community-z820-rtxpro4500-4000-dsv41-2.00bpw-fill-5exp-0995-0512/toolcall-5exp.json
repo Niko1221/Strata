@@ -1,0 +1,653 @@
+{
+ "label": "5exp",
+ "url": "http://127.0.0.1:8080/v1/chat/completions",
+ "effort": "low",
+ "results": [
+  {
+   "tool_calls": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Paris",
+      "days": 1,
+      "metric": true
+     }
+    }
+   ],
+   "names": [
+    "get_weather"
+   ],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "tool_calls",
+   "content": "I'll check the current weather in Paris.",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 493,
+    "completion_tokens": 79,
+    "total_tokens": 572,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-cdad40ab49ed4896b2fc2908",
+    "object": "chat.completion",
+    "created": 1794332075,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "I'll check the current weather in Paris.",
+       "tool_calls": [
+        {
+         "id": "call_ea2230582b73487c9bc5c31d",
+         "type": "function",
+         "function": {
+          "name": "get_weather",
+          "arguments": "{\"city\":\"Paris\",\"days\":1,\"metric\":true}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 493,
+     "completion_tokens": 79,
+     "total_tokens": 572,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 493,
+     "prompt_ms": 4638.9,
+     "prompt_per_token_ms": 9.41,
+     "prompt_per_second": 106.3,
+     "predicted_n": 79,
+     "predicted_ms": 4410.5,
+     "predicted_per_token_ms": 55.829,
+     "predicted_per_second": 17.9,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "call-1arg",
+   "prompt": "What's the weather in Paris right now?",
+   "want": [
+    "get_weather"
+   ],
+   "seconds": 9.1
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Tokyo",
+      "days": 5,
+      "metric": true
+     }
+    }
+   ],
+   "names": [
+    "get_weather"
+   ],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "tool_calls",
+   "content": "I'll check the weather forecast for Tokyo.",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 500,
+    "completion_tokens": 79,
+    "total_tokens": 579,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-9842d875a3da4c7a931ea593",
+    "object": "chat.completion",
+    "created": 1794332084,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "I'll check the weather forecast for Tokyo.",
+       "tool_calls": [
+        {
+         "id": "call_a16a702579804cb79a4a4e32",
+         "type": "function",
+         "function": {
+          "name": "get_weather",
+          "arguments": "{\"city\":\"Tokyo\",\"days\":5,\"metric\":true}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 500,
+     "completion_tokens": 79,
+     "total_tokens": 579,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 500,
+     "prompt_ms": 4745.7,
+     "prompt_per_token_ms": 9.491,
+     "prompt_per_second": 105.4,
+     "predicted_n": 79,
+     "predicted_ms": 4137.5,
+     "predicted_per_token_ms": 52.373,
+     "predicted_per_second": 19.1,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "call-3arg",
+   "prompt": "What's the weather in Tokyo for the next 5 days? Use Celsius.",
+   "want": [
+    "get_weather"
+   ],
+   "seconds": 8.9
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "bash",
+     "arguments": {
+      "command": "ls -la /tmp"
+     }
+    }
+   ],
+   "names": [
+    "bash"
+   ],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "tool_calls",
+   "content": "I'll list the files in /tmp.",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 491,
+    "completion_tokens": 49,
+    "total_tokens": 540,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-b24b4468079e460d957b2759",
+    "object": "chat.completion",
+    "created": 1794332093,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "I'll list the files in /tmp.",
+       "tool_calls": [
+        {
+         "id": "call_a4e22e8e74ea4093991900ab",
+         "type": "function",
+         "function": {
+          "name": "bash",
+          "arguments": "{\"command\":\"ls -la /tmp\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 491,
+     "completion_tokens": 49,
+     "total_tokens": 540,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 491,
+     "prompt_ms": 4563.8,
+     "prompt_per_token_ms": 9.295,
+     "prompt_per_second": 107.6,
+     "predicted_n": 49,
+     "predicted_ms": 2254.4,
+     "predicted_per_token_ms": 46.008,
+     "predicted_per_second": 21.7,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "pick-shell",
+   "prompt": "List the files in /tmp.",
+   "want": [
+    "bash"
+   ],
+   "seconds": 6.8
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "calculator",
+     "arguments": {
+      "expression": "17 * 23"
+     }
+    }
+   ],
+   "names": [
+    "calculator"
+   ],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "tool_calls",
+   "content": "",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 492,
+    "completion_tokens": 40,
+    "total_tokens": 532,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-607a8189b2ef4b7dac47720e",
+    "object": "chat.completion",
+    "created": 1794332100,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": null,
+       "tool_calls": [
+        {
+         "id": "call_d9a39c0106474d99aef073c6",
+         "type": "function",
+         "function": {
+          "name": "calculator",
+          "arguments": "{\"expression\":\"17 * 23\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 492,
+     "completion_tokens": 40,
+     "total_tokens": 532,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 492,
+     "prompt_ms": 4524.1,
+     "prompt_per_token_ms": 9.195,
+     "prompt_per_second": 108.8,
+     "predicted_n": 40,
+     "predicted_ms": 1991.6,
+     "predicted_per_token_ms": 49.79,
+     "predicted_per_second": 20.1,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "pick-math",
+   "prompt": "What is 17 times 23?",
+   "want": [
+    "calculator"
+   ],
+   "seconds": 6.5
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "read_file",
+     "arguments": {
+      "path": "/etc/hostname"
+     }
+    }
+   ],
+   "names": [
+    "read_file"
+   ],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "tool_calls",
+   "content": "I'll read that file for you.",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 494,
+    "completion_tokens": 49,
+    "total_tokens": 543,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-a6db3daa583b4fda88486793",
+    "object": "chat.completion",
+    "created": 1794332107,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "I'll read that file for you.",
+       "tool_calls": [
+        {
+         "id": "call_7eec6c6ef05241489711e47d",
+         "type": "function",
+         "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"/etc/hostname\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 494,
+     "completion_tokens": 49,
+     "total_tokens": 543,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 494,
+     "prompt_ms": 4676.1,
+     "prompt_per_token_ms": 9.466,
+     "prompt_per_second": 105.6,
+     "predicted_n": 49,
+     "predicted_ms": 2161.8,
+     "predicted_per_token_ms": 44.118,
+     "predicted_per_second": 22.7,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "pick-file",
+   "prompt": "Show me what's in /etc/hostname",
+   "want": [
+    "read_file"
+   ],
+   "seconds": 6.8
+  },
+  {
+   "tool_calls": [
+    {
+     "name": "get_weather",
+     "arguments": {
+      "city": "Berlin",
+      "days": 3,
+      "metric": true
+     }
+    },
+    {
+     "name": "read_file",
+     "arguments": {
+      "path": "/etc/hostname"
+     }
+    }
+   ],
+   "names": [
+    "get_weather",
+    "read_file"
+   ],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "tool_calls",
+   "content": "I'll check both in parallel.",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 501,
+    "completion_tokens": 109,
+    "total_tokens": 610,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-33dbfe9ab00d483fb5f84405",
+    "object": "chat.completion",
+    "created": 1794332114,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "I'll check both in parallel.",
+       "tool_calls": [
+        {
+         "id": "call_0a5a8a94c07d48e49003aac4",
+         "type": "function",
+         "function": {
+          "name": "get_weather",
+          "arguments": "{\"city\":\"Berlin\",\"days\":3,\"metric\":true}"
+         }
+        },
+        {
+         "id": "call_c3a391c61e1044339ff0b20f",
+         "type": "function",
+         "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"/etc/hostname\"}"
+         }
+        }
+       ]
+      },
+      "finish_reason": "tool_calls"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 501,
+     "completion_tokens": 109,
+     "total_tokens": 610,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 501,
+     "prompt_ms": 4689.5,
+     "prompt_per_token_ms": 9.36,
+     "prompt_per_second": 106.8,
+     "predicted_n": 109,
+     "predicted_ms": 4907.5,
+     "predicted_per_token_ms": 45.023,
+     "predicted_per_second": 22.2,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "two-in-one",
+   "prompt": "Check the weather in Berlin, and also read /etc/hostname for me.",
+   "want": [
+    "get_weather",
+    "read_file"
+   ],
+   "seconds": 9.6
+  },
+  {
+   "tool_calls": [],
+   "names": [],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "stop",
+   "content": "The capital of France is **Paris**.",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 491,
+    "completion_tokens": 9,
+    "total_tokens": 500,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-14d27256083740b89ea69177",
+    "object": "chat.completion",
+    "created": 1794332123,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "The capital of France is **Paris**."
+      },
+      "finish_reason": "stop"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 491,
+     "completion_tokens": 9,
+     "total_tokens": 500,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 491,
+     "prompt_ms": 4685.2,
+     "prompt_per_token_ms": 9.542,
+     "prompt_per_second": 104.8,
+     "predicted_n": 9,
+     "predicted_ms": 476.1,
+     "predicted_per_token_ms": 52.9,
+     "predicted_per_second": 18.9,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "no-tool-fact",
+   "prompt": "What is the capital of France?",
+   "want": [],
+   "seconds": 5.2
+  },
+  {
+   "tool_calls": [],
+   "names": [],
+   "arguments_bad_json": false,
+   "names_ok": true,
+   "args_ok": true,
+   "arg_notes": [],
+   "leaked_as_text": false,
+   "correct": true,
+   "finish_reason": "stop",
+   "content": "Hey! I'm doing well, thanks for asking. What can I help you with today?",
+   "reasoning_chars": 0,
+   "usage": {
+    "prompt_tokens": 495,
+    "completion_tokens": 20,
+    "total_tokens": 515,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   },
+   "raw": {
+    "id": "chatcmpl-fc80aa0ea63c412497063036",
+    "object": "chat.completion",
+    "created": 1794332128,
+    "model": "deepseek-v4.1-flash",
+    "choices": [
+     {
+      "index": 0,
+      "message": {
+       "role": "assistant",
+       "content": "Hey! I'm doing well, thanks for asking. What can I help you with today?"
+      },
+      "finish_reason": "stop"
+     }
+    ],
+    "usage": {
+     "prompt_tokens": 495,
+     "completion_tokens": 20,
+     "total_tokens": 515,
+     "prompt_tokens_details": {
+      "cached_tokens": 0
+     }
+    },
+    "timings": {
+     "cache_n": 0,
+     "prompt_n": 495,
+     "prompt_ms": 4766.1,
+     "prompt_per_token_ms": 9.628,
+     "prompt_per_second": 103.9,
+     "predicted_n": 20,
+     "predicted_ms": 1178.9,
+     "predicted_per_token_ms": 58.945,
+     "predicted_per_second": 17.0,
+     "draft_n": 0,
+     "draft_n_accepted": 0
+    }
+   },
+   "id": "no-tool-chat",
+   "prompt": "Hey, how's it going? Just saying hi.",
+   "want": [],
+   "seconds": 6.0
+  }
+ ],
+ "correct": 8,
+ "total": 8
+}

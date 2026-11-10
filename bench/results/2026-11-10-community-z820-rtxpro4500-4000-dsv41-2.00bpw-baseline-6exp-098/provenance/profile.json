@@ -1,0 +1,10 @@
+{
+  "id": "launch-ist-das-2-00bpw-64k",
+  "overrides": {
+    "host": "127.0.0.1",
+    "parallel": 1,
+    "port": 8080
+  },
+  "schema_version": 1,
+  "source_config": "<home>/.local/state/strata/launch/ist-das-2-00bpw-64k.json"
+}
