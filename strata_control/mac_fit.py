@@ -64,19 +64,9 @@ STREAM_SPEC = 3
 # (section 31.1 of the same file; it has no Mac setup entry yet, the name is what a config for it would pass).
 SPEC3_MODELS = ("IQ3_S", "Q2_0", "CODER")
 SPEC3_MIN_P = "0.5"
-# STRATA_METAL_F16=1 (the fp16 decode windows, PR 4807) is the default of a resident IQ3_S or Q2_0 pack.  M5 Max: decode +9 to +15% (Q2_0)
-# and +9 to +12% (IQ3_S); top-1 agreement against the fp32 path 97.1% (Q2_0) / 96.2% (IQ3_S), mean KL 0.009 / 0.016 (sections 20, 22);
-# the 61-task quality suite (section 30): same tasks passed with it on and off, no family drop, no new hallucination flag, 0 pass/fail
-# changes between two runs of the same arm.  The owner's rule was an option unless it passes that suite.  STRATA_METAL_F16=0 in the config's
-# env turns it off.  Other sets (and a streaming pack, where the windows are not fp16) are not set.
-F16_MODELS = ("IQ3_S", "Q2_0")
-
-
-def engine_env(model: str, stream: bool) -> dict[str, str]:
-    """The engine variables a Mac config carries besides STRATA_METAL_STREAM: STRATA_METAL_F16=1 for a resident IQ3_S or Q2_0 pack."""
-    if not stream and (model or "").upper() in F16_MODELS:
-        return {"STRATA_METAL_F16": "1"}
-    return {}
+# STRATA_METAL_F16 (the fp16 decode windows, PR 4807) is the ENGINE's default for a resident IQ3_S or Q2_0 pack since 0.2.13 (metal window.cpp
+# f16_auto_for, found from the GGUF file name).  M5 Max: decode +9 to +15% (Q2_0) and +9 to +12% (IQ3_S); top-1 agreement 97.1% / 96.2%, mean KL
+# 0.009 / 0.016; the 61-task suite passed the same tasks.  STRATA_METAL_F16=0 in the config's env turns it off.  Setup writes nothing for it.
 
 
 def spec_args(model: str, stream: bool, mtp: bool) -> list[str]:
@@ -186,6 +176,13 @@ def gpu_budget_gb(ram_gb: float) -> float:
 # The families the Mac app (setup.py's mac_control_setup and the app's model list) installs: the GSQ-RCO Qwen files, Unsloth's sets (several shards:
 # metal/tools/metal_repack.py writes one GGUF for the GPU) and Gyro.  A set with "missing" is left out (METAL_Q5_0_DOWN above).
 APP_FAMILIES = ("qwen", "unsloth", "gyro")
+#: the signed feed's models that run on a Mac (strata_control/feed_models.py adds them; empty without a feed list)
+FEED_FAMILIES: list = []
+
+
+def all_families() -> tuple:
+    """The families the Mac app and Terminal offer: the built-in ones, then the signed feed's."""
+    return (*APP_FAMILIES, *FEED_FAMILIES)
 # What the repack and the pack work in beside the shards (the Mac install path counts it; the repacked file is MAC_MODELS' shard1_gb).
 REPACK_WORK_GB = 6.0
 
@@ -266,8 +263,8 @@ def engine_args(pack: Path, shards: list, rt: Path, ctx: int, stream: bool = Fal
     hyper-connection read (the engine's default on Metal; STRATA_HC_Q8=0 in the config's env gives the exact BF16
     read).  Streaming from the SSD: one token per step, no draft layer (measured faster on the 32 GB M4); a streaming
     Mac with STREAM_MTP_FROM_GB or more keeps the draft layer and uses --spec STREAM_SPEC."""
-    mtp = stream_mtp(stream, ram_gb)
-    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1])]
+    mtp = stream_mtp(stream, ram_gb) and not MAC_MODELS.get(model, {}).get("no_mtp")       # a feed model whose entry says "drafter: none" has no draft layer
+    args = ["--pack", str(pack), "--native", str(shards[0]), "--ple-gguf", str(shards[1] if len(shards) > 1 else shards[0])]       # one file: its own PLE table
     if shards[0].name.endswith("-metal.gguf"):         # the repacked file: it is its own dense GGUF
         args += ["--native-dense-gguf", str(shards[0])]
     args += [

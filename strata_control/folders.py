@@ -18,6 +18,10 @@ NEXT_POSIX = "Pick another folder you own, for example ~/strata-models. Nothing 
 _WIN_BAD = re.compile(r'[<>"|?*\x00-\x1f]')
 _POSIX_SYSTEM = ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var/lib", "/System",
                  "/Library", "/private/etc")
+# Where a desktop (udisks, GNOME, KDE) mounts the drives a person plugs in. It sits inside /run, a system folder, but it is not system
+# state: a model drive there is normal. Whether it is the person's to write to is the write test below, not the name.
+_POSIX_MOUNTS = ("/run/media",)
+SAID_NOTHING_CHANGED = "Nothing was downloaded or changed."
 
 
 def _next() -> str:
@@ -44,6 +48,16 @@ def _norm(path: str) -> str:
 def _inside(path: str, root: str) -> bool:
     p, r = _norm(path), _norm(root)
     return p == r or p.startswith(r + os.sep)
+
+
+def _is_system(full: str) -> bool:
+    for root in _system_roots():
+        if not _inside(full, root) or _inside(full, os.path.expanduser("~")):     # the running user's own home is theirs (root's /root included)
+            continue
+        if any(_inside(full, mount) and _norm(full) != _norm(mount) for mount in _POSIX_MOUNTS):
+            continue                                                               # /run/media/<user>/<drive>/...: a mounted drive
+        return True
+    return False
 
 
 def _can_write(folder: Path) -> bool:
@@ -75,9 +89,8 @@ def problem(raw: str | os.PathLike | None) -> tuple[str, str] | None:
                 "Type the whole path, starting with the drive, like D:\\Strata-models. Nothing was downloaded or changed."
                 if os.name == "nt" else "Type the whole path, starting with /, like /data/strata-models. Nothing was downloaded or changed.")
     full = os.path.abspath(path)
-    for root in _system_roots():
-        if _inside(full, root) and not _inside(full, os.path.expanduser("~")):         # the running user's own home is theirs (root's /root included)
-            return (f"{full} is a system folder, and Strata should not keep model files there.", _next())
+    if _is_system(full):
+        return (f"{full} is a system folder, and Strata should not keep model files there.", _next())
     try:
         if path.exists():
             if not path.is_dir():
@@ -102,3 +115,11 @@ def problem(raw: str | os.PathLike | None) -> tuple[str, str] | None:
 
 def words(problem_: tuple[str, str]) -> str:
     return f"{problem_[0]} {problem_[1]}".strip()
+
+
+def without_nothing_changed(problem_: tuple[str, str]) -> str:
+    """The same words with the closing "Nothing was downloaded or changed." left off, for a caller that says it again in its own sentence."""
+    what, nxt = problem_
+    if nxt.endswith(SAID_NOTHING_CHANGED):
+        nxt = nxt[: -len(SAID_NOTHING_CHANGED)]
+    return f"{what} {nxt}".strip()
