@@ -74,7 +74,7 @@ test('a load fetches the drafter first, never stops for it, and says what ran', 
   assert.match(prepare, /control\.draftingFetch\(/);
   assert.match(prepare, /catch\(error\)\{if\(job\.state==='running'\)\{job\.drafterNote=error\.message;/, 'a failed download leaves the MTP and the job says so');
   assert.match(source, /await prepareDrafter\(job,args,cfg,configFile,drafts,\{noSplit\}\)/);
-  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&[\s\S]*?\{[\s\S]*?await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load (and a plain Auto load when the plan says split)');
+  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|\(drafts\.split===true\|\|args\.firstLoad===true\)&&[\s\S]*?\{[\s\S]*?await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load (and a plain Auto load when the plan says split, or the first load after a setup)');
   assert.match(source, /async function noteDrafting\(job,instance,key\)/);
   assert.match(source, /instance\.status='ready';instance\.phase='idle';await noteDrafting\(job,instance,key\)/);
   assert.match(source, /typeof choice==='string'&&typeof control\.draftingPlan==='function'/, 'the plan lists the drafter Control says is needed');
