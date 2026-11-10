@@ -796,7 +796,15 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
-  rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
+  rope configuration, a loaded control vector and the arithmetic switches, plus the process's `STRATA_*` environment sorted by
+  name and the device plan in stage order). The environment enters whole, minus the runtime-only names (the park's own
+  `STRATA_PARK_*` placement - the park binds them into its tag itself - the manifest path and the `_DUMP`/`_TRACE`/`_STATS`/
+  `_PROF`/`_LOG` report knobs): the kernel layer picks its fast paths from those variables at load time - `STRATA_HC_Q8`
+  changes which bytes exist, `STRATA_ROUTE_TAIL_SKIP` which scorer runs - and an enumerated list would join the switches
+  it is meant to catch only after someone hits the trap, so an unlisted variable counts in: a wrong inclusion costs one
+  re-save, a wrong exclusion costs correctness. The device plan enters per stage (`name|compute capability|total MiB`,
+  stage 0 first, then the `--layer-split` devices), because a stage that moved to another card - which the server's
+  per-boot card reorder can do - is a different computed state no other field can see. Sampling, seeds, draft tuning and the expert
   tier are not in it. Do not change model files while their sessions are kept. The hash detects accidental corruption and does
   not authenticate a file: restore only files this engine wrote.
 - Errors: `501` without `--slot-save-path` or with parallel requests; `400` for a slot other than 0, an unknown action, a refused

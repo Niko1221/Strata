@@ -3,6 +3,7 @@
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -384,6 +385,42 @@ int main() {
         check(differs([](SessionConfig& d) { d.cvec = 7; }), "control vectors enter the config");
         check(differs([](SessionConfig& d) { d.switches[0].second = 1; }), "a switch value enters the config");
         check(differs([](SessionConfig& d) { d.switches.push_back({"X", 0}); }), "the switch list enters the config");
+        // #5379: the identity-relevant environment and the device plan bind the config like every other field
+        check(differs([](SessionConfig& d) { d.env = {{"STRATA_HC_Q8", "1"}}; }), "an environment variable enters the config");
+        check(differs([](SessionConfig& d) { d.env = {{"STRATA_HC_Q8", "2"}}; }), "an environment value enters the config");
+        check(differs([](SessionConfig& d) { d.devices = {"RTX 3080|8.6|10240"}; }), "the device plan enters the config");
+        {
+            SessionConfig p = c, q = c;
+            p.devices = {"A|8.6|1", "B|12.0|2"}; q.devices = {"B|12.0|2", "A|8.6|1"};
+            check(session_config_fingerprint(p) != session_config_fingerprint(q),
+                  "a stage moved to another card is a different config: device order counts");
+        }
+        {
+            SessionConfig p = c, q = c;
+            p.env = {{"STRATA_A", "1"}, {"STRATA_B", "2"}}; q.env = p.env;
+            check(session_config_fingerprint(p) == session_config_fingerprint(q), "the environment counts deterministically");
+        }
+#ifndef _WIN32
+        {   // the collector (#5379): every STRATA_* that is not runtime-only, sorted
+            std::vector<std::pair<std::string, std::string>> ev;
+            setenv("STRATA_TEST_KNOB_A", "1", 1);
+            setenv("STRATA_ZZ_TAIL_KNOB", "2", 1);
+            setenv("STRATA_PARK_DIR", "/where/never", 1);
+            setenv("STRATA_TEST_TRACE", "9", 1);
+            setenv("STRATA_MANIFEST", "/tmp/m", 1);
+            session_env_identity(ev);
+            const auto has = [&ev](const char* n) {
+                for (const auto& kv : ev) if (kv.first == n) return true;
+                return false;
+            };
+            check(has("STRATA_TEST_KNOB_A") && has("STRATA_ZZ_TAIL_KNOB"), "STRATA_* variables enter");
+            check(!has("STRATA_PARK_DIR") && !has("STRATA_MANIFEST") && !has("STRATA_TEST_TRACE"),
+                  "runtime-only variables stay out");
+            check(std::is_sorted(ev.begin(), ev.end()), "the environment enters sorted");
+            unsetenv("STRATA_TEST_KNOB_A"); unsetenv("STRATA_ZZ_TAIL_KNOB"); unsetenv("STRATA_PARK_DIR");
+            unsetenv("STRATA_TEST_TRACE"); unsetenv("STRATA_MANIFEST");
+        }
+#endif
         // field boundaries: ("ab","c") and ("a","bc") hash differently
         SessionIdentityBuilder x(1), y(1);
         x.str("ab", "c"); y.str("a", "bc");

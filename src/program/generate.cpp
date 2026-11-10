@@ -12051,7 +12051,8 @@ int main(int argc, char** argv) {
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
-        // K/V format and the arithmetic switches.  Sampling, seeds, draft tuning and the expert tier are not in it.
+        // K/V format and the arithmetic switches, plus (#5379) the identity-relevant STRATA_* environment and the
+        // device plan in stage order.  Sampling, seeds, draft tuning and the expert tier are not in it.
         std::optional<uint64_t> model_fp, config_fp;
         auto session_identity = [&](strata::core::SessionFileIdentity& id, std::string& e,
                                     const std::function<void()>& next_file) -> bool {
@@ -12116,6 +12117,20 @@ int main(int argc, char** argv) {
                     {"keep_canonical", o.keep_canonical}, {"no_fused_gr", o.no_fused_gr},
                     {"no_fast_attn", o.no_fast_attn}, {"no_fused_gdn", o.no_fused_gdn},
                     {"no_fast_select", o.no_fast_select}, {"vision", o.vision}};
+                strata::core::session_env_identity(c.env);   // #5379: the fast-path environment the kernel layer read at load
+                // the device plan in stage order: stage 0 (the primary's card) first, then the --layer-split
+                // devices - a stage that moved to another card is a different computed state (#5379).
+                const auto dev_tag = [](int d) {
+                    cudaDeviceProp p{};
+                    if (cudaGetDeviceProperties(&p, d) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        return "device-" + std::to_string(d);
+                    }
+                    return std::string(p.name) + "|" + std::to_string(p.major) + "." + std::to_string(p.minor) +
+                           "|" + std::to_string(p.totalGlobalMem >> 20);
+                };
+                c.devices.push_back(dev_tag(primary_device));
+                for (int d : split_devs) c.devices.push_back(dev_tag(d));
                 config_fp = strata::core::session_config_fingerprint(c);
             }
             id.model = *model_fp;
