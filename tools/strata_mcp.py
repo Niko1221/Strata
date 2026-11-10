@@ -200,7 +200,7 @@ def proc_identity(pid) -> str | None:
         finally:
             _k32.CloseHandle(h)
     stat = Path(f"/proc/{pid}/stat")
-    if Path("/proc/self/stat").exists():
+    if _has_proc():
         try:
             fields = stat.read_text().rsplit(")", 1)[1].split()
         except (OSError, IndexError):
@@ -208,11 +208,30 @@ def proc_identity(pid) -> str | None:
         if fields[0] in ("Z", "X"):                     # a zombie has ended
             return None
         return f"linux:{fields[19]}"                    # field 22 of stat: the start time in clock ticks
-    try:                                                # elsewhere (no /proc): alive, without a start time
+    state = _ps_state(pid)                              # elsewhere (macOS: no /proc): ps says whether it runs; a zombie (an ended child
+    if state is not None:                               # not reaped yet) answers kill(pid, 0) but has ended (lane 8, a Mac install that "ran" for ever)
+        return "pid" if state and not state.startswith("Z") else None
+    try:                                                # no ps either: alive, without a start time
         os.kill(pid, 0)
         return "pid"
     except OSError:
         return None
+
+
+def _has_proc() -> bool:
+    return Path("/proc/self/stat").exists()
+
+
+def _ps_state(pid: int) -> str | None:
+    """The process state letter(s) ps reports for the process ("S", "R+", "Z" ...), "" when no such process runs, None when ps cannot be asked."""
+    try:
+        done = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = done.stdout.strip()
+    if done.returncode != 0 and not out:
+        return ""                                       # ps: no such process
+    return out
 
 
 def proc_alive(pid, ident) -> bool:

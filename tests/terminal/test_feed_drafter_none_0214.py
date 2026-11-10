@@ -11,12 +11,13 @@ def _cfg(**kw):
 
 
 def test_a_feed_model_with_no_draft_layer_starts_with_no_drafter():
+    from serve.server import engine_args
     for extra in ({"mtp": False, "drafting": "off"}, {"mtp": False}, {"drafting": "off"}):
-        cfg = _cfg(**extra)
-        d = drafting.apply(cfg, backend="cuda", archs=["sm_86"])
+        d = drafting.apply(_cfg(**extra), backend="cuda", archs=["sm_86"])
         assert d.drafter == "off", extra
-        assert "--mtp" not in cfg["args"] and "--spec-min-p" not in cfg["args"]
-        assert cfg["args"][-2:] == ["--max-context", "32768"]
+        started = engine_args(_cfg(**extra), announce=False)     # what the server starts: no draft layer, whichever key said so
+        assert "--mtp" not in started and "--spec-min-p" not in started, extra
+        assert started[started.index("--max-context") + 1] == "32768"
 
 
 def test_other_models_keep_their_decision():
