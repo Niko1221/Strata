@@ -668,6 +668,13 @@ class Helpers(unittest.TestCase):
             self.assertNotIn(flag, args)
         plan, _a = M.Tools(s).install_plan("qwen36", None, 32768, "no", None, None, None, None, None, None, None)
         self.assertEqual(plan["model"], "UD-Q4_K_XL")
+        # #5715: no context given: the size that fits the 12 GB card (32K), not 128K; a 16 GB card keeps 128K
+        _p, args = M.Tools(s).install_plan("qwen36", "UD-Q4_K_XL", None, "no", None, None, None, None, None, None, None)
+        self.assertEqual(args[args.index("--context") + 1], "32768")
+        s.hardware = lambda fresh=False: {"ram_gb": 64.0, "gpus": [{"index": 0, "name": "x", "vram_gb": 15.93, "usable": True, "vendor": "nvidia"}],
+                                          "cpu": {"avx2": True}}
+        _p, args = M.Tools(s).install_plan("qwen36", "UD-Q4_K_XL", None, "no", None, None, None, None, None, None, None)
+        self.assertEqual(args[args.index("--context") + 1], "131072")
         with self.assertRaises(M.ToolError):
             M.Tools(s).install_plan("qwen36", "IQ3_S", 32768, "no", None, None, None, None, None, None, None)
 

@@ -2446,6 +2446,9 @@ class Tools:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
             context = 131072                          # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
+            own = (getattr(s.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+            if own:                                   # Qwen3.6: the largest size that fits the card when 128K does not (#5715, setup's own rule)
+                context = s.setup_module().own_path_context(own, max((g["vram_gb"] for g in usable), default=0.0), model)
         if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is None:

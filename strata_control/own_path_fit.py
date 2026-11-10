@@ -34,6 +34,7 @@ BASE_GIB = 8.55                                                # the one figure 
 HYBRID_MIN_GIB = {"UD-Q4_K_XL": 1256 / 1024, "UD-Q6_K_XL": 1760 / 1024, "Q8_0": 1760 / 1024}
 FAMILY_NAME = "qwen3.6-35b-a3b"                                # setup.py OWN_PATH_FAMILIES['qwen36']['name'], the config's model_name prefix
 DEFAULT_CONTEXT = 131072                                       # 128K (owner, 2026-11-01): the mark never goes above it
+MENU = [8192, 32768, 65536, 131072, 204800, 262144]           # setup's own-path context menu (setup.own_path_contexts(); a test keeps them equal)
 
 
 def fixed_gib(model: str | None) -> float | None:
@@ -69,3 +70,36 @@ def need_gib(fit: dict, ctx: int) -> float:
 def fits(fit: dict, vram_gb: float, ctx: int) -> bool:
     return need_gib(fit, ctx) <= float(vram_gb)
 
+
+def largest_fit(fit: dict | None, vram_gb: float | None, choices) -> int | None:
+    """The largest of `choices` that fits the card; 0 when none does; None when it cannot be said (no figures, no card)."""
+    if not fit or not vram_gb or float(vram_gb) <= 0:
+        return None
+    ok = [int(c) for c in choices if fits(fit, float(vram_gb), int(c))]
+    return max(ok) if ok else 0
+
+
+def recommended(fit: dict | None, vram_gb: float | None, choices, default: int = DEFAULT_CONTEXT) -> int:
+    """The context to mark "(recommended)": the largest choice that fits the card, at most `default` (128K); the smallest choice when none fits;
+    `default` when it cannot be said."""
+    best = largest_fit(fit, vram_gb, choices)
+    if best is None:
+        return default
+    if best == 0:
+        return min(int(c) for c in choices)
+    return min(best, default)
+
+
+def label(ctx: int) -> str:
+    return f"{ctx // 1024}K" if ctx % 1024 == 0 else f"{ctx:,} tokens"
+
+
+def warning(fit: dict | None, vram_gb: float | None, ctx: int, choices) -> str | None:
+    """The sentence said before the start when `ctx` does not fit the card (owner's wording, 11-10/11-11), else None.  Nothing is said when no
+    choice fits at all (the sentence needs a size that fits) or when it cannot be said."""
+    best = largest_fit(fit, vram_gb, choices)
+    if not best or fits(fit, float(vram_gb), int(ctx)):
+        return None
+    return (f"At {label(int(ctx))}, this model's conversation memory needs about {int(ctx) * float(fit['bytes_per_token']) / GIB:.1f} GB of graphics memory. With the model "
+            f"itself that is more than this card's {float(vram_gb):.0f} GB, so it will probably not start. {label(best)} fits on this card: choose "
+            f"{label(best)} or less.")

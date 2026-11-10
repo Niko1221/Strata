@@ -8559,10 +8559,22 @@ def feed_models_setup(feed: str | None = None, fetch: bool = True) -> None:
         feed_models.apply(_SetupTables(), loaded.models, feed_engine_families())
 
 
-def own_path_context(fam: dict, vram_gb: float) -> int:
-    """The recommended context for an own-path family: its KV cache (VRAM) beside the dense weights and the most-used
-    experts - 32K up to 16 GB, 64K up to 24 GB, 128K above."""
-    return 131072                                      # 128K on every card (owner, 2026-11-01)
+def own_path_contexts() -> list:
+    """The context sizes the own-path menu offers: up to the model's trained 262,144 (no rope scaling on this path yet)."""
+    return [c for c in CONTEXTS if c <= 262144]
+
+
+def own_path_context(fam: dict, vram_gb: float, model: str | None = None) -> int:
+    """The recommended context for an own-path family: 128K (owner, 2026-11-01), or on a card where 128K does not fit the largest
+    size that does (#5715, strata_control/own_path_fit.py; the smallest when none fits).  A recommendation only: any size can be chosen."""
+    from strata_control import own_path_fit
+    return own_path_fit.recommended(own_path_fit.inputs(fam.get("name"), model), vram_gb, own_path_contexts())
+
+
+def own_path_context_warning(fam: dict, model: str, vram_gb: float, ctx: int) -> str | None:
+    """The sentence said when the chosen context does not fit the card (#5715); None when it fits or cannot be said."""
+    from strata_control import own_path_fit
+    return own_path_fit.warning(own_path_fit.inputs(fam.get("name"), model), vram_gb, ctx, own_path_contexts())
 
 
 def own_path_size(fam: dict, ram: float) -> str:
@@ -8711,11 +8723,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
     tag = fam["tag"] + model
-    rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0))
+    rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0), model)
     if a.context:
         ctx = a.context
     else:
-        ctxs = [c for c in CONTEXTS if c <= 262144]   # the model's trained length; no rope scaling on this path yet
+        ctxs = own_path_contexts()                     # the model's trained length; no rope scaling on this path yet
         say()
         say("  Context length = how much text the model can see at once. Its cache takes "
             f"{fam['kv_bytes_per_token'] * 32768 / 2**30:.1f} GB of VRAM per 32K tokens, room the experts would use:")
@@ -8726,6 +8738,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if ctx > 262144:
         warn(f"{ctx // 1024}K is past {fam['title']}'s trained 262,144 positions and this engine path has no rope "
              "scaling yet: kept as you chose, but answers past 256K are untested")
+    too_big = own_path_context_warning(fam, model, float(gpu.get("vram_gb", 0.0)), ctx)
+    if too_big:                                        # #5715: said before the start; the choice is kept (recommend, never force)
+        warn(too_big)
     ok(f"context: {ctx} tokens")
     vision = own_path_vision(a, fam, gpu, hip)
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
