@@ -350,7 +350,9 @@ class Monitor(unittest.TestCase):
 @contextlib.contextmanager
 def tempfile_home():
     import tempfile
-    with tempfile.TemporaryDirectory(prefix="strata-notice-") as d:
+    # A check the app started in the background may still hold .updates/update.lock when the case ends (a file in use cannot be deleted on
+    # Windows); the folder is scratch, so a leftover is not a failure of the case.
+    with tempfile.TemporaryDirectory(prefix="strata-notice-", ignore_cleanup_errors=True) as d:
         yield d
 
 

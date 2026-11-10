@@ -9,7 +9,7 @@
 #   SRC=<this checkout>              the Strata source (default: the checkout this script is in)
 #   LLAMA=<llama.cpp checkout>       at the pinned commit (setup.py LLAMA_CPP_COMMIT); mtmd and ggml come from it
 #   HP=<ROCm devel root>  CORE=<ROCm core root>  LIBW=<ROCm libraries root>   (TheRock: _rocm_sdk_devel, _rocm_sdk_core, _rocm_sdk_libraries_*)
-#   OUT=<work folder>  PKGVER=0.1.58  COMMIT=<source commit for the build id>  JOBS=16
+#   OUT=<work folder>  PKGVER=0.1.59  COMMIT=<source commit for the build id>  JOBS=16
 #   VISION_ONLY=1                    build only the two readers (no engine, no package)
 #   DSV41=1|0                        also build strata-dsv41 (the DeepSeek-V4.1 engine, tools/dsv41/build_hip_linux.sh's flags) and ship it beside
 #                                    strata: default 1 for the rx9070 variant (gfx1200 gfx1201; built and run on an R9700), 0 for the others
@@ -27,7 +27,7 @@ HP=${HP:?HP=<ROCm devel root>}
 CORE=${CORE:-$HP}
 LIBW=${LIBW:-$HP}
 OUT=${OUT:-$PWD/work-$V}
-PKGVER=${PKGVER:-0.1.58}
+PKGVER=${PKGVER:-0.1.59}
 COMMIT=${COMMIT:-unknown}
 JOBS=${JOBS:-16}
 case "$V" in
@@ -58,9 +58,11 @@ HIPDEFS=(-DCMAKE_HIP_COMPILER=$HP/llvm/bin/clang++ -DCMAKE_HIP_COMPILER_ROCM_ROO
 st "start $V ($ARCHS) commit $COMMIT"
 cd "$SRC" || exit 1
 if [ -z "${VISION_ONLY:-}" ]; then
+  # STRATA_CMAKE_EXTRA: more configure arguments for the engine build, e.g. -DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp (a new model shape)
+  # shellcheck disable=SC2086
   cmake -G Ninja -S . -B "$OUT/b" -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=OFF \
     -DSTRATA_PREFILL_MMQ=ON "-DCMAKE_HIP_ARCHITECTURES=$ARCHS" "${HIPDEFS[@]}" -DSTRATA_GGML_DIR="$LLAMA" -DSTRATA_PORTABLE=ON \
-    "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags" > "$OUT/cfg.log" 2>&1
+    "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath,'\$ORIGIN' -Wl,--enable-new-dtags" ${STRATA_CMAKE_EXTRA:-} > "$OUT/cfg.log" 2>&1
   chk $? "engine configured"
   nice -n 10 cmake --build "$OUT/b" --target strata -j "$JOBS" > "$OUT/build.log" 2>&1
   chk $? "engine built"

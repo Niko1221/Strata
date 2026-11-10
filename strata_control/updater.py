@@ -384,6 +384,11 @@ def open_feed(ctx: Context, state: State) -> feedmod.Feed:
         raise feedmod.FeedDowngrade(downgrade_words(exc.sequence, exc.accepted, state.path)) from None
     for line in loaded.skipped:                       # an entry from a newer release that this Control cannot use: said once, never an error
         ctx.say("feed", line)
+    try:                                              # the feed's model list, kept (signature and all) for a PC that is offline later; nothing when the feed has none
+        from strata_control import feed_models
+        feed_models.remember(loaded, state.path.parent.parent)
+    except Exception:                                 # noqa: BLE001 - never part of an update
+        pass
     info = state.section("feed")
     info.update({"sequence": loaded.sequence, "key_id": loaded.key_id, "source": ctx.source, "channel": loaded.channel,
                  "checked_at": (ctx.now or dt.datetime.now(dt.timezone.utc)).isoformat()})
@@ -700,8 +705,9 @@ def new_stage(root: Path, prefix: str = "") -> Path:
             return stage
 
 
-def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, archive: Path) -> tuple[Path, ec.EngineComponent]:
-    """Unpack and check a downloaded engine package in a staging component folder. Returns (staging root, component)."""
+def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, archive: Path, *, component_id: str = ec.COMPONENT_ID) -> tuple[Path, ec.EngineComponent]:
+    """Unpack and check a downloaded engine package in a staging component folder. Returns (staging root, component). `component_id`: the engine of a model shape
+    (strata_control/shape_engine.py) is read and checked as its own component, never as the Strata engine."""
     stage_root = new_stage(ctx.components)
     folder = stage_root / "engine" / folder_name(pkg)
     ctx.say("verify", f"Unpacking {pkg.label}", component="engine")
@@ -714,11 +720,11 @@ def stage_engine(ctx: Context, feed: feedmod.Feed, pkg: feedmod.EnginePackage, a
         if transfer.sha256_file(manifest) != pkg.manifest_sha256:
             raise UpdateError("the package's manifest is not the one the signed feed names; not installed", 5)
         try:
-            component = ec.read_manifest(folder)
+            component = ec.read_manifest(folder, component_id)
         except ec.ComponentProblem as exc:
             raise UpdateError(f"the package manifest is invalid: {exc}", 5) from None
         mismatches = [name for name, a, b in (
-            ("version", component.version, pkg.version), ("platform", component.platform, pkg.platform),
+            ("version", component.version, pkg.version), ("platform", component.platform, pkg.platform), ("shape", component.shape, pkg.shape),
             ("backend", component.backend, pkg.backend), ("variant", component.variant, pkg.variant),
             ("build_id", component.build_id, pkg.build_id), ("archs", set(component.archs), set(pkg.archs)),
             ("min_driver", component.min_driver, pkg.min_driver), ("min_runtime", component.min_runtime, pkg.min_runtime))
@@ -1721,6 +1727,16 @@ def _model_check(ctx: Context, feed: feedmod.Feed, state: State, *, engine: bool
     gate.consent(serving, "It would update the " + " and the ".join(changes) + ".")
 
 
+def _shape_steps(ctx: Context, feed: feedmod.Feed, engine: bool) -> list:
+    """One step for each model-shape engine installed here (strata_control/shape_engine.py): the explicit update brings it up to the feed's, beside the older one; the Strata engine is
+    not touched. A PC that never installed one has no such step."""
+    if not engine:
+        return []
+    from strata_control import shape_engine
+    return [(shape_engine.component_id(shape), (lambda shape=shape: shape_engine.update_one(ctx, feed, shape, install_missing=False)))
+            for shape in shape_engine.installed_shapes(ctx.components)]
+
+
 def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: bool = False) -> dict:
     """`strata update`: the feed once, then the engine, Control and (if asked) the app installer, each reported separately.
     A component that fails does not undo one that succeeded; the exit code is the worst one."""
@@ -1732,7 +1748,7 @@ def run_update(ctx: Context, *, engine: bool = True, control: bool = True, app: 
         state.save()
         _model_check(ctx, feed, state, engine=engine, control=control)
         steps = ([("engine", lambda: update_engine(ctx, feed, state))] if engine else []) + \
-                ([("dsv41", lambda: update_dsv41(ctx, feed, state))] if engine else []) + \
+                ([("dsv41", lambda: update_dsv41(ctx, feed, state))] if engine else []) +                 _shape_steps(ctx, feed, engine) + \
                 ([("control", lambda: update_control(ctx, feed, state))] if control else []) + \
                 ([("app", lambda: update_app(ctx, feed))] if app else [])
         for name, step in steps:

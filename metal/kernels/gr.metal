@@ -11,6 +11,18 @@
 // lo[t] (hc_lr), inject[t] (hc), XP planes of n_tok rows.
 
 constant int GR_NTOK [[function_constant(1)]];
+// GEO_NJ: n_embd / 256, the elements per thread of one stream's row in gr_norm2 (Flash-Next 10); GEO_GRU_NU: the units of one up row a lane of
+// the prefetching gr_up holds, ceil(hc_lr / 32 / 4) (Flash-Next 3).  The host prelude (engine/geo.h) defines them for another shape.
+#ifdef GEO_NJ
+#define GR_NJ GEO_NJ
+#else
+#define GR_NJ 10
+#endif
+#ifdef GEO_GRU_NU
+#define GR_NU GEO_GRU_NU
+#else
+#define GR_NU 3
+#endif
 
 struct GrArgs {
     uint n_embd;
@@ -60,7 +72,7 @@ kernel void gr_norm2(device float* R [[buffer(0)]], device const float* bo [[buf
                      device float* xn [[buffer(4)]], constant GrArgs& a [[buffer(5)]],
                      uint3 tg [[threadgroup_position_in_grid]], ushort tid [[thread_index_in_threadgroup]],
                      ushort sg [[simdgroup_index_in_threadgroup]], ushort lane [[thread_index_in_simdgroup]]) {
-    constexpr int NJ = 10;
+    constexpr int NJ = GR_NJ;
     threadgroup float part[8];
     const uint c = tg.x, t = tg.y, n = a.n_embd;
     device float* r = R + (t * a.hc + c) * n;
@@ -210,7 +222,7 @@ kernel void gr_up_f(device const uchar* w_up [[buffer(0)]], device const float* 
     for (int t = 0; t < 8; ++t) acc[t] = 0.0f;
     if (PF) {
         // up to three units (U = 10 over 4 lanes) decoded before the first is combined; the per-token order is u = li, li + 4, li + 8
-        constexpr int NU = 3;
+        constexpr int NU = GR_NU;
         float q[NU][UNIT];
         float4 sc[NU];
         for (int j = 0; j < NU; ++j)
@@ -277,12 +289,3 @@ template [[host_name("gr_up_q8")]] kernel decltype(gr_up_f<T_Q8_0>) gr_up_f<T_Q8
 template [[host_name("gr_downp_q8_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>) gr_down_f<8, 8, T_Q8_0, T_Q8_0, 1>;
 template [[host_name("gr_downp_q8f_8_8")]] kernel decltype(gr_down_f<8, 8, T_Q8_0, T_F32, 1>) gr_down_f<8, 8, T_Q8_0, T_F32, 1>;
 template [[host_name("gr_upp_q8")]] kernel decltype(gr_up_f<T_Q8_0, 1>) gr_up_f<T_Q8_0, 1>;
-
-// wpf: a weight prefetch. Reads n16 uint4 of W (grid-strided) and writes nothing unless the xor of everything is one value in 2^32; the point is only to
-// pull the next kernel's first weights into the GPU's caches while the small hyper-connection kernels run (STRATA_METAL_WPF_MIB).
-kernel void wpf(device const uint4* W [[buffer(0)]], device uint* flag [[buffer(1)]], constant uint& n16 [[buffer(2)]],
-                uint gid [[thread_position_in_grid]], uint gsz [[threads_per_grid]]) {
-    uint4 a = 0;
-    for (uint i = gid; i < n16; i += gsz) a ^= W[i];
-    if ((a.x ^ a.y ^ a.z ^ a.w) == 0x7fffffffu) flag[0] = 1;
-}

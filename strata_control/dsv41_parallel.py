@@ -12,7 +12,6 @@ measured figures and the person decides.
 
 from __future__ import annotations
 
-from typing import Any
 
 MAX_CONVERSATIONS = 8      # the engine's limit (ds4_main.cpp: --parallel takes 1 to 8)
 

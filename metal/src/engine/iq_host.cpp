@@ -31,6 +31,7 @@ int gu_qk(int t) {
 int d_qk(int t) {
     switch (t) {
         case 23: return 256;
+        case 21: case 11: case 12: case 13: case 14: return 256;   // IQ3_S, Q3_K, Q4_K, Q5_K, Q6_K down (UD files at expert widths divisible by 256: Q4-KQ; moe.metal DNK_SET / DN_SET, moe_mm.metal MM3_DN / MM6_DN1 / MM_DN2_KQ)
         case 42: return 64;
         case 144: case 146: return 128;   // TQ2_T / TQK7 down
         case 20: case 7: case 6: case 8: return 32;   // IQ4_NL, Q5_1, Q5_0 (moe.metal DN_SET since 0.2.11 UD sets), Q8_0; Q4_0 / Q4_1 down have no Metal kernel

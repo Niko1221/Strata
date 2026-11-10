@@ -457,7 +457,7 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
 
     def test_the_names_are_the_ones_setup_writes(self):
         """Read from the code, not from memory: the family names and the way setup.py and metal/setup_mac.py make the run config's model_name."""
-        setup = (ROOT / "setup.py").read_text(encoding="utf-8")
+        setup = (ROOT / "setup.py").read_text(encoding="utf-8") + (ROOT / "strata_control" / "setup_config.py").read_text(encoding="utf-8")    # (the run config's construction moved to the setup seam)
         mac = (ROOT / "metal" / "setup_mac.py").read_text(encoding="utf-8")
         self.assertIn('"name": "qwen3.8-flash-next-unsloth"', setup)
         self.assertIn('"name": "qwen3.8-flash-next-coder"', setup)
@@ -494,7 +494,7 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
                     self.assertEqual(args[args.index("--mtp-draft-vocab") + 1], str(mtp / "draft_vocab.bin"), "the vocabulary the engine needs")
                     for flag in ("--mtp", "--spec-min-p"):
                         self.assertNotIn(flag, args, (backend, name, flag))
-                    self.assertEqual(args[args.index("--spec") + 1], "6")
+                    self.assertEqual(args[args.index("--spec") + 1], "8" if (backend, archs) == ("hip", ["gfx1151"]) else "6", "Strix Halo 8 (RESULTS-CONF.md 11-08), every other card 6")
 
     def test_swift_coder_and_nvfp4_stay_on_the_mtp(self):
         for backend, archs in self.HARDWARE:
@@ -518,9 +518,11 @@ class UnslothAndTheOtherFlashNextFiles(unittest.TestCase):
         # the app's own copies of the rule (the host and the page) name the same families and the same names
         host = (ROOT / "apps" / "host" / "server" / "native-settings.mjs").read_text(encoding="utf-8")
         page = (ROOT / "apps" / "host" / "src" / "lib" / "drafting.ts").read_text(encoding="utf-8")
-        self.assertIn("DRAFTING_FAMILIES=['qwen','gyro','unsloth']", host)
+        generated = (ROOT / "apps" / "host" / "server" / "policy-generated.mjs").read_text(encoding="utf-8")        # the host's copy is generated from drafting.py (strata_control/app_policy.py)
+        self.assertIn("DRAFTING_FAMILIES=GENERATED_DRAFTING_FAMILIES", host)
+        self.assertIn('DRAFTING_FAMILIES = ["qwen", "gyro", "unsloth"]', generated)
         self.assertIn("DRAFTING_FAMILIES = ['qwen', 'gyro', 'unsloth']", page)
-        self.assertIn(r"-unsloth-[a-z0-9._-]+", host)
+        self.assertIn(r"-unsloth-[a-z0-9._-]+", generated)
 
 
 class TheInstalledEngineDecidesTheFlags(unittest.TestCase):
@@ -1016,6 +1018,10 @@ class TheAppAsksControl(unittest.TestCase):
 
 class TheDownloadPlanListsIt(unittest.TestCase):
     """`strata launch --plan --drafting dflash2` adds the drafter to the download when it would be used."""
+
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
 
     def test_the_plan_line_and_the_part(self):
         from tests.terminal.launch_support import HW_12, Home, catalog

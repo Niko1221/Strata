@@ -8,7 +8,7 @@ const four = { gpus: [0, 1, 2, 3].map(i => amd(i)) };
 const old = { arch: 'deepseek41', backend: 'hip', gpu: 0, gpus_asked: true };
 const linux = process.platform !== 'win32';
 
-test('setup\'s own one-card pick is not a choice (Linux, several cards)', { skip: !linux }, () => {
+test('setup\'s own one-card pick is not a choice (Linux, several cards)', { skip: !linux && 'reads the Linux card layout (Linux only)' }, () => {
   assert.equal(setupPickedOneCard(old, four), true);
 });
 test('another card, a marker, roles, a list or another model are the person\'s', () => {

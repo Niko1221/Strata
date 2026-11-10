@@ -353,6 +353,21 @@ int Context::compile_try(const std::vector<std::string>& files, const std::strin
         std::string p = (f.size() && f[0] == '/') ? f : kernel_dir + "/" + f;
         src += "#line 1 \"" + f + "\"\n" + read_file(p) + "\n";
     }
+    if (const char* dump = std::getenv("STRATA_METAL_MSL_DUMP")) {   // research: the full text of every library, as the compiler gets it
+        static int ndump = 0;
+        char name[32];
+        std::snprintf(name, sizeof name, "/%03d.msl", ndump++);
+        if (std::FILE* f = std::fopen((std::string(dump) + name).c_str(), "wb")) {
+            std::fwrite(src.data(), 1, src.size(), f);
+            std::fclose(f);
+        }
+        if (std::FILE* f = std::fopen((std::string(dump) + "/index.txt").c_str(), "ab")) {
+            std::fprintf(f, "%s:", name + 1);
+            for (const auto& fl : files) std::fprintf(f, " %s", fl.c_str());
+            std::fprintf(f, "\n");
+            std::fclose(f);
+        }
+    }
     MTLCompileOptions* o = [MTLCompileOptions new];
     // Safe math by default: no reassociation, so every token of a window is bitwise what a one-token call gives
     // (the kernels write their contractions as explicit fma).  Measured free on the M5 Max.

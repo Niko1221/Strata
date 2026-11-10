@@ -1,0 +1,5 @@
+# Packages the checks need on top of requirements.txt (tools/check, the CI workflows). Not part of the runtime or the app.
+# CMake and Ninja are in requirements-build.txt.
+pytest==9.1.1
+# the Terminal's screens are tested with Textual's test driver (tests/terminal); setup.py installs the same pin for the Terminal
+textual==8.2.8

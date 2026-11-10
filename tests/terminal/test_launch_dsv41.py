@@ -28,6 +28,10 @@ class LaunchDeepSeek(unittest.TestCase):
         p = mock.patch.object(Catalog, "hardware", lambda s, fresh=False: dict(self.hw))
         p.start()
         self.addCleanup(p.stop)
+        # several AMD cards share a DeepSeek model on Linux only (dsv41_fit.run_cards asks the host OS); these four R9700 are a Linux PC
+        p = mock.patch("strata_control.dsv41_fit._on_windows", lambda: False)
+        p.start()
+        self.addCleanup(p.stop)
 
     def plan(self, *args):
         code, out, err = run_cli(["launch", "--plan", "--output", "json", *args])
@@ -121,7 +125,7 @@ class LaunchDeepSeek(unittest.TestCase):
         self.assertIn("free disk space", out)
         self.assertIn("It is still allowed", out)
         row = next(r for r in catalog(self.hw).rows() if r.family == "deepseek41" and r.model == "UD-Q8_K_XL")
-        self.assertEqual(row.verdict, "no")                         # "too big (can still try)": the plan above is printed and nothing is refused
+        self.assertEqual((row.verdict, row.words), ("tight", "tight: needs more disk space"))      # 100 GB free: the disk is said first; the plan above is printed and nothing is refused
 
     def test_the_plan_names_dspark_not_mtp(self):
         code, out, err = run_cli(["launch", "--plan", "--model", "ud-q8_k_xl", "--no-tui"])

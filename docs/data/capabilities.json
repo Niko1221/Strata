@@ -1,0 +1,60 @@
+{
+ "_about": "What each model family runs on, per kind of hardware. tools/capability_table.py builds docs/CAPABILITIES.md and the short summaries in AI_SETUP, AI_REFERENCE and MEDIA_KIT from this file and from the release's package names (docs/data/release.json). 'Packaged' is never typed here: it is read from the asset list. 'supported' is what the docs commit to: yes, untested (a package exists, nothing is claimed), or no. 'measured' names where numbers are published; an empty field means none are published, not that it fails.",
+ "columns": [
+  {"id": "nvidia_win", "label": "NVIDIA on Windows"},
+  {"id": "nvidia_linux", "label": "NVIDIA on Linux"},
+  {"id": "nvidia_spark", "label": "NVIDIA DGX Spark"},
+  {"id": "amd_win", "label": "AMD on Windows"},
+  {"id": "amd_linux", "label": "AMD on Linux"},
+  {"id": "intel_linux", "label": "Intel Arc on Linux"},
+  {"id": "mac", "label": "Apple silicon"}
+ ],
+ "families": [
+  {
+   "id": "deepseek41",
+   "name": "DeepSeekV4.1-Flash-1017",
+   "asset_prefix": "strata-dsv41-",
+   "guide": "MODELS.md#deepseek-v41-flash",
+   "cells": {
+    "nvidia_win": {"supported": "yes", "hardware": "RTX 30, 40 and 50", "limits": "The package carries RTX 40 code (sm_89); we have not run an RTX 40 card.", "measured": "[README](../README.md) speed table (RTX 5070, RTX 3060); [DEEPSEEK41.md](DEEPSEEK41.md)"},
+    "nvidia_linux": {"supported": "yes", "hardware": "RTX 30, 40 and 50", "limits": "The package carries RTX 40 code (sm_89); we have not run an RTX 40 card.", "measured": "[DEEPSEEK41.md](DEEPSEEK41.md)"},
+    "nvidia_spark": {"supported": "yes", "hardware": "GB10", "limits": "", "measured": "[DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md) (2.00 bpw)"},
+    "amd_win": {"supported": "yes", "hardware": "Ryzen AI Max / Strix Halo, gfx1151", "limits": "The package is built for gfx1151. Other AMD cards on Windows: nothing is claimed.", "measured": "[STRIX_HALO.md](STRIX_HALO.md#deepseek-v41-flash)"},
+    "amd_linux": {"supported": "yes", "hardware": "Radeon AI PRO R9700", "limits": "The RX 9070 (gfx1200) uses the same package and is untested. Ryzen AI Max (Strix Halo) on Linux has no DeepSeek package.", "measured": "[README](../README.md) speed table (1 and 4 cards); [AMD_HIP.md](AMD_HIP.md)"},
+    "intel_linux": {"supported": "no", "hardware": "", "limits": "No package. DeepSeek does not run on Intel ([INTEL.md](INTEL.md)).", "measured": ""},
+    "mac": {"supported": "yes", "hardware": "64 GB or more, macOS 15 or newer", "limits": "Text; pictures only with an engine that carries the Metal picture reader (marker STRATA_DS4_METAL_VISION_V1, present in the 0.1.58 package). Nothing under 128 GB was run.", "measured": "[DEEPSEEK_MAC.md](DEEPSEEK_MAC.md) (M5 Max, 128 GB)"}
+   }
+  },
+  {
+   "id": "qwen38",
+   "name": "Qwen3.8-Flash-Next",
+   "asset_prefix": "strata-engine-",
+   "guide": "MODELS.md#qwen38-flash-next",
+   "cells": {
+    "nvidia_win": {"supported": "yes", "hardware": "", "limits": "", "measured": "[README](../README.md) speed table; [DETAILS.md](DETAILS.md)"},
+    "nvidia_linux": {"supported": "yes", "hardware": "", "limits": "", "measured": "[DETAILS.md](DETAILS.md)"},
+    "nvidia_spark": {"supported": "yes", "hardware": "GB10", "limits": "", "measured": "[DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md)"},
+    "amd_win": {"supported": "yes", "hardware": "RX 6000, 7000 and 9000, Ryzen AI Max", "limits": "", "measured": "[STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md); [AMD_HIP.md](AMD_HIP.md)"},
+    "amd_linux": {"supported": "yes", "hardware": "RX 6000, 7000 and 9000, Radeon AI PRO R9700, Ryzen AI Max", "limits": "RX 6000 is validated differently from the newer cards ([AMD_HIP.md](AMD_HIP.md)).", "measured": "[AMD_HIP.md](AMD_HIP.md); [STRIX_HALO.md](STRIX_HALO.md)"},
+    "intel_linux": {"supported": "yes", "hardware": "Arc A-series and B-series", "limits": "Linux only (Ubuntu 24.04 or newer); the model is prepared for the card first, with per-card limits ([INTEL_ARC.md](INTEL_ARC.md)).", "measured": "[INTEL_ARC.md](INTEL_ARC.md)"},
+    "mac": {"supported": "yes", "hardware": "M1 or newer, macOS 15 or newer", "limits": "", "measured": "[MAC.md](MAC.md#measured-m5-max-128-gb) (M5 Max, 128 GB)"}
+   }
+  },
+  {
+   "id": "qwen36",
+   "name": "Qwen3.6-35B-A3B",
+   "asset_prefix": "strata-engine-",
+   "backends": ["cuda", "hip"],
+   "guide": "QWEN36.md",
+   "cells": {
+    "nvidia_win": {"supported": "yes", "hardware": "", "limits": "", "measured": "[QWEN36.md](QWEN36.md)"},
+    "nvidia_linux": {"supported": "yes", "hardware": "", "limits": "", "measured": "[QWEN36.md](QWEN36.md)"},
+    "nvidia_spark": {"supported": "untested", "hardware": "", "limits": "The engine package is the same one; no page states a Qwen3.6 run on the Spark.", "measured": ""},
+    "amd_win": {"supported": "yes", "hardware": "", "limits": "", "measured": "[QWEN36.md](QWEN36.md)"},
+    "amd_linux": {"supported": "yes", "hardware": "", "limits": "", "measured": "[QWEN36.md](QWEN36.md)"},
+    "intel_linux": {"supported": "no", "hardware": "", "limits": "The Intel Arc engine does not run this family ([QWEN36.md](QWEN36.md)).", "measured": ""},
+    "mac": {"supported": "no", "hardware": "", "limits": "The Mac engine does not run this family ([QWEN36.md](QWEN36.md)).", "measured": ""}
+   }
+  }
+ ]
+}

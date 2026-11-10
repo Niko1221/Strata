@@ -19,7 +19,6 @@ import json
 import math
 import os
 import struct
-import sys
 
 
 WARM = 0   # accesses before this index warm the cache but are not counted

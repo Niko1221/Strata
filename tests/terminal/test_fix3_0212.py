@@ -152,7 +152,7 @@ class DraftLayerInTheDataDir(Base):
 
     def test_plan_still_asks_for_the_layer_when_no_data_dir_has_it(self):
         folder = self.model_files(self.base / "ext" / "models" / "iq3_xxs")
-        with mock.patch.object(Catalog, "data_dir", return_value=self.base / "emptydata"):
+        with mock.patch.object(Catalog, "data_dir", return_value=self.base / "emptydata"),                 mock.patch.object(Runner, "intel_chosen", lambda self: False):       # an Intel Arc in the box that runs the test would plan its own engine
             out = self.plan_text("--model-path", str(folder), "--data-dir", str(self.base / "data"), "--vision", "off")
         self.assertIn("About 5.2 GB to download: the draft layer (5.2 GB).", out)
 
@@ -323,7 +323,9 @@ class PlanOnBusyCards(Base):
         r = Runner(s, catalog=catalog({**HW_12, "ram_gb": 125.0, "engine_vendor": "nvidia",
                                        "gpus": [{"index": i, "name": "NVIDIA RTX PRO 6000", "vram_gb": 96.0, "usable": True, "vendor": "nvidia"} for i in range(2)]}))
         for p in (mock.patch.object(SE, "probe_cards", lambda idx=None: probe), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),
-                  mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"]))):
+                  mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])),
+                  mock.patch("sys.platform", "linux"),       # the all-cards split rule asks the host OS (Linux only): this fake PC is Linux
+                  mock.patch.object(Runner, "intel_chosen", lambda self: False)):       # and NVIDIA: the real box's Intel Arc must not make the launch an Intel one
             p.start()
             self.addCleanup(p.stop)
         return r
@@ -368,7 +370,7 @@ class AppPlanWhileItsEngineRuns(Base):
         data = self.base / "d"
         data.mkdir(exist_ok=True)
         busy = [card(0, free=8192), card(1, free=8192)]
-        with mock.patch.object(SE, "probe_cards", lambda idx=None: busy), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),                 mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])):
+        with mock.patch.object(SE, "probe_cards", lambda idx=None: busy), mock.patch.object(SE, "ram_gib", lambda: (500.0, 400.0)),                 mock.patch("strata_control.drafting.detect_hardware", lambda: ("cuda", ["sm_120"])),                 mock.patch("sys.platform", "linux"),                 mock.patch.object(Runner, "intel_chosen", lambda self: False):       # the split rule asks the host OS (Linux only) and the make: this fake PC is Linux and NVIDIA
             code, out, err = run_cli(["drafting", "plan", "--family", "qwen", "--data-dir", str(data), "--mode", "auto", "--output", "json", *extra])
         self.assertEqual(code, 0, err)
         return json.loads(out)

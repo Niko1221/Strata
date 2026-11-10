@@ -60,7 +60,7 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-constexpr int64_t H = 2560, FF = 640;
+int64_t H = 2560, FF = 640;   // Q4KQ_PARITY_EMBD / Q4KQ_PARITY_FF override them in main (Q4-KQ: expert widths 512 and 1024)
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
@@ -902,6 +902,8 @@ int check_load(const char* pack, const char* gguf) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
+    if (const char* e = std::getenv("Q4KQ_PARITY_EMBD")) H = std::atoll(e);
+    if (const char* e = std::getenv("Q4KQ_PARITY_FF")) FF = std::atoll(e);
     if (argc < 2) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"

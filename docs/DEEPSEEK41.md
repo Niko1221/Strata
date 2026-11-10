@@ -89,7 +89,7 @@ Measured on 4 x Radeon AI PRO R9700 (the packaged Terminal, 128K context, 5 expe
 read in 80 s; on one R9700: 2,859 experts on the card, decode about 26 tokens a second (with the RAM capped for the whole run: 21 with 40 GB, 18 with 32 GB, 15 with 24 GB, 8 with 16 GB); an RTX PRO 6000 Blackwell
 (CUDA 12.8, sm_120, one of two cards on a shared box): about 100 tokens a second. Against the original model (4,995 positions, 6 experts a word, 4 cards, same harness): KL 0.397, top-1 76.4%, perplexity 4.645
 (reference 3.140); the same run gives 2.00 KL 0.171, top-1 83.7%, perplexity 3.630 and 2.25 KL 0.109, top-1 87.2%, perplexity 3.405. By part (KL): code 0.230, agent 0.199, documents 0.302, English 0.476, multilingual 0.777
-for the Coder; 0.104, 0.108, 0.202, 0.303, 0.138 for 2.00. One run per cell unless the numbers repeat; details and the task suite in `phaseA-tests/maya-port/DS-CODER.md`. Also run (2026-11-02, official files, the 0.2.9
+for the Coder; 0.104, 0.108, 0.202, 0.303, 0.138 for 2.00. One run per cell unless the numbers repeat. These are internal measurements; the run logs and the task suite are not published. Also run (2026-11-02, official files, the 0.2.9
 engines): on an Apple M5 Max 19 to 22 tokens a second with all 7,680 experts in memory (a 6,054-token needle read at 300 tokens a second), and on a Ryzen AI Max (Strix Halo, Windows, 64 GB of RAM)
 19 to 22 tokens a second with 7,734 of 8,064 experts in graphics memory.
 

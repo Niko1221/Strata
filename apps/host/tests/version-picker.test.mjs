@@ -58,33 +58,46 @@ test('no downloads and no pick: everything is in the one list below, and the fir
   assert.ok(!more.some(x => x.id === 'iq3_s' || x.id === 'gyro-gyro-s'));
 });
 
-test("the list writes Fits nowhere; only 'SSD streaming · will run slower' and 'Doesn't fit' are words", () => {
+test("the list writes Fits nowhere; only 'may run slower' is a word", () => {
   const big = { id: 'x', download_gb: 111, memory_gb: 78 }, small = { id: 'y', download_gb: 66, memory_gb: 35 };
   assert.equal(versionFit(small, { ram_gb: 128, vram_gb: 24 }), 'fits');
   assert.equal(versionFit(big, { ram_gb: 64, vram_gb: 12 }), 'ssd', 'part of the experts read from the SSD');
   assert.equal(versionFit(small, null), 'unknown', 'no hardware figures: no claim');
   assert.ok(!/'Fits'|"Fits"|Fits with SSD streaming/.test(source), 'no Fits word in the picker');
-  assert.match(source, /state === 'ssd' \|\| state === 'no' \? <span className="version-row__fit"/, 'a version that fits has no fit line at all');
-  assert.match(source, /'SSD streaming · will run slower'|'SSD streaming · will run slower'/);
+  assert.match(source, /state === 'ssd' \? <span className="version-row__fit"/, 'a version that fits has no fit line at all');
+  assert.ok(!/Doesn't fit|Uses SSD/.test(source), "no Doesn't fit and no SSD figure any more");
+  assert.match(source, /'may run slower'/);
+  assert.ok(!/SSD streaming/.test(source), 'the old words are gone');
   assert.ok(!/nativeVersionLabel|plainLabel/.test(source), 'no Fastest, Compact, High quality words');
 });
 
-test("NVFP4 on a 12 GB card with 63 GB of RAM is SSD streaming, not Doesn't fit (the engine's catalog compares RAM only)", () => {
-  // NVFP4: ram_gb 80, arena_gb 68, so the catalog says "does not fit" below 72 GB of RAM whatever the graphics card holds.
+test("one rule (owner 2026-11-08): the weight files without the lookup table against RAM + VRAM, nothing taken off", () => {
+  // NVFP4: 69 GB of weights. 63.1 GB of RAM and a 11.9 GB card hold 75 GB: it fits, whatever the engine's old RAM-only words said.
   const nvfp4 = { id: 'nvfp4-nvfp4', download_gb: 128, ram_needed_gb: 80, experts_gb: 68, memory_gb: 69, on_this_pc: 'does not fit' };
-  assert.equal(versionFit(nvfp4, { ram_gb: 63.1, vram_gb: 11.9 }), 'ssd');
+  assert.equal(versionFit(nvfp4, { ram_gb: 63.1, vram_gb: 11.9 }), 'fits');
+  assert.equal(versionFit(nvfp4, { ram_gb: 31, vram_gb: 32 }), 'ssd', 'the V100 32 GB with 31 GB of RAM: 63 GB');
+  assert.equal(versionFit({ id: 'u', download_gb: 84, memory_gb: 51.3 }, { ram_gb: 31, vram_gb: 32 }), 'fits', 'UD-IQ3_XXS / IQ3_S there: 51 GB');
+  assert.equal(versionFit({ id: 'x', download_gb: 1, memory_gb: 63 }, { ram_gb: 31, vram_gb: 32 }), 'fits', 'exactly as much as there is');
+  assert.equal(versionFit({ id: 'x', download_gb: 1, memory_gb: 63.1 }, { ram_gb: 31, vram_gb: 32 }), 'ssd');
+  assert.equal(versionFit({ id: 'x', download_gb: 1, memory_gb: 40, fit_gb: 150 }, { ram_gb: 64, vram_gb: 24 }), 'ssd', "DeepSeek: the set's files, not the CPU's share");
+  assert.equal(versionFit({ id: 'x', download_gb: 1, memory_gb: 40, fit_gb: 60 }, { ram_gb: 64, vram_gb: 24 }), 'fits');
   assert.equal(versionFit({ ...nvfp4, on_this_pc: 'does not fit' }, { ram_gb: 32, vram_gb: 24 }), 'ssd', 'a smaller PC still runs it, slower');
   assert.equal(versionFit({ ...nvfp4, on_this_pc: 'tight' }, { ram_gb: 128, vram_gb: 32 }), 'fits');
 });
 
-test("Doesn't fit is left for the cases that cannot run at all", () => {
+test("no card, little memory, a Mac with too little: the same two words, never 'Doesn't fit' (owner 11-08)", () => {
   const v = { id: 'x', download_gb: 66, memory_gb: 35 };
-  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit: it needs one or more graphics cards' }, { ram_gb: 256, vram_gb: 0 }), 'no', 'DeepSeek without a graphics card');
-  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, { ram_gb: 8, vram_gb: 0 }), 'no', 'less memory than anything was run with, and the engine agrees');
-  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit: this Mac has too little memory' }, { ram_gb: 8, vram_gb: 0 }), 'no');
-  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, null), 'no', 'the engine says so and nothing contradicts it');
-  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, { ram_gb: 16, vram_gb: 0 }), 'ssd', 'at the floor it runs from the SSD');
-  assert.equal(versionFit({ ...v, memory_gb: 260, on_this_pc: 'does not fit: about 120 GB of its experts would be read from the SSD' }, { ram_gb: 128, vram_gb: 24 }), 'ssd', 'a big spill is slow, not a refusal');
+  for (const words of ['does not fit: it needs one or more graphics cards', 'does not fit', 'does not fit: this Mac has too little memory'])
+    assert.equal(versionFit({ ...v, on_this_pc: words }, { ram_gb: 8, vram_gb: 0 }), 'ssd', words);
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit' }, null), 'unknown', 'no hardware figures: no claim');
+  assert.equal(versionFit({ ...v, on_this_pc: 'does not fit: about 120 GB of its experts would be read from the SSD' }, { ram_gb: 128, vram_gb: 24 }), 'fits', '35 GB fit 152 GB, whatever the old words said');
+});
+
+test('the size is the files without the lookup table (fit_gb): UD-IQ4_XS-v31 is 64.9 GB, 63 GB do not hold it', () => {
+  const pc = { ram_gb: 31, vram_gb: 32 };
+  assert.equal(versionFit({ id: 'ud-iq4_xs-v31', download_gb: 93.7, memory_gb: 61.4, fit_gb: 64.9 }, pc), 'ssd');
+  assert.equal(versionFit({ id: 'ud-q3_k_xl', download_gb: 89.5, memory_gb: 57.2, fit_gb: 60.7 }, pc), 'fits');
+  assert.equal(versionFit({ id: 'iq3_s', download_gb: 83.6, memory_gb: 51.3, fit_gb: 54.8 }, pc), 'fits');
 });
 
 test("the list is for one base model: the page passes only the chosen model's versions", async () => {

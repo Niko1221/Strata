@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import stat
 import sys
 import tempfile
@@ -72,6 +73,7 @@ class Classification(unittest.TestCase):
         self.assertIn("1 vendored ggml entries skipped", out)
 
 
+@unittest.skipIf(os.name == "nt", "the stand-in demangler is a #!/bin/sh script; Windows cannot run it as a program (needs a POSIX shell and exec of a shebang file)")
 class Demangling(unittest.TestCase):
     """A mangled name has no "::", so a kernel the demangler did not translate would read as vendored and be skipped:
     every way the demangler can be absent or wrong must end in 77, never in a pass."""

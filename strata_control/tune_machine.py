@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
 from strata_control import sysinfo
 import re
 import shutil

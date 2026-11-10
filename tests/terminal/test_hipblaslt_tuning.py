@@ -168,16 +168,28 @@ class Decision(TempDir):
 
 
 class Apply(TempDir):
-    def test_apply_puts_the_table_in_a_copy_of_the_config_and_says_so_once(self):
+    def test_apply_says_so_once_and_leaves_the_table_to_the_engine(self):
         pkg = fake_package(self.root)
         cfg = {"backend": "hip", "env": {"STRATA_RESIDENT_PIN": "0"}}
         lines = []
         out = ht.apply(cfg, pkg, ["gfx1201"], environ=ON, say=lines.append)
-        self.assertEqual(out["env"][ht.ENGINE_VAR], str(pkg / "tuning" / "gfx1201-hipblaslt-100500.txt"))
-        self.assertEqual(out["env"]["STRATA_RESIDENT_PIN"], "0")
-        self.assertNotIn(ht.ENGINE_VAR, cfg["env"])        # the caller's config is untouched
+        self.assertIs(out, cfg)                            # the engine finds tuning/ beside itself: no path in the config
+        self.assertNotIn(ht.ENGINE_VAR, out["env"])
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("[strata] hipBLASLt tuning table"))
+
+    def test_a_config_level_switch_reaches_the_engine_as_the_env_variable(self):
+        pkg = fake_package(self.root)
+        for value, word in ((False, "off"), (True, "on")):
+            cfg = {"backend": "hip", "hipblaslt_table": value, "env": {"STRATA_RESIDENT_PIN": "0"}}
+            out = ht.apply(cfg, pkg, ["gfx1201"], environ={}, say=lambda line: None)
+            self.assertEqual(out["env"][ht.SWITCH], word)
+            self.assertEqual(out["env"]["STRATA_RESIDENT_PIN"], "0")
+            self.assertNotIn(ht.SWITCH, cfg["env"])        # the caller's config is untouched
+        # the shell's own switch, or a table the person named, is not overridden
+        cfg = {"backend": "hip", "hipblaslt_table": False}
+        self.assertIs(ht.apply(cfg, pkg, ["gfx1201"], environ={ht.SWITCH: "on"}, say=lambda line: None), cfg)
+        self.assertIs(ht.apply(cfg, pkg, ["gfx1201"], environ={ht.ENGINE_VAR: "x.txt"}, say=lambda line: None), cfg)
 
     def test_apply_with_a_mismatch_leaves_the_config_alone_and_warns(self):
         pkg = fake_package(self.root, version=100200)
@@ -214,7 +226,8 @@ class Apply(TempDir):
             os.environ[ht.SWITCH] = "on"
             started = server.with_component_engine(cfg)
             env = server.child_env(started)
-            self.assertEqual(env[ht.ENGINE_VAR], str(pkg / "tuning" / "gfx1201-hipblaslt-100500.txt"))
+            self.assertNotIn(ht.ENGINE_VAR, env)           # the engine finds the table beside itself; the shell's switch reaches it
+            self.assertEqual(env[ht.SWITCH], "on")
             os.environ[ht.SWITCH] = "off"
             self.assertNotIn(ht.ENGINE_VAR, server.child_env(server.with_component_engine(cfg)))
         self.assertIn("hipBLASLt tuning table", out.getvalue())

@@ -42,6 +42,9 @@ public:
     static bool keep_unquantized_ple_key(const std::string& pack_dir, std::set<std::string>& skip, std::string& err);
     /// STRATA_HC_Q8=1: the hyper-connection down / up projections of the layers live only as Q8_0 (the bf16 copy is not
     /// loaded: `add_hc_skip` puts their rows in the arena's skip set, `load` quantizes them from the pack file).
+    /// Whether the GGUF shards carry the hyper-connection down / up projections as Q8_0 (an Unsloth UD-* file; the GSQ-RCO packs keep them
+    /// BF16).  Reads the tensor directories only.  generate.cpp turns STRATA_HC_Q8 on by default on CUDA when this is true (owner yes 2026-11-07).
+    static bool gguf_carries_q8_hc(const std::vector<std::string>& shards);
     static bool hc_q8_requested();
     static bool add_hc_skip(const std::string& pack_dir, std::set<std::string>& skip);
     /// A projection's bf16 values for a path that has no Q8 kernel (the prompt path's GEMMs, the single-token read): the

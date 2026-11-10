@@ -1,0 +1,534 @@
+#!/usr/bin/env python3
+"""One command for the fast checks:  python tools/check   (Python 3.8+, standard library only)
+
+Runs, each in its own step with its own timeout, in a scratch folder (build trees, temp files, logs):
+
+  cmake-cpu       CMake preset `cpu-check` (CMakePresets.json): configure, build, CTest. No GPU, no model, no network.
+  py-tests        pytest tests/   (without tests/snapshot, which has its own step)
+  py-serve        pytest serve/
+  py-tools        pytest tools/test_*.py
+  py-optional     tools/dflash2, tools/dsv41, tools/trellis tests; need torch and are skipped without it
+  host-typecheck  apps/host: npm run typecheck
+  host-test       apps/host: npm test (a per-test timeout, so a hang fails one test instead of the run)
+  host-build      apps/host: npm run build
+  snapshot        pytest tests/snapshot (the config snapshot of the four entry points; needs Node 24)
+  docs            local links in the current pages (tools/check_links.py), the release manifest, the capability table and the bench results index (--check)
+
+Prints one table: passed / failed / skipped / not run, per step, with the reason for every skip and every "not run".
+A step that cannot run because a tool is missing (Node, cmake, a compiler, pytest, torch) is "not run" and says which tool;
+it is never reported as a pass.  The exit code is 1 when anything failed or timed out, and 0 otherwise; --strict makes a
+"not run" step exit 2 too.  Nothing here needs a GPU, a model or the real Strata install.
+
+    python tools/check                      everything above
+    python tools/check --only cmake-cpu,py-tools
+    python tools/check --skip host-build --json result.json
+    python tools/check --list
+Backend, model and browser tests are separate commands (see the CI workflows in .github/workflows); they are not part of this one.
+"""
+import argparse
+import glob
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WIN = os.name == "nt"
+HOST = os.path.join(ROOT, "apps", "host")
+NODE_MIN = (24, 12)
+
+# step name -> default timeout in seconds (explicit, per step; --timeout-scale multiplies them)
+TIMEOUTS = {"cmake-cpu": 1800, "py-tests": 3600, "py-serve": 1800, "py-tools": 1200, "py-optional": 900,
+            "host-typecheck": 600, "host-test": 1800, "host-build": 600, "snapshot": 900, "docs": 300}
+STEPS = list(TIMEOUTS)
+
+
+class Result:
+    def __init__(self, name):
+        self.name, self.status, self.reason = name, "not run", ""
+        self.passed = self.failed = self.skipped = 0
+        self.seconds = 0.0
+        self.failures = []     # test ids or the failing command
+        self.skips = {}        # reason -> count
+        self.log = ""
+
+    def row(self):
+        return {"step": self.name, "status": self.status, "passed": self.passed, "failed": self.failed,
+                "skipped": self.skipped, "seconds": round(self.seconds, 1), "reason": self.reason,
+                "failures": self.failures[:200], "skips": self.skips, "log": self.log}
+
+
+class Scratch:
+    def __init__(self, base, keep):
+        self.keep = keep
+        self.created = base is None
+        self.dir = os.path.abspath(base) if base else tempfile.mkdtemp(prefix="strata-check-")
+        os.makedirs(os.path.join(self.dir, "tmp"), exist_ok=True)
+
+    def path(self, *p):
+        return os.path.join(self.dir, *p)
+
+    def env(self, extra=None):
+        env = dict(os.environ)
+        tmp = self.path("tmp")
+        env.update({"TMP": tmp, "TEMP": tmp, "TMPDIR": tmp, "PYTHONUTF8": "1", "PYTHONDONTWRITEBYTECODE": "1",
+                    "PYTHONUNBUFFERED": "1"})      # CI is left as the caller has it: some code asks whether a person can answer (strata_cli/launch/cmd.py)
+        env.update(extra or {})
+        return env
+
+    def cleanup(self):
+        # only a folder this run created is removed
+        if self.created and not self.keep:
+            shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def run_cmd(cmd, cwd, env, timeout, logfile, shell=False):
+    """Run one command to a log file. Returns (exit code or None on timeout, seconds). On timeout the whole tree of
+    the child is killed (only this child's own tree)."""
+    t0 = time.time()
+    kw = {}
+    if WIN:
+        kw["creationflags"] = 0x00000200  # CREATE_NEW_PROCESS_GROUP
+    else:
+        kw["start_new_session"] = True
+    with open(logfile, "ab") as log:
+        log.write(("\n$ %s\n" % (cmd if isinstance(cmd, str) else " ".join(cmd))).encode())
+        log.flush()
+        try:
+            p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT, shell=shell, **kw)
+        except OSError as e:
+            log.write(("could not start: %s\n" % e).encode())
+            return -1, 0.0
+        try:
+            rc = p.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if WIN:
+                subprocess.call(["taskkill", "/PID", str(p.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                try:
+                    os.killpg(p.pid, signal.SIGTERM)
+                    time.sleep(3)
+                    os.killpg(p.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            p.wait()
+            log.write(("\n[tools/check: timed out after %d s, killed]\n" % timeout).encode())
+            return None, time.time() - t0
+    return rc, time.time() - t0
+
+
+def tail(logfile, n=25):
+    try:
+        with open(logfile, "rb") as f:
+            return f.read().decode("utf-8", "replace").splitlines()[-n:]
+    except OSError:
+        return []
+
+
+# ---------------------------------------------------------------------------------------------------------- tools
+
+def node_version():
+    node = shutil.which("node")
+    if not node:
+        return None, "Node.js is not installed (needs >= %d.%d)" % NODE_MIN
+    try:
+        out = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
+        v = tuple(int(x) for x in re.match(r"v(\d+)\.(\d+)", out).groups())
+    except Exception as e:  # noqa: BLE001
+        return None, "node --version failed (%s)" % e
+    if v < NODE_MIN:
+        return None, "Node.js %s is too old (needs >= %d.%d)" % (out, NODE_MIN[0], NODE_MIN[1])
+    return node, ""
+
+
+def have_module(name):
+    r = subprocess.run([sys.executable, "-c", "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec(%r) else 1)" % name],
+                       capture_output=True)
+    return r.returncode == 0
+
+
+_vc_env = {}
+
+
+def msvc_env(base_env):
+    """On Windows the compiler is found through Visual Studio's vcvars64.bat when cl is not already on PATH."""
+    if shutil.which("cl", path=base_env.get("PATH")):
+        return base_env, ""
+    if "env" in _vc_env:
+        return _vc_env["env"], _vc_env["why"]
+    cands = []
+    pf = [os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), os.environ.get("ProgramFiles", r"C:\Program Files")]
+    vswhere = os.path.join(pf[0], "Microsoft Visual Studio", "Installer", "vswhere.exe")
+    if os.path.exists(vswhere):
+        out = subprocess.run([vswhere, "-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                              "-property", "installationPath"], capture_output=True, text=True).stdout.strip()
+        if out:
+            cands.append(os.path.join(out.splitlines()[0], "VC", "Auxiliary", "Build", "vcvars64.bat"))
+    for root in pf:
+        for edition in ("BuildTools", "Community", "Professional", "Enterprise"):
+            cands.append(os.path.join(root, "Microsoft Visual Studio", "2022", edition, "VC", "Auxiliary", "Build", "vcvars64.bat"))
+    for bat in cands:
+        if os.path.exists(bat):
+            out = subprocess.run('cmd /c ""%s" >nul && set"' % bat, capture_output=True, text=True, shell=True).stdout
+            env = dict(base_env)
+            for line in out.splitlines():
+                if "=" in line and not line.startswith("="):
+                    k, v = line.split("=", 1)
+                    env[k] = v
+            _vc_env["env"], _vc_env["why"] = env, ""
+            return env, ""
+    _vc_env["env"], _vc_env["why"] = base_env, "no C++ compiler: cl is not on PATH and Visual Studio 2022's vcvars64.bat was not found"
+    return base_env, _vc_env["why"]
+
+
+# ---------------------------------------------------------------------------------------------------------- parsing
+
+def parse_junit(path, res, prefix=""):
+    try:
+        tree = ET.parse(path)
+    except (OSError, ET.ParseError):
+        return False
+    for case in tree.iter("testcase"):
+        name = (case.get("classname") or "") + "::" + (case.get("name") or "")
+        kids = {c.tag for c in case}
+        if "skipped" in kids:
+            sk = case.find("skipped")
+            msg = (sk.get("message") or "").strip()
+            if msg.lower().startswith("collection skipped") and (sk.text or "").strip():   # a module-level skip: the reason is in the text
+                msg = (sk.text or "").strip().splitlines()[-1].replace("Skipped: ", "").strip()
+            reason = (msg or (sk.text or "")).strip().splitlines()
+            reason = reason[0][:140] if reason else "no reason given"
+            if reason.lower() in ("true", "skipped", "skip"):
+                reason = "(skipped in the test file without a reason: " + (case.get("name") or "?")[:80] + ")"
+            res.skipped += 1
+            res.skips[reason] = res.skips.get(reason, 0) + 1
+        elif "failure" in kids or "error" in kids:
+            res.failed += 1
+            res.failures.append(prefix + name)
+        else:
+            res.passed += 1
+    return True
+
+
+def finish(res, rc, timed_out, log):
+    res.log = log
+    if timed_out:
+        res.status = "failed"
+        res.reason = "timed out after %d s" % round(res.seconds)
+        res.failures.append("timeout")
+    elif rc != 0 or res.failed:
+        res.status = "failed"
+        if not res.failures:
+            res.failures.append("exit code %s" % rc)
+            res.reason = " | ".join(l.strip() for l in tail(log, 4))[:300]
+    else:
+        res.status = "passed"
+    return res
+
+
+# ---------------------------------------------------------------------------------------------------------- steps
+
+def step_cmake(ctx):
+    r = Result("cmake-cpu")
+    cmake, ninja = shutil.which("cmake"), shutil.which("ninja")
+    if not cmake:
+        r.reason = "cmake is not installed"
+        return r
+    if not ninja:
+        r.reason = "ninja is not installed (the cpu-check preset uses the Ninja generator)"
+        return r
+    env = ctx.scratch.env()
+    if WIN:
+        env, why = msvc_env(env)
+        if why:
+            r.reason = why
+            return r
+    elif not any(shutil.which(c) for c in ("c++", "g++", "clang++")):
+        r.reason = "no C++ compiler (c++, g++ or clang++) on PATH"
+        return r
+    build = ctx.scratch.path("build-cpu-check")
+    log = ctx.scratch.path("cmake-cpu.log")
+    t = ctx.timeout("cmake-cpu")
+    t0 = time.time()
+    for label, cmd in (("configure", [cmake, "--preset", "cpu-check", "-B", build]),
+                       ("build", [cmake, "--build", build, "--parallel", str(ctx.jobs)])):
+        rc, _ = run_cmd(cmd, ROOT, env, max(30, t - (time.time() - t0)), log)
+        if rc is None or rc != 0:
+            r.seconds = time.time() - t0
+            r.failures.append("cmake " + label + (" (timed out)" if rc is None else ""))
+            r.reason = " | ".join(l.strip() for l in tail(log, 4))[:300]
+            return finish(r, rc if rc is not None else 1, rc is None, log)
+    junit = ctx.scratch.path("ctest.xml")
+    rc, _ = run_cmd([shutil.which("ctest"), "--test-dir", build, "--output-on-failure", "--parallel", str(min(ctx.jobs, 8)),
+                     "--timeout", "120", "--no-tests=error", "--output-junit", junit], ROOT, env, max(30, t - (time.time() - t0)), log)
+    r.seconds = time.time() - t0
+    if rc is None:
+        return finish(r, 1, True, log)
+    if not parse_junit(junit, r):
+        r.failures.append("ctest wrote no result file")
+        return finish(r, 1, False, log)
+    # the one-line summary the CMakeLists prints at configure time (which kinds of test were registered)
+    for line in open(log, "rb").read().decode("utf-8", "replace").splitlines():
+        if "strata tests:" in line:
+            r.reason = line.split("-- ", 1)[-1].strip()
+            break
+    return finish(r, rc, False, log)
+
+
+def step_pytest(name, targets, extra=(), need_node=False, cwd=None):
+    def run(ctx):
+        r = Result(name)
+        if not have_module("pytest"):
+            r.reason = "pytest is not installed for %s" % sys.executable
+            return r
+        if need_node:
+            node, why = node_version()
+            if not node:
+                r.reason = why
+                return r
+        paths = []
+        for t in targets:
+            hit = sorted(glob.glob(os.path.join(ROOT, t))) if any(c in t for c in "*?[") else ([os.path.join(ROOT, t)] if os.path.exists(os.path.join(ROOT, t)) else [])
+            paths.extend(hit)
+        if not paths:
+            r.reason = "no test files found for " + " ".join(targets)
+            return r
+        if ctx.shard:   # --shard I/N: every N-th test file (for a machine that allows only short jobs); the shards together are the whole step
+            i, n = ctx.shard
+            files = []
+            for pth in paths:
+                if os.path.isdir(pth):
+                    for pat in ("test_*.py", "*_test.py"):
+                        files += glob.glob(os.path.join(pth, "**", pat), recursive=True)
+                else:
+                    files.append(pth)
+            skip_dirs = [os.path.normpath(x[len("--ignore="):]) for x in extra if x.startswith("--ignore=")]
+            files = sorted({f for f in files if not any(os.path.normpath(f).startswith(d + os.sep) for d in skip_dirs)})
+            paths = files[i - 1::n]
+            r.reason = "shard %d/%d: %d of %d test files" % (i, n, len(paths), len(files))
+            if not paths:
+                return r
+        junit = ctx.scratch.path(name + ".xml")
+        log = ctx.scratch.path(name + ".log")
+        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xunit2",
+               "--junitxml=" + junit, "--maxfail=1000000", *extra, *paths]
+        rc, secs = run_cmd(cmd, cwd or ROOT, ctx.scratch.env(), ctx.timeout(name), log)
+        r.seconds = secs
+        ok = parse_junit(junit, r)
+        if rc is None and not ok:
+            return finish(r, 1, True, log)
+        if not ok and rc not in (0, 5):
+            r.failures.append("pytest wrote no result file (exit %s)" % rc)
+            r.reason = " | ".join(l.strip() for l in tail(log, 4))[:300]
+        if rc == 5:  # nothing collected
+            r.reason = "pytest collected no tests"
+            r.status = "not run"
+            return r
+        return finish(r, rc, rc is None, log)
+    return run
+
+
+def step_optional(ctx):
+    r = Result("py-optional")
+    for mod, what in (("torch", "torch"), ("gguf", "gguf (llama.cpp's gguf-py: pip install gguf)")):
+        if not have_module(mod):
+            r.reason = "%s is not installed for %s (tools/dflash2 and tools/dsv41 tests need torch and gguf)" % (what, sys.executable)
+            return r
+    return step_pytest("py-optional", ["tools/dflash2", "tools/dsv41", "tools/trellis"])(ctx)
+
+
+def npm_cmd():
+    return shutil.which("npm.cmd" if WIN else "npm") or shutil.which("npm")
+
+
+def host_ready(ctx, r):
+    """Node, npm and apps/host/node_modules. Installs the packages with `npm ci` when they are missing."""
+    node, why = node_version()
+    if not node:
+        r.reason = why
+        return False
+    if not npm_cmd():
+        r.reason = "npm is not installed"
+        return False
+    if os.path.isdir(os.path.join(HOST, "node_modules", ".bin")) or ctx.npm_ready:
+        return True
+    log = ctx.scratch.path("npm-ci.log")
+    rc, _ = run_cmd([npm_cmd(), "ci", "--no-audit", "--no-fund"], HOST, ctx.scratch.env(), 900, log)
+    if rc != 0:
+        r.reason = "npm ci could not install apps/host's packages (no network?); log " + log
+        return False
+    ctx.npm_ready = True
+    return True
+
+
+def step_npm(name, script, args=()):
+    def run(ctx):
+        r = Result(name)
+        if not host_ready(ctx, r):
+            return r
+        log = ctx.scratch.path(name + ".log")
+        junit = ctx.scratch.path(name + ".xml")
+        cmd = [npm_cmd(), "run", script]
+        if name == "host-test":
+            # the junit file gives the counts and the skip reasons; spec goes to the log
+            cmd += ["--", "--test-reporter=spec", "--test-reporter-destination=stdout", "--test-reporter=junit",
+                    "--test-reporter-destination=" + junit]
+        rc, secs = run_cmd(cmd, HOST, ctx.scratch.env({"STRATA_TEST_TIMEOUT_MS": "180000"}), ctx.timeout(name), log)
+        r.seconds = secs
+        if name == "host-test" and os.path.exists(junit):
+            parse_junit(junit, r)
+            # node writes suites and tests as testcases; a suite-level failure has no testcase of its own
+        elif name == "host-test":
+            summary = {m.group(1): int(m.group(2)) for m in re.finditer(r"^\W*(tests|pass|fail|cancelled|skipped)\s+(\d+)\s*$",
+                                                                       open(log, "rb").read().decode("utf-8", "replace"), re.M)}
+            r.passed, r.failed, r.skipped = summary.get("pass", 0), summary.get("fail", 0) + summary.get("cancelled", 0), summary.get("skipped", 0)
+            if r.skipped:
+                r.skips["(node:test gives no reason in this report)"] = r.skipped
+        return finish(r, rc, rc is None, log)
+    return run
+
+
+def step_docs(ctx):
+    """The documentation checks that need no tools but Python: links, release manifest, capability table, bench index, settings register, the vendored ggml manifest."""
+    r = Result("docs")
+    log = ctx.scratch.path("docs.log")
+    r.log = log
+    for label, script, args in (("links", "check_links.py", ()), ("release manifest", "release_manifest.py", ("--check",)),
+                                ("capability table", "capability_table.py", ("--check",)), ("bench results index", "bench_results_index.py", ("--check",)), ("settings register", "settings_register.py", ("--check",)),
+                                ("vendored ggml (third_party/strata-ggml)", "check_vendored.py", ())):
+        path = os.path.join(ROOT, "tools", script)
+        if not os.path.exists(path):
+            r.skipped += 1
+            r.skips["%s: tools/%s is not in this checkout" % (label, script)] = 1
+            continue
+        rc, secs = run_cmd([sys.executable, path, *args], ROOT, ctx.scratch.env(), ctx.timeout("docs"), log)
+        r.seconds += secs
+        if rc == 0:
+            r.passed += 1
+        else:
+            r.failed += 1
+            r.failures.append("%s (exit %s)" % (label, rc))
+    if r.failed:
+        r.status = "failed"
+        r.reason = " | ".join(l.strip() for l in tail(log, 4))[:300]
+    else:
+        r.status = "passed"
+    return r
+
+
+STEP_FUNCS = {
+    "cmake-cpu": step_cmake,
+    "py-tests": step_pytest("py-tests", ["tests"], ["--ignore=" + os.path.join(ROOT, "tests", "snapshot")]),
+    "py-serve": step_pytest("py-serve", ["serve"]),
+    "py-tools": step_pytest("py-tools", ["tools/test_*.py"]),
+    "py-optional": step_optional,
+    "host-typecheck": step_npm("host-typecheck", "typecheck"),
+    "host-test": step_npm("host-test", "test"),
+    "host-build": step_npm("host-build", "build"),
+    "snapshot": step_pytest("snapshot", ["tests/snapshot"], need_node=True),
+    "docs": step_docs,
+}
+
+
+class Ctx:
+    def __init__(self, scratch, scale, jobs, shard=None):
+        self.scratch, self.scale, self.jobs, self.npm_ready, self.shard = scratch, scale, jobs, False, shard
+
+    def timeout(self, name):
+        return int(TIMEOUTS[name] * self.scale)
+
+
+def table(results):
+    head = ("step", "status", "passed", "failed", "skipped", "time", "")
+    rows = [head] + [(r.name, r.status.upper() if r.status != "passed" else "passed", str(r.passed), str(r.failed), str(r.skipped),
+                      "%dm%02ds" % divmod(int(r.seconds), 60), r.reason if r.status != "passed" else "") for r in results]
+    w = [max(len(row[i]) for row in rows) for i in range(6)]
+    out = []
+    for i, row in enumerate(rows):
+        out.append("  ".join(row[j].ljust(w[j]) if j in (0, 1) else row[j].rjust(w[j]) for j in range(6)) + ("  " + row[6] if row[6] else ""))
+        if i == 0:
+            out.append("  ".join("-" * x for x in w))
+    return "\n".join(out)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Strata fast checks (see the top of this file)")
+    ap.add_argument("--only", help="comma list of steps")
+    ap.add_argument("--skip", help="comma list of steps to leave out")
+    ap.add_argument("--list", action="store_true", help="list the steps and their timeouts")
+    ap.add_argument("--scratch", help="scratch folder (default: a new one under the temp folder, removed at the end)")
+    ap.add_argument("--keep", action="store_true", help="keep the scratch folder (logs, build tree)")
+    ap.add_argument("--json", help="also write the result to this file")
+    ap.add_argument("--strict", action="store_true", help="exit 2 when a step could not run")
+    ap.add_argument("--timeout-scale", type=float, default=1.0, help="multiply every step's timeout")
+    ap.add_argument("--shard", help="I/N: run every N-th test file of the Python steps (e.g. 1/4), for a machine with short job limits")
+    ap.add_argument("--jobs", type=int, default=max(2, min(16, (os.cpu_count() or 4) // 2)), help="build/test parallelism")
+    a = ap.parse_args(argv)
+    if a.list:
+        for s in STEPS:
+            print("%-15s timeout %ds" % (s, TIMEOUTS[s]))
+        return 0
+    want = [s.strip() for s in a.only.split(",")] if a.only else list(STEPS)
+    for s in want + [x.strip() for x in (a.skip or "").split(",") if x.strip()]:
+        if s not in STEPS:
+            ap.error("unknown step %r (try --list)" % s)
+    want = [s for s in want if s not in [x.strip() for x in (a.skip or "").split(",")]]
+    scratch = Scratch(a.scratch, a.keep)
+    shard = None
+    if a.shard:
+        m = re.match(r"^(\d+)/(\d+)$", a.shard)
+        if not m or not 1 <= int(m.group(1)) <= int(m.group(2)):
+            ap.error("--shard wants I/N with 1 <= I <= N, for example 2/4")
+        shard = (int(m.group(1)), int(m.group(2)))
+    ctx = Ctx(scratch, a.timeout_scale, a.jobs, shard)
+    results = []
+    print("tools/check: %s, python %s, scratch %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), sys.version.split()[0], scratch.dir), flush=True)
+    try:
+        for s in want:
+            print("... %s" % s, flush=True)
+            try:
+                r = STEP_FUNCS[s](ctx)
+            except Exception as e:  # noqa: BLE001  a bug in this script is a failure, never a pass
+                r = Result(s)
+                r.status, r.reason = "failed", "tools/check itself failed: %r" % (e,)
+                r.failures.append(r.reason)
+            print("    %s %s" % (s, r.status), flush=True)
+            results.append(r)
+        print()
+        print(table(results))
+        for r in results:
+            if r.failures:
+                print("\nFAILED in %s (%d):" % (r.name, len(r.failures)))
+                for f in r.failures[:40]:
+                    print("  " + f)
+                if len(r.failures) > 40:
+                    print("  ... %d more (see %s)" % (len(r.failures) - 40, r.log))
+                if r.log:
+                    print("  log: " + r.log)
+        skips = [(r.name, k, v) for r in results for k, v in sorted(r.skips.items(), key=lambda kv: -kv[1])]
+        if skips:
+            print("\nSKIPPED, with the reason:")
+            for name, reason, n in skips:
+                print("  %-14s %5d  %s" % (name, n, reason))
+        nrun = [r for r in results if r.status == "not run"]
+        failed = [r for r in results if r.status == "failed"]
+        print("\ncheck: %d passed, %d failed, %d not run (of %d steps)" % (
+            len([r for r in results if r.status == "passed"]), len(failed), len(nrun), len(results)))
+        if a.json:
+            with open(a.json, "w", encoding="utf-8") as f:
+                json.dump([r.row() for r in results], f, indent=1)
+        if a.keep or a.scratch:
+            print("scratch kept: " + scratch.dir)
+        return 1 if failed else (2 if (a.strict and nrun) else 0)
+    finally:
+        scratch.cleanup()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

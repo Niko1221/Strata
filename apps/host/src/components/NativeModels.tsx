@@ -129,7 +129,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
     const cardsGpus: number[] = roleCards.length > 1 ? roleOrder(effectiveRoles, roleCards) : [];
     const chosenCards = cardsGpus;
     const fitHardware = { ram_gb: pcRam ? Math.max(0, pcRam - keptRam) : pcRam, vram_gb: Math.max(0, (roleCards.length > 1 ? vramOn(effectiveRoles, roleCards) : pcVram) - keptVramOn(chosenCards)) };
-    // How the chosen version sits on this computer (the same rule as the version list): the page says a word only for "SSD streaming" and "Doesn't fit".
+    // How the chosen version sits on this computer (the same rule as the version list): the page says a word only for "may run slower".
     const fitState = selectedSize ? versionFit(selectedSize, fitHardware, { context, kv }) : 'unknown';
     // A layer split written for another number of cards no longer fits: back to automatic.
     useEffect(() => { if (cardsGpus.length <= 1 && split !== 'auto') setSplit('auto'); }, [cardsGpus.length]);
@@ -251,7 +251,7 @@ export function NativeModels({ onOtherModels, onReady, onImport, onConnectEngine
       <div className="native-choice__head"><span className="native-choice__label">{tr("Version")}</span><span className="native-choice__tools"><NativePresets values={values} onApply={v => { const f = families.find(f => f.family === v.family || f.sizes.some(s => s.sourceFamily === v.family)); if (!f)
         return; presetPending.current = true; setFamily(f.family); setSize(f.sizes.find(s => s.model === v.model && (s.sourceFamily === v.family || f.family === v.family))?.id ?? ''); setContext(v.context ?? 32768); setVision(v.vision ?? 'no'); setKv(v.kv ?? 'int8'); setLowRam(v.low_ram ?? 'auto'); }}/><Btn icon="models" size="sm" variant="ghost" onClick={() => setManage(true)}>{tr("Manage models")}</Btn></span></div>
       <div className="native-version"><VersionPicker pick={native?.catalog?.recommendation} versions={selectedFamily?.sizes ?? []} details={expert} selectedId={selectedSize.id} hardware={fitHardware} cache={{ context, kv, drafter: fitDrafter }} downloaded={readyIds} onSelect={id => { const f = families.find(f => f.sizes.some(s => s.id === id)); if (f) { setFamily(f.family); setSize(id); setError(''); } }} onOwnGguf={() => (onImport ?? onOtherModels)()}/></div>
-      {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("SSD streaming · will run slower")}</p> : fitState === 'no' ? <p className="small muted native-spill-note"><Icon name="warning" size={16}/>{tr("Doesn't fit")}</p> : null)}
+      {tr(fitState === 'ssd' ? <p className="small muted native-spill-note"><Icon name="disk" size={16}/>{tr("may run slower")}</p> : null)}
       {tr(selectedSize?.multi_file && deepseekContextNote(context) ? <p className="small muted native-spill-note"><Icon name="info" size={16}/>{tr(deepseekContextNote(context))}</p> : null)}
       <div className="native-choice__row">
        <div className="native-choice__col"><span className="native-choice__label">{tr("Conversation context")}</span><Select ariaLabel={tr("Conversation context")} value={String(context)} options={contextChoices(contextList, context).map(n => ({ value: String(n), label: n % 1024 === 0 ? `${n / 1024}K` : `${n.toLocaleString()} tokens` }))} onChange={n => { setContextPicked(true); setContext(Number(n)); }}/></div>

@@ -544,6 +544,5 @@ decimals. Prompt speed is unchanged.
 | `STRATA_Q6_SHAPE_GRF` | no | Large GRF for bounded Q6_K projection shapes |
 | `STRATA_GDN_QK_REG` | no | Register-broadcast QK for supported Battlemage GDN geometry |
 
-The eight "no" controls measured neutral or slightly slower on that configuration (single-control table in
-`phaseA-tests/pr-priorities/RESULTS-INTEL.md`); they stay available for other models and cards. Unsupported layouts retain their
+The eight "no" controls measured neutral or slightly slower on that configuration (an internal measurement; the single-control table is not published); they stay available for other models and cards. Unsupported layouts retain their
 existing paths. Explicit projection overrides take precedence over shape selection.

@@ -15,9 +15,7 @@ import ctypes
 import json
 import multiprocessing as mp
 import os
-import pathlib
 import re
-import sys
 import time
 
 import numpy as np

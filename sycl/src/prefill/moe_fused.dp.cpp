@@ -23,6 +23,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/moe_fused.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -939,7 +940,8 @@ catch (sycl::exception const &exc) {
 }  // namespace
 
 bool built() { return true; }
-bool available() { return dev_info().cc >= 80; }
+// the blob layout and the tile loops below are Flash-Next's 2560 x 640 (O_D_CODES = 1280 * 640 ...): another compiled shape never takes this path
+bool available() { return strata::core::kCompiledGeometry.n_embd == 2560 && strata::core::kCompiledGeometry.n_ff == 640 && dev_info().cc >= 80; }
 // 0.1.36: on by default for the Q2_0 pack (+13-23% prompts on an RTX 5070; teacher-forced against the FP16 path as
 // close as MMQ at 8K and closer at 32K: phaseA-tests s18-tf); STRATA_PF_FUSED=0 keeps MMQ.  The native packs' kernels
 // (moe_fused_iq) stay opt-in: STRATA_PF_FUSED=1 (requested()).

@@ -1,6 +1,6 @@
 {
  "r3_01": "Precisa de uma atualização do motor",
- "r3_02": "Streaming do SSD · vai rodar mais devagar",
+ "r3_02": "pode rodar mais devagar",
  "r3_03": "Esse contexto ocupa cerca de {0} GB de memória gráfica e deixa pouco espaço para o modelo nesta placa. O Strata vai tentar; se não iniciar, escolha um contexto menor.",
  "r3_04": "Trabalhando · {0}",
  "r3_05": "{0} chats trabalhando",

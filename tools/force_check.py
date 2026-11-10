@@ -29,7 +29,7 @@ Rules (paper):  mismatch = the scorer's argmax is not the forced token; margin =
               mismatch with margin > 2 delta.  REJECT if the candidate has more events than stock by an exact one-sided binomial test (p < 0.05,
               exposure-weighted).  (The paper also audits events stock reproduces on its own paths; that audit is not done here, events are counted raw.)
 """
-import argparse, json, math, os, random, signal, subprocess, sys, time, pathlib
+import argparse, json, math, os, random, signal, subprocess, sys, pathlib
 
 SCORER_DROP_VALUE = {"--draft", "--draft-model", "--draft-fallback", "--mtp-draft-vocab", "--spec", "--draft-conf", "--draft-cap", "--mtp", "--spec-min-p",
                      "--prompt-cache", "--max-context", "--prefill", "--short-read", "--prompt-cache-every", "--conversation-cache-mib", "--suffix-draft"}

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """recon.py - reconcile PAR-A's boston numbers with this harness (runs on boston, one arm after the other)."""
-import json, os, subprocess, sys, time
+import os, subprocess, sys, time
 PA = "/data/external/niko/parA"
 I = "/data/external/niko/int029"
 R = "/data/external/niko/par29"

@@ -7,9 +7,7 @@ import json
 import os
 import re
 import sys
-import threading
 from pathlib import Path
-from typing import Any
 
 from strata_cli.launch import settings as S
 
@@ -103,7 +101,7 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "slower answers; use it when the engine stops at start on a small card or a PC with little RAM. Default: on")
     g.add_argument("--drafting", type=_choice("a drafting setting", S.DRAFTING_MODES), metavar="auto|mtp|dflash2|off",
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
-                        "else the MTP), mtp, dflash2 (downloads a 1.2 GB drafter once) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
+                        "else the MTP), mtp, dflash2 (downloads its drafter once, 0.3 to 1.2 GB depending on the model; the size is shown before the download) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
                         "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
     g.add_argument("--split-engine", type=_choice("a split-engine setting", S.SPLIT_MODES), metavar="auto|on|off",
                    help="NVIDIA, two or more cards: the engine that splits every layer across the cards (faster answers). auto (the default) uses it by itself "
@@ -411,6 +409,8 @@ def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list
                     pass
             if r.verdict == "no":
                 notices.append(S.Notice("warn", f"{r.title} does not fit this computer.", "It can still start; expect it to be slow or to run out of memory."))
+            elif r.verdict == "slower":
+                notices.append(S.Notice("warn", f"{r.title}: {r.words}.", ""))
             elif r.verdict == "tight" and s.model_path and "disk space" in r.words:
                 pass                                         # the files are already here ("used where they are"): there is no download to make room for
             elif r.verdict == "tight":
@@ -592,7 +592,7 @@ def _printer(quiet: bool = False):
 
 
 def _stop_all(name: str | None) -> int:
-    from strata_cli.launch import access, store
+    from strata_cli.launch import access
     from strata_control import profiles, runtime
     targets = [name] if name else [p["id"] for p in profiles.list_profiles() if p["id"].startswith("launch-")]
     stopped = failed = 0
@@ -1062,7 +1062,7 @@ def run_launch(a: argparse.Namespace) -> int:
 # ------------------------------------------------------------------------------------------------ connect
 
 def run_connect(a: argparse.Namespace) -> int:
-    from strata_cli.launch import access, harness
+    from strata_cli.launch import harness
     machine = a.output == "json"
     if not a.harness:
         rows = [{"id": h.id, "title": h.title, "speaks": h.speaks, "status": h.status, "vendor_tested": h.tested or None} for h in harness.HARNESSES]

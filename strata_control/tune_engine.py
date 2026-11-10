@@ -29,15 +29,13 @@ measurement, and neither is a run whose `produced` is zero.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import select
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 #: A workload is fixed for the whole sweep: the same prompt, the same number of tokens to generate,
 #: the same sampling. Changing any of these between candidates invalidates the comparison.

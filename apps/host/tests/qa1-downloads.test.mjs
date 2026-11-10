@@ -12,6 +12,7 @@ const compiled = await build({
   bundle: true, write: false, platform: 'node', format: 'esm',
 });
 const lib = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await lib.loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
 
 const job = (progress, state = 'running') => ({ id: 'j1', kind: 'install', state, startedAt: '', summary: '', error: null, result: { install: progress } });
 const stateWith = (jobs, extra = {}) => ({ available: true, repo: '', summary: '', error: null, catalog: null, installed: null, hardware: null, instances: [], jobs, ...extra });

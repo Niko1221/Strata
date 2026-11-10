@@ -9,6 +9,7 @@
 #if defined(STRATA_MMQ_TAB) && !defined(__HIPCC__)
 #include "moe_mmq_tab.hpp"   // declarations only: the tab kernels live in the per-type mmq-tab-*.cu TUs
 #endif
+#include "strata/prefill/moe_fused.hpp"   // kMoeEmbd, kMoeFF: the compiled geometry's widths
 #include "strata/prefill/moe_iq4_w4a8.hpp"
 
 #include "strata/prefill/mmq_kq_abi.hpp"
@@ -108,26 +109,29 @@ __global__ void copy1_kernel(const uint8_t* __restrict__ a, int64_t na, const ui
     else if (i < na + nb + nc) c_dst[i - na - nb] = c[i - na - nb];
 }
 
-// Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales
-// [2560][10] f16 (the layout of prefill/kernels.cu's blob_dequant_kernel).  A GGUF Q2_0 block is {f16 d; 16 code
+// Strata blob: gate/up codes [2 F][E / 4 B], down codes [E][F / 4 B], gate/up scales [2 F][E / 64] f16, down scales
+// [E][F / 64] f16 (the layout of prefill/kernels.cu's blob_dequant_kernel; E, F the compiled geometry's: Flash-Next
+// [1280][640 B], [2560][160 B], [1280][40], [2560][10]).  A GGUF Q2_0 block is {f16 d; 16 code
 // bytes} with the same 2-bit codes in the same order, so a block is a scale and a 16-byte run of codes.
+constexpr int Q2_GU_ROWS = fused::kMoeGuRows, Q2_ROW_GU = fused::kMoeEmbd / 4, Q2_ROW_D = fused::kMoeFF / 4, Q2_SC_GU = fused::kMoeEmbd / 64, Q2_SC_D = fused::kMoeFF / 64;
+static_assert(fused::kMoeEmbd % 64 == 0 && fused::kMoeFF % 64 == 0, "the Strata Q2 blob holds whole 64-weight blocks");
 __global__ void strata_q2_kernel(const uint8_t* __restrict__ blob, uint16_t* __restrict__ gu, uint16_t* __restrict__ dn) {
-    constexpr size_t O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                     O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+    constexpr size_t O_D_CODES = (size_t) Q2_GU_ROWS * Q2_ROW_GU, O_GU_SC = O_D_CODES + (size_t) fused::kMoeEmbd * Q2_ROW_D,
+                     O_D_SC = O_GU_SC + (size_t) Q2_GU_ROWS * Q2_SC_GU * 2;
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // one GGUF block
-    const int64_t n_gu = 1280LL * 40, n_d = 2560LL * 10;
+    const int64_t n_gu = (int64_t) Q2_GU_ROWS * Q2_SC_GU, n_d = (int64_t) fused::kMoeEmbd * Q2_SC_D;
     const uint8_t* codes;
     const uint16_t* scale;
     uint16_t* out;
     if (i < n_gu) {
-        const int64_t row = i / 40, b = i % 40;
-        codes = blob + row * 640 + b * 16;
-        scale = (const uint16_t*) (blob + O_GU_SC) + row * 40 + b;
+        const int64_t row = i / Q2_SC_GU, b = i % Q2_SC_GU;
+        codes = blob + row * Q2_ROW_GU + b * 16;
+        scale = (const uint16_t*) (blob + O_GU_SC) + row * Q2_SC_GU + b;
         out = gu + i * 9;
     } else if (i < n_gu + n_d) {
-        const int64_t j = i - n_gu, row = j / 10, b = j % 10;
-        codes = blob + O_D_CODES + row * 160 + b * 16;
-        scale = (const uint16_t*) (blob + O_D_SC) + row * 10 + b;
+        const int64_t j = i - n_gu, row = j / Q2_SC_D, b = j % Q2_SC_D;
+        codes = blob + O_D_CODES + row * Q2_ROW_D + b * 16;
+        scale = (const uint16_t*) (blob + O_D_SC) + row * Q2_SC_D + b;
         out = dn + j * 9;
     } else {
         return;
@@ -742,7 +746,7 @@ bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_byt
 }
 
 void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
-    strata_q2_kernel<<<blocks(1280LL * 40 + 2560LL * 10), 256, 0, (cudaStream_t) stream>>>(blob, (uint16_t*) gu_dst,
+    strata_q2_kernel<<<blocks((int64_t) Q2_GU_ROWS * Q2_SC_GU + (int64_t) fused::kMoeEmbd * Q2_SC_D), 256, 0, (cudaStream_t) stream>>>(blob, (uint16_t*) gu_dst,
                                                                                          (uint16_t*) d_dst);
     ck(cudaGetLastError(), "gather_strata_q2");
 }

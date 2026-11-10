@@ -21,7 +21,6 @@ The engine package folders are copied (never changed in place) before they are s
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 import tarfile

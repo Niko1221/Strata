@@ -35,7 +35,7 @@ test('the notice exists in all nine languages, with the placeholder kept', () =>
 
 test('the catalog finds the notice: the German page shows it in German, with the number filled in', async () => {
   const i18n = await bundle('../src/lib/i18n.ts');
-  i18n.setTranslationLanguage('de');
+  await i18n.setTranslationLanguage('de');
   assert.equal(i18n.tr(TITLE), 'Einige Chats konnten nicht gespeichert werden');
   assert.equal(i18n.tr(BUTTON), 'Nicht gespeicherte Chats kopieren');
   assert.match(i18n.tr(BODY, [3]), /^Der Chat-Speicher von Strata ist voll, daher gibt es die neuesten Änderungen an 3 Chat\(s\) nur in diesem Fenster/);

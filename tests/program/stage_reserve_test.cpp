@@ -1,6 +1,6 @@
 // tests/program/stage_reserve_test.cpp - #3702: the later-stage reserve arithmetic of the layer split search.
-// reserve_mib / room_bytes must equal generate.cpp's `stage_room` expression as it was written there; the proposal
-// functions are pinned too (they are not used by the default placement).
+// reserve_mib / room_bytes must equal generate.cpp's `stage_room` expression as it was written there. (The unused
+// window-term proposal and its checks are in research/stage-reserve-proposal/.)
 #include "strata/program/stage_reserve.hpp"
 
 #include <cstdint>
@@ -71,18 +71,6 @@ int main() {
         in.base_reserve_mib = 1400;
         in.later = true;
         check(reserve_mib(in) == 1496, "the workaround reserve: 1400 + 96");
-    }
-    // the proposal: the window term grows with the number of window sizes (--spec 4 -> windows of 1..6 tokens)
-    check(proposed_window_mib(1) == 96 + 48, "proposal: one window size = the arena and the burst");
-    check(proposed_window_mib(6) == 96 + 5 * 6 + 48, "proposal: six sizes = 174 MiB");
-    check(proposed_window_mib(0) == proposed_window_mib(1), "proposal: no negative sizes");
-    {
-        Inputs in;
-        in.base_reserve_mib = 700;
-        in.later = true;
-        check(proposed_reserve_mib(in, 6) == 700 + 174, "proposed reserve on a later card, six sizes");
-        in.later = false;
-        check(proposed_reserve_mib(in, 6) == reserve_mib(in), "the first card is not changed by the proposal");
     }
     std::printf("stage_reserve_test: %ld cases, %s\n", cases, g_fail ? "FAIL" : "PASS");
     return g_fail ? 1 : 0;

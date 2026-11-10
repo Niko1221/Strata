@@ -68,6 +68,8 @@ def model_shard_names(model: str) -> list[str]:
     n = MAC_MODELS[model].get("shards", 2)
     if MAC_MODELS[model].get("family") == "gyro":          # agentionai's one file (the n-gram table is inside it)
         return [S.model_file(S.FAMILIES["gyro"], model, 1)]
+    if S.FAMILIES.get(MAC_MODELS[model].get("family", "qwen"), {}).get("feed"):     # a model of the signed feed: its files as the feed names them
+        return [S.model_file(S.FAMILIES[MAC_MODELS[model]["family"]], model, i) for i in range(1, n + 1)]
     if MAC_MODELS[model].get("family") == "unsloth":      # (setup.py's model_file: the v3.1 UD-IQ4_XS is named UD-IQ4_XS on the Hub)
         return [S.model_file(S.FAMILIES["unsloth"], model, i) for i in range(1, n + 1)]
     return [S.model_file(S.FAMILIES["qwen"], model, i) for i in range(1, n + 1)]
@@ -355,9 +357,22 @@ def fetch_drafter(model_name: str, data: Path) -> Path | None:
 
 
 # ------------------------------------------------------------------------------------------------ main
+def _feed_models(argv, interactive: bool) -> None:
+    """The signed feed's models (setup.py feed_models_setup: the feed, else the last verified list) join MAC_MODELS / FAMILIES / MODELS. Read when a name the built-in
+    tables do not know is given, or when the size menu is going to be shown; nothing happens when the feed has no models."""
+    args = list(argv or sys.argv[1:])
+    peek = lambda flag: next((v.split("=", 1)[1] if v.startswith(flag + "=") else args[i + 1] if i + 1 < len(args) else None   # noqa: E731
+                              for i, v in enumerate(args) if v == flag or v.startswith(flag + "=")), None)
+    family, model = peek("--family"), peek("--model")
+    if (family and family not in ("qwen", "unsloth", "gyro")) or (model and model not in MAC_MODELS) or interactive:
+        S.feed_models_setup(peek("--feed"))
+
+
 def main(argv=None) -> int:
+    given = argv if argv is not None else sys.argv[1:]
+    _feed_models(argv, not any(x in given for x in ("--yes", "--model", "--check", "--family")) and ("--setup" in given or not mac_configs()))   # (a plain start of an installed model reads nothing)
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro"], default=None,
+    ap.add_argument("--family", choices=["qwen", "unsloth", "gyro", *_fit.FEED_FAMILIES], default=None,
                     help="qwen = Qwen3.8-Flash-Next (GSQ-RCO), unsloth = Unsloth's UD-*_K_XL, gyro = agentionai's Gyro-S / Gyro-M "
                          "(follows --model)")
     ap.add_argument("--model", choices=list(MAC_MODELS))
@@ -490,7 +505,7 @@ def main(argv=None) -> int:
         S.download(S.model_hf(fam, model) + s.name, s)
     S.check_shards(files)
     for s in files:                                    # the Unsloth files: pinned sizes and SHA-256
-        if family == "unsloth" and s.name in fam.get("sha256", {}):       # the family's pins, and UD-Q4_K_XL's second layout by the size on the disk
+        if (family == "unsloth" or fam.get("feed")) and s.name in fam.get("sha256", {}):       # the family's pins, and UD-Q4_K_XL's second layout by the size on the disk
             S.verify_sha256(s, *S.fam_pin(fam, s), own=bool(a.gguf_dir))
         elif shard_sha(s.name):
             S.verify_sha256(s, *shard_sha(s.name))
@@ -578,8 +593,7 @@ def main(argv=None) -> int:
     S.step(7, "writing the start script")
     port = a.port or 8080
     cfg = mac_config(exe, engine_args(pack, shards, rt, ctx, stream, info["ram_gb"], model), pack, f"{fam['name']}-{model.lower()}", tag, port)
-    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0",   # the engine follows setup's measured choice
-                  **_fit.engine_env(model, stream)}                # STRATA_METAL_F16=1 for a resident IQ3_S / Q2_0 (mac_fit.F16_MODELS)
+    cfg["env"] = {"STRATA_METAL_STREAM": "1" if stream else "0"}   # the engine follows setup's measured choice (STRATA_METAL_F16 is the engine's own default)
     if vision == "yes":
         cfg["args"] += ["--vision"]
         cfg["vision"] = {"exe": str(vexe), "mmproj": str(mmproj), "model": str(files[0]), "gpu": vision_gpu,

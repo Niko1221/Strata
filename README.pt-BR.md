@@ -63,7 +63,7 @@ No **aplicativo de desktop** e no **Terminal**. O que não cabe na memória é l
 | 2.00 bpw | 257 GB | cerca de 265 GB |
 | 2.25 bpw | 274 GB | cerca de 280 GB |
 
-Roda em NVIDIA RTX 30, 40 e 50 (Windows e Linux) e em AMD Radeon AI PRO R9700 (Linux). A instalação baixa os arquivos e o motor do DeepSeek e depois inicia o modelo.
+Roda em NVIDIA RTX 30, 40 e 50 (Windows e Linux), AMD Radeon AI PRO R9700 (Linux), AMD Ryzen AI Max — Strix Halo (Windows) e Macs com Apple Silicon e 64 GB ou mais ([Mac](docs/DEEPSEEK_MAC.md)). A instalação baixa os arquivos e o motor do DeepSeek e depois inicia o modelo.
 
 ```sh
 strata launch --family deepseek41 --model ist-das-2.00bpw --plan
@@ -96,7 +96,7 @@ Não sabe o que cabe? [Escolha um modelo para o seu computador](docs/MODELS.md#p
 
 Instale o aplicativo, escolha um modelo e comece a conversar. Há um instalador por sistema. Na primeira vez que abre, o aplicativo baixa o motor da sua placa de vídeo. [Ajuda com o instalador](docs/INSTALL.md#the-app).
 
-<sub>Arquivos: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
+<sub>Arquivos: `Strata-0.2.13-windows-x64-setup.exe` · `Strata-0.2.13-linux-x86_64.AppImage` · `Strata-0.2.13-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplicativo de desktop do Strata com um chat e uma prévia do código ao vivo lado a lado">
@@ -191,6 +191,10 @@ Obrigado a todas as pessoas que apoiam o Strata.
 <a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
 <a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
 <a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
+<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
 <!-- supporters:end -->
 
 [Licença MIT](LICENSE) · [Créditos e licenças dos modelos](docs/HOW_IT_WORKS.md#credits) · [Privacidade](docs/SAFETY.md)

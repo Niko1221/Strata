@@ -7,16 +7,12 @@ tints composited over `--st-surface` first.
 
 ## 1. How the app consumes the kit
 
-`src/styles/kit/{tokens,components}.css` are synced verbatim from `../ui` by
-`npm run sync:kit` (the only rewrite is making the `@font-face` URLs absolute).
+`src/styles/kit/{tokens,components}.css` are the checked-in kit styles and the source of truth
+(there is no generator; the kit was first imported from a separate design workspace that is not in this repository).
 `src/styles/app.css` sits on top and contains, in order: extensions to the kit's
 classes, app shell layout, utilities, app-only components, and the first-run
 takeover. There are no gradients in it and no literal colours — every value is
 either a kit token or a layout constant.
-
-```
-npm run sync:kit     # re-import tokens/components/fonts/icons from ../ui
-```
 
 Every component the kit defines is in use:
 

@@ -84,7 +84,7 @@ def _supported() -> None:
     POSIX uses an owner-private ``AF_UNIX`` socket. Windows uses a loopback-only TCP listener whose
     authority rests on the 256-bit control token plus a ``0700`` state directory, because the Python
     standard library cannot create a named pipe with a security descriptor; the difference is
-    recorded in ``owner_transport`` and in ``docs/work/IMPLEMENTATION_STATUS.md`` rather than being
+    recorded in ``owner_transport`` and in ``history/docs/work/IMPLEMENTATION_STATUS.md`` rather than being
     presented as equivalent. Anything else is refused.
     """
     if os.name == "nt" or (os.name == "posix" and hasattr(socket, "AF_UNIX")):

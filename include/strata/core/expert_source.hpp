@@ -1341,6 +1341,10 @@ public:
     /// The headroom the arena must find under a HARD memory limit (cgroup, container, job object) beyond its own size when the fallback is
     /// allowed: the RAM copy's headroom (ple_residency.hpp, arena_hard_limit_need).  0: none.  Set before `open`.
     uint64_t hard_limit_headroom_bytes = 0;
+    /// #5327: `open` also says the "loads anyway" warning on stdout when this is set (`--serve`: a service setup keeps stdout in its log and
+    /// never sees stderr; the lines come before READY, which the server ignores).  Unset (a plain `generate` run): stderr only, so the token
+    /// stream stays clean.  Set before `open`.
+    bool notices_on_stdout = false;
     bool ram_short() const { return ram_short_; }
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
     const std::string& ram_warning() const { return ram_warning_; }

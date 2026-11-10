@@ -200,12 +200,8 @@ static void set_default(const std::pair<std::string, std::string>& kv) {
 #endif
 }
 
-std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots) {
-    std::vector<std::pair<std::string, std::string>> t;
-    if (!windows || batch_slots < 2 || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
-    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
-    if (off != nullptr && off[0] == '0') return t;
-    t = {
+static std::vector<std::pair<std::string, std::string>> parallel_stack_table() {
+    return {
         {"STRATA_CKPT_POOL", "1"},
         {"STRATA_CKPT_POOL_READY", "4"},
         {"STRATA_SLOT_CKPT_MOVE", "1"},
@@ -216,7 +212,59 @@ std::vector<std::pair<std::string, std::string>> parallel_default_env(const char
         {"STRATA_BATCH_SELF_COMMIT", "1"},
         {"STRATA_QSA_SLOTS", "1"},
     };
-    return t;
+}
+
+std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (!windows || batch_slots < 2 || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
+    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+    if (off != nullptr && off[0] == '0') return t;
+    return parallel_stack_table();
+}
+
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots) {
+    if (!linux_cuda || batch_slots < 2) return {};
+    return parallel_stack_table();
+}
+
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots) {
+    std::vector<std::string> set;
+    for (const auto& kv : parallel_default_env_cuda(linux_cuda, batch_slots)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
+std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda) {
+    if (!linux_cuda) return {};
+    return {{"STRATA_GDN_TC", "1"}, {"STRATA_GDN_CONVL2", "2"}};
+}
+
+std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda) {
+    std::vector<std::string> set;
+    for (const auto& kv : gdn_default_env_cuda(linux_cuda)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12) {
+    if (!linux_host || !all_gfx12) return {};
+    return {{"STRATA_GDN_CHUNKED", "1"}};
+}
+
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12) {
+    std::vector<std::string> set;
+    for (const auto& kv : gdn_chunked_default_env(linux_host, all_gfx12)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
 }
 
 std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows) {

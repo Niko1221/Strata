@@ -8,11 +8,7 @@ of key hints. Esc goes back, Enter goes on, q leaves (and says what is kept). Ch
 from __future__ import annotations
 
 import os
-import shutil
-import sys
-import threading
 from pathlib import Path
-from typing import Any
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -408,8 +404,8 @@ class ConfirmScreen(ModalScreen):
 class ModelScreen(Base):
     step_id = "model"
     hints = "↑↓ choose   Enter next   o use my own files   Esc back   ? help"
-    help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model wants (the app's figure); 'SSD N GB' is the part that does not fit and is read from the SSD while it answers; the n-gram table stays on "
-                 "your SSD and is not counted. 'Too big' is a warning, not a block: you can still try it.")
+    help_text = ("Pick the model. 'Needs' is the RAM + graphics memory the model's files take (the app's figure; the n-gram table stays on your SSD and is not counted). 'fits' means they fit the RAM and "
+                 "the graphics memory together; 'may run slower' means they do not, so part is read from the SSD while it answers. Neither is a block: you can still try it.")
 
     BINDINGS = Base.BINDINGS + [Binding("o", "own", "Own files", show=False)]
 
@@ -442,14 +438,13 @@ class ModelScreen(Base):
         items: list[Item] = []
         sel = 0
         for i, r in enumerate(self.rows):
-            col = {"fits": "", "tight": WARN, "no": BAD}[r.verdict]
+            col = {"fits": "", "slower": WARN, "tight": WARN, "no": BAD}[r.verdict]
             tag = (" (recommended)" if r.recommended else "") + (" (installed)" if r.installed else "") + (" [experimental]" if r.experimental else "")
-            need = f"{r.memory_gb:.0f} GB" if r.memory_gb else "-"
-            ssd = f" · SSD {r.spill_gb:.0f} GB" if r.spill_gb >= 1 else ""
-            verdict = (r.words.split(",")[0].split(":")[0] if ssd and "SSD" in r.words else r.words) + ssd + tag
+            need = f"{r.fit_gb:.0f} GB" if r.fit_gb else "-"
+            verdict = r.words + tag
             if self.width() < 100:                           # a short verdict that fits the column; the full sentence is shown under the list
                 extra = " (recommended)" if r.recommended else " (installed)" if r.installed else " [experimental]" if r.experimental else ""
-                verdict = {"fits": "fits", "tight": "tight", "no": "too big"}[r.verdict] + extra
+                verdict = {"fits": "fits", "slower": "may run slower", "tight": "tight", "no": "too big"}[r.verdict] + extra
             items.append(Item([r.title, f"{r.download_gb:.0f} GB", need, Cell(verdict, col)], key=(r.family, r.model)))
             if (s.family, s.model) == (r.family, r.model):
                 sel = i
@@ -485,14 +480,20 @@ class ModelScreen(Base):
             if r:
                 out.append(f"{r.title}: {r.about}.\n", style=FG)
                 if r.verdict != "fits":
-                    out.append(f"{r.words}. ", style=WARN if r.verdict == "tight" else BAD)
-                if r.spill_gb:
-                    out.append(f"About {r.spill_gb:.0f} GB would be read from the SSD while it answers. ", style=MUTE)
+                    out.append(f"{r.words}. ", style=BAD if r.verdict == "no" else WARN)
         out.append("The n-gram table stays on your SSD and is not counted above.", style=MUTE)
+        for title, why in self.unavailable_lines():
+            out.append(f"\n{title}: {why}", style=MUTE)
         note = self.ctx.computer.other_vendor_note
         if note:
             out.append(" " + note, style=WARN)
         return out
+
+    def unavailable_lines(self) -> list:
+        """Models of the signed feed this engine does not run (none for a feed without any): listed under the models, never in the list."""
+        if not hasattr(self, "_unavailable"):
+            self._unavailable = self.ctx.catalog.unavailable(self.ctx.computer.raw)
+        return self._unavailable
 
     def on_cursor(self) -> None:
         pass

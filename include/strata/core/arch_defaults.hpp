@@ -69,6 +69,30 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
 /// Empty for every other architecture / platform, below 2 slots, and with STRATA_GFX1151_DEFAULTS=0.  A switch the user set is kept.
 std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots);
 
+/// The same nine switches for Linux CUDA (the Qwen engine of generate.cpp) with 2 or more batch slots: what serve/server.py's
+/// PARALLEL_STACK_ENV set for a managed start, now the engine's own so a plain start is the same.  QUAL-PAR: bit-exact against the plain
+/// slots (greedy identity at c=1, first-token KL 0).  `linux_cuda` is false on HIP, Windows, Metal and SYCL builds (empty then).  Each
+/// switch keeps =0 as its off switch; a value the user set is kept.  Silent: the launcher printed nothing for these either.
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots);
+
+/// Sets `parallel_default_env_cuda` in this process's environment where the user has not set the variable; returns the names it set.
+/// Call once, before any engine code reads its switches.
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots);
+
+/// The tensor-core GDN prompt scan and the one-pass conv (QUAL-GDN, l620: prompt +4.4% at 4K, +5.5% at 16K, +5.7% at 32K; first-token KL mean
+/// 0.0019, max 0.0125; owner yes 2026-11-07): STRATA_GDN_TC=1 and STRATA_GDN_CONVL2=2 on Linux CUDA, what serve/server.py's GDN_STACK_CUDA set.
+/// The engine still gates the scan at run time (compute capability 8 or more, one SM per value head, shared memory) and falls back to the old
+/// kernels.  Empty when `linux_cuda` is false (HIP, Windows, Metal, SYCL).  =0 turns each off; a value the user set is kept.  Silent.
+std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda);
+std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda);
+
+/// gfx12 (RDNA4, R9700 / RX 9000) on Linux, when EVERY visible card is gfx12 (the same rule as serve/server.py's GDN_STACK_GFX12): the chunked GDN scan
+/// from the first 64-token chunk instead of from 30,000 tokens (owner yes 2026-11-07).  R9700: +3.5% prompt speed at 4K, +5.5% at 16K, first-token KL mean
+/// 0.0025, 61-task suite 55 vs 56.  STRATA_GDN_CHUNKED=0 turns it off; a value the user set is kept.  Empty elsewhere.  Silent: the engine's own
+/// "prompt chunks of 30,000+ tokens" line is not printed when the variable is set, as with a launcher start.
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12);
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12);
+
 /// 0.2.10 (STRIX-TDR): a Windows Strix Halo (gfx1151) launches the verify window's graph from a helper thread, so the main thread can
 /// serve the GPU's doorbells while the launch call is still running.  On the strix box the launch call of the first window sometimes never
 /// returned (host in the driver, GPU already past layer 0, "GPU rang 1, flags served 0": the Q4_K_XL start stall); the helper thread

@@ -25,7 +25,7 @@ strata launch --family unsloth --model UD-Q4_K_XL
 
 - **Where the experts live.** Every expert goes into RAM when its 72 GiB plus 16 GiB more fit (about 88 GB of RAM). On a
   PC with less RAM, or on a unified-memory APU, setup keeps a RAM budget: the hottest experts in RAM, the rest read
-  from the GGUF on the SSD. It needs 48 GB of RAM or more. With less it asks (default no), and
+  from the GGUF on the SSD. It fits when its files (without the n-gram table) are no bigger than your graphics memory and RAM together; then the menu says "fits", otherwise "may run slower" and setup asks (default no), and
   `--model UD-Q4_K_XL --yes` installs it anyway.
 - **The RAM budget** is the PC's RAM less 24 GB (`--resident-budget-gib 40` on 64 GB), at most all 71 GiB of experts. From
   a 64K context up, where the KV cache moves to RAM, its size comes out of the budget. `--resident-budget-gib N` at
@@ -67,7 +67,7 @@ Windows). Hugging Face snapshot symlinks work if you pass the snapshot's file na
 | | |
 | --- | --- |
 | Disk | 111.3 GB for the four files, 1.4 GB for the pack, about 6 GB for the MTP draft layer if you have none yet. There is **no `experts.bin`**: the engine reads the experts from the GGUF files in place. An NVMe SSD matters, because experts that fit neither VRAM nor the RAM budget are read from it for every token. |
-| RAM | 48 GB minimum; about 88 GB for every expert in RAM. The RAM budget holds the most-used experts and the rest come from the SSD through the OS file cache. |
+| Memory | Its files (without the n-gram table) no bigger than your graphics memory and RAM together, or the menu says "may run slower"; about 88 GB of RAM for every expert in RAM. The RAM budget holds the most-used experts and the rest come from the SSD through the OS file cache. |
 | GPU | 12 GB works: after the weights, the draft layer and the buffers, the expert cache held 1,280 of the 24,576 experts (3.7 GiB) at 4K context on an RTX 5070. |
 
 ## The pack (by hand)

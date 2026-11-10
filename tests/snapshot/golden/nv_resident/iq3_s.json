@@ -1,0 +1,484 @@
+{
+ "machine": "nv_resident",
+ "set": "iq3_s",
+ "entries": {
+  "setup": {
+   "entry": "setup",
+   "command": "strata setup --family qwen --model IQ3_S --yes --no-start",
+   "inputs": {
+    "family": "qwen",
+    "model": "IQ3_S",
+    "ram_gb": 256.0,
+    "gpu": {
+     "arch": "120",
+     "count": 1,
+     "index": 0,
+     "name": "NVIDIA RTX PRO 5000 Blackwell",
+     "vram_gb": 72.0
+    },
+    "context": 131072,
+    "kv": "int8",
+    "vision": "gpu",
+    "low_ram": false,
+    "resident": false,
+    "ram_budget_gib": null,
+    "in_budget": false,
+    "engine_version": "0.2.12"
+   },
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--ple-io",
+     "ram",
+     "--kv-resident",
+     "32768",
+     "--vision",
+     "--vram-reserve-mib",
+     "700"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<REPO>/strata-iq3_s.log",
+    "lib_dirs": [],
+    "port": 8080,
+    "vision": {
+     "exe": "<ROOT>/engine/strata-vision",
+     "mmproj": "<ROOT>/data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+     "model": "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "gpu": true,
+     "max_tokens": 1024
+    }
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--ple-io",
+     "ram",
+     "--kv-resident",
+     "32768",
+     "--vision",
+     "--vram-reserve-mib",
+     "700"
+    ],
+    "env_set": {},
+    "notes": [
+     "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"
+    ]
+   },
+   "setup_says": [
+    "[ok] 256 GB of RAM: the 29 GB n-gram table is kept in RAM (--ple-io ram), so a new prompt does not wait for its rows from the SSD (a 4K prompt about 18% sooner on a fast card); remove --ple-io ram from the config's args to read it from the SSD instead",
+    "[ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM"
+   ]
+  },
+  "launch": {
+   "entry": "launch",
+   "command": "strata launch --model IQ3_S --yes --no-tui --context 131072",
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "cuda",
+     "gb": 0.34
+    }
+   ],
+   "setup_args": [
+    "--yes",
+    "--no-start",
+    "--family",
+    "qwen",
+    "--model",
+    "IQ3_S",
+    "--context",
+    "131072",
+    "--vision",
+    "gpu",
+    "--experimental-speed-projection",
+    "off",
+    "--drafter",
+    "dflash2",
+    "--data-dir",
+    "<ROOT>/data"
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<ROOT>/<STATE>/launch/iq3_s-128k.engine.log",
+    "lib_dirs": [],
+    "port": 8080,
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "engine_ready_s": 1008,
+    "args_derived": "=args",
+    "args_written": "=args"
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "8",
+     "--draft-conf",
+     "0.55"
+    ],
+    "env_set": {},
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.55)"
+    ]
+   }
+  },
+  "app_plain": {
+   "entry": "app_plain",
+   "command": "plain Load iq3_s",
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "cuda",
+     "gb": 0.34
+    }
+   ],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": true,
+      "choice": "dflash2",
+      "drafter": "mtp",
+      "gb": 0.34,
+      "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
+      "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "dflash2",
+      "drafter": "dflash2",
+      "gb": 0,
+      "line": "Drafting: DFlash2",
+      "note": "",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<ROOT>/install/strata-iq3_s.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "iq3_s"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "8",
+     "--draft-conf",
+     "0.55"
+    ],
+    "env_set": {},
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.55)"
+    ]
+   }
+  },
+  "app_models": {
+   "entry": "app_models",
+   "command": "Models screen: Load iq3_s with Drafting = Auto",
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "cuda",
+     "gb": 0.34
+    }
+   ],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": "auto",
+     "noSplit": false,
+     "result": {
+      "needed": true,
+      "choice": "dflash2",
+      "drafter": "mtp",
+      "gb": 0.34,
+      "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
+      "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<ROOT>/install/strata-iq3_s.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "drafting": "auto",
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "iq3_s"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "8",
+     "--draft-conf",
+     "0.55"
+    ],
+    "env_set": {},
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.55)"
+    ]
+   }
+  }
+ }
+}

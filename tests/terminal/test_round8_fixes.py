@@ -186,6 +186,10 @@ class SetupArguments(unittest.TestCase):
 
 
 class PlanPredictsEveryDownload(unittest.TestCase):
+    def setUp(self):
+        from tests.terminal.launch_support import not_intel
+        not_intel(self)
+
     def plan_text(self, h: Home, own: Path, **kw) -> dict:
         s = S.LaunchSettings(family="qwen", model="IQ3_XXS", context=32768, vision="on", model_path=str(own), data_dir=str(h.base / "data"), **kw)
         r = Runner(s, catalog=catalog(HW_12))
