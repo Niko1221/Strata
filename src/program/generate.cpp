@@ -41,6 +41,7 @@
 #include "strata/core/conversation_memory.hpp"
 #include "strata/core/auto_cache.hpp"
 #include "strata/core/ple_residency.hpp"
+#include "strata/core/resident_ram_copy.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
@@ -3746,8 +3747,7 @@ int main(int argc, char** argv) {
             o.resident_headroom = 4ull << 30;
             // A/B arms: STRATA_RESIDENT_PIN=0 keeps the copy pageable (the --resident-cpu-experts form);
             // STRATA_RESIDENT_HEADROOM_GIB=N leaves N GiB of the available RAM free instead of 4
-            if (const char* v = std::getenv("STRATA_RESIDENT_PIN"); v != nullptr && std::string(v) == "0")
-                o.resident_pin = false;
+            o.resident_pin = strata::core::resident_pin_from_env(std::getenv("STRATA_RESIDENT_PIN"));
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
@@ -3761,10 +3761,9 @@ int main(int argc, char** argv) {
             const double gib = std::atof(next("--resident-budget-gib"));
             if (!(gib > 0.0)) { std::fprintf(stderr, "strata generate: --resident-budget-gib needs N > 0\n"); return 2; }
             o.resident_budget = (uint64_t) (gib * 1073741824.0);
-            o.mmap_experts = o.resident_cpu_experts = o.resident_pin = true;
+            o.mmap_experts = o.resident_cpu_experts = true;
+            o.resident_pin = strata::core::resident_pin_from_env(std::getenv("STRATA_RESIDENT_PIN"));
             o.resident_headroom = 4ull << 30;
-            if (const char* v = std::getenv("STRATA_RESIDENT_PIN"); v != nullptr && std::string(v) == "0")
-                o.resident_pin = false;
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
@@ -7771,9 +7770,13 @@ int main(int argc, char** argv) {
             // 46.84 GiB arena) it decodes at 9-10 tok/s where a RAM copy of the hottest experts gives 27-28.  The fallback
             // takes the --resident-experts form instead (the hottest experts by the profile in RAM as far as the available
             // RAM allows, the rest read from the files); needs the static expert profile, STRATA_ARENA_FALLBACK_RESIDENT=0
-            // keeps the plain file source.
+            // keeps the plain file source.  STRATA_RESIDENT_PIN=0 keeps the copy pageable, read as for the flags (it was not
+            // read here before: the copy was page-locked whatever the variable said).
             if (!o.expert_profile.empty() && !o.resident_cpu_experts && !ram_fallback_resident_off) {
-                o.resident_cpu_experts = o.resident_pin = o.resident_soft = true;
+                const auto mode = strata::core::auto_ram_copy_mode(std::getenv("STRATA_RESIDENT_PIN"));
+                o.resident_cpu_experts = mode.resident_cpu_experts;
+                o.resident_pin = mode.pin;
+                o.resident_soft = mode.soft;
                 o.resident_headroom = ram_fallback_headroom;
                 // the budget form (as --resident-budget-gib): the hottest experts in what is available minus the headroom, and the rest
                 // read unbuffered, not through the mapped view (whose pages grow the working set until available RAM is near zero)
@@ -10487,6 +10490,7 @@ int main(int argc, char** argv) {
             src.set_extra_drop_files(std::move(drop));
         }
         const std::vector<std::pair<int32_t, int32_t>>& rank_all = profile_all.empty() ? profile : profile_all;
+        src.budget_is_automatic(ram_fallback_resident);   // its clamp line then names no flag
         bool resident_ok = src.pin_cache_complement(xcache, err, o.resident_pin, stage_pairs, lend_from,
                                                     o.resident_headroom, o.resident_budget, &rank_all);
         std::string whole_err;
