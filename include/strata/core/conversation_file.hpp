@@ -92,7 +92,7 @@ struct SessionConfig {
 uint64_t session_config_fingerprint(const SessionConfig& config);
 
 // The identity-relevant environment (#5379): every STRATA_* variable in the process environment, sorted by name,
-// minus the runtime-only names (the park's own placement - the park tag binds those itself - the manifest path and
+// minus the runtime-only names (the park's own placement - the park bytes are unchanged by them - the manifest path and
 // the report/trace knobs that print without changing what the saved bytes mean).  Variables the engine itself sets
 // at start count too: the identity is the resolved environment.  The rule is inclusive by default: an unknown
 // variable joins the fingerprint; a wrong inclusion costs one re-save, a wrong exclusion costs correctness.

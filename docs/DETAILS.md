@@ -798,7 +798,7 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
   rope configuration, a loaded control vector and the arithmetic switches, plus the process's `STRATA_*` environment sorted by
   name and the device plan in stage order). The environment enters whole, minus the runtime-only names (the park's own
-  `STRATA_PARK_*` placement - the park binds them into its tag itself - the manifest path and the `_DUMP`/`_TRACE`/`_STATS`/
+  `STRATA_PARK_*` placement - a parked image is the same bytes with any of them - the manifest path and the `_DUMP`/`_TRACE`/`_STATS`/
   `_PROF`/`_PROFILE`/`_LOG` report knobs; a name that forces tokens, like `STRATA_LOGPOS`, is not a report knob and enters):
   the kernel layer picks its fast paths from those variables at load time - `STRATA_HC_Q8`
   changes which bytes exist, `STRATA_ROUTE_TAIL_SKIP` which scorer runs - and an enumerated list would join the switches

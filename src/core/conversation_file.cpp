@@ -3,7 +3,7 @@
 #if defined(__APPLE__)
 #include <crt_externs.h>     // _NSGetEnviron(): the environment of a macOS process, valid inside dylibs too
 #elif !defined(_WIN32)
-extern "C" char** environ;   // glibc and the BSDs declare it inside __BEGIN_DECLS; <cstdlib> has _environ on Windows
+extern "C" char** environ;   // glibc declares it inside __BEGIN_DECLS; <cstdlib> has _environ on Windows
 #endif
 
 #include <algorithm>
@@ -881,8 +881,8 @@ void SessionIdentityBuilder::f64(const std::string& tag, double v) {
 }
 void SessionIdentityBuilder::bytes(const std::string& tag, const void* data, size_t n) { field(tag, 'b', data, n); }
 
-// runtime-only STRATA_* names (#5379): the park's placement variables bind themselves into the park tag (the
-// #3957 rule), and a report or trace knob changes what prints, never what the saved bytes mean.  Everything else
+// runtime-only STRATA_* names (#5379): the park's placement variables only say *where* the bytes live - a parked image
+// is the same bytes with any of them (DETAILS.md), - and a report or trace knob changes what prints,  Everything else
 // that starts with STRATA_ joins the config fingerprint - the kernel layer picks its fast paths from these at
 // load time, and the engine keeps no registry of which: STRATA_HC_Q8 changes which bytes exist, STRATA_ROUTE_TAIL_SKIP
 // swaps the scorer, and a new one lands every train.  Names the engine itself sets at start (auto-injected
