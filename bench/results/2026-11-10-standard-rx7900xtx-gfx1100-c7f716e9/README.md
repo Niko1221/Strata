@@ -77,6 +77,10 @@ The runner could not read the GPU model (the server was already running); this s
 - CPU / RAM / OS: as in the header above.
 - Model, launch arguments and tuning: `run-config-sanitized.json` here.
 - Vision: off - the `vision` section is removed from the run config.
+- Commit nuance: the official component's `BUILD.json` records source `f-0213-rc 712fec6b4297`, while the source
+  build is tag `v0.2.13` = `d2f0964`. Comparing those two commits, only `packaging/make_model_release.py` and
+  `tests/terminal/test_make_model_release.py` differ; the engine sources (`src/`, `include/`, `cmake/` and the
+  ggml tree) are identical, and both binaries print `strata 0.1.59`.
 - Sysctls on the box: `vm.min_free_kbytes=524288`, `vm.watermark_scale_factor=100`.
 - Engine: the **official `0.1.59-linux-x86_64-hip-rx7900` component from the signed feed** (release v0.2.13). It is
   portable and loads its own HIP stack from the component directory (`RUNPATH=$ORIGIN`; `BUILD.json`:
