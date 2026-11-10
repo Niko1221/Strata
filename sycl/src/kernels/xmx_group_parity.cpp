@@ -53,15 +53,20 @@ int main(int argc, char** argv) {
         };
         std::vector<uint8_t*> dg(n), du(n);
         std::vector<const uint8_t*> pg(n), pu(n);
+        // The host blobs must outlive the copies: a memcpy from a USM host pointer is asynchronous, and the
+        // loop-local vectors this used to take died at the end of each iteration, before the queue's wait()
+        // below.  It passed here only because the copies finished first; on an Arc A770 it read freed memory
+        // (reported against this port, 2026-11-09).  These live until the end of the case.
+        std::vector<std::vector<uint8_t>> keep_g(n), keep_u(cs.gu ? n : 0);
         for (int i = 0; i < n; ++i) {
-            auto g = blob();
+            keep_g[i] = blob();
             dg[i] = sycl::malloc_device<uint8_t>(mat_bytes, *q);
-            q->memcpy(dg[i], g.data(), mat_bytes);
+            q->memcpy(dg[i], keep_g[i].data(), mat_bytes);
             pg[i] = dg[i];
             if (cs.gu) {
-                auto u = blob();
+                keep_u[i] = blob();
                 du[i] = sycl::malloc_device<uint8_t>(mat_bytes, *q);
-                q->memcpy(du[i], u.data(), mat_bytes);
+                q->memcpy(du[i], keep_u[i].data(), mat_bytes);
                 pu[i] = du[i];
             }
         }

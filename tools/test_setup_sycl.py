@@ -10,6 +10,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -678,6 +679,53 @@ class WindowsDeviceProbe(unittest.TestCase):
         got, out = self.probe([{**self.ARC, "driver": "opencl", "free_memory_supported": False}])
         self.assertEqual(got, ("exit", 1))
         self.assertIn("requires Level Zero, not opencl", out)
+
+
+    def test_a_card_without_the_graph_aspect_needs_the_opt_in(self):
+        """shenef, fork PR #1: an Alchemist does not advertise ext_oneapi_graph but runs command graphs, so the
+        refusal stays the default and STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT=1 is the way in."""
+        card = {**self.ARC, "command_graph_supported": False}
+        got, out = self.probe([card])
+        self.assertEqual(got, ("exit", 1))
+        with mock.patch.dict(os.environ, {"STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT": "1"}):
+            got2, out2 = self.probe([card])
+        self.assertEqual([c["name"] for c in got2], [card["name"]])
+        self.assertIn("does not advertise command graphs", out2)
+
+
+class Alchemist(unittest.TestCase):
+    """A-series findings merged from shenef's fork PR #1: the 4 GiB single-allocation limit, the missing graph
+    aspect, and the fp64 emulation a Windows driver needs."""
+
+    @staticmethod
+    def mod():
+        spec = importlib.util.spec_from_file_location("setup_intel_alchemist", ROOT / "sycl" / "setup_intel.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    @staticmethod
+    def cfg(m):
+        base = m.MOUNT
+        return {"exe": "x", "cwd": "y", "args": ["--pack", str(base / "d" / "pack"), "--native", str(base / "d" / "a.gguf"),
+                "--expert-cache", "auto", "--prefill", "auto", "--max-context", "32768", "--kv", "int8"]}
+
+    def test_an_alchemist_gets_the_4_gib_limit_lifted(self):
+        m = self.mod()
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-win" / "strata.exe", 64.0, {}, 16.0, "i915", "56a0")
+        env = c["env"]
+        self.assertEqual(env.get("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS"), "1")
+        self.assertEqual(env.get("STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT"), "1")
+        self.assertEqual(env.get("NEO_FP64_EMULATION"), "1")
+
+    def test_a_battlemage_keeps_the_adapter_limits(self):
+        m = self.mod()
+        c = m.to_sycl(self.cfg(m), m.ROOT / "build-sycl-win" / "strata.exe", 64.0, {}, 32.0, "xe", "e223")
+        env = c["env"]
+        self.assertNotIn("UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS", env)
+        self.assertNotIn("STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT", env)
+        # the fp64 emulation is an Alchemist need (no FP64 hardware there); a Battlemage has it
+        self.assertNotIn("NEO_FP64_EMULATION", env)
 
 
 if __name__ == "__main__":
