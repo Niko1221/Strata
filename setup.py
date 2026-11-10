@@ -7375,6 +7375,84 @@ def mmproj_beside(gguf_dir, name: str, size: int | None = None):
     return None
 
 
+# A picture reader the person may already have instead of the pinned one: Unsloth's mmproj-F16.gguf for Flash-Next (the same vision tower in F16;
+# lane 14: 58 of 72 answers word for word with the pinned BF16 file on the same card, none of the differences wrong about the picture; embeddings 0.9998
+# mean / 0.998 worst).  Accepted ONLY when it is already there, with this size and this SHA-256 (Unsloth rev 38bb39ee97821de2c9009abb7e93950eec396e66),
+# and only when no pinned file is found: pinned name -> (file name, bytes, sha256).  It is never downloaded.
+ALT_READERS = {MMPROJ: ("mmproj-F16.gguf", 904004000, "1f7b7f0b984cf065c604360c29c8098362ed61b290db0ff12c6f360bb1a8a980")}
+_ALT_MARK = re.compile(r"alt-reader sha256 ([0-9a-f]{64})")
+
+
+def alt_reader_places(pinned: str, models_dir, roots, gguf_dir) -> list:
+    """Where the alternative reader of `pinned` is looked for: the same places as the pinned one (the data folder's models/, an earlier install's
+    models/, and a person's own GGUF folder: beside the shards, the folder above and that folder's models/)."""
+    alt = ALT_READERS.get(pinned)
+    if alt is None:
+        return []
+    places = [Path(models_dir) / alt[0]] + [Path(r) / "models" / alt[0] for r in roots or []]
+    if gguf_dir:
+        base = Path(gguf_dir)
+        places += [base / alt[0], base.parent / alt[0], base.parent / "models" / alt[0]]
+    return places
+
+
+def accepted_alt_reader(pinned: str, places, *, start: bool = True):
+    """The first file in `places` that is the alternative reader of `pinned` (name, size and SHA-256 all as pinned in ALT_READERS), else None. Anything
+    else with that name is ignored (never deleted, never renamed). The SHA-256 (0.9 GB, a few seconds) is remembered in a mark in Strata's own
+    marks/ folder, never beside the person's file; the mark is keyed by the real path, size and modification time (_kept_mark), so a file that was
+    replaced is hashed again. start=True is the setup run (says what it does, writes the mark); start=False is the plan (the same answer, says
+    nothing, writes nothing)."""
+    alt = ALT_READERS.get(pinned)
+    if alt is None:
+        return None
+    name, size, sha = alt
+    for p in places:
+        p = Path(p)
+        try:
+            if p.name != name or not p.is_file() or p.stat().st_size != size:
+                continue                                   # absent, another name or another size: ignored exactly as before
+        except OSError:
+            continue
+        digest = None
+        kept = _kept_mark(p)
+        try:
+            found = _ALT_MARK.match(kept.read_text(encoding="utf-8", errors="replace")) if kept is not None and kept.exists() else None
+            digest = found.group(1) if found else None
+        except OSError:
+            digest = None
+        if digest is None:
+            if start:
+                say(f"  checking {p.name} (SHA-256, {size / 1e9:.1f} GB) ...")
+            digest = _hash_file(p, size)
+            if start and kept is not None:
+                try:
+                    kept.parent.mkdir(parents=True, exist_ok=True)
+                    kept.write_text(f"alt-reader sha256 {digest}\n", encoding="utf-8")
+                except OSError:
+                    pass                                   # (not remembered: the next run hashes again; nothing else changes)
+        if digest == sha:
+            return p
+        if start:
+            say(f"  note: {p} has the name of Unsloth's picture reader but is a different file, so it is not used. "
+                "The picture reader is downloaded (0.9 GB).")
+    return None
+
+
+def resolve_reader(pinned: str, mmproj: Path, models_dir, roots, gguf_dir, size):
+    """Which picture reader this run uses: (kind, path). `mmproj` is where the pinned file would be (the data folder's models/, or an earlier
+    install's copy when there is one). kind "fetch": the pinned file at `mmproj` (it exists, or it is downloaded); "near": the pinned file in the
+    person's own folder (mmproj_beside); "alt": a verified Unsloth mmproj-F16.gguf the person already has (only when no pinned file is anywhere)."""
+    if mmproj.exists():
+        return "fetch", mmproj
+    near = mmproj_beside(gguf_dir, pinned, size)
+    if near is not None:
+        return "near", near
+    alt = accepted_alt_reader(pinned, alt_reader_places(pinned, models_dir, roots, gguf_dir), start=True)
+    if alt is not None:
+        return "alt", alt
+    return "fetch", mmproj
+
+
 def share_sibling_file(dst: Path, parent: Path, name: str, size: int) -> bool:
     """A shared file that sits in another model's folder under `parent` (parent/<model folder>/<name>; Qwen3.6 keeps its picture file beside each size) is made
     available at `dst` without the network: a hard link, else a copy.  Only a file of the pinned `size`; its SHA-256 is checked by the caller's download(), as for
@@ -10097,14 +10175,12 @@ def mac_control_setup(a) -> int:
         mmproj = Path(models_root) / fam["mmproj"]
         if not mmproj.exists():                        # an earlier install's copy (the same file for every family)
             mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
-        near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
-        if near is not None:
-            mmproj = near
-        elif not (mmproj.exists() and done(mmproj)):
+        kind, mmproj = resolve_reader(fam["mmproj"], mmproj, models_root, roots, a.gguf_dir, (ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
+        if kind == "fetch" and not (mmproj.exists() and done(mmproj)):
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam["mmproj"] in ISTA_FILES:
+        if fam["mmproj"] in ISTA_FILES and kind != "alt":       # (a verified Unsloth F16 file was checked against its own pin)
             verify_sha256(mmproj, *ISTA_FILES[fam["mmproj"]])
-        ok(f"vision encoder: {mmproj}")
+        ok(f"vision encoder: {mmproj}" + (" (Unsloth's mmproj-F16.gguf, SHA-256 checked)" if kind == "alt" else ""))
 
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
@@ -11180,14 +11256,15 @@ def main() -> int:
     if not mmproj.exists():                            # an earlier install's copy (the same file for every family)
         mmproj = find_in(roots, f"models/{fam.get('mmproj', MMPROJ)}") or mmproj      # a feed model without a picture reader has no fam["mmproj"]
     if vision != "none":
-        near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (fam.get("mmproj_sha256") or ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
-        if near is not None:                           # the person's own folder (or the one above it) has the picture file: used where it is
-            mmproj = near
-        else:
+        # the person's own folder (or the one above it) has the pinned picture file: used where it is ('near'); a verified Unsloth mmproj-F16.gguf they
+        # already have is used when no pinned file is anywhere ('alt'); else the pinned file is downloaded
+        kind, mmproj = resolve_reader(fam["mmproj"], mmproj, a.models_dir, roots, a.gguf_dir,
+                                      (fam.get("mmproj_sha256") or ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
+        if kind == "fetch":
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam.get("mmproj_sha256"):                   # the NVFP4 family pins it by size and SHA-256 too
+        if fam.get("mmproj_sha256") and kind != "alt":   # the NVFP4 family pins it by size and SHA-256 too
             verify_sha256(mmproj, *fam["mmproj_sha256"])
-        ok(f"vision encoder: {mmproj}")
+        ok(f"vision encoder: {mmproj}" + (" (Unsloth's mmproj-F16.gguf, SHA-256 checked)" if kind == "alt" else ""))
         if vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
             say("       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding "
                 "cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md")

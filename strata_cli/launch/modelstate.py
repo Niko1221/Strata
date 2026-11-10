@@ -235,7 +235,8 @@ def mmproj_size(catalog, family: str | None, name: str) -> int | None:
 def reader_present(catalog, family: str | None, data_folders, own: Path | None = None) -> bool:
     """Whether setup will find the picture reader without a download - setup's own rule (setup.py step 5 and mmproj_beside), not any
     mmproj*.gguf: the family's pinned file name in a data folder's models/ (the one in use, or a folder setup reuses), or with the person's own
-    files in their folder (by name), or in the folder above it or that folder's models/ (by name, at the pinned size)."""
+    files in their folder (by name), or in the folder above it or that folder's models/ (by name, at the pinned size). Or, when there is no pinned
+    file, a verified Unsloth mmproj-F16.gguf (setup.accepted_alt_reader: the same function the start uses)."""
     name = mmproj_name(catalog, family)
     for base in data_folders:
         if not base:
@@ -258,7 +259,17 @@ def reader_present(catalog, family: str | None, data_folders, own: Path | None =
                     return True
         except OSError:
             pass
-    return False
+    try:                                                     # no pinned file: a verified Unsloth mmproj-F16.gguf the person already has counts, as in setup
+        mod = catalog.strata.setup_module()
+        alt = (getattr(mod, "ALT_READERS", None) or {}).get(name) if mod is not None else None
+        if alt is None:
+            return False
+        places = [Path(b) / sub / alt[0] for b in data_folders if b for sub in ("models", "Models")]
+        if own is not None:
+            places += [Path(own) / alt[0], Path(own).parent / alt[0], Path(own).parent / "models" / alt[0]]
+        return mod.accepted_alt_reader(name, places, start=False) is not None      # (the plan hashes without writing a mark and says nothing)
+    except Exception:                                        # noqa: BLE001 - the plan must not fail on this
+        return False
 
 
 def _first_gguf(path: Path) -> Path | None:
