@@ -5998,12 +5998,6 @@ int main(int argc, char** argv) {
     // STRATA_PIPED_MTP=N: up to N proposals per slot and window (at most --spec - 1); the first always, each further
     // one while the draft layer is at least --spec-min-p sure of it, as the solo path extends its windows
     int pm_drafts = 0;
-    // STRATA_BATCH_MTP_DRAFTS=N (tuning, opt-in, lossless): the serial batch windows give a slot up to N proposals when
-    // fewer than four slots are live (the window's spare rows); unset/1 = one proposal per slot, as before
-    const int batch_mtp_drafts = [] {
-        const char* v = std::getenv("STRATA_BATCH_MTP_DRAFTS");
-        return v != nullptr ? std::clamp(std::atoi(v), 1, (int) strata::kernels::kVerifyMaxT - 1) : 1;
-    }();
     if (piped_mtp) {
         pm_drafts = std::clamp(std::atoi(std::getenv("STRATA_PIPED_MTP")), 1,
                                std::max(1, std::min(o.spec - 1, (int) strata::kernels::kVerifyMaxT - 1)));
@@ -12661,44 +12655,24 @@ int main(int argc, char** argv) {
             static size_t next_slot = 0;
             // Each MTP slot uses two rows; rotate slots when more than four are active.
             int A = 0;
-            // STRATA_BATCH_MTP_DRAFTS=N (tuning, opt-in): with fewer than four live slots the rows the window has left
-            // (kVerifyMaxT - 2 per slot) carry further proposals of the slots, up to N per slot (at most --spec - 1)
-            int win_nd[strata::kernels::kVerifyMaxT] = {};
-            int extra_rows = 0;
-            if (batch_mtp && batch_mtp_drafts > 1) {
-                int live = 0;
-                for (const BSlot& s0 : bs) live += s0.active ? 1 : 0;
-                extra_rows = std::max(0, (int) strata::kernels::kVerifyMaxT - 2 * std::min(live, (int) strata::kernels::kVerifyMaxT / 2));
-            }
             for (size_t offset = 0; offset < bs.size() && S + (batch_mtp ? 2 : 1) <= strata::kernels::kVerifyMaxT; ++offset) {
                 const int b = (int) ((next_slot + offset) % bs.size());
                 if (bs[(size_t) b].active) {
                     first[A] = S;
-                    win_nd[A] = 0;
                     active[A++] = b;
                     rows[S] = b;
                     tok[S] = bs[(size_t) b].x;
                     pos[S] = bs[(size_t) b].p;
                     ++S;
                     if (batch_mtp) {
+                        rows[S] = b;
                         if (!bs[(size_t) b].draft_ready) {
                             err = "batch MTP: a live slot has no draft";
                             return false;
                         }
-                        int nd = 1;
-                        if (extra_rows > 0 && bs[(size_t) b].n_drafts > 1 &&
-                            bs[(size_t) b].p + bs[(size_t) b].n_drafts + 2 <= o.max_context) {
-                            const int more = std::min(bs[(size_t) b].n_drafts - 1, extra_rows);
-                            nd += more;
-                            extra_rows -= more;
-                        }
-                        win_nd[A - 1] = nd;
-                        for (int j = 0; j < nd; ++j) {
-                            rows[S] = b;
-                            tok[S] = bs[(size_t) b].draft[(size_t) j];
-                            pos[S] = bs[(size_t) b].p + 1 + j;
-                            ++S;
-                        }
+                        tok[S] = bs[(size_t) b].draft[0];
+                        pos[S] = bs[(size_t) b].p + 1;
+                        ++S;
                     }
                 }
             }
@@ -12762,13 +12736,6 @@ int main(int argc, char** argv) {
                 const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outb[i]) != o.eos_ids.end();
                 keep[b] = batch_mtp && outb[i] == tok[i + 1] && !eos && !sl.stop &&
                           sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
-                // STRATA_BATCH_MTP_DRAFTS: each further proposal while the target picked every one before it
-                for (int j = 1; j < win_nd[a] && keep[b] == j + 1; ++j) {
-                    const bool eos_j = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outb[i + j]) != o.eos_ids.end();
-                    if (outb[i + j] == tok[i + j + 1] && !eos_j && sl.produced + j + 2 <= sl.max_new &&
-                        sl.p + j + 3 <= o.max_context)
-                        keep[b] = j + 2;
-                }
             }
             // STRATA_BATCH_DRAFT_OVERLAP (tuning, bit-exact): 1 = every slot's draft round is queued before the picks are
             // collected; 2 = also before the window's commit, so the drafts (drafter streams) and the commit (the window's
@@ -12797,7 +12764,7 @@ int main(int argc, char** argv) {
                 const int b = active[t];
                 BSlot& sl = bs[(size_t) b];
                 bool nf = false;   // #879: a row of this slot held non-finite logits: the slot ends, nothing emitted
-                for (int r = first[t]; r < first[t] + (batch_mtp ? 1 + win_nd[t] : 1); ++r) nf = nf || ver.nonfinite_in(r);
+                for (int r = first[t]; r < first[t] + (batch_mtp ? 2 : 1); ++r) nf = nf || ver.nonfinite_in(r);
                 if (nf) {
                     std::fprintf(stderr, "strata batch: non-finite logits (#879) in slot %d at position %lld: it ends "
                                          "(BDONE nonfinite) and the next request reads its prompt from token 0\n", b,
@@ -12834,23 +12801,12 @@ int main(int argc, char** argv) {
                     // queued on the drafter's own stream after the window's host sync, so the draft graph reads it.
                     const strata::core::OnDevice on_slot_mtp(slot_mtp[(size_t) b]->device());
                     const size_t stride = (size_t) g.hc * (size_t) g.n_embd;
-                    const int wr = 1 + win_nd[t];   // the slot's rows in this window (its token and its proposals)
-                    if (batch_mtp_drafts > 1) {
-                        // the next window's proposals: as many as the rows the live slots leave (1 with four or more)
-                        int live = 0;
-                        for (const BSlot& s0 : bs) live += s0.active ? 1 : 0;
-                        live = std::max(live, 1);
-                        const int d = std::clamp(((int) strata::kernels::kVerifyMaxT - 2 * live) / live + 1, 1,
-                                                 std::max(1, std::min(batch_mtp_drafts, o.spec - 1)));
-                        slot_mtp[(size_t) b]->set_max_drafts(d);
-                        sl.n_drafts = d;
-                    }
                     if (cudaMemcpyAsync(slot_mtp_rows[(size_t) b].get(),
                                         ver.final_R_all() + (size_t) first[t] * stride,
-                                        (size_t) wr * stride * sizeof(float), cudaMemcpyDeviceToDevice,
+                                        2 * stride * sizeof(float), cudaMemcpyDeviceToDevice,
                                         slot_mtp[(size_t) b]->stream()) != cudaSuccess ||
-                        !(draft_overlap ? slot_mtp[(size_t) b]->draft_launch(wr, outb + first[t], pos[first[t]], keep[b] - 1, err)
-                                        : slot_mtp[(size_t) b]->draft(wr, outb + first[t], pos[first[t]], keep[b] - 1,
+                        !(draft_overlap ? slot_mtp[(size_t) b]->draft_launch(2, outb + first[t], pos[first[t]], keep[b] - 1, err)
+                                        : slot_mtp[(size_t) b]->draft(2, outb + first[t], pos[first[t]], keep[b] - 1,
                                                                       sl.draft.data(), err))) {
                         std::printf("ERR batch MTP slot %d: %s\n", b, err.c_str());
                         return false;
