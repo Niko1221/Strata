@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <initializer_list>
 #include <memory>
 #include <utility>
@@ -144,6 +145,18 @@ private:
             const char* v = std::getenv("STRATA_PARK_RECYCLE_MIB");
             const long long mib = v != nullptr ? std::atoll(v) : 0;
             cap = mib > 0 ? (size_t) (mib / 16) : 0;
+            // STRATA_PARK_RECYCLE_WARM=1: a background thread fills the pool with faulted-in segments at the first use
+            const char* w = std::getenv("STRATA_PARK_RECYCLE_WARM");
+            if (cap > 0 && w != nullptr && w[0] == '1')
+                std::thread([this] {
+                    for (size_t k = 0; k < cap; ++k) {
+                        void* p = std::allocator<uint8_t>().allocate(segment_bytes);
+                        std::memset(p, 0, segment_bytes);
+                        std::lock_guard<std::mutex> lk(mu);
+                        if (free.size() >= cap) { std::allocator<uint8_t>().deallocate(static_cast<uint8_t*>(p), segment_bytes); break; }
+                        free.push_back(p);
+                    }
+                }).detach();
         }
     };
     static Recycler& recycler() { static Recycler r; return r; }
