@@ -705,6 +705,15 @@ Windows, or on any other rocBLAS build; the engine then logs that the table was 
 The dot product change is device code, so the environment variable cannot undo it on a build that has it: build with `-DSTRATA_AMD_COMMUNITY_TUNING=OFF` to compile the portable loop for gfx1010
 again (`-DSTRATA_GFX1012_PORTABLE_DOT=ON` does the same, for gfx1010 and gfx1012). Other architectures compile the same code either way.
 
+## Experimental gfx12 grid padding
+
+Set `STRATA_GRID_PAD=1` before starting the engine to add empty workgroups to selected single-token (T=1)
+decode matvecs on gfx12 near full-die wave-slot boundaries. Padding is off by default; `=0` also disables it.
+T>1 launches, CUDA and other AMD architectures keep their original grid sizes, even with `=1`.
+Historic R9700 timings from #2492 are archival; they do not establish a speedup on a later revision or another card.
+The current HIP wave MMVQ path can bypass these padded fallbacks. Compare the default path and an explicit
+`STRATA_MMVQ_WAVE=0` control before attributing a timing change to padding.
+
 ## Strix Halo: 8-bit hyper-connection weights (default on gfx1151)
 
 On Strix Halo (gfx1151) and gfx12 the hyper-connection down and up projections are read as Q8_0 by default (quantized at load
