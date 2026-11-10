@@ -39,7 +39,7 @@ Comments are for this document only; actual feed files must be strict JSON.
     "version": "0.2.13", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
     "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.13-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
   },
-  "control": {"version": "0.1.59", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
+  "control": {"version": "0.1.59.1", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
                                                   "size": 0, "sha256": "...", "installed_bytes": 0, "entry": "strata.py"}]},
   "engine": {"packages": [{
     "version": "0.1.59", "platform": "linux-x86_64", "backend": "cuda", "variant": "cuda13",
@@ -72,7 +72,7 @@ separate component, picked by the model, and never in place of the Strata engine
 ```
 
 * Package: `package_engine.py --shape q4_lite ...` (the build made with `-DSTRATA_GEOMETRY=q4_lite`, or `-DSTRATA_GEOMETRY_FILE=` for a header that is not in the tree: use that header's name). The manifest's id is the shape's component (`strata-q4-lite`) and it carries `"shape"`; both are in the signed manifest. `sign-package`, then `pack-engine` (the archive is `strata-q4-lite-<version>-<platform>-<backend>[-<variant>]`, the entry names the shape), one folder of entries, `build-feed --shapes FOLDER`. `build-feed` refuses a model whose family is `qwen4exp_<shape>` when the feed has no engine for that shape; `verify-feed` lists the shape engines. Give the package `--min-runtime` of the Control that knows shape engines.
-* A PC: the model's family (`qwen4exp_q4_lite`) makes setup (the app's Download and the Terminal's launch) fetch the engine of that shape through the signed feed when the model is chosen (resumable download, the archive's SHA-256, the manifest hash the feed names, the package signature, every file's hash, the shape in the manifest, then `strata --version` once and `strata --geometry`, which must print that shape: an engine compiled for another geometry is refused at install, and an engine from before the flag is accepted. Build the engine with `-DSTRATA_GEOMETRY_FILE=` of a header whose label is the shape name: `q4geo_synth.py --from-gguf ... --label q4_lite`), into `<components>/shapes/q4_lite/engine/<version>-<platform>-<backend>/`. The Strata engine's folder is not read or written. The model's run config says `"exe": "component:strata-q4-lite"`; every start looks it up there and checks every file. `strata update` brings an installed shape engine up to date beside the older one (the newest two are kept) and never installs one by itself. Starting never downloads.
+* A PC: the model's family (`qwen4exp_q4_lite`) makes setup (the app's Download and the Terminal's launch) fetch the engine of that shape through the signed feed when the model is chosen (resumable download, the archive's SHA-256, the manifest hash the feed names, the package signature, every file's hash, the shape in the manifest, then `strata --version` once and `strata --geometry`, which must print that shape: an engine compiled for another geometry is refused at install, and so is one that cannot answer the flag ("it does not say which model shape it was built for"; the Intel engine answers it since 0.2.14). Build the engine with `-DSTRATA_GEOMETRY_FILE=` of a header whose label is the shape name: `q4geo_synth.py --from-gguf ... --label q4_lite`), into `<components>/shapes/q4_lite/engine/<version>-<platform>-<backend>/`. The Strata engine's folder is not read or written. The model's run config says `"exe": "component:strata-q4-lite"`; every start looks it up there and checks every file. `strata update` brings an installed shape engine up to date beside the older one (the newest two are kept) and never installs one by itself. Starting never downloads.
 * Older Controls: they ignore the member (no `engine` entry, no `dsv41` entry), they read only `strata-engine` manifests (a shape package copied into their engine folder is refused: its id is another component), and the model's family is one they do not know, so they list it as "needs a newer Strata" and never offer it.
 * A Mac does not offer a model of its own shape yet (that install path has no shape step).
 
@@ -206,9 +206,9 @@ All signing happens on the release PC, on the finished files.
 
     python packaging/feed_tool.py sign-package <engine package folder> --key <feed-key.json>        # every engine package (the Mac app bundles its UNSIGNED copy)
     python packaging/feed_tool.py pack-engine  <engine package folder> --out RELEASE/engine --url-prefix=
-    python packaging/feed_tool.py pack-control <control folder> --version 0.1.59 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
+    python packaging/feed_tool.py pack-control <control folder> --version 0.1.59.1 --platform P --out RELEASE/control --url-prefix=   # --format zip for windows-x86_64
     # --url-prefix= (not --url-prefix "") because PowerShell 5.1 drops an empty argument. The Control version is the VERSION file
-    # (0.1.59), not the app version: a Control package newer than the installed one is installed by `strata update`.
+    # (0.1.59.1), not the app version: a Control package newer than the installed one is installed by `strata update`.
     # Pack Linux and Mac packages on Linux / the Mac or on Windows with this tool: it sets the execute bit from the file header either way.
     cd apps/desktop && npx tauri build --bundles nsis --config src-tauri/tauri.update.conf.json    # Windows installer (no engine inside)
     # Linux: tauri build --bundles appimage (no engine inside) is the AppImage
