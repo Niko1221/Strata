@@ -95,3 +95,7 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
+
+# Agents' own test scripts and probes: how a claim was checked, not part of the product (AGENTS.md, "Working on the code")
+/.test_tool/
+/.scratch/
