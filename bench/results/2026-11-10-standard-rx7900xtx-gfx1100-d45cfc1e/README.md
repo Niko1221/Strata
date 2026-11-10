@@ -10,7 +10,9 @@ Written by `strata bench run`. The machine-readable result is [results.json](res
 - CPU: AMD Ryzen 9 5900X 12-Core Processor; RAM: 62.7 GiB
 - Storage of the model files: ssd Samsung SSD 870 EVO 1TB (sata)
 - OS: Debian GNU/Linux 13 (trixie) 7.2.12+deb13-amd64; drivers: not measured; runtime: not measured
-- Strata commit: `7df6538d6c886093df39d74b36ed0a3396bf9467`; engine 0.1.59; source build
+- Strata commit: `7df6538d6c886093df39d74b36ed0a3396bf9467` - the checkout the runner found, which is a third-party
+  RDNA3 fork of this project (see the operator section below). Engine 0.1.59; the runner labels this a "source
+  build", but the engine binary is the official signed component, not a local build.
 - Background work: not measured
 
 ## Model and configuration
@@ -82,6 +84,9 @@ running, so it could not read the engine options. This section fills both in; pa
   the engine does not load it; it serves the source build and the tools (hipcc, rocminfo).
 - Engine: `0.1.59-linux-x86_64-hip-rx7900` from the signed feed (release v0.2.13, upstream commit d2f0964).
 - Control repository: `7df6538d` (a third-party RDNA3 fork of this project); the engine binary is the official component.
+- The runner's protocol ID (`strata-qwen38-thinking-v1-draft.1`) and schema version (1) are the same as in
+  v0.2.13's `docs/BENCHMARK_PROTOCOL.md`, so this report matches the current draft protocol. Only the control and
+  serving layer come from the fork checkout; the engine and the timings it reports are the official component's.
 - Launch arguments (sanitized): see `run-config-sanitized.json`.
 - Tuning environment that matters for prompt speed: `STRATA_SELECT_WMMA=1` (the block scorer on the matrix cores),
   `STRATA_SCORES_THREAD=0`, `STRATA_PREFILL_AUTO_MAX=32768`, `STRATA_PREFILL_RING=192`, `STRATA_QSA_ROWS=1`.
