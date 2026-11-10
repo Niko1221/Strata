@@ -243,6 +243,10 @@ class Plan(unittest.TestCase):
             self.skipTest("no templates folder")
         out = Path(self.tmp.name) / "out2"
         code, _, err = run(self.base(self.a, "--write", str(out), "--templates", str(d), "--revision", "abc", "--hf-repo", "x/y"))
+        self.assertNotEqual(code, 0, "case A with --write needs --min-engine (078b52563)")
+        self.assertIn("case A: give --min-engine", err)
+        self.assertFalse(out.exists())
+        code, _, err = run(self.base(self.a, "--write", str(out), "--templates", str(d), "--revision", "abc", "--hf-repo", "x/y", "--min-engine", "0.1.58"))
         self.assertEqual(code, 0, err)
         for name in ("RELEASE-NOTES.md", "MODEL-CARD.md", "CHECKLIST.md"):
             text = (out / name).read_text(encoding="utf-8")
