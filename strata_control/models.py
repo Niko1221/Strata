@@ -340,8 +340,8 @@ def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
 
 
 ISSUE_WORDS = {
-    "not_on_this_mac": "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do",
-    "not_on_this_spark": "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were",
+    "not_on_this_mac": "Unsloth's UD-Q3_K_XL set doesn't run on a Mac yet; the UD-IQ1_S and UD-IQ1_M, 1.75, 2.00 and 2.25 sets do",
+    "not_on_this_spark": "Unsloth's UD-Q3_K_XL set was not tested on a DGX Spark yet; the 1-bit DeepSeek sets and the 2.00 and 2.25 sets were",
     "multiple_model_groups": "the folder holds more than one model",
     "incomplete_or_invalid_shard_set": "some parts of the model are missing",
     "unrecognized_or_unsupported_model_variant": "this is not a model size Strata knows",

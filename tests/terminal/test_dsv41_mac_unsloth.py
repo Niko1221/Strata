@@ -1,6 +1,7 @@
 """Unsloth's DeepSeek sets on a Mac: UD-IQ1_S runs on the Metal engine (IQ1_S kernels, run on an M5 Max) and is offered like the ISTA-DAS sets;
-UD-IQ1_M was never run on a Mac, so it is not offered there (model list, `--model`, `--model-path`, the app's "I already have the model"
-check, setup), and the line says what does work.
+UD-IQ1_M was never run there but is offered anyway (the owner's call, with a plain "not run yet" line in its plan); UD-Q3_K_XL is behind the gate,
+because the Metal engine has no kernel for the formats it routes its experts in and it ships its n-gram table in MXFP8 (model list, `--model`,
+`--model-path`, the app's "I already have the model" check, setup), and the line says what does work.  The same set is behind the DGX Spark gate.
 On every other computer nothing changes."""
 
 from __future__ import annotations
@@ -17,12 +18,12 @@ from strata_cli.launch.runner import LaunchError, Runner
 from strata_control import dsv41_fit, dsv41_sets, models
 from tests.terminal.launch_support import HW_12, Home, catalog
 
-LINE = "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do."
+LINE = "Unsloth's UD-Q3_K_XL set doesn't run on a Mac yet; the UD-IQ1_S and UD-IQ1_M, 1.75, 2.00 and 2.25 sets do."
 MAC = {**HW_12, "mac": True, "ram_gb": 128.0, "disk_free_gb": 900.0, "gpus": [], "engine_vendor": "apple"}
 PC = {**HW_12, "ram_gb": 64.0, "disk_free_gb": 900.0, "engine_vendor": "nvidia"}
-UD = ("UD-IQ1_M",)          # the set the gate holds back in these tests (MAC_NOT_YET is empty in the product: the owner offers UD-IQ1_M on a Mac, not run there)
+UD = ("UD-Q3_K_XL",)        # the set the gate holds back: the product state, so these tests cannot drift away from it
 RUNS = "UD-IQ1_S"            # the one that was run there
-BOTH = ("UD-IQ1_S", "UD-IQ1_M")   # both ran on a DGX Spark (10-30): AARCH64_NOT_YET is empty; SparkGate patches it back to test the mechanism
+OFFERED = ("UD-IQ1_S", "UD-IQ1_M")   # the Unsloth sets a Mac and a DGX Spark are offered (UD-IQ1_M not run on a Mac, both run on a Spark 10-30)
 
 
 def hidden(fn):
@@ -81,14 +82,20 @@ class Lists(unittest.TestCase):
         for m in UD + (RUNS,):
             self.assertIn(m, got)
 
-    @hidden
     def test_model_flag_on_a_mac_says_what_works(self):
-        with self.assertRaises(ValueError) as cm:
-            catalog(self.hw).resolve("ud-iq1_m", None)
+        with self.assertRaises(ValueError) as cm:                # the gate is asked only for the family that was chosen
+            catalog(self.hw).resolve("ud-q3_k_xl", "deepseek41")
         self.assertIn(LINE, str(cm.exception))
         self.assertIn("ist-das-2.25bpw", str(cm.exception))
         self.assertEqual(catalog(self.hw).resolve("ist-das-2.25bpw"), ("deepseek41", "IST-DAS-2.25bpw"))
         self.assertEqual(catalog(self.hw).resolve("ud-iq1_s"), ("deepseek41", RUNS))
+
+    def test_a_shared_name_with_no_family_is_the_other_models_size(self):
+        # Unsloth sells UD-Q3_K_XL for Qwen3.8 as well, and DeepSeek's copy is the newer: the bare word goes to Qwen, so a Mac's DeepSeek gate cannot fire
+        # for it; --family deepseek41 asks for DeepSeek's set and gets the line above. UD-IQ1_M still defaults to DeepSeek.
+        self.assertEqual(catalog(self.hw).resolve("ud-q3_k_xl"), ("unsloth", "UD-Q3_K_XL"))
+        self.assertEqual(catalog(self.hw).resolve("ud-iq1_m"), ("deepseek41", "UD-IQ1_M"))
+        self.assertEqual(catalog(self.hw).resolve("ud-iq1_m", "unsloth"), ("unsloth", "UD-IQ1_M"))
 
     def test_model_flag_on_a_pc_is_unchanged(self):
         self.hw = dict(PC)
@@ -137,7 +144,7 @@ class OwnFiles(unittest.TestCase):
 
 
 class OfferedOnAMac(unittest.TestCase):
-    """The product state: the Mac gate is empty, both Unsloth sets are offered; UD-IQ1_M says plainly that it was not run on a Mac."""
+    """The product state: the gate holds the 3-bit set, both Unsloth 1-bit sets are offered; UD-IQ1_M says plainly that it was not run on a Mac."""
     PLAIN = "Not run on a Mac yet; UD-IQ1_S was. It keeps fewer experts in memory, so expect it to be slower."
 
     def setUp(self):
@@ -148,16 +155,22 @@ class OfferedOnAMac(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_the_gate_is_empty_and_both_sets_have_a_pack(self):
-        self.assertEqual(dsv41_fit.MAC_NOT_YET, ())
+    def test_the_gate_holds_the_3_bit_set_and_both_1_bit_sets_have_a_pack(self):
+        self.assertEqual(dsv41_fit.MAC_NOT_YET, UD)
         for m in ("UD-IQ1_S", "UD-IQ1_M"):
             self.assertIn(m, dsv41_fit.MAC_SET_PACK)
             self.assertIsNone(dsv41_fit.not_here(m))
+        self.assertNotIn("UD-Q3_K_XL", dsv41_fit.MAC_SET_PACK)
+        with mock.patch.object(sys, "platform", "darwin"):
+            self.assertEqual(dsv41_fit.not_here("UD-Q3_K_XL"), LINE)
+        with mock.patch.object(sys, "platform", "linux"), mock.patch("platform.machine", return_value="x86_64"):
+            self.assertIsNone(dsv41_fit.not_here("UD-Q3_K_XL"))    # a normal PC takes it
 
     def test_the_list_and_the_flag(self):
         got = [r.model for r in catalog(self.hw).rows() if r.family == "deepseek41"]
         for m in ("UD-IQ1_S", "UD-IQ1_M"):
             self.assertIn(m, got)
+        self.assertNotIn("UD-Q3_K_XL", got)          # the Mac list keeps it out
         self.assertEqual(catalog(self.hw).resolve("ud-iq1_m"), ("deepseek41", "UD-IQ1_M"))
 
     def test_the_plan_of_ud_iq1_m_says_it_was_not_run_and_invents_no_numbers(self):
@@ -258,7 +271,7 @@ class Setup(unittest.TestCase):
             self.assertIn("nothing has been downloaded", text)
 
 
-SPARK_LINE = "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were."
+SPARK_LINE = "Unsloth's UD-Q3_K_XL set was not tested on a DGX Spark yet; the 1-bit DeepSeek sets and the 2.00 and 2.25 sets were."
 
 
 def spark():
@@ -280,15 +293,15 @@ class SparkGate(unittest.TestCase):
         p = mock.patch.object(Catalog, "hardware", lambda s, fresh=False: dict(self.hw))
         p.start()
         self.addCleanup(p.stop)
-        q = mock.patch.object(dsv41_fit, "AARCH64_NOT_YET", BOTH)     # the mechanism, as it was while the sets were kept off
+        q = mock.patch.object(dsv41_fit, "AARCH64_NOT_YET", OFFERED + UD)   # the mechanism, as it was while all three sets were kept off
         q.start()
         self.addCleanup(q.stop)
 
     def test_the_rule(self):
-        self.assertEqual(dsv41_fit.AARCH64_NOT_YET, BOTH)
+        self.assertEqual(dsv41_fit.AARCH64_NOT_YET, OFFERED + UD)
         self.assertEqual(dsv41_fit.AARCH64_NOT_YET_LINE, SPARK_LINE)
         with spark():
-            for m in BOTH:
+            for m in OFFERED + UD:
                 self.assertEqual(dsv41_fit.not_here(m), SPARK_LINE)
             self.assertIsNone(dsv41_fit.not_here("IST-DAS-2.25bpw"))
         with mock.patch.object(sys, "platform", "linux"), mock.patch("platform.machine", return_value="x86_64"):
@@ -300,17 +313,17 @@ class SparkGate(unittest.TestCase):
     def test_not_in_the_list_on_a_spark_but_on_a_pc(self):
         with spark():
             got = [r.model for r in catalog(self.hw).rows() if r.family == "deepseek41"]
-        for m in BOTH:
+        for m in OFFERED:
             self.assertNotIn(m, got)
         self.assertIn("IST-DAS-2.25bpw", got)
         pc = [r.model for r in catalog(self.hw).rows() if r.family == "deepseek41"]
-        for m in BOTH:
+        for m in OFFERED:
             self.assertIn(m, pc)
 
     def test_model_flag_on_a_spark_says_what_works(self):
         with spark():
             with self.assertRaises(ValueError) as cm:
-                catalog(self.hw).resolve("ud-iq1_s", None)
+                catalog(self.hw).resolve("ud-iq1_s", None)      # patched off the Spark for this test
         self.assertIn(SPARK_LINE, str(cm.exception))
         self.assertIn("ist-das-2.25bpw", str(cm.exception))
 
@@ -343,13 +356,18 @@ class SparkGate(unittest.TestCase):
 
 
 class SparkOffered(unittest.TestCase):
-    """Both Unsloth sets ran on a DGX Spark (2026-10-30): the production rule hides nothing there."""
+    """The production rule on a DGX Spark: both 1-bit sets ran there (2026-10-30) and stay offered; only the 3-bit set is hidden."""
 
-    def test_nothing_is_hidden_on_a_spark(self):
-        self.assertEqual(dsv41_fit.AARCH64_NOT_YET, ())
+    def test_only_the_3_bit_set_is_hidden_on_a_spark(self):
+        self.assertEqual(dsv41_fit.AARCH64_NOT_YET, UD)
         with spark():
-            for m in BOTH + ("IST-DAS-2.25bpw",):
+            for m in OFFERED + ("IST-DAS-2.25bpw",):
                 self.assertIsNone(dsv41_fit.not_here(m))
+            self.assertEqual(dsv41_fit.not_here("UD-Q3_K_XL"), SPARK_LINE)
+            c = catalog(PC, root=Path(__file__).resolve().parents[2])
+            self.assertEqual(c.resolve("ud-q3_k_xl"), ("unsloth", "UD-Q3_K_XL"))
+            with self.assertRaisesRegex(ValueError, "not tested on a DGX Spark"):
+                c.resolve("ud-q3_k_xl", "deepseek41")
 
 
 if __name__ == "__main__":

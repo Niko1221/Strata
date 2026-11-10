@@ -85,6 +85,18 @@ ISTA_SETS["UD-IQ1_S"] = {"title": "Unsloth UD-IQ1_S", "set_bytes": 122_384_317_8
 ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_132, "experts_gb": 132.21, "profile": "profile-2.00.bin", "meta_bytes": 0,
                          "ppl": "?", "ram_ok_gb": 40.0, "disk_total": 258.0,
                          "quality": "Unsloth's next dynamic version, the size of ISTA-DAS 2.00 bpw; not measured here yet"}
+# Unsloth's UD-Q3_K_XL (2026-11-08, the same repository at 2688c0c3): shard 1 = metadata, shards 2-7 = the model, shard 8 = its OWN n-gram table (MXFP8, 202.8 GB, unlike the
+# IQ4_NL table the 1-bit sets ship and ISTA-DAS publishes).  Strata installs it with the shared IQ4_NL table (the smaller download, the table every other set uses) and takes the
+# set's own MXFP8 table when it is available and no shared table is found first.  set_bytes = shards 1-7 = 282.31 GB; the bytes by role come from the GGUF headers:
+# routed experts 271.62 GB (MXFP4 219.0, IQ3_S 21.4, Q3_K 15.6, IQ2_S 8.7, IQ3_XXS 6.9), the rest 10.69 GB (attention in Q8_0 and Q5_K, the shared experts in Q8_0, the
+# router in F32). Quality against the original model has not been measured here.
+ISTA_SETS["UD-Q3_K_XL"] = {"title": "Unsloth UD-Q3_K_XL", "set_bytes": 282_310_606_623, "experts_gb": 271.62, "dense_gb": 10.69,
+                           "profile": "profile-2.00.bin", "meta_bytes": 0, "ppl": "?", "ram_ok_gb": 64.0, "disk_total": 401.0, "measured": "",
+                           "tight_words": "reads the rest from the SSD. This version has not been timed yet.",
+                           "spill_words": "This computer has {ram:.0f} GB of RAM. This version has not been timed on any computer yet; its dense "
+                                          "weights alone are 10.7 GB, so with this little RAM most experts come from the SSD while it answers: it "
+                                          "works but is slow, and a word can take seconds. More RAM fixes it. It is still allowed.",
+                           "quality": "Unsloth's 3-bit dynamic version; quality against the original model is not measured here yet"}
 # The ISTA-DAS Coder (2026-11-01): ISTA-DAS's coding variant, "the layout of the IQ2_XXS set with experts removed": 192 routed experts a layer instead of 384 (read from the header of its
 # shards: the experts, the router and the routing biases are half as wide; every other tensor is the 2.00 set's).  Where the repository, the commit and the files are is ONE
 # file, data/dsv41/coder-set.json (tools/dsv41/pin_coder.py writes it); the sizes here come from it.  Shard 1 = the metadata, shards 2-3 = the model, shard 4 = the Engram
@@ -133,7 +145,8 @@ ISTA_DENSE_ON_GPU_GB = 4.5            # (the old plan's figure, kept for the Uns
 #   and the experts that stay on a card are a little bigger than the set's average (the hot ones: 9.86-10.0 MB against 9.70 for 2.25 bpw): x1.025
 # ISTA-DAS Coder: the engine's startup lines on r9700 with this branch at 128K context, 11-01: one R9700 weights 5.70 GB, experts 24.91 GB (2,859 of 7,680); four R9700 weights
 # 0.74 + 0.87 + 2.25 + 2.56 = 6.42 GB and all 7,680 experts in graphics memory -> base 5.46 + 0.24 for each card (5.70 on one, 6.42 on four).
-ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.46, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37}
+ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.46, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37,
+                          "UD-Q3_K_XL": 10.0}      # UD-Q3_K_XL: not timed -- its own headers say 10.69 GB of dense weights, of which the 0.7 GB embedding stays on the CPU
 CARD_DENSE_REPEAT_GB = 0.24
 ENGINE_FREE_GB = 0.62
 CARD_OTHER_GB = {"amd": 1.60, "amd_low_share": 2.58, "other": 3.6}
@@ -769,14 +782,16 @@ def mac_plan(ram_gb: float, quant: str = "IQ2_XS", disk_free_gb: float | None = 
 MAC_SET_PACK = {"IST-DAS-2.00bpw": "IQ2_XXS", "IST-DAS-2.25bpw": "IQ2_XS", "UD-IQ1_S": "UD-IQ1_S", "UD-IQ1_M": "UD-IQ1_M",
                 **({CODER_MODEL: CODER_MODEL} if CODER else {})}
 # Unsloth's UD-IQ1_S was run on an M5 Max (f-039-mac-dsu).  UD-IQ1_M has the same kernels and was not run there; the owner chose to offer it anyway ("they
-# will tell if it works"), with a plain "not run yet" line in its plan.  The gate stays as a mechanism, empty: put a name here to keep a set off a Mac
-# (the model lists, setup, the launch and the "I already have the model" check all read it through not_here()).
-MAC_NOT_YET = ()
-MAC_NOT_YET_LINE = "Unsloth's UD-IQ1_M set doesn't run on a Mac yet; the UD-IQ1_S, 2.00 and 2.25 sets do."
+# will tell if it works"), with a plain "not run yet" line in its plan.  Unsloth's UD-Q3_K_XL is behind the gate: metal/ds4_types.h names the expert formats the
+# Metal engine reads (Q4_K, Q5_K, Q6_K, Q8_0, the MXFP4 packs), and this set routes experts in MXFP4, Q3_K, IQ3_S, IQ3_XXS and IQ2_S and keeps its own n-gram
+# table in MXFP8 -- reading the dense weights as a fallback is not the same as running the model, so nothing on a Mac was measured.  A Mac run of the IQ4_NL
+# pairing (shard 8 replaced by the shared table, IQ3_S and Q3_K kernels) is the way to take it out again.
+MAC_NOT_YET = ("UD-Q3_K_XL",)
+MAC_NOT_YET_LINE = "Unsloth's UD-Q3_K_XL set doesn't run on a Mac yet; the UD-IQ1_S and UD-IQ1_M, 1.75, 2.00 and 2.25 sets do."
 # The same two sets were kept off a DGX Spark (linux-aarch64, GB10) until a Spark run passed: both passed there on 2026-10-30 (real `strata launch --model-path`,
-# 10 of 10 answers, tool call correct), so the tuple is empty.  Put a name back here to hide a set from the Spark again.
-AARCH64_NOT_YET = ()
-AARCH64_NOT_YET_LINE = "Unsloth's 1-bit DeepSeek sets were not tested on a DGX Spark yet; the 2.00 and 2.25 sets were."
+# 10 of 10 answers, tool call correct), so the tuple was empty. UD-Q3_K_XL stays gated until it has been tested on a Spark.
+AARCH64_NOT_YET = ("UD-Q3_K_XL",)
+AARCH64_NOT_YET_LINE = "Unsloth's UD-Q3_K_XL set was not tested on a DGX Spark yet; the 1-bit DeepSeek sets and the 2.00 and 2.25 sets were."
 
 
 def not_here(model: str | None) -> str | None:

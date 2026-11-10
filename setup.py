@@ -101,7 +101,7 @@ HF_REVISIONS = {
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",                  # 2026-10-12
     "agentionai/Qwen3.8-Flash-Next-Gyro-GGUF": "1ada08422e404aca51ab9df665f089f34c419c6b",           # 2026-10-13
-    "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": "8a6ec9cf118e785a362ea94ee123c61c70553be6",             # 2026-10-30 (adds UD-IQ1_S / UD-IQ1_M; every file pinned from the 2026-10-20 commit has the same size and SHA-256 here)
+    "unsloth/DeepSeek-V4.1-Flash-1017-GGUF": "2688c0c3c2c3b052ec4f6d10a8417b0ef7ee4eba",             # 2026-11-08 (adds UD-Q3_K_XL; every file pinned from the 2026-10-30 commit has the same size and SHA-256 here)
     "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF": "cb02422c900df489cea5833e8a92171224059b3c",    # 2026-10-24 (ISTA-DASLab's final 1.75 / 2.00 / 2.25 bpw sets and Engram)
 }
 
@@ -893,10 +893,11 @@ DSV41_SHARED = {
     DSV41_SHARD.format(i=1): hf(DSV41_REPO) + "UD-Q8_K_XL/",      # only its metadata is read (pack_gguf --engram-meta)
     DSV41_DSPARK: hf(DSV41_REPO),
 }
-# Unsloth's own low-bit sets (2026-10-30, unsloth/DeepSeek-V4.1-Flash-1017-GGUF, UD-IQ1_S and UD-IQ1_M): shard 1 = metadata, shards 2-4 = the model, shard 5 = the
-# Engram table (IQ4_NL, 110.6 GB; its data is byte-identical to ISTA's Engram file, so an ISTA Engram already here is used instead of fetching shard 5).
+# Unsloth's own low-bit sets (2026-10-30 and 2026-11-08, unsloth/DeepSeek-V4.1-Flash-1017-GGUF, UD-IQ1_S, UD-IQ1_M and UD-Q3_K_XL): shard 1 = metadata, the shards after it = the model,
+# the last shard = the Engram table.  For the 1-bit sets that table is IQ4_NL, 110.6 GB, and its data is byte-identical to ISTA's Engram file, so an ISTA Engram already here is used
+# instead of fetching shard 5.  UD-Q3_K_XL's last shard is its own MXFP8 table (202.8 GB), which is what Unsloth pairs with it.
 # Same tensor names as the ISTA-DAS six-shard layout; dense weights in Q6_K / Q8_0 / Q5_K, router F32.  Opt-in model names, not the download default.
-DSV41_UD_SHARD = "DeepSeek-V4.1-Flash-1017-{quant}-{i:05d}-of-00005.gguf"
+DSV41_UD_SHARD = "DeepSeek-V4.1-Flash-1017-{quant}-{i:05d}-of-{total:05d}.gguf"
 DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00001-of-00005.gguf": (5780868, "5197c309479c7be06e3612dc696d7f18e13e5942cfe52e70c3c586b7e585a5ac"),
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_M-00002-of-00005.gguf": (49707332128, "fbfb546557a33f41332ffbed7f15fbed249b9f7796975d9db571c8cf3870f335"),
@@ -908,8 +909,21 @@ DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00003-of-00005.gguf": (48899707008, "6caa1da6302b532374d55da6510fc92a9031a0ee1bd2bb5bf7defca2477f3d98"),
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00004-of-00005.gguf": (24358544704, "71c6c54dd1f20008e2130188cc655742d3738a365de4571d21a56de503b206b7"),
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00005-of-00005.gguf": (110595290592, "771805301e695d72d268151dfc43043581ba904298574aa879d4349cbe67b020"),
+    # Unsloth UD-Q3_K_XL (2026-11-08, the same repository at 2688c0c3): shard 1 = metadata, shards 2-7 = the model (282.3 GB: the routed experts in
+    # MXFP4 / Q3_K / IQ3_S / IQ3_XXS / IQ2_S, the rest in Q8_0 and Q6_K), shard 8 = its own n-gram table (MXFP8, 202.8 GB).
+    # Sizes and SHA-256 from the Hub's file list on 2026-11-08; the sizes and headers were checked against a full copy of the set with
+    # tools/dsv41/pack_gguf.py, which is how shard 8 was found to be the n-gram table.
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00001-of-00008.gguf": (5780927, "427a6be72b502c52562b1f1f7c5c764cad2a4cb3af991e9aaf02a33d958cc322"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00002-of-00008.gguf": (48856795552, "9a3500224d10ca5565f010f57154f5b1999406c9453d86e4a0903a8183503697"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00003-of-00008.gguf": (48089732928, "ba5c295631a392c7f929a14b633f6c9badc0eb1c9d719ecad92ec43efd4ddc6d"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00004-of-00008.gguf": (49795067616, "4dd4ea5d34219cd1444218352def2977dd153739853464154a3936276f31ffbb"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00005-of-00008.gguf": (49964720992, "1a733e505a723fb1a5ccc15a45547c6d42097d8830d8fa4c4d17ca7bbb580855"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00006-of-00008.gguf": (49332666816, "0592a53ddba5a57062e266116bae26e9f1a97c268acb5287c8f4be5bb1741314"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00007-of-00008.gguf": (36265841792, "e6e8dd016ffbb2820f0e6a37f4f8a531f5365fbdd009e758dda1c054453f9ffc"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q3_K_XL-00008-of-00008.gguf": (202758032592, "18ddc73eea11981cb6317c6d3c4a4e58ec71baaea2de41b071d9127bc15c2a94"),
 }
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
+
 # The ISTA-DAS Coder (2026-11-01; the official ISTA-DASLab repository since 2026-11-02): ISTA-DAS's coding variant of this model, "the layout of the
 # IQ2_XXS set with half of the experts removed": 192 routed experts a layer instead of 384 (the router, the experts and the routing biases are narrower; every other tensor has the 2.00
 # set's name, shape and type).  Five model files in the folder IQ2_XXS/ (shard 1 = the metadata, shards 2-5 = the model; the Engram would be the sixth shard of the split) plus two files at
@@ -1003,15 +1017,26 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "label": "Unsloth UD-IQ1_S",
         "about": "Unsloth's smallest dynamic version: 122 GB of model (experts in IQ1_S / IQ2_XXS, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as ISTA-DAS 1.75 bpw. A 1-bit version: expect weaker answers than the 2.00 and 2.25 versions on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet). Pick 2.00 or 2.25 if they fit",
         "ram_gb": 36, "recipe": "udlow", "subdir": "UD-IQ1_S", "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_REPO) + "UD-IQ1_S/",
-        "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_S", i=i) for i in range(1, 5)],
-        "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_S", i=5),
+        "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_S", i=i, total=5) for i in range(1, 5)],
+        "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_S", i=5, total=5),
         "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]},
     "UD-IQ1_M": {
         "label": "Unsloth UD-IQ1_M",
         "about": "Unsloth's next dynamic version: 140 GB of model (experts in IQ1_S / IQ2_XXS / IQ2_XS / IQ2_S, attention in Q6_K) + the 111 GB n-gram table + 8 GB drafter. Same size class as ISTA-DAS 2.00 bpw. Part of its experts are 1-bit: expect somewhat weaker answers than the 2.25 version on long, detailed or careful work (short answers, code and tool calls looked fine in our check; its quality is not measured against the original yet)",
         "ram_gb": 40, "recipe": "udlow", "subdir": "UD-IQ1_M", "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_REPO) + "UD-IQ1_M/",
-        "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=i) for i in range(1, 5)],
-        "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=5),
+        "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=i, total=5) for i in range(1, 5)],
+        "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=5, total=5),
+        "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]},
+    # Unsloth's 3-bit set (2026-11-08).  Its last shard is its own n-gram table in MXFP8 (202.8 GB), not the IQ4_NL copy the 1-bit sets ship, so the
+    # shared table is what a fresh install fetches; an existing set's own table is also accepted (dsv41_find_shared's alt).
+    "UD-Q3_K_XL": {
+        "label": "Unsloth UD-Q3_K_XL",
+        "about": "Unsloth's 3-bit dynamic version: 282 GB of model (the smaller experts in MXFP4, the ones it rates as important in IQ3_S, Q3_K, IQ3_XXS "
+                 "and IQ2_S; the dense parts in Q8_0 and Q6_K) + the 111 GB n-gram table + 8 GB drafter (401 GB of disk; about 493 GB with the set's own "
+                 "MXFP8 n-gram table instead). Not run on a Mac or a DGX Spark yet; its quality against the original model is not measured here yet",
+        "ram_gb": 64, "recipe": "udlow", "subdir": "UD-Q3_K_XL", "legacy_subdir": None, "profile": "profile-2.00.bin", "hf": hf(DSV41_REPO) + "UD-Q3_K_XL/",
+        "shards": [DSV41_UD_SHARD.format(quant="UD-Q3_K_XL", i=i, total=8) for i in range(1, 8)],
+        "engram_shard": DSV41_UD_SHARD.format(quant="UD-Q3_K_XL", i=8, total=8),
         "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]},
     "UD-Q8_K_XL": {
         "label": "Unsloth UD-Q8_K_XL",

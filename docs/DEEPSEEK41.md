@@ -100,7 +100,8 @@ engines): on an Apple M5 Max 19 to 22 tokens a second with all 7,680 experts in 
 ./setup.sh --family deepseek41 --model ISTA-DAS-2.25bpw   # 274 GB (the Engram is shared with 2.00)
 ./setup.sh --family deepseek41 --model ISTA-DAS-1.75bpw   # 239 GB, the smallest
 ./setup.sh --family deepseek41 --model UD-Q8_K_XL        # Unsloth's 508 GB set, for hundreds of GB of RAM or several cards
-./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
+./setup.sh --family deepseek41 --model UD-Q3_K_XL        # Unsloth's 3-bit set: 282 GB of model, 401 GB with the shared n-gram table (485 GB with the table it ships with)
+./setup.sh --family deepseek41 --gguf-dir DIR            # files you already have: the shards (or the folder with 2.00bpw / 2.25bpw / UD-Q3_K_XL / UD-Q8_K_XL inside); the Engram and drafter are looked for beside them
 strata launch --model ist-das-2.00bpw --plan             # where it would go on this computer, nothing changed
 strata launch --model-path DIR --model ist-das-2.00bpw   # start from files you already have
 ```
@@ -108,6 +109,12 @@ strata launch --model-path DIR --model ist-das-2.00bpw   # start from files you 
 Setup needs `strata-dsv41` next to the engine (or `STRATA_DSV41_EXE`) and says so before it downloads anything. Build it with
 `cmake -DSTRATA_BUILD_DSV41=ON`. The default context is 8192 tokens, the size it was checked at; `--context` asks for more.
 Loading takes a few minutes (the config sets `"engine_ready_s": 3600`).
+
+DeepSeek `UD-Q3_K_XL` needs mixed-expert engine support; engine 0.1.58 does not have it. This model is not ready to use with the released engine. Setup uses the shared IQ4_NL Engram table for a new download; it can also use the model's own MXFP8 table when present.
+
+**Unsloth reuses its size names for both models Strata serves**, so `UD-Q3_K_XL` and `UD-IQ1_M` are also Qwen3.8-Flash-Next sizes. A name written on its own
+stays with the family that had it first: `--model UD-IQ1_M` is DeepSeek's, `--model UD-Q3_K_XL` is Qwen's (DeepSeek's 3-bit set arrived later). Say
+`--family deepseek41`, as above, for the DeepSeek one. Strata recognises existing DeepSeek files by their names and sizes; setup checks their hashes.
 
 **Context up to 1M.** The model reads 1,048,576 positions natively, so `--context` takes 8K to 1M (`--context 512k`, `--context 1m`; the Terminal's context step
 lists 8K, 32K, 64K, 128K, 256K, 512K and 1M, and the app lists them up to the limit its pack states in `ds4.txt`, `max_position_embeddings`). A size past what the

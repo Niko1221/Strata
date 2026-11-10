@@ -37,8 +37,23 @@ class DeepSeekPreview(unittest.TestCase):
                 return models.plan_import(str(target)), folder
 
     def test_the_tables_come_from_setup_and_cover_the_three_official_sizes(self):
-        self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_M", "UD-IQ1_S"])
+        self.assertEqual(sorted(T["sets"]), ["IST-DAS-1.75bpw", "IST-DAS-2.00bpw", "IST-DAS-2.25bpw", "ISTA-DAS-Coder", "UD-IQ1_M", "UD-IQ1_S", "UD-Q3_K_XL"])
         self.assertEqual(len(T["engram"]), 2)
+
+    def test_q3_set_with_either_table_and_a_missing_shard(self):
+        model = "UD-Q3_K_XL"
+        entry = T["sets"][model]
+        own_table = entry["engram_alt"]
+        for table in (own_table, T["engram"]):
+            listing = {**entry["shards"], **table}
+            plan, _ = self.preview(listing)
+            self.assertEqual(plan["file_set_status"], "plausible")
+            self.assertEqual(plan["candidate_selection"]["model"], model)
+            missing = next(iter(entry["shards"]))
+            del listing[missing]
+            plan, _ = self.preview(listing)
+            self.assertEqual(plan["file_set_status"], "invalid_or_incomplete")
+            self.assertIn(missing, plan["missing_shards"])
 
     def test_each_official_set_is_recognised_with_its_size_name(self):
         for model in ISTA:
