@@ -12840,7 +12840,11 @@ int main(int argc, char** argv) {
                         int live = 0;
                         for (const BSlot& s0 : bs) live += s0.active ? 1 : 0;
                         live = std::max(live, 1);
-                        const int d = std::clamp(((int) strata::kernels::kVerifyMaxT - 2 * live) / live + 1, 1,
+                        // STRATA_BATCH_MTP_FILL=1: round up, so three live slots use the window's two spare rows too
+                        static const bool fill = std::getenv("STRATA_BATCH_MTP_FILL") != nullptr &&
+                                                 std::getenv("STRATA_BATCH_MTP_FILL")[0] == '1';
+                        const int spare = (int) strata::kernels::kVerifyMaxT - 2 * live;
+                        const int d = std::clamp((fill ? (spare + live - 1) : spare) / live + 1, 1,
                                                  std::max(1, std::min(batch_mtp_drafts, o.spec - 1)));
                         slot_mtp[(size_t) b]->set_max_drafts(d);
                         sl.n_drafts = d;
