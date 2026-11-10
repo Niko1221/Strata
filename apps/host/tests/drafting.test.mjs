@@ -249,8 +249,8 @@ test('where the all-cards split engine takes the start, Auto is the MTP in the l
   }
   const source = read('../server/native-control.mjs');
   assert.match(source, /dflash2Split=p\.split===true/, 'the probe reads the plan word');
-  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&\(config\.drafting==null\|\|String\(config\.drafting\)\.toLowerCase\(\)==='auto'\)\)/,
-    'a plain Auto load fetches the draft layer when the plan says split; a saved explicit choice is left alone');
+  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|\(drafts\.split===true\|\|args\.firstLoad===true\)&&\(config\.drafting==null\|\|String\(config\.drafting\)\.toLowerCase\(\)==='auto'\)\)/,
+    'a plain Auto load fetches the draft layer when the plan says split (or it is the first load after a setup); a saved explicit choice is left alone');
   assert.match(read('../src/lib/native.ts'), /dflash2Split\?:boolean/);
 });
 
