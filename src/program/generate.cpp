@@ -44,6 +44,9 @@
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/expert_source.hpp"
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+#include "strata/kernels/cpu/idle_prefetch.hpp"
+#endif
 #include "strata/core/foresight_swap.hpp"
 #include "strata/core/pinned.hpp"
 #include "strata/core/pin_budget.hpp"
@@ -1386,6 +1389,12 @@ struct Drive {
     /// needs no locking.  `d.layers` is the CURRENT layer on entry (the adapter increments it as it walks the
     /// blob), which is why the layer index comes from there rather than from a counter of our own.
     std::FILE* routing = nullptr;
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    std::unique_ptr<strata::kernels::cpu::IdleExpertPrefetch> warm;
+    strata::core::ArenaExpertSource* warm_arena = nullptr;
+    int64_t warm_end = 0;
+    std::vector<strata::kernels::cpu::WarmBlob> warm_blobs;
+#endif
 };
 
 void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd, int64_t k,
@@ -1422,10 +1431,28 @@ void drive_pool_multi_impl(void* user, const float* x_f, const int32_t* ids, int
                            int64_t layer, strata::kernels::cpu::NativeArithmetic arithmetic) {
     Drive* t = (Drive*) user;
     t->d.layers = layer;
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    if (t->warm) t->warm->score((int)layer, ids, n_tok * k); // cancels and joins before any foreground work
+#endif
     const Clock::time_point a = Clock::now();
     strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out, arithmetic);
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    if (t->warm && !t->d.failed && layer + 1 < t->warm_end) {
+        const int64_t next = layer + 1;
+        const auto& f = strata::kernels::cpu::expert_layout().fmt[(size_t)next];
+        for (int e = 0; e < t->d.n_expert; ++e) {
+            auto& b = t->warm_blobs[(size_t)e]; b = {};
+            if (t->d.host_res[(size_t)next * t->d.n_expert + e] >= 0 ||
+                (t->d.peer && t->d.peer->has(next, e))) continue;
+            bool remote = false;
+            for (int q = 0; q < t->d.remote_count; ++q) remote |= t->d.remote[q]->holds(next, e);
+            if (!remote) b = {t->warm_arena->blob_at(next, e), f.bytes, f.down_off, f.up_off};
+        }
+        t->warm->start((int)next, x_f, (int)n_tok, t->warm_blobs);
+    }
+#endif
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
     // one record per token.  The multi dispatch fuses the router weights into the kernel and does not surface
     // them, so records carry unit weights: tools/make_profile.py ranks pairs by routed frequency, which is the
@@ -1472,6 +1499,9 @@ void drive_pool_split_impl(void* user, const float* x_f, const int32_t* ids, int
     d.d.cache_base = s->cache_base[st];
     d.d.cache_slot_off = s->cache_slot_off[st];
     d.d.pcie_num = s->pcie_num[st];
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    d.warm_end = s->end[st]; // never leave background work across a stage/window boundary
+#endif
     drive_pool_multi_impl(s->base, x_f, ids, n_tok, k, out, layer, arithmetic);
 }
 void drive_pool_split(void* u, const float* x, const int32_t* ids, int64_t n, int64_t k, float* out, int64_t l) {
@@ -9710,6 +9740,41 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "strata generate: token graph hit path: %lld resident experts, decided on the device\n",
                      (long long) resident);
     }
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    // New opt-in. Read-only stable arena only: no fallback to files, mutable complement slots or CUDA from workers.
+    const int warm_count = [] { const char* v = std::getenv("STRATA_CPU_PREFETCH"); return v ? std::clamp(std::atoi(v), 0, 4) : 0; }();
+    if (warm_count > 0) {
+        if (srcp != &arena_src || !arena_src.ram_backed() || !native_pack || drive.d.host_res == nullptr || o.pipeline_windows >= 2 ||
+            (o.batch > 0 && o.batch_groups > 1)) {
+            std::fprintf(stderr, "strata generate: CPU prefetch refused: requires native arena and serialized windows/groups\n");
+            return 1;
+        }
+        std::vector<std::vector<uint16_t>> routers((size_t)g.n_layers);
+        bool ok = true;
+        for (int64_t l = 0; l < g.n_layers && ok; ++l) {
+            // Stage trimming removes later routers from CUDA0. Read from their actual owning stage.
+            const strata::core::WeightTable* rw = &wt;
+            int router_dev = primary_device;
+            for (const auto& st : stages) if (l >= st->lb && l < st->le) { rw = &st->wt; router_dev = st->dev; break; }
+            const auto* w = rw->find("blk." + std::to_string(l) + ".ffn_gate_inp.weight");
+            ok = w && w->data && w->kind == strata::core::WeightKind::Bf16InF32 && w->bytes == uint64_t(g.n_expert * g.n_embd) * 2;
+            if (ok) {
+                const strata::core::OnDevice on(router_dev);
+                routers[(size_t)l].resize((size_t)(g.n_expert * g.n_embd));
+                ok = cudaMemcpy(routers[(size_t)l].data(), w->data, w->bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
+            }
+            if (!ok) std::fprintf(stderr, "strata generate: CPU prefetch router unavailable at layer %lld on CUDA%d\n", (long long)l, router_dev);
+        }
+        auto warm = std::make_unique<strata::kernels::cpu::IdleExpertPrefetch>(pool, warm_count);
+        if (!ok || !warm->init(routers, (int)g.n_embd, (int)g.n_expert, (int)K, err)) {
+            std::fprintf(stderr, "strata generate: CPU prefetch initialization failed: %s\n", ok ? err.c_str() : "router read");
+            return 1;
+        }
+        drive.warm = std::move(warm); drive.warm_arena = &arena_src; drive.warm_end = g.n_layers;
+        drive.warm_blobs.resize((size_t)g.n_expert);
+        std::fprintf(stderr, "strata generate: CPU prefetch active: count=%d, q4 prediction only, stable arena, mixed layouts\n", warm_count);
+    }
+#endif
     if (!o.no_capture && !o.no_token_graph && layer_dump == nullptr && half_dump == nullptr &&
         (hit_fn == nullptr || thits.on()) && !native_pack && !multi_gpu) {   // a split's token graph cannot span stages
         if (!strata::core::session_capture_token(wt, g, ss, d_parts, loop_scratch.y_miss, loop_scratch.parts_bytes,
@@ -19811,6 +19876,9 @@ int main(int argc, char** argv) {
                 admit_slot = -1;
             }
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+            if (drive.warm) { drive.warm->stop(); drive.warm->report(); } // joined cumulative snapshot for this request
+#endif
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
             char read_txt[64];
             if (cancelled)
