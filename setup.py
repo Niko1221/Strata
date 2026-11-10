@@ -10692,6 +10692,7 @@ def main() -> int:
     ok(f"model: {fam['title']}")
     if fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None:
         a.mtp = "off"                                  # the feed says this model has no draft layer: the Flash-Next one (fetched below for every qwen4exp model) is not its own
+        a.feed_no_drafter = True                       # and no drafter at its starts either: the run config says "drafting": "off" (setup_config; APP-LIN 0.2.14)
         say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
     if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
         warn(nvfp4_cpu_note(avx2, avx512))
