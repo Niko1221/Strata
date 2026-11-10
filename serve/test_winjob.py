@@ -86,8 +86,8 @@ class Held:
             image, created = _identity(handle)
         finally:
             _k32.CloseHandle(handle)
-        same = abs(created - self.created) < 0.001 and image == self.image
-        return "%s created %s (%s)" % (image, _when(created), "the same process" if same else "NOT the process held")
+        same = abs(created - self.created) < 0.001           # the creation time is what tells two processes with one PID apart (an exited process has no image name to ask for)
+        return "%s created %s (%s)" % (image if image != "?" else "an exited process", _when(created), "the same process" if same else "NOT the process held")
 
     def explain(self, since_kill: float) -> str:
         listed = subprocess.run(["tasklist", "/FI", f"PID eq {self.pid}", "/NH"], capture_output=True, text=True).stdout.strip().replace("\n", " | ")
