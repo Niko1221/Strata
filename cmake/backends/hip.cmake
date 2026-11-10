@@ -117,7 +117,7 @@ endmacro()
 macro(strata_hip_gfx906_sources)
 if(STRATA_HIP_GFX906)
   file(GLOB_RECURSE _strata_cu CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/bench/micro/*.cu
-       ${CMAKE_CURRENT_SOURCE_DIR}/tools/vision/*.cu)
+       ${CMAKE_CURRENT_SOURCE_DIR}/tools/vision/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/tests/dsv41/*.cu)
   if(_strata_mmq)
     file(GLOB _strata_mmq_cu ${_strata_mmq}/*.cu ${_strata_mmq}/template-instances/*.cu)
     list(APPEND _strata_cu ${_strata_mmq_cu})

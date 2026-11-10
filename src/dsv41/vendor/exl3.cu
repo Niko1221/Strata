@@ -37,7 +37,7 @@
 #include <mutex>
 #include <utility>
 
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 namespace strata::dsv41k::exl3::legacy {   // exl3_legacy.cu: v1.1.8's decode kernels
 int launch_errors();
 bool prepare(cudaStream_t s);
@@ -267,7 +267,7 @@ __device__ __forceinline__ void chunk_store(float (&v)[4], const float (&s)[4], 
 // with a __syncthreads (out complete).
 constexpr int kTok = 8;   // activations a block takes at once (the MMA's n)
 
-#if !defined(STRATA_USE_HIP) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 #define EXL3_TC 1
 #endif
 
@@ -916,7 +916,7 @@ __global__ void rows_f16_kernel(const float* __restrict__ x, int ldx, const int*
 // straight into mma.m16n8k16's B fragments - a lane's 8 steps ARE the fragment order (steps 0,1 / 2,3 rows 2t+{0,1} /
 // 2t+8+{0,1} of column g, steps 4..7 the same of column g + 8) - and multiplies every m-tile of the block with them.
 // The output rotation and svh run on the F32 tile in shared memory.
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 namespace tc {
 
 constexpr int BM = 32, MT = BM / 16, AP = 136;   // rows a block, its m-tiles, the A rows' pitch (halves)
@@ -1188,7 +1188,7 @@ template <int K, int cb> struct RunRows {
             m.trellis, m.ld > 0 ? m.ld : m.n / 16, m.suh, m.svh, m.k, dst, bf16);
     }
 };
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 template <int K, int cb> struct RunGemm {
     static void run(const tc::GArgs& a, dim3 grid, cudaStream_t s) { strata_ds4_launch(tc::gemm_kernel<K, cb>, grid, kThreads, 0, s, a); }
 };
@@ -1270,7 +1270,7 @@ int sm_count() {
 // token path and the verify windows take the same family on a device, so a window stays bit for bit its token path.
 // Asked once per device.
 bool use_legacy() {
-#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL) || defined(STRATA_HIP_GFX906)
     // HIP has no v1.1.8 kernels.  Metal has neither them nor a compute capability to ask for: the shim answers
     // cudaDeviceGetAttribute with an error, so `major` stayed 0 and every Metal run without STRATA_GLM_EXL3_DECODE=new
     // took this branch and aborted in exl3::legacy::prepare's stub.  The 2.25 bpw pack never uses EXL3.
@@ -1371,7 +1371,7 @@ int mv_splits(const Mat& m) {
 
 int mv_cols(const Mat& m) {
     if (!supported(m)) return 0;
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (use_legacy()) return 4;   // (v1.1.8's kernels: the runs of four their callers have always used)
 #endif
     const int S = mv_splits(m);
@@ -1381,7 +1381,7 @@ int mv_cols(const Mat& m) {
 }
 
 int launch_errors() {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     return g_launch_errors.load(std::memory_order_relaxed) + legacy::launch_errors();
 #else
     return g_launch_errors.load(std::memory_order_relaxed);
@@ -1598,7 +1598,7 @@ bool win_experts(const WinArgs& a, cudaStream_t s) {
 }
 
 bool mma_supported() {
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     return false;
 #else
     int dev = 0, major = 0;
@@ -1610,7 +1610,7 @@ bool mma_supported() {
 
 void set_gate_up(const SetArgs& sa, const float* x, int ldx, const int* row_idx, uint16_t* h16, int ldh,
                  cudaStream_t s) {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (sa.lay.K[0] != sa.lay.K[1]) {
         std::fprintf(stderr, "exl3 set_gate_up: gate K %d != up K %d\n", sa.lay.K[0], sa.lay.K[1]);
         g_launch_errors.fetch_add(1, std::memory_order_relaxed);
@@ -1645,7 +1645,7 @@ void set_gate_up(const SetArgs& sa, const float* x, int ldx, const int* row_idx,
 }
 
 void set_down(const SetArgs& sa, const uint16_t* h16, int ldh, float* y, int ldy, cudaStream_t s) {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (sa.n_exp <= 0 || sa.max_rows <= 0) return;
     tc::GArgs a{};
     a.wbase = sa.wbase;
@@ -1671,7 +1671,7 @@ void set_down(const SetArgs& sa, const uint16_t* h16, int ldh, float* y, int ldy
 }
 
 void gemm_rows(const Mat& m, const uint16_t* x16, int ldx, int rows, float* y, int ldy, float beta, cudaStream_t s) {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (rows <= 0) return;
     tc::GArgs a{};
     a.wbase = nullptr;

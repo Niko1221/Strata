@@ -14,7 +14,7 @@
 #include "ds4_numerics.cuh"
 
 #include <cuda_fp16.h>
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <mma.h>
 #endif
 
@@ -849,7 +849,7 @@ __global__ void __launch_bounds__(kThreads) mx_set_kernel(const SetK a) {
 
 // the same on the tensor cores: a block BM rows x BN outputs, 8 warps each 16 rows x 32 outputs (2 fragments, gate and
 // up: 4), a 32-value MXFP4 block of K a step (2 WMMA k-steps), the tiles in shared memory as F16
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 namespace wm = nvcuda::wmma;
 constexpr int kLdT = 40;   // halves a tile row (32 + 8: WMMA wants a multiple of 8; the pad spreads the banks)
 template <bool GATE_UP>
@@ -1070,7 +1070,9 @@ __global__ void __launch_bounds__(kThreads) mx_set_wmma_kernel(const SetK a) {
 }
 #endif
 bool tc_ok() {   // sm_70 and later (WMMA F16) / AMD gfx11, gfx12 (wave32 WMMA); STRATA_DS4_NO_TC=1 keeps the F32 kernel
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_HIP_GFX906)
+    return false;   // gfx906 has no WMMA; the FMA kernel runs
+#elif defined(STRATA_USE_HIP)
     static const bool ok = [] {
         int dev = 0;
         cudaGetDevice(&dev);
@@ -1703,12 +1705,14 @@ void set_gate_up(const x3::SetArgs& sa, const float* x, int ldx, const int* row_
     k.h = (__half*) h16;
     k.ldo = ldh;
     const dim3 grid((unsigned) ((sa.max_rows + BM - 1) / BM), (unsigned) (sa.n_ff / BN), (unsigned) sa.n_exp);
+#if !defined(STRATA_HIP_GFX906)
 #if !defined(STRATA_USE_HIP)
     if (tc_ok()) strata_ds4_launch(mx_set_tc_kernel<true>, grid, kThreads, 0, s, k);
 #else
     if (tc_ok()) strata_ds4_launch(mx_set_wmma_kernel<true>, grid, kThreads, 0, s, k);
 #endif
     else
+#endif
         strata_ds4_launch(mx_set_kernel<true>, grid, kThreads, 0, s, k);
     check("set_gate_up");
 }
@@ -1760,12 +1764,14 @@ void set_down(const x3::SetArgs& sa, const uint16_t* h16, int ldh, float* y, int
     k.y = y;
     k.ldo = ldy;
     const dim3 grid((unsigned) ((sa.max_rows + BM - 1) / BM), (unsigned) (sa.n_embd / BN), (unsigned) sa.n_exp);
+#if !defined(STRATA_HIP_GFX906)
 #if !defined(STRATA_USE_HIP)
     if (tc_ok()) strata_ds4_launch(mx_set_tc_kernel<false>, grid, kThreads, 0, s, k);
 #else
     if (tc_ok()) strata_ds4_launch(mx_set_wmma_kernel<false>, grid, kThreads, 0, s, k);
 #endif
     else
+#endif
         strata_ds4_launch(mx_set_kernel<false>, grid, kThreads, 0, s, k);
     check("set_down");
 }

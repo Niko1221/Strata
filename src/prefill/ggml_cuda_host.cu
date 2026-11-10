@@ -140,7 +140,12 @@ struct CachingPool : ggml_cuda_pool {
 };
 }  // namespace
 
+#if __has_include("mmid.cuh")
+#include "graph.cuh"   // completes ggml_cuda_stream_context, destroyed by the context destructor below
+std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(ggml_backend_cuda_context &, int, int) {
+#else
 std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int, int) {
+#endif
     return std::unique_ptr<ggml_cuda_pool>(new CachingPool());
 }
 

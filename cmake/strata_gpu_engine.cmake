@@ -515,11 +515,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # DeepSeek-V4.1-Flash: the third engine path (src/dsv41, from Project Maya's maya-ds4, MIT, third_party/project-maya).
   # Its own executable for now (strata-dsv41); a family switch in `strata` comes after first light.  OFF by default: it
   # changes no existing target (the vendored kernels live in strata::dsv41k, so no symbol is shared with strata_kernels).
+  # gfx906 (wave64) builds this when the option is on, on the scalar and FMA kernels. The option stays OFF, so a normal
+  # gfx906 Qwen build does not compile it. gfx906 is not one of the signed package's architectures.
   option(STRATA_BUILD_DSV41 "Build the DeepSeek-V4.1 engine path (strata-dsv41)" OFF)
-  if(STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906)
+  if(STRATA_BUILD_DSV41)
     add_library(strata_dsv41_kernels STATIC src/dsv41/vendor/exl3.cu src/dsv41/vendor/sampler.cu src/dsv41/vendor/moe_win.cu
                 src/dsv41/vendor/exl3_cpu.cpp)
-    if(NOT STRATA_ENABLE_HIP)   # (the pre-sm_80 NVIDIA decode kernels exl3.cu dispatches to)
+    if(NOT STRATA_ENABLE_HIP AND NOT STRATA_HIP_GFX906)   # (the pre-sm_80 NVIDIA decode kernels exl3.cu dispatches to)
       target_sources(strata_dsv41_kernels PRIVATE src/dsv41/vendor/exl3_legacy.cu)
     endif()
     target_include_directories(strata_dsv41_kernels PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_strata_gpu_include_directories})
@@ -600,8 +602,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endif()
     if(STRATA_NATIVE_EXPERTS)
       # the trellis experts (device kernels ds4_tq.cu, CPU lane ds4_tq_cpu.cpp) against a double reference; needs a GPU, no model
-      # both test .cpp files launch kernels, so they compile as HIP on the AMD backend and as CUDA on the NVIDIA one
-      if(STRATA_ENABLE_HIP)
+      # both test .cpp files launch kernels, so they compile as HIP on the AMD backends (wave32 and gfx906; CUDA is not
+      # enabled on gfx906) and as CUDA on the NVIDIA one
+      if(STRATA_ENABLE_HIP OR STRATA_HIP_GFX906)
         set(_ds4_test_lang HIP)
       elseif(STRATA_ENABLE_CUDA)
         set(_ds4_test_lang CUDA)
