@@ -33,6 +33,39 @@ class LaunchDeepSeek(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
+    def test_q3_requires_an_explicit_source_engine_before_downloads(self):
+        from strata_control import dsv41_fit
+        with mock.patch.dict(os.environ, {"STRATA_DSV41_EXE": ""}):
+            self.assertIn("source-built", dsv41_fit.source_engine_problem("UD-Q3_K_XL"))
+            self.assertIsNone(dsv41_fit.source_engine_problem("UD-IQ1_M"))
+            r = self.runner_with_own_shards()
+            r.s.model = "UD-Q3_K_XL"
+            with mock.patch.object(r, "check_own_files"), mock.patch.object(r, "ensure_engine") as engine:
+                with self.assertRaisesRegex(LaunchError, "source-built"):
+                    r.run(start=False)
+                engine.assert_not_called()
+            r.s.family = "unsloth"
+            with mock.patch.object(r, "check_own_files"), mock.patch.object(r, "ensure_engine", side_effect=LaunchError("engine reached")):
+                with self.assertRaisesRegex(LaunchError, "engine reached"):
+                    r.run(start=False)
+        with mock.patch.dict(os.environ, {"STRATA_DSV41_EXE": str(self.home.base / "missing")}):
+            self.assertIsNotNone(dsv41_fit.source_engine_problem("UD-Q3_K_XL"))
+        exe = self.home.base / "strata-dsv41"
+        exe.touch()
+        with mock.patch.dict(os.environ, {"STRATA_DSV41_EXE": str(exe)}):
+            self.assertIsNone(dsv41_fit.source_engine_problem("UD-Q3_K_XL"))
+
+    def test_setup_rejects_q3_before_fetching_the_engine(self):
+        from types import SimpleNamespace
+        mod = catalog(self.hw).strata.setup_module()
+        with mock.patch.dict(os.environ, {"STRATA_DSV41_EXE": ""}), \
+                mock.patch("strata_control.dsv41_fit.not_here", return_value=None), \
+                mock.patch.object(mod, "fail", side_effect=LaunchError("source engine required")), \
+                mock.patch.object(mod, "get_dsv41_engine") as engine:
+            with self.assertRaisesRegex(LaunchError, "source engine required"):
+                mod.install_dsv41(SimpleNamespace(model="UD-Q3_K_XL"), "deepseek41", None, False, False, None, False, 8080, 251, None)
+            engine.assert_not_called()
+
     def plan(self, *args):
         code, out, err = run_cli(["launch", "--plan", "--output", "json", *args])
         self.assertEqual(code, 0, err + out)

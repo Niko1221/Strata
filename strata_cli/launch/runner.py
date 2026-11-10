@@ -2776,6 +2776,9 @@ class Runner:
                 reused = self.check_serving()                # before anything is downloaded or stopped
                 if reused is not None:
                     return reused
+            from strata_control import dsv41_fit
+            if self.s.family == "deepseek41" and (problem := dsv41_fit.source_engine_problem(self.s.model)):
+                raise LaunchError(problem, "Set STRATA_DSV41_EXE to a compatible source-built engine; nothing has been downloaded.")
             self.ensure_engine()
             self.check_cancel()
             base = self.ensure_model()

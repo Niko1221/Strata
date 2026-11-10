@@ -794,6 +794,14 @@ AARCH64_NOT_YET = ("UD-Q3_K_XL",)
 AARCH64_NOT_YET_LINE = "Unsloth's UD-Q3_K_XL set was not tested on a DGX Spark yet; the 1-bit DeepSeek sets and the 2.00 and 2.25 sets were."
 
 
+def source_engine_problem(model: str | None) -> str | None:
+    """Q3 is source-engine-only until a released package carries mixed-expert support."""
+    if model == "UD-Q3_K_XL" and not os.path.isfile(os.environ.get("STRATA_DSV41_EXE", "").strip()):
+        return ("DeepSeek UD-Q3_K_XL needs a source-built engine with mixed-expert support. "
+                "Set STRATA_DSV41_EXE to that executable before setup; the released 0.1.58 engine cannot load this model.")
+    return None
+
+
 def not_here(model: str | None) -> str | None:
     """The plain line when `model` is not offered on THIS computer (a Mac: MAC_NOT_YET; linux-aarch64, the DGX Spark: AARCH64_NOT_YET), else None.
     Read at call time from sys.platform and sysinfo.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""

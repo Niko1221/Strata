@@ -110,7 +110,15 @@ Setup needs `strata-dsv41` next to the engine (or `STRATA_DSV41_EXE`) and says s
 `cmake -DSTRATA_BUILD_DSV41=ON`. The default context is 8192 tokens, the size it was checked at; `--context` asks for more.
 Loading takes a few minutes (the config sets `"engine_ready_s": 3600`).
 
-DeepSeek `UD-Q3_K_XL` needs mixed-expert engine support; engine 0.1.58 does not have it. This model is not ready to use with the released engine. Setup uses the shared IQ4_NL Engram table for a new download; it can also use the model's own MXFP8 table when present.
+DeepSeek `UD-Q3_K_XL` needs a source-built engine with mixed-expert support; released engine 0.1.58 cannot load it. Setup and `strata launch` stop before downloading unless `STRATA_DSV41_EXE` names an existing executable. This is an explicit override, not a capability check: make sure that build includes mixed IQ gate/up and MXFP4 down support. Setup uses the shared IQ4_NL Engram table for a new download; it can also use the model's own MXFP8 table when present.
+
+For files already downloaded, after building a compatible engine:
+
+```sh
+STRATA_DSV41_EXE=/path/to/strata-dsv41 ./setup.sh --family deepseek41 --model UD-Q3_K_XL --gguf-dir /path/to/gguf --no-start
+```
+
+Use the same environment variable when launching through the Terminal.
 
 **Unsloth reuses its size names for both models Strata serves**, so `UD-Q3_K_XL` and `UD-IQ1_M` are also Qwen3.8-Flash-Next sizes. A name written on its own
 stays with the family that had it first: `--model UD-IQ1_M` is DeepSeek's, `--model UD-Q3_K_XL` is Qwen's (DeepSeek's 3-bit set arrived later). Say
