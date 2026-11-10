@@ -1,9 +1,9 @@
 #include "strata/core/conversation_file.hpp"
 
-#if defined(_WIN32)
-extern "C" char** _environ;   // the narrow CRT environment (MSVC and MinGW-w64)
-#else
-extern "C" char** environ;   // the process environment (POSIX)
+#if defined(__APPLE__)
+#include <crt_externs.h>     // _NSGetEnviron(): the environment of a macOS process, valid inside dylibs too
+#elif !defined(_WIN32)
+extern "C" char** environ;   // glibc and the BSDs declare it inside __BEGIN_DECLS; <cstdlib> has _environ on Windows
 #endif
 
 #include <algorithm>
@@ -882,10 +882,13 @@ void SessionIdentityBuilder::f64(const std::string& tag, double v) {
 void SessionIdentityBuilder::bytes(const std::string& tag, const void* data, size_t n) { field(tag, 'b', data, n); }
 
 // runtime-only STRATA_* names (#5379): the park's placement variables bind themselves into the park tag (the
-// #3957 rule), and a report or trace knob changes what prints, never what computes.  Everything else that starts
-// with STRATA_ joins the config fingerprint - the kernel layer picks its fast paths from these at load time,
-// and the engine keeps no registry of which: STRATA_HC_Q8 moves rows between stages, STRATA_ROUTE_TAIL_SKIP
-// swaps the scorer, and a new one lands every train.
+// #3957 rule), and a report or trace knob changes what prints, never what the saved bytes mean.  Everything else
+// that starts with STRATA_ joins the config fingerprint - the kernel layer picks its fast paths from these at
+// load time, and the engine keeps no registry of which: STRATA_HC_Q8 changes which bytes exist, STRATA_ROUTE_TAIL_SKIP
+// swaps the scorer, and a new one lands every train.  Names the engine itself sets at start (auto-injected
+// defaults) count too - the resolved environment is the identity, set or inherited.  The prefix compare is
+// case-sensitive; on Windows the CRT's getenv matches case-insensitively, so a lowercase-set knob would move a
+// fast path yet stay out of the fingerprint - a documented limit, as everywhere the engine reads STRATA_*.
 static bool session_env_excluded(const std::string& name) {
     const auto ends = [&name](const char* s) {
         const size_t n = std::strlen(s);
@@ -895,7 +898,7 @@ static bool session_env_excluded(const std::string& name) {
         || name == "STRATA_MANIFEST"                     // the run manifest's output path (a diagnostic file)
         || ends("_DUMP") || ends("_TRACE") || ends("_STATS")
         || ends("_PROF") || ends("_PROFILE")
-        || ends("_LOG") || ends("_LOGPOS");              // reports, traces, test forcing
+        || ends("_LOG");                                 // reports and traces (STRATA_LOGPOS forces tokens: it COUNTS)
 }
 
 void session_env_identity(std::vector<std::pair<std::string, std::string>>& out) {
@@ -903,6 +906,8 @@ void session_env_identity(std::vector<std::pair<std::string, std::string>>& out)
     char** env =
 #if defined(_WIN32)
         _environ;
+#elif defined(__APPLE__)
+        *(_NSGetEnviron());
 #else
         ::environ;
 #endif

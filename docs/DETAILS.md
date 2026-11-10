@@ -799,10 +799,12 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   rope configuration, a loaded control vector and the arithmetic switches, plus the process's `STRATA_*` environment sorted by
   name and the device plan in stage order). The environment enters whole, minus the runtime-only names (the park's own
   `STRATA_PARK_*` placement - the park binds them into its tag itself - the manifest path and the `_DUMP`/`_TRACE`/`_STATS`/
-  `_PROF`/`_LOG` report knobs): the kernel layer picks its fast paths from those variables at load time - `STRATA_HC_Q8`
+  `_PROF`/`_PROFILE`/`_LOG` report knobs; a name that forces tokens, like `STRATA_LOGPOS`, is not a report knob and enters):
+  the kernel layer picks its fast paths from those variables at load time - `STRATA_HC_Q8`
   changes which bytes exist, `STRATA_ROUTE_TAIL_SKIP` which scorer runs - and an enumerated list would join the switches
   it is meant to catch only after someone hits the trap, so an unlisted variable counts in: a wrong inclusion costs one
-  re-save, a wrong exclusion costs correctness. The device plan enters per stage (`name|compute capability|total MiB`,
+  re-save, a wrong exclusion costs correctness. Variables the engine itself sets at start count too - the identity is
+  the resolved environment. The device plan enters per stage (`name|compute capability|total MiB`,
   stage 0 first, then the `--layer-split` devices), because a stage that moved to another card - which the server's
   per-boot card reorder can do - is a different computed state no other field can see. Sampling, seeds, draft tuning and the expert
   tier are not in it. Do not change model files while their sessions are kept. The hash detects accidental corruption and does

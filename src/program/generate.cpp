@@ -12124,6 +12124,9 @@ int main(int argc, char** argv) {
                     cudaDeviceProp p{};
                     if (cudaGetDeviceProperties(&p, d) != cudaSuccess) {
                         (void) cudaGetLastError();
+                        std::fprintf(stderr, "strata serve: session identity: device %d: properties failed; files from "
+                                             "this start bind to 'device-%d' and will refuse once when the card answers "
+                                             "again\n", d, d);
                         return "device-" + std::to_string(d);
                     }
                     return std::string(p.name) + "|" + std::to_string(p.major) + "." + std::to_string(p.minor) +

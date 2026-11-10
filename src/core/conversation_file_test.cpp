@@ -405,20 +405,31 @@ int main() {
             std::vector<std::pair<std::string, std::string>> ev;
             setenv("STRATA_TEST_KNOB_A", "1", 1);
             setenv("STRATA_ZZ_TAIL_KNOB", "2", 1);
+            setenv("STRATA_TEST_EMPTY", "", 1);
             setenv("STRATA_PARK_DIR", "/where/never", 1);
             setenv("STRATA_TEST_TRACE", "9", 1);
+            setenv("STRATA_TEST_LOGPOS", "9", 1);
+            setenv("STRATA_TEST_STATS", "9", 1);
+            setenv("STRATA_TEST_PROFILE", "9", 1);
             setenv("STRATA_MANIFEST", "/tmp/m", 1);
+            setenv("NOT_STRATA_AT_ALL", "9", 1);
             session_env_identity(ev);
-            const auto has = [&ev](const char* n) {
-                for (const auto& kv : ev) if (kv.first == n) return true;
-                return false;
+            const auto find = [&ev](const char* n) -> const char* {
+                for (const auto& kv : ev) if (kv.first == n) return kv.second.c_str();
+                return nullptr;
             };
-            check(has("STRATA_TEST_KNOB_A") && has("STRATA_ZZ_TAIL_KNOB"), "STRATA_* variables enter");
-            check(!has("STRATA_PARK_DIR") && !has("STRATA_MANIFEST") && !has("STRATA_TEST_TRACE"),
-                  "runtime-only variables stay out");
+            check(find("STRATA_TEST_KNOB_A") && find("STRATA_ZZ_TAIL_KNOB"), "STRATA_* variables enter");
+            check(find("STRATA_TEST_EMPTY") && find("STRATA_TEST_EMPTY")[0] == '\0', "an empty value enters as empty");
+            check(!find("STRATA_PARK_DIR") && !find("STRATA_MANIFEST") && !find("NOT_STRATA_AT_ALL"),
+                  "placement, manifest and foreign names stay out");
+            check(!find("STRATA_TEST_TRACE") && !find("STRATA_TEST_STATS") && !find("STRATA_TEST_PROFILE"),
+                  "the report/trace suffixes stay out");
+            check(find("STRATA_TEST_LOGPOS") != nullptr, "a token-forcing knob is NOT a report knob: it enters");
             check(std::is_sorted(ev.begin(), ev.end()), "the environment enters sorted");
-            unsetenv("STRATA_TEST_KNOB_A"); unsetenv("STRATA_ZZ_TAIL_KNOB"); unsetenv("STRATA_PARK_DIR");
-            unsetenv("STRATA_TEST_TRACE"); unsetenv("STRATA_MANIFEST");
+            unsetenv("STRATA_TEST_KNOB_A"); unsetenv("STRATA_ZZ_TAIL_KNOB"); unsetenv("STRATA_TEST_EMPTY");
+            unsetenv("STRATA_PARK_DIR"); unsetenv("STRATA_TEST_TRACE"); unsetenv("STRATA_TEST_LOGPOS");
+            unsetenv("STRATA_TEST_STATS"); unsetenv("STRATA_TEST_PROFILE"); unsetenv("STRATA_MANIFEST");
+            unsetenv("NOT_STRATA_AT_ALL");
         }
 #endif
         // field boundaries: ("ab","c") and ("a","bc") hash differently
