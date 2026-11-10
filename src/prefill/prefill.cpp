@@ -7990,7 +7990,8 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
     float* const R_chunk = m.R;
     const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
     double ms_attn = 0, ms_experts = 0, ms_host_tables = 0, ms_wait_a = 0;
-    std::vector<int> pf_job((size_t) NE, -1);   // the layer's prefetch: expert -> stager job (-1: not streamed)
+    const int64_t n_expert = m.g->n_expert;
+    std::vector<int> pf_job((size_t) n_expert, -1);   // the layer's prefetch: expert -> stager job (-1: not streamed)
     // every streamed expert of layer l, in id order, to the stager - started with the layer's attention halves, so
     // the NVMe / page-cache reads overlap them (at a super-chunk's size nearly every expert is routed)
     static const bool pf_on = [] { const char* e = std::getenv("STRATA_LM_PREFETCH"); return e == nullptr || e[0] != '0'; }();
@@ -7999,8 +8000,8 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         if (m.src == nullptr || !pf_on) return true;
         std::vector<Stager::Job> js;
         const bool pdirect = false;   // (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
-        for (int32_t e = 0; e < NE; ++e) {
-            if ((m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0) || m.src->pinned(l, e)) continue;
+        for (int32_t e = 0; e < n_expert; ++e) {
+            if ((m.host_res && m.cache && m.host_res[(size_t) l * n_expert + e] >= 0) || m.src->pinned(l, e)) continue;
             pf_job[(size_t) e] = (int) js.size();
             if (pdirect || m.src->transient(l, e)) {
                 js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
@@ -8042,24 +8043,24 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         const auto th1 = Clock::now();
         const int32_t* ids_h = idsw;
         const float* w_h = (const float*) (idsw + rows);
-        std::vector<int32_t> cnt((size_t) NE, 0), off((size_t) NE + 1, 0);
+        std::vector<int32_t> cnt((size_t) n_expert, 0), off((size_t) n_expert + 1, 0);
         for (int64_t i = 0; i < rows; ++i) {
             const int32_t e = ids_h[(size_t) i];
-            if (e < 0 || e >= NE) { err = "prefill (layer-major): routed id out of range"; return false; }
+            if (e < 0 || e >= n_expert) { err = "prefill (layer-major): routed id out of range"; return false; }
             ++cnt[(size_t) e];
         }
-        for (int32_t e = 0; e < NE; ++e) off[(size_t) e + 1] = off[(size_t) e] + cnt[(size_t) e];
+        for (int32_t e = 0; e < n_expert; ++e) off[(size_t) e + 1] = off[(size_t) e] + cnt[(size_t) e];
         // ---- the routed experts in id order: resident ones from the cache, the others staged once (run_impl's walk)
         // (started before the tables are built: the stager's threads read while the host builds them)
         std::vector<int32_t> uniq;
-        for (int32_t e = 0; e < NE; ++e)
+        for (int32_t e = 0; e < n_expert; ++e)
             if (cnt[(size_t) e] > 0) uniq.push_back(e);
-        auto resident = [&](int32_t e) { return m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0; };
+        auto resident = [&](int32_t e) { return m.host_res && m.cache && m.host_res[(size_t) l * n_expert + e] >= 0; };
         // the stager was started with every streamed expert of the layer when its attention halves began (the
         // prefetch); an expert the routing skipped is never waited for (a later job's issue covers its buffer)
         std::vector<int> job_of(uniq.size(), -1), stage_of(uniq.size(), -1);
         for (size_t u = 0; u < uniq.size(); ++u) job_of[u] = pf_job[(size_t) uniq[u]];
-        for (int32_t e = 0; e < NE; ++e)   // prefetched but not routed: not read, if not started yet
+        for (int32_t e = 0; e < n_expert; ++e)   // prefetched but not routed: not read, if not started yet
             if (cnt[(size_t) e] == 0 && pf_job[(size_t) e] >= 0) m.stager->skip(pf_job[(size_t) e]);
         if (!pf_on && m.src != nullptr) {   // STRATA_LM_PREFETCH=0: the routed experts only, started now
             std::vector<Stager::Job> js;
@@ -8100,7 +8101,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         }
         struct Entry { int32_t e, r0, nr; };
         std::vector<Entry> ents;
-        for (int32_t e = 0; e < NE; ++e)
+        for (int32_t e = 0; e < n_expert; ++e)
             for (int32_t r = off[(size_t) e]; r < off[(size_t) e + 1]; r += (int32_t) G)
                 ents.push_back({e, r, (int32_t) std::min<int64_t>(G, off[(size_t) e + 1] - r)});
         struct Grp { size_t j0, j1; int32_t r0, nr, maxr; int64_t b_at, u_at, uo_at, nu; };
@@ -8246,7 +8247,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     ++staged;
                 }
                 if (stage_of[u] < 0) {
-                    blob_dev = m.cache->device_slot(m.host_res[(size_t) l * NE + e]);
+                    blob_dev = m.cache->device_slot(m.host_res[(size_t) l * n_expert + e]);
                     ++stats_.experts_resident;
                     ++lm_resident;
                 } else {
