@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import queue
 import re
 import subprocess
@@ -49,12 +50,17 @@ import sys
 import threading
 import time
 
-DATA = r"D:\Admin\Documents\GitHub\Strata-data"
+# Portable defaults: no contributor-specific absolute path is committed. STRATA_ROOT is
+# the repository checkout, STRATA_DATA is the sibling tree holding quantized packs, and
+# STRATA_MEZO is the checkout that built the engine. Set them in the environment, or
+# override any derived path with --engine / --pack / --native / --expert-profile / --corpus.
+_HERE = pathlib.Path(__file__).resolve()
+ROOT = os.environ.get("STRATA_ROOT", str(_HERE.parents[1]))
+MEZO = os.environ.get("STRATA_MEZO", ROOT)
+DATA = os.environ.get("STRATA_DATA", str(pathlib.Path(ROOT).parent / "Strata-data"))
 GGUF = os.path.join(DATA, "models", "swift-IQ3_XXS",
                     "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf")
 PACK = os.path.join(DATA, "packs", "swift-iq3_xxs")
-ROOT = r"D:\Admin\Documents\GitHub\Strata"
-MEZO = r"D:\Admin\Documents\GitHub\Strata-mezo"
 
 
 # ----------------------------------------------------------------------------------------------------------- pipe

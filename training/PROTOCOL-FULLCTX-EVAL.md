@@ -527,18 +527,26 @@ C 用重扫后的步数 −0.4 h、加载走 fadvise −0.5 h；去掉仓库文�
 
 ```
 export PYTHONUTF8=1          # 不设的话 GDN 会静默回落到 torch 参考实现，bench 自己会拒绝跑
-T=/mnt/d/Admin/Documents/GitHub/Strata-prtrain/training
-M=/mnt/d/Admin/Documents/GitHub/Strata-mezo
-D=/mnt/d/Admin/Documents/GitHub/Strata-data
+# 下面五个换成你自己的目录：提交进仓库的记录里一律是 $VAR 占位，不写本机路径。
+# run_plan.py 会用 --set / 环境变量展开 plan 里的 $VAR；serve.server --config 直接读的
+# JSON 不经过展开，复现时把文件里的占位符替换成实际路径即可。
+export STRATA_ROOT=/path/to/Strata               # 主仓：data/expert-profile.bin 在这里
+export STRATA_TRAIN=/path/to/training-checkout  # 训练脚本所在仓库根，下面 T 会接 /training
+export STRATA_MEZO=/path/to/engine-checkout     # 构建引擎的 checkout
+export STRATA_DATA=/path/to/weights-and-packs   # 权重 / pack 目录
+export STRATA_ENGINE_DIR=/path/to/engine-build  # 编译产物 strata 所在目录
+T=$STRATA_TRAIN/training
+M=$STRATA_MEZO
+D=$STRATA_DATA
 python3 $T/run_plan.py $T/plan.stage-ab.json \
   --set ENV_PY=python3 --set TRAIN=$T --set EXAMPLES=$T/../examples/training --set MEZO=$M \
   --set PACK=$D/packs/swift-iq3_xxs \
   --set PACK_EXPERTS=$D/models/swift-IQ3_XXS/experts_nf4.bin \
   --set GGUF1=$D/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \
   --set GGUF2=$D/models/swift-IQ3_XXS/Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf \
-  --set EXPERT_PROFILE=/mnt/d/Admin/Documents/GitHub/Strata/data/expert-profile.bin \
+  --set EXPERT_PROFILE=$STRATA_ROOT/data/expert-profile.bin \
   --set ADAPTER=$M/training/lora_hard_dpo.gguf \
-  --set ENGINE=/root/build-mezo-wsl/strata \
+  --set ENGINE=$STRATA_ENGINE_DIR/strata \
   --set CORPUS=$T/_discard/corpus.npy --set BASE=http://127.0.0.1:18080 \
   --report $T/report_ab.json --logdir $T/logs
 ```

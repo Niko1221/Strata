@@ -600,6 +600,33 @@ can still differ despite a matching `--seed`.
 results) ship with all three trees. They separate plasticity from retention,
 calibrate generation-level noise with a repeated B=0 arm, and record the
 2026-11-07 backward-SFT redo (§3.7 / `sections.backward_redo`). Reproduction
-scripts live outside the tree because they contain machine-local absolute paths
-and depend on historical sampling artifacts. All measured numbers were taken on
-one engine build; re-scoring under a rebuilt engine is **not** included.
+scripts live outside the tree because they depend on historical sampling
+artifacts. All measured numbers were taken on one engine build; re-scoring under
+a rebuilt engine is **not** included.
+
+### Paths in the recorded benchmarks
+
+No machine-specific path is committed. `$STRATA_ROOT`, `$STRATA_TRAIN`,
+`$STRATA_MEZO`, `$STRATA_DATA`, `$STRATA_ENGINE_DIR` and `$STRATA_WORK` are
+placeholders for your own directories:
+
+- `training/bench/run_plan.py` expands `$VAR` with `os.path.expandvars`, so the
+  plan files (`bench_iface.json`, `plan.stage-ab.json`) can be run unchanged with
+  `--set STRATA_DATA=/your/path` or an exported shell variable.
+- Config files read directly by `serve.server --config` (for example
+  `bench_iface_serve.json`) and the result snapshots (`bench_limits*.json`) are
+  **records, not runnable defaults**: replace the placeholders with your own
+  paths before running. `PROTOCOL-FULLCTX-EVAL.md` section 12 shows the setup.
+- Python tools take their defaults from `STRATA_ROOT` (repository checkout),
+  `STRATA_DATA` (quantized packs) and `STRATA_MEZO` (engine checkout); every
+  derived path is also overridable on the command line (`--engine`, `--pack`,
+  `--native`, `--expert-profile`, `--corpus`). `training/bench/diag_frozen.py`
+  uses `STRATA_TRAIN_DATA` or `STRATA_MEZO`.
+- Training data is never downloaded implicitly. `--data` accepts `identity`
+  (built in, the default), `jsonl:<your-file>` or `pretrain:<your-file>`.
+  `training/tests/` builds its fixtures in `tempfile` directories, so the test
+  suite is offline and needs no dataset from ModelScope, Hugging Face or any
+  other hub.
+
+The generic `/root/...` and `/mnt/d/...` strings that remain are examples in
+prose (WSL path conversion, placeholder filenames), not private paths.
