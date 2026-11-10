@@ -4950,6 +4950,13 @@ TRAIN_MAX_ARG_BYTES = 4096
 TRAIN_MAX_LINE_BYTES = 8 * 1024 * 1024   # a 128K SCORE line is ~1 MB of ids
 
 
+def train_bridge_env() -> dict:
+    """The training session's engine links ggml too: on an abort ggml forks gdb, whose messages would land in
+    the pipe this bridge reads READY from (strata_control/childenv.py).  Built here rather than relying on
+    main(): a host that embeds Service can open a session without ever calling the CLI entry point."""
+    return quiet_crash_env(dict(os.environ))
+
+
 class TrainBridge:
     """A training-mode engine behind POST /v1/training/*.
 
@@ -4972,7 +4979,7 @@ class TrainBridge:
         try:
             self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                          stderr=self.log, text=True, encoding="utf-8", errors="replace",
-                                         bufsize=1)
+                                         env=train_bridge_env(), bufsize=1)
         except OSError:
             self.log.close()
             raise
