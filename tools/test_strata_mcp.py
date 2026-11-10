@@ -895,7 +895,8 @@ class MacCatalog(unittest.TestCase):
         s, hw = self.hw(128)
         s.hardware = lambda fresh=False: hw
         s.disk_free = lambda p: 1000.0
-        with tempfile.TemporaryDirectory() as t:
+        # a person's data folder, not the system's temp folder: on macOS that is under /var/folders, which the tool refuses as a system folder
+        with tempfile.TemporaryDirectory(dir=Path.home() if sys.platform == "darwin" else None) as t:
             target = Path(t) / "Strata-data"
             target.mkdir()
             plan, args = M.Tools(s).install_plan("unsloth", "UD-IQ1_M", None, "no", "int8", 0, None, None, "auto", None, str(target))

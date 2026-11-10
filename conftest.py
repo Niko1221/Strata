@@ -22,14 +22,15 @@ if os.name == "nt" and os.environ.get("PSModulePath"):
     os.environ["PSModulePath"] = os.pathsep.join(_keep)
 # The tests run where GitHub's runners do: no NVIDIA card the code can read. On a box with one (p1004's P100, Boston's A6000s, l620) the
 # real nvidia-smi answered and every check that reads the card (engine choice, a stub engine's own start, setup) judged the stand-in
-# packages against it: sm_60 has no code in them, so 64 update tests failed on p1004. A `nvidia-smi` that answers nothing comes first
-# on PATH for the whole run, child processes included; the code reads that as "cannot tell", as without the tool. A test about a
+# packages against it: sm_60 has no code in them, so 64 update tests failed on p1004. A `nvidia-smi` that answers nothing and fails
+# comes first on PATH for the whole run, child processes included; the code reads that as "cannot tell", as without the tool, and a
+# test that needs a card puts its own stand-in first (tools/feed_model_install_gate.py does when `nvidia-smi -L` fails). A test about a
 # card patches the reader (engine_component.cuda_archs_present, setup.gpus, ...) as before. POSIX only for now (a stub there would be
 # a .cmd, which code that runs `nvidia-smi` directly does not start); the Windows test boxes' cards fit the stand-ins.
 if os.name != "nt" and not os.environ.get("STRATA_TEST_REAL_NVIDIA_SMI"):
     _smi = os.path.join(_home, "no-nvidia-smi")
     os.makedirs(_smi, exist_ok=True)
     with open(os.path.join(_smi, "nvidia-smi"), "w") as _f:
-        _f.write("#!/bin/sh\n# tests: no NVIDIA card can be read here (conftest.py)\nexit 0\n")
+        _f.write("#!/bin/sh\n# tests: no NVIDIA card can be read here (conftest.py): it answers nothing and fails, as without a loaded driver\nexit 1\n")
     os.chmod(os.path.join(_smi, "nvidia-smi"), 0o755)
     os.environ["PATH"] = _smi + os.pathsep + os.environ.get("PATH", "")
