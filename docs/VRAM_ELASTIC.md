@@ -132,6 +132,11 @@ With `"vram_elastic": true` as well (opt-in) the expert cache gives the room ins
   sends `VRAM` with that reserve again, so the cache grows back to the size it had (0, not the start's reserve: that
   would leave it a segment or more smaller).
 - **A CPU reader that took over** needs no VRAM: the cache grows back at once.
+- **`"elastic_no_warmup": true`** (opt-in, GPU reader): the on-demand start skips the reader's warm-up encode of the largest
+  picture (it only tokenizes it, so the token-limit check still runs); the work buffers come with the first real picture. On
+  2x RX 6900 XT (HIP) the reader is ready in 0.8 s instead of 7.0 s and the first picture comes back 6 s sooner, with byte-identical
+  embeddings. The buffers can then grow twice (a small picture, then a large one): peak 1,963 MiB against 1,819 MiB with the warm-up,
+  inside the default `"elastic_mib"` (2048) but closer to it; keep `"elastic_mib"` at the default or above with this switch.
 - **`POST /v1/vram` while the encoder runs** keeps the asked reserve on top of the encoder's share; the encoder's stop
   then goes back to the asked reserve.
 - An unload of the model stops the encoder too. A picture that was encoded before (a conversation sends its pictures with every turn)
