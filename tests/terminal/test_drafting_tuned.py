@@ -868,7 +868,8 @@ class SetupOnAMac(Base):
         self.assertIn("Downloading the DFlash2 drafter (0.34 GB, once)", self.said[0][1])
 
     def test_offline_it_says_nothing(self):
-        with mock.patch.object(drafting_fetch, "online", return_value=False):
+        from tests.terminal import net_dead
+        with mock.patch.object(drafting_fetch, "online", return_value=False), net_dead.no_name_resolution():     # (the feed lookup is offline too)
             self.assertIsNone(self.mac.fetch_drafter(Q4, self.data))
         self.assertEqual(self.said, [])
 

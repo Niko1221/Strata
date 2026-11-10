@@ -24,6 +24,27 @@ WINDOW = (0.3, 0.6)
 
 
 @contextlib.contextmanager
+def no_name_resolution():
+    """A computer with no name service: every lookup of a name other than this computer fails at once, as with no network (loopback addresses and
+    "localhost" still resolve). For the tests that stand for an offline PC: they never ask a real resolver (the test guard in conftest.py)."""
+    import ipaddress
+    real = socket.getaddrinfo
+
+    def lookup(host, *args, **kwargs):
+        text = str(host).strip("[]").lower() if host is not None else ""
+        try:
+            local = text in ("", "localhost") or ipaddress.ip_address(text).is_loopback
+        except ValueError:
+            local = False
+        if local:
+            return real(host, *args, **kwargs)
+        raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+    with mock.patch.object(socket, "getaddrinfo", lookup):
+        yield
+
+
+@contextlib.contextmanager
 def dead_feed(kind: str):
     """Yield a feed address that is unreachable in the way `kind` says."""
     assert kind in KINDS, kind

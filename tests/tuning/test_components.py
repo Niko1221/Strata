@@ -436,7 +436,8 @@ class TestInterruptedTransfer(StoreCase):
         # partial is discarded and the ranged request then fails on the unreachable host.
         object.__setattr__(artifact, "url", "https://example.invalid/e.tar.gz")
         object.__setattr__(artifact, "bytes", 100)
-        with self.assertRaises(C.ComponentError):
+        from tests.terminal import net_dead
+        with net_dead.no_name_resolution(), self.assertRaises(C.ComponentError):               # (no real name service: the host is unreachable)
             self.store._fetch(artifact)
         self.assertFalse(partial.exists(), "a stale partial is removed, not appended to")
 
