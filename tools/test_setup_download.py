@@ -42,6 +42,7 @@ class Server:
         self.lock = threading.Lock()
         self.gets, self.heads, self.redirects = [], 0, 0           # gets: (start, end) of every ranged GET
         self.active = self.max_active = 0
+        self.streams = self.max_streams = 0                         # the same without setup's one-byte probes (Range: bytes=0-0)
         self.nth = {}
         outer = self
 
@@ -104,6 +105,10 @@ class Server:
             self.nth[key] = n = self.nth.get(key, 0) + 1
             self.active += 1
             self.max_active = max(self.max_active, self.active)
+            probe = rng == "bytes=0-0"
+            if not probe:
+                self.streams += 1
+                self.max_streams = max(self.max_streams, self.streams)
         try:
             fault = self.faults(path, start, end, n) if self.faults else None
             if fault and fault[0] == "status":
@@ -133,6 +138,8 @@ class Server:
         finally:
             with self.lock:
                 self.active -= 1
+                if not probe:
+                    self.streams -= 1
 
 
 def pin_of(data):
@@ -204,7 +211,7 @@ class ParallelDownload(unittest.TestCase):
             code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
             self.assertEqual(len(srv.gets), 1)
 
     def test_one_connection_variable_restores_one_stream(self):
@@ -213,7 +220,7 @@ class ParallelDownload(unittest.TestCase):
                 code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
             self.assertEqual(srv.gets, [(0, len(DATA) - 1)])                # one request for the whole file
 
     def test_connection_count_variable(self):
@@ -230,7 +237,7 @@ class NoRangeSupport(unittest.TestCase):
             code, out = run(srv, d)
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
             self.assertEqual(files(d), [NAME, NAME + ".done"])
 
     def test_a_server_without_any_length_is_read_in_one_stream(self):
@@ -238,7 +245,7 @@ class NoRangeSupport(unittest.TestCase):
             code, out = run(srv, d, pin=None)                                # no length, so nothing to check a pin against first
             self.assertIsNone(code, out)
             self.assertEqual((Path(d) / NAME).read_bytes(), DATA)
-            self.assertEqual(srv.max_active, 1)
+            self.assertEqual(srv.max_streams, 1)   # (the one-byte probe can still be sending: not a stream)
 
     def test_a_head_without_a_length_still_gets_the_connections(self):
         """ModelScope's HEAD has no Content-Length (#1915): the length comes from a one-byte ranged GET, not 'unknown'."""
