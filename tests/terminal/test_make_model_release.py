@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -216,6 +217,25 @@ class Plan(unittest.TestCase):
         for f in filled["quants"][0]["files"]:
             f["sha256"] = f["sha256"] if len(f["sha256"]) == 64 else "0" * 64
         feedmod._model_entry(filled)                                     # strata_control/feed.py keeps it
+
+    def test_the_plan_prints_the_launch_line_with_the_size_name_a_person_types(self):
+        """Q4-READY: a feed size whose quant name is a built-in size is <quant>-<id> (strata_control/feed_models.py); the rehearsal typed the plain name twice."""
+        code, out, err = run(self.base(self.a, "--json", "--quant", "UD-Q4_K_XL"))
+        self.assertEqual(code, 0, err)
+        launch = json.loads(out)["launch"]
+        self.assertIn("strata launch --family m1 --model ud-q4_k_xl-m1", launch)
+        self.assertTrue(any(l.startswith("strata launch --family m1 --model ud-q4_k_xl-m1 --model-path ") for l in launch))
+        code, out, err = run(self.base(self.a, "--json", "--quant", "Q4REH"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("strata launch --family m1 --model q4reh", json.loads(out)["launch"])
+        code, out, err = run(self.base(self.a, "--quant", "Q4REH"))
+        self.assertIn("## How a person starts it", out)
+        self.assertIn("    strata launch --family m1 --model q4reh", out)
+        with mock.patch.object(M, "builtin_sizes", return_value=None):
+            code, out, err = run(self.base(self.a, "--json", "--quant", "Q4REH"))
+        launch = json.loads(out)["launch"]
+        self.assertIn("strata launch --family m1 --model q4reh", launch)
+        self.assertIn("strata launch --family m1 --model q4reh-m1", launch)
 
     def test_the_templates_in_phaseA_tests_have_what_the_script_fills(self):
         d = Path(r"C:\Users\AI-Server\Desktop\Strata\phaseA-tests\qwen4\templates")

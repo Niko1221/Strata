@@ -277,6 +277,38 @@ def feed_entry(s: dict, a) -> dict:
     return e
 
 
+def builtin_sizes() -> set | None:
+    """The built-in size names (setup.py MODELS), which a feed size may not take: None when setup.py cannot be read here."""
+    import contextlib
+    import io
+    sys.path.insert(0, str(ROOT))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            import setup as setup_mod
+        return set(setup_mod.MODELS)
+    except (Exception, SystemExit):                       # noqa: BLE001 - the launch line then names both possible spellings
+        return None
+
+
+def launch_lines(entry: dict, sizes: set | None) -> list[str]:
+    """The `strata launch` lines for each size of the feed entry, with the size name a person types: the quant's name, or <quant>-<id> when that
+    name is a built-in size (strata_control/feed_models.py _flash_next takes the same decision)."""
+    out = []
+    mid = entry.get("id")
+    for q in entry.get("quants") or []:
+        name = str(q.get("name"))
+        if sizes is None:
+            keys = [name, "%s-%s" % (name, mid)]
+        else:
+            keys = ["%s-%s" % (name, mid) if name in sizes else name]
+        for key in keys:
+            out.append("strata launch --family %s --model %s" % (mid, key.lower()))
+            out.append("strata launch --family %s --model %s --model-path <the folder with the files>   # files already on the computer (an Intel Arc card: always)" % (mid, key.lower()))
+    if sizes is None:
+        out.append("# setup.py could not be read here: the size is the first spelling unless its quant name is a built-in size")
+    return out
+
+
 def render_md(p: dict, a) -> str:
     out = ["# Model release plan: %s (case %s)" % (p["id"], p["case"]), "",
            "DRY RUN. Nothing was built, signed, uploaded or published. The set: `%s`." % p["set"], ""]
@@ -304,6 +336,11 @@ def render_md(p: dict, a) -> str:
     out.append("Kept from the previous release (same files, not uploaded again): %d files, %s." % (len(p["kept"]), gib(sum(k["size"] or 0 for k in p["kept"]))))
     out.append("")
     out.append("New to upload: %s in %d files; %s." % (gib(p["upload_bytes"]), len(p["changed"]), upload_minutes(p["upload_bytes"])))
+    if p.get("launch"):
+        out.append("")
+        out.append("## How a person starts it (the size name as the Terminal takes it)")
+        out.append("")
+        out += ["    " + line for line in p["launch"]]
     return "\n".join(out) + "\n"
 
 
@@ -376,6 +413,7 @@ def main(argv=None) -> int:
     if a.prev_upload is None:
         print("note: no --prev-upload, so sizes of the files that stay or get rebuilt are unknown", file=sys.stderr)
     p = plan(report, a.set, a, prev)
+    p["launch"] = launch_lines(feed_entry(s, a), builtin_sizes())
     if a.json:
         print(json.dumps(p, indent=1))
     else:
