@@ -69,6 +69,17 @@ Sanity checks: **12 of 12**.
 - The runner cannot see other programs on the machine, the repeat-stop and loop-recovery switches of the server, or the quantization repository's revision; see `missing` in results.json for every value it could not read.
 - The server had answered no request before this run (a freshly loaded engine).
 
+## NOT COMPARABLE - correction (2026-11-10)
+
+**This run used one slot.** Its `config.json` says `total_slots: 1`: the test server was started without
+`--parallel 2`, while the official-component run in the sibling directory used 2 slots. With one slot the engine
+has about 2 GiB more free VRAM when it sizes the expert cache (17.89 GiB against 15.99 GiB), which is also why it
+took 8840 cache slots instead of 7841.
+
+The speed difference reported for this PR therefore mixes the engine build with the slot count and must not be
+read as a build comparison. A corrected run with `--parallel 2` is pending; this note stays until it replaces
+the numbers.
+
 ## Provenance added by the operator (sanitized)
 
 The runner could not read the GPU model (the server was already running); this section fills it in. Paths are redacted.
@@ -82,6 +93,7 @@ The runner could not read the GPU model (the server was already running); this s
   `tests/terminal/test_make_model_release.py` differ; the engine sources (`src/`, `include/`, `cmake/` and the
   ggml tree) are identical, and both binaries print `strata 0.1.59`.
 - Sysctls on the box: `vm.min_free_kbytes=524288`, `vm.watermark_scale_factor=100`.
+- Slots: **1** (`total_slots: 1`) - see the correction above; the official-component run used 2.
 - Engine: **source build of this repository** at tag `v0.2.13` (commit `d2f0964`), built on the same box against
   the system **ROCm 10.1** (HIP 7.16, hipBLASLt 1.4.1 = 100401, clang 24): `-DSTRATA_ENABLE_HIP=ON
   -DCMAKE_HIP_ARCHITECTURES=gfx1100`, plus `-DSTRATA_PREFILL_MMQ=ON` - the HIP build does not link without that option
