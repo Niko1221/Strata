@@ -453,7 +453,9 @@ ref-overrides.txt / calibration.txt(sha256 已记)都在 $D。imatrix 记录按�
 
 ### 服务管理去脚本化(2026-11-09)
 - 正式单元:~/.config/systemd/user/strata-glm53.service(512k×2 配置即 glm53-serve.json)。
-  已 enable + linger:开机自启、崩溃自拉(Restart=on-failure)。
+  **不自启**(用户要求:开机加载拖慢启动且内存压力易致系统不稳)——需要时手动
+  `systemctl --user start strata-glm53` 或 start-glm53.sh;单元保留 Restart=on-failure
+  (运行中崩溃自拉),Enable 状态 static,linger=no。
 - 日常:start/stop/status 走 systemctl --user;日志 journalctl --user -u strata-glm53 -f。
   旧 systemd-run 脚本 start-glm53.sh 保留为等价入口,同名瞬态单元与常驻单元互斥(先 stop 再用)。
 
