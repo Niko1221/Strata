@@ -3004,15 +3004,48 @@ class StallNote:
                 "and run the same command again: the download continues where it stopped")
 
 
+DL_PROBE_WAITS = (1.0, 3.0)                     # seconds before the 2nd and the 3rd range probe
+
+
+def _probe_retryable(exc: BaseException) -> bool:
+    """Is a failed range probe worth one more try?  A hiccup is (a timeout, a reset or dropped connection, a busy server: 429/5xx); no internet
+    is not (no DNS answer, no route, refused): that fails at once, with no wait and no message (offline users, owner 11-01)."""
+    import errno
+    import socket
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 500, 502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        if not isinstance(exc.reason, BaseException):
+            return False
+        exc = exc.reason
+    if isinstance(exc, (socket.gaierror, ConnectionRefusedError)):
+        return False
+    if isinstance(exc, OSError) and exc.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN):
+        return False
+    return isinstance(exc, (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError, BrokenPipeError, http.client.HTTPException))
+
+
+def _probe_ranges(src: "_Source", waits=DL_PROBE_WAITS, sleep=time.sleep) -> bool:
+    """The first range request of a parallel download, tried up to len(waits)+1 times when it fails by a hiccup: one failed probe used to make a
+    50-100 GB download a single stream.  False: the server does not do ranges, or the probe failed (the caller then reads one stream)."""
+    for attempt in range(len(waits) + 1):
+        try:
+            src.resolve()
+            return True
+        except _NoRange:
+            return False
+        except (OSError, http.client.HTTPException) as exc:
+            if attempt >= len(waits) or not _probe_retryable(exc):
+                return False
+            sleep(waits[attempt])
+    return False
+
+
 def parallel_download(url: str, part: Path, total: int, label: str, conns: int, name: str) -> bool:
     """Fill `part` (total bytes) over `conns` ranged connections.  True when every byte is there; False when the server
     does not do ranges (the caller reads the file in one stream)."""
     src = _Source(url, total)
-    try:
-        src.resolve()
-    except _NoRange:
-        return False
-    except (OSError, http.client.HTTPException):
+    if not _probe_ranges(src):
         return False                                    # the one-stream path has its own retries and messages
     part.parent.mkdir(parents=True, exist_ok=True)
     _claim_part(part, url, src.etag)                    # a .part from another address or version is dropped here
@@ -8294,6 +8327,79 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def intel_control_setup(a) -> int:
+    """`--backend sycl` in the app's CONTROL mode (tools/strata_mcp.py passes it for an Intel Arc PC): what the Terminal does for an Arc
+    (strata_cli/launch/runner.py adopt_prepared_files): the pack from the model's GGUF files (`--prepare-pack`'s step), then the run config
+    (strata_cli/launch/adopt.py), the engine named as the component. Nothing is downloaded but gguf-py's small helper, nothing is compiled; Intel
+    cards do not download models, so the files must be on the computer (--gguf-dir, or <data folder>/models/<tag>). The older `--backend sycl`
+    (a source build with oneAPI, sycl/setup_intel.py) is sycl_setup(), for a checkout; the app's bundle has no sycl/ folder."""
+    from strata_cli.launch import adopt
+    from strata_control import intel_app
+    say("Strata on an Intel Arc card (the SYCL engine)")
+    step(1, "checking this computer")
+    if not intel_app.supported_here():
+        fail("the Intel Arc engine runs on Linux only", "there is no Windows or Mac Intel engine yet")
+    family = a.family or "qwen"
+    if family not in FAMILIES or not intel_app.can_set_up(family, FAMILIES[family]):
+        fail(f"cannot set up {family} for an Intel Arc card", "choose a Qwen3.8-Flash-Next, Swift, Coder, Gyro or Unsloth size")
+    fam, model = FAMILIES[family], a.model
+    if not model:
+        fail("an Intel Arc setup needs --model, e.g. --model Q2_0")
+    data, _elsewhere = data_folder_for(a)
+    tag = fam["tag"] + model
+    if a.gguf_dir:
+        model_dir = Path(a.gguf_dir)
+    else:
+        model_dir = (Path(a.models_dir) if a.models_dir else data / "models") / tag
+    if model_dir.is_file():
+        model_dir = model_dir.parent
+    shards = intel_app.model_files_in(model_dir, family, fam)
+    if not shards:
+        fail(intel_app.NO_DOWNLOAD)
+    ok(f"model files: {model_dir} ({len(shards)} file{'s' if len(shards) != 1 else ''})")
+    cards = intel_app.arc_cards()
+    vram = max((float(c.get("vram_gb") or 0) for c in cards), default=0.0)
+    ok("graphics card: " + (", ".join(f"{c['name']} ({c['vram_gb']:g} GB)" for c in cards) or "an Intel Arc"))
+    if a.check:
+        return 0
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own engine component, fetched from the signed feed (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
+        shape_engine_fetch(a)
+    step(2, "preparing the model for this graphics card")
+    pack = data / "packs" / tag.lower()
+    if not ((pack / "experts.bin").exists() or ((pack / "index.txt").exists() and (pack / "tokenizer" / "vocab.json").exists())):
+        a.gguf_dir, a.prepare_pack = str(model_dir), str(pack)
+        rc = prepare_pack_only(a)
+        if rc:
+            return rc
+    else:
+        ok(f"model already prepared: {pack}")
+    step(3, "writing the run settings")
+    notes: list = []
+    cfg, problems = adopt.plan(family=family, model=model, model_dir=model_dir, data_dir=data, src=ROOT, context=a.context or 32768, kv=a.kv,
+                               model_name=f"{fam.get('name', family)}-{model.lower()}", family_def=fam, log=home() / f"strata-{tag.lower()}.log",
+                               backend="sycl", vram_gb=vram, notes=notes, pack_name=tag.lower())
+    if cfg is None:
+        fail("Strata cannot start this model on the Intel Arc card yet: " + "; ".join(problems))
+    if a.port:
+        cfg["port"] = a.port
+    if a.host:
+        cfg["host"] = a.host
+    if a.api_key:
+        cfg["api_key"] = a.api_key
+    if a.browser is not None:
+        cfg["open_browser"] = a.browser
+    cfg_path = home() / f"strata-{tag.lower()}.json"
+    write_setup_config(cfg_path, cfg)
+    for n in notes:
+        say("  " + n)
+    ok(f"run settings: {cfg_path.name}")
+    say()
+    say("All set.")
+    return 0
+
+
 def control_engine_step(gpu, vision):
     """Step 4 in the app: the engine is the component folder's package (strata_control/engine_component.py), found if it is
     there and never fetched or built. A model can be downloaded and prepared before the engine is installed; the run config
@@ -10226,7 +10332,9 @@ def main() -> int:
         if a.family in MULTI_FILE_FAMILIES:            # DeepSeek-V4.1-Flash: its own engine package, the generic DeepSeek install
             return mac_dsv41_setup(a)
         return mac_control_setup(a)
-    if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
+    if a.backend == "sycl":                            # Intel Arc: the app / Terminal's installer mode prepares the files and writes the config; a checkout builds from source
+        if CONTROL:
+            return intel_control_setup(a)
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
@@ -10629,6 +10737,7 @@ def main() -> int:
     ok(f"model: {fam['title']}")
     if fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None:
         a.mtp = "off"                                  # the feed says this model has no draft layer: the Flash-Next one (fetched below for every qwen4exp model) is not its own
+        a.feed_no_drafter = True                       # and no drafter at its starts either: the run config says "drafting": "off" (setup_config; APP-LIN 0.2.14)
         say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
     if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
         warn(nvfp4_cpu_note(avx2, avx512))
