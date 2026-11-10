@@ -5,7 +5,10 @@
 // fresh read from DRAM.  Prints the weight bytes per second against the --ram-gbs given (a separate read test).
 //
 //     kq_cpu_bench [--pairs q4_K/q5_1,q5_K/q8_0,q6_K/q8_0,q8_0/q8_0,iq3_s/iq4_nl] [--threads 1,8,16,32] [--nt 1,2,4]
-//                  [--mb 4096] [--reps 3] [--ram-gbs N]
+//                  [--mb 4096] [--reps 3] [--ram-gbs N] [--part both|gu|down] [--hot K]
+//
+// --part times only the gate/up rows (gu) or only the down rows (down); --hot K walks only K distinct expert blobs over and
+// over (K=1: one expert, cache-resident: the arithmetic and instruction throughput; the default walks --mb of blobs: DRAM).
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/native_expert.hpp"
 
@@ -79,8 +82,9 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     std::vector<std::string> pairs = split("q4_K/q5_1,q5_K/q8_0,q6_K/q8_0,q8_0/q8_0,iq3_s/iq4_nl");
     std::vector<int> threads = {1, 8, 16, 32}, nts = {1, 2, 4};
-    int mb = 4096, reps = 3;
+    int mb = 4096, reps = 3, hot = 0;
     double ram = 0;
+    std::string part = "both";
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const bool more = i + 1 < argc;
@@ -91,11 +95,14 @@ int main(int argc, char** argv) {
         else if (a == "--mb" && more) mb = std::atoi(argv[++i]);
         else if (a == "--reps" && more) reps = std::max(1, std::atoi(argv[++i]));
         else if (a == "--ram-gbs" && more) ram = std::atof(argv[++i]);
+        else if (a == "--part" && more) part = argv[++i];
+        else if (a == "--hot" && more) hot = std::max(0, std::atoi(argv[++i]));
         else {
             std::fprintf(stderr, "usage: kq_cpu_bench [--pairs a/b,...] [--threads 1,8] [--nt 1,2,4] [--mb 4096] [--reps 3] [--ram-gbs N]\n");
             return 2;
         }
     }
+    const bool do_gu = part != "down", do_down = part != "gu";
     ggml_cpu_init();
     std::printf("kq_cpu_bench: %s (avx2 %d, avx512 %d), %d MB of blobs per format\n", cpu::cpu_name().c_str(),
                 (int) cpu::cpu_avx2_ok(), (int) cpu::cpu_avx512_ok(), mb);
@@ -157,6 +164,7 @@ int main(int argc, char** argv) {
         }
         std::printf("\n%s: %zu experts of %.3f MB (%.0f MB)%s%s\n", pair.c_str(), E, f.bytes / 1e6, E * (double) f.bytes / 1e6,
                     q2_gu ? ", Q2_0 gate/up" : "", q2_down ? ", Q2_0 down on Strata's rows (the pool's path)" : "");
+        const double part_bytes = do_gu && do_down ? (double) f.bytes : do_gu ? (double) f.down_off : (double) (f.bytes - f.down_off);
         for (int nt : nts) {
             for (int T : threads) {
                 if (T < 1) continue;
@@ -177,8 +185,9 @@ int main(int argc, char** argv) {
                         for (;;) {
                             const size_t e = next.fetch_add(1);
                             if (e >= E) break;
-                            const uint8_t* blob = blobs + e * f.bytes;
-                            if (q2_gu) {
+                            const uint8_t* blob = blobs + (hot > 0 ? e % (size_t) hot : e) * f.bytes;
+                            if (!do_gu) {
+                            } else if (q2_gu) {
                                 cpu::q2_rows_any(blob, f.gu_row, (int) (kH / 64), ax, nt, gp, 0, (int) kFF);
                                 cpu::q2_rows_any(blob + f.up_off, f.gu_row, (int) (kH / 64), ax, nt, up, 0, (int) kFF);
                                 for (int t = 0; t < nt; ++t)
@@ -187,7 +196,8 @@ int main(int argc, char** argv) {
                             } else {
                                 cpu::native_gu_rows(f, blob, act, nt, ff, 0, (int) kFF);
                             }
-                            if (q2_down)
+                            if (!do_down) {
+                            } else if (q2_down)
                                 cpu::q2_rows_any(blob + f.down_off, f.d_row, (int) (f.n_ff / 64), a2, nt, out, 0, (int) kH);
                             else
                                 cpu::native_down_rows(f, blob, hq, nt, out, 0, (int) kH);
@@ -200,12 +210,12 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < T; ++k) th.emplace_back(work);
                     for (auto& x : th) x.join();
                     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-                    gbs.push_back(E * (double) f.bytes / s / 1e9);
+                    gbs.push_back(E * part_bytes / s / 1e9);
                 }
                 std::sort(gbs.begin(), gbs.end());
                 const double med = gbs[gbs.size() / 2];
                 std::printf("  nt %d threads %2d: %6.1f GB/s of weights (%.3f ms per expert per thread)%s\n", nt, T, med,
-                            f.bytes / (med * 1e9 / T) * 1e3,
+                            part_bytes / (med * 1e9 / T) * 1e3,
                             ram > 0 ? (" = " + std::to_string((int) std::lround(100 * med / ram)) + "% of RAM").c_str() : "");
             }
         }

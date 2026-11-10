@@ -18,7 +18,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;          // head_dim
-constexpr int G = 12;            // query heads per KV head (24 / 2)
+constexpr int G = strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv;   // query heads per KV head (12 for Flash-Next; 1..16, a multiple of 4)
+static_assert(G % 4 == 0 && G <= 16, "qsa_decode_attn: query heads per KV head must be 4, 8, 12 or 16 (float4 probability rows, the 16-lane score reduce)");
 static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, "qsa_decode_attn is compiled for core/geometry.hpp");
 constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;

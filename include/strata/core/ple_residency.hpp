@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <sstream>
+#include <string>
 
 #include "strata/core/conversation_memory.hpp"
 
@@ -68,6 +70,70 @@ inline ArenaRamVerdict arena_ram_verdict(uint64_t need, uint64_t available, uint
 inline bool arena_ram_fallback_allowed(const char* env_value, bool ple_ram_by_hand, bool shared_arena) {
     if (ple_ram_by_hand || shared_arena) return false;
     if (env_value != nullptr && env_value[0] != '\0') return std::atoi(env_value) != 0;
+    return true;
+}
+
+/// #5327: may a short arena still load, as 0.1.55 did?  The false alarm `available < need` raises on a host that can
+/// load is a reserved hugetlb pool: MemAvailable does not count free huge pages at all, and a launcher may reserve the
+/// pool for exactly this arena, so the reserve itself takes MemAvailable below the need while every page the arena
+/// maps sits free in the pool (the 0.1.54/0.1.55 "expert arena read through the file cache", decode at full speed for
+/// hours).  The arena's mapping is MAP_HUGETLB or nothing (pinned.cu), so the free pool is credited only when it holds
+/// the WHOLE arena; a smaller pool serves none of it.  Free pages plus the droppable file pages
+/// (`meminfo_free_and_droppable`) are credited too, but that is within a small margin of what MemAvailable already
+/// counts (it keeps back the zone low watermark and reserves; this does not), so it only bridges a small shortfall.
+/// The shortfall that must NOT load is the one backed by memory the kernel cannot take without swapping another
+/// program's anonymous RAM - #4051's host (an engine that was still exiting) wedged in reclaim until it was
+/// power-cycled, which is what the #4846 refusal is for.  Subtraction form, so no overflow.
+inline bool arena_shortfall_served_by_file_cache(uint64_t need, uint64_t free_bytes, uint64_t droppable_file_bytes,
+                                                 uint64_t huge_free_bytes = 0) {
+    if (need == 0) return false;
+    if (huge_free_bytes >= need) return true;
+    if (free_bytes >= need) return true;
+    return droppable_file_bytes >= need - free_bytes;
+}
+
+/// #5327: MemFree and the file pages the kernel can drop for the arena without touching swap or any program's anonymous
+/// memory, from a /proc/meminfo text: MemFree, and Cached + Buffers + SReclaimable - Shmem - Dirty - Mlocked, floored at 0
+/// (Shmem is swap-backed and counted inside Cached; Dirty needs a writeback before its pages are reusable; Mlocked pages
+/// are file pages too - the PLE table's mlock is a mapping of the model file, the same for a program that is still
+/// exiting - but the kernel cannot drop them: MemAvailable leaves them out, so this must as well).
+/// `huge_free_bytes` (optional) gets (HugePages_Free - HugePages_Rsvd) x Hugepagesize, the pool the arena's MAP_HUGETLB try
+/// takes (pages another mapping has reserved are spoken for), and only where Hugepagesize is the 2 MiB the arena asks for.
+/// False when MemFree or Cached is absent (no credit: the refusal stands).
+inline bool meminfo_free_and_droppable(const std::string& meminfo_text, uint64_t& free_bytes, uint64_t& droppable_file_bytes,
+                                       uint64_t* huge_free_bytes = nullptr) {
+    free_bytes = droppable_file_bytes = 0;
+    if (huge_free_bytes) *huge_free_bytes = 0;
+    bool have_free = false, have_cached = false;
+    uint64_t cached = 0, buffers = 0, sreclaimable = 0, shmem = 0, dirty = 0, mlocked = 0, huge_pages = 0, huge_rsvd = 0, huge_size = 0;
+    std::istringstream in(meminfo_text);
+    std::string line;
+    while (std::getline(in, line)) {
+        std::istringstream fields(line);
+        std::string key, unit;
+        uint64_t value = 0;
+        if (!(fields >> key >> value)) continue;
+        fields >> unit;
+        const uint64_t bytes = unit == "kB" ? value * 1024 : value;
+        if (key == "MemFree:") { free_bytes = bytes; have_free = true; }
+        else if (key == "Cached:") { cached = bytes; have_cached = true; }
+        else if (key == "Buffers:") buffers = bytes;
+        else if (key == "SReclaimable:") sreclaimable = bytes;
+        else if (key == "Shmem:") shmem = bytes;
+        else if (key == "Dirty:") dirty = bytes;
+        else if (key == "Mlocked:") mlocked = bytes;
+        else if (key == "HugePages_Free:") huge_pages = value;
+        else if (key == "HugePages_Rsvd:") huge_rsvd = value;
+        else if (key == "Hugepagesize:") huge_size = bytes;
+    }
+    if (!have_free || !have_cached) return false;
+    const uint64_t held_a = shmem > UINT64_MAX - dirty ? UINT64_MAX : shmem + dirty;
+    const uint64_t held = held_a > UINT64_MAX - mlocked ? UINT64_MAX : held_a + mlocked;
+    droppable_file_bytes = cached + buffers + sreclaimable > held ? cached + buffers + sreclaimable - held : 0;
+    if (huge_free_bytes && huge_size == (2ull << 20)) {   // the arena maps MAP_HUGE_2MB: another pool size is not its pool
+        const uint64_t pages = huge_pages > huge_rsvd ? huge_pages - huge_rsvd : 0;
+        *huge_free_bytes = pages > UINT64_MAX / huge_size ? UINT64_MAX : pages * huge_size;
+    }
     return true;
 }
 

@@ -33,9 +33,9 @@
 namespace strata::kernels::cpu {
 
 // ---- geometry, all of it fixed by the artifact (tools/verify_q2_0_geometry.py: 202/202 tensors at QK=64) ----
-inline constexpr int H = 2560;      // n_embd
-inline constexpr int FF = 640;      // expert intermediate width
-inline constexpr int NE = 512;      // routed experts per layer
+inline constexpr int H = strata::core::kCompiledGeometry.n_embd;      // 2560 in Flash-Next
+inline constexpr int FF = strata::core::kCompiledGeometry.n_ff;      // expert intermediate width, 640
+inline constexpr int NE = strata::core::kCompiledGeometry.n_expert;      // routed experts per layer, 512
 static_assert(H == strata::core::kCompiledGeometry.n_embd && FF == strata::core::kCompiledGeometry.n_ff,
               "the CPU expert path is compiled for core/geometry.hpp");
 inline constexpr int QK = 64;       // QK2_0: weights per fp16 scale

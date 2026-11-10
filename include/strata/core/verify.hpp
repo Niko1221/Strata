@@ -24,6 +24,7 @@
 #include <cstdio>
 
 #include "strata/core/expert_source.hpp"
+#include "strata/core/flag_order.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
@@ -47,10 +48,11 @@ namespace strata::core {
 /// bytes arrive layer by layer: `run` holds a layer's plan (the first thing that lets the GPU read the layer's expert
 /// slots) back until `landed >= layer` for a layer with a swap (`has[layer]`).  Set `active` only around one window.
 struct AdaptGate {
-    struct Tick { AdaptGate* gate; int32_t layer; };
+    struct Tick { std::atomic<int32_t>* counter; int32_t layer; };
     std::atomic<int32_t> landed{-1};      ///< the highest layer whose swap copies have landed (n_layers: all of them)
     std::atomic<bool> active{false};
     std::vector<uint8_t> has;             ///< per layer: a swap copies into this layer's slots
+    int32_t last = -1;                    ///< the highest layer with a swap this round (-1: none)
     std::vector<Tick> ticks;              ///< host-function contexts, one per layer and the final one (stable storage)
     const int32_t* dvals = nullptr;       ///< device [0..n_layers]: the source of those copies
     volatile int32_t* hland = nullptr;   ///< pinned host int the copy stream writes (a D2H copy of the layer number), instead of a host function; null: host functions
@@ -58,6 +60,19 @@ struct AdaptGate {
         const int32_t a = landed.load(std::memory_order_acquire);
         if (hland == nullptr) return a;
         const int32_t b = *hland;
+        return a > b ? a : b;
+    }
+    /// The peer tier's copies (--peer-device with STRATA_ADAPT_OVERLAP=1): its own counter, raised on its refill stream
+    /// in layer order the same two ways (`peer_hland`: the pinned int its D2H copies write; null: host functions); a
+    /// layer with a peer swap waits for it as well.
+    std::atomic<int32_t> peer_landed{-1};
+    std::vector<uint8_t> peer_has;
+    int32_t peer_last = -1;
+    volatile int32_t* peer_hland = nullptr;
+    int32_t peer_reached() const {
+        const int32_t a = peer_landed.load(std::memory_order_acquire);
+        if (peer_hland == nullptr) return a;
+        const int32_t b = *peer_hland;
         return a > b ? a : b;
     }
 };
@@ -402,7 +417,8 @@ public:
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
     void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
     /// Called before every window this verifier launches (run, the batch and pipelined launches): the device's
-    /// residency table catches up with the host's (the adaptive tier's evictions while its copies are in flight).
+    /// residency table catches up with the host's (the adaptive tier's evictions while its copies are in flight,
+    /// STRATA_ADAPT_FETCH's admissions).
     /// It gets this verifier's stream; false (with the message in `err`) fails the launch.
     void set_pre_launch(std::function<bool(cudaStream_t cs, std::string& err)> f) { pre_launch_ = std::move(f); }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
@@ -701,12 +717,15 @@ private:
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
-    struct FlagSet { uint32_t* flag; uint32_t value; };
+    using FlagSet = strata::core::FlagRaise;
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
     static void fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes);
     static void raise_flag(uint32_t* flag, uint32_t value);
+    /// Flag B for `want`, behind every copy queued on copy_ (an empty plan must not overtake an earlier layer's DMA).
+    void raise_flag_b_ordered(uint32_t want);
     int32_t* h_plan_ = nullptr;  int32_t* m_plan_ = nullptr;     // counts | start | dst | tok | ptr (as int32 pairs)
     int64_t plan_i32_ = 0;                                        // int32 words in the plan block
+    int64_t dst2_off_ = 0;                                        // its PCIe groups' slot targets (GpuPlanSink::dst2)
     GpuPlanSink sink_;
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);

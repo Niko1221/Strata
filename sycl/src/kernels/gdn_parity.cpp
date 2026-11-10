@@ -24,6 +24,7 @@
 #include "strata/kernels/gdn.hpp"
 #include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/core/geometry.hpp"
 
 #include "strata/prefill/kernels.hpp"
 
@@ -99,7 +100,7 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
 // Fixtures have nonzero initial state, modulo-paired heads, signed q/k/v, and
 // both shallow and deep decay. A tolerance is diagnostic only, never a pass.
 int prefill_case(int T, int seed, int repeats) {
-    constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+    constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;   // the compiled shape
     sycl::queue q(dpct::get_in_order_queue().get_device(),
                   sycl::property_list{sycl::property::queue::in_order{}});
     // Variant 6 runs on Intel GPUs only (the engine throws elsewhere): skip, not fail, on any other device.
@@ -240,7 +241,7 @@ int main(int argc, char** argv) {
         return prefill_bad ? 1 : 0;
     }
 
-    const int S = 128, h_k = 16, h_v = 48;      // the artifact's real geometry
+    const int S = strata::core::kCompiledGeometry.ssm_state_size, h_k = strata::core::kCompiledGeometry.ssm_k_heads, h_v = strata::core::kCompiledGeometry.ssm_v_heads;      // the compiled shape (Flash-Next: the artifact's 128 / 16 / 48)
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     int bad = prefill_bad;
@@ -734,7 +735,7 @@ int main(int argc, char** argv) {
     // token (verify_kernels.hpp). Every T from 1 to kVerifyMaxT is its own exact-T instantiation, so each is run,
     // and every output and the state are compared with memcmp (not a tolerance).
     {
-        const int n_embd = 2560, qk = S * h_k, C = 2 * qk + S * h_v, vd = S * h_v;
+        const int n_embd = strata::core::kCompiledGeometry.n_embd, qk = S * h_k, C = 2 * qk + S * h_v, vd = S * h_v;
         const float eps = 1e-6f;
         auto bf16_of = [](float f) {
             uint32_t u;

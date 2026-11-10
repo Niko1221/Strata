@@ -239,7 +239,6 @@
    ],
    "cwd": "<T>",
    "env": {
-    "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
    "exe": "<T>/engine/<EXE>",
@@ -532,9 +531,6 @@
     "700"
    ],
    "cwd": "<T>",
-   "env": {
-    "STRATA_HC_Q8": "1"
-   },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -824,9 +820,6 @@
     "--vision"
    ],
    "cwd": "<T>",
-   "env": {
-    "STRATA_HC_Q8": "1"
-   },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpu_roles": {
@@ -1092,9 +1085,6 @@
     "700"
    ],
    "cwd": "<T>",
-   "env": {
-    "STRATA_HC_Q8": "1"
-   },
    "exe": "<T>/engine/<EXE>",
    "gpu": 0,
    "gpus_asked": true,
@@ -1348,7 +1338,6 @@
    ],
    "cwd": "<T>",
    "env": {
-    "STRATA_HC_Q8": "1",
     "STRATA_ROUTE_TAIL_SKIP": "0"
    },
    "exe": "<T>/engine/<EXE>",

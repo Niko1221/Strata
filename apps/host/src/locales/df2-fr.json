@@ -18,5 +18,7 @@
  "df17": "Anticipation : MTP (DFlash2 n’a pas démarré)",
  "df18": "Auto utilise le moteur réparti sur toutes les cartes avec la couche de brouillon MTP : environ {0} Go à télécharger, une seule fois.",
  "df19": "Le moteur réparti sur toutes les cartes n’a pas pu démarrer, la répartition normale par couches est donc utilisée.",
- "df20": "Anticipation : désactivée (les cartes manquaient de mémoire)"
+ "df20": "Anticipation : désactivée (les cartes manquaient de mémoire)",
+ "df21": "Sur votre Mac, DFlash2 a été plus rapide que MTP avec ce modèle lors de nos tests.",
+ "df22": "DFlash2 est désactivé par défaut sur cette carte graphique pour le moment ; choisissez-le dans Anticipation pour l’utiliser."
 }

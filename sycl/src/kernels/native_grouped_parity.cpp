@@ -16,6 +16,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -688,6 +689,50 @@ int main(int argc, char** argv) {
         dpct::get_current_device().destroy_queue(s);
         return 0;
     }
+    // Q4-KQ: the K-quant downs of a UD file at expert widths divisible by 256 (Qwen3.6's UD-Q4_K_XL: Q4_K / Q5_K gate/up, Q5_K / Q6_K
+    // down, 2048 x 512), split vs per-entry bitwise and the GPU against the CPU reference, at the widths 512 and 1024
+    auto kq_down = [&] {
+        // Q4-SYCL: and the hidden width the build is compiled for (3072 in q4_mid, 4096 in q4_big; the pools' buffers follow it)
+        std::vector<int64_t> Hs = {2048, 2560};
+        if (std::find(Hs.begin(), Hs.end(), (int64_t) strata::core::kCompiledGeometry.n_embd) == Hs.end()) Hs.push_back(strata::core::kCompiledGeometry.n_embd);
+        const int gus[] = {12, 13};
+        for (const int gu : gus)
+            for (const int dt : {13
+#ifdef STRATA_Q6K_EXPERTS
+                                 , 14
+#endif
+                                })
+                for (const int64_t H : Hs)
+                    for (const int64_t FF : {512, 1024}) check_kq(gu, dt, H, FF, s, rng);
+    };
+    // Q4-KQ: --hash, a checksum of the grouped expert call's output bytes for every pair of today's sets (the IQ3_XXS pack and the
+    // Unsloth UD sets at the model's 2560 x 640), fixed seeds: run on the build before and after a kernel change, the lines must be
+    // identical (the A750 is not repeatable end to end, but a kernel call on fixed inputs is)
+    if (argc > 1 && std::string(argv[1]) == "--hash") {
+        const int pairs[][2] = {{18, 42}, {18, 20}, {18, 6}, {18, 8}, {21, 20}, {21, 6}, {21, 8}, {21, 42}, {23, 20}, {23, 6}, {16, 42}, {17, 20},
+                                {22, 42}, {29, 42}, {42, 42}, {42, 20}, {12, 7}, {12, 8}, {13, 8}, {13, 7}, {14, 8}, {8, 8}};
+        for (const auto& pr : pairs) {
+            for (const int64_t FF : {640}) {
+                std::mt19937 r2(4242 + pr[0] * 64 + pr[1]);
+                Setup S(pr[0], pr[1], 2560, FF, 6, 4, 9, r2, s);
+                uint64_t h = 1469598103934665603ull;
+                for (const int groups : {1, 3, 5, 8}) {
+                    S.plan(groups, 0, r2);
+                    const auto b = S.result(false, 0, 0x7F, s);
+                    for (const auto v : b) { h ^= (uint64_t) v; h *= 1099511628211ull; }
+                }
+                std::printf("HASH %s/%s 2560 x %lld %016llx\n", name_of(pr[0]), name_of(pr[1]), (long long) FF, (unsigned long long) h);
+            }
+        }
+        dpct::get_current_device().destroy_queue(s);
+        return 0;
+    }
+    if (argc > 1 && std::string(argv[1]) == "--kqdown") {
+        kq_down();
+        std::printf("native_grouped_parity --kqdown: %d failures\n", g_fail);
+        dpct::get_current_device().destroy_queue(s);
+        return g_fail ? 1 : 0;
+    }
     if (argc > 1 && std::string(argv[1]) == "--kq") {   // the K-quant split and the CPU reference only
         const int pairs[][2] = {{12, 7}, {12, 8}, {13, 8}, {14, 8}, {8, 8}, {13, 7}};
         for (const auto& pr : pairs) check_kq(pr[0], pr[1], 2560, 640, s, rng);   // the model's shapes
@@ -701,13 +746,29 @@ int main(int argc, char** argv) {
                    14,
 #endif
                    8})        // STRATA_GU_FMTS
-        for (int dt : {20, 23, 42, 7, 8, 6}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS (6 = Q5_0: UD-IQ4_XS / Q3_K_XL); IQ4_XS: n_ff % 256
+        for (int dt : {20, 23, 42, 7, 8, 6, 13}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS (6 = Q5_0: UD-IQ4_XS / Q3_K_XL); IQ4_XS: n_ff % 256
+    kq_down();                                                          // Q4-KQ: Q5_K / Q6_K downs at widths 512 and 1024
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
     // round 0214: every expert type pair of the new Unsloth Qwen3.8-Flash-Next sets at the model's 2560 x 640
     // (IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/Q2_0/IQ3_XXS/IQ4_XS gate/up; Q2_0/IQ4_NL/Q5_0/Q8_0 down; IQ4_XS is 256-wide so n_ff 640 needs a 32-block down)
     for (int gu : {29, 16, 17, 22, 42, 18, 23})
         for (int dt : {42, 20, 6, 8}) check(gu, dt, 2560, 640, s, rng);
     check(21, 23, 2560, 768, s, rng);
+    // Q4-SYCL: the build's own expert shape (q4_lite 2048 x 512, q4_mid 3072 x 1024, q4_big 4096 x 1024): the UD mix's pairs (Q4_K / Q5_K gate/up;
+    // Q5_K, Q6_K, Q5_1, IQ4_NL, Q8_0 downs) against the CPU reference and split vs per-entry
+    if (strata::core::kCompiledGeometry.n_embd != 2560 || strata::core::kCompiledGeometry.n_ff != 640) {
+        const int64_t KH = strata::core::kCompiledGeometry.n_embd, KF = strata::core::kCompiledGeometry.n_ff;
+        std::printf("compiled shape %lld x %lld\n", (long long) KH, (long long) KF);
+        for (int gu : {12, 13})
+            for (int dt : {13,
+#ifdef STRATA_Q6K_EXPERTS
+                           14,
+#endif
+                           7, 8})   // (check_kq's reference has no IQ4_NL down: those pairs are in the loop below)
+                check_kq(gu, dt, KH, KF, s, rng);
+        for (int gu : {29, 16, 17, 22, 42, 18, 23, 21})
+            for (int dt : {42, 20, 6, 8}) check(gu, dt, KH, KF, s, rng);
+    }
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);
     dpct::get_current_device().destroy_queue(s);

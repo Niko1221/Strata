@@ -27,8 +27,10 @@ bool Window::taps_enable(const std::vector<int>& layers, std::string& err) {
         if (layers[i] < 0 || layers[i] >= 47) { err = "metal taps: layer " + std::to_string(layers[i]) + " is out of range"; return false; }
         tap_slot_[layers[i]] = (int) i;
     }
-    ldf2_ = cx_->compile({strata_metal::resource("STRATA_METAL_ENGINE_KERNELS", "engine-msl", STRATA_METAL_ENGINE_KERNELS_DEFAULT) + "/dflash2.metal"},
-                         "#define NO_GGML_COMMON 1\n");
+    {
+        const strata_metal::MslLib L = strata_metal::lib_dflash2(engine_msl_dir());
+        ldf2_ = cx_->compile(L.files, L.prelude);
+    }
     tap_layers_ = layers;
     tap_dec_ = cx_->alloc((size_t) MAXT * layers.size() * N * 4);
     wcache_.clear();   // the windows encoded so far have no tap dispatches
