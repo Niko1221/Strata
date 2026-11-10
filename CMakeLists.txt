@@ -326,6 +326,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(prefill_plan_test PRIVATE include)
   add_test(NAME prefill_plan_test COMMAND prefill_plan_test)
 
+  # #5715: strata-q36's one-session context check (the reporter's 12 GB card from its log): header-only, no GPU
+  add_executable(q36_context_fit_test tests/program/q36_context_fit_test.cpp)
+  target_include_directories(q36_context_fit_test PRIVATE include)
+  add_test(NAME q36_context_fit_test COMMAND q36_context_fit_test)
+
   # the default CPU prefill share is not armed when every expert is resident (#1595): header-only rule, no GPU
   add_executable(share_rules_test tests/prefill/share_rules_test.cpp)
   target_include_directories(share_rules_test PRIVATE include)
