@@ -416,7 +416,10 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
         const bool staged = a.active && src[i] != nullptr && sizes[i] > keep && a.used + (sizes[i] - keep) <= a.cap &&
                             (st.kv_mode == 0 || on_device(src[i]));
         const auto t1 = tick();
-        if (staged) dst[i]->resize_for_overwrite(sizes[i]);
+        // STRATA_PARK_BOUNCE: the copy below writes every byte past `keep` (or fails, and the image is dropped), so the
+        // zero fill is skipped as on the staged path
+        static const bool no_fill = [] { const char* v = std::getenv("STRATA_PARK_BOUNCE"); return v != nullptr && v[0] == '1'; }();
+        if (staged || (no_fill && src[i] != nullptr)) dst[i]->resize_for_overwrite(sizes[i]);
         else dst[i]->resize(sizes[i]);
         const auto t2 = tick();
         const bool copied = dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
