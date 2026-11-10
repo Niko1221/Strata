@@ -129,6 +129,9 @@ class Base(unittest.TestCase):
         self.memory = N.HostMemory()
         self.opener = N.build_opener(urllib.request.ProxyHandler({}))
         self.lines = []
+        p = mock.patch.object(N, "CONNECT_LIMITS", (0.4, 0.8))      # the rule's window, scaled: (0.4, 0.8) is the full window here
+        p.start()
+        self.addCleanup(p.stop)
 
     def open(self, url, limits=(0.4, 0.8), **kw):
         kw.setdefault("memory", self.memory)
@@ -193,6 +196,24 @@ class BlackHoleFailsFast(Base):
         with self.assertRaises(N.NetFailure) as cm:
             self.open(f"http://127.0.0.1:{hole.port}/b", check_memory=False)
         self.assertEqual(cm.exception.kind, "no_answer")
+
+    def test_a_shorter_call_reads_the_memory_but_never_writes_it(self):
+        hole = BlackHole()
+        self.addCleanup(hole.close)
+        with self.assertRaises(N.NetFailure) as cm:
+            self.open(f"http://127.0.0.1:{hole.port}/models", limits=(0.2, 0.2))      # an optional 5 s read, scaled
+        self.assertEqual(cm.exception.kind, "no_answer")
+        self.assertFalse(self.memory.failed_recently(f"127.0.0.1:{hole.port}"), "a short read does not mark the host")
+        with self.assertRaises(N.NetFailure) as cm:                                  # the required download: its own full window
+            self.open(f"http://127.0.0.1:{hole.port}/engine")
+        self.assertEqual(cm.exception.kind, "no_answer")
+        self.assertEqual(len(hole.held), 4)
+        self.assertTrue(self.memory.failed_recently(f"127.0.0.1:{hole.port}"))
+        t0 = time.monotonic()
+        with self.assertRaises(N.NetFailure) as cm:                                  # and a later short read skips it at once
+            self.open(f"http://127.0.0.1:{hole.port}/models", limits=(0.2, 0.2))
+        self.assertEqual(cm.exception.kind, "again")
+        self.assertLess(time.monotonic() - t0, 0.1)
 
     def test_the_waiting_line_names_the_host(self):
         hole = BlackHole()

@@ -109,7 +109,11 @@ def missing_file(failure: str) -> bool:
 
 
 def capital(text: str) -> str:
-    """A reason that was written to stand alone ("the update feed could not be read: ...") starts the sentence it is joined to with a capital."""
+    """A reason that was written to stand alone ("the update feed could not be read: ...") starts the sentence it is joined to with a capital.
+    A host name stays as it is written ("github.com did not answer ...", strata_control/netpolicy.py)."""
+    first = text.split(" ", 1)[0]
+    if "." in first.strip(".") and re.fullmatch(r"[a-z0-9.-]+", first.rstrip(".")):
+        return text
     return text[:1].upper() + text[1:]
 
 
@@ -1256,9 +1260,10 @@ class Runner:
         for line in self._read_lines(p):
             if self.cancel.is_set():
                 self._stop_children()
+                self.keep_setup_output(lines + [f"(you stopped it{': ' + said[0] if said else ''})"])   # the log says where it stood
                 raise Cancelled()
             if line is None:                                 # nothing printed for a while: the long steps (packing, converting) are silent
-                if said and said[1] != "download" and time.monotonic() - quiet_since >= self.HEARTBEAT_S:
+                if said and time.monotonic() - quiet_since >= self.HEARTBEAT_S:     # (the download phase too: a server that does not answer is silent)
                     quiet_since = time.monotonic()
                     self.emit("model", f"{said[0]} (still working, {_elapsed(time.monotonic() - step_since)} so far)", None, step=step_seen)
                 continue
@@ -1279,11 +1284,10 @@ class Runner:
             dl, phase, label = prog.get("download"), prog.get("phase"), prog.get("label")
             if prog.get("step") != step_seen:
                 step_seen, step_since = prog.get("step"), time.monotonic()
-            if label and not dl:
-                said = (label, phase)
-            else:
-                said = None
-            if dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
+            said = (label, phase) if label else None
+            if phase == "waiting":                           # setup is waiting for a server to answer: say which one (netpolicy's line)
+                self.emit("model", label, None, step=prog.get("step"))
+            elif dl and dl.get("total_gb", 0) >= 0.05 and not (s.model_path and phase == "download"):
                 if phase == "download" and already is None:
                     already = float(dl["percent"]) >= 99.5
                 text = download_text(dl, bool(already) and phase == "download", label)

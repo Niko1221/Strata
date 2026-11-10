@@ -11,7 +11,8 @@ the screen. The rule here:
    unreachable, a refused certificate, an HTTP error other than 408/429/5xx.
 3. One retry, ``RETRY_GAP_S`` later, for a timeout, a reset before the first byte, or HTTP 408/429/5xx. A host that never answers is
    given up after about 12 + 2 + 30 = 44 s.
-4. A host given up under rule 3 is not tried again for ``HOST_MEMORY_S`` *in the same process* (``HOSTS``, memory only, never on disk:
+4. A host given up under rule 3 after the whole window (12 s, then 30 s) is not tried again for ``HOST_MEMORY_S`` *in the same process*
+   (``HOSTS``, memory only, never on disk; a call with shorter limits reads it but never writes it;
    a new run always tries afresh). The next file from it fails at once with the same message.
 5. Once the answer has come, a read that gets no byte for ``STALL_S`` ends that connection (the caller resumes from the byte it
    reached). A download stops only after ``GIVE_UP_S`` in a row without a new byte (``StallClock``); there is no total time cap, so a
@@ -59,9 +60,14 @@ WORDS = {
              "Models that are already on this computer still start without the internet."),
     "stalled": "No data arrived for {minutes} minutes, so the download of {what} stopped at {percent}%.",
     "stalled_next": "Run the same command again: it continues where it stopped.",
+    "update_no_answer": ("{host} did not answer within {seconds} seconds, so the update check could not run. Check that this computer can open "
+                         "https://{host}, then try again. Strata keeps working with what is installed."),
+    # (W7's two companions, owner 11-10)
+    "update_offline": "this computer could not connect to {host} (it looks offline), so the update check could not run. Strata keeps working with what is installed.",
+    "update_again": "{host} did not answer a moment ago, so the update check was not tried again. Strata keeps working with what is installed.",
 }
 
-#: the waiting line as setup prints it ("  Waiting for huggingface.co to answer (15 s so far) ..."), for the progress readers
+#: the waiting line as setup prints it ("  Waiting for github.com to answer (15 s so far) ..."), for the progress readers
 WAITING_RE = re.compile(r"^\s*Waiting for (?P<host>\S+) to answer \((?P<seconds>\d+) s so far\)")
 
 
@@ -256,17 +262,12 @@ def create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_ad
         left = deadline - time.monotonic()
         if left <= 0:
             break
-        sock = socket.socket(af, socktype, proto)
-        try:
-            sock.settimeout(left)
-            if source_address:
-                sock.bind(source_address)
-            sock.connect(sa)
+        try:                                                     # through socket.create_connection (a numeric address: no second lookup)
+            sock = socket.create_connection(sa[:2], left, source_address)
             sock.settimeout(max(0.05, deadline - time.monotonic()))
             return sock
         except OSError as exc:
             last = exc
-            sock.close()
     if last is not None and not isinstance(last, (TimeoutError, socket.timeout)):
         raise last
     raise TimeoutError(f"{host} did not accept a connection within {limit:.0f} s")
@@ -340,7 +341,7 @@ _OPENER_LOCK = threading.Lock()
 
 def urlopen(request, timeout=None):
     """urllib.request.urlopen with the rule's connection classes: `timeout` bounds the connection phase, reads after the answer stall
-    out after STALL_S. Without a timeout it behaves as urllib does."""
+    out after STALL_S. Without a timeout it behaves as urllib does. (Tests that fake the network replace this function.)"""
     global _OPENER
     with _OPENER_LOCK:
         if _OPENER is None:
@@ -354,7 +355,7 @@ def urlopen(request, timeout=None):
 # ------------------------------------------------------------------------------------------------ one request under the rule
 
 def open_url(open_fn: Callable, request, *, host: str | None = None, say: Callable[[str], None] | None = None,
-             memory: HostMemory | None = None, limits: Iterable[float] = CONNECT_LIMITS, gap: float | None = None,
+             memory: HostMemory | None = None, limits: Iterable[float] | None = None, gap: float | None = None,
              sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic, check_memory: bool = True,
              wait_after: float | None = None, wait_every: float | None = None):
     """open_fn(request, timeout=limit) under rules 1-4 and 6. Returns the answer. Raises NetFailure when the host did not answer or
@@ -362,10 +363,18 @@ def open_url(open_fn: Callable, request, *, host: str | None = None, say: Callab
     refusal of the acquisition rule) unchanged."""
     url = getattr(request, "full_url", request)
     host = host or host_of(str(url))
+    try:                                                         # remembered per host and port (a test server on 127.0.0.1 is not github.com)
+        key = (urllib.parse.urlsplit(str(url)).netloc or host).lower()
+    except ValueError:
+        key = host
     memory = HOSTS if memory is None else memory
-    if check_memory and memory.failed_recently(host):
+    if check_memory and memory.failed_recently(key):
         raise NetFailure(host, "again")
-    limits = tuple(limits)
+    limits = tuple(CONNECT_LIMITS if limits is None else limits)
+    # Only a failure that had the whole window of the rule (12 s, then 30 s) is remembered: a call with shorter limits (an optional read
+    # of 5 s) may READ the memory and skip a host that already failed, but never WRITES it, so a slow but working link that a short read
+    # gave up on still gets its full attempt from a download that needs it (coordinator, 11-10).
+    full = len(limits) >= len(CONNECT_LIMITS) and all(a >= b for a, b in zip(limits, CONNECT_LIMITS))
     gap = RETRY_GAP_S if gap is None else gap
     start = clock()
     with WaitLine(host, say, wait_after, wait_every, clock):
@@ -388,7 +397,8 @@ def open_url(open_fn: Callable, request, *, host: str | None = None, say: Callab
                     sleep(gap)
                     continue
                 if k in ("no_answer", "retry"):
-                    memory.remember(host)
+                    if full:
+                        memory.remember(key)
                     raise NetFailure(host, "no_answer", exc, clock() - start) from None
                 if k == "offline":
                     raise NetFailure(host, "offline", exc, clock() - start) from None

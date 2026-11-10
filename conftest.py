@@ -4,6 +4,23 @@ A test that reaches it must never touch the real file, so the whole session gets
 import os
 import tempfile
 
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _fresh_host_memory():
+    """The network rule remembers, per process, a host that did not answer (strata_control/netpolicy.py HOSTS). A test run is one process: each
+    test starts with an empty memory, so one test's dead fake server does not make the next test's request "fail a moment ago"."""
+    def forget():
+        try:
+            from strata_control import netpolicy
+            netpolicy.HOSTS.forget()
+        except ImportError:
+            pass
+    forget()
+    yield
+    forget()
+
 _home = tempfile.mkdtemp(prefix="strata-pytest-config-")
 os.environ["APPDATA"] = _home
 os.environ["XDG_CONFIG_HOME"] = _home

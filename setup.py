@@ -64,6 +64,7 @@ from pathlib import Path
 
 from strata_control import acquisition
 from strata_control import tls
+from strata_control import netpolicy
 
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
 from strata_control import atomic
@@ -1117,11 +1118,27 @@ def _urlopen(req, timeout=None):
     (strata_control/acquisition.py), only an explicit setup, update or install does."""
     acquisition.require("a download")
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        # strata_control/netpolicy.py: `timeout` bounds the connection phase (lookup, connect, TLS, the answer's headers); a read after
+        # the answer that gets no byte for netpolicy.STALL_S ends the connection
+        return netpolicy.urlopen(req, timeout=timeout)
     except urllib.error.URLError as e:
         if tls.is_certificate_error(e):               # not the raw urlopen text, and never a way to skip the check
             raise tls.CertificateProblem(tls.host_of(req.full_url if hasattr(req, "full_url") else str(req))) from None
         raise
+
+
+def _open_net(req, check_memory: bool = True):
+    """One request under the network rule (strata_control/netpolicy.py): 12 s, then one retry with 30 s, a line naming the host after
+    5 s, and a host that did not answer is not asked again in this run. Raises netpolicy.NetFailure, HTTPError or CertificateProblem."""
+    return netpolicy.open_url(_urlopen, req, say=lambda line: say(f"  {line} ..."), check_memory=check_memory)
+
+
+def net_fail(e: "netpolicy.NetFailure", url: str, what=None):
+    """setup's stop for a host that cannot be reached: the plain sentence, the one next step, then the proxy and ModelScope hints."""
+    extra = "".join(" " + h[2:3].upper() + h[3:] + "." for h in (proxy_hint(), source_hint(url)) if h)
+    if e.detail():
+        say(f"  ({e.host}: {e.detail()})")             # the raw reason, for the log
+    fail(e.headline(netpolicy.what_words(what)), e.next_step() + extra)
 
 
 def run(cmd, cwd=None, env=None, check=True, quiet=False):
@@ -2717,7 +2734,7 @@ class _Source:
             if stale is not None and self.final is not None and self.final != stale:
                 return self.final                        # another connection already got a fresh address
             req = urllib.request.Request(self.url, headers={"User-Agent": "strata-setup", "Range": "bytes=0-0"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 cr = (r.headers.get("Content-Range") or "").strip()
                 if r.status != 206 or cr != f"bytes 0-0/{self.total}":
                     raise _NoRange(f"HTTP {r.status}, Content-Range {cr!r}")
@@ -2910,7 +2927,7 @@ def _fetch_run(src: _Source, st: _Pieces, f, run: list):
         try:
             url = src.get()
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={pos}-{end}"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 _check_ranged(r, pos, end, st.total, src.etag)
                 while pos <= end:
                     if st.stop.is_set():
@@ -3141,7 +3158,7 @@ def _repair_piece(src: _Source, st: _Pieces, f, i: int, stats: dict):
         try:
             url = src.get()
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={pos}-{end}"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 _check_ranged(r, pos, end, st.total, src.etag)
                 while pos <= end:
                     if st.stop.is_set():
@@ -3252,7 +3269,7 @@ def download_single(url: str, part: Path, total: int, label: str):
             break                                      # ask for (a range past the end is a 416, retried 30 times)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 if have:
                     m = _CONTENT_RANGE.match(r.headers.get("Content-Range") or "")
                     if r.status != 206 or not m or int(m.group(1)) != have or (total and int(m.group(3)) != total):
@@ -3294,7 +3311,7 @@ def range_total(url: str) -> int:
     (ModelScope's: #1915); 0 when it does not say.  With the length known the file comes over several connections."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": "bytes=0-0"})
-        with _urlopen(req, timeout=60) as r:
+        with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
             m = re.match(r"\s*bytes 0-0/(\d+)\s*$", r.headers.get("Content-Range") or "")
             return int(m.group(1)) if r.status == 206 and m else 0
     except (OSError, http.client.HTTPException):
@@ -3336,7 +3353,7 @@ def download(url, dst: Path, what=None):
         return
     ms = ms_file(url) if model_source() == "modelscope" else None
     if ms is not None:
-        if reachable(ms_url(*ms), timeout=30):
+        if reachable(ms_url(*ms), timeout=netpolicy.FIRST_CONNECT_S):
             url = ms_url(*ms)
         else:
             warn(f"{what or dst.name}: ModelScope does not answer; downloading it from {hf_endpoint()}")
@@ -3345,10 +3362,11 @@ def download(url, dst: Path, what=None):
     total = 0
     # the file's pinned size and SHA-256, when it has them (ModelScope's copy is checked against the same pin)
     pin = REPO_PINS.get(ms[0], {}).get(ms[1].rsplit("/", 1)[-1]) if ms is not None else file_pin(url)
-    for attempt in range(5):
+    for _unpinned in range(2):                         # the size: one request under the network rule (no more 5 x 60 s in silence)
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
-            total = int(_urlopen(req, timeout=60).headers.get("Content-Length", 0))
+            with _open_net(req) as r:
+                total = int(r.headers.get("Content-Length", 0) or 0)
             break
         except urllib.error.HTTPError as e:
             if e.code == 404 and hf_unpinned(url) != url:  # the pinned revision is gone from the repository
@@ -3360,17 +3378,15 @@ def download(url, dst: Path, what=None):
                 url = hf_unpinned(url)
                 pin = None
                 continue
-            if attempt == 4:
-                fail(f"cannot reach {url.split('/')[2]} ({e})",
-                     "check your internet connection and run it again" + proxy_hint() + source_hint(url))
-            time.sleep(5)
-        except tls.CertificateProblem as e:           # the same answer five times: no retry
+            fail(f"cannot reach {url.split('/')[2]} ({e})",
+                 "check your internet connection and run it again" + proxy_hint() + source_hint(url))
+        except tls.CertificateProblem as e:           # the same answer every time: no retry
             fail(f"cannot download from {url.split('/')[2]}: its security certificate was not accepted", str(e))
-        except OSError as e:
-            if attempt == 4:
-                fail(f"cannot reach {url.split('/')[2]} ({e})",
-                     "check your internet connection and run it again" + proxy_hint() + source_hint(url))
-            time.sleep(5)
+        except netpolicy.NetFailure as e:
+            net_fail(e, url, what)
+        except (OSError, http.client.HTTPException) as e:
+            fail(f"cannot reach {url.split('/')[2]} ({e})",
+                 "check your internet connection and run it again" + proxy_hint() + source_hint(url))
     if not total:
         total = range_total(url)
     meta = ms_meta(*ms) if ms is not None else None
