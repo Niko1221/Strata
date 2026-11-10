@@ -456,3 +456,10 @@ ref-overrides.txt / calibration.txt(sha256 已记)都在 $D。imatrix 记录按�
   已 enable + linger:开机自启、崩溃自拉(Restart=on-failure)。
 - 日常:start/stop/status 走 systemctl --user;日志 journalctl --user -u strata-glm53 -f。
   旧 systemd-run 脚本 start-glm53.sh 保留为等价入口,同名瞬态单元与常驻单元互斥(先 stop 再用)。
+
+### systemd 单元启动失败的修复(2026-11-10 晚)
+- 事故:重启后服务崩溃循环 30+ 次。根因是 config 里我调试期加的 "log": "/tmp/opencode/engine53.log"
+  —— /tmp 重启即清,open("a") 因父目录不存在抛 FileNotFoundError(而不是警告)。
+- 修复:log 挪到 /data/models/.../engine53.log(常驻目录);单元加 After=local-fs.target +
+  ExecStartPre 检查 /data 与 /nvme 模型目录存在;RestartSec=15 + StartLimitBurst=0(无限自愈重试)。
+- 教训:**配置里的每个路径都必须是重启后依然存在的路径**;/tmp 只放可再生文件。
