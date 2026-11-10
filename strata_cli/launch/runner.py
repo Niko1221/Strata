@@ -2904,6 +2904,15 @@ def engine_log_tail(config: Path | None, limit: int = 65536, since: dict | None 
     return [x.rstrip() for x in data.splitlines() if x.strip()], str(log)
 
 
+def _reader_token_limit(config: Path | None) -> int | None:
+    """The picture reader's image limit in the run config (vision.max_tokens; 0 = no limit); None when the config does not say (the default limit)."""
+    try:
+        value = (read_config(config).get("vision") or {}).get("max_tokens") if config else None
+        return int(value) if value is not None else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def _reader_room_facts(config: Path | None, room: reader_room.NoRoom) -> tuple[int | None, int | None]:
     """(the card as nvidia-smi numbers it, its free memory in MiB) for a picture reader that found no room; None for what cannot be said.  The reader counts
     the cards its environment shows it, so its number is looked up in the list the server gave it (the config's cards in the engine's order, or the one card
@@ -2972,7 +2981,7 @@ def explain_engine_exit(result: dict, config: Path | None, marks: dict | None = 
             cause = ""
     if reader is not None and not hsa:                    # the plain sentence: which card, what the reader needs, what is free, and the next step
         card, free = _reader_room_facts(config, reader)
-        said, nxt = reader_room.could_not_start(card, reader.need_mib, free)
+        said, nxt = reader_room.could_not_start(card, reader_room.whole_need_mib(reader.need_mib, _reader_token_limit(config)), free)
         return said, nxt + _log_sentence(log)
     text = stage + (f": {cause}" if cause else ".")
     if not text.endswith((".", "!")):

@@ -19,7 +19,7 @@ from strata_cli.launch import runner as R
 
 ALLOC = "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 865.48 MiB on device 0: cudaMalloc failed: out of memory"
 NOTE = ("Pictures are read on the processor, which is slower: graphics card 2 has no room for the picture reader "
-        "(it needs about 0.8 GB; 0.1 GB are free). To read them on the card, close the other programs that use it and start again.")
+        "(it needs about 1.5 GB; 0.1 GB are free). To read them on the card, close the other programs that use it and start again.")
 
 
 def plain_popen(what, args, **kw):
@@ -129,6 +129,12 @@ class Fallback(unittest.TestCase):
         self.assertIn("[strata] the GPU picture reader did not start", said)
         self.assertIn("pictures are read on the CPU", said)
 
+    def test_the_need_in_the_note_follows_the_image_limit(self):
+        v = self.vision(self.OOM, self.READY, env={"CUDA_VISIBLE_DEVICES": "2,3"})
+        v.max_tokens = 16384
+        self.start(v)
+        self.assertIn("(it needs about 3.6 GB; 0.1 GB are free)", v.cpu_note)
+
     def test_a_reader_that_starts_changes_nothing(self):
         v = self.vision(self.READY, self.OOM)
         error, said = self.start(v)
@@ -163,7 +169,7 @@ class Fallback(unittest.TestCase):
         error, _ = self.start(v)
         self.assertIsNone(error)
         self.assertEqual(v.cpu_note, "Pictures are read on the processor, which is slower: the graphics card has no room for the picture reader "
-                                     "(it needs about 0.8 GB). To read them on the card, close the other programs that use it and start again.")
+                                     "(it needs about 1.5 GB). To read them on the card, close the other programs that use it and start again.")
 
     def test_an_on_demand_reader_that_goes_up_again_loses_the_note(self):
         v = self.vision(self.OOM, self.READY, env={"CUDA_VISIBLE_DEVICES": "2,3"})

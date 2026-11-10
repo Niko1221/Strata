@@ -65,6 +65,27 @@ class Find(unittest.TestCase):
         self.assertIsNone(reader_room.physical_card(None, "0"))
 
 
+class Need(unittest.TestCase):
+    def test_the_whole_need_at_a_limit(self):
+        self.assertEqual(reader_room.reader_needs_mib(1024), 1536)
+        self.assertEqual(reader_room.reader_needs_mib(None), 1536)
+        self.assertEqual(reader_room.reader_needs_mib(300), 1536)                 # below the default limit it is not smaller: the warm-up picture is the same
+        self.assertAlmostEqual(reader_room.reader_needs_mib(16384), 3674)
+        self.assertAlmostEqual(reader_room.reader_needs_mib(0), 3674)             # no limit: the largest the Terminal offers
+        self.assertAlmostEqual(reader_room.reader_needs_mib(99999), 3674)
+        self.assertTrue(1536 < reader_room.reader_needs_mib(4096) < 3674)
+
+    def test_what_the_person_is_told_is_the_larger_of_the_failed_allocation_and_that(self):
+        self.assertEqual(reader_room.whole_need_mib(865.48, 1024), 1536)
+        self.assertEqual(reader_room.whole_need_mib(None, 1024), 1536)
+        self.assertEqual(reader_room.whole_need_mib(2600, 1024), 2600)
+        self.assertAlmostEqual(reader_room.whole_need_mib(865.48, 16384), 3674)
+
+    def test_in_the_sentence(self):
+        said, _ = reader_room.could_not_start(0, reader_room.whole_need_mib(865.48), 600)
+        self.assertEqual(said, "The picture reader could not start: graphics card 0 has no room for it (it needs about 1.5 GB; 0.6 GB are free).")
+
+
 class Words(unittest.TestCase):
     """The owner's wording (11-10), exactly."""
 
@@ -114,7 +135,7 @@ class LaunchSaysIt(unittest.TestCase):
         text, nxt = R.explain_engine_exit({"state": "failed", "error": "server_exited", "engine_exit_code": code}, path)
         return text, nxt, log
 
-    NEW2 = "The picture reader could not start: graphics card 0 has no room for it (it needs about 0.8 GB; 0.1 GB are free)."
+    NEW2 = "The picture reader could not start: graphics card 0 has no room for it (it needs about 1.5 GB; 0.1 GB are free)."      # 865 MiB failed; the reader needs 1,536 in all
     STEP = "Close the other programs that use the card and start again, or add --vision off to start without pictures."
 
     def test_linux_with_gdb_as_seen_on_the_v100_box(self):
@@ -143,7 +164,7 @@ class LaunchSaysIt(unittest.TestCase):
     def test_the_free_memory_is_left_out_when_it_cannot_be_read(self):
         self.free.clear()
         text, _, _ = self.explain([ALLOC, BUFFER, ASSERT] + GDB)
-        self.assertEqual(text, "The picture reader could not start: graphics card 0 has no room for it (it needs about 0.8 GB).")
+        self.assertEqual(text, "The picture reader could not start: graphics card 0 has no room for it (it needs about 1.5 GB).")
 
     def test_the_card_is_the_one_in_the_config_in_the_engines_order(self):
         text, _, _ = self.explain([ALLOC.replace("device 0", "device 1"), ASSERT], cfg={"gpu": [2, 3], "gpu_order": "as_given"})
@@ -157,7 +178,23 @@ class LaunchSaysIt(unittest.TestCase):
         for cfg in (None, {"gpu": [2, 3], "gpu_order": "as_given"}):
             with self.subTest(cfg=cfg):
                 text, _, _ = self.explain(["CUDA error: cudaMalloc failed: out of memory", "GGML_ASSERT failed"], cfg=cfg)
-                self.assertEqual(text, "The picture reader could not start: the graphics card has no room for it.")
+                self.assertEqual(text, "The picture reader could not start: the graphics card has no room for it (it needs about 1.5 GB).")       # no figure in the line: the reader's known need
+
+    def test_the_need_is_the_readers_whole_need_not_the_one_allocation_that_failed(self):
+        self.free[0] = 600
+        text, _, _ = self.explain([ALLOC, BUFFER, ASSERT] + GDB)             # 865 MiB failed, 600 MiB free
+        self.assertEqual(text, "The picture reader could not start: graphics card 0 has no room for it (it needs about 1.5 GB; 0.6 GB are free).")
+
+    def test_the_need_grows_with_the_readers_image_limit(self):
+        for limit, said in ((None, "1.5 GB"), (1024, "1.5 GB"), (4096, "1.9 GB"), (16384, "3.6 GB"), (0, "3.6 GB")):
+            with self.subTest(limit=limit):
+                cfg = {"vision": {"max_tokens": limit}} if limit is not None else None
+                text, _, _ = self.explain([ALLOC, BUFFER, ASSERT], cfg=cfg)
+                self.assertIn("(it needs about " + said + ";", text)
+
+    def test_a_bigger_failed_allocation_is_the_need(self):
+        text, _, _ = self.explain([ALLOC.replace("865.48 MiB", "2600.00 MiB"), ASSERT])
+        self.assertIn("(it needs about 2.5 GB;", text)
 
     def test_the_engines_own_out_of_memory_later_in_the_log_wins(self):
         text, nxt, _ = self.explain([ALLOC, BUFFER, "strata serve: the GPU has too little free VRAM for the prompt path: turn images off (setup: --vision no)"])

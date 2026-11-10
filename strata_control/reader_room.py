@@ -22,6 +22,31 @@ _BUFFER = re.compile(r"failed to allocate (?:CUDA|ROCm|HIP|MUSA)(\d+) buffer of 
 _GENERIC = re.compile(r"(?:cuda|hip)Malloc failed: out of memory", re.I)
 
 
+#: What the GPU picture reader takes from the card in all, at the default image limit of 1,024 tokens: 1,342 MiB measured on an RTX A6000 and an R9700, 1,536 the
+#: figure the server plans with (serve/server.py READER_NEEDS_MIB).  Above 1,024 tokens the picture is bigger and so are the reader's work buffers: at 16,384
+#: tokens the largest peak measured for mtmd's GPU reader was 3,674 MiB (P100, Qwen3.8), 3,264-3,656 MiB on the other cards; between the two the need is taken to
+#: grow in a straight line with the limit (an estimate, said as "about").  A limit of 0 means no limit: the largest the Terminal offers, 16,384.
+READER_NEEDS_MIB = 1536
+READER_NEEDS_AT_LIMIT_MIB = 3674
+READER_LIMIT_DEFAULT = 1024
+READER_LIMIT_LARGEST = 16384
+
+
+def reader_needs_mib(max_tokens: int | None = None) -> float:
+    """The reader's whole need of the card, in MiB, at an image limit of max_tokens tokens (None: the default limit; 0: no limit)."""
+    limit = READER_LIMIT_DEFAULT if max_tokens is None else int(max_tokens)
+    if limit == 0:
+        limit = READER_LIMIT_LARGEST
+    limit = min(max(limit, READER_LIMIT_DEFAULT), READER_LIMIT_LARGEST)
+    return READER_NEEDS_MIB + (limit - READER_LIMIT_DEFAULT) * (READER_NEEDS_AT_LIMIT_MIB - READER_NEEDS_MIB) / (READER_LIMIT_LARGEST - READER_LIMIT_DEFAULT)
+
+
+def whole_need_mib(failed_mib: float | None, max_tokens: int | None = None) -> float:
+    """What to tell the person the reader needs: the larger of the one allocation that failed (the line says it) and the reader's known need at its limit.  The
+    failed allocation alone is not the need: a person who frees that much and nothing more still fails on the next one."""
+    return max(float(failed_mib or 0.0), reader_needs_mib(max_tokens))
+
+
 @dataclass(frozen=True)
 class NoRoom:
     """`device`: the card's number as the reader counts (the cards its environment shows it), None when the lines do not say; `need_mib`: what it asked for."""
