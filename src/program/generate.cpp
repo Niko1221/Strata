@@ -10536,7 +10536,7 @@ int main(int argc, char** argv) {
                          (long long) src.resident_lent_slots(),
                          o.resident_budget > 0
                              ? (ram_fallback_resident
-                                    ? "A larger the automatic RAM copy (the lend region comes after the ranked experts), or a smaller --prefill,"
+                                    ? "A larger automatic RAM copy (the lend region comes after the ranked experts), or a smaller --prefill,"
                                     : "A larger --resident-budget-gib (the lend region comes after the ranked experts), or a smaller --prefill,")
                              : "A smaller --prefill, or auto,");
         if (resident_ok) {

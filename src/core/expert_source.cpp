@@ -4214,7 +4214,7 @@ bool FileExpertSource::pin_cache_complement(
                              "cost 26%%). %s and restart; the line above should read N of N.\n", missing, lendable,
                      100.0 * (double) missing / (double) std::max<long long>(1, lendable),
                      lend ? "Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start)"
-                          : budget_automatic_ ? "Raise the automatic RAM copy (the lend region comes after the ranked experts)"
+                          : budget_automatic_ ? "Free more RAM for the automatic RAM copy (the lend region comes after the ranked experts)"
                                               : "Raise --resident-budget-gib (the lend region comes after the ranked experts)");
     }
     if (!stage_lend_regions_.empty()) {
