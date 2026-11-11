@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +49,15 @@ void set_idle_thread_stack(uint64_t lo, uint64_t hi);
 /// #3431 (Windows, HIP): the start addresses of the address-space reservations main() keeps for the life of the process; a GPU
 /// alias inside one is clear, nothing can be placed there.
 void set_held_address_space(std::vector<uint64_t> bases);
+
+/// STRATA_ARENA_NUMA_PLACE (Linux, expert_source.cpp): what an arena does with its pages between the reservation and the
+/// registration.  `place` gets the reserved, untouched private mapping (base, bytes) and faults its pages in on the nodes
+/// it wants; the arena then takes 4 KiB pages (no hugetlb, no MADV_HUGEPAGE, MADV_NOHUGEPAGE), since one 2 MiB page
+/// would hold both nodes' halves of an expert.  Not for a shared arena file.  Empty `place`: the constructors that take
+/// it behave exactly as the ones without it.
+struct ArenaPrePlace {
+    std::function<void(uint8_t* base, uint64_t bytes)> place;
+};
 
 struct PinnedArena {
     void* base = nullptr;
@@ -83,6 +93,12 @@ struct PinnedArena {
     struct ByNeed {};
     PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
                 uint64_t max_pinned_bytes = 0, const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+    /// The two constructors above with an ArenaPrePlace step run before the registration (CUDA / HIP builds only).
+    PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes,
+                const std::string& shared_file, uint64_t shared_pack_hash, const ArenaPrePlace& pre);
+    PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+                uint64_t max_pinned_bytes, const std::string& shared_file, uint64_t shared_pack_hash,
+                const ArenaPrePlace& pre);
     bool by_need = false;
     std::vector<std::pair<uint64_t, uint64_t>> pin_ranges;    ///< registered (offset, length), sorted by offset, page-rounded
     std::vector<std::pair<uint64_t, uint64_t>> locked_ranges; ///< the holes locked resident (offset, length)

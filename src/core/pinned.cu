@@ -138,8 +138,10 @@ uint64_t free_huge_bytes() {
 // A non-empty shared_file instead maps one file whose first 4 KiB identify the pack and whose remaining bytes
 // are the resident arena.  This shared-file layout is intended for tmpfs (/dev/shm); hugetlbfs would need
 // hugepage-aligned file size and arena offset rather than the 4 KiB header layout used here.
+// `small_pages` (STRATA_ARENA_NUMA_PLACE, Linux, private arena only): 4 KiB pages, no hugetlb try and no transparent huge pages.
 void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::string& shared_file,
-              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes) {
+              uint64_t shared_pack_hash, void*& mapping_base, uint64_t& mapping_bytes, bool small_pages = false) {
+    (void) small_pages;
     mapping_base = nullptr;
     mapping_bytes = 0;
 
@@ -431,7 +433,9 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
 
     // STRATA_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
     // here too, so the large-page path can be compared without changing the pool or rebooting.
-    if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
+    if (small_pages) {
+        note = "4 KB pages (NUMA placement: a 2 MiB page would hold both nodes' halves of an expert)";
+    } else if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
         note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
     } else {
         void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
@@ -468,6 +472,12 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     const uintptr_t end = aligned + bytes, raw_end = start + padded;
     if (raw_end > end) munmap((void*) end, raw_end - end);
     void* p = (void*) aligned;
+    if (small_pages) {
+        // THP "always" would still give this mapping huge pages: say no for the whole of it (one call, no VMA split)
+        if (madvise(p, bytes, MADV_NOHUGEPAGE) != 0)
+            note += "; madvise(MADV_NOHUGEPAGE) failed (errno " + std::to_string(errno) + ")";
+        return p;
+    }
     // #771: with THP "always" the kernel already backs this mapping with huge pages where it can; the extra
     // MADV_HUGEPAGE only adds direct reclaim and compaction on every fault (defrag=madvise), which on a fragmented
     // machine stretched a 25 s start to 432 s.  So it is not asked for there.  STRATA_NO_ARENA_THP=1 skips it
@@ -710,6 +720,18 @@ void release_alias_claims(std::vector<void*>& claims) {
     claims.clear();
 }
 
+// STRATA_ARENA_NUMA_PLACE: only a private Linux arena takes the placement step (a shared file keeps one layout and the
+// pages of whichever engine filled it); everywhere else the step is never run, whatever the caller passed
+bool pre_place_applies(const ArenaPrePlace& pre, const std::string& shared_file) {
+#if defined(__linux__)
+    return pre.place != nullptr && shared_file.empty();
+#else
+    (void) pre;
+    (void) shared_file;
+    return false;
+#endif
+}
+
 // pin_register for the arena's ranges.  Windows HIP: a range whose GPU alias covers memory in use is unregistered again and
 // reported as refused, so the caller's "the driver refused it" path applies to it (#3431).
 cudaError_t register_range(PinnedArena& arena, void* p, uint64_t n) {
@@ -736,9 +758,15 @@ PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, un
 
 PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
-                         uint64_t shared_pack_hash) : capacity(bytes) {
+                         uint64_t shared_pack_hash)
+    : PinnedArena(bytes, bounds, max_pinned_bytes, shared_file, shared_pack_hash, ArenaPrePlace{}) {}
+
+PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
+                         uint64_t max_pinned_bytes, const std::string& shared_file,
+                         uint64_t shared_pack_hash, const ArenaPrePlace& pre) : capacity(bytes) {
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    const bool place = pre_place_applies(pre, shared_file);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes, place);
     if (!shared_file.empty() && base != nullptr && mapping_base != nullptr)
         shared_state = reinterpret_cast<std::atomic<uint64_t>*>(static_cast<char*>(mapping_base) +
                                                                 offsetof(SharedArenaHeader, reserved));
@@ -746,6 +774,9 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
         mapping_base = base;
         mapping_bytes = bytes;
     }
+    // STRATA_ARENA_NUMA_PLACE: the pages are faulted in on their nodes first; the registration below then pins them where
+    // they are (it allocates nothing)
+    if (base != nullptr && place) pre.place((uint8_t*) base, bytes);
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
@@ -857,10 +888,16 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
 
 PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
                          uint64_t max_pinned_bytes, const std::string& shared_file,
-                         uint64_t shared_pack_hash) : capacity(bytes) {
+                         uint64_t shared_pack_hash)
+    : PinnedArena(bytes, ByNeed{}, ranges, max_pinned_bytes, shared_file, shared_pack_hash, ArenaPrePlace{}) {}
+
+PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+                         uint64_t max_pinned_bytes, const std::string& shared_file,
+                         uint64_t shared_pack_hash, const ArenaPrePlace& pre) : capacity(bytes) {
     by_need = true;
     if (bytes == 0) return;
-    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
+    const bool place = pre_place_applies(pre, shared_file);
+    base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes, place);
     if (!shared_file.empty() && base != nullptr && mapping_base != nullptr)
         shared_state = reinterpret_cast<std::atomic<uint64_t>*>(static_cast<char*>(mapping_base) +
                                                                 offsetof(SharedArenaHeader, reserved));
@@ -869,6 +906,7 @@ PinnedArena::PinnedArena(uint64_t bytes, ByNeed, const std::vector<std::pair<uin
         mapping_bytes = bytes;
     }
     if (base == nullptr) return;
+    if (place) pre.place((uint8_t*) base, bytes);   // STRATA_ARENA_NUMA_PLACE, as in the first constructor
     // Register BEFORE any page is touched (see the first constructor).  Same caps as there: the engine's
     // `max_pinned_bytes`, else STRATA_ARENA_PIN_GIB=N (> 0); "auto" (-2) is the sliced pin's and does not apply.
     const int env_gib = arena_pin_cap_gib();
