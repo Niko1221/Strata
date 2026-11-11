@@ -330,6 +330,10 @@ Two fixes came out of the merge and are in the branch: `sycl/serve/server_intel.
 
 Serving was not re-measured on 0.1.59.1; the 0.1.56 numbers stand, and the 256K server answered over the LAN on this build.
 
+**Two Windows traps after an OS or driver update (2026-11-11).** Windows updates KB5132061/KB5132688 left `C:\Windows\System32\ze_loader.dll` at **v1.2.3 (2021-06-18)** while the installed Arc driver ships **v1.32.0** in its driver store. That file is owned by `NT SERVICE\TrustedInstaller`, so an administrator cannot overwrite it with a plain copy (the copy is refused; take ownership first, or leave it alone). The engine died with `0xC0000005` inside `sycl9.dll` on the first device call, and `strata --list-devices` printed nothing. Two mechanical facts made it confusing: the registry value this port relies on, `HKLM\SOFTWARE\Intel\oneAPI\LevelZero\1\LevelZeroLoaderPath`, named System32, and a per-user copy of the value is ignored, so only the machine-wide one counts. Pointing that value at a folder holding the driver's own loader (`C:\ProgramData\Strata\levelzero`) fixed the crash.
+
+With the loader fixed, the oneAPI 2026.2 runtime then switched to its **Level Zero V2** adapter, where this engine fails at startup with `UR_RESULT_ERROR_UNKNOWN` - although a plain SYCL program of the same toolkit enumerates the card on that platform. `SYCL_UR_USE_LEVEL_ZERO_V2=0` and `UR_LOADER_USE_LEVEL_ZERO_V2=0` in the run config's `env` put it back on the legacy adapter, after which the 256K server served normally (0.1.59.1, first request 5.8 s on a cold cache). Both settings are in the serving config now. Whether the engine should work on the V2 adapter is open; it is the one part of this failure that may be a real defect rather than a stale file.
+
 **Two settings that bite on a 24 GB card** (measured by an Arc Pro B60 owner, 2026-10-24). `--vram-reserve-mib` below
 about 1024 moves the card's memory out from under the engine: decode fell from 36.3 to 3.76 tok/s at 512, and the
 700 MiB default is already near the edge there. `--prefill 8192` helps only with `--prefill-borrow` and below about
