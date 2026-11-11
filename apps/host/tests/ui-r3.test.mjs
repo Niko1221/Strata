@@ -33,8 +33,8 @@ test('2: pictures are on by default; a missing reader says nothing wordy and sav
   assert.match(host, /const noReader=args\.visionUnavailable===true;/);
   assert.match(host, /const visionPreferences=args\.vision!==undefined&&!noReader\?/, 'nothing is saved when the reader is missing');
   assert.match(host, /runtimeVision\(config,noReader\?'no':args\.vision\)/);
-  // An "off" that sits on a model without the picture files is not a choice of the person: it starts on.
-  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && installed\.visionPrepared !== false\) return 'no'/);
+  // An old "off" (no marker) that sits on a model without the picture files is not a choice of the person: it starts on.
+  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && \(installed\.visionPrepared !== false \|\| installed\.visionChosen === true\)\) return 'no'/);   // since 0.2.14 an off with the marker (ui_vision_chosen) holds too: tests/pictures-hold.test.mjs
 });
 
 test('6: the conversation context opens at 128K for every configuration, or the model largest size when that is smaller; a warning, never a refusal', async () => {
@@ -59,13 +59,13 @@ test('6: the conversation context opens at 128K for every configuration, or the 
   assert.match(models, /useKept\('models\.context', DEFAULT_CONTEXT\)/);
   assert.ok(!/rec\.context/.test(models), 'the engine recommendation is not what the page opens with');
   assert.match(models, /setContext\(defaultContext\(first\?\.multi_file \? deepseekContexts\(\) : native\.catalog\.contexts\)\)/, 'DeepSeek too, from its own list');
-  assert.match(models, /contextIsTight\(fitHardware\.vram_gb, context, kv\) \? <p className="small muted native-spill-note"><Icon name="warning"/);
+  assert.match(models, /contextIsTight\(fitHardware\.vram_gb, context, kv, selectedSize\?\.context_fit\) \? <p className="small muted native-spill-note"><Icon name="warning"/);
   assert.ok(!/setContext\([^)]*contextIsTight/.test(models), 'the warning never changes the context');
   assert.match(models, /cache=\{\{ context, kv, drafter: fitDrafter \}\}/, 'the version list follows the chosen context, as the card does');
   const guided = read('src/components/GuidedSetup.tsx');
   assert.match(guided, /const context = pickedContext \?\? defaultContext\(contextList\)/, 'first-run opens at 128K on every card too');
   assert.ok(!/OLD_DEFAULT_CONTEXT|contextIsTight\(topCardGb, DEFAULT_CONTEXT/.test(guided), 'no fallback to 32K on a tight card');
-  assert.match(guided, /contextIsTight\(topCardGb, context\) \? <p className="small muted native-spill-note">/, 'the same inline warning, nothing lowered');
+  assert.match(guided, /contextIsTight\(topCardGb, context, 'int8', version\?\.context_fit\) \? <p className="small muted native-spill-note">/, 'the same inline warning, nothing lowered');
 });
 
 test('7 and 8: Model files has no explanatory sentence and holds "Other local models..." beside Storage settings', () => {

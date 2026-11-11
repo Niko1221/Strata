@@ -111,7 +111,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="DeepSeek: faster uses 5 of 6 experts per word (a small quality change, usually not noticeable; the default on a PC with 16 GB "
                         "of graphics memory or less, and on a single Radeon RX 9000 / AI PRO R9700 card, or several that hold half of the experts), full uses all 6")
     g.add_argument("--full-quality", action="store_true", help="DeepSeek: all 6 experts per word (the same as --speed full), for scripts")
-    g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice)")
+    g.add_argument("--gpu", metavar="LIST", help="graphics card numbers to use, e.g. 0 or 0,1 (default: the engine's choice). "
+                   "With more than one card the engine decides which is the Main card; --gpu-roles (instead of --gpu) sets the roles yourself.")
     g.add_argument("--backend", metavar="nvidia|amd|intel|auto",
                    help="which make of graphics card the engine uses on a PC that has cards of more than one make (default: auto = NVIDIA first, "
                         "then AMD, then Intel). Your choice is remembered for the next launch, update and app; 'auto' forgets it")
@@ -565,7 +566,7 @@ def _interrupted_move_notice() -> None:
 
 def _printer(quiet: bool = False):
     """An emit callback that prints readable lines: new text once, progress in steps of 10% when not on a terminal."""
-    state = {"last": None, "pct": -10, "stage": None}
+    state = {"last": None, "pct": -10, "stage": None, "key": None}
     isatty = sys.stdout.isatty()
 
     def emit(ev) -> None:
@@ -577,9 +578,10 @@ def _printer(quiet: bool = False):
                 sys.stdout.write(f"\r  {text}  {ev.pct:.0f}%   " + ("\n" if ev.pct >= 100 else ""))
                 sys.stdout.flush()
                 return
-            if ev.pct < 100 and ev.pct < state["pct"] + 10 and state["stage"] == ev.stage:
+            key = text.rsplit(":", 1)[0]                     # the sentence without its figure: a new sentence is always shown
+            if ev.pct < 100 and ev.pct < state["pct"] + 10 and state["stage"] == ev.stage and key == state["key"]:
                 return
-            state["pct"] = ev.pct
+            state["pct"], state["key"] = ev.pct, key
         if ev.stage == "start" and ev.text.startswith("Loading the model") and state["stage"] == "start" and not isatty:
             n = int("".join(ch for ch in ev.text.split("…")[-1] if ch.isdigit()) or 0)
             if n % 15:

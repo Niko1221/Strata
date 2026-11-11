@@ -136,10 +136,14 @@ class AnAutomaticFetch(unittest.TestCase):
 
     def test_a_miss_less_than_twelve_hours_old_skips_the_feed(self):
         (self.data / "dflash2" / drafting_fetch.MISS_MARK).write_text("x")
+        # After the skipped tuned lookup the fetch falls back to the STOCK drafter (ensure): on a box with internet that is a real 1.2 GB download from
+        # Hugging Face, or a hash and pack of the person's own Hugging Face cache (17 minutes and killed on the owner PC, 11-10). This test is about the
+        # feed being skipped, so the stock path is kept offline here: no network, no Hugging Face cache.
         with serving(), hardware(STRIX), mock.patch.object(drafting_fetch, "tuned_from_feed") as feed, mock.patch.object(drafting_fetch.acquisition, "require"), \
-             mock.patch.dict(drafting_fetch.os.environ, {drafting.TUNED_URL_ENV: ""}), \
-             mock.patch.object(drafting_fetch, "ensure", side_effect=drafting_fetch.OfflineError("offline")) as stock:
+                mock.patch.object(drafting_fetch, "online", return_value=False) as reach, mock.patch.object(drafting_fetch, "_hub_snapshots", return_value=[]), \
+                mock.patch.object(drafting_fetch, "ensure", wraps=drafting_fetch.ensure) as stock:
             code, _out, _ = self.fetch("--throttle")
+        reach.assert_called()                               # (the stock path was reached and stayed offline: nothing was downloaded)
         self.assertEqual(code, 0)
         feed.assert_not_called()
         stock.assert_called_once()

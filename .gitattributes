@@ -32,3 +32,6 @@ serve/web/vendor/** -text
 # Source patches are hashed byte for byte; blank context lines contain the diff prefix.
 packaging/harness/*.patch -text whitespace=-blank-at-eol
 third_party/strata-ggml/** text eol=lf
+
+# chat templates are read and hashed byte for byte (the served prompt, tools/test_qwen4_intake): LF wherever the repository is cloned
+*.jinja text eol=lf
