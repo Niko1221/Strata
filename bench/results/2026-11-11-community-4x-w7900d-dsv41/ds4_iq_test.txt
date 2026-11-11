@@ -1,0 +1,85 @@
+IQ2_XXS token gate_up          worst 5.21e-08 (tol 1e-05) ok
+IQ2_XXS token down             worst 3.59e-08 (tol 1e-06) ok
+IQ2_XXS set gate_up (f16)      worst 7.02e-03 (tol 1e-02) ok
+IQ2_XXS set down               worst 4.19e-04 (tol 3e-03) ok
+IQ2_XXS matrix-core tiles taken 2 (scalar run: 0)
+IQ2_XXS wmma gate_up vs CPU    worst 7.02e-03 (tol 1e-02) ok
+IQ2_XXS wmma down vs CPU       worst 4.19e-04 (tol 3e-03) ok
+IQ2_XXS wmma vs scalar h       worst 2.97e-04 (tol 1e-02) ok
+IQ2_XXS wmma vs scalar y       worst 1.68e-03 (tol 3e-03) ok
+IQ2_XXS cpu gate_up vs ref     worst 5.59e-08 (tol 1e-05) ok
+IQ2_XXS cpu down vs ref        worst 3.35e-08 (tol 1e-05) ok
+IQ2_XXS cpu rows: ggml-cpu
+IQ2_XS  token gate_up          worst 4.63e-08 (tol 1e-05) ok
+IQ2_XS  token down             worst 4.60e-08 (tol 1e-06) ok
+IQ2_XS  set gate_up (f16)      worst 8.87e-03 (tol 1e-02) ok
+IQ2_XS  set down               worst 3.73e-04 (tol 3e-03) ok
+IQ2_XS  matrix-core tiles taken 2 (scalar run: 0)
+IQ2_XS  wmma gate_up vs CPU    worst 8.87e-03 (tol 1e-02) ok
+IQ2_XS  wmma down vs CPU       worst 3.73e-04 (tol 3e-03) ok
+IQ2_XS  wmma vs scalar h       worst 2.25e-04 (tol 1e-02) ok
+IQ2_XS  wmma vs scalar y       worst 9.36e-04 (tol 3e-03) ok
+IQ2_XS  cpu gate_up vs ref     worst 3.54e-08 (tol 1e-05) ok
+IQ2_XS  cpu down vs ref        worst 6.41e-08 (tol 1e-05) ok
+IQ2_XS  cpu rows: ggml-cpu
+IQ2_S   token gate_up          worst 3.76e-08 (tol 1e-05) ok
+IQ2_S   token down             worst 2.95e-08 (tol 1e-06) ok
+IQ2_S   set gate_up (f16)      worst 7.23e-03 (tol 1e-02) ok
+IQ2_S   set down               worst 4.55e-04 (tol 3e-03) ok
+IQ2_S   matrix-core tiles taken 2 (scalar run: 0)
+IQ2_S   wmma gate_up vs CPU    worst 7.23e-03 (tol 1e-02) ok
+IQ2_S   wmma down vs CPU       worst 4.55e-04 (tol 3e-03) ok
+IQ2_S   wmma vs scalar h       worst 1.96e-04 (tol 1e-02) ok
+IQ2_S   wmma vs scalar y       worst 1.08e-03 (tol 3e-03) ok
+IQ2_S   cpu gate_up vs ref     worst 2.25e-08 (tol 1e-05) ok
+IQ2_S   cpu down vs ref        worst 3.01e-08 (tol 1e-05) ok
+IQ2_S   cpu rows: ggml-cpu
+IQ3_XXS token gate_up          worst 1.72e-08 (tol 1e-05) ok
+IQ3_XXS token down             worst 3.99e-08 (tol 1e-06) ok
+IQ3_XXS set gate_up (f16)      worst 5.11e-03 (tol 1e-02) ok
+IQ3_XXS set down               worst 1.86e-04 (tol 3e-03) ok
+IQ3_XXS matrix-core tiles taken 2 (scalar run: 0)
+IQ3_XXS wmma gate_up vs CPU    worst 5.11e-03 (tol 1e-02) ok
+IQ3_XXS wmma down vs CPU       worst 1.86e-04 (tol 3e-03) ok
+IQ3_XXS wmma vs scalar h       worst 1.26e-04 (tol 1e-02) ok
+IQ3_XXS wmma vs scalar y       worst 1.64e-03 (tol 3e-03) ok
+IQ3_XXS cpu gate_up vs ref     worst 3.22e-08 (tol 1e-05) ok
+IQ3_XXS cpu down vs ref        worst 3.92e-08 (tol 1e-05) ok
+IQ3_XXS cpu rows: ggml-cpu
+IQ3_S   token gate_up          worst 3.97e-08 (tol 1e-05) ok
+IQ3_S   token down             worst 3.80e-08 (tol 1e-06) ok
+IQ3_S   set gate_up (f16)      worst 3.71e-03 (tol 1e-02) ok
+IQ3_S   set down               worst 3.08e-04 (tol 3e-03) ok
+IQ3_S   matrix-core tiles taken 2 (scalar run: 0)
+IQ3_S   wmma gate_up vs CPU    worst 3.71e-03 (tol 1e-02) ok
+IQ3_S   wmma down vs CPU       worst 3.08e-04 (tol 3e-03) ok
+IQ3_S   wmma vs scalar h       worst 3.17e-04 (tol 1e-02) ok
+IQ3_S   wmma vs scalar y       worst 1.63e-03 (tol 3e-03) ok
+IQ3_S   cpu gate_up vs ref     worst 1.93e-08 (tol 1e-05) ok
+IQ3_S   cpu down vs ref        worst 4.05e-08 (tol 1e-05) ok
+IQ3_S   cpu rows: ggml-cpu
+IQ4_XS  token gate_up          worst 6.50e-11 (tol 1e-05) ok
+IQ4_XS  token down             worst 5.02e-08 (tol 1e-06) ok
+IQ4_XS  set gate_up (f16)      worst 6.87e-04 (tol 1e-02) ok
+IQ4_XS  set down               worst 7.66e-05 (tol 3e-03) ok
+IQ4_XS  matrix-core tiles taken 2 (scalar run: 0)
+IQ4_XS  wmma gate_up vs CPU    worst 6.87e-04 (tol 1e-02) ok
+IQ4_XS  wmma down vs CPU       worst 1.47e-04 (tol 3e-03) ok
+IQ4_XS  wmma vs scalar h       worst 2.02e-04 (tol 1e-02) ok
+IQ4_XS  wmma vs scalar y       worst 6.72e-03 (tol 3e-03) FAIL
+IQ4_XS  cpu gate_up vs ref     worst 2.59e-08 (tol 1e-05) ok
+IQ4_XS  cpu down vs ref        worst 3.43e-08 (tol 1e-05) ok
+IQ4_XS  cpu rows: ggml-cpu
+IQ1_M   token gate_up          worst 5.67e-08 (tol 1e-05) ok
+IQ1_M   token down             worst 4.80e-08 (tol 1e-06) ok
+IQ1_M   set gate_up (f16)      worst 8.15e-03 (tol 1e-02) ok
+IQ1_M   set down               worst 1.26e-03 (tol 3e-03) ok
+IQ1_M   matrix-core tiles taken 2 (scalar run: 0)
+IQ1_M   wmma gate_up vs CPU    worst 8.15e-03 (tol 1e-02) ok
+IQ1_M   wmma down vs CPU       worst 1.26e-03 (tol 3e-03) ok
+IQ1_M   wmma vs scalar h       worst 5.05e-04 (tol 1e-02) ok
+IQ1_M   wmma vs scalar y       worst 6.35e-04 (tol 3e-03) ok
+IQ1_M   cpu gate_up vs ref     worst 4.97e-08 (tol 1e-05) ok
+IQ1_M   cpu down vs ref        worst 5.10e-08 (tol 1e-05) ok
+IQ1_M   cpu rows: ggml-cpu
+FAILED

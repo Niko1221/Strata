@@ -62,7 +62,7 @@ the default). The tested driver is AMD Adrenalin 26.10.1 (driver 32.0.32015.7029
 
 Measured: an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive answers at about 4.7 tokens/s and reads prompts at 121
 tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 48
-tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
+tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). On four Radeon W7900D (48 GB each, gfx1100, source `VARIANT=rx7900` build, 2.00 bpw, `--experts 6`, 8K): a 17-token prompt 53 tok/s prompt / 61.5 tok/s decode (median of 3); a 4,096-token prompt 314.5 / 91.4 with the matrix-core attention default (274.6 / 90.5 on the scalar kernels; same greedy ids). 15,234 of 15,360 experts in VRAM. Three greedy runs matched. One box; not a comparison with the R9700 numbers. Report: [bench/results/2026-11-11-community-4x-w7900d-dsv41](../bench/results/2026-11-11-community-4x-w7900d-dsv41/README.md). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
 
 **RTX 40 series (sm_89).** The engine packages carry machine code for sm_86, sm_89 and sm_120 since 0.2.7 (before, an RTX 40 card ran the sm_86 code through
 CUDA's same-generation rule). We have no RTX 40 card: the sm_89 build was compiled here but not run. A user's own build for sm_89 ran the 2.00 set on an
@@ -175,7 +175,7 @@ What it does:
 - Answers are the same as when each runs alone: 12 combinations of 2 to 4 conversations, with and without the drafter, were identical to the last bit of the model's
   output on a DGX Spark and on 2 RTX A6000, and 6 prompts at once through the server had the same text as alone (greedy), also when a client dropped its connection.
 
-Where it was run: Linux, with 4 Radeon AI PRO R9700 (gfx1201), 1 R9700, 2 RTX A6000 (sm_86) and a DGX Spark (sm_121). Not run: Windows (the engine builds with it, a
+Where it was run: Linux, with 4 Radeon AI PRO R9700 (gfx1201), 1 R9700, 4 Radeon W7900D (gfx1100), 2 RTX A6000 (sm_86) and a DGX Spark (sm_121). Not run: Windows (the engine builds with it, a
 Windows run has not been done), a Mac (Metal; the code adds no Metal kernel of its own, nothing has started it there), Ryzen AI Max, cards under 24 GB, other AMD
 families. `strata launch` warns for these and still starts. If the engine stops at the start or an answer looks wrong, start without `--parallel`.
 

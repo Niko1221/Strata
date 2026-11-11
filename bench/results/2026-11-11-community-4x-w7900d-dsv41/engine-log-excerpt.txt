@@ -1,0 +1,48 @@
+=== greedy1 (product default) ===
+ds4: tensor parallel 2 -> 1: the experts' 256-value blocks split n_ff 2304 no other way (each GPU its own layers)
+ds4: the one-GPU decode path (in-place pulls, windows streamed, landings): off (v1.1.27's path: not NVIDIA + one GPU)
+ds4: experts per word: 6 (full quality)
+ds4: the experts VRAM leaves over (~0.0 GB) are read in place from the model's files (--mmap-experts off copies them into RAM) (205.6 GB of RAM free to keep them: the most-routed 0.0 GB read ahead; prompts in chunks of 8192)
+ds4: CPU lane: cores, 64 threads (measured, 4 experts of one token a call: cores 0.32 ms, node 0.46 ms)
+ds4: RAM store: up to 12856 slots of 10.3 MB (132.1 GB), policy 0, 8 reader threads, unbuffered reads
+ds4: RAM store: 12856 of the profile's hottest experts read in (99.8 GB) in 15.0 s
+ds4: prompt path: the chunked pass from 96 tokens, windows of 16 below
+ds4: CUDA0 layers [0, 42]: weights 0.75 GB, experts 10.21 GB (768 of 768 in VRAM), caches 0.00 GB, 35706 MiB free
+ds4: CUDA1 layers [1, 12]: weights 1.67 GB, experts 37.38 GB (4608 of 4608 in VRAM), caches 0.00 GB, 8790 MiB free
+ds4: CUDA2 layers [13, 26]: weights 1.93 GB, experts 45.68 GB (5250 of 5376 in VRAM), caches 0.01 GB, 590 MiB free
+ds4: CUDA3 layers [27, 39] + head: weights 2.24 GB, experts 45.42 GB (4992 of 4992 in VRAM), caches 0.00 GB, 630 MiB free
+ds4: 126 routed experts on the CPU lane (1.1 GB, in place in the model's files), 64 threads
+prompt: 17 tokens in 331 ms (51.39 tok/s, windows of 8192)
+prompt's Engram rows: 816, 0.0% without a read (repeats and the row cache), 816 read
+dspark: 2 rounds, 10 drafts offered, 6 accepted (4.00 tokens a round); drafting 4.51 ms a round, verifying 101.7 ms in all (0 windows)
+dspark per position (kept / reached): 1: 2/2 100% 2: 2/2 100% 3: 1/2 50% 4: 1/1 100% 5: 0/1 0%
+decode: 8 tokens in 113 ms (61.83 tok/s); CPU lane: 0 of 2970 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+decode per token: layers 0.64 ms (of it: routing waits 0.00, CPU lane 0.00, the rest host launches), head wait 7.80, Engram reads 0.05
+Engram per token: 48 rows, 19.4% without a read (the row cache holds 1280 of 1016800), 38.7 read, the reads 0.10 ms from asking to the last one (left to wait: 0.05)
+decode reads from the disk: 0.0 MB a token
+store: 0.0% of the CPU lane's experts were in RAM (0.0 hits, 0.0 misses a token); read 0.0 MB a token (demand and guesses), the CPU lane waited 0.0 ms a token for them; 0 prefetched, 0 used, 0 given up unused; slots 12856 of 12856, 0 evictions, 0 failed reads; the GPU computed 0.0 experts a token from the store (0 slots visible)
+
+=== greedy2 decode lines ===
+prompt: 17 tokens in 314 ms (54.19 tok/s, windows of 8192)
+dspark: 2 rounds, 10 drafts offered, 6 accepted (4.00 tokens a round); drafting 4.49 ms a round, verifying 102.0 ms in all (0 windows)
+decode: 8 tokens in 114 ms (61.51 tok/s); CPU lane: 0 of 2970 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+decode per token: layers 0.76 ms (of it: routing waits 0.00, CPU lane 0.00, the rest host launches), head wait 7.70, Engram reads 0.04
+
+=== greedy3 decode lines ===
+prompt: 17 tokens in 321 ms (53.00 tok/s, windows of 8192)
+dspark: 2 rounds, 10 drafts offered, 6 accepted (4.00 tokens a round); drafting 4.55 ms a round, verifying 102.2 ms in all (0 windows)
+decode: 8 tokens in 115 ms (61.06 tok/s); CPU lane: 0 of 2970 experts, streamed to the GPU: 0; the cache moved 0 (0 in all)
+decode per token: layers 0.66 ms (of it: routing waits 0.00, CPU lane 0.00, the rest host launches), head wait 7.83, Engram reads 0.04
+
+=== prompt4k ===
+ds4: experts per word: 6 (full quality)
+ds4: CUDA0 layers [0, 42]: weights 0.75 GB, experts 10.21 GB (768 of 768 in VRAM), caches 0.00 GB, 35706 MiB free
+ds4: CUDA1 layers [1, 12]: weights 1.67 GB, experts 37.38 GB (4608 of 4608 in VRAM), caches 0.00 GB, 8790 MiB free
+ds4: CUDA2 layers [13, 26]: weights 1.93 GB, experts 45.68 GB (5250 of 5376 in VRAM), caches 0.01 GB, 590 MiB free
+ds4: CUDA3 layers [27, 39] + head: weights 2.24 GB, experts 45.42 GB (4992 of 4992 in VRAM), caches 0.00 GB, 630 MiB free
+prompt: 4096 tokens in 15544 ms (263.51 tok/s, windows of 8192)
+decode: 32 tokens in 343 ms (90.25 tok/s); CPU lane: 0 of 7665 experts, streamed to the GPU: 0; the cache moved 0 (28 in all)
+decode per token: layers 1.10 ms (of it: routing waits 0.00, CPU lane 0.00, the rest host launches), head wait 8.92, Engram reads 0.11
+
+=== smoke ===
+The capital of France is Paris.<｜end▁of▁sentence｜>

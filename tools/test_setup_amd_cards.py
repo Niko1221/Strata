@@ -65,6 +65,16 @@ class Rule(unittest.TestCase):
         keep, _ = dsv41_fit.run_cards([amd(0, "gfx1201"), amd(1, "gfx1100", 24.0)], "amd", windows=False, covered=("gfx1100", "gfx1201"))
         self.assertEqual(ids(keep), [0, 1])
 
+    def test_four_w7900d_are_kept_without_a_package_list(self):
+        keep, left = dsv41_fit.run_cards([amd(i, "gfx1100", 48.0) for i in range(4)], "amd", windows=False)
+        self.assertEqual(ids(keep), [0, 1, 2, 3])
+        self.assertEqual(left, [])
+
+    def test_w7900d_is_not_classified_as_rdna4(self):
+        self.assertFalse(dsv41_fit._is_rdna4(amd(0, "gfx1100")))
+        self.assertTrue(dsv41_fit._is_rdna4(amd(0, "gfx1201")))
+        self.assertFalse(dsv41_fit.rdna4_faster([amd(i, "gfx1100", 48.0) for i in range(4)], "IST-DAS-2.00bpw", vendor="amd"))
+
     def test_windows_runs_on_one_card(self):
         keep, left = dsv41_fit.run_cards([amd(0), amd(1)], "amd", windows=True)
         self.assertEqual(ids(keep), [0])
