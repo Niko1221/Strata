@@ -5,7 +5,7 @@
 // free figure after a request, the window graphs captured on first use). The next start of the same binary with the same
 // arguments and STRATA_* variables keeps need + grow + a margin free instead of --vram-reserve-mib / --vram-reserve-later-mib
 // and the fixed late-allocation terms. This header holds the parts that touch no GPU, so tests/program/vram_calib_test.cpp
-// can pin them: the file key, the file format, the reserve and the growth update.
+// can pin them: the file key, the file format, the reserve, the growth update and the plausibility checks.
 #pragma once
 
 #include <algorithm>
@@ -114,6 +114,28 @@ inline long long reserve_mib(const std::vector<Card>& cards, int dev, long long 
 inline long long need_bytes(long long free_at_mark, long long free_now, long long cache_bytes) {
     if (free_at_mark < 0 || free_now < 0) return -1;
     return std::max(0ll, free_at_mark - free_now - cache_bytes);
+}
+
+/// What to do with a measured need (`raw`, mark - now - cache, may be negative) given the figure this start was sized from
+/// (`prev_need`, -1 without one). Take it; KeepPrev - it fell by more than half and by more than 64 MiB; Skip - no earlier
+/// figure and under 32 MiB, too little to be real, so the card is not written. A rise is always taken (the safe direction).
+/// Why: on 2x RX 6900 XT with --vram-elastic on a layer split, one start in a few hundred had part of card 0's cache chunks
+/// made on card 1; card 1 then measured 0 MiB allocated after its cache, and with that written every later start kept no room
+/// on card 1, sized its cache past the drafter's room and failed - before the point where a start measures again.
+enum class NeedVerdict { Take, KeepPrev, Skip };
+inline NeedVerdict judge_need(long long raw, long long prev_need) {
+    constexpr long long kMiB = 1ll << 20;
+    if (prev_need >= 0) return 2 * raw < prev_need && prev_need - raw > 64 * kMiB ? NeedVerdict::KeepPrev : NeedVerdict::Take;
+    return raw < 32 * kMiB ? NeedVerdict::Skip : NeedVerdict::Take;
+}
+
+/// The cards of a read file whose need is too little to be real (an older binary could write the 0 MiB above) are taken out,
+/// so they are sized with the fixed terms instead of keeping no room. Returns the cards taken out.
+inline std::vector<Card> drop_implausible(std::vector<Card>& cards) {
+    std::vector<Card> kept, dropped;
+    for (const Card& c : cards) (c.need >= 0 && judge_need(c.need, -1) == NeedVerdict::Skip ? dropped : kept).push_back(c);
+    cards.swap(kept);
+    return dropped;
 }
 
 /// After a request: the growth since everything was loaded, never smaller than what is already kept. True when it grew.
