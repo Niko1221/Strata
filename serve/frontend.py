@@ -1164,6 +1164,10 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
         if value.endswith("\n"):
             value = value[:-1]
         args[pname] = coerce_value(value, (props.get(pname) or {}).get("type"), notes)
+    # The model sometimes wraps the whole argument object in one `<parameter=arguments>` instead of writing the
+    # schema's parameters.  When the tool does not declare such a parameter, its members are the call's arguments.
+    if len(args) == 1 and "arguments" not in props and isinstance(args.get("arguments"), dict):
+        args = args["arguments"]
     return ToolCall(name=name, arguments=args)
 
 
@@ -1244,6 +1248,7 @@ class OutputParser:
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
         self.recover = recover
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
+        self.swallow = False         # a bare call's optional </tool_call> may follow: it is dropped, not text
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._final = False          # #4701: the turn has ended: a call held for what might follow it is decided now
         self._held = ""              # #5276/#5409: the end of a misspelt opener or a prefixed name still arriving (see _prefixed)
@@ -1325,10 +1330,15 @@ class OutputParser:
 
     def _bare_opener(self) -> tuple[int, bool]:
         """recover: the first `<function=` in self.buf that opens a call without the wrapper (start of a line, outside
-        code, a declared tool) -> (position, decided); (-1, False) for none.  A name still arriving is undecided."""
+        code, a declared tool) -> (position, decided); (-1, False) for none.  A name still arriving is undecided.
+        Right after a line that names the wrapper (`<tool_call>`, `<toolcall>`) it is that example, not a call."""
         p = self.buf.find(FUNC_START)
         while p >= 0:
             if self._ok_at(p):
+                start = self.buf.rfind("\n", 0, p) + 1
+                if self._quotes_opener(self.buf[:start]):
+                    p = self.buf.find(FUNC_START, p + 1)
+                    continue
                 gt = self.buf.find(">", p)
                 raw_name = self.buf[p + len(FUNC_START):gt if gt >= 0 else len(self.buf)]
                 name = raw_name.strip()
@@ -1339,6 +1349,13 @@ class OutputParser:
                     return p, True
             p = self.buf.find(FUNC_START, p + 1)
         return -1, False
+
+    @staticmethod
+    def _quotes_opener(text: str) -> bool:
+        """The last line of `text` names a call wrapper: what follows it is the model's example of the format."""
+        lines = [ln for ln in text.split("\n") if ln.strip()]
+        last = lines[-1] if lines else ""
+        return CALL_START in last or "<toolcall>" in last or "<tool-call>" in last
 
     @property
     def line(self) -> str:
@@ -1480,6 +1497,8 @@ class OutputParser:
         self.sdeclared = {}
         self.spname = None
         self.svstart = 0
+        self.sunwrapped = False      # the parameter being read is the whole argument object
+        self.sunvalue = None         # ... and its parsed value, held until the call's </function>
 
     def _wrapped_call_end(self) -> int:
         # Without a closing tag the structural walk cannot finish. Search only
@@ -1529,16 +1548,28 @@ class OutputParser:
                     if b < 0:
                         return out
                     pname = stripped[11:b]
-                    args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
+                    first = self.sfirst
                     self.sfirst = False
                     self.sp += b + 1
                     self.spname = pname.strip()
+                    if self.sunvalue is not None:    # a second parameter: the member form after all
+                        args('"arguments":' + json.dumps(self.sunvalue, ensure_ascii=False))
+                        self.sunvalue, self.sunwrapped = None, False
+                    if first and self.spname == "arguments" and self.spname not in self.sdeclared:
+                        self.sunwrapped = True       # the value is the argument object itself, not a member
+                        self.ss = "raw"
+                        continue
+                    args(("" if first else ",") + json.dumps(pname) + ":")
+                    self.sfirst = False
                     if self.sdeclared.get(pname) == "string":
                         args('"')
                         self.ss, self.sval_started = "str", False
                     else:
                         self.ss = "raw"
                 elif stripped.startswith("</function>"):
+                    if self.sunvalue is not None:    # the object's body; its braces came from the call's own
+                        args(json.dumps(self.sunvalue, ensure_ascii=False)[1:-1])
+                        self.sunvalue = None
                     self.sp += len("</function>")
                     self.ss = "function_done"
                 else:
@@ -1581,7 +1612,13 @@ class OutputParser:
                 if value.endswith("\n"):
                     value = value[:-1]
                 v = coerce_value(value, self.sdeclared.get(self.spname))    # the note comes with the final call (parse_tool_call)
-                args(json.dumps(v, ensure_ascii=False))
+                if self.sunwrapped and isinstance(v, dict):
+                    self.sunvalue = v            # the whole argument object: sent at the call's </function>
+                else:
+                    if self.sunwrapped:          # not an object after all: the member form
+                        self.sunwrapped = False
+                        args('"arguments":')
+                    args(json.dumps(v, ensure_ascii=False))
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"
             else:
@@ -1596,7 +1633,18 @@ class OutputParser:
         if self.ss == "str":
             tail += '"'
         elif self.ss == "raw":
-            tail += json.dumps(self.buf[self.sp:].strip("\n"))
+            raw = self.buf[self.sp:].strip("\n")
+            v = coerce_value(raw, self.sdeclared.get(self.spname))
+            if self.sunwrapped and isinstance(v, dict):
+                tail += json.dumps(v, ensure_ascii=False)[1:-1]
+            else:
+                if self.sunwrapped:              # not an object: the member form
+                    tail += '"arguments":'
+                    self.sunwrapped = False
+                tail += json.dumps(v, ensure_ascii=False)
+        if self.sunvalue is not None:
+            tail += json.dumps(self.sunvalue, ensure_ascii=False)[1:-1]
+            self.sunvalue = None
         tail += "}"
         out.append(Event("tool_args", tail, call=self.scall))
         self.ss = "done"
@@ -1703,15 +1751,34 @@ class OutputParser:
     def _feed(self) -> list[Event]:
         out: list[Event] = []
         while True:
+            if self.swallow and self.state in ("content", "reasoning"):
+                # a bare call's optional </tool_call> follows its </function>: drop it, never show it as text
+                s = self.buf.lstrip()
+                if s.startswith(CALL_END):
+                    self.buf = s[len(CALL_END):]
+                    self.swallow = False
+                elif CALL_END.startswith(s):
+                    return out                  # still arriving, or nothing after the call yet
+                else:
+                    self.swallow = False
             if self.state == "rcall":
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body, hold=False), body.find(THINK_END)
-                drop = len(CALL_END)
-                f = function_end(body)               # #4427: as in the answer, a following call opener confirms an omitted closer
-                if f >= 0 and (end < 0 or f < end) and re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", body[f:].lstrip()):
-                    end, drop = f, 0
+                drop = 0
+                if self.bare:                        # no wrapper: the call ends at its </function>; a
+                    end = function_end(body)         # </tool_call> the model wrote anyway is dropped too
+                    think = body.find(THINK_END)
+                    if end >= 0:
+                        tail = body[end:].lstrip()
+                        if tail.startswith(CALL_END):
+                            drop = len(body[end:]) - len(tail) + len(CALL_END)
+                else:
+                    end, think = call_end(body, hold=False), body.find(THINK_END)
+                    drop = len(CALL_END)
+                    f = function_end(body)           # #4427: as in the answer, a following call opener confirms an omitted closer
+                    if f >= 0 and (end < 0 or f < end) and re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", body[f:].lstrip()):
+                        end, drop = f, 0
                 if end >= 0 and (think < 0 or think >= end):
                     call = None
                     try:
@@ -1722,23 +1789,27 @@ class OutputParser:
                             call.name = name
                     except ValueError:
                         pass
-                    raw = self.buf[:len(CALL_START) + end + drop]
+                    raw = body[:end] if self.bare else self.buf[:len(CALL_START) + end + drop]
                     if call is not None or self.pending:
                         self.pending.append([raw, call])    # settled by what follows it (see __init__)
+                        self.swallow = self.bare           # the wrapper's closer may still come
                     else:
                         out.append(Event("reasoning", self._track(raw)))
                     self.buf = body[end + drop:]
-                    self.state = "reasoning"
+                    self.state, self.bare = "reasoning", False
                 elif think >= 0:                     # the thinking ended inside it: it never was a call
                     out += self._release(False)
-                    out.append(Event("reasoning", self._track(self.buf[:len(CALL_START) + think])))
+                    prefix = self.buf[:len(CALL_START) + think]
+                    if self.bare:                    # the opener was added here: keep the model's text as written
+                        prefix = prefix[len(CALL_START):]
+                    out.append(Event("reasoning", self._track(prefix)))
                     self.buf = body[think:]
-                    self.state = "reasoning"
+                    self.state, self.bare = "reasoning", False
                 elif len(body) > RCALL_MAX:          # a tag in the prose that never closes: stop holding the thinking back
                     out += self._release(False)
-                    out.append(Event("reasoning", self._track(self.buf)))
+                    out.append(Event("reasoning", self._track(body if self.bare else self.buf)))
                     self.buf = ""
-                    self.state = "reasoning"
+                    self.state, self.bare = "reasoning", False
                 else:
                     return out
             elif self.state == "reasoning":
@@ -1762,6 +1833,17 @@ class OutputParser:
                     continue
                 i = self.buf.find(THINK_END)
                 tool = self.buf.find(CALL_START) if self.schemas else -1
+                b, decided = self._bare_opener() if self.recover and self.schemas else (-1, False)
+                if b >= 0 and (tool < 0 or b < tool) and (i < 0 or b < i):
+                    # recover: <function=NAME> alone at the start of a line - the call without its <tool_call>
+                    if b:
+                        out.append(Event("reasoning", self._track(self.buf[:b])))
+                    self.buf = self.buf[b:]
+                    if not decided:                  # the name is still arriving: hold it
+                        return out
+                    self.buf = CALL_START + self.buf  # read it as the wrapped call it should have been
+                    self.state, self.bare = "rcall", True
+                    continue
                 if tool >= 0 and (i < 0 or tool < i):
                     if tool:
                         out.append(Event("reasoning", self._track(self.buf[:tool])))
@@ -1773,7 +1855,7 @@ class OutputParser:
                         self.buf = self.buf[tool + len(CALL_START):]
                     continue
                 if i < 0:
-                    keep = self._hold(self.buf, (THINK_END, CALL_START) if self.schemas else (THINK_END,))
+                    keep = self._hold(self.buf, (THINK_END, CALL_START, FUNC_START) if self.schemas else (THINK_END,))
                     if len(self.buf) > keep:
                         out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]
@@ -1996,6 +2078,9 @@ class OutputParser:
         out = []
         if self._held:
             self.buf, self._held = self.buf + self._held, ""
+        if self.swallow and CALL_END.startswith(self.buf.lstrip()):
+            self.buf = ""                       # the turn ended inside the optional </tool_call> of a bare call
+        self.swallow = False
         if self.buf and self.state in ("call", "rcall"):
             self._final = True                  # #4701: a call held after its closing tags (could a file's text go on?) is whole now
             out += self.feed("")
@@ -2010,8 +2095,9 @@ class OutputParser:
                 try:
                     call = parse_tool_call(body[:f], self.schemas.get(name), self.notes)
                     call.name = name
-                    self.pending.append([self.buf, call])
-                    self.buf, self.state = "", "reasoning"
+                    self.pending.append([body[:f] if self.bare else self.buf, call])
+                    self.swallow = self.bare
+                    self.buf, self.state, self.bare = "", "reasoning", False
                 except ValueError:
                     pass
         if self.pending:
@@ -2047,8 +2133,11 @@ class OutputParser:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
             text = CALL_START + self.buf if self.state in ("call", "json") and not self.bare else self.buf
+            if self.state == "rcall" and self.bare:
+                text = self.buf[len(CALL_START):]        # the opener was added here, not written by the model
             out.append(Event(kind, text))
             self.buf = ""
+        self.bare = False
         return out
 
     def _finish_call(self, body: str) -> list[Event]:
