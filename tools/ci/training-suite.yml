@@ -1,5 +1,20 @@
 name: Training suite
 
+# 注意：本文件**不在** `.github/workflows/` 下，因此不会自动运行。
+#
+# 原因：这个 PR 来自 fork。GitHub 的规则是——只要来自 fork 的 PR 改动了
+# `.github/workflows/` 下的任何文件，该 PR 的 workflow 就必须由维护者手动点一次
+# "Approve and run" 才会执行；在批准之前它们会一直停在 queued。因为这个文件是
+# add-only，一旦放回 `.github/workflows/`，被卡住的不只是本 workflow，而是本 PR
+# 的全部 CI（Linux/Windows/macOS 的 Python 测试、Backend compile checks 等），
+# 每次 push 都要等一次人工批准。
+#
+# 维护者若希望启用，把它移回即可：
+#
+#     git mv tools/ci/training-suite.yml .github/workflows/training-test.yml
+#
+# 移回后本 workflow 按下方 on: 条件自动运行，两档都只要 CPU，Linux only。
+
 # 合并门：training/ 的测试。
 #
 # 两档，都只要 CPU：
