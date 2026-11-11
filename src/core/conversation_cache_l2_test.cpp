@@ -28,13 +28,13 @@ int main() {
     check(cache.put(image({1, 2, 3})), "put first");
     const uint64_t a = cache.l2_last_serial();
     check(a != 0, "serial assigned");
-    cache.l2_set_source(a, "/data/slots/a");
+    cache.l2_set_source(a, "/tmp/l2-slots/a");
     check(cache.l2_set_pinned(a, true), "pin whole entry");
     check(cache.l2_stats().pinned == 1, "stats sees pin");
 
     auto rows = cache.l2_list();
     check(rows.size() == 1 && rows[0].serial == a, "list serial");
-    check(rows[0].tokens == 3 && rows[0].source == "/data/slots/a", "list metadata");
+    check(rows[0].tokens == 3 && rows[0].source == "/tmp/l2-slots/a", "list metadata");
     check(rows[0].pinned, "list pin");
 
     // A pinned whole entry cannot be evicted by a new image in a one-slot cache.
