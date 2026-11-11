@@ -153,6 +153,17 @@ def vision_section(reader: Reader, base: dict) -> dict:
     return out
 
 
+def shared_memory_nvidia_host() -> bool:
+    """Linux on Arm: the DGX Spark class (GB10: the GPU shares the system RAM, 121 GB), where the NVIDIA picture reader stays loaded instead of starting with the first
+    picture (owner 2026-11-11).  Measured on a Spark (IQ3_S, two starts per arm): the first picture after a start takes 0.84-0.89 s resident against 3.0-7.1 s on demand
+    (the reader's start, and its context retry when the kernel has no free 2 MiB blocks), and again 2.2 s after every idle stop; the resident reader costs about 5 s of start
+    time and about 1 GiB of the shared RAM, and no expert slot (every expert is resident there).  The same switch as the AMD reader and the Mac's: the reader starts with the
+    server, before the engine; an explicit "elastic" key in the vision section wins either way."""
+    import platform
+    import sys
+    return sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64")
+
+
 #: A GPU reader's start that failed while it made its CUDA context on a Linux Arm machine with shared CPU / GPU memory (DGX Spark, GB10) is tried again.  Such a context needs
 #: physically contiguous memory (2 MiB blocks); when the kernel has almost none free, ggml's cudaSetDevice answers "CUDA error: out of memory ... in function
 #: ggml_cuda_init" and the reader aborts, although 20+ GiB are free.  The same start 1 to 5 s later works (the kernel compacts memory after the failed try; measured

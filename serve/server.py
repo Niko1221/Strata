@@ -9893,6 +9893,8 @@ def vision_on_demand_by_default(cfg: dict) -> bool:
     name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
     if backend == "hip":       # AMD: the HIP reader, with the CPU reader setup wrote beside it to read when the card has no room
         return VISION_ON_DEMAND_AMD_BY_DEFAULT and name in (vision_reader.GPU_READER, vision_reader.GPU_READER + ".exe") and bool(vis.get("cpu_exe"))
+    if vision_reader.shared_memory_nvidia_host():      # a DGX Spark: the reader stays loaded (owner 2026-11-11; vision_reader.shared_memory_nvidia_host)
+        return False
     return name in (vision_reader.CPU_READER, vision_reader.CPU_READER + ".exe")
 
 
