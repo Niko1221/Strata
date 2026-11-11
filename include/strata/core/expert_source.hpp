@@ -1236,6 +1236,9 @@ private:
     bool complement_pinned_ = false;
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered
     bool complement_registered_ = false;      ///< the arena is ordinary memory registered with cudaHostRegister (not cudaHostAlloc)
+    void* complement_pinned_arena_ = nullptr; ///< STRATA_RESIDENT_PIN_MODE=register: the PinnedArena that owns the memory
+    std::vector<uint64_t> comp_slice_start_;  ///< registered slice starts (ascending), for the device-alias lookup
+    std::vector<const uint8_t*> comp_slice_dev_;  ///< cudaHostGetDevicePointer of each slice start
     uint64_t complement_pin_limit_ = 0;
     uint64_t complement_lock_off_ = 0;        ///< the working-set lock covers [lock_off, lock_off + locked)
     bool complement_ready_ = false;

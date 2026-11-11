@@ -37,6 +37,15 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>   // kv_host_alloc: VirtualAlloc for the registered KV host copy
+#endif
 #include <cuda_runtime.h>
 #include <cmath>
 #include <cstdio>
@@ -590,7 +599,35 @@ uint8_t* kv_host_alloc(uint64_t bytes) {
         return nullptr;
     };
 #ifdef _WIN32
-    return host_alloc(bytes);
+    // WDDM charges cudaHostAlloc(Mapped) to the card's shared (non-local) segment; a cudaHostRegister of
+    // ordinary memory goes through the same aperture but is not capped the same way (the expert arena
+    // registers tens of GiB this way, pinned.cu).  STRATA_KV_HOST_REGISTER=1 registers first; otherwise the
+    // cudaHostAlloc stays first and registration is the fallback when it is refused.
+    static const bool register_first = [] {
+        const char* e = std::getenv("STRATA_KV_HOST_REGISTER");
+        return e != nullptr && e[0] == '1';
+    }();
+    auto register_anon = [](uint64_t n) -> uint8_t* {
+        void* m = VirtualAlloc(nullptr, (SIZE_T) n, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (m == nullptr) return nullptr;
+        if (cudaHostRegister(m, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+            (void) cudaGetLastError();
+            VirtualFree(m, 0, MEM_RELEASE);
+            return nullptr;
+        }
+        static bool said = false;
+        if (!said) {
+            std::fprintf(stderr, "strata: KV streaming: the host copy is pinned with cudaHostRegister\n");
+            said = true;
+        }
+        return (uint8_t*) m;
+    };
+    if (register_first) {
+        if (uint8_t* m = register_anon(bytes)) return m;
+        return host_alloc(bytes);
+    }
+    if (uint8_t* h = host_alloc(bytes)) return h;
+    return register_anon(bytes);
 #else
     static const bool register_first = [] {
         const char* e = std::getenv("STRATA_KV_HOST_REGISTER");
