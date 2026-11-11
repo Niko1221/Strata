@@ -193,6 +193,9 @@ function(strata_add_pack_test name needs)
   endif()
 endfunction()
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+option(STRATA_POOL_SPIN_US_MICROBENCH "Also build the park-cost timing into pool_tasks_test: the CPU time a worker parked at STRATA_POOL_SPIN_US=0 burns. It is its own test (pool_park_cost), it prints, and only `parkcost assert` or STRATA_POOL_PARK_ASSERT=1 fails it" OFF)
+# off by default because it measures CPU time and not output; and not with STRATA_SDE, which runs that binary
+# on an emulated CPU where a CPU-time bound means nothing
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
 # native-experts section far below, so a first configure registered four tests fewer than the second)

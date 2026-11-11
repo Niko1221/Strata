@@ -161,6 +161,39 @@ else()
               src/kernels/cpu/expert_layout.cpp src/kernels/cpu/hadamard.cpp)
 endif()
 target_include_directories(strata_kernels_cpu PUBLIC include)
+# issue #4624's test seam: with the tests on, the park loop counts the times it runs its hot pause stage
+# (`strata_pool_pause_count`, include/strata/kernels/cpu/pool.hpp), so `pool_spin_test` below can assert that a budget
+# of 0 runs that stage zero times without a clock, a cost threshold, or a CPU that has the AVX-512 expert kernels.
+# PRIVATE, because the count is a namespace-scope object and not a member: a translation unit built without the macro
+# simply never adds to it, so nothing that links this library has to be compiled with it.  A build with
+# STRATA_BUILD_TESTS=OFF - every release build - has no increment in the park loop at all.
+if(STRATA_BUILD_TESTS)
+  target_compile_definitions(strata_kernels_cpu PRIVATE STRATA_POOL_PAUSE_COUNT=1)
+endif()
+# issue #4624: the park loop honours `STRATA_POOL_SPIN_US=0` in every build of the pool
+# (src/kernels/cpu/pool.cpp, `spin_hot`, decided by `park_warm_stage` in include/strata/kernels/cpu/pool.hpp).  What
+# is gated here is only the timing that prices a park: `pool_park_cost` below and its compile-time twin
+# STRATA_POOL_PARK_COST_TEST, which src/kernels/cpu/pool_tasks_test.cpp reads.  That timing watches the pool's own
+# worker threads through `getrusage`: it compiles no GPU code and takes no GPU time, so what it can say is a statement
+# about the platform - the CPU, its scheduler, the C library - and the gate is drawn by platform, not by which engine
+# is configured.  It is compiled where this platform was built and measured: Linux on x86-64 in a CUDA engine (gcc),
+# in a CPU-only engine (gcc), in a wave32 HIP configuration (whose pool object the host compiler builds) and in the
+# gfx906 compat build (clang 21 with the HIP-compat headers; the test links no ROCm and runs no GPU code, and no AMD
+# hardware was here).  All four answer the same way.  Left out on purpose:
+# Windows and macOS, whose toolchains have never built this test, and every other architecture - the arm64 Spark
+# engine package included (packaging/build_cuda_linux_aarch64.sh:36 runs spark/build_engine.sh, whose configure line
+# passes -DSTRATA_ENABLE_CUDA=ON at its :63).  The Mac engine (metal/CMakeLists.txt compiles src/kernels/cpu/pool.cpp
+# itself; docs/MAC.md) and the SYCL port (sycl/CMakeLists.txt compiles pool.cpp itself, and CMakeLists.txt returns at
+# its STRATA_ENABLE_SYCL branch before strata_cpu_kernels() is reached) never see this flag at all.  Everywhere the
+# timing is left out a park is fixed but unpriced: the spin-zero check every build of `pool_tasks_test` runs would
+# notice a worker that never sleeps or a wake that never arrives, but only this test notices a park that costs too
+# much, and the only paper trail is the line naming the test that was not registered, which prints in a build asked
+# for the microbench (-DSTRATA_POOL_SPIN_US_MICROBENCH=ON); an ordinary build says nothing.
+set(_strata_park_cost_test OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")   # the platform the timing was measured on, not the engine
+  set(_strata_park_cost_test ON)
+endif()
 # expert_layout.cpp (above) names the AVX1 rung of the Q2_0 rows and the activation quantizer; with STRATA_NATIVE_EXPERTS=ON
 # q2_avx1.cpp joins the library in the native-experts section below (default, release builds).  Without it the library has
 # to carry that file itself, or every program that links it fails with undefined *_avx1 symbols.
@@ -304,6 +337,21 @@ macro(strata_cpu_native_experts)
              STRATA_NO_NVFP4_512=1 STRATA_NO_NVFP4_256=1 $<TARGET_FILE:native_arithmetic_parity>)
     add_executable(pool_tasks_test src/kernels/cpu/pool_tasks_test.cpp)
     target_link_libraries(pool_tasks_test PRIVATE strata_kernels_cpu)
+    if(STRATA_POOL_SPIN_US_MICROBENCH)
+      target_compile_definitions(pool_tasks_test PRIVATE STRATA_POOL_SPIN_US_MICROBENCH)
+      if(_strata_park_cost_test)
+        # its own test name and its own timeout: what a park costs is measured in CPU time, and a number measured
+        # on a working PC must not take the 360 bitwise comparisons down with it.
+        target_compile_definitions(pool_tasks_test PRIVATE STRATA_POOL_PARK_COST_TEST=1)
+        add_test(NAME pool_park_cost COMMAND pool_tasks_test parkcost)
+        set_tests_properties(pool_park_cost PROPERTIES TIMEOUT 300)
+      else()
+        # outside this gate the timing is not compiled into the binary at all, so there is no number to register and
+        # no bound to enforce: a park there honours the knob just the same and nobody prices it.  This line is the
+        # only trace; the comment near the top of this file carries what that leaves unmeasured.
+        message(STATUS "Strata: pool_park_cost not registered: this configuration compiles the park fix but measures no park cost")
+      endif()
+    endif()
     add_test(NAME pool_tasks_test COMMAND pool_tasks_test)
     set_tests_properties(pool_tasks_test PROPERTIES TIMEOUT 180)
     add_test(NAME router_dot_parity COMMAND router_dot_parity)
@@ -442,6 +490,18 @@ if(STRATA_BUILD_TESTS)
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)
   add_test(NAME pool_stress COMMAND pool_stress 20)
+
+  # issue #4624: what `STRATA_POOL_SPIN_US` does to the park loop, read from the pause counter above and from the
+  # per-worker state `diag()` prints (src/kernels/cpu/pool_sleep_diag.hpp).  It asks for no expert kernels and no
+  # particular instruction set, which is why it lives here rather than next to `pool_tasks_test` (registered only where
+  # the native experts are configured) or in `pool_stress` above (whose stress loop skips on a CPU without AVX-512):
+  # this is the one that runs in the CPU configuration CI builds, on Linux and on Windows.  It puts no work through the
+  # pool - a parked worker with nothing to do is the subject - so its waits are bounded waits for a state the pool
+  # reports about itself, and what is judged is a count and a state, never a duration.
+  add_executable(pool_spin_test src/kernels/cpu/pool_spin_test.cpp)
+  target_link_libraries(pool_spin_test PRIVATE strata_kernels_cpu)
+  add_test(NAME pool_spin_test COMMAND pool_spin_test)
+  set_tests_properties(pool_spin_test PROPERTIES TIMEOUT 120)
 
   # #795: nothing an AVX2-only CPU can reach may hold AVX-512 / AVX-VNNI-class instructions.  (1) the linked test binary
   # (every CPU kernel file plus ggml-cpu; on Linux, the kernel library) is disassembled and any function with such instructions must be a kernel of
