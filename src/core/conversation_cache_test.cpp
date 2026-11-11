@@ -449,6 +449,48 @@ int main() {
               "matches report the entry's serial");
     }
     {
+        // A parked live state with a BPE/tokenization boundary difference is still the deepest reusable source.  Only
+        // live gets a partial match; a checkpoint is mounted by its exact length and must stay exact.
+        std::vector<int32_t> saved_ids(6000);
+        for (size_t i = 0; i < saved_ids.size(); ++i) saved_ids[i] = (int32_t) i;
+        std::vector<int64_t> prompt(saved_ids.begin(), saved_ids.end());
+        prompt[5000] = -1;
+        SavedConversation a = image({});
+        a.live.ids = saved_ids;
+        a.live.imgs = {{100, 77}, {5500, 78}};
+        ConversationCheckpoint exact;
+        exact.ids.assign(saved_ids.begin(), saved_ids.begin() + 4500);
+        a.checkpoints.push_back(exact);
+        ConversationCache cache(1 << 20, 4);
+        check(cache.put(std::move(a)), "park a live state with a later tokenization difference");
+        const auto partial = cache.best(prompt, {{100, 77}}, true);
+        check(partial.tokens == 5000 && partial.live && !cache.borrows(partial),
+              "parked live LCP beats a shorter exact checkpoint and is taken");
+        check(cache.best(prompt, {{100, 78}}, true).tokens == 0,
+              "parked live LCP rejects a different picture below the rewind point");
+
+        SavedConversation b = image({7, 7, 7});
+        ConversationCheckpoint partial_checkpoint;
+        partial_checkpoint.ids = saved_ids;
+        b.checkpoints.push_back(partial_checkpoint);
+        ConversationCache checkpoint_only(1 << 20, 4);
+        check(checkpoint_only.put(std::move(b)), "park a checkpoint with a later tokenization difference");
+        check(checkpoint_only.best(prompt, {}, true).tokens == 0, "checkpoints do not get partial matches");
+
+        ConversationCache short_cache(1 << 20, 4);
+        check(short_cache.put(image({1, 2, 3, 4})), "park an exact short live state");
+        check(short_cache.best(std::vector<int64_t>{1, 2, 3, 4, 5}, {}, true).tokens == 4,
+              "the partial-match floor does not disable exact short matches");
+
+        SavedConversation c = image({});
+        c.live.ids = saved_ids;
+        ConversationCache full_prompt(1 << 20, 4);
+        check(full_prompt.put(std::move(c)), "park a live state longer than the prompt");
+        std::vector<int64_t> whole(saved_ids.begin(), saved_ids.begin() + 5000);
+        check(full_prompt.best(whole, {}, true).tokens == 0,
+              "parked live LCP still leaves the last prompt token for the verify window");
+    }
+    {
         // the outgoing conversation fits only in the guarded donor's room: make_room refuses before evicting anything
         auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
         SavedConversation a = image({1, 2, 3, 4, 10, 11});
