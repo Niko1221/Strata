@@ -136,10 +136,13 @@ class AnAutomaticFetch(unittest.TestCase):
 
     def test_a_miss_less_than_twelve_hours_old_skips_the_feed(self):
         (self.data / "dflash2" / drafting_fetch.MISS_MARK).write_text("x")
-        with serving(), hardware(STRIX), mock.patch.object(drafting_fetch, "tuned_from_feed") as feed, mock.patch.object(drafting_fetch.acquisition, "require"):
+        with serving(), hardware(STRIX), mock.patch.object(drafting_fetch, "tuned_from_feed") as feed, mock.patch.object(drafting_fetch.acquisition, "require"), \
+             mock.patch.dict(drafting_fetch.os.environ, {drafting.TUNED_URL_ENV: ""}), \
+             mock.patch.object(drafting_fetch, "ensure", side_effect=drafting_fetch.OfflineError("offline")) as stock:
             code, _out, _ = self.fetch("--throttle")
         self.assertEqual(code, 0)
         feed.assert_not_called()
+        stock.assert_called_once()
 
     def test_a_real_fault_is_still_reported(self):
         fault = drafting_fetch.DraftingError("The tuned DFlash2 drafter did not pass the safety check, so it was deleted.")

@@ -107,7 +107,10 @@ async function rig(t, { tool = false, manual = false, holdFuture = false } = {})
     const end = reason => { res.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: reason }] }) + '\n\ndata: [DONE]\n\n'); res.end(); };
     if (requests.length === 1 && tool) {
       const name = body.tools.find(x => ['bash', 'pwsh'].includes(x.function.name)).function.name;
-      const command = `printf started > ${JSON.stringify(began)}; ${manual ? '' : `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.05; done; `}printf 'done\\n' >> ${JSON.stringify(marker)}; printf actual-tool-result`;
+      const psPath = path => `'${path.replaceAll("'", "''")}'`;
+      const command = name === 'pwsh'
+        ? `[System.IO.File]::WriteAllText(${psPath(began)}, 'started'); ${manual ? '' : `while (-not (Test-Path -LiteralPath ${psPath(release)})) { Start-Sleep -Milliseconds 50 }; `}[System.IO.File]::AppendAllText(${psPath(marker)}, "done\`n"); Write-Output 'actual-tool-result'`
+        : `printf started > ${JSON.stringify(began)}; ${manual ? '' : `while [ ! -f ${JSON.stringify(release)} ]; do sleep 0.05; done; `}printf 'done\\n' >> ${JSON.stringify(marker)}; printf actual-tool-result`;
       delta({ tool_calls: [{ index: 0, id: 'side-effect', type: 'function', function: { name, arguments: JSON.stringify({ description: 'Perform the controlled operation once', command }) } }] }); end('tool_calls'); return;
     }
     if (requests.length === 1) {
