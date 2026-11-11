@@ -158,6 +158,7 @@
 
 #include <cuda_runtime.h>
 #if defined(STRATA_GPU_METAL)
+#include <functional>
 namespace strata::metal_engine {
 void set_model_shard(const char* shard1);   // metal/src/engine/window.cpp
 void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch slots the window keeps state for
@@ -165,6 +166,24 @@ void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch 
 bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err);
 std::string draft_vocab_default();   // metal/src/engine/window.cpp: the packaged default draft subset (data/draft_vocab.bin)
 bool draft_vocab_whole_head();       // STRATA_METAL_DRAFT_VOCAB=full
+// between requests (window.cpp, STRATA_METAL_IDLE_RELEASE_MS / STRATA_METAL_PRESSURE_RELEASE_GB)
+bool idle_release();
+bool idle_refill();
+bool idle_pressure(uint64_t& wired_low);
+// the streamed arena follows memory (window.cpp, STRATA_METAL_ARENA_ELASTIC=1)
+bool arena_dynamic();
+uint64_t arena_shrink(uint64_t bytes);
+uint64_t arena_grow(uint64_t bytes);
+uint64_t arena_shed();
+int64_t mem_spare();
+bool arena_grow_start(uint64_t bytes);
+bool arena_growing();
+uint64_t arena_commit();
+void set_token_hook(std::function<void(bool)> hook);
+uint64_t arena_shed_prompt_band();
+uint64_t arena_prompt_band_back();
+void dense_offer();
+void dense_take_back();
 }
 #endif
 
@@ -13876,12 +13895,127 @@ int main(int argc, char** argv) {
             st->eof = true;
             st->cv.notify_one();
         }).detach();
+#if defined(STRATA_GPU_METAL)
+        // The streamed arena follows spare memory (mem_spare: free memory over the headroom) in 1 GB chunks, between
+        // requests every 100 ms (next_line) and during them at token boundaries (the token hook): short of the headroom,
+        // as many chunks as the shortfall needs go at once; more than one chunk plus 1 GB spare for 1 s, chunks come back:
+        // one near the limit, up to four with plenty spare (step). A grow never takes spare from above the band to below
+        // zero: no hold, cap or back-off, and nothing but memory is measured. STRATA_METAL_IDLE_RELEASE_MS shrinks it to
+        // its decode core after that long idle and holds it there until a request.
+        bool idle_released = false;
+        bool arena_released = false;   // an arena that is not elastic, or a resident model, given back while idle
+        constexpr int64_t kChunk = 1ll << 30, kBand = kChunk + 1000000000ll;
+        const auto kRoomy = std::chrono::seconds(1);
+        auto shortfall = [](int64_t spare) { return (uint64_t) ((-spare + kChunk - 1) / kChunk * kChunk); };
+        auto step = [](int64_t spare) { return (uint64_t) std::clamp<int64_t>((spare - kBand) / kChunk, 1, 4) * kChunk; };
+        struct TokenHookOff { ~TokenHookOff() { strata::metal_engine::set_token_hook({}); } } token_hook_off;   // it captures this scope
+        {   // (the arena itself comes up with the first window: the hook checks for it)
+            auto last = std::chrono::steady_clock::time_point{}, roomy_since = last;
+            auto every = std::chrono::steady_clock::duration(std::chrono::milliseconds(500));
+            strata::metal_engine::set_token_hook([=](bool) mutable {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last < every || !strata::metal_engine::arena_dynamic()) return;
+                last = now;
+                // at most ~1% of the decode: the next check waits 100 times mem_spare's cost (its mincore of the shed
+                // slots inside live buffers is ~0.1 us a page), never less than 500 ms. Only the reading is timed, not the
+                // shrink it triggers (~13 ms a tier), so a large shrink cannot push the next check seconds away
+                const int64_t spare = strata::metal_engine::mem_spare();
+                every = std::max<std::chrono::steady_clock::duration>(std::chrono::milliseconds(500), 100 * (std::chrono::steady_clock::now() - now));
+                if (spare < 0) {
+                    strata::metal_engine::arena_shrink(shortfall(spare));
+                    roomy_since = {};
+                } else if (spare > kBand && strata::metal_engine::arena_shed() > 0 && !strata::metal_engine::arena_growing()) {
+                    if (roomy_since == std::chrono::steady_clock::time_point{}) roomy_since = now;
+                    else if (now - roomy_since >= kRoomy) {
+                        strata::metal_engine::arena_grow_start(step(spare));
+                        roomy_since = {};
+                    }
+                } else {
+                    roomy_since = {};
+                }
+            });
+        }
+#endif
         auto next_line = [&](std::string& out) -> bool {
             std::unique_lock<std::mutex> lk(in_mu);
-            in_cv.wait(lk, [&] { return !in_lines.empty() || in_eof; });
+            auto have = [&] { return !in_lines.empty() || in_eof; };
+#if defined(STRATA_GPU_METAL)
+            const long idle_ms = 0;   // no fixed idle timer: the arena follows memory (see window.cpp)
+            const bool on_pressure = true;
+            if (strata::metal_engine::arena_dynamic()) {
+                const auto t0 = std::chrono::steady_clock::now();
+                auto roomy_since = std::chrono::steady_clock::time_point{};
+                while (!in_cv.wait_for(lk, std::chrono::milliseconds(100), have)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const long idle = (long) std::chrono::duration_cast<std::chrono::milliseconds>(now - t0).count();
+                    const int64_t spare = strata::metal_engine::mem_spare();
+                    lk.unlock();
+                    strata::metal_engine::arena_commit();   // a grow read during the request
+                    if (idle_ms > 0 && idle >= idle_ms && !idle_released) {
+                        const uint64_t shed = strata::metal_engine::arena_shrink(UINT64_MAX) +
+                                              strata::metal_engine::arena_shed_prompt_band();   // down to the decode core
+                        std::fprintf(stderr, "strata metal stream: idle: %.1f GB of the arena shed to its decode core after %ld ms\n",
+                                     shed / 1e9, idle);
+                        strata::metal_engine::dense_offer();
+                        idle_released = true;
+                    } else if (spare < 0) {
+                        const uint64_t need = shortfall(spare);
+                        // at the arena's floor the dense weights are offered too
+                        if (strata::metal_engine::arena_shrink(need) < need) strata::metal_engine::dense_offer();
+                        roomy_since = {};
+                    } else if (!idle_released && spare > kBand && strata::metal_engine::arena_shed() > 0) {
+                        if (roomy_since == std::chrono::steady_clock::time_point{}) roomy_since = now;
+                        else if (now - roomy_since >= kRoomy) {
+                            // one chunk at a time, free memory measured again before each, so a model that starts
+                            // loading mid-grow meets at most one chunk of it
+                            for (uint64_t n = step(spare) / kChunk, i = 0; i < n; ++i)
+                                if ((i > 0 && strata::metal_engine::mem_spare() <= kBand) || !strata::metal_engine::arena_grow((uint64_t) kChunk)) break;
+                            roomy_since = {};
+                        }
+                    } else {
+                        roomy_since = {};
+                    }
+                    lk.lock();
+                }
+            }
+            // not elastic: the whole arena (or a resident model's pages) goes back after IDLE_RELEASE_MS, or as soon as
+            // another process needs the memory (checked every 100 ms)
+            else if ((idle_ms > 0 || on_pressure) && !arena_released) {
+                const auto t0 = std::chrono::steady_clock::now();
+                uint64_t wired_low = UINT64_MAX;
+                while (!in_cv.wait_for(lk, std::chrono::milliseconds(100), have)) {
+                    const long idle = (long) std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+                    if ((idle_ms > 0 && idle >= idle_ms) || strata::metal_engine::idle_pressure(wired_low)) {
+                        lk.unlock();
+                        arena_released = strata::metal_engine::idle_release();
+                        lk.lock();
+                        break;
+                    }
+                }
+            }
+#endif
+            in_cv.wait(lk, have);
             if (in_lines.empty()) return false;
             out = std::move(in_lines.front());
             in_lines.pop_front();
+#if defined(STRATA_GPU_METAL)
+            const bool request = out.rfind("GEN", 0) == 0 || out.rfind("BGEN", 0) == 0 || out.rfind("RESTORE", 0) == 0;
+            lk.unlock();
+            strata::metal_engine::dense_take_back();   // before anything can run on the GPU
+            if (request) strata::metal_engine::arena_prompt_band_back();   // whatever memory is spare
+            if (request && idle_released) {
+                // after an idle release, what fits of the shed arena comes back before the request (8 GB more than the
+                // headroom stays free: the request's own buffers); otherwise the arena comes back 1 GB at a time
+                const int64_t spare = strata::metal_engine::mem_spare();
+                if (spare > (int64_t) 8e9) strata::metal_engine::arena_grow((uint64_t) (spare - (int64_t) 8e9));
+                idle_released = false;
+            }
+            if (request && arena_released) {
+                strata::metal_engine::idle_refill();
+                arena_released = false;
+            }
+            lk.lock();
+#endif
             return true;
         };
         sp.should_stop = [&] { return stop_req.load(); };

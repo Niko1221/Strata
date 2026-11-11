@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -49,6 +50,7 @@ bool ExpertStream::wanted(const gguf::File& f, const mtl::Context& cx) {
 }
 
 ExpertStream::~ExpertStream() {
+    if (bg_.joinable()) { bg_stop_ = true; bg_.join(); }
     {
         std::lock_guard<std::mutex> g(mu_);
         stop_ = true;
@@ -163,6 +165,9 @@ bool ExpertStream::open(const gguf::File& f, std::string& err) {
     pre_mru_ = env_int("STRATA_METAL_PREFETCH_MRU", big ? 0 : 1) != 0;
     // timing only (WRONG answers): every missing expert is pointed at slot 0, nothing is read
     fake_ = env_int("STRATA_METAL_STREAM_FAKE", 0) != 0;
+    held_on_ = env_int("STRATA_METAL_HELD", 1) != 0;
+    hold_.assign((size_t) NL, 0);
+    skip_.assign((size_t) NL, 0);
     return true;
 }
 
@@ -214,10 +219,24 @@ bool ExpertStream::load_dense(gguf::File& f, mtl::Context& cx, const std::vector
         });
     for (auto& x : th) x.join();
     if (!ok) { err = "metal stream: reading the dense tensors failed"; return false; }
+    for (size_t i = 0; i < ts.size(); ++i) dense_reads_.push_back({dst[i], ts[i]->bytes, src[i]});
     for (size_t i = 0; i < ts.size(); ++i) ts[i]->offset = dst[i];
     std::fprintf(stderr, "strata metal stream: %zu dense tensors read into memory (%.2f GB, %.1f s; %zu left out)\n", ts.size(),
                  tot / 1e9, (now_ms() - t0) / 1e3, skip.size());
     return true;
+}
+
+bool ExpertStream::reload_dense(uint8_t* base) {
+    std::atomic<size_t> next{0};
+    std::atomic<bool> ok{true};
+    std::vector<std::thread> th;
+    for (int k = 0; k < 4; ++k)
+        th.emplace_back([&] {
+            for (size_t i; (i = next++) < dense_reads_.size();)
+                if (!read(base + dense_reads_[i].dst, dense_reads_[i].len, dense_reads_[i].src)) ok = false;
+        });
+    for (auto& x : th) x.join();
+    return ok;
 }
 
 int ExpertStream::cls_of(int s) const {   // the class ranges are contiguous
@@ -229,6 +248,7 @@ int ExpertStream::cls_of(int s) const {   // the class ranges are contiguous
 void ExpertStream::lru_unlink(int s) {
     Slot& x = slots_[(size_t) s];
     Cls& k = cls_[(size_t) cls_of(s)];
+    if (x.prev < 0 && x.next < 0 && k.head != s) return;   // not in the list (a shed slot coming back)
     if (x.prev >= 0) slots_[(size_t) x.prev].next = x.next; else k.head = x.next;
     if (x.next >= 0) slots_[(size_t) x.next].prev = x.prev; else k.tail = x.prev;
     x.prev = x.next = -1;
@@ -259,7 +279,8 @@ void ExpertStream::lru_front(int s) {
 int ExpertStream::victim(int ci) {
     Cls& k = cls_[(size_t) ci];
     for (int s = k.tail; s >= 0; s = slots_[(size_t) s].prev)
-        if (slots_[(size_t) s].state.load() == 0 && slots_[(size_t) s].pin != stamp_) {
+        if (slots_[(size_t) s].state.load() == 0 && slots_[(size_t) s].pin != stamp_ &&
+            !(slots_[(size_t) s].layer >= 0 && hold_[(size_t) slots_[(size_t) s].layer])) {
             Slot& x = slots_[(size_t) s];
             if (x.layer >= 0) {
                 const int key = x.layer * NE + x.e;
@@ -312,10 +333,11 @@ void ExpertStream::io_main() {
         Job j;
         {
             std::unique_lock<std::mutex> g(mu_);
-            cv_.wait(g, [&] { return stop_ || !urgent_q_.empty() || !pre_q_.empty(); });
+            cv_.wait(g, [&] { return stop_ || !urgent_q_.empty() || !pre_q_.empty() || !fill_q_.empty(); });
             if (stop_) return;
             if (!urgent_q_.empty()) { j = urgent_q_.front(); urgent_q_.pop_front(); }
-            else { j = pre_q_.front(); pre_q_.pop_front(); }
+            else if (!pre_q_.empty()) { j = pre_q_.front(); pre_q_.pop_front(); }
+            else { j = fill_q_.front(); fill_q_.pop_front(); }
             slots_[(size_t) j.slot].state = 2;
         }
         read_part(j.slot, j.layer, j.e, j.part);
@@ -335,7 +357,7 @@ void ExpertStream::io_main() {
     }
 }
 
-void ExpertStream::submit(int s, int l, int e, bool urgent) {
+void ExpertStream::submit(int s, int l, int e, bool urgent, bool fill) {
     Slot& x = slots_[(size_t) s];
     x.layer = (int16_t) l;
     x.e = (int16_t) e;
@@ -345,13 +367,14 @@ void ExpertStream::submit(int s, int l, int e, bool urgent) {
     x.left = parts;
     ++outstanding_;
     where_[(size_t) (l * NE + e)] = s;
-    for (int p = 0; p < parts; ++p) (urgent ? urgent_q_ : pre_q_).push_back({s, l, e, p});
+    for (int p = 0; p < parts; ++p) (urgent ? urgent_q_ : fill ? fill_q_ : pre_q_).push_back({s, l, e, p});
 }
 
 // a queued read-ahead nobody wants: its pieces dropped, the slot freed (only before any piece has started)
 void ExpertStream::cancel_slot(int s) {
     Slot& x = slots_[(size_t) s];
     for (auto it = pre_q_.begin(); it != pre_q_.end();) it = it->slot == s ? pre_q_.erase(it) : it + 1;
+    for (auto it = fill_q_.begin(); it != fill_q_.end();) it = it->slot == s ? fill_q_.erase(it) : it + 1;
     where_[(size_t) (x.layer * NE + x.e)] = -1;
     x.layer = x.e = -1;
     x.state = 0;
@@ -365,9 +388,10 @@ void ExpertStream::cancel_slot(int s) {
 // a read-ahead that is wanted now: its queued pieces go first
 void ExpertStream::promote_slot(int s) {
     std::vector<Job> mine;
-    for (auto it = pre_q_.begin(); it != pre_q_.end();)
-        if (it->slot == s) { mine.push_back(*it); it = pre_q_.erase(it); }
-        else ++it;
+    for (auto* q : {&pre_q_, &fill_q_})   // a held layer's queued fill read too
+        for (auto it = q->begin(); it != q->end();)
+            if (it->slot == s) { mine.push_back(*it); it = q->erase(it); }
+            else ++it;
     for (auto it = mine.rbegin(); it != mine.rend(); ++it) urgent_q_.push_front(*it);
 }
 
@@ -375,6 +399,10 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
                               const std::function<uint64_t()>& recheck, const std::function<bool(uint64_t)>& grow) {
     const double t0 = now_ms();
     shrink_to_ = 0;
+    min_slots_ = min_slots;
+    cx_ = &cx;
+    const char* el = std::getenv("STRATA_METAL_ARENA_ELASTIC");   // the arena follows memory (window.cpp arena_elastic)
+    const bool dyn = el && std::string(el) == "1";
     for (auto& k : cls_) k.n = 0;   // a second try (after a shrink) lays the arena out again
     // the ranking: the profile's pairs, then every pair it misses, layer-interleaved
     std::vector<std::pair<int, int>> rank;
@@ -420,34 +448,86 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         k.base = base;
         base += k.n;
     }
-    // the slots placed in chunks of at most maxBufferLength (and 8 GB), up to 4 (the kernels' buffers 0, 7, 8, 9)
-    // (8 GB each unless the arena needs bigger ones to fit 4: the M4 refused one 20.6 GB buffer, the M5 Max takes an
-    // 89 GB arena for UD-Q5_K_XL in 4 of ~23 GB; STRATA_METAL_ARENA_CHUNK_GB sets it)
+    // the slots placed in chunks of at most maxBufferLength (and 8 GB unless the arena needs bigger ones: the M4 refused
+    // one 20.6 GB buffer; STRATA_METAL_ARENA_CHUNK_GB sets it), up to 64, each its own buffer reached through an address
+    // table (table_). An elastic arena uses chunks of ~1 GB, so it sheds or grows ~1 GB at a time
     uint64_t total = 0, biggest = 0;
     for (const auto& k : cls_) {
         total += (uint64_t) k.n * k.pages * PAGE;
         biggest = std::max<uint64_t>(biggest, k.pages * PAGE);
     }
-    uint64_t want = std::max<uint64_t>(8ull << 30, total / 4 + 4 * biggest);
+    // an elastic arena: tiers (stream.h extra0_) above its floor, each class's min_slots; every chunk above the floor is
+    // a tier, so any shrink gives whole chunks back to macOS
+    uint64_t floor = 0;
+    for (const auto& k : cls_) floor += (uint64_t) min_slots * k.pages * PAGE;
+    const bool tiered = dyn && total > floor + (2ull << 30);
+    uint64_t want = tiered ? (1ull << 30) : std::max<uint64_t>(8ull << 30, total / 32 + 4 * biggest);
     if (const char* e = std::getenv("STRATA_METAL_ARENA_CHUNK_GB")) want = (uint64_t) (std::atof(e) * (1ull << 30));
-    const uint64_t cmax = std::min<uint64_t>(cx.max_buffer_length(), want) / PAGE * PAGE;
+    const uint64_t cm = std::max<uint64_t>((biggest + PAGE - 1) / PAGE * PAGE, std::min<uint64_t>(cx.max_buffer_length(), want) / PAGE * PAGE);
     code_.assign((size_t) base, 0);
     host_.assign((size_t) base, nullptr);
     std::vector<uint64_t> csize;
     std::vector<std::pair<int, uint64_t>> at((size_t) base);
+    // per class: the decode core, the prompt band (the rest of the floor), the tiers. A prompt chunk's layer needs up to
+    // 512 slots at once, a decode's 64; between requests only the decode core stays
+    constexpr int kDecodeSlots = 64;
+    std::vector<std::vector<int>> cut(cls_.size());
+    for (size_t c = 0; c < cls_.size(); ++c) {
+        const Cls& k = cls_[c];
+        const int core = tiered ? std::min(k.n, min_slots) : k.n;
+        const int dec = tiered ? std::min(core, kDecodeSlots) : core;
+        cut[c] = {k.base, k.base + dec, k.base + core, k.base + k.n};
+    }
+    // the tiers in fill (rank) order across the classes, so chunk k holds the k-th GB of ranked experts: a fill that
+    // stops keeps every chunk it filled, and a shrink gives back the coldest GB of the whole model. Class by class,
+    // the top tiers were one class's slots: a fill stopped at 25.8 GB kept 7.7, and a shrink emptied that class
+    std::vector<int> tier_order;
+    if (tiered) {
+        std::vector<int> cnt(cls_.size(), 0);
+        for (const auto& p : fill) {
+            const size_t c = (size_t) lay_[(size_t) p.first].cls;
+            const int s = cls_[c].base + cnt[c]++;
+            if (s >= cut[c][2] && s < cut[c][3]) tier_order.push_back(s);
+        }
+        for (size_t c = 0; c < cls_.size(); ++c)
+            for (int s = std::max(cut[c][2], cls_[c].base + cnt[c]); s < cut[c][3]; ++s) tier_order.push_back(s);
+    }
+    extra0_ = -1;
+    core0_ = -1;
     uint64_t cur = 0;
-    for (const auto& k : cls_)
-        for (int s = k.base; s < k.base + k.n; ++s) {
-            if (csize.empty() || cur + k.pages * PAGE > cmax) {
-                if (!csize.empty()) csize.back() = cur;
+    auto place = [&](int s) {
+        const uint64_t sz = cls_[(size_t) cls_of(s)].pages * PAGE;
+        if (csize.empty() || cur + sz > cm) {
+            if (!csize.empty()) csize.back() = cur;
+            csize.push_back(0);
+            cur = 0;
+        }
+        at[(size_t) s] = {(int) csize.size() - 1, cur / PAGE};
+        cur += sz;
+    };
+    for (int t = 0; t < 3; ++t) {
+        if (t > 0 && tiered && !csize.empty()) {   // the prompt band and the tiers start a chunk of their own
+            if (cur == 0) {   // an empty prompt band (no prompt chunks): its chunk takes the tiers
+                if (t == 2) { extra0_ = core0_; core0_ = -1; }
+            } else {
+                csize.back() = cur;
+                (t == 1 ? core0_ : extra0_) = (int) csize.size();
                 csize.push_back(0);
                 cur = 0;
             }
-            at[(size_t) s] = {(int) csize.size() - 1, cur / PAGE};
-            cur += k.pages * PAGE;
         }
+        if (t == 2 && tiered) {
+            for (int s : tier_order) place(s);
+            continue;
+        }
+        for (size_t c = 0; c < cls_.size(); ++c)
+            for (int s = cut[c][(size_t) t]; s < cut[c][(size_t) t + 1]; ++s) place(s);
+    }
     if (!csize.empty()) csize.back() = cur;
-    if (csize.size() > 4) { err = "metal stream: the arena needs more than 4 buffers (lower STRATA_METAL_ARENA_GB)"; return false; }
+    if (!csize.empty() && csize.back() == 0) csize.pop_back();   // a tier 1 with no slot
+    if (extra0_ >= (int) csize.size()) extra0_ = -1;
+    if (extra0_ < 0 || core0_ >= extra0_) core0_ = -1;
+    if (csize.size() > 64) { err = "metal stream: the arena needs more than 64 chunks (raise STRATA_METAL_ARENA_CHUNK_GB)"; return false; }
     if (recheck) {   // the memory macOS can give, asked again just before the arena is committed
         uint64_t total = 0;
         for (uint64_t b : csize) total += b;
@@ -462,15 +542,23 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         void* m = mmap(nullptr, (size_t) b, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
         if (m == MAP_FAILED) { err = "metal stream: cannot map the arena"; return false; }
         chunks_.push_back(cx.wrap(m, (size_t) b));
+        parked_mem_.push_back({m, (size_t) b});
         arena_bytes_ += b;
     }
+    live_bufs_ = (int) chunks_.size();
+    table_ = cx.alloc(64 * sizeof(uint64_t));
+    for (size_t k = 0; k < chunks_.size(); ++k) {
+        cx.keep_resident(chunks_[k], true);
+        table_.as<uint64_t>()[k] = cx.gpu_address(chunks_[k]);
+    }
     for (int s = 0; s < base; ++s) {
-        code_[(size_t) s] = ((uint32_t) at[(size_t) s].first << 28) | (uint32_t) at[(size_t) s].second;
+        code_[(size_t) s] = ((uint32_t) at[(size_t) s].first << 26) | (uint32_t) at[(size_t) s].second;
         host_[(size_t) s] = chunks_[(size_t) at[(size_t) s].first].as<uint8_t>() + at[(size_t) s].second * PAGE;
     }
     smap_ = cx.alloc((size_t) NL * NE * 4);
     std::memset(smap_.ptr, 0xFF, (size_t) NL * NE * 4);
     slots_ = std::vector<Slot>((size_t) base);
+    full_ = (size_t) base >= (size_t) NL * ne_ && fill.size() == (size_t) NL * ne_;
     retired_.assign((size_t) base, 0);
     where_.assign((size_t) NL * NE, -1);
     for (auto& k : cls_) {
@@ -520,7 +608,26 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
     size_t nretired = 0;
     {
         std::unique_lock<std::mutex> g(mu_);
-        if (stopped)   // the slots not filled stay unused (their pages never touched), all but min_slots of each class
+        if (stopped && dyn) {   // a resized arena keeps the pairs not filled as shed slots (pages never
+                                // touched, coldest first); grow() reads them in, best first, once macOS has the memory
+            std::vector<Gone> unfilled;
+            for (size_t i = done; i < fill.size(); ++i) {
+                const int c = lay_[(size_t) fill[i].first].cls;
+                unfilled.push_back({next_free[(size_t) c]++, fill[i].first, fill[i].second});
+            }
+            for (size_t i = unfilled.size(); i-- > 0;) {
+                // each class keeps its first min_slots in the LRU, filled or empty (buffer 0, never shed): a class
+                // shed to nothing had no slot for a miss and exited 6 on the first prompt
+                const Cls& k = cls_[(size_t) cls_of(unfilled[i].slot)];
+                if (unfilled[i].slot < k.base + std::min(min_slots_, k.n)) continue;
+                lru_unlink(unfilled[i].slot);
+                shed_.push_back(unfilled[i]);
+                shed_bytes_ += cls_[(size_t) cls_of(unfilled[i].slot)].pages * PAGE;
+            }
+            retired_bytes = shed_bytes_;
+        } else if (stopped) {   // the slots not filled stay unused (their pages never touched), all but min_slots of each class
+            full_ = false;   // retired slots never come back, so no expert left out is ever read in;
+                             // as full, complete() let the window skip the host turns and the GPU read the empty smap entries
             for (size_t c = 0; c < cls_.size(); ++c) {
                 const Cls& k = cls_[c];
                 for (int s = std::max(next_free[c], k.base + std::min(min_slots, k.n)); s < k.base + k.n; ++s) {
@@ -530,12 +637,22 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
                     ++nretired;
                 }
             }
+        }
         // the LRU order = the rank order (best at the front)
         for (size_t i = done; i-- > 0;) lru_front(where_[(size_t) (fill[i].first * NE + fill[i].second)]);
     }
+    if (stopped && extra0_ >= 0) {   // no half-filled tier: from the top down to the lowest one with an
+        int low = live_bufs_;          // unfilled slot, tiers above buffer 0 go
+        for (const Gone& x : shed_) low = std::min(low, buf_of(x.slot));
+        arena_live_ = arena_bytes_ - retired_bytes;
+        while (live_bufs_ > std::max(low, extra0_)) shed_top(extra0_);
+        retired_bytes = arena_bytes_ - arena_live_;
+    }
+    fill_.assign(fill.begin(), fill.begin() + (long) done);
     if (stopped)
         std::fprintf(stderr, "strata metal stream: the arena's fill stopped after %.2f GB: macOS's free memory reached what it "
-                             "keeps; %.2f GB of the arena (%zu slots) stay unused\n", filled / 1e9, retired_bytes / 1e9, nretired);
+                             "keeps; %.2f GB of the arena %s\n", filled / 1e9, retired_bytes / 1e9,
+                     dyn ? "start shed (read in as memory frees)" : "stay unused");
     arena_live_ = arena_bytes_ - retired_bytes;
     fill_s_ = (now_ms() - t0) / 1e3;
     fill_bytes_ = bytes_read_.load();
@@ -557,14 +674,26 @@ bool ExpertStream::make_arena(mtl::Context& cx, uint64_t budget, const std::stri
         sysctlbyname("hw.memsize", &phys, &plen, nullptr, 0);
         const char* we = std::getenv("STRATA_METAL_WIRE_ARENA");
         const bool want = we && *we ? std::atoi(we) != 0 : (double) phys >= kBigMac;
-        if (want && !stopped) {
+        if (want && (!stopped || dyn)) {
             const double tp = now_ms();
             uint64_t pinned = 0;
             int failed = 0;
-            for (const auto& c : chunks_) {
-                if (mlock(c.ptr, c.bytes) == 0) pinned += c.bytes;
-                else ++failed;
+            if (shed_.empty()) {
+                for (const auto& c : chunks_) {
+                    if (mlock(c.ptr, c.bytes) == 0) pinned += c.bytes;
+                    else ++failed;
+                }
+            } else {   // only the filled slots: wiring a shed slot would fault its pages in
+                std::vector<uint8_t> shed((size_t) slots_.size(), 0);
+                for (const Gone& x : shed_) shed[(size_t) x.slot] = 1;
+                for (size_t sl = 0; sl < slots_.size(); ++sl) {
+                    if (shed[sl]) continue;
+                    const size_t sz = cls_[(size_t) cls_of((int) sl)].pages * PAGE;
+                    if (mlock(host_[sl], sz) == 0) pinned += sz;
+                    else ++failed;
+                }
             }
+            wired_ = failed == 0;
             std::fprintf(stderr, "strata metal stream: %.1f GB of the arena wired (mlock) in %.0f ms%s; macOS cannot compress it while "
                                  "the engine idles (STRATA_METAL_WIRE_ARENA=0 turns it off)\n", pinned / 1e9, now_ms() - tp,
                          failed ? "; SOME CHUNKS COULD NOT BE WIRED" : "");
@@ -639,7 +768,7 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
     }
     std::vector<int> wait;
     {
-        std::lock_guard<std::mutex> g(mu_);
+        std::unique_lock<std::mutex> g(mu_);   // unique: the miss path below waits for a slot to free
         // read-aheads of this layer (or older) that were not started and are not wanted: dropped (the slot goes free)
         {
             std::vector<int> drop;
@@ -673,7 +802,19 @@ void ExpertStream::at_layer(int l, int T, int topk, const int32_t* ids, const fl
             }
             ++(prompt ? p_misses_ : misses_);
             s = victim(lay_[(size_t) l].cls);
-            if (s < 0) { std::fprintf(stderr, "strata metal stream: no free slot (layer %d)\n", l); std::exit(6); }
+            if (s < 0) {   // every slot of the class is pinned or a read still in flight: wait for a read to finish
+                           // (an older layer's read-ahead) instead of exiting
+                const double t0 = now_ms();
+                while (s < 0 && !stop_ && now_ms() - t0 < 10000.0) {
+                    done_cv_.wait_for(g, std::chrono::milliseconds(20));
+                    s = victim(lay_[(size_t) l].cls);
+                }
+            }
+            if (s < 0) {
+                std::fprintf(stderr, "strata metal stream: no free slot (layer %d: %d slots, none freed in 10 s)\n", l,
+                             cls_[(size_t) lay_[(size_t) l].cls].n);
+                std::exit(6);
+            }
             submit(s, l, e, true);
             slots_[(size_t) s].pin = stamp_;
             if (!prompt) lru_front(s);
@@ -737,6 +878,8 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
             for (int s : region_slots_) ++stolen[(size_t) cls_of(s)];
             bool tight = false;
             for (size_t i = 0; i < cls_.size(); ++i) tight = tight || (cls_[i].n > 0 && cls_[i].n - stolen[i] < ne_);
+            tight = tight || full_ || extra0_ >= 0;   // a full arena keeps every expert through a prompt; an elastic one
+                                                      // may release the chunk the region would use
             if (tight) return standalone_region(bytes);
         }
         region_ = lo;
@@ -745,7 +888,7 @@ uint8_t* ExpertStream::region(uint64_t bytes) {
                      bytes / 1e9, region_slots_.size());
         return lo;
     }
-    // no chunk is big enough for the prompt's buffers (an arena that shrank at the start, a 24 GB Mac): the fallback
+    // no chunk is big enough for the prompt's buffers (an arena that shrank at the start, a 24 GB Mac, ~1 GB chunks): the fallback
     // inside the loop above is only reached when a chunk fits, so the buffers get their own allocation here too
     return standalone_region(bytes);
 }
@@ -759,7 +902,8 @@ uint8_t* ExpertStream::standalone_region(uint64_t bytes) {
     region_slots_.clear();
     region_ = (uint8_t*) m;
     region_bytes_ = 0;   // fresh zero pages; nothing in the arena to empty
-    std::fprintf(stderr, "strata metal stream: the arena is small: the prompt's %.2f GB of buffers are their own "
+    region_own_ = sz;
+    std::fprintf(stderr, "strata metal stream: no arena chunk can lend the prompt's %.2f GB of buffers: they are their own "
                          "allocation, not a region of its slots\n", bytes / 1e9);
     return region_;
 }
@@ -768,11 +912,7 @@ void ExpertStream::hold_region(bool hold) {
     std::unique_lock<std::mutex> g(mu_);
     if (hold) {
         // nothing may be reading into those slots: the queued read-aheads are dropped, the running ones waited for
-        std::vector<int> drop;
-        for (const Job& j : pre_q_)
-            if (slots_[(size_t) j.slot].state.load() == 1 && std::find(drop.begin(), drop.end(), j.slot) == drop.end())
-                drop.push_back(j.slot);
-        for (int s : drop) cancel_slot(s);
+        drop_queued();   // read-ahead and fill
         done_cv_.wait(g, [&] { return outstanding_ == 0; });
         for (int s : region_slots_) {
             Slot& x = slots_[(size_t) s];
@@ -786,12 +926,511 @@ void ExpertStream::hold_region(bool hold) {
             x.state = 3;
         }
         if (region_) std::memset(region_, 0, (size_t) region_bytes_);
+        if (region_ && region_bytes_ == 0 && region_own_) {   // the own allocation, given back after the last prompt
+            madvise(region_, (size_t) region_own_, MADV_FREE_REUSE);
+            std::memset(region_, 0, (size_t) region_own_);
+        }
     } else {
+        if (region_ && region_slots_.empty() && region_bytes_ == 0 && region_own_) madvise(region_, (size_t) region_own_, MADV_FREE_REUSABLE);
         for (int s : region_slots_) {
             slots_[(size_t) s].state = 0;
             if (!retired_[(size_t) s]) lru_back(s);   // a retired slot's memory serves the prompt only
         }
     }
+}
+
+bool ExpertStream::release() {
+    if (released_ || chunks_.empty()) return false;
+    drop_bg();
+    const double t0 = now_ms();
+    {
+        std::unique_lock<std::mutex> g(mu_);
+        drop_queued();   // read-ahead and fill
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        uint32_t* sm = smap_.as<uint32_t>();
+        for (auto& x : slots_) {
+            if (x.layer >= 0) {
+                const int key = x.layer * NE + x.e;
+                where_[(size_t) key] = -1;
+                sm[key] = 0xFFFFFFFFu;
+            }
+            x.layer = x.e = -1;
+            x.pre = false;
+        }
+    }
+    uint64_t freed = 0;
+    for (const auto& c : chunks_) {
+        if (wired_) munlock(c.ptr, c.bytes);
+        if (madvise(c.ptr, c.bytes, MADV_FREE_REUSABLE) == 0) freed += c.bytes;
+    }
+    wired_ = false;
+    released_ = true;
+    std::fprintf(stderr, "strata metal stream: idle: the arena released (%.1f GB back to macOS) in %.0f ms\n", freed / 1e9,
+                 now_ms() - t0);
+    return true;
+}
+
+bool ExpertStream::refill() {
+    if (!released_) return false;
+    const double t0 = now_ms();
+    const uint64_t b0 = bytes_read_.load();
+    for (const auto& c : chunks_) madvise(c.ptr, c.bytes, MADV_FREE_REUSE);
+    std::vector<int> slot_of(fill_.size(), -1);
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        // file order within the ranked set (sequential reads), each pair into a free slot of its size class
+        std::vector<size_t> order(fill_.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const auto& x = fill_[a]; const auto& y = fill_[b];
+            return lay_[(size_t) x.first].g + (uint64_t) x.second * lay_[(size_t) x.first].gs <
+                   lay_[(size_t) y.first].g + (uint64_t) y.second * lay_[(size_t) y.first].gs;
+        });
+        for (size_t i : order) {
+            const int s = victim(lay_[(size_t) fill_[i].first].cls);
+            if (s < 0) continue;
+            submit(s, fill_[i].first, fill_[i].second, true);
+            slot_of[i] = s;
+        }
+    }
+    cv_.notify_all();
+    {
+        std::unique_lock<std::mutex> g(mu_);
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        for (size_t i = fill_.size(); i-- > 0;)   // the LRU order = the rank order (best at the front)
+            if (slot_of[i] >= 0) lru_front(slot_of[i]);
+    }
+    // not wired again: the wiring keeps an idle arena out of the compressor, and with the idle release an idle arena
+    // is given back instead (mlock of 20 GB costs ~1.6 s here, half of the refill)
+    released_ = false;
+    const double s = (now_ms() - t0) / 1e3;
+    std::fprintf(stderr, "strata metal stream: resume: the arena refilled (%.1f GB from the SSD) in %.2f s\n",
+                 (bytes_read_.load() - b0) / 1e9, s);
+    return true;
+}
+
+// chunk k wrapped and resident, its address in the table (live), or out of the set encoders mark used and
+// released, its table entry chunk 0's (no smap value points into it) and chunk() serving chunk 0 for it
+void ExpertStream::set_chunk(int k, bool live) {
+    uint64_t* tab = table_.as<uint64_t>();
+    if (live) {
+        chunks_[(size_t) k] = cx_->wrap(parked_mem_[(size_t) k].first, parked_mem_[(size_t) k].second);
+        cx_->keep_resident(chunks_[(size_t) k], true);
+        tab[k] = cx_->gpu_address(chunks_[(size_t) k]);
+    } else {
+        cx_->keep_resident(chunks_[(size_t) k], false);
+        cx_->free(chunks_[(size_t) k]);
+        chunks_[(size_t) k] = chunks_[0];
+        tab[k] = tab[0];
+    }
+}
+
+uint64_t ExpertStream::shed_top(int floor) {
+    if (floor < 0 || live_bufs_ <= floor) return 0;
+    const int top = live_bufs_ - 1;
+    const double t0 = now_ms();
+    uint64_t freed = 0;
+    {
+        std::unique_lock<std::mutex> g(mu_);
+        drop_queued();   // read-ahead and fill
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        uint32_t* sm = smap_.as<uint32_t>();
+        for (size_t c = 0; c < cls_.size(); ++c)
+            for (int s = cls_[c].tail; s >= 0;) {   // coldest first
+                const int up = slots_[(size_t) s].prev;
+                if (buf_of(s) == top) {
+                    Slot& x = slots_[(size_t) s];
+                    shed_.push_back({s, x.layer, x.e});
+                    if (x.layer >= 0) {
+                        const int key = x.layer * NE + x.e;
+                        where_[(size_t) key] = -1;
+                        sm[key] = 0xFFFFFFFFu;
+                    }
+                    x.layer = x.e = -1;
+                    x.pre = false;
+                    lru_unlink(s);
+                    freed += cls_[(size_t) cls_of(s)].pages * PAGE;
+                }
+                s = up;
+            }
+    }
+    void* p = parked_mem_[(size_t) top].first;
+    const size_t sz = parked_mem_[(size_t) top].second;
+    set_chunk(top, false);
+    if (wired_) munlock(p, sz);
+    if (mmap(p, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        std::fprintf(stderr, "strata metal stream: cannot replace a tier's pages\n");
+        std::exit(6);
+    }
+    live_bufs_ = top;
+    shed_bytes_ += freed;
+    arena_live_ -= freed;
+    std::fprintf(stderr, "strata metal stream: %.0f shrink: tier %d, %.1f GB, back to macOS in %.0f ms; the arena runs at %.1f GB "
+                         "(%.1f GB shed)\n", (double) time(nullptr), top, freed / 1e9, now_ms() - t0, arena_live_ / 1e9, shed_bytes_ / 1e9);
+    return freed;
+}
+
+uint64_t ExpertStream::shrink(uint64_t bytes) {
+    if (chunks_.empty() || bytes == 0) return 0;
+    drop_bg();
+    if (extra0_ >= 0 && live_bufs_ > extra0_) {   // a tiered arena gives its top tier back first, whole
+        const uint64_t f = shed_top(extra0_);
+        return f >= bytes ? f : f + shrink(bytes - f);
+    }
+    const double t0 = now_ms();
+    const size_t first = shed_.size();
+    uint64_t freed = 0;
+    {
+        std::unique_lock<std::mutex> g(mu_);
+        drop_queued();   // read-ahead and fill
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+        std::vector<uint8_t> region((size_t) slots_.size(), 0);
+        for (int s : region_slots_) region[(size_t) s] = 1;
+        uint64_t live = 0;
+        std::vector<int> n((size_t) cls_.size(), 0);
+        for (size_t c = 0; c < cls_.size(); ++c)
+            for (int s = cls_[c].head; s >= 0; s = slots_[(size_t) s].next) { live += cls_[c].pages * PAGE; ++n[c]; }
+        uint32_t* sm = smap_.as<uint32_t>();
+        for (size_t c = 0; c < cls_.size() && live > 0; ++c) {
+            const uint64_t sb = cls_[c].pages * PAGE;
+            const uint64_t share = (uint64_t) ((double) bytes * (double) n[c] * (double) sb / (double) live);
+            uint64_t taken = 0;
+            for (int s = cls_[c].tail; s >= 0 && taken < share && n[c] > min_slots_ + (int) region_slots_.size();) {
+                const int up = slots_[(size_t) s].prev;
+                if (!region[(size_t) s]) {
+                    Slot& x = slots_[(size_t) s];
+                    shed_.push_back({s, x.layer, x.e});
+                    if (x.layer >= 0) {
+                        const int key = x.layer * NE + x.e;
+                        where_[(size_t) key] = -1;
+                        sm[key] = 0xFFFFFFFFu;
+                    }
+                    x.layer = x.e = -1;
+                    x.pre = false;
+                    lru_unlink(s);
+                    taken += sb;
+                    --n[c];
+                }
+                s = up;
+            }
+        }
+    }
+    for (size_t i = first; i < shed_.size(); ++i) {
+        uint8_t* p = host_[(size_t) shed_[i].slot];
+        const size_t sz = cls_[(size_t) cls_of(shed_[i].slot)].pages * PAGE;
+        if (wired_) munlock(p, sz);
+        madvise(p, sz, MADV_FREE_REUSABLE);
+        freed += sz;
+    }
+    if (freed == 0) return 0;   // at the floor
+    shed_bytes_ += freed;
+    arena_live_ -= freed;
+    std::fprintf(stderr, "strata metal stream: %.0f shrink: %.1f GB back to macOS in %.0f ms; the arena runs at %.1f GB (%.1f GB shed)\n",
+                 (double) time(nullptr), freed / 1e9, now_ms() - t0, arena_live_ / 1e9, shed_bytes_ / 1e9);
+    return freed;
+}
+
+// a full arena after its shed slots came back: the experts a miss pushed out while it was smaller go
+// into the slots left empty (one empty slot per missing expert), so complete() holds again
+void ExpertStream::fill_missing() {
+    if (!full_) return;
+    const double t0 = now_ms();
+    std::vector<std::vector<int>> empty(cls_.size());
+    for (size_t c = 0; c < cls_.size(); ++c)
+        for (int s = cls_[c].head; s >= 0; s = slots_[(size_t) s].next)
+            if (slots_[(size_t) s].layer < 0 && slots_[(size_t) s].state.load() == 0) empty[c].push_back(s);
+    int n = 0, left = 0;
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        for (int l = 0; l < NL; ++l)
+            for (int e = 0; e < ne_; ++e)
+                if (where_[(size_t) (l * NE + e)] < 0) {
+                    auto& v = empty[(size_t) lay_[(size_t) l].cls];
+                    if (v.empty()) { ++left; continue; }
+                    submit(v.back(), l, e, true);
+                    v.pop_back();
+                    ++n;
+                }
+    }
+    cv_.notify_all();
+    {
+        std::unique_lock<std::mutex> g(mu_);
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+    }
+    missing_ = left;
+    if (n || left)
+        std::fprintf(stderr, "strata metal stream: full arena: %d experts read back in %.0f ms%s\n", n, now_ms() - t0,
+                     left ? " (some still missing: no empty slot)" : "; complete");
+}
+
+void ExpertStream::drop_queued() {
+    std::vector<int> drop;
+    for (auto* q : {&pre_q_, &fill_q_})
+        for (const Job& j : *q)
+            if (slots_[(size_t) j.slot].state.load() == 1 && std::find(drop.begin(), drop.end(), j.slot) == drop.end())
+                drop.push_back(j.slot);
+    for (int s : drop) cancel_slot(s);
+}
+
+// Per size class, the lowest layers held whole while the class's live slots hold every expert of
+// them plus a pool for its other layers; a held layer's missing experts are read at the lowest priority, at most 256
+// per call (a shrink or an idle grow waits for what is queued)
+void ExpertStream::hold() {
+    if (!held_on_ || chunks_.empty() || released_ || fake_) return;
+    std::lock_guard<std::mutex> g(mu_);
+    std::vector<int> live(cls_.size(), 0), nl(cls_.size(), 0);
+    for (size_t c = 0; c < cls_.size(); ++c)
+        for (int s = cls_[c].head; s >= 0; s = slots_[(size_t) s].next)
+            if (slots_[(size_t) s].state.load() != 3) ++live[c];
+    for (int l = 0; l < NL; ++l) ++nl[(size_t) lay_[(size_t) l].cls];
+    const int keep = min_slots_ + (int) region_slots_.size();
+    std::fill(hold_.begin(), hold_.end(), 0);
+    int held = 0;
+    for (size_t c = 0; c < cls_.size(); ++c) {
+        auto pool = [&](int m) { return m == 0 ? 0 : std::max(keep, (int) std::ceil(held_pool_ * ne_ * m)); };
+        int k = nl[c];
+        while (k > 0 && ne_ * k + pool(nl[c] - k) > live[c]) --k;
+        for (int l = 0; l < NL && k > 0; ++l)
+            if (lay_[(size_t) l].cls == (int) c) { hold_[(size_t) l] = 1; --k; ++held; }
+    }
+    int queued = 0, whole = 0;
+    for (int l = 0; l < NL; ++l) {
+        skip_[(size_t) l] = 0;
+        if (!hold_[(size_t) l]) continue;
+        bool all = true;
+        for (int e = 0; e < ne_; ++e) {
+            const int s = where_[(size_t) (l * NE + e)];
+            if (s >= 0) { if (slots_[(size_t) s].state.load() != 0) all = false; continue; }
+            all = false;
+            if (queued >= 256) continue;
+            const int v = victim(lay_[(size_t) l].cls);
+            if (v < 0) continue;
+            submit(v, l, e, false, true);
+            lru_front(v);
+            ++queued;
+        }
+        skip_[(size_t) l] = all;
+        whole += all;
+    }
+    if (queued) cv_.notify_all();
+    if (held != held_n_ || (whole != skip_n_ && (whole == held || whole == 0))) {
+        std::fprintf(stderr, "strata metal stream: %.0f layers held whole: %d of %d chosen, %d complete (no host turn there)\n",
+                     (double) time(nullptr), held, NL, whole);
+        held_n_ = held;
+        skip_n_ = whole;
+    }
+}
+
+uint64_t ExpertStream::shed_resident() const {
+    // one mincore per run of adjacent shed slots (one per slot paid ~20 us of call each: ~85 ms with a
+    // few thousand shed). A parked tier's pages were replaced when it was shed (shed_top, drop_bg) and only the
+    // background read touches them, and the slots it fills are not reclaimable: both are skipped
+    std::vector<std::pair<uint8_t*, size_t>> runs;
+    for (const Gone& x : shed_)
+        if (buf_of(x.slot) < live_bufs_ && (bg_mark_.empty() || !bg_mark_[(size_t) x.slot]))
+            runs.push_back({host_[(size_t) x.slot], cls_[(size_t) cls_of(x.slot)].pages * PAGE});
+    std::sort(runs.begin(), runs.end());
+    uint64_t n = 0;
+    std::vector<char> v;
+    for (size_t i = 0; i < runs.size();) {
+        uint8_t* p = runs[i].first;
+        size_t len = runs[i].second;
+        for (++i; i < runs.size() && runs[i].first == p + len; ++i) len += runs[i].second;
+        v.resize(len / PAGE);   // PAGE = 16 KiB, the system page; slots are whole pages
+        if (mincore(p, len, v.data()) != 0) continue;
+        for (char c : v) n += (c & MINCORE_INCORE) ? PAGE : 0;
+    }
+    return n;
+}
+
+uint64_t ExpertStream::shed_prompt_band() {
+    if (core0_ < 0 || live_bufs_ > extra0_) return 0;
+    drop_bg();
+    uint64_t freed = 0;
+    while (live_bufs_ > core0_) freed += shed_top(core0_);
+    return freed;
+}
+
+uint64_t ExpertStream::prompt_band_back() {
+    if (core0_ < 0 || live_bufs_ >= extra0_) return 0;
+    uint64_t bytes = 0;
+    for (const Gone& x : shed_) if (buf_of(x.slot) < extra0_) bytes += cls_[(size_t) cls_of(x.slot)].pages * PAGE;
+    return grow(bytes);
+}
+
+ExpertStream::GrowPlan ExpertStream::plan_grow(uint64_t bytes) const {
+    GrowPlan p;
+    p.live = live_bufs_;
+    // the slots shed within the live buffers first, then parked tiers, the lowest first, each whole but the last
+    std::vector<Gone> keep;
+    for (size_t i = shed_.size(); i-- > 0;) {
+        const Gone& x = shed_[i];
+        const uint64_t sz = cls_[(size_t) cls_of(x.slot)].pages * PAGE;
+        if (buf_of(x.slot) >= live_bufs_ || p.got + sz > bytes) { keep.push_back(x); continue; }
+        p.got += sz;
+        p.back.push_back(x);
+    }
+    while (p.live < (int) chunks_.size()) {
+        uint64_t tb = 0;
+        for (const Gone& x : keep) if (buf_of(x.slot) == p.live) tb += cls_[(size_t) cls_of(x.slot)].pages * PAGE;
+        // a tier larger than the room comes back in part, its hottest slots; the rest stay shed
+        // inside the live buffer and return slot by slot (above) as memory frees
+        const bool part = p.got + tb > bytes;
+        if (part && bytes - p.got < (512ull << 20)) break;
+        std::vector<Gone> rest;
+        for (const Gone& x : keep) {   // hottest first
+            const uint64_t sz = cls_[(size_t) cls_of(x.slot)].pages * PAGE;
+            if (buf_of(x.slot) == p.live && p.got + sz <= bytes) { p.back.push_back(x); p.got += sz; }
+            else rest.push_back(x);
+        }
+        keep.swap(rest);
+        ++p.live;
+        if (part) break;
+    }
+    p.keep.assign(keep.rbegin(), keep.rend());
+    return p;
+}
+
+uint64_t ExpertStream::grow(uint64_t bytes) {
+    if (bg_.joinable()) return grow_commit();   // one started during a request lands first
+    if (shed_.empty() || bytes < (512ull << 20)) return 0;
+    const double t0 = now_ms();
+    const uint64_t b0 = bytes_read_.load();
+    GrowPlan p = plan_grow(bytes);
+    if (p.back.empty() && p.live == live_bufs_) return 0;
+    std::vector<Gone> order = p.back;   // read in file order
+    std::sort(order.begin(), order.end(), [&](const Gone& a, const Gone& b) {
+        if ((a.layer < 0) != (b.layer < 0)) return a.layer >= 0;
+        if (a.layer < 0) return false;
+        return lay_[(size_t) a.layer].g + (uint64_t) a.e * lay_[(size_t) a.layer].gs <
+               lay_[(size_t) b.layer].g + (uint64_t) b.e * lay_[(size_t) b.layer].gs;
+    });
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        for (const Gone& x : order) {
+            madvise(host_[(size_t) x.slot], cls_[(size_t) cls_of(x.slot)].pages * PAGE, MADV_FREE_REUSE);
+            if (x.layer >= 0 && where_[(size_t) (x.layer * NE + x.e)] < 0) submit(x.slot, x.layer, x.e, true);
+        }
+    }
+    cv_.notify_all();
+    {
+        std::unique_lock<std::mutex> g(mu_);
+        done_cv_.wait(g, [&] { return outstanding_ == 0; });
+    }
+    const double tr = now_ms();
+    if (wired_)
+        for (const Gone& x : p.back) mlock(host_[(size_t) x.slot], cls_[(size_t) cls_of(x.slot)].pages * PAGE);
+    return apply_grow(p, t0, b0, tr, now_ms(), false);
+}
+
+// the plan's tiers wrapped live, its slots back in the LRU; an expert read into a slot (the background read) and in no
+// other slot is published (where_, smap). Only where nothing on the GPU is in flight: between requests, or at a token
+// boundary
+// b0: the byte count at t0 (bg: the bytes the background read took; the decode's own misses share the count)
+uint64_t ExpertStream::apply_grow(GrowPlan& p, double t0, uint64_t b0, double t_read, double t_wired, bool bg) {
+    const double tc = now_ms();
+    for (int k = live_bufs_; k < p.live; ++k) set_chunk(k, true);
+    live_bufs_ = p.live;
+    shed_.swap(p.keep);
+    {
+        std::lock_guard<std::mutex> g(mu_);
+        uint32_t* sm = smap_.as<uint32_t>();
+        for (const Gone& x : p.back) {   // hottest first: the coldest ends at the back
+            if (x.layer >= 0 && where_[(size_t) (x.layer * NE + x.e)] < 0) {
+                Slot& s = slots_[(size_t) x.slot];
+                s.layer = (int16_t) x.layer;
+                s.e = (int16_t) x.e;
+                s.pre = false;
+                s.state = 0;
+                where_[(size_t) (x.layer * NE + x.e)] = x.slot;
+                sm[x.layer * NE + x.e] = code_[(size_t) x.slot];
+            }
+            lru_back(x.slot);
+        }
+    }
+    shed_bytes_ -= p.got;
+    arena_live_ += p.got;
+    if (shed_.empty()) fill_missing();
+    if (bg)
+        std::fprintf(stderr, "strata metal stream: %.0f grow during a request: %.1f GB back into the arena (%.1f GB read beside the "
+                     "decode in %.0f ms, wired in %.0f ms; committed at a token boundary in %.0f ms); the arena runs at %.1f GB "
+                     "(%.1f GB shed)\n", (double) time(nullptr), p.got / 1e9, b0 / 1e9, t_read - t0,
+                     t_wired - t_read, now_ms() - tc, arena_live_ / 1e9, shed_bytes_ / 1e9);
+    else
+        std::fprintf(stderr, "strata metal stream: %.0f grow: %.1f GB back into the arena (%.1f GB read in %.0f ms, wired in %.0f ms); "
+                     "the arena runs at %.1f GB (%.1f GB shed)\n", (double) time(nullptr), p.got / 1e9, (bytes_read_.load() - b0) / 1e9,
+                     t_read - t0, t_wired - t_read, arena_live_ / 1e9, shed_bytes_ / 1e9);
+    const uint64_t got = p.got;
+    p = GrowPlan{};
+    return got;
+}
+
+bool ExpertStream::grow_start(uint64_t bytes) {
+    if (bg_.joinable() || released_ || shed_.empty() || bytes < (512ull << 20)) return false;
+    bg_plan_ = plan_grow(bytes);
+    if (bg_plan_.back.empty()) { bg_plan_ = GrowPlan{}; return false; }   // a tier with nothing to read: the next idle grow
+    bg_t0_ = now_ms();
+    bg_bytes_ = 0;
+    bg_mark_.assign(slots_.size(), 0);
+    for (const Gone& x : bg_plan_.back) bg_mark_[(size_t) x.slot] = 1;
+    std::vector<Gone> order = bg_plan_.back;
+    std::sort(order.begin(), order.end(), [&](const Gone& a, const Gone& b) {
+        if ((a.layer < 0) != (b.layer < 0)) return a.layer >= 0;
+        if (a.layer < 0) return false;
+        return lay_[(size_t) a.layer].g + (uint64_t) a.e * lay_[(size_t) a.layer].gs <
+               lay_[(size_t) b.layer].g + (uint64_t) b.e * lay_[(size_t) b.layer].gs;
+    });
+    bg_done_ = false;
+    bg_stop_ = false;
+    std::fprintf(stderr, "strata metal stream: %.0f grow during a request: reading %.1f GB beside the decode (the arena runs at "
+                 "%.1f GB)\n", (double) time(nullptr), bg_plan_.got / 1e9, arena_live_ / 1e9);
+    // one thread: the decode's own misses share the SSD (read_part touches only the slot's memory and the byte count)
+    bg_ = std::thread([this, order = std::move(order)] {
+        const int parts = cfd_ >= 0 ? split_ : 3 * split_;
+        for (const Gone& x : order) {
+            if (bg_stop_.load()) break;
+            madvise(host_[(size_t) x.slot], cls_[(size_t) cls_of(x.slot)].pages * PAGE, MADV_FREE_REUSE);
+            if (x.layer >= 0) {
+                for (int k = 0; k < parts; ++k) read_part(x.slot, x.layer, x.e, k);
+                const Lay& y = lay_[(size_t) x.layer];
+                bg_bytes_ += y.gs + y.us + y.ds;
+            }
+        }
+        bg_tr_ = now_ms();
+        if (wired_ && !bg_stop_.load())
+            for (const Gone& x : order) mlock(host_[(size_t) x.slot], cls_[(size_t) cls_of(x.slot)].pages * PAGE);
+        bg_tw_ = now_ms();
+        bg_done_ = true;
+    });
+    return true;
+}
+
+uint64_t ExpertStream::grow_commit() {
+    if (!bg_.joinable() || !bg_done_.load()) return 0;
+    bg_.join();
+    bg_mark_.clear();
+    return apply_grow(bg_plan_, bg_t0_, bg_bytes_, bg_tr_, bg_tw_, true);
+}
+
+// a shrink while a background read runs: it stops, and the slots it filled are given back as shed slots are
+void ExpertStream::drop_bg() {
+    if (!bg_.joinable()) return;
+    bg_stop_ = true;
+    bg_.join();
+    for (const Gone& x : bg_plan_.back) {
+        uint8_t* h = host_[(size_t) x.slot];
+        const size_t sz = cls_[(size_t) cls_of(x.slot)].pages * PAGE;
+        if (wired_) munlock(h, sz);
+        if (buf_of(x.slot) < live_bufs_) madvise(h, sz, MADV_FREE_REUSABLE);
+        else if (mmap(h, sz, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0) == MAP_FAILED) {   // as shed_top
+            std::fprintf(stderr, "strata metal stream: cannot replace a tier's pages\n");
+            std::exit(6);
+        }
+    }
+    std::fprintf(stderr, "strata metal stream: %.0f grow during a request: dropped (%.1f GB not committed: the arena shrinks)\n",
+                 (double) time(nullptr), bg_plan_.got / 1e9);
+    bg_plan_ = GrowPlan{};
+    bg_mark_.clear();
 }
 
 void ExpertStream::reset_stats() {

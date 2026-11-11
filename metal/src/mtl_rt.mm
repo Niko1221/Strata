@@ -61,7 +61,14 @@ struct Context::Impl {
     std::vector<id<MTLLibrary>> libs;
     id<MTLSharedEvent> ev = nil;   // run_graph_seg's handshake timeline
     uint64_t ev_v = 0;
+    NSMutableArray* arena = [NSMutableArray new];   // keep_resident: buffers reached through an address table
 };
+
+// buffers the kernels reach only through an address table: every encoder marks them used, or their pages are not
+// resident for the GPU (a queue residency set instead halved decode at a 30 GB arena)
+static inline void mark_arena(NSMutableArray* arena, id<MTLComputeCommandEncoder> enc) {
+    for (id<MTLBuffer> x in arena) [enc useResource:x usage:MTLResourceUsageRead];
+}
 
 static inline id<MTLBuffer> B(const Buffer& b) { return (__bridge id<MTLBuffer>)b.handle; }
 // the MTLBuffer and offset that bind byte `off` of b (a chunked buffer: the chunk the offset selects)
@@ -328,6 +335,11 @@ bool Context::supports_metal4() const {
 }
 uint64_t Context::recommended_working_set() const { return [impl_->dev recommendedMaxWorkingSetSize]; }
 uint64_t Context::max_buffer_length() const { return [impl_->dev maxBufferLength]; }
+uint64_t Context::gpu_address(const Buffer& b) const { return B(b).gpuAddress + b.bias; }
+void Context::keep_resident(const Buffer& b, bool on) {
+    if (on) [impl_->arena addObject:B(b)];
+    else [impl_->arena removeObject:B(b)];
+}
 
 int Context::compile(const std::vector<std::string>& files, const std::string& prelude, bool fast_math) {
     std::string why;
@@ -607,6 +619,21 @@ Buffer Context::alloc(size_t bytes) {
 #endif
 }
 
+Buffer Context::wrap_map(void* p, size_t bytes) {
+    Buffer r;
+    @autoreleasepool {   // (see alloc: the engine's host threads have no pool of their own)
+        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
+        if (!b) {
+            std::fprintf(stderr, "mtl: wrap_map %zu failed\n", bytes);
+            std::exit(4);
+        }
+        r.handle = (__bridge_retained void*)b;
+    }
+    r.ptr = p;
+    r.bytes = bytes;
+    return r;
+}
+
 Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
     const size_t pg = 16384, maxlen = [impl_->dev maxBufferLength] / pg * pg;
     if (bytes <= maxlen || std::getenv("STRATA_METAL_WRAP_SPLIT") && std::string(std::getenv("STRATA_METAL_WRAP_SPLIT")) == "0")
@@ -692,6 +719,16 @@ Buffer Context::wrap(void* p, size_t bytes) {
     r.bytes = bytes;
     return r;
 #endif
+}
+
+bool Context::set_volatile(const Buffer& b, bool v) {
+    id<MTLBuffer> buf = (__bridge id<MTLBuffer>) b.handle;
+    return [buf setPurgeableState:v ? MTLPurgeableStateVolatile : MTLPurgeableStateNonVolatile] == MTLPurgeableStateEmpty;
+}
+
+bool Context::emptied(const Buffer& b) {
+    id<MTLBuffer> buf = (__bridge id<MTLBuffer>) b.handle;
+    return [buf setPurgeableState:MTLPurgeableStateKeepCurrent] == MTLPurgeableStateEmpty;
 }
 
 void Context::free(Buffer& b) {
@@ -988,6 +1025,7 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc =
             [cb computeCommandEncoderWithDispatchType:concurrent ? MTLDispatchTypeConcurrent : MTLDispatchTypeSerial];
+        mark_arena(impl_->arena, enc);
         for (int r = 0; r < reps; ++r)
             for (const auto& d : ds) {
                 encode(enc, d);
@@ -1014,6 +1052,7 @@ double Context::run_graph(const std::vector<Dispatch>& ds, size_t count) {
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        mark_arena(impl_->arena, enc);
         const size_t nd = std::min(count, ds.size());
         for (size_t i = 0; i < nd; ++i) {
             if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -1040,6 +1079,7 @@ void* Context::run_graph_async(const std::vector<Dispatch>& ds) {
         if (impl_->q2 == nil) impl_->q2 = [impl_->dev newCommandQueue];
         id<MTLCommandBuffer> cb = [impl_->q2 commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        mark_arena(impl_->arena, enc);
         for (size_t i = 0; i < ds.size(); ++i) {
             if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
             encode(enc, ds[i]);
@@ -1074,6 +1114,7 @@ double Context::run_graph_seg(const std::vector<Dispatch>& ds, const std::vector
         for (size_t s = 0; s <= cuts.size(); ++s) {
             const size_t end = s < cuts.size() ? (size_t) cuts[s] : ds.size();
             id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+            mark_arena(impl_->arena, enc);
             const size_t first = i;
             for (; i < end; ++i) {
                 if (i > first && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -1111,6 +1152,7 @@ double Context::run_wall(const std::vector<Dispatch>& ds, int reps, double* gpu_
         @autoreleasepool {
             id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
             id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+            mark_arena(impl_->arena, enc);
             for (const auto& d : ds) encode(enc, d);
             [enc endEncoding];
             [cb commit];
@@ -1162,6 +1204,7 @@ double Context::run_icb(const std::vector<Dispatch>& ds, int reps, bool barrier_
         }
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
+        mark_arena(impl_->arena, enc);
         for (id<MTLBuffer> b in used) [enc useResource:b usage:MTLResourceUsageRead | MTLResourceUsageWrite];
         for (int r = 0; r < reps; ++r) {
             [enc executeCommandsInBuffer:icb withRange:NSMakeRange(0, ds.size())];
