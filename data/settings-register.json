@@ -8757,6 +8757,38 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_EXP_TABLE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/kernels/cuda/iq_kernels.cu",
+     "line": 6373,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "",
+   "note": "[reviewed] =1 (HIP): the decode expert layout chosen per format from a measured table; bitwise equal to mode 0 (#5476)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "ca4a88d6c",
+   "last_commit": "ca4a88d6c",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
+  },
+  {
    "name": "STRATA_F16_RANGE",
    "backends": [
     "cuda-hip"
@@ -21132,6 +21164,38 @@
    "note": "[reviewed] Only a plan line mentions it; no recorded verdict. [notes-145-pp-sycl.md:51]",
    "retire_after": "",
    "retired_in": ""
+  },
+  {
+   "name": "STRATA_MMVQ_NW1",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "src/kernels/cuda/native_mmvq.cu",
+     "line": 1556,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "",
+   "note": "[reviewed] =1 (HIP builds, measured on gfx1030): decode MMVQ with K <= 4096 one warp and one row a block (not bitwise: another reduction order, rel. diff < 1e-5) (#5476)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "ca4a88d6c",
+   "last_commit": "ca4a88d6c",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
   },
   {
    "name": "STRATA_MMVQ_PF",
