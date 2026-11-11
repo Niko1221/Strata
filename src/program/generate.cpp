@@ -15826,11 +15826,7 @@ int main(int argc, char** argv) {
                                         wo.min_free_bytes = (uint64_t) o.session_min_free_mib << 20;
                                         wo.progress = moving;
                                         wo.phase = blocking;
-                                        // L2 v3 WriterPool:   FIFO  capture++,
-                                        //  (, );  0/  .
                                         if (strata::core::l2two::conversation_file_l2_writer_enabled()) {
-
-                                                         (long long) strata::core::l2two::writer_budget_mib());
                                             strata::core::l2two::conversation_file_l2_writer_start();
                                             strata::core::SavedConversation job_meta;
                                             std::vector<strata::core::SessionKvSource> job_kv;
