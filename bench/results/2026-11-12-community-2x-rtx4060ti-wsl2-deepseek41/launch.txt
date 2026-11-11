@@ -1,0 +1,10 @@
+strata launch --family deepseek41 --model ist-das-1.75bpw \
+  --model-path /home/onkanat/ds41/models/deepseek-v4.1-flash-IST-DAS-1.75bpw \
+  --data-dir /home/onkanat/ds41/data --context 128k --kv q4_0 --vision on \
+  --parallel 1 --tune skip --access local --port 8081 --api-key-env STRATA_KEY --no-tui --yes
+
+# client (three passes: std / long / nothink)
+# BASE=http://127.0.0.1:8081 STRATA_KEY=... python3 bench-client.py all
+#
+# The same model files were copied from the Windows drive (/mnt/d, 124 MB/s) to the WSL2 ext4
+# virtual disk (about 1.4 GB/s read) before the run; the launcher accepts them in place.
