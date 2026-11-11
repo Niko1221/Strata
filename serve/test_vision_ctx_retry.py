@@ -5,6 +5,8 @@ started, and at most 12 times.  Every other failure goes the way it went.
     python -m serve.test_vision_ctx_retry
 """
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -71,22 +73,29 @@ def make_vision(args=("/engine/strata-vision", "--gpu"), log_text=""):
 
 
 class Clock:
-    """A fake monotonic clock: `sleep` and every spawn (`attempt_s` long) move it."""
+    """A fake monotonic clock: `sleep` and every spawn (`attempt_s` long) move it.  It belongs to the thread that made it (the test's): `server.time` is the
+    process-wide `time` module, so while it is patched any other thread of the pytest process that sleeps or reads the clock (on Windows a watcher or job thread
+    that an earlier test left running) would call these.  Those threads get the real `time.sleep` / `time.monotonic` and are neither counted nor allowed to move the clock.
+    Make it before patching, so the real functions it keeps are the unpatched ones."""
 
     def __init__(self):
         self.now = 0.0
         self.sleeps = []
+        self.owner = threading.get_ident()
+        self._real_sleep, self._real_monotonic = time.sleep, time.monotonic
 
     def monotonic(self):
-        return self.now
+        return self.now if threading.get_ident() == self.owner else self._real_monotonic()
 
     def sleep(self, s):
+        if threading.get_ident() != self.owner:
+            return self._real_sleep(s)
         self.sleeps.append(s)
         self.now += s
 
 
 class Spawn(unittest.TestCase):
-    def run_start(self, outcomes, args=("/engine/strata-vision", "--gpu"), system="linux", machine="aarch64", logged=CTX, attempt_s=1.4):
+    def run_start(self, outcomes, args=("/engine/strata-vision", "--gpu"), system="linux", machine="aarch64", logged=CTX, attempt_s=1.4, hook=None):
         """_start_gpu_reader with `_start_reader` giving `outcomes` in turn (the last one repeats; an exception is raised, anything else returned) and taking `attempt_s`
         on a fake clock; returns (clock, calls, result or error)."""
         v, f = make_vision(args)
@@ -95,6 +104,8 @@ class Spawn(unittest.TestCase):
 
         def start_reader():
             calls.append(clock.now)             # when this spawn started
+            if hook is not None:
+                hook()
             clock.now += attempt_s
             o = outcomes[min(len(calls) - 1, len(outcomes) - 1)]
             if isinstance(o, Exception):
@@ -142,6 +153,30 @@ class Spawn(unittest.TestCase):
         self.assertEqual((len(calls), len(clock.sleeps)), (13, 12))       # 1 spawn + 12 retries, 13.3 s: the cap, not the clock
         self.assertLess(clock.now, 18.0)
 
+    def test_another_thread_that_sleeps_meanwhile_is_not_counted_and_does_not_move_the_clock(self):
+        """`server.time` is the process-wide module: a thread of another part of the process that sleeps while the test has it patched (a winjob / watcher thread left
+        by an earlier test on Windows counted 232,838 sleeps) must get the real sleep.  Here a thread sleeps in a loop and every spawn waits until it has slept once more."""
+        stop, slept = threading.Event(), threading.Event()
+
+        def other():
+            while not stop.is_set():
+                time.sleep(0.0002)              # the fake one when it is patched, and it must not count
+                slept.set()
+
+        def hook():
+            slept.clear()
+            slept.wait(2)
+
+        t = threading.Thread(target=other, daemon=True)
+        t.start()
+        try:
+            clock, calls, res = self.run_start([RuntimeError(DIED)], attempt_s=0.1, hook=hook)
+        finally:
+            stop.set()
+            t.join(2)
+        self.assertEqual((len(calls), len(clock.sleeps)), (13, 12))
+        self.assertAlmostEqual(clock.now, 13 * 0.1 + 12 * 1.0)      # only this thread's pauses and spawns moved it
+
     def test_a_spawn_that_would_start_at_17_9_s_is_allowed_and_one_at_18_0_s_is_not(self):
         clock, calls, res = self.run_start([RuntimeError(DIED), None], attempt_s=16.9)        # fails at 16.9, next starts at 17.9
         self.assertEqual((len(calls), res), (2, None))
@@ -158,7 +193,8 @@ class Spawn(unittest.TestCase):
             with self.subTest(env=env, n=len(outcomes)), mock.patch.dict(server.os.environ, env), mock.patch("builtins.print") as pr:
                 server.os.environ.pop("STRATA_VIT_PROF", None) if not env else None
                 self.run_start(outcomes)
-            self.assertEqual([c.args[0] for c in pr.call_args_list], expect)
+            # (print is patched for the whole process: only this module's diagnostic lines count, whatever another thread prints meanwhile)
+            self.assertEqual([c.args[0] for c in pr.call_args_list if c.args and str(c.args[0]).startswith("vit-prof")], expect)
 
     def test_no_room_is_not_retried(self):
         err = server.VisionNoRoom("the vision encoder did not start: the graphics card has no room for it", None)
@@ -183,11 +219,13 @@ class Spawn(unittest.TestCase):
         v, f = make_vision(log_text=CTX)       # an earlier start's lines are in the file already
         self.addCleanup(lambda: (f.close(), Path(f.name).unlink()))
         v._start_reader = mock.Mock(side_effect=RuntimeError("the vision encoder did not start: ERR cannot open the model"))
+        clock = Clock()
         with mock.patch.object(server.sys, "platform", "linux"), mock.patch.object(server.platform, "machine", return_value="aarch64"), \
-                mock.patch.object(server.time, "sleep", lambda s: self.fail("slept")):
+                mock.patch.object(server.time, "sleep", clock.sleep), mock.patch.object(server.time, "monotonic", clock.monotonic):
             with self.assertRaises(RuntimeError):
                 v._start_gpu_reader()
         self.assertEqual(v._start_reader.call_count, 1)
+        self.assertEqual(clock.sleeps, [])                    # no retry: this thread never slept
 
     def test_start_falls_back_to_the_cpu_reader_after_the_last_retry(self):
         v, f = make_vision()
