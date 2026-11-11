@@ -3310,7 +3310,21 @@ inline void init(int argc, char** argv) {
         std::fclose(f);
         s.prev = vc::parse(text);
     }
+    const auto report_dropped = [](const std::vector<vc::Card>& dropped) {
+        for (const vc::Card& c : dropped)
+            std::fprintf(stderr, "strata vram: CUDA%d calibration: WARNING: the file says %lld MiB allocated after the cache - too "
+                                 "little to be real, not used; this card is sized with the fixed terms\n", c.dev, c.need >> 20);
+    };
+    report_dropped(vc::drop_implausible(s.prev));
     s.loaded = !s.prev.empty();
+    // the file is held aside from here until this start writes it again once everything is loaded: a start that fails before
+    // that (a calibration that sized a cache too large can leave no room for the drafter, and every later start would fail
+    // the same way without ever measuring again) leaves no file, and the next start falls back to the binary's file below
+    // or to the fixed terms
+    if (s.loaded) {
+        std::error_code rc;
+        std::filesystem::rename(s.path, s.path + ".inuse", rc);
+    }
     // no calibration for this configuration, one for this binary: start from it (a first start then sizes its caches as a
     // calibrated start does, and writes this configuration's own measurement; a configuration that needs more is reported once
     // everything is loaded, and the margin pays for it until the next start)
@@ -3321,6 +3335,7 @@ inline void init(int argc, char** argv) {
             while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
             std::fclose(f);
             s.prev = vc::parse(text);
+            report_dropped(vc::drop_implausible(s.prev));
             s.loaded = s.from_binary = !s.prev.empty();
         }
     if (s.from_binary)
@@ -3351,6 +3366,8 @@ inline void save() {
             std::filesystem::rename(tmp, path, ec);
         }
     }
+    std::error_code rc;
+    std::filesystem::remove(s.path + ".inuse", rc);   // written again: the held-aside copy goes
 }
 inline long long free_on(int dev) {
     int cur = 0; size_t fr = 0, tot = 0;
@@ -3380,6 +3397,21 @@ inline void at_seal(int dev, long long cache_bytes) {
     if (c.need < 0) return;
     long long prev_need = -1;
     for (const vc::Card& p : s.prev) if (p.dev == dev) { c.grow = std::max(0ll, p.grow); prev_need = p.need; }   // grow kept until this run shows its own
+    // a reading far below the figure this start was sized from is not taken (another card's allocation landing on this one,
+    // or a reading during a free); a rise always is; with no earlier figure, too little to be real is not written
+    const long long raw = fm - fn - cache_bytes;
+    switch (vc::judge_need(raw, prev_need)) {
+    case vc::NeedVerdict::KeepPrev:
+        std::fprintf(stderr, "strata vram: CUDA%d calibration: WARNING: measured %lld MiB allocated after the cache, the calibration "
+                             "said %lld MiB - not taken; the earlier figure stays\n", dev, raw >> 20, prev_need >> 20);
+        c.need = prev_need;
+        break;
+    case vc::NeedVerdict::Skip:
+        std::fprintf(stderr, "strata vram: CUDA%d calibration: WARNING: measured %lld MiB allocated after the cache - too little to be "
+                             "real, not written; the next start sizes this card with the fixed terms\n", dev, raw >> 20);
+        return;
+    case vc::NeedVerdict::Take: break;
+    }
     s.cur.push_back(c);
     s.live.push_back({dev, fn, fn});
     std::fprintf(stderr, "strata vram: CUDA%d calibration: %lld MiB allocated after the cache was sized (free %lld MiB then, "

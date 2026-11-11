@@ -78,6 +78,23 @@ int main() {
     check(margin_mib("256") == 256 && margin_mib("0") == 0, "a number of MiB");
     check(margin_mib("-5") == 192 && margin_mib("12x") == 192 && margin_mib("huge") == 192, "a bad value falls back to the default");
 
+    // a measured need far below the calibration is not taken; a rise always is; none and tiny is not written
+    check(judge_need(0, 465 * MiB) == NeedVerdict::KeepPrev, "card 1 measured 0 against 465 MiB: the earlier figure stays");
+    check(judge_need(-300 * MiB, 465 * MiB) == NeedVerdict::KeepPrev, "a negative reading against a calibration: kept");
+    check(judge_need(440 * MiB, 465 * MiB) == NeedVerdict::Take, "a small fall is taken");
+    check(judge_need(200 * MiB, 465 * MiB) == NeedVerdict::KeepPrev, "a fall by more than half and 64 MiB: kept");
+    check(judge_need(40 * MiB, 100 * MiB) == NeedVerdict::Take, "more than half but under 64 MiB: taken");
+    check(judge_need(900 * MiB, 465 * MiB) == NeedVerdict::Take, "a rise is always taken");
+    check(judge_need(0, -1) == NeedVerdict::Skip && judge_need(31 * MiB, -1) == NeedVerdict::Skip, "no calibration, under 32 MiB: skipped");
+    check(judge_need(351 * MiB, -1) == NeedVerdict::Take, "no calibration, a real figure: taken");
+
+    // a read file: a card whose need is too little to be real is taken out, the rest stay
+    std::vector<Card> read = {{0, 351 * MiB, 104 * MiB}, {1, 0, 164 * MiB}, {2, -1, 0}};
+    const std::vector<Card> dropped = drop_implausible(read);
+    check(dropped.size() == 1 && dropped[0].dev == 1, "card 1 with 0 MiB is taken out");
+    check(read.size() == 2 && read[0].dev == 0 && read[1].dev == 2, "card 0 and the unmeasured card 2 stay");
+    check(reserve_mib(read, 1, kDefaultMarginMib) == -1, "the taken-out card is sized with the fixed terms");
+
     if (g_fail == 0) std::printf("vram_calib_test: all checks passed\n");
     return g_fail == 0 ? 0 : 1;
 }
