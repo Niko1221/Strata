@@ -15461,6 +15461,69 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return pmtp_settle();
         };
+        // ================================ STRATA_DF2_BOOT_PROBE (#5271 revision 3) ================================
+        //
+        // An opt-in start-time check that can reject the estimator's gross --draft-conf errors before the first
+        // real request. Pre-conditions (all per the design doc): DFlash2 active, the conf came from the
+        // estimator (not pinned), --serve, and the env switch on. The probe queues its own synthetic GEN
+        // requests before this loop starts (the stdin reader is idle: the server sends nothing until it saw
+        // READY), so they run through the FULL request machinery - prompt read, decode windows, DONE
+        // accounting - and a PROBE_END line, dispatched below next to QUIT, applies the decision.
+        //
+        // The sequence is the design's C0-C1-C0 sandwich with a discarded warm-up first: the warm-up moves the
+        // cold tax (JIT, KV ramp, first-touch) out of the comparison, the two C0 arms must both lose to C1 for
+        // the switch, and the C0-C0 gap is this boot's own drift sample, logged.
+        //
+        // Probes use ckpt=0 (no checkpoints, no conversation parking, the next request starts fresh), greedy
+        // sampling, and fixed id lists tokenized offline from the pack's own tokenizer (the engine
+        // has no string tokenizer; ids verified by round-trip on the author box). Each arm gets a
+        // DIFFERENT counting prompt (count 1.., 101.., 201.., 301..): same shape, same token length,
+        // different continuation. Two properties are load-bearing, both measured on the author box:
+        // 1) a counting task's greedy continuation runs long and identically-shaped at every conf -
+        //    free prose can stop at 2-33 tokens at one conf and run to the cap at another, which the
+        //    inconclusive guard then rejects boot after boot;
+        // 2) identical prompts across arms are NOT independent: the engine's caches (conversation,
+        //    expert, drafter ring) warm on the exact repeated token sequence, so later arms run up to
+        //    2x faster than earlier ones by position alone (measured: 51.7 -> 53.6 -> 106.8 -> 112.8
+        //    tok/s over four same-prompt arms) - the sandwich's symmetry cannot absorb a monotonic
+        //    trend. Different numbers to count share the shape without sharing the tokens.
+        static const char kProbeIdsA[] = "2427,494,220,16,310,220,21,15,11,799,1324,791,1500,11,17955,1132,11,874,975,1414,13";                 // count from 1
+        static const char kProbeIdsB[] = "2427,494,220,16,15,16,310,220,16,21,15,11,799,1324,791,1500,11,17955,1132,11,874,975,1414,13";         // count from 101
+        static const char kProbeIdsC[] = "2427,494,220,17,15,16,310,220,17,21,15,11,799,1324,791,1500,11,17955,1132,11,874,975,1414,13";         // count from 201
+        static const char kProbeIdsD[] = "2427,494,220,18,15,16,310,220,18,21,15,11,799,1324,791,1500,11,17955,1132,11,874,975,1414,13";         // count from 301
+        const int kProbeTokens = 128;            // per the design: 3 x 128 + 32 warm-up = 416 tokens total
+        const double kProbeFloor = 0.08;         // the author-machine threshold floor (p95 of the #5275 repeat5 pool, rounded up)
+        bool probe_active = false;               // set between PROBE_BEGIN and PROBE_END
+        double probe_c0_ms = 0.0, probe_c0b_ms = 0.0, probe_c1_ms = 0.0;
+        double probe_c1_conf = 0.0;              // the CONF_STEPS neighbor toward safer confidence, resolved at PROBE_BEGIN
+        int probe_arm = 0;                       // 0 = before the sequence, 1 = warm-up, 2 = C0, 3 = C1, 4 = C0
+        int64_t probe_c0_tok = 0, probe_c0b_tok = 0, probe_c1_tok = 0;
+        if (const char* pb = std::getenv("STRATA_DF2_BOOT_PROBE"); pb != nullptr && pb[0] == 'o' && use_df2 &&
+            o.serve) {
+            // The env var is the whole opt-in: the person (or the server, when it learns to pass it) sets it
+            // deliberately, so the "was the conf pinned by a person?" question belongs to the layer that can
+            // see the difference - the server knows user_args, the engine cannot distinguish "--draft-conf
+            // 0.35" typed by a person from the same flag written by the server's estimator (#5178's shape).
+            // Engine-side rule: whoever set STRATA_DF2_BOOT_PROBE=on wants the probe to run against the
+            // conf now in force (o.draft_conf, or the internal 0.35 default when unset).
+            {
+                std::lock_guard<std::mutex> lk(in_mu);
+                in_lines.push_back("PROBE_BEGIN");
+                // each PROBE_GEN carries its own conf; the dispatch sets o.draft_conf then rewrites the
+                // line into a plain GEN request (the BGEN pattern), so the arm runs through the full
+                // request machinery with exactly that confidence in force
+                // warm-up is 128 tokens at the SAME width as the measured arms: the warm-up must capture
+                // every window graph the arms will hit (a 32-token warm-up leaves the wide-window captures
+                // to the first arm - the cold tax the sandwich exists to remove). Each arm's prompt is
+                // different (see the id-list comment above): same shape, no shared cache warming.
+                in_lines.push_back(std::string("PROBE_GEN 0 128 ckpt=0 ") + kProbeIdsA);   // warm-up (count 1..), discarded
+                in_lines.push_back(std::string("PROBE_GEN 0 128 ckpt=0 ") + kProbeIdsB);   // C0 (count 101.., conf in force)
+                in_lines.push_back(std::string("PROBE_GEN 0 128 ckpt=0 ") + kProbeIdsC);   // C1 (count 201.., CONF_STEPS neighbor)
+                in_lines.push_back(std::string("PROBE_GEN 0 128 ckpt=0 ") + kProbeIdsD);   // C0 (count 301.., second arm)
+                in_lines.push_back("PROBE_END");
+            }
+            in_cv.notify_one();
+        }
         for (;;) {
             line_drain_ms = 0.0;
             strata::core::manifest::instance().flush_if_dirty("request");   // STRATA_MANIFEST: what the last request added (a no-op when off)
@@ -15836,6 +15899,71 @@ int main(int argc, char** argv) {
                     std::printf("RESTORED %zu %zu %.1f\n", live.size(), bytes, ms());
                 }
                 std::fflush(stdout);
+                continue;
+            }
+            // ---- STRATA_DF2_BOOT_PROBE dispatch (#5271 r3) ----
+            // PROBE_BEGIN: the warm-up and four probe requests follow; the DONE hook above records the arms.
+            // PROBE_GEN <conf-or-0> <rest...>: set this arm's confidence (0 keeps the current default),
+            // then rewrite into a plain GEN line - the BGEN pattern - so the request runs through the
+            // full machinery. The C1 arm's conf comes from the CONF_STEPS neighbor of the effective
+            // default (the same table the server's estimator uses, mirrored engine-side).
+            // PROBE_END: apply the design's decision rule and log one line.
+            if (line == "PROBE_BEGIN") {
+                probe_active = true;
+                // resolve the C1 arm: the CONF_STEPS neighbor toward safer confidence for the conf now in
+                // effect (the server estimator's table, mirrored engine-side; a bare engine start with no
+                // conf acts as 0.35 for this purpose, matching the server's multi-card fallback)
+                const double now = o.draft_conf > 0.0 ? o.draft_conf : 0.35;
+                probe_c1_conf = now < 0.50 ? 0.50 : (now < 0.70 ? 0.70 : (now < 0.80 ? 0.80 : 0.80));
+                continue;
+            }
+            if (line.rfind("PROBE_GEN ", 0) == 0) {
+                double conf = std::atof(line.c_str() + 10);
+                probe_arm += 1;   // the dispatch counts the arm; the DONE hook reads the same counter
+                if (conf <= 0.0) {
+                    // 0 = "this arm's designed value": the C1 arm (the third) takes the neighbor, every
+                    // other arm the conf in force
+                    conf = probe_arm == 3 ? probe_c1_conf : (o.draft_conf > 0.0 ? o.draft_conf : 0.35);
+                }
+                o.draft_conf = conf;
+                line = "GEN " + line.substr(line.find(' ', 10) + 1);
+            }
+            if (line == "PROBE_END") {
+                probe_active = false;
+                // an arm that stopped early (the model ended its turn mid-probe - greedy continuations
+                // legitimately differ per conf and per boot) measured a shorter regime than a full arm:
+                // below this bar the comparison is apples-to-oranges and the probe is inconclusive. The
+                // bar sits where a stopped arm still averaged enough tokens for a stable ms/tok (the
+                // counting prompt's stopped arms produce 50-60 tokens on the author box; free prose can
+                // stop at 2-30 and is excluded by design of the prompt, not of this bar).
+                const int64_t kMinValid = 48;
+                if (probe_c0_tok < kMinValid || probe_c0b_tok < kMinValid || probe_c1_tok < kMinValid) {
+                    std::fprintf(stderr, "strata serve: boot probe: inconclusive - an arm stopped early "
+                                 "(tokens %lld, %lld, %lld of %d) - keeping the default conf\n",
+                                 (long long) probe_c0_tok, (long long) probe_c1_tok, (long long) probe_c0b_tok,
+                                 kProbeTokens);
+                    continue;
+                }
+                // per-token times (ms); a guard against a zero/failed arm keeps the decision at "keep"
+                const double c0_t = probe_c0_tok > 0 && probe_c0_ms > 0 ? probe_c0_ms / (double) probe_c0_tok : 1e9;
+                const double c0b_t = probe_c0b_tok > 0 && probe_c0b_ms > 0 ? probe_c0b_ms / (double) probe_c0b_tok : 1e9;
+                const double c1_t = probe_c1_tok > 0 && probe_c1_ms > 0 ? probe_c1_ms / (double) probe_c1_tok : 1e9;
+                // the C0-C0 gap is this boot's drift sample; the design's per-box threshold is
+                // max(floor 8%, the boot's own gap, rounded up) - a single boot only seeds it
+                const double gap = std::abs(c0_t - c0b_t) / std::min(c0_t, c0b_t);
+                const double thr = std::max(kProbeFloor, std::ceil(gap * 100.0) / 100.0);
+                // adopt C1 only when BOTH C0 arms agree it lost by more than the threshold
+                const bool c1_wins = c1_t < c0_t * (1.0 - thr) && c1_t < c0b_t * (1.0 - thr);
+                if (c1_wins) {
+                    o.draft_conf = probe_c1_conf;
+                    std::fprintf(stderr, "strata serve: boot probe: C1 %.4f ms/tok beat C0 %.4f and %.4f ms/tok by "
+                                 ">%.0f%% (gap %.1f%%) - adopted C1 conf %.2f for this run\n",
+                                 c1_t, c0_t, c0b_t, thr * 100.0, gap * 100.0, o.draft_conf);
+                } else {
+                    std::fprintf(stderr, "strata serve: boot probe: C1 %.4f ms/tok did not beat both C0 arms "
+                                 "(%.4f, %.4f ms/tok) by >%.0f%% (gap %.1f%%) - keeping the default conf\n",
+                                 c1_t, c0_t, c0b_t, thr * 100.0, gap * 100.0);
+                }
                 continue;
             }
             const bool geni = line.rfind("GENI ", 0) == 0;
@@ -16839,7 +16967,7 @@ int main(int argc, char** argv) {
                 part_at.clear();
                 std::fill(part_next.begin(), part_next.end(), pp_next_check);
             }
-            std::printf("RESUME %lld\n", (long long) resume);   // before reading: this many prompt tokens are reused
+            if (!probe_active) std::printf("RESUME %lld\n", (long long) resume);   // before reading: this many prompt tokens are reused (probe arms stay off the protocol stream)
             strata::core::progress_at("reading the prompt, from token", read_from);
             std::fflush(stdout);
             // A SHORT PART OF THE PROMPT - the new message of a chat that continues from a checkpoint, the assistant
@@ -16994,7 +17122,7 @@ int main(int argc, char** argv) {
                 pl_drain();   // nothing in flight: both stages' commits and the drafter's rows have landed
                 pl_mtp_live[0] = pl_mtp_live[1] = false;
                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
-                std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
+                if (!probe_active) std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
                             ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
                 strata::core::progress_beat();
                 std::fflush(stdout);
@@ -17068,7 +17196,7 @@ int main(int argc, char** argv) {
                 // the batched prompt path (other streams), checkpoints and snapshots may follow: the last commit first
                 if (!ver.wait_commit(e)) return false;
                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
-                std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
+                if (!probe_active) std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
                             ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
                 strata::core::progress_beat();
                 std::fflush(stdout);
@@ -18100,7 +18228,7 @@ int main(int argc, char** argv) {
                 }
                 if (sp_ok && merge_at >= 0) {   // the server's progress reaches the prompt's end, as after its last window
                     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
-                    std::printf("PP %lld %lld %.0f %.1f\n", (long long) to, (long long) pp_total, ms,
+                    if (!probe_active) std::printf("PP %lld %lld %.0f %.1f\n", (long long) to, (long long) pp_total, ms,
                                 ms > 0.0 ? 1000.0 * (double) (to - pp_from) / ms : 0.0);
                     std::fflush(stdout);
                 }
@@ -18147,7 +18275,7 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata batch: the prompt was read in %lld parts, the slots decoding %.0f ms between "
                                      "them\n", (long long) il_parts + 1, il_ms);
             const double prompt_ms = std::chrono::duration<double, std::milli>(Clock::now() - r0).count();
-            std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next
+            if (!probe_active) std::printf("REUSED %lld\n", (long long) resume);   // the prompt is read; the first window comes next (probe arms stay off the protocol stream)
             std::fflush(stdout);
             // the verify windows: the first holds the last prompt token alone (STRATA_ADMIT_MERGE_FIRST: the prompt
             // tokens from merge_at on, the last one's output its first token)
@@ -18791,7 +18919,12 @@ int main(int argc, char** argv) {
                     const bool nf = nonfinite_hit(V1(A), "decode");   // #879: none of its tokens goes out
                     bool eos = false;
                     for (int i = 0; !nf && i <= a && produced_n < max_new && !eos; ++i) {
-                        std::printf("T %d\n", (int) outp[(size_t) i]);
+                        // the boot probe's synthetic requests never reach a server: their T/DONE/PP/RESUME
+                        // lines on stdout would interleave into the server's control stream (its reader
+                        // may treat them as unexpected and STOP the in-flight arm - observed as probe
+                        // arms cancelled at 0-3 tokens). The probe reads its numbers from the DONE-side
+                        // hook, so suppressing the protocol output for its arms loses nothing.
+                        if (!probe_active) std::printf("T %d\n", (int) outp[(size_t) i]);
                         if (req_logprobs >= 0) emit_lp_line(V1(A), i, outp[(size_t) i], req_logprobs, req_allowed);
                         strata::core::progress_beat();
                         ++produced_n;
@@ -19385,7 +19518,7 @@ int main(int argc, char** argv) {
                 first_window = false;
                 bool eos = false;
                 for (int i = merged ? a : 0; i <= a && produced_n < max_new && !eos; ++i) {   // (merged: row T-1 only)
-                    std::printf("T %d\n", (int) outv[(size_t) i]);
+                    if (!probe_active) std::printf("T %d\n", (int) outv[(size_t) i]);   // see the pipelined arm's comment: probe output stays off the protocol stream
                     if (req_logprobs >= 0) emit_lp_line(ver, i, outv[(size_t) i], req_logprobs, req_allowed);
                     strata::core::progress_beat();
                     ++produced_n;
@@ -19718,6 +19851,9 @@ int main(int argc, char** argv) {
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
+            // the probe's DONE stays off the protocol stream (its numbers are read by the hook below);
+            // a probe request never yields (no batch slots), so gating the whole block is equivalent
+            if (!probe_active) {
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld\n",
@@ -19728,6 +19864,22 @@ int main(int argc, char** argv) {
                         (double) (src.file_read_bytes() - file_bytes0) / 1e6, (long long) read_n,
                         (long long) req_offload, chain_txt, (long long) req_chunk,
                         (long long) (sp.chain_experts_streamed() - streamed0));
+            }   // (!probe_active)
+            // STRATA_DF2_BOOT_PROBE (#5271 r3): a probe request just finished - record its arm directly from
+            // the same numbers the DONE line prints (produced_n, decode_ms). The probe arms run in order
+            // warm-up / C0 / C1 / C0; the counter is the probe state block's probe_arm, incremented by the
+            // PROBE_GEN dispatch so the dispatch also knows which arm comes next.
+            if (probe_active) {
+                if (probe_arm == 1) {
+                    /* warm-up: discarded, only its wall cost was spent */
+                } else if (probe_arm == 2) {
+                    probe_c0_tok = produced_n; probe_c0_ms = decode_ms;
+                } else if (probe_arm == 3) {
+                    probe_c1_tok = produced_n; probe_c1_ms = decode_ms;
+                } else if (probe_arm == 4) {
+                    probe_c0b_tok = produced_n; probe_c0b_ms = decode_ms;
+                }
+            }
             std::fflush(stdout);
             if (admit_slot >= 0) {   // --batch: BADM <slot> <1 = continues in the batch windows | 0 = done>
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
