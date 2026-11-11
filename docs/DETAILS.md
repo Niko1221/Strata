@@ -505,7 +505,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `api_monitor` | off | Records requests for `/api-monitor`. |
 | `lazy_load` | off | Start without loading the model. |
 | `slot_save_path` | none | Enables session files. |
-| `host`, `api_key`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
+| `host`, `api_key`, `api_keys`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
 

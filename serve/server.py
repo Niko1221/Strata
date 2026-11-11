@@ -4923,6 +4923,8 @@ class Service:
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.key_limits = None                         # #5004 (the config's "api_keys"): KeyLimits when some keys
+                                                       # carry their own limits; None = one shared pool, nothing counted
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
@@ -6329,9 +6331,21 @@ class Service:
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
+        gate = self.key_limits
+        counted = False
         try:
+            if gate is not None:
+                # #5004 (the config's "api_keys"): hold this request within the limits of the key it arrived with
+                # before the engine queue.  The wait is the queue's own kind of wait: queue_timeout bounds it (the
+                # same 429 when it expires) and a client that hangs up ends it (ClientGone, like a prepared request
+                # whose client left).  The cancel Event carries the key's identity, stamped when it was watched.
+                gate.acquire(getattr(cancel, "_strata_key", None), cancel=cancel,
+                             deadline=None if self.queue_timeout_s is None else time.monotonic() + self.queue_timeout_s)
+                counted = True
             yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred)
         finally:
+            if counted:
+                gate.release(getattr(cancel, "_strata_key", None))
             if ka is not None:
                 ka.release()
 
@@ -7834,6 +7848,9 @@ def make_handler(svc: Service):
             request is HTTP/1.0 and fully read here, so no later bytes are expected - data is not a hang-up."""
             done = self.watch_done = threading.Event()
             self.cancel_event = cancel
+            # #5004 (the config's "api_keys"): carry the key this request arrived on to Service.run(), where the
+            # per-key limits count it.  Every inference path watches its cancel Event right after creating it.
+            cancel._strata_key = getattr(self, "key_id", None)
             with svc.status_lock:
                 svc.active_cancels.add(cancel)
             sock = self.connection
@@ -7910,11 +7927,14 @@ def make_handler(svc: Service):
             self.wfile.write(body)
 
         def _authorized(self) -> bool:
+            self.key_id = None                             # #5004: which configured key this request came with (None = keyless)
             if not svc.api_key:
                 return True
             auth = self.headers.get("Authorization", "")
             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
-            if key_matches(given, svc.api_key):
+            hit = matched_key(given, svc.api_key)
+            if hit is not None:
+                self.key_id = hit                          # #5004: the per-key limits count this request against it
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
@@ -8265,6 +8285,8 @@ def make_handler(svc: Service):
                         s["tokens_per_s_mean"] = round(svc._tok_s_mean(), 1)
                 for k in ("started", "first_token"):
                     s.pop(k, None)
+                if svc.key_limits is not None:      # #5004: what each api_keys entry holds right now (names, never keys)
+                    s["api_keys"] = svc.key_limits.snapshot()
                 self._json(200, s)
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
@@ -9322,20 +9344,166 @@ def api_key_of(value):
     return key.strip()
 
 
-def key_matches(given: str, key) -> bool:
-    """given: a header's value as http.server read it, each byte one character.  A key with characters outside ASCII
-    arrives as UTF-8 from most clients and as Latin-1 from some; the right key passes in both forms (#725: the
-    bytes were re-encoded before, so a UTF-8 key never matched).  Constant-time (#213).  #1344: `key` may name several
-    keys (see key_list); the given one must match any, and every key is compared whatever the outcome."""
+def matched_key(given: str, key):
+    """The configured key a request's header presents, or None.  The same comparison as key_matches (both header
+    byte-forms, #725; every key compared whatever the outcome, #213), but it answers WHICH key passed: #5004's
+    per-key limits ("api_keys") need the key's identity, not only its right to be here.  A hit on several keys
+    (the same key written twice) keeps the first - a policy is looked up by the key string either way."""
     raw = given.encode("latin-1", "replace")
-    ok = False
+    hit = None
     for k in key_list(key):
-        ok |= hmac.compare_digest(raw, k.encode())
+        ok = hmac.compare_digest(raw, k.encode())
         try:
             ok |= hmac.compare_digest(raw, k.encode("latin-1"))
         except UnicodeEncodeError:
             pass
-    return ok
+        if ok and hit is None:
+            hit = k
+    return hit
+
+
+def key_matches(given: str, key) -> bool:
+    """given: a header's value as http.server read it, each byte one character.  A key with characters outside ASCII
+    arrives as UTF-8 from most clients and as Latin-1 from some; the right key passes in both forms (#725: the
+    bytes were re-encoded before, so a UTF-8 key never matched).  Constant-time (#213).  #1344: `key` may name several
+    keys (see key_list); the given one must match any, and every key is compared whatever the outcome.
+    #5004: matched_key answers which key passed, for callers that need the identity."""
+    return matched_key(given, key) is not None
+
+
+class KeyLimits:
+    """#5004 (the config's "api_keys"): what each key may have in flight, and what that leaves the others.
+
+    A request counts against the key it arrived with from the moment it enters `Service.run()` to the moment it
+    ends: the queue wait, the prompt read and the generation all count.  While its key is at a limit the request
+    waits - the queue's own kind of wait: `queue_timeout` bounds it and the same 429 answers its expiry, and a
+    client that hangs up mid-wait ends it (ClientGone, as for a prepared request whose client left).
+
+    * "max_concurrent": how many requests of that key the server holds at once.
+    * "reserved_capacity": slots of a "parallel" server that only this key may sit on.  Every other key's reach
+      shrinks by it - the others may hold at most `slots - reserved` at once, whether this key is using its
+      reservation or not: a reserved slot waits empty rather than being borrowed.  Nothing is ever moved off a
+      slot a request already holds (there is no preemption): the reservation holds at the next admission.
+
+    A key with no entry (a plain "api_key") shares `slots - every reservation`, and so does a request whose key
+    the server accepts but the block does not name.  Names are what GET /status and the logs show; the keys
+    themselves never leave the config.  The class exists only when the config lists "api_keys" - without it
+    nothing is counted and admission is exactly as before."""
+
+    OTHER = "(other keys)"                 # the shared bucket; api_key_limits_of refuses it as a name
+
+    def __init__(self, policies, slots):
+        self.policies = policies                      # api_key_limits_of()'s rows, in config order
+        self.by_key = {p["key"]: p for p in policies}
+        self.reserved_all = sum(p["reserved_capacity"] for p in policies)
+        self.slots = slots                            # callable: the engine's slots right now (its batch)
+        self.held = collections.Counter()             # name -> requests inside (self.OTHER for unlisted keys)
+        self.cv = threading.Condition()
+
+    def _row(self, key):
+        pol = self.by_key.get(key) if key is not None else None
+        return pol, self.OTHER if pol is None else pol["name"]
+
+    def _reach(self, pol) -> int:
+        # the slots this bucket may sit on: its own key's reservation counts for it, no other key's does
+        return max(0, self.slots() - (self.reserved_all - (pol["reserved_capacity"] if pol else 0)))
+
+    def _room(self, pol, name) -> bool:
+        reach = self._reach(pol)
+        if pol is not None and pol["max_concurrent"] is not None:
+            reach = min(reach, pol["max_concurrent"])
+        return self.held[name] < reach
+
+    def acquire(self, key, cancel=None, deadline=None) -> None:
+        """Wait until this key's figures leave room, then count the request.  Raises QueueWaitExpired when
+        `deadline` runs out (the handler turns it into the same 429 the engine queue's wait gets) and ClientGone
+        when `cancel` says the client already left."""
+        pol, name = self._row(key)
+        with self.cv:
+            while not self._room(pol, name):
+                if cancel is not None and cancel.is_set():
+                    raise ClientGone(f"the client disconnected while {name} waited for its api_keys limit to free")
+                left = deadline - time.monotonic() if deadline is not None else None
+                if left is not None and left <= 0:
+                    raise QueueWaitExpired(f"the inference queue wait deadline expired while {name} was at its "
+                                           "api_keys limit; retry later")
+                self.cv.wait(0.25 if left is None else min(0.25, left))
+            self.held[name] += 1
+
+    def release(self, key) -> None:
+        pol, name = self._row(key)
+        with self.cv:
+            self.held[name] -= 1
+            self.cv.notify_all()
+
+    def snapshot(self):
+        """What GET /status shows: names, counts and limits - never a key."""
+        return {"slots": self.slots(),
+                "keys": [{"name": p["name"], "inflight": self.held[p["name"]],
+                          "max_concurrent": p["max_concurrent"], "reserved_capacity": p["reserved_capacity"]}
+                         for p in self.policies],
+                "unlisted": {"inflight": self.held[self.OTHER], "max": self._reach(None)}}
+
+
+def api_key_limits_of(value, slots: int):
+    """#5004 (the config's "api_keys"): per-key admission limits, keyed by the key itself.  Every entry is a key
+    the server accepts, like the ones in "api_key"; its object names what that key may do:
+
+        "api_keys": {
+            "hermes-key":       {"name": "hermes", "max_concurrent": 1},
+            "home-assistant-key": {"name": "home assistant", "max_concurrent": 1, "reserved_capacity": 1}
+        }
+
+    "max_concurrent": requests of that key at once (default: as many as its reach).  "reserved_capacity": slots
+    of a "parallel" server kept for this key alone (default 0).  "name": what GET /status and the logs call it
+    (default: "key 1", "key 2", ... in order).  Like origins_of, a wrong entry stops the start rather than
+    limiting less or more than meant: a value that is not a whole number, a key that is empty or "none", a field
+    the server does not know, two entries sharing a name, or reservations that leave some key no slot at all
+    (`slots` is the "parallel" the server starts with; KeyLimits follows the engine's own batch from then on).
+    Returns [{"key", "name", "max_concurrent", "reserved_capacity"}] in config order."""
+    if value is None or value == "" or value == {}:
+        return []
+    if not isinstance(value, dict):
+        raise ValueError('api_keys must be an object: {"the-key": {"max_concurrent": ..., "reserved_capacity": ...}}')
+    out = []
+    for i, (key, pol) in enumerate(value.items(), 1):
+        key = str(key).strip()
+        if not key or key.lower() == "none":
+            raise ValueError(f'api_keys entry {i} is not a usable key (empty, or "none")')
+        pol = {} if pol is None else pol
+        if not isinstance(pol, dict):
+            raise ValueError(f'api_keys entry "{key}" must be an object (or null)')
+        unknown = sorted(set(pol) - {"name", "max_concurrent", "reserved_capacity"})
+        if unknown:
+            raise ValueError(f'api_keys entry "{key}" says {", ".join(map(repr, unknown))}, '
+                             "which is not a limit (the fields are name, max_concurrent, reserved_capacity)")
+        name = str(pol.get("name") or f"key {i}").strip() or f"key {i}"
+        if name == KeyLimits.OTHER:
+            raise ValueError(f'api_keys entry "{key}" may not be named "{KeyLimits.OTHER}"')
+        mc = pol.get("max_concurrent")
+        if mc is not None and (isinstance(mc, bool) or not isinstance(mc, int) or mc < 1):
+            raise ValueError(f'api_keys entry "{key}": max_concurrent must be a whole number of requests, at least 1')
+        rc = pol.get("reserved_capacity")
+        if rc is None:
+            rc = 0
+        if isinstance(rc, bool) or not isinstance(rc, int) or rc < 0:
+            raise ValueError(f'api_keys entry "{key}": reserved_capacity must be a whole number of slots, 0 or more')
+        out.append({"key": key, "name": name, "max_concurrent": mc, "reserved_capacity": rc})
+    if len({p["name"] for p in out}) != len(out):
+        raise ValueError("api_keys: two entries share a name; names must differ (GET /status shows them)")
+    reserved_all = sum(p["reserved_capacity"] for p in out)
+    for p in out:
+        if slots - (reserved_all - p["reserved_capacity"]) < 1:
+            raise ValueError(f'api_keys: the reservations of the other keys leave "{p["name"]}" no slot of a '
+                             f"{slots}-slot server (raise \"parallel\" or lower \"reserved_capacity\")")
+        if p["max_concurrent"] and p["max_concurrent"] > slots - (reserved_all - p["reserved_capacity"]):
+            print(f'[strata] api_keys: "{p["name"]}" may run {p["max_concurrent"]} at once, but only '
+                  f"{slots - (reserved_all - p['reserved_capacity'])} of the {slots} slots are its reach (the rest "
+                  "are reserved): the limit that holds is the reach", flush=True)
+    if reserved_all >= slots:
+        print("[strata] api_keys: the reservations cover every slot: a request with a key that has no "
+              "reserved_capacity of its own never gets one", flush=True)
+    return out
 
 
 def origin_allowed(origin: str, host, names, origins=()) -> bool:
@@ -10447,6 +10615,24 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     if svc.aliases:
         print(f"[strata] model aliases: {', '.join(svc.aliases)}", flush=True)
     svc.api_key = preflight_api_key
+    # #5004 (the config's "api_keys"): keys with their own admission limits.  They are keys the server accepts,
+    # so they join the accepted set before the telemetry-key clash check below sees it.  The reservations are
+    # sanity-checked against the "parallel" asked for here; KeyLimits follows the engine's own batch after that.
+    par = a.parallel if getattr(a, "parallel", None) is not None else cfg.get("parallel")
+    key_slots = par if isinstance(par, int) and not isinstance(par, bool) and par >= 1 else 1
+    try:
+        key_policies = api_key_limits_of(cfg.get("api_keys"), key_slots)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    if key_policies:
+        if no_key_chosen:
+            raise SystemExit('[strata] config "api_keys" and the choice to serve without a key contradict each other')
+        merged = key_list(svc.api_key)
+        merged += [p["key"] for p in key_policies if p["key"] not in merged]
+        svc.api_key = merged
+        svc.key_limits = KeyLimits(key_policies, lambda: max(1, int(getattr(svc.engine, "batch", 0) or 0)))
+        print(f"[strata] api_keys: {len(key_policies)} key(s) with their own limits "
+              f"({', '.join(p['name'] for p in key_policies)}); GET /status shows what each holds", flush=True)
     try:
         svc.telemetry_key = api_key_of(os.environ.get("STRATA_TELEMETRY_KEY") or cfg.get("telemetry_read_key", ""))
     except ValueError as e:
