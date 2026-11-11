@@ -20,6 +20,7 @@ import threading
 import time
 import email.utils
 import datetime as _dt
+import errno
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +34,15 @@ tls.install()      # #3722: the operating system's certificates, like the browse
 
 CHUNK = 1 << 20
 WAITED_S = 0.002                 # a read that took longer than this had to wait for the server
+# errors on the DESTINATION (the .part file) that waiting cannot cure: raised at once, as before the network rule, never retried
+# (a full disk, a quota, a read-only drive, no permission); any other write error (EIO on a flaky drive, a share that drops) is retried
+_DEST_ERRNOS = {e for e in (errno.ENOSPC, getattr(errno, "EDQUOT", None), errno.EROFS, errno.EACCES, errno.EPERM) if e is not None}
+_DEST_OPEN_ERRORS = (PermissionError, IsADirectoryError, NotADirectoryError, FileNotFoundError)
+
+
+def _destination(exc: BaseException) -> BaseException:
+    exc.strata_destination = True        # read in _transfer: a plain TransferError, not an Interrupted
+    return exc
 SMALL_LIMIT = 8 << 20
 ENV_ALLOW_HTTP = "STRATA_UPDATE_ALLOW_HTTP"
 
@@ -338,9 +348,11 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
             raise TransferError(tls.explain(tls.host_of(location)), resumable=True) from None
         got = partial.stat().st_size if partial.exists() else 0
         reason = getattr(exc, "reason", exc)
-        raise Interrupted(f"the download of {location} was interrupted after {got} of {size} bytes "
-                          f"({type(exc).__name__}: {reason}); the partial file is kept and the next try resumes it",
-                          resumable=True) from None
+        said = (f"the download of {location} was interrupted after {got} of {size} bytes "
+                f"({type(exc).__name__}: {reason}); the partial file is kept and the next try resumes it")
+        if getattr(exc, "strata_destination", False):     # the .part cannot be written (a full disk, no permission): at once, as before
+            raise TransferError(said, resumable=True) from None
+        raise Interrupted(said, resumable=True) from None
 
 
 _CONTENT_RANGE = re.compile(r"\s*bytes (\d+)-(\d+)/(\d+|\*)\s*$")
@@ -359,33 +371,53 @@ def _copy(source, partial: Path, mode: str, done: int, size: int, progress, canc
     to wait; when the connection stalls, the bytes gathered so far are written before the error goes on, so the next try resumes after them
     and the network rule's 5 minutes without a NEW byte are counted on the file's size (strata_control/netpolicy.py)."""
     read = getattr(source, "read1", None) or source.read
-    with partial.open(mode) as out:
-        while True:
-            if cancel is not None and cancel.is_set():
-                out.flush()
-                raise Cancelled()
-            gathered = bytearray()
-            end = False
-            try:
-                while len(gathered) < CHUNK:
-                    began = time.monotonic()
-                    piece = read(CHUNK - len(gathered))
-                    if not piece:
-                        end = True
-                        break
-                    gathered += piece
-                    if time.monotonic() - began > WAITED_S:
-                        break                              # this read waited for the server: do not hold what we have any longer
-            except BaseException:
-                out.write(gathered)                        # a stall or a break: what did arrive stays on disk
-                raise
-            if gathered:
-                if done + len(gathered) > size:
-                    raise TransferError("the server sent more bytes than the feed says; the download was stopped")
-                out.write(gathered)
-                done += len(gathered)
-                if progress:
-                    progress(done, size)
-            if end:
-                break
-        out.flush()
+    try:
+        opened = partial.open(mode)
+    except _DEST_OPEN_ERRORS as exc:                       # the .part cannot be written here at all
+        raise _destination(exc)
+
+    def put(out, data) -> None:
+        try:
+            out.write(data)
+        except OSError as exc:
+            if exc.errno in _DEST_ERRNOS:
+                _destination(exc)
+            raise
+
+    source_failed = False
+    try:
+        with opened as out:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    out.flush()
+                    raise Cancelled()
+                gathered = bytearray()
+                end = False
+                try:
+                    while len(gathered) < CHUNK:
+                        began = time.monotonic()
+                        piece = read(CHUNK - len(gathered))
+                        if not piece:
+                            end = True
+                            break
+                        gathered += piece
+                        if time.monotonic() - began > WAITED_S:
+                            break                          # this read waited for the server: do not hold what we have any longer
+                except BaseException:
+                    source_failed = True
+                    put(out, gathered)                     # a stall or a break: what did arrive stays on disk
+                    raise
+                if gathered:
+                    if done + len(gathered) > size:
+                        raise TransferError("the server sent more bytes than the feed says; the download was stopped")
+                    put(out, gathered)
+                    done += len(gathered)
+                    if progress:
+                        progress(done, size)
+                if end:
+                    break
+            out.flush()
+    except OSError as exc:                                 # a buffered write fails at flush or close: the same rule
+        if not source_failed and exc.errno in _DEST_ERRNOS:
+            _destination(exc)
+        raise
