@@ -131,8 +131,11 @@ test('a chat the model server refused once is not stuck: the next message compac
   // could go through, because the summary request carried the same history and was refused for its size too.
   const { worker, send } = await rig(t, { noCount: true });
   assert.equal((await send(`SCRIPT:echo one ${dense.repeat(300)}`)).at(-1).type, 'done');
-  const huge = await send(`SCRIPT:echo two ${dense.repeat(7000)}`);
+  // Leave room for the current Harness tool descriptions after compaction: 7,000 repeats also overflow on the retry.
+  // The refusal-count assertion below still requires the original request to exceed the window.
+  const huge = await send(`SCRIPT:echo two ${dense.repeat(6800)}`);
   assert.equal(huge.at(-1).type, 'done', 'the Harness compacted after the refusal and asked again: ' + JSON.stringify(huge.at(-1)).slice(0, 200));
+  assert.match(answerOf(huge), /^two/, 'the retry answers the original message');
   const small = await send('SCRIPT:echo three please');
   assert.equal(small.at(-1).type, 'done', JSON.stringify(small.at(-1)).slice(0, 300));
   assert.match(answerOf(small), /three/);
@@ -140,6 +143,7 @@ test('a chat the model server refused once is not stuck: the next message compac
   assert.equal(again.at(-1).type, 'done');
   const refused = worker.requests.filter(r => r.refused);
   assert.equal(refused.length, 1, `only the first, too large, prompt was refused: ${refused.map(r => r.refused).join(', ')}`);
+  assert.ok(worker.requests.some(r => r.summary), 'the refused request was recovered through compaction');
   assert.ok(worker.requests.filter(r => r.summary).every(r => Math.round(r.promptChars / 3) < 32768 - 64), 'every summary request fitted the window');
 });
 
