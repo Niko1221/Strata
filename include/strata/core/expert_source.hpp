@@ -1301,6 +1301,10 @@ public:
     void close();
 
     bool mapped() const { return base_ != nullptr; }
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    /// CPU speculative reads require the RAM arena, never the disk-backed mmap alternative.
+    bool ram_backed() const { return base_ != nullptr && map_ == nullptr && arena_ != nullptr; }
+#endif
     int64_t blobs() const { return blobs_; }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// `blob` without the read counter: a pure pointer into the arena, safe from another thread (the async adaptive

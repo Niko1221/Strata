@@ -946,6 +946,9 @@ std::string ExpertPool::placement_line() const {
 }
 
 ExpertPool::~ExpertPool() {
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    idle_stop();
+#endif
     const ExpertPool* self = this;
     g_diag_pool.compare_exchange_strong(self, nullptr);
     if (g_numa_owner == this) {
@@ -1185,7 +1188,13 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
         const uint32_t i = (uint32_t) ci;
         if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
         else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+        if (mode_ == 9) {
+            idle_fn_(idle_ctx_, (int) i, n_, idle_halt_);
+        } else if (mode_ == 0) {
+#else
         if (mode_ == 0) {
+#endif
             const ExpertJob& j = jobs_[i];
             s2_expert_vnni_q(j.blob, *j.act, j.out, scratch);
         } else if (mode_ == 1) {
@@ -1283,7 +1292,71 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     }
 }
 
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+// Background work uses the same epoch-tagged queue as foreground work (Basalt MIT idea).
+void ExpertPool::idle_start(IdleFn fn, void* ctx) {
+    idle_stop();
+    if (n_ <= 1 || fn == nullptr) return;
+    wait_parked("before idle work");
+    idle_fn_ = fn;
+    idle_ctx_ = ctx;
+    idle_halt_.store(false, std::memory_order_relaxed);
+    if (numa_n_ > 0)
+        for (int k = 0; k < numa_n_; ++k)
+            if (std::count(wslice_.begin(), wslice_.end(), k) == 0) return;
+    mode_ = 9;
+    njobs_ = n_;
+    if (numa_n_ > 0) {
+        int base = 0;
+        for (int k = 0; k < numa_n_; ++k) {
+            auto& ns = nsync_[(size_t) k];
+            ns.base = base;
+            ns.tasks = (int) std::count(wslice_.begin(), wslice_.end(), k);
+            base += ns.tasks;
+        }
+    }
+    begin_batch(n_);
+    idle_live_ = true;
+}
+
+void ExpertPool::idle_partition(int ticket, int& slice, int& rank, int& count) const {
+    slice = -1; rank = ticket; count = n_;
+    for (int k = 0; k < numa_n_; ++k) {
+        const auto& ns = nsync_[(size_t) k];
+        if (ticket >= ns.base && ticket < ns.base + ns.tasks) {
+            slice = k; rank = ticket - ns.base; count = ns.tasks;
+            return;
+        }
+    }
+}
+
+void ExpertPool::idle_stop() {
+    if (!idle_live_) return;
+    idle_halt_.store(true, std::memory_order_release);
+    auto cancel = [](std::atomic<uint64_t>& head) {
+        uint64_t h = head.load(std::memory_order_acquire);
+        for (;;) {
+            const uint32_t n = (uint32_t) (h >> 16) & 0xffffu, i = (uint32_t) h & 0xffffu;
+            if (i >= n || head.compare_exchange_weak(h, (h & ~uint64_t{0xffff}) | n,
+                                                    std::memory_order_acq_rel, std::memory_order_acquire))
+                return (std::min)(i, n);
+        }
+    };
+    uint32_t claimed = 0;
+    if (numa_n_ > 0)
+        for (int k = 0; k < numa_n_; ++k) claimed += cancel(nsync_[(size_t) k].head);
+    else claimed = cancel(head_);
+    wait_done((int) claimed);
+    wait_parked("after idle work");
+    idle_live_ = false;
+    mode_ = 0;
+}
+
+#endif
 void ExpertPool::run_phase(int mode, int n_tasks) {
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    idle_stop();
+#endif
     wait_parked("before a phase");
     mode_ = mode;
     njobs_ = n_tasks;
@@ -1304,6 +1377,9 @@ void ExpertPool::run_phase(int mode, int n_tasks) {
 }
 
 void ExpertPool::run_split(ExpertJob* jobs, int n) {
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    idle_stop();
+#endif
     if (n <= 0) return;
     if (n > kMaxSplit || n_ == 1 || expert_oracle_q8_0_enabled()) { run(jobs, n); return; }
     const auto t0 = std::chrono::steady_clock::now();
@@ -1324,6 +1400,9 @@ int ExpertPool::phase_tasks(int64_t rows) const {
 }
 
 void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    idle_stop();
+#endif
     if (n <= 0) return;
     if (n > kMaxSplitMulti || expert_oracle_q8_0_enabled()) {
         // one token at a time through the single-token path (the oracle contract has no multi kernel)
@@ -1363,6 +1442,9 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
 }
 
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, NativeArithmetic arithmetic) {
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    idle_stop();
+#endif
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
     // more distinct experts than buffers: run them in batches
@@ -1395,6 +1477,9 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
 }
 
 void ExpertPool::run(ExpertJob* jobs, int n) {
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    idle_stop();
+#endif
     if (n <= 0) return;
     if (n_ == 1) {   // no workers: run inline, so a single-core machine still produces a token
         for (int i = 0; i < n; ++i) s2_expert_vnni_q(jobs[i].blob, *jobs[i].act, jobs[i].out, scratch_[0]);
