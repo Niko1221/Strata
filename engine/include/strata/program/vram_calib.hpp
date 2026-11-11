@@ -40,12 +40,23 @@ struct Card {
     long long grow = 0;    ///< bytes lost after the first requests (window graphs captured on first use)
 };
 
-/// The STRATA_* variables that select the engine's behaviour, sorted. The calibration's own switches are left out: turning the
-/// margin up must not throw the measurement away.
+/// Switches that only measure or report (timers, traces, node lists, dispatch counts, empty probe nodes): a run that differs
+/// from another only in them is the same configuration for the reserve, so an A/B arm with a trace keeps the calibration.
+inline bool measure_only(const char* kv) {
+    static const char* const names[] = {"STRATA_TRACE=", "STRATA_DECODE_TIMING=", "STRATA_PREFILL_TIMING=", "STRATA_DISPATCH_REPORT=",
+                                        "STRATA_VERIFY_NODES=", "STRATA_DUMMY_NODES="};
+    for (const char* n : names)
+        if (std::strncmp(kv, n, std::strlen(n)) == 0) return true;
+    return false;
+}
+
+/// The STRATA_* variables that select the engine's behaviour, sorted. The calibration's own switches are left out (turning the
+/// margin up must not throw the measurement away), and so are the measurement-only ones (measure_only).
 inline std::vector<std::string> sizing_env(char** envp) {
     std::vector<std::string> env;
     for (char** e = envp; e != nullptr && *e != nullptr; ++e)
-        if (std::strncmp(*e, "STRATA_", 7) == 0 && std::strncmp(*e, "STRATA_VRAM_CALIB", 17) != 0) env.emplace_back(*e);
+        if (std::strncmp(*e, "STRATA_", 7) == 0 && std::strncmp(*e, "STRATA_VRAM_CALIB", 17) != 0 && !measure_only(*e))
+            env.emplace_back(*e);
     std::sort(env.begin(), env.end());
     return env;
 }
@@ -59,6 +70,17 @@ inline std::string file_key(const std::string& exe_id, const std::vector<std::st
     for (const unsigned char c : key) { h ^= c; h *= 1099511628211ull; }
     char hex[24];
     std::snprintf(hex, sizeof hex, "%016llx", (unsigned long long) h);
+    return hex;
+}
+
+/// The file of the last measurement made with this binary in any configuration ("binary-<16 hex>"): the need after the cache
+/// and the growth hardly depend on the configuration, so a first start of a new configuration sizes from it instead of from
+/// the fixed terms, and only a new binary's very first start does not.
+inline std::string binary_key(const std::string& exe_id) {
+    uint64_t h = 1469598103934665603ull;
+    for (const unsigned char c : exe_id) { h ^= c; h *= 1099511628211ull; }
+    char hex[32];
+    std::snprintf(hex, sizeof hex, "binary-%016llx", (unsigned long long) h);
     return hex;
 }
 
