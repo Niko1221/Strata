@@ -27,6 +27,16 @@ int main() {
     CHECK(uma_cache_room_bytes(10 * GiB, 10 * GiB) == 0);
     CHECK(uma_cache_room_bytes(5 * GiB, 10 * GiB) == 0);
     CHECK(uma_cache_room_bytes(5 * GiB, 0) == 5 * GiB);
+    // G16: the Windows HIP floor of the auto cache's reserve is for a discrete card of 15 GiB or more only
+    CHECK(wddm_auto_reserve_mib(false, 20 * GiB, 700) == 2560);              // a 20 GB discrete card (#1376): the floor
+    CHECK(wddm_auto_reserve_mib(false, 15 * GiB, 700) == 2560);              // 15 GiB: the floor (#1709)
+    CHECK(wddm_auto_reserve_mib(false, 16 * GiB - 1, 700) == 2560);          // a 16 GB card reports just under 16
+    CHECK(wddm_auto_reserve_mib(false, 8 * GiB, 700) == 700);                // a smaller card keeps its own sizing
+    CHECK(wddm_auto_reserve_mib(false, 15 * GiB - 1, 700) == 700);
+    CHECK(wddm_auto_reserve_mib(true, 94027ull << 20, 700) == 700);          // a Strix Halo (94,027 MiB pool): no floor
+    CHECK(wddm_auto_reserve_mib(true, 20 * GiB, 700) == 700);                // integrated wins whatever the size
+    CHECK(wddm_auto_reserve_mib(false, 20 * GiB, 3000) == 3000);             // a larger reserve is never lowered
+    CHECK(wddm_auto_reserve_mib(true, 94027ull << 20, 3000) == 3000);
     if (fails == 0) std::printf("uma_cache_test: all checks passed\n");
     return fails == 0 ? 0 : 1;
 }

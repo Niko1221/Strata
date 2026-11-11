@@ -22,7 +22,13 @@ import package_terminal  # noqa: E402
 
 
 def host(system: str, machine: str) -> str:
-    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine):
+    # the name and the architecture come from strata_control.sysinfo: on Windows from sys.platform and the environment (no WMI, #4975),
+    # elsewhere from the platform module
+    win = system == "Windows"
+    env = {"PROCESSOR_ARCHITECTURE": machine, "PROCESSOR_ARCHITEW6432": ""} if win else {}
+    with mock.patch.object(targets.platform, "system", return_value=system), mock.patch.object(targets.platform, "machine", return_value=machine), \
+            mock.patch.object(sys, "platform", "win32" if win else ("darwin" if system == "Darwin" else "linux")), \
+            mock.patch.dict("os.environ", env):
         return targets.host_platform()
 
 
@@ -140,7 +146,7 @@ class GB10Probes(unittest.TestCase):
         done = mock.Mock(returncode=0, stdout=self.LINE)
         with mock.patch.object(doctor.shutil, "which", return_value="/usr/bin/nvidia-smi"), \
                 mock.patch.object(doctor.subprocess, "run", return_value=done), \
-                mock.patch.object(doctor.platform, "machine", return_value=machine):
+                mock.patch.object(doctor.platform, "machine", return_value=machine),                 mock.patch.object(sys, "platform", "linux"):          # (sysinfo answers from the platform module only off Windows)
             return doctor._nvidia_cards()
 
     def test_doctor_lists_a_gb10_with_no_memory_figure(self):

@@ -29,7 +29,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;           // head_dim
-constexpr int G = 12;             // query heads per KV head
+constexpr int G = strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv;   // query heads per KV head (12 for Flash-Next); the tiles pad the rows to 16, so G <= 16
+static_assert(G >= 1 && G <= 16, "qsa_prompt_attn: query heads per KV head must be 1..16 (one M16 tile)");
 static_assert(HD == strata::core::kCompiledGeometry.head_dim && G == strata::core::kCompiledGeometry.n_head / strata::core::kCompiledGeometry.n_head_kv, "qsa_prompt_attn is compiled for core/geometry.hpp");
 #ifndef D1_CH
 #define D1_CH 32
@@ -2435,6 +2436,16 @@ bool qsa_prompt_attn_matrix_cores_requested() {
     if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
     const int mode = hip_wmma_mode_env(), arch = hip_wmma_arch(dev);
     return mode != 0 && arch != 3 && !g_wmma_failed.load(std::memory_order_relaxed) && (mode >= 1 || (arch == 2 && strata::core::kGfx12PromptDefaultsOn));
+#else
+    return false;
+#endif
+}
+
+bool qsa_prompt_attn_matrix_cores_gfx12() {
+#if defined(__HIPCC__)
+    int dev = 0;
+    if (hipGetDevice(&dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+    return qsa_prompt_attn_matrix_cores_requested() && hip_wmma_arch(dev) == 2;
 #else
     return false;
 #endif

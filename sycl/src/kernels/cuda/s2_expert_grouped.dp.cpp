@@ -39,8 +39,8 @@ namespace {
 // THE BLOB'S OWN GEOMETRY, from `include/strata/kernels/cpu/expert.hpp`.  Restated as literals because that
 // header is the CPU path's and this file must not silently follow it if the two ever disagree: the sizes below
 // are what the CPU kernel's indexing computes, and `moe_hit_parity` compares the two end to end.
-constexpr int H = 2560;
-constexpr int FF = 640;
+constexpr int H = strata::core::kCompiledGeometry.n_embd;
+constexpr int FF = strata::core::kCompiledGeometry.n_ff;
 static_assert(H == strata::core::kCompiledGeometry.n_embd && FF == strata::core::kCompiledGeometry.n_ff, "s2_expert_grouped is compiled for core/geometry.hpp");
 constexpr int QK = 64;                       // Q2_0's group: one fp16 scale per 64 weights
 constexpr int ROW_GU = H / 4;                // 640 B of codes per gate/up row (2 bits per element)

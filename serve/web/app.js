@@ -1574,10 +1574,17 @@ async function start() {
   if (settings.chatList) await setChatList(true, false);       // the saved-chats list is read before the first draw
   setBusy(false);
   renderChat();
-  const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
-  if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+  // /?q=... fills the question in and focuses the box; it is never sent from the address (#4221): any page can link here,
+  // and a send would go out with the API key and the MCP tools saved in this browser. The person presses Send.
+  const startQuestion = new URLSearchParams(location.search).get("q");
+  if (startQuestion) {
+    history.replaceState(null, "", location.pathname + location.hash);
+    $("input").value = startQuestion;
+    autosize();
+  }
+  loadHealth().then(loadMcp);
   showTab(location.hash.slice(1) || "chat");
+  if (startQuestion && tab === "chat") $("input").focus();
   poll();
   requestAnimationFrame(fitHeader);
 }

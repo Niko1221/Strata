@@ -6,6 +6,7 @@
 //   gdn_parity --bench    GPU time per layer: 36 distinct layer states rotated (113 MB, beyond the SLC)
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,7 +17,7 @@
 #include <vector>
 
 namespace {
-constexpr int S = 128, HK = 16, HV = 48, C = (2 * HK + HV) * S, MAXT = 8;
+constexpr int S = strata_metal::geo::SS, HK = strata_metal::geo::HK, HV = strata_metal::geo::HV, C = (2 * HK + HV) * S, MAXT = 8;
 struct GdnArgs { uint32_t h_k, h_v, channels, commit; float eps; uint32_t plane; };
 double median(std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; }
 struct Err {

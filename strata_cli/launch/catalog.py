@@ -59,30 +59,28 @@ def fit_on(v: dict, ram_gb: float | None, vram_gb: float | None) -> dict[str, An
 
 
 # --- the verdict words ---------------------------------------------------------------------------------------------------
-FITS, TIGHT, NO = "fits", "tight", "no"
+FITS, SLOWER, TIGHT, NO = "fits", "slower", "tight", "no"
 
 
 def verdict(on_this_pc: str | None) -> tuple[str, str]:
-    """(category, plain words) from the catalog's own `on_this_pc` text (setup.py `--check`'s rules, through strata_mcp).
+    """(category, plain words) from the catalog's own `on_this_pc` text (strata_control/fit_label.py through strata_mcp: "fits" or "may run slower").
 
-    Never a block: `no` still lets the person try, and the screen says so."""
+    The one other word is not about memory: DeepSeek's "tight: needs more disk space".  No card and a Mac with little memory get "may run slower" too (owner 11-08);
+    an older Control's "does not fit..." is read the same way.  Never a block: the person can always try, and the screen says so."""
     text = (on_this_pc or "").strip()
     low = text.lower()
     if not text:
         return TIGHT, "not checked (this computer's memory could not be read)"
     if low.startswith("does not fit"):
-        return NO, "too big (can still try)"
+        return SLOWER, "may run slower"
     if "free disk space" in low:                           # DeepSeek: fits in memory, not on the disk (still allowed)
         return TIGHT, "tight: needs more disk space"
-    if "low-ram mode" in low:
-        return FITS, "fits, a bit slower"
-    if "part of its experts" in low or "read from the ssd" in low:
-        base = "slow here" in low
-        return (TIGHT, "tight: much read from SSD") if base else (FITS, "fits, part read from SSD")
+    if low == "may run slower":
+        return SLOWER, "may run slower"
+    if low == "fits":
+        return FITS, "fits"
     if low.startswith("tight"):
         return TIGHT, "tight: close other programs"
-    if "fits" in low:
-        return FITS, "fits"
     return TIGHT, text
 
 
@@ -104,7 +102,8 @@ class ModelRow:
     installed: bool
     recommended: bool = False
     mem_total: bool = False
-    memory_gb: float = 0.0
+    memory_gb: float = 0.0        # the placement estimate (experts + dense), for the cards
+    fit_gb: float = 0.0           # the files without the lookup table: the "Needs" column and the fit label
 
     @property
     def title(self) -> str:
@@ -212,20 +211,47 @@ INTEL_ARC = {"0x56a1": ("Arc A750", 8.0), "0x56a2": ("Arc A580", 8.0), "0x56a0":
              "0xe212": ("Arc B50", 16.0)}
 
 
+#: PCI id ranges of Intel's discrete cards, for a model that is not in the table above (a new Battlemage or Alchemist part): such a card is counted as an
+#: Arc of the family's smallest memory, never named by model. The processors' own graphics (0x46xx, 0x7dxx, 0xa7xx, ...) are outside these ranges.
+INTEL_ARC_FAMILIES = ((0x5690, 0x56c1, 8.0), (0xe200, 0xe2ff, 10.0))
+
+
+def _arc_entry(did: str) -> tuple[str, float] | None:
+    if did in INTEL_ARC:
+        return INTEL_ARC[did]
+    try:
+        value = int(did, 16)
+    except ValueError:
+        return None
+    for low, high, gb in INTEL_ARC_FAMILIES:
+        if low <= value <= high:
+            return "Arc", gb
+    return None
+
+
 def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
-    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere)."""
+    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere). One unreadable entry or a card number
+    above 9 never hides the others, and the cards of other makes beside them (an AMD APU's graphics) do not matter here (#4971, #5111)."""
     cards: list[dict] = []
     try:
-        for dev in sorted(Path(root).glob("card[0-9]/device")):
-            if (dev / "vendor").read_text().strip() != "0x8086":
+        entries = sorted(Path(root).glob("card[0-9]*"), key=lambda p: (len(p.name), p.name))
+    except OSError:
+        return cards
+    for card in entries:
+        if "-" in card.name:                                 # a connector (card0-DP-1), not a card
+            continue
+        dev = card / "device"
+        try:
+            if (dev / "vendor").read_text().strip().lower() != "0x8086":
                 continue
             did = (dev / "device").read_text().strip().lower()
-            if did not in INTEL_ARC:
-                continue
-            name, gb = INTEL_ARC[did]
-            cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
-    except OSError:
-        pass
+        except OSError:
+            continue
+        entry = _arc_entry(did)
+        if entry is None:
+            continue
+        name, gb = entry
+        cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
     return cards
 
 
@@ -385,9 +411,17 @@ class Catalog:
                     need_ram_gb=f["ramUseGb"], spill_gb=f["spillGb"], verdict=cat, words=words,
                     experimental=bool(size.get("experimental") or fam.get("experimental")), images=bool(size.get("images")),
                     installed=bool(size.get("installed")) or self.installed_config(str(size["id"])) is not None, mem_total=bool(size.get("mem_total")),
-                    memory_gb=float(size.get("memory_gb") or 0),
+                    memory_gb=float(size.get("memory_gb") or 0), fit_gb=float(size.get("fit_gb") or size.get("memory_gb") or 0),
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
+
+    def unavailable(self, hw: dict | None = None) -> list[tuple[str, str]]:
+        """(title, the plain reason) of each model of the signed feed that this engine does not run: nothing for a feed without such a model. The model list
+        shows them under the list (same sentence as setup and the app: strata_control/feed_models.py)."""
+        try:
+            return [(f["title"], f["unavailable_reason"]) for f in self.strata.model_table(hw or self.hardware()) if f.get("available") is False]
+        except Exception:                                  # noqa: BLE001 - a line for information
+            return []
 
     def own_files_verdict(self, hw: dict | None, model: str) -> tuple[str, str]:
         """DeepSeek-V4.1-Flash with the person's own files used where they are (--model-path): nothing is downloaded or copied, so the disk
@@ -425,7 +459,16 @@ class Catalog:
             return family, match
         if not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
+        if len(offered) > 1 and "deepseek41" in offered:     # UD-IQ1_M is Unsloth's name in two families (round 0214): the bare name stays DeepSeek's, as it was; the Qwen set is --family unsloth
+            return "deepseek41", match
         return ("qwen" if "qwen" in offered else offered[0]), match
+
+    def model_name_of(self, family: str | None, model: str | None) -> str | None:
+        """The ``model_name`` setup writes into this model's run config (``qwen3.8-flash-next-iq3_s``), known before the model is installed: what the drafter table is keyed by."""
+        if not family or not model:
+            return None
+        fam = self.tables()[1].get(family) or {}
+        return f"{fam.get('name', family)}-{model.lower()}"
 
     def tag_of(self, family: str, model: str) -> str:
         _m, families, _c, _s = self.tables()

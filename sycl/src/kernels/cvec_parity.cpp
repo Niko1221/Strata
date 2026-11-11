@@ -10,6 +10,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/fused_gr.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -66,7 +67,7 @@ void check(bool ok, const char* what) {
 }  // namespace
 
 int main() {
-    constexpr int64_t L = 48, N = 2560, HC = 4, LR = 320, T = 5, D = HC * N;
+    constexpr int64_t L = 48, N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, LR = strata::core::kCompiledGeometry.hc_lr, T = 5, D = HC * N;   // the compiled shape (Q4-SYCL)
     constexpr int64_t kLayer = 7, kOff = 3;   // steered / not steered
     std::mt19937 rng(1234);
     std::normal_distribution<float> nd(0.0f, 1.0f);

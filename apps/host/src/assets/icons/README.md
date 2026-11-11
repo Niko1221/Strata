@@ -7,7 +7,7 @@ Original SVGs supplied by Niko in `modelandweights.zip`, 10 October 2026.
 
 The originals retain their metadata and vector geometry. The app sprite strips
 metadata and uses their 24 x 24 viewBox, currentColor, 1.5px strokes, and 12% fills.
-`scripts/sync-design-kit.mjs` includes these files when rebuilding the kit sprite.
+They are already in the checked-in sprite, `public/icons/sprite.svg`, which is the source: a new icon is added there as a `<symbol id="i-NAME">`.
 
 Also supplied by Niko on 10 October 2026:
 

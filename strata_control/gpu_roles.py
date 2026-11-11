@@ -14,7 +14,7 @@ Pure functions, no I/O.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from strata_control import gpu_fit
 
@@ -252,6 +252,30 @@ def roles_from_text(text: str, cards: list[dict]) -> dict[int, str]:
     return normalize(full, cards)
 
 
+def speed_stage_order(order: list[int], speeds: dict[int, float], vram_mib: "dict[int, int] | Callable[[], dict[int, int] | None] | None" = None) -> tuple[list[int], str, tuple[int, int] | None]:
+    """THE decision of the card order of an automatic layer split (#1352, #1576, #1760), shared by the start (serve/server.py ordered_gpus) and the plan
+    (`from_legacy`, strata launch --plan): the same function, so the plan can never name a different Main card than the run.
+    `order`: the cards as the config lists them.  `speeds`: {index: multiprocessors x max clock}, every card of `order`.  `vram_mib`: {index: MiB}, or a function
+    that returns it (asked only when a reorder is on the table; None / missing cards: no VRAM check).
+    Returns (order, why, vram) with why:
+      "same"       the speeds are within 5% of each other (#1760): the config's order is kept;
+      "kept"       the order is already speed order: nothing to change;
+      "kept-vram"  the faster card has less total VRAM than the card the config ends on (#1576): the config's order is kept; vram = (that card's MiB, the config's last card's MiB);
+      "faster-last" the cards are put in speed order, the faster card LAST (it runs the head, the draft layer and the verify; a prompt chunk waits on it)."""
+    gl = list(order)
+    if len(gl) < 2:
+        return gl, "same", None
+    if max(speeds[i] for i in gl) < SAME_SPEED * min(speeds[i] for i in gl):
+        return gl, "same", None     # #1760: cards within 5% of each other are the same card (two 5070 Ti read 1.2% apart on the clock): keep the order
+    out = sorted(gl, key=lambda i: speeds[i])
+    if out == gl:
+        return gl, "kept", None
+    vram = vram_mib() if callable(vram_mib) else vram_mib
+    if vram is not None and all(i in vram for i in gl) and vram[out[-1]] < vram[gl[-1]]:
+        return gl, "kept-vram", (vram[out[-1]], vram[gl[-1]])
+    return out, "faster-last", None
+
+
 def from_legacy(gpu: Any, cards: list[dict], gpu_order: str | None = None, speed_order: bool = True) -> dict[int, str]:
     """Roles of an old "gpu" setting, for display: the LAST card of the engine's order is Main, earlier ones are Helpers, unlisted cards are Off.
     `gpu` None / "" / []: the recommendation (nothing was chosen)."""
@@ -264,9 +288,11 @@ def from_legacy(gpu: Any, cards: list[dict], gpu_order: str | None = None, speed
     items = [i for i in items if i in cs]
     if not items:
         return dict(recommend(cards)["roles"])
-    if len(items) > 1 and gpu_order != "as_given" and speed_order:
-        if max(_speed(cs[i]) for i in items) >= SAME_SPEED * max(1e-9, min(_speed(cs[i]) for i in items)) and all(_speed(cs[i]) for i in items):
-            items = sorted(items, key=lambda i: _speed(cs[i]))       # the engine puts the faster card last (#1352)
+    if len(items) > 1 and gpu_order != "as_given" and speed_order and all(_speed(cs[i]) for i in items):
+        # the engine's own decision (serve/server.py ordered_gpus calls the same function): the faster card last (#1352), unless the speeds are within 5% (#1760)
+        # or the faster card has less VRAM than the one the list ends on (#1576)
+        vram = {i: int(_mem(cs[i]) * 1024) for i in items} if all(_mem(cs[i]) for i in items) else None
+        items = speed_stage_order(items, {i: _speed(cs[i]) for i in items}, vram)[0]
     roles = {i: "off" for i in cs}
     for i in items[:-1]:
         roles[i] = "helper"
@@ -416,15 +442,72 @@ def engine_order(roles: dict[int, str], speeds: dict[int, float] | None = None) 
     return helpers + sorted(i for i, r in roles.items() if r == "main")
 
 
-def describe(roles: dict[int, str], cards: list[dict]) -> str:
-    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` (the line launch and setup print)"""
+def describe(roles: dict[int, str], cards: list[dict], *, card_numbers: bool = False) -> str:
+    """`Main: GPU 2 RTX 4070 Ti. Helper: GPU 1 RTX 3060.` (the line setup prints; the screens count from 1: GPU 1 is card 0).
+    `card_numbers`: each card also names the number `--gpu` takes, as `strata launch --plan` prints them: `GPU 2 (--gpu 1) RTX 4070 Ti`."""
     cs = {_idx(c): c for c in cards}
     parts = []
     for role, word in (("main", "Main"), ("helper", "Helper"), ("off", "Off")):
-        names = [f"GPU {i + 1} {short_name(cs[i])}" if i in cs else f"GPU {i + 1}" for i in sorted(roles) if roles[i] == role]
+        label = (lambda i: f"GPU {i + 1} (--gpu {i})") if card_numbers else (lambda i: f"GPU {i + 1}")
+        names = [f"{label(i)} {short_name(cs[i])}" if i in cs else label(i) for i in sorted(roles) if roles[i] == role]
         if names:
             parts.append(f"{word}: {', '.join(names)}.")
     return " ".join(parts)
+
+
+# ---- the cards the environment leaves visible ------------------------------------------------------------------------------------------------
+
+def _ordinals(value: str | None, indexes: list[int]) -> list[int] | None:
+    """The card numbers a visibility list (``1,0``) names, in its order, over `indexes` (the cards in ordinal order). An entry that is not a card ends the list, as
+    the CUDA and HIP runtimes read it. None: not set, or it names cards by something other than a number (a UUID), which this cannot map."""
+    if value is None:
+        return None
+    if not value.strip():
+        return []
+    out: list[int] = []
+    for tok in value.split(","):
+        tok = tok.strip()
+        if not tok.lstrip("-").isdigit():
+            return None
+        n = int(tok)
+        if n < 0 or n >= len(indexes):
+            break
+        out.append(indexes[n])
+    return out
+
+
+def env_visible(indexes: list[int], vendor: str | None, environ: dict | None = None, *, alike: bool = False) -> list[int] | None:
+    """The card numbers (the numbers `--gpu` takes) that CUDA_VISIBLE_DEVICES leaves visible (NVIDIA), or ROCR_VISIBLE_DEVICES and then HIP_VISIBLE_DEVICES (AMD); None when
+    nothing restricts them or the list cannot be read (a UUID, or CUDA's own card order when the cards differ and CUDA_DEVICE_ORDER is not PCI_BUS_ID).
+    `alike`: the cards are all one model, so their order does not matter."""
+    import os
+    env = os.environ if environ is None else environ
+    cards = sorted(indexes)
+    if vendor == "amd":
+        seen: list[int] | None = None
+        for name in ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+            raw = env.get(name)
+            if raw is None:
+                continue
+            got = _ordinals(raw, seen if seen is not None else cards)
+            if got is None:
+                return None
+            seen = got
+        return seen
+    if vendor != "nvidia":
+        return None
+    raw = env.get("CUDA_VISIBLE_DEVICES")
+    if raw is not None and raw.strip() and len(cards) > 1 and not alike and str(env.get("CUDA_DEVICE_ORDER") or "").strip().upper() != "PCI_BUS_ID":
+        return None                                          # numbers in CUDA's own card order (fastest first) cannot be told from nvidia-smi's here
+    return _ordinals(raw, cards)
+
+
+def visible_cards(cards: list[dict], vendor: str | None, environ: dict | None = None, keep: set[int] | frozenset[int] = frozenset()) -> list[dict]:
+    """`cards` without the ones the environment hides (env_visible); a card in `keep` (named with --gpu, which the server sets the visibility from) stays."""
+    vis = env_visible([_idx(c) for c in cards], vendor, environ, alike=len({(str(c.get("name")), rnd_(_mem(c))) for c in cards}) <= 1)
+    if vis is None:
+        return list(cards)
+    return [c for c in cards if _idx(c) in vis or _idx(c) in keep]
 
 
 # ---- speed of each card (the same measure the engine orders a split by: multiprocessors x max clock) ------------------------------------
