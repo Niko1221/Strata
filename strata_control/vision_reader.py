@@ -153,6 +153,26 @@ def vision_section(reader: Reader, base: dict) -> dict:
     return out
 
 
+#: A GPU reader's start that failed while it made its CUDA context on a Linux Arm machine with shared CPU / GPU memory (DGX Spark, GB10) is tried again.  Such a context needs
+#: physically contiguous memory (2 MiB blocks); when the kernel has almost none free, ggml's cudaSetDevice answers "CUDA error: out of memory ... in function
+#: ggml_cuda_init" and the reader aborts, although 20+ GiB are free.  The same start 1 to 5 s later works (the kernel compacts memory after the failed try; measured
+#: on a Spark: five failed tries in a row, then success after 6.1 s).  Without the retry the picture reader falls back to the CPU for good (90 s for a large picture).
+CONTEXT_RETRIES = 8
+CONTEXT_RETRY_WAIT_S = 1.0
+
+
+def retry_gpu_start(*, linux: bool, arm: bool, hip: bool, text: str, retries_done: int) -> bool:
+    """Should a failed GPU reader start be tried again?  Only for the context failure ("out of memory" in ggml_cuda_init / cudaSetDevice), only for the NVIDIA reader on
+    Linux on Arm, at most CONTEXT_RETRIES times.  A card another program filled says "cudaMalloc failed: out of memory" (a retry cannot help: reader_room reports it), every
+    other error (no device, no kernel image, busy) is not this case.  `text`: what the failed start said (its message and the tail of the reader's log)."""
+    if not linux or not arm or hip or retries_done >= CONTEXT_RETRIES:
+        return False
+    t = text.lower()
+    if "out of memory" not in t or "cudamalloc failed" in t or "failed to allocate" in t:
+        return False
+    return "ggml_cuda_init" in t or "cudasetdevice" in t or "cannot use gpu" in t
+
+
 def cpu_fallback(vision_cfg: dict, same_program: bool = False) -> dict | None:
     """The same section for the CPU reader, when the GPU reader has one to fall back on; None otherwise.  AMD and Intel name it (`cpu_exe`);
     the NVIDIA reader (`strata-vision`) is the CPU reader too, without --gpu - `same_program` takes that one (the on-demand reader's

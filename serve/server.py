@@ -36,6 +36,7 @@ import codecs
 import json
 import math
 import os
+import platform
 import queue
 import re
 import select
@@ -3353,7 +3354,7 @@ class Vision:
         load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
         and no question."""
         try:
-            self._start_reader()
+            self._start_gpu_reader()
         except (RuntimeError, OSError) as e:
             fallback = getattr(self, "fallback", None)
             if fallback is None:
@@ -3364,6 +3365,24 @@ class Vision:
             print(f"[strata] the GPU picture reader did not start ({why}); pictures are read on the CPU{again}", flush=True)
             self.spawn, self.fallback, self.on_cpu = fallback, None, True
             self._start_reader()
+
+    def _start_gpu_reader(self):
+        """`_start_reader`, tried again when the start failed in the GPU context itself on a Linux Arm machine with shared memory (DGX Spark; see
+        vision_reader.retry_gpu_start): up to vision_reader.CONTEXT_RETRIES times, CONTEXT_RETRY_WAIT_S apart.  Every other start, and the last failure, are
+        `_start_reader`'s as before (the CPU reader follows in `_start`)."""
+        args, log, _env = self.spawn
+        retries = 0
+        while True:
+            since = vision_log_size(log)
+            try:
+                return self._start_reader()
+            except (RuntimeError, OSError) as e:
+                text = str(e) + chr(10) + vision_log_tail(log, since=since)
+                if not vision_reader.retry_gpu_start(linux=sys.platform.startswith("linux"), arm=platform.machine().lower() in ("aarch64", "arm64"),
+                                                     hip="hip" in Path(str(args[0])).name.lower(), text=text, retries_done=retries):
+                    raise
+                retries += 1
+                time.sleep(vision_reader.CONTEXT_RETRY_WAIT_S)
 
     def no_room_note(self, room) -> str:
         """The sentence for the person when the card had no room for the reader and the processor reads instead: which card (as nvidia-smi numbers it), what
