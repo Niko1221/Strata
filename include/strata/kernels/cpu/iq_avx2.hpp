@@ -26,6 +26,11 @@ void iq256_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const 
 /// The DeepSeek-V4.1 CPU lane's rows (src/dsv41/ds4_gg_cpu.cpp).  The same loops as iq256_rows / iq256_gu_rows with ggml's float
 /// order, so a token's dot is ggml-cpu's vec_dot bit for bit at any number of tokens (the main engine's iq256_* are unchanged),
 /// and IQ1_M (29), whose ggml dot is single-token.  The caller checks AVX2 support.
+/// STRATA_CPU_IQ_OWN1: ONE token of IQ2_XXS (16) / IQ2_XS (17) / IQ1_M (29) rows [r0, r1) of `w` (row r at r * row_bytes, n weights each)
+/// against one Q8_K activation, `out[r]` = ggml-cpu's AVX2 vec_dot bit for bit (the same int32 lanes and float order), with
+/// the block's indices, signs and scales unpacked by SIMD.  Needs AVX2 + FMA + F16C (cpu_avx2_ok()).
+bool iq_own1_supported(int ggml_type) noexcept;
+void iq_own1_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* act, float* out, int r0, int r1);
 bool iq256x_supported(int ggml_type) noexcept;
 void iq256x_rows(int ggml_type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt,
                  float* const* out, int r0, int r1);
