@@ -9751,7 +9751,7 @@ struct Model::Impl {
         }
         cudaMemcpyAsync(cc_x, r.x[0], (size_t) g.dim * sizeof(float), cudaMemcpyHostToDevice, ccd.st);
         cudaMemcpyAsync(cc_in_d, cc_in_h, sizeof(CardIn), cudaMemcpyHostToDevice, ccd.st);
-        card_plan_k<<<1, kPicks, 0, ccd.st>>>(l.cc_tab, &cc_in_d->ids[0], cc_plan);
+        strata_ds4_launch(card_plan_k, 1, kPicks, 0, ccd.st, l.cc_tab, &cc_in_d->ids[0], cc_plan);
         x3::MoeArgs ma;
         ma.plan_ptr = cc_plan;
         ma.plan_w = &cc_in_d->w[0];
