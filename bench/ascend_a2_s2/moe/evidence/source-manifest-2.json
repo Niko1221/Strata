@@ -1,0 +1,6 @@
+{
+  "bench/ascend_a2_s2/moe/probe.py": "b23db9d7e18497cc51da9cb019995fa8a7de3e17076c46f4ce34a68bf84d5616",
+  "bench/ascend_a2_s2/moe/diagnose_expert.py": "6f0a8e32bc197bc2443a7edd0d56d4410c7c9e45398a77822c1b3ddf32cc10e7",
+  "bench/ascend_a2_s2/moe/fetch_layer.py": "f7773bf0760006ba8afd086863e882097bdc55d38018e1eae93e94e7ec8c5c22",
+  "bench/ascend_a2_s2/moe/README.md": "d40a783e8a3245925a596f96f38b1dd03df66361dd5fc7f6180304c90302c1d3"
+}
