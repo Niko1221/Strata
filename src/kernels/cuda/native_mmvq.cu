@@ -1551,7 +1551,12 @@ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in,
     // STRATA_MMVQ_NW1=1 (opt-in, not bitwise: one warp a row reduces in another order, rel. diff < 1e-5):
     // the decode window's K <= 4096 shapes (qkv / gate / q / shared expert, K = 2560) one warp and one row a block -
     // gfx1030, cold weights: 1.06-1.73x over the 4-warp 2-row default at T = 2..4, the default stays for K = 6144
+    // HIP builds only (measured on gfx1030; a CUDA build keeps its default whatever the variable says)
+#if defined(__HIPCC__)
     static const bool nw1 = [] { const char* v = std::getenv("STRATA_MMVQ_NW1"); return v != nullptr && v[0] == '1'; }();
+#else
+    constexpr bool nw1 = false;
+#endif
     if (nw1 && n_in <= 4096 && n_in / F::DIV >= 1) {
         launch_pdl(native_mmvq_multi_kernel<F, NCOLS, 1, 1, false, false>, dim3(unsigned(n_out)), dim3(WARP, 1), 0, s, w, x, y,
                    n_in, n_out, (const typename F::Block*) nullptr, (float*) nullptr);
