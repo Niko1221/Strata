@@ -41272,7 +41272,7 @@
    "last_date": "2026-11-09",
    "status": "opt-in",
    "owner": "program",
-   "note": "=1: size each card's reserve from the measured need after the cache + growth + margin (#5571); the first start of a binary/config measures and writes ~/.cache/strata/vram-calib/<key>.txt",
+   "note": "=1: size each card's reserve from the measured need after the cache + growth + margin (#5571); each binary/config writes ~/.cache/strata/vram-calib/<key>.txt, a new config of a measured binary starts from binary-<id>.txt, measurement-only switches (TRACE, TIMING, VERIFY_NODES, DUMMY_NODES, DISPATCH_REPORT) do not change the key",
    "retire_after": "",
    "retired_in": ""
   },

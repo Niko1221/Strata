@@ -3259,7 +3259,7 @@ namespace vcal {
 namespace vc = strata::program::vram_calib;
 struct Live { int dev = -1; long long seal_free = -1, low_free = -1; };
 struct State {
-    bool on = false, loaded = false; std::string path; long long margin_mib = vc::kDefaultMarginMib;
+    bool on = false, loaded = false, from_binary = false; std::string path, binary_path; long long margin_mib = vc::kDefaultMarginMib;
     std::vector<vc::Card> prev, cur; std::vector<Live> live; std::vector<std::pair<int, long long>> marks;
 };
 inline State& st() { static State s; return s; }
@@ -3299,7 +3299,8 @@ inline void init(int argc, char** argv) {
     const char* home = std::getenv("HOME");
     const std::filesystem::path dir = std::filesystem::path(xdg != nullptr && *xdg ? std::string(xdg) : std::string(home != nullptr ? home : "/tmp") + "/.cache") / "strata" / "vram-calib";
 #endif
-    const std::string key = vc::file_key(exe_id(argv), std::vector<std::string>(argv + 1, argv + argc), vc::sizing_env(envp));
+    const std::string id = exe_id(argv);
+    const std::string key = vc::file_key(id, std::vector<std::string>(argv + 1, argv + argc), vc::sizing_env(envp));
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     s.path = (dir / (key + ".txt")).string();
@@ -3310,8 +3311,24 @@ inline void init(int argc, char** argv) {
         s.prev = vc::parse(text);
     }
     s.loaded = !s.prev.empty();
-    std::fprintf(stderr, "strata vram: STRATA_VRAM_CALIB=1: %s (%s)\n", s.loaded ? "calibration found, the caches keep what it measured free" :
-                 "no calibration for this binary and config yet: sized as before, measured once everything is loaded", s.path.c_str());
+    // no calibration for this configuration, one for this binary: start from it (a first start then sizes its caches as a
+    // calibrated start does, and writes this configuration's own measurement; a configuration that needs more is reported once
+    // everything is loaded, and the margin pays for it until the next start)
+    s.binary_path = (dir / (vc::binary_key(id) + ".txt")).string();
+    if (!s.loaded)
+        if (std::FILE* f = std::fopen(s.binary_path.c_str(), "rb")) {
+            std::string text; char buf[512]; size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+            std::fclose(f);
+            s.prev = vc::parse(text);
+            s.loaded = s.from_binary = !s.prev.empty();
+        }
+    if (s.from_binary)
+        std::fprintf(stderr, "strata vram: STRATA_VRAM_CALIB=1: no calibration for this config yet: sized from this binary's last "
+                             "one (%s), measured once everything is loaded (%s)\n", s.binary_path.c_str(), s.path.c_str());
+    else
+        std::fprintf(stderr, "strata vram: STRATA_VRAM_CALIB=1: %s (%s)\n", s.loaded ? "calibration found, the caches keep what it measured free" :
+                     "no calibration for this binary and config yet: sized as before, measured once everything is loaded", s.path.c_str());
 }
 /// MiB to keep free on `dev` after its cache (need + grow + margin), or -1 without a calibration for it
 inline long long reserve_mib(int dev) {
@@ -3321,12 +3338,18 @@ inline long long reserve_mib(int dev) {
 inline void save() {
     const State& s = st();
     if (!s.on || s.path.empty() || s.cur.empty()) return;
-    const std::string tmp = s.path + ".tmp", text = vc::format(s.cur);
-    if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
-        std::fwrite(text.data(), 1, text.size(), f);
-        std::fclose(f);
-        std::error_code ec;
-        std::filesystem::rename(tmp, s.path, ec);
+    const std::string text = vc::format(s.cur);
+    bool grown = false;   // the binary's file too, once a request has shown the growth (a measurement without it would size short)
+    for (const vc::Card& c : s.cur) grown = grown || c.grow > 0;
+    for (const std::string& path : {s.path, grown ? s.binary_path : std::string()}) {
+        if (path.empty()) continue;
+        const std::string tmp = path + ".tmp";
+        if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+            std::error_code ec;
+            std::filesystem::rename(tmp, path, ec);
+        }
     }
 }
 inline long long free_on(int dev) {

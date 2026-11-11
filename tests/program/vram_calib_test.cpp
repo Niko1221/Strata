@@ -33,6 +33,16 @@ int main() {
     char* envp[] = {e0, e1, e2, e3, e4, nullptr};
     const std::vector<std::string> se = sizing_env(envp);
     check(se == env, "sizing_env keeps the STRATA_* variables, sorted, without PATH or the calibration's own switches");
+    char m0[] = "STRATA_B=2", m1[] = "STRATA_TRACE=1", m2[] = "STRATA_A=1", m3[] = "STRATA_DECODE_TIMING=1", m4[] = "STRATA_VERIFY_NODES=2",
+         m5[] = "STRATA_DUMMY_NODES=8", m6[] = "STRATA_PREFILL_TIMING=1", m7[] = "STRATA_DISPATCH_REPORT=/tmp/d.json";
+    char* envm[] = {m0, m1, m2, m3, m4, m5, m6, m7, nullptr};
+    check(sizing_env(envm) == env, "the measurement-only switches do not change the key");
+    check(measure_only("STRATA_TRACE=1") && !measure_only("STRATA_TRACE_X=1") && !measure_only("STRATA_TRACEX=1"),
+          "measure_only matches the whole name");
+    check(!measure_only("STRATA_VERIFY_PROFILE=1"), "a switch that allocates (the verifier's profile buffers) is not measurement-only");
+    check(binary_key("123:456") == binary_key("123:456") && binary_key("123:456") != binary_key("123:457"),
+          "the binary's file follows the binary alone");
+    check(binary_key("123:456").rfind("binary-", 0) == 0 && binary_key("123:456").size() == 7 + 16, "binary-<16 hex>");
 
     // the file round-trips
     const std::vector<Card> cards = {{0, 361 * MiB, 104 * MiB}, {1, 556 * MiB, 131 * MiB}};
