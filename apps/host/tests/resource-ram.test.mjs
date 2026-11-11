@@ -230,3 +230,11 @@ test('0.2.3 tuning: Work keeps a fifth of the card but no more than 1536 MiB on 
   assert.equal(resourceSettings({ gpu: 0, args: [], vision: { gpu: true } }, card(12), 'work').vram_reserve_mib, 2048);
   assert.equal(resourceSettings({ gpu: 0, args: ['--vram-reserve-mib', '3000'], user_args: ['--vram-reserve-mib', '3000'] }, card(12), 'work').vram_reserve_mib, 3000, 'the person\'s own number is kept');
 });
+
+test('an engine that refused the prompt chunk at the start is not retried with a memory setting: the same chunk would fail again', () => {
+  const line = 'strata generate: a 32768-token prompt chunk does not fit beside the 52.1 GiB expert cache on this GPU (a stream could not be created): use --prefill auto:16384, or a smaller --expert-cache';
+  const withBudget = { ...config, args: [...config.args, '--resident-budget-gib', '40'] };
+  assert.equal(saferStart(withBudget, pc64, iq3s, `server_exited (exit code 2): ${line}`), null);
+  assert.equal(saferStart(config, pc64, iq3s, `Engine stopped (exit code 2): ${line}`), null);
+  assert.ok(saferStart(withBudget, pc64, iq3s, 'server_exited: memory guard: 1.9 GiB free'), 'a real memory stop still gets its safer try');
+});

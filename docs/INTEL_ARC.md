@@ -53,7 +53,7 @@ engine package. Otherwise [build the image yourself](DOCKER.md#build-it-yourself
   model folders that contain `native_experts.txt` (IQ3_XXS, IQ3_S, NVFP4, Unsloth). An older Q2_0 folder has no such file, and its
   CPU kernel needs AVX-512. With that folder the engine stops with "this CPU cannot run the expert kernel", and `strata doctor`
   warns about it before the start. Building the model folder again with `strata setup` (or `tools/iq_pack.py`) fixes it.
-- For a source build without Docker: **Intel oneAPI** with the DPC++ compiler (`icpx`, 2025.3 or newer) and **oneMKL**
+- For a source build without Docker: **Intel oneAPI** with the DPC++ compiler (`icpx`, **2026.1 or newer**; 2025.3 does not build the engine) and **oneMKL**
   (about 5 GB), `cmake` 3.24+, `ninja`, `git`, Python 3. The build fetches ggml unless you point `STRATA_GGML_DIR` at a
   llama.cpp checkout.
 - For `./setup.sh --backend sycl`: **Docker** and the GPU driver, nothing else from the list above. `sycl/setup_intel.py`

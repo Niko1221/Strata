@@ -139,6 +139,7 @@ const char* finish_name(Finish f) {
 
 Session::Session(Engine& e, int K, int lookup_k, std::vector<int> eos, int turn, std::shared_ptr<ConvCache> cache, int lane)
     : e_(e), K_(K), LK_(lookup_k), eos_(std::move(eos)), turn_(turn), lane_(lane), cache_(std::move(cache)) {
+    speculate = env_int("FNX_SPECULATE", 1) != 0;   // 0: one row a window, no drafts (the reference a speculative run must equal; tests)
     if (K_ < 1 || K_ + 1 > MAXT) throw std::runtime_error("session: K must be 1.." + std::to_string(MAXT - 1));
     if (LK_ < 0 || LK_ + 1 > MAXT) throw std::runtime_error("session: lookup drafts must be 0.." + std::to_string(MAXT - 1));
     if (!cache_) throw std::runtime_error("session: no cache");
@@ -415,12 +416,12 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
     const bool adapt = env_int("FNX_DRAFT_ADAPT", 1) != 0;
     constexpr double ROUND_MS = 11.2, DRAFT_ROW_MS = 1.3, DRAFT_CALL_MS = 0.65, DECAY = 0.97;
     std::vector<double> tried(MAXT, 1.0), stood(MAXT, 0.7);   // a prior of 70% at every position
-    auto chain_len = [&]() {
+    auto chain_len = [&](double call_ms) {
         int best = K_;
         double best_rate = -1.0, expect = 1.0, reach = 1.0;
         for (int k = 1; k <= K_; ++k) {   // at least d1: its acceptance stays measured (it pays above ~8% anyway)
             reach *= stood[(size_t) k - 1] / tried[(size_t) k - 1], expect += reach;
-            const double rate = expect / (ROUND_MS + k * DRAFT_ROW_MS + std::max(0, k - 1) * DRAFT_CALL_MS);
+            const double rate = expect / (ROUND_MS + k * DRAFT_ROW_MS + std::max(0, k - 1) * call_ms);
             if (rate > best_rate) best_rate = rate, best = k;
         }
         return best;
@@ -449,6 +450,10 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         }
         return d;
     };
+    // DFlash2 in place of the draft layer: one drafter round after each window gives up to 7 fixed drafts with the selector's probabilities; the window
+    // keeps the drafts while the product of those probabilities stays at or over FNX_DF2_CONF (as the main engine's --draft-conf), at most K
+    const bool df2 = e_.df2_on();
+    const double df2_conf = env_num("FNX_DF2_CONF", 0.35);
     Finish fin = Finish::length;
     for (;;) {
         if (stop && stop->load()) {
@@ -556,9 +561,39 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         // the draft layer reads the kept rows either way (its cells stay current for later turns)
         std::vector<int> pen_seq;   // the penalty window before the next token: the context's last pen_last_n
         if (pen_drafts) pen_seq.assign(ctx.size() > (size_t) s.pen_last_n ? ctx.end() - s.pen_last_n : ctx.begin(), ctx.end());
+        mtp_round = false;
+        if (df2) {
+            if (!speculate) {
+                drafts.clear(), qs.clear();
+                continue;
+            }
+            std::vector<Engine::Df2Req> rq(1);
+            rq[0].lane = lane_, rq[0].row0 = 0, rq[0].used = used, rq[0].pos0 = p, rq[0].anchor = x;
+            e_.df2_draft(rq);
+            st.draft_ms += e_.last_df2_ms, ++st.draft_calls;
+            const int d1 = rq[0].tokens[0];
+            drafts = lookup(ctx, d1);   // a lookup that begins with the drafter's first draft goes on from there, as it does behind the draft layer's
+            if (!drafts.empty()) {
+                ++st.lookup_rounds;
+                qs.assign(drafts.size(), Dist{});
+                continue;
+            }
+            int kmax = 0;
+            double cum = 1.0;
+            for (; kmax < std::min(K_, df2::kDrafts); ++kmax) {
+                cum *= (double) rq[0].probs[kmax];
+                if (cum < df2_conf) break;
+            }
+            // as the draft layer's chain: the length follows how often each position stood (a draft after the first costs a verify row, no call),
+            // every 4th round one draft longer so the position past the chosen length stays measured
+            const int k = !adapt ? kmax : std::min(kmax, chain_len(0.0) + (++mtp_chains % 4 ? 0 : 1));
+            mtp_round = k > 0;
+            drafts.assign(rq[0].tokens, rq[0].tokens + k);
+            qs.assign(drafts.size(), Dist{});
+            continue;
+        }
         Dist q1;
         const int d1 = draft_one(used, true, 0, std::vector<int>(o.begin(), o.begin() + used), p, pen_seq, q1);
-        mtp_round = false;
         if (!speculate) {
             drafts.clear(), qs.clear();
             continue;
@@ -573,7 +608,7 @@ Finish Session::generate(int max_new, const Sampling& s, const std::function<voi
         // the MTP chain: each draft from the draft layer's own row for the one before
         // every 4th chain one draft longer, so the position past the chosen length stays measured (the full K every 4th
         // chain cost prose ~0.9 ms a round)
-        const int k = !adapt ? K_ : std::min(K_, chain_len() + (++mtp_chains % 4 ? 0 : 1));   // every 16th: code stuck at ~3
+        const int k = !adapt ? K_ : std::min(K_, chain_len(DRAFT_CALL_MS) + (++mtp_chains % 4 ? 0 : 1));   // every 16th: code stuck at ~3
         mtp_round = true;
         drafts = {d1}, qs = {std::move(q1)};
         for (int j = 1; j < k; ++j) {

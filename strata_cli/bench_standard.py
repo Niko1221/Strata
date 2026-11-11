@@ -13,6 +13,7 @@ timings are saved without home folders, host names, private addresses or keys.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import json
@@ -287,7 +288,7 @@ def stream_chat(target: Target, spec: dict, model: str | None, *, timeout_s: flo
         raw["interrupted"] = True
         raw["error"] = {"kind": "cancelled", "message": "cancelled by the operator"}
     except (OSError, http.client.HTTPException, ValueError) as exc:
-        if raw["timed_out"]:
+        if raw["timed_out"] or isinstance(exc, TimeoutError):   # the socket's own timeout can fire just before the timer does (Windows)
             raw["error"] = {"kind": "timeout", "message": f"no complete answer within {timeout_s:g} seconds"}
         else:
             raw["error"] = {"kind": "connection_" + type(exc).__name__, "message": str(exc)[:200] or type(exc).__name__}
@@ -682,8 +683,18 @@ def start_engine(ref: str, target: Target, log_path: Path, log, timeout_s: float
         kwargs["start_new_session"] = True
     proc = subprocess.Popen(command, cwd=str(root), stdout=handle, stderr=subprocess.STDOUT, **kwargs)
     proc._strata_log = handle                              # closed by stop_engine
+    if os.name == "nt":
+        # Windows has no process group to signal: the engine tree is put in a job object this run owns, which ends every process in it in one call
+        # and cannot be refused for a single member (a per-process taskkill was "Access is denied" on a tree this very user started, #4260)
+        from serve import winjob
+        proc._strata_job = winjob.contain(proc)
     log("starting the engine (the model load is not part of the benchmark time) ...")
-    if not _start_wait(target, proc, timeout_s, log, log_path):
+    try:
+        ready = _start_wait(target, proc, timeout_s, log, log_path)
+    except BaseException:                                  # Ctrl+C (or a SIGTERM turned into one) while the model loads: the caller never gets `proc`, so end it here
+        stop_engine(proc)
+        raise
+    if not ready:
         stuck = stop_engine(proc)
         tail = ""
         try:
@@ -713,6 +724,38 @@ def engine_log_since(console_log: Path, run_log: Path | None, offset: int) -> Pa
     return console_log
 
 
+@contextlib.contextmanager
+def term_is_interrupt():
+    """While a run owns an engine it started, SIGTERM (and Ctrl+Break on Windows) end the run the way Ctrl+C does: the `finally` that stops the engine
+    runs. Without this a plain `kill` (a service stop, a script's timeout, the app's Stop) ended only the runner and left the server and the engine
+    holding the port and the GPU. Main thread only; the earlier handlers come back afterwards."""
+    import signal
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def handler(signum, frame):
+        raise KeyboardInterrupt
+
+    saved = []
+    for name in ("SIGTERM", "SIGBREAK"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            saved.append((number, signal.signal(number, handler)))
+        except (ValueError, OSError):
+            pass
+    try:
+        yield
+    finally:
+        for number, old in saved:
+            try:
+                signal.signal(number, old)
+            except (ValueError, OSError, TypeError):
+                pass
+
+
 def stop_engine(proc) -> str | None:
     """Stop only the process this run started. -> None when it is gone, else a plain sentence on why it may still be running
     (a failed taskkill / signal, or a process that outlives the wait): the caller must not report a normal finish then, because
@@ -723,15 +766,30 @@ def stop_engine(proc) -> str | None:
     try:
         if proc.poll() is None:
             if os.name == "nt":
-                try:
-                    done = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
-                    if done.returncode != 0 and proc.poll() is None:
-                        said = (done.stderr or done.stdout or b"").decode("utf-8", errors="replace").strip()
-                        problem = f"taskkill for process {proc.pid} failed (exit {done.returncode}){': ' + said[:200] if said else ''}"
-                except subprocess.TimeoutExpired:
-                    problem = f"taskkill for process {proc.pid} did not finish in 60 s"
-                except OSError as error:
-                    problem = f"taskkill could not run for process {proc.pid}: {error}"
+                # 1. the job this run put the engine in (ends the whole tree at once); 2. taskkill of the tree; 3. the process itself.
+                # The next step runs only when the one before left the process running, and a refusal is reported only if all of them fail.
+                if getattr(proc, "_strata_job", False):
+                    from serve import winjob
+                    winjob.terminate()
+                    try:
+                        proc.wait(10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if proc.poll() is None:
+                    try:
+                        done = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+                        if done.returncode != 0 and proc.poll() is None:
+                            said = (done.stderr or done.stdout or b"").decode("utf-8", errors="replace").strip()
+                            problem = f"taskkill for process {proc.pid} failed (exit {done.returncode}){': ' + said[:200] if said else ''}"
+                    except subprocess.TimeoutExpired:
+                        problem = f"taskkill for process {proc.pid} did not finish in 60 s"
+                    except OSError as error:
+                        problem = f"taskkill could not run for process {proc.pid}: {error}"
+                if proc.poll() is None:
+                    try:
+                        proc.kill()                          # this run's own child, by the handle it holds
+                    except OSError:
+                        pass
             else:
                 import signal
                 try:
@@ -751,6 +809,8 @@ def stop_engine(proc) -> str | None:
                 pass
             if proc.poll() is None:
                 problem = (problem + "; " if problem else "") + f"process {proc.pid} is still running 30 s after it was told to stop"
+            else:
+                problem = None                               # it is gone: an earlier refusal that a later step got around is not news
     finally:
         handle = getattr(proc, "_strata_log", None)
         if handle is not None:
@@ -947,6 +1007,7 @@ def run(target: Target, out: Path | None, *, out_root: Path | None = None, optio
                        "request_checks": {rid: v for rid, v in extras.items()},
                        "optional_stage_skipped": skipped_optional,
                        "api_key_sent": bool(target.key)}}
+    doc = facts.redact_document(doc, redact)      # results.json gets what the README and the other files get (#4484)
     if doc["run"]["optional_duration_s"] is None:
         why.add("/run/optional_duration_s", "the optional concurrency stage was not selected" if not optional_concurrency
                 else "the optional concurrency stage did not run")

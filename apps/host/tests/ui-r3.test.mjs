@@ -33,8 +33,8 @@ test('2: pictures are on by default; a missing reader says nothing wordy and sav
   assert.match(host, /const noReader=args\.visionUnavailable===true;/);
   assert.match(host, /const visionPreferences=args\.vision!==undefined&&!noReader\?/, 'nothing is saved when the reader is missing');
   assert.match(host, /runtimeVision\(config,noReader\?'no':args\.vision\)/);
-  // An "off" that sits on a model without the picture files is not a choice of the person: it starts on.
-  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && installed\.visionPrepared !== false\) return 'no'/);
+  // An old "off" (no marker) that sits on a model without the picture files is not a choice of the person: it starts on.
+  assert.match(readFileSync(new URL('../src/lib/pictures-choice.ts', import.meta.url), 'utf8'), /installed\.visionEnabled === false && \(installed\.visionPrepared !== false \|\| installed\.visionChosen === true\)\) return 'no'/);   // since 0.2.14 an off with the marker (ui_vision_chosen) holds too: tests/pictures-hold.test.mjs
 });
 
 test('6: the conversation context opens at 128K for every configuration, or the model largest size when that is smaller; a warning, never a refusal', async () => {
@@ -102,11 +102,11 @@ test('13: Load model has no pop-up: the size and the warnings are in the page, a
   assert.match(load, /if \(planned\?\.plan\?\.disk_short\) \{\s*setPlan\(planned\);\s*return;\s*\}/, 'safety: not enough disk, nothing starts');
   assert.match(load, /kind: 'install', args: downloadValues/, 'otherwise it starts at once');
   assert.match(models, /\{tr\(plan\?\.plan\?\.disk_short \? <ErrorNotice message=\{plan\.plan\.disk_short\}\/> : null\)\}/, 'the disk message is in the page');
-  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(nowDrafter === 'mtp' \? "Choosing MTP downloads its drafter: about \{0\} GB, once\." : "Choosing DFlash2 downloads its drafter/, 'the extra download is said in the page while it runs');
+  assert.match(models, /active && drafterGb \? <p className="small muted native-spill-note"><Icon name="info" size=\{16\}\/>\{tr\(nowDrafter === 'mtp' \? \(splitCards && drafting === 'auto' \? "Auto uses the all-cards split engine with the MTP draft layer: about \{0\} GB to download, once\." : "Choosing MTP downloads its drafter: about \{0\} GB, once\."\) : "Choosing DFlash2 downloads its drafter/, 'the extra download is said in the page while it runs');
   assert.match(models, /className="native-download-size small muted">\{tr\("\{0\} download", \[sizeGb\(selectedSize\.download_gb\)\]\)\}/, 'the download size sits beside the button');
-  // The warnings for a version that does not fit stay inline (item 5): SSD streaming and Doesn't fit under the version list.
+  // The warnings for a version that does not fit stay inline (item 5): may run slower under the version list.
   assert.match(models, /fitState === 'ssd' \? <p className="small muted native-spill-note"><Icon name="disk" size=\{16\}\/>/);
-  assert.match(models, /fitState === 'no' \? <p className="small muted native-spill-note"><Icon name="warning" size=\{16\}\/>/);
+  assert.ok(!/fitState === 'no'|Doesn't fit/.test(models), "no Doesn't fit under the version list any more");
 });
 
 test('9: a chat that is working shows it on its sidebar row, and the model chip says which chat when it is elsewhere', () => {

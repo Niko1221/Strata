@@ -42,7 +42,7 @@ class LlamaSourceArchive(unittest.TestCase):
         stack.enter_context(mock.patch.object(setup, "ROOT", self.root))
         # a plain path: download() copies it (file:// plus a Windows drive letter is not one)
         stack.enter_context(mock.patch.object(setup, "LLAMA_CPP_ZIP", str(self.source)))
-        stack.enter_context(mock.patch.object(setup.urllib.request, "urlopen",
+        stack.enter_context(mock.patch.object(setup.netpolicy, "urlopen",
                                              side_effect=AssertionError("test must not use the network")))
         stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
 
