@@ -5910,6 +5910,70 @@ class Service:
         return self.tok.encode(prompt, parse_special=True, plain=plain) if plain else \
             self.tok.encode(prompt, parse_special=True)
 
+    @staticmethod
+    def _fetch_images(images, fetched, cancel):
+        """An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
+        for as long as urlopen waited.  `fetched`: URLs `_note_unreadable_tool_images` already downloaded."""
+        def fetch(src):
+            if cancel is not None and cancel.is_set():
+                raise ClientGone()
+            if src.startswith(("http://", "https://")):
+                return fetched[src] if fetched is not None and src in fetched else Vision.download(src)
+            return src
+        return [fetch(src) for src in images]
+
+    def expand_image_tokens(self, images, ids, cancel=None, fetched=None):
+        """-> (ids, encoded).  The rendered prompt's ids with each image placeholder replaced by the run of image
+        tokens its picture takes - the prompt a request's answer would read.  `encoded`: the encoder's
+        (embeddings file, token count) pairs, which prepare() combines into the GENI file.  Shared by `prepare()`
+        and POST /tokenize, so both count the same prompt.  DeepSeek-V4.1's own vision tower (DsPictures) is not
+        counted here: the caller refuses such requests."""
+        if self.offline and any(src.startswith(("http://", "https://")) for src in images):
+            raise ValueError("offline mode cannot download an image URL; send a data: image instead")
+        if self.vision is None:
+            if self.family == "deepseek41":
+                raise ValueError("this server was started without pictures for DeepSeek (--vision off, or a pack made without the "
+                                 "picture reader): run strata launch again without --vision off to read images")
+            raise ValueError("this server was started without the vision encoder (run setup again and choose "
+                             "'vision'), so it cannot read images")
+        if isinstance(self.vision, DsPictures):
+            raise ValueError("token counting cannot read this server's DeepSeek-V4.1 pictures; use /v1/chat/completions "
+                             "or /v1/messages")
+        images = self._fetch_images(images, fetched, cancel)
+        pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+        start = self.tok.encode(VISION_START, parse_special=True)[0]
+        # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
+        # run on the GPU at the same time - an encode during a running request left that request stuck at
+        # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
+        # same FIFO as the requests.
+        with self._turn(cancel):
+            if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
+                self._vision_up()
+            try:
+                encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                           else [self.vision.encode(src) for src in images])
+            finally:
+                self.last_image_at = time.time()
+        # one placeholder per image -> one per image token.  Only the markers the template writes for an image
+        # (right after the vision start) are images: the same text inside a message (an agent reading these docs,
+        # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+        literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+        out, k = [], 0
+        for j, t in enumerate(ids):
+            if t == pad and j > 0 and ids[j - 1] == start:
+                # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                if k == len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                out += [pad] * encoded[k][1]
+                k += 1
+            elif t == pad:
+                out += literal
+            else:
+                out.append(t)
+        if k != len(encoded):
+            raise ValueError("the prompt and its images do not match")
+        return out, encoded
+
     @contextlib.contextmanager
     def _turn(self, cancel=None):
         """The engine's single turn (self.fifo) for an image encode.  #1999: a client that leaves while this request
@@ -6005,55 +6069,16 @@ class Service:
                                      "picture reader): run strata launch again without --vision off to read images")
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
-            # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
-            # for as long as urlopen waited.
-            def fetch(src):
-                if cancel is not None and cancel.is_set():
-                    raise ClientGone()
-                return fetched[src] if src in fetched else Vision.download(src) \
-                    if src.startswith(("http://", "https://")) else src
-            images = [fetch(src) for src in images]
             if isinstance(self.vision, DsPictures):
                 # DeepSeek-V4.1: the engine has its own vision tower.  The pictures go to it as raw RGB in the file of a GENI line
                 # (serve/ds_pictures.py); each template placeholder becomes the run of image tokens its picture takes.
+                images = self._fetch_images(images, fetched, cancel)
                 ids, ds_file = self.vision.build(ids, [Vision.load(src) if isinstance(src, str) else src for src in images])
                 self.embeddings.path = ds_file
                 self.embeddings.keys = None
                 images, ds_pics = [], True
-        if images:
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
-            # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
-            # run on the GPU at the same time - an encode during a running request left that request stuck at
-            # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
-            # same FIFO as the requests.
-            with self._turn(cancel):
-                if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
-                    self._vision_up()
-                try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
-                finally:
-                    self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
-            if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
-            ids = out
+            else:
+                ids, encoded = self.expand_image_tokens(images, ids, cancel=cancel, fetched=fetched)
         ctx = self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
