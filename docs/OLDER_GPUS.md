@@ -23,7 +23,7 @@ unchanged. Numbers are the reporters' own, on one machine each, unless the text 
 | --- | --- | --- | --- |
 | Quadro M6000, GTX 900 series (Maxwell) | 5.2 | a source build with CUDA 12.x | Opt-in, one reporter, [below](#maxwell-sm_52). No native half-precision arithmetic. Not in the ready-made CUDA 12 engine |
 | Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32; seven scheduling switches on by default ([below](#tesla-p100-sm_60)); opt-in `STRATA_Q8_SM60=1` ([below](#pascal-gp100-a-q8_0-decode-kernel-opt-in)) |
-| Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there); dense weights dequantized by a wide kernel; expert mode 8 and its own interleaved-matvec table; opt-in `STRATA_DENSE_F32=1` ([below](#tesla-p40-sm_61-what-was-measured-and-changed)) |
+| Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there); dense weights dequantized by a wide kernel; expert mode 8 and its own interleaved-matvec table; opt-in `STRATA_DENSE_F32=1` ([below](#tesla-p40-sm_61-what-was-measured-and-changed)); DeepSeek-V4.1-Flash runs on it too, from the CUDA 12 source image ([below](#deepseek-v41-flash-on-a-p40-2026-11-10)) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores; prompt attention on `mma.m8n8k4`; a leaner attention kernel. See [NVIDIA_V100.md](NVIDIA_V100.md) |
 | RTX 20 (Turing) | 7.5 | **supported**, the ready-made engine | opt-in `STRATA_BF16_TC=1` runs the BF16 projections on the FP16 tensor cores |
 
@@ -280,6 +280,16 @@ Two things to know when measuring on such a card:
 
 Profiling switches: `STRATA_PREFILL_TIMING=1`, `STRATA_DECODE_TIMING=1`, `STRATA_VERIFY_PROFILE=1`.
 
+### DeepSeek-V4.1-Flash on a P40 (2026-11-10)
+
+The DeepSeek engine (`strata-dsv41`) builds for this card in the CUDA 12.9.2 source image (`Dockerfile.dsv41`,
+[DOCKER.md](DOCKER.md)) - CUDA 13 has no code for sm_60 and sm_61. Measured there (ist-das-2.25bpw,
+`strata bench run` standard-v1, one P40, a 126 GB RAM box): decode 3.4-3.6 tokens a second, prompts 93 tokens a
+second at 4K and 145 at 16K, 12 of 12 sanity checks. The engine keeps its block of dense layers on the card
+(22.1 of 24 GB used) and reads the experts in place from the model files behind a 112 GB RAM store; the container
+held 100 GB, so the card wants a box with plenty of RAM - with less it runs, but more of the experts come from
+the SSD (see [DEEPSEEK41.md](DEEPSEEK41.md#where-it-goes)). The report: [bench results](../bench/results/2026-11-10-dsv41-p40-cuda12/README.md).
+
 ## Quadro RTX 8000 and other Turing cards
 
 Turing (sm_75) has FP16 tensor cores but no native BF16 or TF32 tensor cores. Two existing, opt-in switches are worth comparing
@@ -336,6 +346,7 @@ Dated numbers. Each row is one machine and one engine version, as labelled. They
 | PH402 (4 GP100 dies) | IQ3_XXS, engine 0.1.40.2 | decode 28.3 -> 38.9 tok/s with `STRATA_Q8_SM60=1` and a Q8_0 dense shard |
 | Tesla P40 | IQ3_S, engine 0.1.30 (#395) | prompt 217-374 tok/s; decode 30-33 tok/s |
 | Tesla P40 | IQ3_S, engine 0.1.43.1 with the sm_61 changes | prompt 255 tok/s at 565 tokens (was 205); decode 37-38 tok/s (was 34-35); with `STRATA_DENSE_F32=1` 464-474 tok/s at 7K tokens (was 360-432) |
+| Tesla P40 | DeepSeek-V4.1-Flash ist-das-2.25bpw, dsv41 engine 0.1.59.1 built on CUDA 12.9.2 ([report](../bench/results/2026-11-10-dsv41-p40-cuda12/README.md)) | prompt 93 (4K) / 145 (16K) tok/s; decode 3.4-3.6 tok/s; 12 of 12 sanity checks |
 | V100-PCIE-32GB | UD-IQ4_XS (#600) | prompt 1,123-1,251 tok/s |
 | V100 32GB | IQ2_XS (#540) | prompt +22% |
 | RTX 2080 Ti | Q2_0 (#655) | prompt +15-18% with `STRATA_BF16_TC=1` |

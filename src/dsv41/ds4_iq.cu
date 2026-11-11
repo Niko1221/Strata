@@ -9,6 +9,7 @@
 #endif
 #include "ds4_numerics.cuh"
 #include "ds4_experts_rule.hpp"
+#include "strata/kernels/dp4a.hpp"   // STRATA_DP4A: __dp4a with the sm_60 fallback (an experimental Pascal build)
 
 #include <cuda_fp16.h>
 #if !defined(STRATA_USE_HIP)
@@ -356,24 +357,24 @@ __device__ __forceinline__ void decode(const uint8_t* __restrict__ row, int kb, 
 // its scales in F32 (explicit roundings: every instantiation the same bits)
 template <int T>
 __device__ __forceinline__ float sub_dot(const Sub& s, const int4& xa, const int4& xb) {
-    int lo = __dp4a(s.q[0], xa.x, 0);
-    lo = __dp4a(s.q[1], xa.y, lo);
-    lo = __dp4a(s.q[2], xa.z, lo);
-    lo = __dp4a(s.q[3], xa.w, lo);
-    int hi = __dp4a(s.q[4], xb.x, 0);
-    hi = __dp4a(s.q[5], xb.y, hi);
-    hi = __dp4a(s.q[6], xb.z, hi);
-    hi = __dp4a(s.q[7], xb.w, hi);
+    int lo = STRATA_DP4A(s.q[0], xa.x, 0);
+    lo = STRATA_DP4A(s.q[1], xa.y, lo);
+    lo = STRATA_DP4A(s.q[2], xa.z, lo);
+    lo = STRATA_DP4A(s.q[3], xa.w, lo);
+    int hi = STRATA_DP4A(s.q[4], xb.x, 0);
+    hi = STRATA_DP4A(s.q[5], xb.y, hi);
+    hi = STRATA_DP4A(s.q[6], xb.z, hi);
+    hi = STRATA_DP4A(s.q[7], xb.w, hi);
     float v = __fmul_rn(s.d, (float) (s.s0 * lo + s.s1 * hi));
     if constexpr (Ty<T>::MIN) {
-        int sl = __dp4a(0x01010101, xa.x, 0);
-        sl = __dp4a(0x01010101, xa.y, sl);
-        sl = __dp4a(0x01010101, xa.z, sl);
-        sl = __dp4a(0x01010101, xa.w, sl);
-        int sh = __dp4a(0x01010101, xb.x, 0);
-        sh = __dp4a(0x01010101, xb.y, sh);
-        sh = __dp4a(0x01010101, xb.z, sh);
-        sh = __dp4a(0x01010101, xb.w, sh);
+        int sl = STRATA_DP4A(0x01010101, xa.x, 0);
+        sl = STRATA_DP4A(0x01010101, xa.y, sl);
+        sl = STRATA_DP4A(0x01010101, xa.z, sl);
+        sl = STRATA_DP4A(0x01010101, xa.w, sl);
+        int sh = STRATA_DP4A(0x01010101, xb.x, 0);
+        sh = STRATA_DP4A(0x01010101, xb.y, sh);
+        sh = STRATA_DP4A(0x01010101, xb.z, sh);
+        sh = STRATA_DP4A(0x01010101, xb.w, sh);
         v = __fsub_rn(v, __fadd_rn(__fmul_rn(s.m0, (float) sl), __fmul_rn(s.m1, (float) sh)));
     }
     return v;
@@ -815,10 +816,17 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
 
 #if !defined(STRATA_USE_HIP)
 // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
+// (wmma is declared in <mma.h> only for sm_70+ device code; the kernel still compiles on every pass - the launcher
+// references it on every pass - and stays an empty body below sm_70, where the runtime gate refuses to launch it)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 namespace wm = nvcuda::wmma;
+#endif
 constexpr int kLdT = 40;
 template <int T, bool GATE_UP>
 __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+    (void)a;   // (never launched below sm_70: the gate says no before the launch)
+#else
     struct Tiles {
         __half x[BM][kLdT], wg[BN][kLdT], wu[GATE_UP ? BN : 1][kLdT];
     };
@@ -899,6 +907,7 @@ __global__ void __launch_bounds__(kThreads) set_tc_kernel(const SetArgs a) {
         if (GATE_UP) a.h[lr * a.ldo + c0 + c] = __half_as_ushort(__float2half_rn(swiglu(O.g[r][c], O.u[r][c], a.limit)));
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
+#endif
 }
 #endif
 

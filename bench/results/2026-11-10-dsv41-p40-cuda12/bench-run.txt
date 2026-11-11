@@ -1,0 +1,45 @@
+[1/22] warmup (up to 128 tokens)
+    truncated: prompt 3.769206 tok/s, decode 3.310471 tok/s, first token 5.654084 s
+[2/22] performance-short-r1 (up to 512 tokens)
+    truncated: prompt 7.175698 tok/s, decode 3.396996 tok/s, first token 5.622515 s
+[3/22] performance-prompt-4k-r1 (up to 512 tokens)
+    truncated: prompt 92.957842 tok/s, decode 3.802887 tok/s, first token 30.508974 s
+[4/22] performance-prompt-16k-r1 (up to 512 tokens)
+    truncated: prompt 144.342347 tok/s, decode 3.699178 tok/s, first token 74.447467 s
+[5/22] performance-short-r2 (up to 512 tokens)
+    truncated: prompt 6.646154 tok/s, decode 3.499373 tok/s, first token 6.158949 s
+[6/22] performance-prompt-4k-r2 (up to 512 tokens)
+    truncated: prompt 93.691229 tok/s, decode 3.603163 tok/s, first token 30.238315 s
+[7/22] performance-prompt-16k-r2 (up to 512 tokens)
+    completed: prompt 145.058669 tok/s, decode 3.400316 tok/s, first token 74.035694 s
+[8/22] performance-short-r3 (up to 512 tokens)
+    truncated: prompt 6.672021 tok/s, decode 3.396619 tok/s, first token 6.121721 s
+[9/22] performance-prompt-4k-r3 (up to 512 tokens)
+    truncated: prompt 76.994801 tok/s, decode 3.499279 tok/s, first token 30.256787 s
+[10/22] performance-prompt-16k-r3 (up to 512 tokens)
+    completed: prompt 158.700319 tok/s, decode 3.60163 tok/s, first token 74.06293 s
+[11/22] sanity-I1 (up to 2048 tokens)
+    completed: prompt 9.053106 tok/s, decode 4.4459 tok/s, first token 6.519241 s
+[12/22] sanity-I2 (up to 2048 tokens)
+    completed: prompt 9.722968 tok/s, decode 4.07498 tok/s, first token 6.892868 s
+[13/22] sanity-I3 (up to 2048 tokens)
+    completed: prompt 9.715077 tok/s, decode 4.31729 tok/s, first token 6.280954 s
+[14/22] sanity-I4 (up to 2048 tokens)
+    completed: prompt 9.995716 tok/s, decode 3.614458 tok/s, first token 4.904211 s
+[15/22] sanity-R1 (up to 2048 tokens)
+    completed: prompt 99.216228 tok/s, decode 3.580729 tok/s, first token 30.333523 s
+[16/22] sanity-R2 (up to 2048 tokens)
+    completed: prompt 99.300607 tok/s, decode 3.770495 tok/s, first token 30.317387 s
+[17/22] sanity-R3 (up to 2048 tokens)
+    completed: prompt 162.585085 tok/s, decode 3.505017 tok/s, first token 74.236617 s
+[18/22] sanity-R4 (up to 2048 tokens)
+    completed: prompt 162.619035 tok/s, decode 4.235965 tok/s, first token 74.269737 s
+[19/22] sanity-T1 (up to 2048 tokens)
+    completed: prompt 35.614951 tok/s, decode 6.379876 tok/s, first token 8.848432 s
+[20/22] sanity-T2 (up to 2048 tokens)
+    completed: prompt 36.073434 tok/s, decode 5.416842 tok/s, first token 9.011964 s
+[21/22] sanity-T3 (up to 2048 tokens)
+    completed: prompt 38.332535 tok/s, decode 5.703264 tok/s, first token 8.976659 s
+[22/22] sanity-T4 (up to 2048 tokens)
+    completed: prompt 37.416663 tok/s, decode 5.69775 tok/s, first token 8.82217 s
+{"schema_version": 1, "ok": false, "path": "/data/bench/2026-11-10-dsv41-p40-cuda12/results.json", "status": "nonconforming", "engine_stop_error": null, "quality": {"passed": 12, "total": 12, "categories": {"instruction": {"passed": 4, "total": 4}, "retrieval": {"passed": 4, "total": 4}, "tool_call": {"passed": 4, "total": 4}}}, "summaries": [{"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "prompt_tps", "unit": "tokens/s", "median": 6.672021, "min": 6.646154, "max": 7.175698, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "decode_tps", "unit": "tokens/s", "median": 3.396996, "min": 3.396619, "max": 3.499373, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "ttft_s", "unit": "s", "median": 6.121721, "min": 5.622515, "max": 6.158949, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "first_answer_s", "unit": "s", "median": 88.763689, "min": 86.369542, "max": 91.697394, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "short", "concurrency": 1, "metric": "total_s", "unit": "s", "median": 152.950957, "min": 148.724342, "max": 155.007128, "n": 3, "included_request_ids": ["performance-short-r1", "performance-short-r2", "performance-short-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "prompt_tps", "unit": "tokens/s", "median": 92.957842, "min": 76.994801, "max": 93.691229, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "decode_tps", "unit": "tokens/s", "median": 3.603163, "min": 3.499279, "max": 3.802887, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "ttft_s", "unit": "s", "median": 30.256787, "min": 30.238315, "max": 30.508974, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "first_answer_s", "unit": "s", "median": 118.033682, "min": 106.93859, "max": 122.671317, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-4k", "concurrency": 1, "metric": "total_s", "unit": "s", "median": 171.221202, "min": 163.121985, "max": 182.895977, "n": 3, "included_request_ids": ["performance-prompt-4k-r1", "performance-prompt-4k-r2", "performance-prompt-4k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "prompt_tps", "unit": "tokens/s", "median": 145.058669, "min": 144.342347, "max": 158.700319, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "decode_tps", "unit": "tokens/s", "median": 3.60163, "min": 3.400316, "max": 3.699178, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "ttft_s", "unit": "s", "median": 74.06293, "min": 74.035694, "max": 74.447467, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "first_answer_s", "unit": "s", "median": 161.369323, "min": 157.10774, "max": 169.259296, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}, {"phase": "performance", "case_id": "prompt-16k", "concurrency": 1, "metric": "total_s", "unit": "s", "median": 218.280947, "min": 210.470523, "max": 222.345748, "n": 3, "included_request_ids": ["performance-prompt-16k-r1", "performance-prompt-16k-r2", "performance-prompt-16k-r3"], "excluded": []}]}

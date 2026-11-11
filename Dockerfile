@@ -3,9 +3,10 @@
 #
 # Most people want the ready-made images instead (nothing compiled): docs/DOCKER.md.
 #
-#   docker build -t strata:src .                                        # RTX 20/30/40/50 (compiles for each, ~25 min)
-#   docker build -t strata:src --build-arg CUDA_ARCHITECTURES=86 .      # one card only (faster); 86 = RTX 30, 89 = RTX 40, 120 = RTX 50
-#   docker build -t strata:src-cuda12 --build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04 \
+#   docker build -t strata:src --build-arg STRATA_COMMIT=$(git rev-parse HEAD) .                                        # RTX 20/30/40/50 (compiles for each, ~25 min)
+#   docker build -t strata:src --build-arg STRATA_COMMIT=$(git rev-parse HEAD) --build-arg CUDA_ARCHITECTURES=86 .      # one card only (faster); 86 = RTX 30, 89 = RTX 40, 120 = RTX 50
+#   docker build -t strata:src-cuda12 --build-arg STRATA_COMMIT=$(git rev-parse HEAD) \
+#              --build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 \
 #              --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .   # GTX 10 / P100 / V100 (driver 575+)
 #   docker run --rm --gpus all -p 127.0.0.1:8080:8080 --ulimit memlock=-1 --shm-size 2g --stop-timeout 120 \
 #              -v strata-data:/data -e MODEL=IQ3_XXS -e API_KEY=change-me-please-123 strata:src
@@ -14,6 +15,10 @@
 # a machine-code part per listed architecture (plus PTX for the newest, which later cards can JIT), and the runtime picks the one
 # matching your card. Narrow CUDA_ARCHITECTURES to your card for a faster build. Native code for the CPU that builds the image is NOT
 # used (STRATA_PORTABLE=ON), so the image runs on any x86-64 CPU with AVX2.
+#
+# .git is not in the build context (.dockerignore), so every build above passes --build-arg STRATA_COMMIT=$(git rev-parse HEAD):
+# the Terminal stage writes it to COMMIT, and without it package_terminal.py stops (#3644).
+# The DeepSeek-V4.1 engine beside this one (strata-dsv41 in the image): build with Dockerfile.dsv41 instead, same arguments (docs/DOCKER.md).
 #
 # Plain legacy-builder features only (no heredocs, no --mount). AMD (HIP) and Intel (SYCL) source builds: docs/AMD_HIP.md, docs/INTEL.md.
 
@@ -68,6 +73,7 @@ RUN set -e; \
 
 # ---- 2. the Terminal (the release archive, built here)
 FROM ${RUNTIME_BASE} AS terminal
+# the sources have no .git here (.dockerignore): pass the commit with --build-arg STRATA_COMMIT=$(git rev-parse HEAD), package_terminal.py writes it to COMMIT
 ARG STRATA_COMMIT=
 ENV STRATA_BUILD_COMMIT=${STRATA_COMMIT}
 ENV DEBIAN_FRONTEND=noninteractive

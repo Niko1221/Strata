@@ -24,6 +24,7 @@
 #include <ds4_metal_host.h>
 #endif
 #include "strata/dsv41/exl3.hpp"
+#include "strata/kernels/dp4a.hpp"   // STRATA_DP4A: __dp4a with the sm_60 fallback (an experimental Pascal build)
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -84,7 +85,7 @@ __device__ __forceinline__ uint32_t bytesum_plus(uint32_t x, uint32_t acc) {
 #if defined(STRATA_USE_HIP)
     return acc + (x & 0xffu) + ((x >> 8) & 0xffu) + ((x >> 16) & 0xffu) + (x >> 24);
 #else
-    return __dp4a(x, 0x01010101u, acc);
+    return STRATA_DP4A(x, 0x01010101u, acc);
 #endif
 }
 

@@ -237,6 +237,14 @@ on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into 
 python setup.py --family deepseek41 --model ISTA-DAS-2.00bpw
 ```
 
+**An older NVIDIA card (CUDA 12).** CUDA 13 has no code for sm_60 and sm_61 (GTX 10, P40, P100), so those cards build with the CUDA 12 toolkit:
+the same `cmake` lines with CUDA 12's `nvcc` on the PATH, your card's number in `CMAKE_CUDA_ARCHITECTURES` (`61` for a P40, `60;61` for both Pascal
+cards), and `-DSTRATA_EXPERIMENTAL_SM60=ON` when a number below 75 is listed - the same switch the image build turns on by itself.
+[Dockerfile.dsv41](../Dockerfile.dsv41) builds the whole container this way with `--build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04`
+([DOCKER.md](DOCKER.md) has the full command). Measured on a Tesla P40 (sm_61, CUDA 12.9.2,
+ist-das-2.25bpw): decode 3.4-3.6 tokens a second, a 4K prompt 93 tokens a second and a 16K one 145, 12 of 12 sanity checks
+([report](../bench/results/2026-11-10-dsv41-p40-cuda12/README.md)).
+
 `strata-dsv41 --version` prints the commit it was built from. A build you made yourself is not signed by Strata, which is fine for your own computer.
 Please tell us how it runs on your card (the speed, and the card and RAM): we only list a card as tested after someone has run it.
 

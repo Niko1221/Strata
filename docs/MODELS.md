@@ -70,6 +70,7 @@ you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lo
 | Hardware | Systems |
 | --- | --- |
 | NVIDIA RTX 30, 40 and 50 series, 12 GB or more | Windows, Linux |
+| NVIDIA Pascal and Volta (GTX 10, P40, P100, V100), built from source on CUDA 12 ([DOCKER.md](DOCKER.md)) | Linux |
 | AMD Radeon AI PRO R9700 | Linux |
 | AMD Ryzen AI Max (Strix Halo, gfx1151, 128 GB unified; 64 GB or more shared with Windows) | Windows |
 | Apple Silicon Mac, 64 GB or more, macOS 15 or newer ([DEEPSEEK_MAC.md](DEEPSEEK_MAC.md); text and pictures) | macOS |
@@ -78,7 +79,8 @@ Tested on an RTX 3060 (Linux), an RTX 5070 (Windows), four R9700 cards (Linux) a
 14 to 16 tokens a second on code with the default Faster mode, 10 to 11 on chat, 78 tokens a second on a 4K prompt and 109 on
 8K). The RTX 30 kernels were also checked on an RTX A4000. Windows on RTX 30 and the RX 9070 are built but were not run. On a
 Mac it was run on an M5 Max with 128 GB ([DEEPSEEK_MAC.md](DEEPSEEK_MAC.md)). Strix Halo on Linux does not run it yet; on Strix Halo Windows the graphics memory is the RAM, so most of the experts are
-read from the SSD and an NVMe drive matters.
+read from the SSD and an NVMe drive matters. A Tesla P40 ran it from the CUDA 12 source image on a 126 GB RAM box: 3.4-3.6 tokens a second on
+the answer and 93 on a 4K prompt ([report](../bench/results/2026-11-10-dsv41-p40-cuda12/README.md)).
 
 RTX 40 cards are covered by the engine packages since 0.2.7 (sm_89 code); we have not run one ourselves, see [DEEPSEEK41.md](DEEPSEEK41.md#the-engine-package) for a user's measurement.
 
