@@ -58,6 +58,9 @@ export interface HydrateResult {
   failed: { id: string; error: string; code?: string }[];
   /** Chats that came back from the last-moment copy because the host's version was older. */
   recovered: string[];
+  /** The chat files the host has a name for but cannot read (a hand-edited file, a truncated one, a format from a later release).
+   *  They have no entries to show, so the page lists the ids and lets the person delete one (#5421). */
+  damaged: string[];
 }
 
 /** By name, so it holds across two copies of this module (a bundle per test file). */
@@ -131,9 +134,9 @@ export async function hydrateChats(opts: {
     const onlyHere = opts.current.filter(s => !hostIds.has(s.id));
     const sessions = [...onlyHere, ...merged];
     const recovered = takeLastMomentCopy(browser, sessions, revs);
-    return { sessions: recovered.sessions, revs, offline: false, moved, failed, recovered: recovered.ids };
+    return { sessions: recovered.sessions, revs, offline: false, moved, failed, recovered: recovered.ids, damaged: list.damaged ?? [] };
   } catch (e) {
-    if (isTransportError(e)) return { sessions: opts.current, revs: new Map(), offline: true, moved, failed, recovered: [] };
+    if (isTransportError(e)) return { sessions: opts.current, revs: new Map(), offline: true, moved, failed, recovered: [], damaged: [] };
     throw e;
   }
 }

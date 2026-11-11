@@ -164,6 +164,9 @@ export function createChatStore({ dir, io = realIo, privateDir = () => {}, now =
       return queue(async () => {
         try { await io.unlink(fileOf(id)); } catch (e) { if (e?.code !== 'ENOENT') throw storeFailure(e); }
         const had = index.delete(id);
+        // A chat the start-up read could not parse is in `damaged`, never in `index`: its file is now gone,
+        // so the list must forget it too, or the page keeps showing an id with nothing behind it (#5421).
+        damaged.delete(id);
         await writeIndex();
         return { id, removed: had };
       });

@@ -1,0 +1,12 @@
+{
+ "dmg01": "Unlesbare Chats",
+ "dmg02": "Strata konnte diese Chat-Dateien nicht lesen. Löschen Sie eine, um die Datei zu entfernen.",
+ "dmg03": "Strata konnte diese Chat-Datei nicht lesen, daher werden ihre Nachrichten nicht angezeigt.",
+ "dmg04": "Chat-Datei löschen",
+ "dmg05": "{0}.json löschen",
+ "dmg06": "Diese Chat-Datei löschen?",
+ "dmg07": "Datei behalten",
+ "dmg08": "Datei löschen",
+ "dmg09": "Die Datei {0} wird gelöscht. Sonst ändert sich nichts, und der Chat kommt nicht zurück.",
+ "dmg10": "Die Chat-Datei konnte nicht gelöscht werden"
+}

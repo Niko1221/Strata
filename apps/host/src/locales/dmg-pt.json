@@ -1,0 +1,12 @@
+{
+ "dmg01": "Chats ilegíveis",
+ "dmg02": "O Strata não conseguiu ler estes arquivos de chat. Exclua um para remover o arquivo.",
+ "dmg03": "O Strata não conseguiu ler este arquivo de chat, então as mensagens não são exibidas.",
+ "dmg04": "Excluir arquivo de chat",
+ "dmg05": "Excluir {0}.json",
+ "dmg06": "Excluir este arquivo de chat?",
+ "dmg07": "Manter arquivo",
+ "dmg08": "Excluir arquivo",
+ "dmg09": "O arquivo {0} é excluído. Nada mais muda, e o chat não volta.",
+ "dmg10": "O arquivo de chat não pôde ser excluído"
+}
