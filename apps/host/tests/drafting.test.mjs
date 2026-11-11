@@ -74,7 +74,7 @@ test('a load fetches the drafter first, never stops for it, and says what ran', 
   assert.match(prepare, /control\.draftingFetch\(/);
   assert.match(prepare, /catch\(error\)\{if\(job\.state==='running'\)\{job\.drafterNote=error\.message;/, 'a failed download leaves the MTP and the job says so');
   assert.match(source, /await prepareDrafter\(job,args,cfg,configFile,drafts,\{noSplit\}\)/);
-  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&[\s\S]*?\{[\s\S]*?await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load (and a plain Auto load when the plan says split)');
+  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|\(drafts\.split===true\|\|args\.firstLoad===true\)&&[\s\S]*?\{[\s\S]*?await installMtpLayer/, 'a switch to the MTP fetches its layer once, from the Models screen own Load (and a plain Auto load when the plan says split, or the first load after a setup)');
   assert.match(source, /async function noteDrafting\(job,instance,key\)/);
   assert.match(source, /instance\.status='ready';instance\.phase='idle';await noteDrafting\(job,instance,key\)/);
   assert.match(source, /typeof choice==='string'&&typeof control\.draftingPlan==='function'/, 'the plan lists the drafter Control says is needed');
@@ -95,7 +95,7 @@ test('every sentence of the Drafting choice is in the catalog in all nine langua
     // the DFlash2 option (df2-<lang>.json): the paragraph under the dropdown, the lines about the card, the two new notes
     "Drafting: MTP (DFlash2 isn't available on this graphics card)", "There is no internet connection, so the DFlash2 drafter can't be downloaded now.",
     'On graphics cards like yours, DFlash2 was faster than MTP on some kinds of text and slower on others in our tests.',
-    'On graphics cards like yours, DFlash2 was slower than MTP in our tests.', 'DFlash2 has not been tested on your graphics card yet.', 'SSD: not needed'];
+    'On graphics cards like yours, DFlash2 was slower than MTP in our tests.', 'DFlash2 has not been tested on your graphics card yet.', 'On your Mac, DFlash2 was faster than MTP on this model in our tests.', 'DFlash2 is off by default on this graphics card for now; choose it in Drafting to use it.', 'SSD: not needed'];
   const slots = t => (t.match(/\{\d+\}/g) ?? []).sort().join();
   for (const text of sentences) {
     const id = idOf(text);
@@ -249,8 +249,8 @@ test('where the all-cards split engine takes the start, Auto is the MTP in the l
   }
   const source = read('../server/native-control.mjs');
   assert.match(source, /dflash2Split=p\.split===true/, 'the probe reads the plan word');
-  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|drafts\.split===true&&\(config\.drafting==null\|\|String\(config\.drafting\)\.toLowerCase\(\)==='auto'\)\)/,
-    'a plain Auto load fetches the draft layer when the plan says split; a saved explicit choice is left alone');
+  assert.match(source, /drafts\?\.mtp_needed===true&&\(args\.values\?\.drafting!==undefined\|\|\(drafts\.split===true\|\|args\.firstLoad===true\)&&\(config\.drafting==null\|\|String\(config\.drafting\)\.toLowerCase\(\)==='auto'\)\)/,
+    'a plain Auto load fetches the draft layer when the plan says split (or it is the first load after a setup); a saved explicit choice is left alone');
   assert.match(read('../src/lib/native.ts'), /dflash2Split\?:boolean/);
 });
 

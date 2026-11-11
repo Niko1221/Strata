@@ -353,6 +353,21 @@ int Context::compile_try(const std::vector<std::string>& files, const std::strin
         std::string p = (f.size() && f[0] == '/') ? f : kernel_dir + "/" + f;
         src += "#line 1 \"" + f + "\"\n" + read_file(p) + "\n";
     }
+    if (const char* dump = std::getenv("STRATA_METAL_MSL_DUMP")) {   // research: the full text of every library, as the compiler gets it
+        static int ndump = 0;
+        char name[32];
+        std::snprintf(name, sizeof name, "/%03d.msl", ndump++);
+        if (std::FILE* f = std::fopen((std::string(dump) + name).c_str(), "wb")) {
+            std::fwrite(src.data(), 1, src.size(), f);
+            std::fclose(f);
+        }
+        if (std::FILE* f = std::fopen((std::string(dump) + "/index.txt").c_str(), "ab")) {
+            std::fprintf(f, "%s:", name + 1);
+            for (const auto& fl : files) std::fprintf(f, " %s", fl.c_str());
+            std::fprintf(f, "\n");
+            std::fclose(f);
+        }
+    }
     MTLCompileOptions* o = [MTLCompileOptions new];
     // Safe math by default: no reassociation, so every token of a window is bitwise what a one-token call gives
     // (the kernels write their contractions as explicit fma).  Measured free on the M5 Max.
@@ -992,14 +1007,15 @@ double Context::run(const std::vector<Dispatch>& ds, int reps, bool concurrent, 
     }
 }
 
-double Context::run_graph(const std::vector<Dispatch>& ds) {
+double Context::run_graph(const std::vector<Dispatch>& ds, size_t count) {
     // The wait spins on the buffer's status for up to 20 ms before it blocks: waitUntilCompleted's thread wake costs ~0.5 ms
     // a window (M5 Max, Q2_0 decode: +5% tok/s, same tokens).  STRATA_METAL_SPIN=0: the blocking wait.
     static const bool spin = !(std::getenv("STRATA_METAL_SPIN") && std::string(std::getenv("STRATA_METAL_SPIN")) == "0");
     @autoreleasepool {
         id<MTLCommandBuffer> cb = [impl_->q commandBufferWithUnretainedReferences];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoderWithDispatchType:MTLDispatchTypeConcurrent];
-        for (size_t i = 0; i < ds.size(); ++i) {
+        const size_t nd = std::min(count, ds.size());
+        for (size_t i = 0; i < nd; ++i) {
             if (i > 0 && ds[i].barrier) [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
             encode(enc, ds[i]);
         }

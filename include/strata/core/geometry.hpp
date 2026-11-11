@@ -67,8 +67,21 @@ struct ModelGeometry {
     constexpr int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
 };
 
-/// The shape the kernels are compiled for.  A kernel that fixes a dimension at compile time asserts it here.
-inline constexpr ModelGeometry kCompiledGeometry{};
+}  // namespace strata::core
+
+// The shape the kernels are compiled for: `kCompiledGeometry`, defined by the geometry header chosen at configure
+// time (`-DSTRATA_GEOMETRY=<name>` selects include/strata/core/geometries/<name>.hpp, `-DSTRATA_GEOMETRY_FILE=<path>`
+// takes any header; cmake/strata_geometry.cmake writes geometry_selected.hpp into the build tree for either).  With
+// neither option the build uses Flash-Next's header and adds no compile flag.  A kernel that fixes a dimension at
+// compile time asserts it against `kCompiledGeometry`; geometry_checks.hpp holds the constraints every shape must meet.
+#if __has_include("strata/core/geometry_selected.hpp")
+#include "strata/core/geometry_selected.hpp"
+#else
+#include "strata/core/geometries/flash_next.hpp"
+#endif
+#include "strata/core/geometry_checks.hpp"
+
+namespace strata::core {
 
 /// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval
 /// = 4` and an explicit `attention.compress_ratios` array - and `read_geometry` checks that the two agree.

@@ -19,6 +19,7 @@
 // a different random routing per rep; GB/s = bytes of the distinct experts the kernel must read / GPU time.
 #include "mtl_rt.h"
 #include "ref_quant.h"
+#include "engine/geo.h"
 #include "gguf_lite.h"
 // Gyro: the engine's CPU Hadamard rotation (the reference of the Metal one) and hadamard.txt's parser
 #include "../../src/kernels/cpu/hadamard.cpp"
@@ -38,7 +39,8 @@ const uint16_t* tq_lut_for_test() { return tq_lut_f16; }
 
 namespace {
 
-constexpr int N_EMBD = 2560, N_FF = 640, TOPK = 10;
+int N_EMBD = strata_metal::geo::N, N_FF = strata_metal::geo::NFF;   // the shape this build is compiled for (engine/geo.h); --embd / --ff change them (Q4-KQ: expert widths 512 and 1024)
+constexpr int TOPK = strata_metal::geo::TOPK;
 // plan layout (moe.metal)
 constexpr int P_NG = 0, P_IGU = 4, P_IDN = 8, P_MAXE = 128, P_GEXP = 16, P_GSTART = P_GEXP + P_MAXE,
               P_ETOK = P_GSTART + P_MAXE + 4, P_EW = P_ETOK + P_MAXE, P_TOKENT = P_EW + P_MAXE,
@@ -50,7 +52,7 @@ struct MoeArgs {
 };
 
 int type_of(const std::string& s) {
-    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1, ref::Q5_0})
+    for (int t : {ref::TQ2_T, ref::TQK6, ref::TQK7, ref::Q2_0, ref::IQ3_XXS, ref::IQ2_XXS, ref::IQ2_XS, ref::IQ2_S, ref::IQ3_S, ref::IQ4_NL, ref::IQ4_XS, ref::Q3_K, ref::Q4_K, ref::Q5_K, ref::Q6_K, ref::Q8_0, ref::Q5_1, ref::Q5_0})
         if (s == ref::type_name(t)) return t;
     std::fprintf(stderr, "unknown type %s\n", s.c_str());
     std::exit(2);
@@ -120,7 +122,8 @@ int xkind(int t) {
 }
 constexpr int CAPE = 8 * TOPK;                     // entries capacity of h
 // prepared buffers: x [8][N_EMBD] -> XPX, h [CAPE][N_FF] -> XPH (4 planes + S16)
-constexpr size_t PLANE_X = 8 * N_EMBD, PLANE_H = (size_t)CAPE * N_FF;
+#define PLANE_X ((size_t)8 * N_EMBD)
+#define PLANE_H ((size_t)CAPE * N_FF)
 
 mtl::Dispatch prep_dispatch(const mtl::Pipeline& p, const mtl::Buffer& x, const mtl::Buffer& xp, uint32_t n, uint32_t nt) {
     mtl::Dispatch d;
@@ -254,6 +257,8 @@ int main(int argc, char** argv) {
         else if (a == "--had-pack") had_pack = nx();
         else if (a == "--had-test") had_test = true;
         else if (a == "--decode-check") decode_check = true;
+        else if (a == "--ff") N_FF = std::atoi(nx());
+        else if (a == "--embd") N_EMBD = std::atoi(nx());
         else if (a == "--seed") seed = std::strtoull(nx(), nullptr, 10);
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
@@ -278,7 +283,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "EXPERT_F16: Q2_0 gate/up and down only, without --dn-prep and Hadamard\n");
         return 2;
     }
-    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"}, g_f16 ? "#define STRATA_METAL_F16 1\n" : "");
+    // the host defines STRATA_KQ_DOWN only for a model whose downs are K-quant / IQ4_XS / IQ3_S (window.cpp kq_down_prelude)
+    const bool kq_dn = dn == ref::Q3_K || dn == ref::Q4_K || dn == ref::Q5_K || dn == ref::Q6_K || dn == ref::IQ3_S || dn == ref::IQ4_XS;
+    const int lib = cx.compile({"quant.metal", "units.metal", "moe.metal"},
+                               std::string(g_f16 ? "#define STRATA_METAL_F16 1\n" : "") + (kq_dn ? "#define STRATA_KQ_DOWN 1\n" : ""));
     const Layout L = layout(gu, dn);
     // Gyro: the pack's hadamard.txt (the signs of the widths 2560 and 640) -> the engine's CPU spec (the reference)
     mtl::Buffer hsx, hsh;

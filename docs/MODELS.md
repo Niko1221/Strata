@@ -72,7 +72,7 @@ you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lo
 | NVIDIA RTX 30, 40 and 50 series, 12 GB or more | Windows, Linux |
 | AMD Radeon AI PRO R9700 | Linux |
 | AMD Ryzen AI Max (Strix Halo, gfx1151, 128 GB unified; 64 GB or more shared with Windows) | Windows |
-| Apple Silicon Mac, 64 GB or more, macOS 15 or newer (text only, [DEEPSEEK_MAC.md](DEEPSEEK_MAC.md)) | macOS |
+| Apple Silicon Mac, 64 GB or more, macOS 15 or newer ([DEEPSEEK_MAC.md](DEEPSEEK_MAC.md); text and pictures) | macOS |
 
 Tested on an RTX 3060 (Linux), an RTX 5070 (Windows), four R9700 cards (Linux) and a Ryzen AI Max+ 395 with 128 GB unified (Windows:
 14 to 16 tokens a second on code with the default Faster mode, 10 to 11 on chat, 78 tokens a second on a 4K prompt and 109 on

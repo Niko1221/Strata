@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -149,18 +150,18 @@ class UnslothDefaultEnv(unittest.TestCase):
         for m in ("UD-Q4_K_XL", "UD-IQ4_XS", "Q8_0"):
             self.assertNotIn("STRATA_MMQ_KQ", f("unsloth", m, False, False), m)
 
-    def test_hc_q8_on_cuda_for_the_ud_files_only(self):
+    def test_hc_q8_is_the_engines_own_default_not_setups(self):
         f = setup.unsloth_default_env
-        for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL"):
-            self.assertEqual(f("unsloth", m, False, True)["STRATA_HC_Q8"], "1", m)
-            self.assertNotIn("STRATA_HC_Q8", f("unsloth", m, True, True), m)          # not on AMD
-        self.assertNotIn("STRATA_HC_Q8", f("unsloth", "Q8_0", False, True))
+        for m in ("UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"):
+            for hip in (False, True):
+                self.assertNotIn("STRATA_HC_Q8", f("unsloth", m, hip, True), (m, hip))
 
     def test_tail_skip_off_only_when_every_expert_is_in_ram(self):
         f = setup.unsloth_default_env
         self.assertEqual(f("unsloth", "UD-Q4_K_XL", False, False)["STRATA_ROUTE_TAIL_SKIP"], "0")
         self.assertNotIn("STRATA_ROUTE_TAIL_SKIP", f("unsloth", "UD-Q4_K_XL", False, True))   # budget mode keeps the skip
 
+    @mock.patch.object(setup, "WIN", False)       # "Linux" gfx12: setup asks the host OS (setup.WIN), so the test names Linux itself
     def test_tail_skip_stays_on_for_linux_gfx12(self):
         # owner 11-03 ("3 Yes"): on Linux gfx12 (R9700, RX 9000) setup no longer turns the skip off for the UD files; the engine's own default (rank 7) runs
         f = setup.unsloth_default_env
