@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from serve.frontend import Event, OutputParser
+from serve.frontend import THINK_END, Event, OutputParser
 
 DSML = "｜DSML｜"
 _OPEN = "<" + DSML
@@ -211,6 +211,10 @@ class DsmlOutputParser(OutputParser):
             # no </think> and no answer: the text IS the answer.  A streaming client has already seen it as reasoning and now gets
             # it as content; the non-streaming collectors (server.py) drop the identical reasoning.
             self._answered = True
+            if THINK_END in text:
+                # the model spelled the end of its thinking out instead of writing the token: the answer is what
+                # follows the last spelled tag, never the thinking itself
+                text = text.rsplit(THINK_END, 1)[1].strip() or text
             out.append(Event("content", text))
         return out
 

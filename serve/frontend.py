@@ -769,6 +769,13 @@ class Event:
 
 
 THINK_END = "</think>"
+# #4077/#5605: for a model whose `</think>` is one control token (DeepSeek-V4.1), the reasoning ends only when the model
+# writes that token.  The server hands the parser this mark in place of the token's text (Service.think_end_id), so a
+# `</think>` the model spells out with ordinary tokens - quoting the tag, reasoning about the chat format - stays text.
+# That is what DeepSeek's own serving stack does (DeepInfer, doc/inference_deployment_qa.md: the end-of-reasoning marker
+# is identified by token ID, and "the same text spelled out by the model using ordinary tokens is correctly preserved as
+# literal content").  Private use, clear of LITERAL_TAGS' marks and the control marks (CONTROL_MARK0).
+THINK_END_TOKEN = "\U000F0E0F"
 CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 
@@ -1175,9 +1182,14 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
+                 recover: bool = False, declared_only: bool = False, deferred: bool = False,
+                 think_end: str = THINK_END):
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
+        # what ends the reasoning: the tag's text, or THINK_END_TOKEN when the server reads the model's control token
+        # by its id (#4077): then a spelled-out `</think>` is text and the quote and stray rules below are not needed
+        self.think_end = think_end
+        self.by_token = think_end != THINK_END
         self.lead = False
         self.schemas = {t.get("name"): t for t in tools or []}
         # #4663: the request defers tools (Anthropic's tool search, see anthropic_tools): the client holds back more tools
@@ -1447,12 +1459,14 @@ class OutputParser:
         """#4077: where self.buf has a `</think>` at the start of a line, in the answer of a turn whose reasoning
         already ended at one; -1 for none.  A fence or backtick is no reason to keep it: the reasoning may have left
         one open, and the answer's own tracking of code is wrong from there on."""
-        k = self.buf.find(THINK_END)
+        if self.by_token:
+            return self.buf.find(self.think_end)   # the control token again: never text, wherever it stands
+        k = self.buf.find(self.think_end)
         while k >= 0:
             before = self.buf[:k]
             if not (before.rsplit("\n", 1)[1] if "\n" in before else self.line + before).strip():
                 return k
-            k = self.buf.find(THINK_END, k + 1)
+            k = self.buf.find(self.think_end, k + 1)
         return -1
 
     def _release(self, deliver: bool) -> list[Event]:
@@ -1693,6 +1707,8 @@ class OutputParser:
         return found[0] if len(found) == 1 else None
 
     def feed(self, delta: str) -> list[Event]:
+        if self.by_token and self.state not in ("reasoning", "rcall") and self.think_end in delta:
+            delta = delta.replace(self.think_end, "")     # the end-of-thinking token after the thinking: not text
         if self._held:
             delta, self._held = self._held + delta, ""
         self.buf += delta
@@ -1707,7 +1723,7 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body, hold=False), body.find(THINK_END)
+                end, think = call_end(body, hold=False), body.find(self.think_end)
                 drop = len(CALL_END)
                 f = function_end(body)               # #4427: as in the answer, a following call opener confirms an omitted closer
                 if f >= 0 and (end < 0 or f < end) and re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", body[f:].lstrip()):
@@ -1753,14 +1769,14 @@ class OutputParser:
                         return out
                     if self.buf.startswith(CALL_START):
                         self.state = "rcall"
-                    elif self.buf.startswith(THINK_END):
+                    elif self.buf.startswith(self.think_end):
                         out += self._release(True)
-                    elif CALL_START.startswith(self.buf) or THINK_END.startswith(self.buf):
+                    elif CALL_START.startswith(self.buf) or self.think_end.startswith(self.buf):
                         return out
                     else:
                         out += self._release(False)
                     continue
-                i = self.buf.find(THINK_END)
+                i = self.buf.find(self.think_end)
                 tool = self.buf.find(CALL_START) if self.schemas else -1
                 if tool >= 0 and (i < 0 or tool < i):
                     if tool:
@@ -1773,24 +1789,24 @@ class OutputParser:
                         self.buf = self.buf[tool + len(CALL_START):]
                     continue
                 if i < 0:
-                    keep = self._hold(self.buf, (THINK_END, CALL_START) if self.schemas else (THINK_END,))
+                    keep = self._hold(self.buf, (self.think_end, CALL_START) if self.schemas else (self.think_end,))
                     if len(self.buf) > keep:
                         out.append(Event("reasoning", self._track(self.buf[:len(self.buf) - keep])))
                         self.buf = self.buf[len(self.buf) - keep:]
                     return out
-                quoted = self._quoted_think_end(i)
+                quoted = False if self.by_token else self._quoted_think_end(i)   # the control token is never a quote
                 if quoted is None:                   # held like a partial tag until the character after it is here
                     if i:
                         out.append(Event("reasoning", self._track(self.buf[:i])))
                         self.buf = self.buf[i:]
                     return out
                 if quoted:                           # #537: a quoted `</think>` is reasoning text
-                    out.append(Event("reasoning", self._track(self.buf[:i + len(THINK_END)])))
-                    self.buf = self.buf[i + len(THINK_END):]
+                    out.append(Event("reasoning", self._track(self.buf[:i + len(self.think_end)])))
+                    self.buf = self.buf[i + len(self.think_end):]
                     continue
                 if i:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
-                self.buf = self.buf[i + len(THINK_END):]
+                self.buf = self.buf[i + len(self.think_end):]
                 self.state, self.lead, self.after_think = "content", True, True
                 self._reset_track()                               # the answer's own text starts here
             elif self.state == "content":
@@ -1801,7 +1817,7 @@ class OutputParser:
                         return out
                     self.buf, self.lead = stripped, False
                 i = self.buf.find(CALL_START)
-                stray = self._stray_think_at() if self.after_think else -1
+                stray = self._stray_think_at() if self.after_think or self.by_token else -1
                 if stray >= 0 and (i < 0 or stray < i):
                     # #4077: the reasoning ended at a `</think>` the model wrote while thinking (quoting the format on a
                     # line of its own), and this is the one that ends it.  What came between was reasoning, already sent
@@ -1809,7 +1825,7 @@ class OutputParser:
                     # not taken for a quote by the code fence or backtick the reasoning left open.
                     if stray:
                         out.append(Event("content", self._track(self.buf[:stray])))
-                    self.buf = self.buf[stray + len(THINK_END):]
+                    self.buf = self.buf[stray + len(self.think_end):]
                     self._reset_track()
                     self.lead = True
                     self.stray_think += 1
@@ -1832,7 +1848,7 @@ class OutputParser:
                 if i < 0:
                     # Hold a partial tag AND the newlines before it: if a tool call follows, they are dropped,
                     # so emitting them early would make streamed and whole outputs differ.
-                    j = len(self.buf) - self._hold(self.buf, (CALL_START, THINK_END) if self.after_think else (CALL_START,))
+                    j = len(self.buf) - self._hold(self.buf, (CALL_START, self.think_end) if self.after_think else (CALL_START,))
                     if self.recover and self.schemas:            # a line that may be becoming a bare <function=
                         k = self.buf.rfind("\n") + 1
                         tail = self.buf[k:]
@@ -2041,7 +2057,7 @@ class OutputParser:
             self.buf = ""
             self._reset_scan()
             return out
-        if self.state == "reasoning" and self.buf == THINK_END:   # the output ends on a held `</think>`: its end
+        if self.state == "reasoning" and self.buf == self.think_end:   # the output ends on a held `</think>`: its end
             self.buf, self.state = "", "content"
         if self.buf:
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
@@ -2083,9 +2099,10 @@ class JsonOutputParser(OutputParser):
     not the server's tool_call_recovery is on.  Everything else (reasoning, code fences, declared-tool rules) is OutputParser's."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
+                 recover: bool = False, declared_only: bool = False, deferred: bool = False,
+                 think_end: str = THINK_END):
         super().__init__(thinking=thinking, tools=tools, stream_tools=stream_tools, recover=True,
-                         declared_only=declared_only, deferred=deferred)
+                         declared_only=declared_only, deferred=deferred, think_end=think_end)
 
 
 def parser_for_template(source: str | None):

@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, parser_for_template, anthropic_to_messages, anthropic_tools,  # noqa: E402
+from serve.frontend import (THINK_END, THINK_END_TOKEN, ChatTemplate, Event, OutputParser, parser_for_template, anthropic_to_messages, anthropic_tools,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
@@ -5009,6 +5009,7 @@ class Service:
         self.restore_after_load = None                    # a session file an image job saved before it unloaded
         self.stop_ids = end_token_ids(tokenizer)
         self.family = None                              # the model family ("deepseek41"): set_family() below
+        self.think_end_id = None                        # #4077: the end-of-thinking control token's id (set_family)
         self.parser_cls = parser_for_template(getattr(template, "source", None))   # reads the model's output (reasoning, content, tool calls): by the template's tool-call form
         # #567: a prompt re-encodes only what follows the last special token it shares with a recent prompt (the
         # same ids as a full encode: tools/strata_tokenizer.py PromptEncoder).  Tokenizers without resume points
@@ -5026,7 +5027,13 @@ class Service:
         """A family whose text differs from the Qwen form this server was written for (DeepSeek-V4.1: its own end
         token, DSML tool calls, reasoning-effort words).  The others keep the defaults."""
         self.family = family
+        self.think_end_id = None
         if family == "deepseek41":
+            # #4077: the reasoning ends at the model's `</think>` token, not at the same text spelled out with ordinary
+            # tokens (DeepSeek's serving guide: the marker is identified by token ID)
+            ids = self.tok.encode(THINK_END, parse_special=True)
+            if len(ids) == 1:
+                self.think_end_id = ids[0]
             from serve import dsml
             eos = (getattr(self.tok, "special_ids", None) or {}).get("eos", 1)
             self.stop_ids = {int(eos)}
@@ -6374,8 +6381,18 @@ class Service:
                 budget = max(1, max_new - reserve)
         parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
-                                 deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
+                                 deferred=deferred or self.undeclared_tool_calls == "call",   # #4622: opt-in, as for a deferred tool
+                                 **({"think_end": THINK_END_TOKEN} if self.think_end_id is not None else {}))
         detok, n, finish = Detokenizer(self.tok), 0, "length"
+        end_id = self.think_end_id
+
+        def piece_of(t: int) -> str:
+            """The text of token t for the parser: the end-of-thinking control token as its mark (#4077), so the same
+            text spelled out with ordinary tokens stays text."""
+            piece = detok.push(t)
+            if t == end_id and piece.endswith(THINK_END):
+                piece = piece[:-len(THINK_END)] + THINK_END_TOKEN
+            return piece
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         stop_list = stop_strings(sampling)
@@ -6551,7 +6568,7 @@ class Service:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
                                 if t in self.stop_ids:
-                                    if force and parser.state == "reasoning" and parser.buf == THINK_END:
+                                    if force and parser.state == "reasoning" and parser.buf == parser.think_end:
                                         opens = True    # #537: the held </think> was the end: the call opens there
                                         break
                                     finish = "stop"
@@ -6565,7 +6582,7 @@ class Service:
                                 if self.repeat_stop_tokens and run_len >= self.repeat_stop_tokens:
                                     repeated = True     # #606: a degenerate output, not an answer: end it here
                                     break
-                                piece = detok.push(t)
+                                piece = piece_of(t)
                                 tail = (tail + piece)[-2:]
                                 evs = cut(parser.feed(piece))
                                 self._note(n, evs, st, rate)
@@ -6683,7 +6700,7 @@ class Service:
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
-                                and parser.buf != THINK_END         # #537: not after a held </think>, the end
+                                and parser.buf != parser.think_end  # #537: not after a held </think>, the end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
@@ -6696,7 +6713,7 @@ class Service:
                                     n += 1
                                     raw_ids.append(t)
                                     thinking_n += parser.state in ("reasoning", "rcall")
-                                    evs = cut(parser.feed(detok.push(t)))
+                                    evs = cut(parser.feed(piece_of(t)))
                                     self._note(n, evs, st, rate)
                                     for ev in evs:
                                         yield "event", ev
@@ -6726,7 +6743,7 @@ class Service:
                             n += 1
                             raw_ids.append(t)
                             thinking_n += parser.state in ("reasoning", "rcall")
-                            evs = cut(parser.feed(detok.push(t)))
+                            evs = cut(parser.feed(piece_of(t)))
                             self._note(n, evs, st, rate)
                             for ev in evs:
                                 yield "event", ev
