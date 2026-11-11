@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <cstring>
 #include <type_traits>
 #include <map>
@@ -938,6 +939,150 @@ __global__ void __launch_bounds__(kThreads) mv_kernel(const Jobs J) {
         }
 }
 
+// NR rows a warp, 32 / NR lanes a row (DS4_MV_NR): a row of few sub-blocks - q_b's 1280 values are 40 - left most of a
+// warp idle in its last pass and spent its five shuffles on one row; here a row's lanes take its sub-blocks in turn and
+// meet in log2(32 / NR) shuffles.  A column's sums do not depend on the columns beside it (NR follows the row's length
+// alone), so a column alone and the same column in a wider call agree bit for bit.
+#if !defined(STRATA_METAL)
+// decode<T> with 16-byte loads where they are legal: Q4_K's and Q5_K's blocks (144 and 176 bytes) keep a row's 16-byte
+// alignment, so a sub-block's 32 bytes of nibbles (and Q5_K's 32 of high bits) are two 128-bit loads instead of eight
+// 32-bit ones - the same bytes, the same codes.  Other types, or a row that is not 16-byte aligned: decode<T>.
+template <int T>
+__device__ __forceinline__ void decode_v(const uint8_t* __restrict__ row, int kb, const uint32_t* tab, Sub& s) {
+    if constexpr (T == kQ4_K || T == kQ5_K) {
+        const uint8_t* b = row + (size_t) (kb >> 3) * Ty<T>::B;
+        const int ib = kb & 7;
+        if (((uintptr_t) b & 15u) == 0) {
+            int sc, m;
+            q4k_scale(b + 4, ib, sc, m);
+            const uint8_t* qs = b + (T == kQ5_K ? 48 : 16) + 32 * (ib >> 1);
+            const int sh = 4 * (ib & 1);
+            const uint4 q0 = *(const uint4*) qs, q1 = *(const uint4*) (qs + 16);
+            const uint32_t qw[8] = {q0.x, q0.y, q0.z, q0.w, q1.x, q1.y, q1.z, q1.w};
+            if constexpr (T == kQ5_K) {
+                const uint4 h0 = *(const uint4*) (b + 16), h1 = *(const uint4*) (b + 32);
+                const uint32_t hw[8] = {h0.x, h0.y, h0.z, h0.w, h1.x, h1.y, h1.z, h1.w};
+#pragma unroll
+                for (int u = 0; u < 8; ++u) s.q[u] = (int) (((qw[u] >> sh) & 0x0f0f0f0fu) | (((hw[u] >> ib) & 0x01010101u) << 4));
+            } else {
+#pragma unroll
+                for (int u = 0; u < 8; ++u) s.q[u] = (int) ((qw[u] >> sh) & 0x0f0f0f0fu);
+            }
+            s.s0 = s.s1 = sc;
+            s.d = h2f(b);
+            s.m0 = s.m1 = h2f(b + 2) * (float) m;
+            return;
+        }
+    }
+    decode<T>(row, kb, tab, s);
+}
+template <int T, int NC, int NR>
+__global__ void __launch_bounds__(kThreads) mv_kernel_nr(const Jobs J) {
+    __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
+    load_tab<T>(tab);
+    __syncthreads();
+    constexpr int LPR = 32 / NR;   // lanes a row
+    const MvJob& b = J.j[blockIdx.y];
+    const int lane = threadIdx.x & 31, sl = lane % LPR;
+    const int row = (blockIdx.x * kWarps + (threadIdx.x >> 5)) * NR + lane / LPR;
+    const bool live = row < b.n;
+    const int nsb = b.k / 32;
+    float acc[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) acc[c] = 0.0f;
+    if (live) {
+        const uint8_t* w = b.w + (size_t) row * b.ld;
+        for (int kb = sl; kb < nsb; kb += LPR) {
+            Sub s;
+            decode_v<T>(w, kb, tab, s);
+#pragma unroll
+            for (int c = 0; c < NC; ++c)
+                if (c < b.ncol) {
+                    const int4* xp = (const int4*) (b.xq + (size_t) c * b.k + (size_t) kb * 32);
+                    acc[c] = fmaf(b.xd[(size_t) c * nsb + kb], sub_dot<T>(s, xp[0], xp[1]), acc[c]);
+                }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c)
+        if (c < b.ncol) {
+            float v = acc[c];
+#pragma unroll
+            for (int o = LPR / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            if (live && sl == 0) b.y[c * b.ycs + row] = b.alpha * v + (b.bias != nullptr ? b.bias[row] : 0.0f);
+        }
+}
+
+// mv_kernel_nr<T, NC, 1> for Q4_K / Q5_K with the row's weights staged (the default; DS4_MV_STAGE=0: not): a warp loads the next 32
+// sub-blocks (4 blocks) of its row in coalesced words into registers while it computes the 32 it put in its shared stage
+// before - the Q8_0 GEMV's form (q8_mv_kernel), which kept its speed from 1 to 8 activations on a GB10 where mv_kernel_nr
+// lost 15-60% (its lanes each waiting on their own sub-block's loads).  Lane l still takes sub-blocks l, l + 32, ... in that
+// order, decoded by decode_v from the stage, and the same shuffles sum them: the same bits as mv_kernel_nr<T, NC, 1>.  On a GB10
+// (dq_dense_test --path bench) Q5_K wo_b 8192 x 5120 146 -> 130 us at 1 activation, 161 -> 139 at 4; the shared expert's
+// 5120 x 2304 48 -> 40 and 61 -> 47; a verify window of 3.3 tokens 88.9 -> 85.6 ms (DS4_PROF_WIN).
+template <int T, int NC>
+__global__ void __launch_bounds__(kThreads) mv_kernel_kst(const Jobs J) {
+    static_assert(T == kQ4_K || T == kQ5_K, "the K-quants' 16-byte-aligned blocks");
+    constexpr int BB = Ty<T>::B, CW = 4 * BB / 4;   // a step's bytes in words (4 blocks: 32 sub-blocks)
+    constexpr int WL = (CW + 31) / 32;               // words a lane loads
+    __shared__ __align__(16) uint32_t stage[kWarps][CW];
+    const MvJob& b = J.j[blockIdx.y];
+    const int row = blockIdx.x * kWarps + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    if (row >= b.n) return;   // (the warp's own: no block-wide sync below)
+    const uint32_t* w = (const uint32_t*) (b.w + (size_t) row * b.ld);
+    const int nsb = b.k / 32;
+    uint32_t* st = stage[threadIdx.x >> 5];
+    float acc[NC];
+#pragma unroll
+    for (int c = 0; c < NC; ++c) acc[c] = 0.0f;
+    uint32_t r[WL];
+    int nw = min(32, nsb) / 8 * BB / 4;   // (a step's words: whole blocks)
+#pragma unroll
+    for (int j = 0; j < WL; ++j) {
+        const int i = lane + 32 * j;
+        r[j] = i < nw ? w[i] : 0u;
+    }
+    for (int s0 = 0; s0 < nsb; s0 += 32) {
+        __syncwarp();   // (the lanes are done with the step before)
+#pragma unroll
+        for (int j = 0; j < WL; ++j) {
+            const int i = lane + 32 * j;
+            if (i < nw) st[i] = r[j];
+        }
+        __syncwarp();
+        const int n = min(32, nsb - s0);
+        if (s0 + 32 < nsb) {   // (the next step's words in flight while this one computes)
+            nw = min(32, nsb - s0 - 32) / 8 * BB / 4;
+            const uint32_t* src = w + (size_t) (s0 + 32) / 8 * BB / 4;
+#pragma unroll
+            for (int j = 0; j < WL; ++j) {
+                const int i = lane + 32 * j;
+                r[j] = i < nw ? src[i] : 0u;
+            }
+        }
+        if (lane < n) {
+            const int kb = s0 + lane;
+            Sub s;
+            decode_v<T>((const uint8_t*) st, lane, nullptr, s);   // (block lane / 8 of the stage, sub-block lane % 8)
+#pragma unroll
+            for (int c = 0; c < NC; ++c)
+                if (c < b.ncol) {
+                    const int4* xp = (const int4*) (b.xq + (size_t) c * b.k + (size_t) kb * 32);
+                    acc[c] = fmaf(b.xd[(size_t) c * nsb + kb], sub_dot<T>(s, xp[0], xp[1]), acc[c]);
+                }
+        }
+    }
+#pragma unroll
+    for (int c = 0; c < NC; ++c)
+        if (c < b.ncol) {
+            float v = acc[c];
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+            if (lane == 0) b.y[c * b.ycs + row] = b.alpha * v + (b.bias != nullptr ? b.bias[row] : 0.0f);
+        }
+}
+#endif
+
 // ---------------------------------------------------------------- the prompt sets' light experts
 // A set's experts of a few rows (<= kLightRows: a prompt of a few hundred tokens spreads ~10 over most of 384 experts)
 // in the token kernels' form: each weight sub-block decoded once and dotted with every row's int8 input (rounded per 32
@@ -1068,6 +1213,99 @@ __global__ void __launch_bounds__(kThreads) light_kernel_rows(const SetArgs a, c
                 a0[i] = fmaf(dx, sub_dot<T>(s0, xa, xb), a0[i]);
                 if (GATE_UP) a1[i] = fmaf(dx, sub_dot<T>(s1, xa, xb), a1[i]);
             }
+    }
+#pragma unroll
+    for (int i = 0; i < NE; ++i)
+        if (i < ne) {
+            const float v0 = warp_sum(a0[i]);
+            const float v1 = GATE_UP ? warp_sum(a1[i]) : 0.0f;
+            if (lane == 0) {
+                const size_t lr = (size_t) (lo + i);
+                if (GATE_UP) a.h[lr * a.ldo + row] = __half_as_ushort(__float2half_rn(swiglu(v0, v1, a.limit)));
+                else a.y[lr * a.ldo + row] = v0;
+            }
+        }
+}
+
+// light_kernel_rows with the weights' rows staged a step ahead (the default; DS4_LIGHT_STAGE=0: not): a step is 32 sub-blocks (4 blocks of a
+// 256-value type) of each row the warp reads - the gate's and the up's, or the down's - their words loaded in registers while
+// the warp computes the step it put in its shared stage before (mv_kernel_kst's form).  Lane l still takes sub-blocks l,
+// l + 32, ... in order, decoded by decode<T> from the stage, and the same sums: the same bits as light_kernel_rows.  A row that
+// starts 2 bytes past a word (the down's rows of 9 blocks) is staged from the word before it.  On a GB10 (ds4_iq_test
+// --bench-light, 17 experts) IQ2_XXS 10 rows: gate / up 1431 -> 1027 us, down 796 -> 609; 16 rows 2337 -> 1470; an agent
+// turn's prompt (422 tokens) 1856 -> 1669 ms; ds4_iq_test --cmp against light_kernel_rows: 48 buffers, identical.
+template <int T, int NE, bool GATE_UP>
+__global__ void __launch_bounds__(kThreads) light_kernel_rows_st(const SetArgs a, const int8_t* __restrict__ xq,
+                                                                 const float* __restrict__ xd) {
+    static_assert(kQK<T> == 256, "256-value blocks: 8 sub-blocks a block, 4 blocks a step");
+    constexpr int BB = Ty<T>::B, NR = GATE_UP ? 2 : 1;
+    constexpr int CW = (4 * BB + 3 + 3) / 4;   // a step's words, its row starting 0-3 bytes past a word
+    constexpr int WL = (CW + 31) / 32;         // words a lane loads a row
+    __shared__ uint32_t tab[Ty<T>::TAB > 0 ? Ty<T>::TAB : 1];
+    __shared__ __align__(16) uint32_t stage[kWarps][NR][CW];
+    const int e = blockIdx.y;
+    const int lo = a.bounds[e] - a.row0, ne = a.bounds[e + 1] - a.bounds[e];
+    if (ne <= 0 || ne > NE) return;   // (uniform: the tiles take an expert of more rows)
+    load_tab<T>(tab);
+    __syncthreads();
+    const int K = GATE_UP ? a.n_embd : a.n_ff, N = GATE_UP ? a.n_ff : a.n_embd, nsb = K / 32, nblk = nsb / 8;
+    const int warp = threadIdx.x >> 5, row = blockIdx.x * kWarps + warp, lane = threadIdx.x & 31;
+    if (row >= N) return;   // (the warp's own: only warp syncs below)
+    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const size_t rb = row_bytes_t<T>(K);
+    const uint8_t* wr[2] = {blob + a.tr[GATE_UP ? 0 : 2] + (size_t) row * rb, blob + a.tr[1] + (size_t) row * rb};
+    const uint32_t* src[NR];
+    int sh[NR];
+#pragma unroll
+    for (int r = 0; r < NR; ++r) {
+        sh[r] = (int) ((uintptr_t) wr[r] & 3u);
+        src[r] = (const uint32_t*) (wr[r] - sh[r]);
+    }
+    const size_t q0 = (size_t) e * kLightRows;
+    float a0[NE], a1[NE];
+#pragma unroll
+    for (int i = 0; i < NE; ++i) a0[i] = a1[i] = 0.0f;
+    uint32_t rg[NR][WL];
+    auto load = [&](int blk0) {   // the words of blocks [blk0, blk0 + 4) of each row (4 blocks: a whole number of words)
+        const int nb = min(4, nblk - blk0);
+#pragma unroll
+        for (int r = 0; r < NR; ++r) {
+            const int nw = (sh[r] + nb * BB + 3) / 4;
+            const uint32_t* s = src[r] + (size_t) (blk0 / 4) * BB;
+#pragma unroll
+            for (int j = 0; j < WL; ++j) {
+                const int i = lane + 32 * j;
+                rg[r][j] = i < nw ? s[i] : 0u;
+            }
+        }
+    };
+    load(0);
+    for (int blk0 = 0; blk0 < nblk; blk0 += 4) {
+        __syncwarp();   // (the lanes are done with the step before)
+#pragma unroll
+        for (int r = 0; r < NR; ++r)
+#pragma unroll
+            for (int j = 0; j < WL; ++j) {
+                const int i = lane + 32 * j;
+                if (i < CW) stage[warp][r][i] = rg[r][j];
+            }
+        __syncwarp();
+        if (blk0 + 4 < nblk) load(blk0 + 4);   // (the next step's words in flight while this one computes)
+        const int kb = blk0 * 8 + lane;
+        if (kb < nsb) {
+            Sub s0, s1;
+            decode<T>((const uint8_t*) stage[warp][0] + sh[0], lane, tab, s0);
+            if (GATE_UP) decode<T>((const uint8_t*) stage[warp][NR - 1] + sh[NR - 1], lane, tab, s1);
+#pragma unroll
+            for (int i = 0; i < NE; ++i)
+                if (i < ne) {
+                    const int4* xp = (const int4*) (xq + (q0 + i) * K + (size_t) kb * 32);
+                    const int4 xa = xp[0], xb = xp[1];
+                    const float dx = xd[(q0 + i) * nsb + kb];
+                    a0[i] = fmaf(dx, sub_dot<T>(s0, xa, xb), a0[i]);
+                    if (GATE_UP) a1[i] = fmaf(dx, sub_dot<T>(s1, xa, xb), a1[i]);
+                }
+        }
     }
 #pragma unroll
     for (int i = 0; i < NE; ++i)
@@ -1226,6 +1464,21 @@ LightBuf* light_buf(cudaStream_t s, int k) {
     }
     return &b;
 }
+// The decode kernels new to this engine - mv_kernel_nr's 128-bit loads, the staged Q4_K / Q5_K GEMV and light experts,
+// mv_kernel's 8-column instance - run by default only on a GPU that shares the PC's memory (cudaDevAttrIntegrated: a DGX
+// Spark's GB10), where they were timed faster. On the discrete cards timed they were not, overall, so there they stay opt-in
+// (DS4_MV_NR=1, DS4_MV_STAGE=1, DS4_LIGHT_STAGE=1). Not timed on HIP or Metal: opt-in there too.
+bool new_kernels_default() {
+#if defined(STRATA_USE_HIP) || defined(STRATA_METAL)
+    return false;
+#else
+    static const bool v = [] {   // (the current device at first use)
+        int d = 0, i = 0;
+        return cudaGetDevice(&d) == cudaSuccess && cudaDeviceGetAttribute(&i, cudaDevAttrIntegrated, d) == cudaSuccess && i != 0;
+    }();
+    return v;
+#endif
+}
 bool light_on() {   // STRATA_DS4_NO_LIGHT=1: every set through the GEMM tiles
     static const bool on = [] {
         const char* v = std::getenv("STRATA_DS4_NO_LIGHT");
@@ -1236,6 +1489,19 @@ bool light_on() {   // STRATA_DS4_NO_LIGHT=1: every set through the GEMM tiles
 template <int T, bool GU>
 void launch_light(const SetArgs& a, const LightBuf& b, cudaStream_t s) {
     const int tiles = ((GU ? a.n_ff : a.n_embd) + kWarps - 1) / kWarps;
+    if constexpr (kQK<T> == 256) {   // the rows' kernel with its weights staged a step ahead (same bits; DS4_LIGHT_STAGE=0: not)
+        static const bool st = [] {   // (new_kernels_default; DS4_LIGHT_STAGE=0 / 1 decides anywhere)
+            const char* v = std::getenv("DS4_LIGHT_STAGE");
+            return v == nullptr ? new_kernels_default() : std::atoi(v) != 0;
+        }();
+        if (st && (a.max_rows > 4 || !kPersist<T>)) {
+            const dim3 grid((unsigned) tiles, (unsigned) a.n_exp);
+            if (a.max_rows <= 4) strata_ds4_launch(light_kernel_rows_st<T, 4, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+            else if (a.max_rows <= 8) strata_ds4_launch(light_kernel_rows_st<T, 8, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+            else strata_ds4_launch(light_kernel_rows_st<T, kLightRows, GU>, grid, kThreads, 0, s, a, b.q, b.d);
+            return;
+        }
+    }
     if (a.max_rows <= 4) {   // few rows: work items round a persistent grid (the codebook per block is then the cost)
         if constexpr (kPersist<T>)
             strata_ds4_launch(light_kernel<T, 4, GU>, items_grid<T>(a.n_exp * tiles, resident_ctas<light_kernel<T, 4, GU>>()), kThreads, 0, s, a, b.q, b.d);
@@ -1299,8 +1565,68 @@ void mv_nc(const Jobs& J, int nj, int max_n, int max_c, cudaStream_t s) {
         return;
     }
 #endif
+#if !defined(STRATA_METAL)   // (CUDA and HIP: Metal has its own GEMV, metal_host::iq_mv)
+    // mv_kernel_nr (its 128-bit loads of Q4_K / Q5_K): a row a warp by default where new_kernels_default (DS4_MV_NR=1
+    // elsewhere) - the same sums in the same order as mv_kernel's, so the same bits; on a GB10 q_b (Q5_K 1280 x 32768)
+    // 163 -> 148 us, wo_b (8192 x 5120) 175 -> 149, the shared expert's 55 -> 47 and 56 -> 45.  DS4_MV_NR=2 / 4: that many
+    // rows a warp (other sums: their own order); =auto: a row a warp up to 2 columns, else 2 for rows of up to 160
+    // sub-blocks (measured better for the verify windows' 3-6 columns there); =0: mv_kernel.
+    static const int nr_env = [] {   // -1: mv_kernel, 0: auto, else rows a warp
+        const char* v = std::getenv("DS4_MV_NR");
+        if (v == nullptr) return new_kernels_default() ? 1 : -1;
+        if (std::string(v) == "auto") return 0;
+        const int n = std::atoi(v);
+        return n <= 0 ? -1 : n;
+    }();
+    int nsb_max = 0;
+    for (int j = 0; j < nj; ++j) nsb_max = std::max(nsb_max, J.j[j].k / 32);
+    const int nr = nr_env > 0 ? nr_env : nr_env == 0 ? (max_c <= 2 ? 1 : nsb_max <= 160 ? 2 : 1) : -1;
+    if constexpr (T == kQ4_K || T == kQ5_K) {   // (the row's weights staged a step ahead, mv_kernel_kst; DS4_MV_STAGE=0: not)
+        static const bool kst = [] {   // (new_kernels_default; DS4_MV_STAGE=0 / 1 decides anywhere)
+            const char* v = std::getenv("DS4_MV_STAGE");
+            return v == nullptr ? new_kernels_default() : std::atoi(v) != 0;
+        }();
+        bool aligned = true;   // (whole 16-byte words: the jobs' rows and starts)
+        for (int j = 0; j < nj; ++j) aligned = aligned && ((uintptr_t) J.j[j].w & 15u) == 0 && J.j[j].ld % 16 == 0;
+        if (nr == 1 && kst && aligned) {
+            if (max_c <= 1) strata_ds4_launch(mv_kernel_kst<T, 1>, grid, kThreads, 0, s, J);
+            else if (max_c <= 4) strata_ds4_launch(mv_kernel_kst<T, 4>, grid, kThreads, 0, s, J);
+            else if (max_c <= 6) strata_ds4_launch(mv_kernel_kst<T, 6>, grid, kThreads, 0, s, J);
+            else if (max_c <= 8) strata_ds4_launch(mv_kernel_kst<T, 8>, grid, kThreads, 0, s, J);
+            else strata_ds4_launch(mv_kernel_kst<T, 16>, grid, kThreads, 0, s, J);
+            return;
+        }
+    }
+    if (nr == 1) {   // (the new kernel a row a warp: its 128-bit loads)
+        if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 1>, grid, kThreads, 0, s, J);
+        else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 1>, grid, kThreads, 0, s, J);
+        // (5-6 activations - a verify window past 4 drafts' worth, the drafter's block of 5: 8 columns' registers
+        //  measured 16-29% slower than 4 on a GB10's dense shapes; a column's sums are its own whatever NC)
+        else if (max_c <= 6) strata_ds4_launch(mv_kernel_nr<T, 6, 1>, grid, kThreads, 0, s, J);
+        else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 1>, grid, kThreads, 0, s, J);
+        else strata_ds4_launch(mv_kernel_nr<T, 16, 1>, grid, kThreads, 0, s, J);
+        return;
+    }
+    if (nr == 2 || nr == 4) {
+        const dim3 g2((unsigned) ((max_n + kWarps * nr - 1) / (kWarps * nr)), (unsigned) nj);
+        if (nr == 4) {
+            if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 4>, g2, kThreads, 0, s, J);
+            else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 4>, g2, kThreads, 0, s, J);
+            else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 4>, g2, kThreads, 0, s, J);
+            else strata_ds4_launch(mv_kernel_nr<T, 16, 4>, g2, kThreads, 0, s, J);
+        } else {
+            if (max_c <= 1) strata_ds4_launch(mv_kernel_nr<T, 1, 2>, g2, kThreads, 0, s, J);
+            else if (max_c <= 4) strata_ds4_launch(mv_kernel_nr<T, 4, 2>, g2, kThreads, 0, s, J);
+            else if (max_c <= 8) strata_ds4_launch(mv_kernel_nr<T, 8, 2>, g2, kThreads, 0, s, J);
+            else strata_ds4_launch(mv_kernel_nr<T, 16, 2>, g2, kThreads, 0, s, J);
+        }
+        return;
+    }
+#endif
     if (max_c <= 1) strata_ds4_launch(mv_kernel<T, 1>, grid, kThreads, 0, s, J);
     else if (max_c <= 4) strata_ds4_launch(mv_kernel<T, 4>, grid, kThreads, 0, s, J);
+    else if (max_c <= 8 && new_kernels_default())   // (a drafter's window of 5-8: half the registers of 16)
+        strata_ds4_launch(mv_kernel<T, 8>, grid, kThreads, 0, s, J);
     else strata_ds4_launch(mv_kernel<T, 16>, grid, kThreads, 0, s, J);
 }
 
