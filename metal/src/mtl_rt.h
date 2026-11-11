@@ -109,6 +109,9 @@ public:
     // the same, also when bytes > maxBufferLength: then overlapping chunks, each holding any range of up to
     // max_span bytes that starts in it (max_span = the largest tensor bound at one offset)
     Buffer wrap(void* page_aligned, size_t bytes, size_t max_span);
+    // the same no-copy wrap, left out of allocated(): for a mapping whose pages commit only as they are written, so
+    // the budget sees what is resident (the footprint), not the whole reservation
+    Buffer wrap_map(void* page_aligned, size_t bytes);
     void free(Buffer& b);
 
     // Encodes `ds` into ONE compute encoder (serial or concurrent dispatch type) and ONE command buffer, `reps`

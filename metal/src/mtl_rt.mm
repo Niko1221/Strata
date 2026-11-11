@@ -607,6 +607,21 @@ Buffer Context::alloc(size_t bytes) {
 #endif
 }
 
+Buffer Context::wrap_map(void* p, size_t bytes) {
+    Buffer r;
+    @autoreleasepool {   // (see alloc: the engine's host threads have no pool of their own)
+        id<MTLBuffer> b = [impl_->dev newBufferWithBytesNoCopy:p length:bytes options:MTLResourceStorageModeShared deallocator:nil];
+        if (!b) {
+            std::fprintf(stderr, "mtl: wrap_map %zu failed\n", bytes);
+            std::exit(4);
+        }
+        r.handle = (__bridge_retained void*)b;
+    }
+    r.ptr = p;
+    r.bytes = bytes;
+    return r;
+}
+
 Buffer Context::wrap(void* p, size_t bytes, size_t max_span) {
     const size_t pg = 16384, maxlen = [impl_->dev maxBufferLength] / pg * pg;
     if (bytes <= maxlen || std::getenv("STRATA_METAL_WRAP_SPLIT") && std::string(std::getenv("STRATA_METAL_WRAP_SPLIT")) == "0")
