@@ -21,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <set>
 #include <vector>
 
 namespace ng = strata::ngram;
@@ -73,6 +74,25 @@ bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n
             return false;
         }
     }
+    return true;
+}
+
+/// issue() folds the rows of one ticket that share a 4 KiB page into one read (PR #4910: a small stack buffer for up to 64
+/// misses, a reusable vector above that, sorted by offset and merged in one pass).  The bytes are checked as always; here the
+/// counters too: `requests` grows by the rows asked for, and `dedup_rows` by (rows read - distinct pages), worked out from the
+/// row numbers alone.  Needs a reader without a row cache (a cached row is not a miss).
+bool check_coalescing(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n_rows, uint32_t rb, const char* what) {
+    const ng::ReaderStats before = rd.snapshot();
+    if (!check_rows(rd, rows, n_rows, rb, what)) return false;
+    const ng::ReaderStats after = rd.snapshot();
+    std::set<uint64_t> pages;
+    size_t misses = 0;
+    for (uint32_t r : rows)
+        if (r < n_rows) { ++misses; pages.insert((HEADER + (uint64_t) r * rb) / 4096 * 4096); }
+    CHECK(after.requests - before.requests == rows.size(), "%s: requests grew by %llu, not %zu", what,
+          (unsigned long long) (after.requests - before.requests), rows.size());
+    CHECK(after.dedup_rows - before.dedup_rows == misses - pages.size(), "%s: dedup_rows grew by %llu, not %zu", what,
+          (unsigned long long) (after.dedup_rows - before.dedup_rows), misses - pages.size());
     return true;
 }
 
@@ -489,6 +509,31 @@ int selftest(const std::string& dir, uint32_t rb) {
             check_rows(rd, straddle, N, rb, "straddle");
             // duplicates, neighbours on one page, the first and last rows, and out-of-range rows
             check_rows(rd, {5, 5, 6, 7, 5, 0, N - 1, N, 0xFFFFFFFFu, 44, 45}, N, rb, "dedup/edges");
+            if (cache == 0) {
+                // batch sizes around the small-buffer bound (64), empty, one, and well above it; each shape twice, big and
+                // small alternating so the reusable overflow vector is reused at a smaller size too
+                for (size_t n : {(size_t) 0, (size_t) 1, (size_t) 2, (size_t) 15, (size_t) 16, (size_t) 63, (size_t) 64,
+                                 (size_t) 65, (size_t) 66, (size_t) 127, (size_t) 128, (size_t) 129, (size_t) 1000, (size_t) 4096,
+                                 (size_t) 65, (size_t) 1, (size_t) 300}) {
+                    std::vector<uint32_t> rows(n);
+                    for (auto& r : rows) r = rng() % N;
+                    check_coalescing(rd, rows, N, rb, "random");
+                    for (auto& r : rows) r = 1000 + rng() % 200;           // ~200 rows of a few dozen pages: many shared
+                    check_coalescing(rd, rows, N, rb, "clustered");
+                    for (auto& r : rows) r = 77;                           // one row n times
+                    check_coalescing(rd, rows, N, rb, "one row");
+                    for (size_t i = 0; i < n; ++i) rows[i] = (uint32_t) (n - 1 - i) * 3;   // descending: the sort reorders them
+                    check_coalescing(rd, rows, N, rb, "descending");
+                    for (size_t i = 0; i < n; ++i) rows[i] = (i % 5 == 0) ? N + (uint32_t) i : (uint32_t) (i / 2) * 7;   // out of range among misses
+                    check_coalescing(rd, rows, N, rb, "out of range mix");
+                }
+                std::vector<uint32_t> straddle_dup;                        // rows that cross a page, each twice, interleaved
+                for (uint32_t r = 0; r < N && straddle_dup.size() < 140; ++r) {
+                    const uint64_t at = HEADER + (uint64_t) r * rb;
+                    if (at / 4096 != (at + rb - 1) / 4096) { straddle_dup.push_back(r); straddle_dup.push_back(r); }
+                }
+                check_coalescing(rd, straddle_dup, N, rb, "straddle twice");
+            }
             // a prefill-shaped ticket much larger than the in-flight window
             std::vector<uint32_t> bulk(20000);
             for (auto& r : bulk) r = rng() % N;

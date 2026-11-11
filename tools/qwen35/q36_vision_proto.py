@@ -11,7 +11,7 @@ a picture request is not disturbed (the rotary offset is back at 0).
 Start the engine without --mtp for the cache check: the held tokens of a request that ran with drafts include the drafts accepted past
 its last emitted token, so a prompt that does not repeat them reads from the start (correct, but the check wants the reuse)."""
 from pathlib import Path
-import argparse, json, os, shlex, sys
+import argparse, os, shlex, sys
 sys.path.insert(0, __file__.rsplit("/", 1)[0] if "/" in __file__ else ".")
 from q36_harness import Eng, load_prompts
 

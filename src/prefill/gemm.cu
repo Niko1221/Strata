@@ -28,6 +28,8 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <initializer_list>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -272,10 +274,19 @@ std::string own_tuning_dir() {
 std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t workspace_bytes) {
     std::string path_own;
     const char* path = std::getenv("STRATA_HIPBLASLT_TUNING");
-    bool from_package = false;
+    bool from_package = false, table_forced = false;
     if (!path || !*path) {
-        const char* sw = std::getenv("STRATA_HIPBLASLT_TABLE");     // the launcher's switch: off / 0 / false = never the packaged table
-        if (sw != nullptr && (std::strcmp(sw, "off") == 0 || std::strcmp(sw, "0") == 0 || std::strcmp(sw, "false") == 0)) return nullptr;
+        const char* sw = std::getenv("STRATA_HIPBLASLT_TABLE");     // the launcher's switch (strata_control/hipblaslt_tuning.py): off / on / auto
+        std::string low = sw != nullptr ? sw : "";                   // trimmed and lower case, as the launcher reads it
+        while (!low.empty() && std::isspace((unsigned char) low.back())) low.pop_back();
+        while (!low.empty() && std::isspace((unsigned char) low.front())) low.erase(low.begin());
+        for (char& ch : low) ch = (char) std::tolower((unsigned char) ch);
+        const auto word = [&](std::initializer_list<const char*> ws) {
+            for (const char* w : ws) if (low == w) return true;
+            return false;
+        };
+        if (word({"off", "0", "no", "false", "none", "disable", "disabled"})) return nullptr;   // never the packaged table
+        table_forced = word({"on", "1", "yes", "true", "force", "enable", "enabled"});          // any card that has a table beside the engine
         from_package = true;                                          // the file is found below, once the card and the version are known
     }
 
@@ -303,6 +314,10 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     if (suffix != std::string::npos) arch.resize(suffix);
 
     if (from_package) {
+        // Unset or "auto": only Strix Halo (gfx1151) takes the packaged table by itself, the owner's decision of 2026-10-19 (the same
+        // rule as AUTO_ARCHS in strata_control/hipblaslt_tuning.py): on other cards the table changes the answers' last digits for ~1%
+        // (gfx1201), so they take it with STRATA_HIPBLASLT_TABLE=on only.
+        if (!table_forced && arch != "gfx1151") return nullptr;
         const std::string dir = own_tuning_dir();
         if (dir.empty()) return nullptr;
         path_own = dir + arch + "-hipblaslt-" + std::to_string(version) + ".txt";
@@ -1410,15 +1425,23 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     // =0 turns it off.
     if (w16_budget_ < 0) {
         const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
-        if (v != nullptr) {
+        if (v != nullptr && std::strcmp(v, "auto") == 0) {
+            // STRATA_PF_W16_CACHE_MIB=auto (tester switch, round0212 item 7): the automatic sizing - weights are cached while the card
+            // keeps kW16AutoReserve free afterwards, so a card whose expert cache fills it caches nothing.  Not bit-exact (see below),
+            // so it is not the default until the owner says yes.
+            w16_budget_ = 16ll << 30;
+            w16_reserve_ = kW16AutoReserve;
+        } else if (v != nullptr) {
             w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
             w16_reserve_ = 2ll << 30;
         } else {
-            // OFF by default (INT3, 11-01; owner's rule: a default that changes values needs 5%+, KL and a yes).  cda6463e8 had turned it on for
-            // Linux CUDA as 'bit-exact', but gemm_dequant_side_parity fails with it on sm_86 (z440, boston), sm_120 (l620) and sm_121 (Spark): a
-            // cached weight runs one full-N GEMM where the uncached form runs the sliced ones, and the roundings differ.  v0.2.9 had it off.
-            // STRATA_PF_W16_CACHE_MIB=N (above) turns it on by hand; the automatic sizing (kW16AutoReserve) is kept for when it is shown exact.
-            w16_budget_ = 0;
+            // INT3 turned the default off (11-01) because gemm_dequant_side_parity failed with it on sm_86 / sm_120 / sm_121.  That test builds its Gemm
+            // with a 10.5 M-element scratch, smaller than four of its weights, so uncached those take the sliced path (several GEMMs) and cached they
+            // take one full-N GEMM: not the engine.  The engine's scratch is GEMM_SCRATCH = 32 M elements and every dense projection of Qwen3.8
+            // (largest attn_q, 31.5 M) fits it, so cached and uncached are the same GEMM on the same FP16 values (gemm_w16_parity: the engine's scratch,
+            // shapes and types, bitwise).  Round0212 item 7: on when the engine says so (set_w16_auto_default: Linux CUDA with batch slots), else off
+            // as in v0.2.9.  It takes only VRAM beyond kW16AutoReserve, so a card whose expert cache fills it caches nothing.  =0 turns it off.
+            w16_budget_ = w16_auto_default_().load() ? (16ll << 30) : 0;
             w16_reserve_ = kW16AutoReserve;
         }
     }

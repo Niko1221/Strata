@@ -176,7 +176,7 @@ def install_package(dest: Path, package: str | os.PathLike, *, emit: Callable[[s
     """Install a DeepSeek engine package the person downloaded from the release page (a .tar.gz / .zip, or the unpacked folder) into `dest`.
     Checked before anything is installed: it is a DeepSeek engine package for this system, its manifest is signed by a key Strata trusts, and every
     file matches the hash in the manifest.  Returns the new strata-dsv41, or None with a plain line through `emit`."""
-    from strata_control import components, engine_component as ec, signing, updater
+    from strata_control import engine_component as ec, signing, updater
     from strata_control.targets import host_platform
 
     src, dest = Path(package).expanduser(), Path(dest)
@@ -362,7 +362,7 @@ def upgrade(dest: Path, source: str, *, installed: Path | None = None, hardware:
         try:
             feed = updater.open_feed(ctx, state)
         except feedmod.FeedError as exc:
-            if "could not be read" in str(exc):
+            if "could not be read" in str(exc) or isinstance(exc, feedmod.FeedUnreachable):
                 return None                                       # no network, no feed here: silent, the launch goes on
             emit(f"A newer DeepSeek engine may be available but could not be checked: {exc}; still using {shown}.")
             return None
