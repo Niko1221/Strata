@@ -33,11 +33,19 @@ DATA = bytes((i * 7 + (i >> 8)) & 0xFF for i in range(CHUNK * 40 + 12345))      
 NAME = "t.gguf"
 
 
+def pause(seconds):
+    """Wait without going through time.sleep: small_pieces() patches that module-wide, so a time.sleep here would be a no-op
+    as well.  A test that kills a download has to wait on something the client's shortened sleeps do not touch: unpaced, the
+    file reaches its last byte before the kill and there is no .part to resume (GitHub's macOS runners, head 8a79a6d5)."""
+    threading.Event().wait(seconds)
+
+
 class Server:
     """A threaded HTTP server for one file.  `faults(path, start, end, nth)` may answer a request with an error."""
 
-    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None):
+    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None, live_delay=False):
         self.data, self.ranges, self.length, self.redirect, self.delay = data, ranges, length, redirect, delay
+        self.live_delay = live_delay       # the delay must survive small_pieces(): a test that kills a download needs it paced
         self.faults = faults
         self.lock = threading.Lock()
         self.gets, self.heads, self.redirects = [], 0, 0           # gets: (start, end) of every ranged GET
@@ -132,7 +140,7 @@ class Server:
                         return
                     h.wfile.write(body[i:i + 16384])
                     if self.delay:
-                        time.sleep(self.delay)
+                        (pause if self.live_delay else time.sleep)(self.delay)
             except OSError:
                 pass
         finally:
@@ -316,7 +324,7 @@ class Resume(unittest.TestCase):
             "setup.file_pin = lambda u: pin\n"
             "setup.download(sys.argv[1], __import__('pathlib').Path(sys.argv[2]) / %r, 'the model')\n"
             % (str(ROOT), str(ROOT / "tools"), CHUNK, len(DATA), hashlib.sha256(DATA).hexdigest(), NAME))
-        with small_pieces(), Server(delay=0.05) as srv, tempfile.TemporaryDirectory() as d:
+        with small_pieces(), Server(delay=0.05, live_delay=True) as srv, tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, STRATA_SOURCE="huggingface")
             err = Path(d) / "runner.err"                         # kept for the message below: CI saw the sidecar missing once (11-09)
             with open(err, "wb") as err_file:
@@ -335,7 +343,7 @@ class Resume(unittest.TestCase):
                             break
                     except (OSError, ValueError, KeyError):
                         pass
-                    time.sleep(0.05)
+                    pause(0.05)
             finally:
                 code = proc.poll()
                 proc.kill()
