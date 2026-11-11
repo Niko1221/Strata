@@ -188,5 +188,60 @@ class FeedRule(Scaled):
                                             "Strata keeps working with what is installed.")
 
 
+class LocalSource(Scaled):
+    """A local source (a plain path or a file: address) that cannot be OPENED fails at once with the error it had before the network rule (a
+    TransferError, resumable, "the download of ... was interrupted after 0 of N bytes (FileNotFoundError: ...)"), not after the rule's 5 minutes
+    of retries; a read that fails after the open is still resumed in the same run (a USB or network drive that hiccups mid-copy)."""
+
+    def gone(self, location):
+        t0 = time.monotonic()
+        with self.assertRaises(transfer.TransferError) as cm:
+            self.fetch(location)
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertIs(type(cm.exception), transfer.TransferError, "a plain TransferError, as before: not an Interrupted that is retried")
+        self.assertTrue(cm.exception.resumable)
+        self.assertTrue(str(cm.exception).startswith(f"the download of {location} was interrupted after 0 of {len(BODY)} bytes ("), str(cm.exception))
+        self.assertTrue(str(cm.exception).endswith("); the partial file is kept and the next try resumes it"), str(cm.exception))
+        self.assertFalse((self.dir / "f.part").exists(), "nothing written")
+        return str(cm.exception)
+
+    def test_a_missing_file_address_fails_at_once(self):
+        said = self.gone((self.dir / "no-such-file.pack").as_uri())
+        self.assertIn("(FileNotFoundError: ", said)
+
+    def test_a_missing_plain_path_fails_at_once(self):
+        said = self.gone(str(self.dir / "no-such-folder" / "file.pack"))
+        self.assertIn("(FileNotFoundError: ", said)
+
+    def test_a_folder_given_as_the_file_fails_at_once(self):
+        (self.dir / "a-folder").mkdir()
+        self.gone(str(self.dir / "a-folder"))               # IsADirectoryError (Linux, macOS) or PermissionError (Windows)
+
+    def test_a_read_that_fails_after_the_open_is_resumed_in_the_same_run(self):
+        source = self.dir / "source.bin"
+        source.write_bytes(BODY)
+        real_copy = transfer._copy
+        calls = []
+
+        class Hiccup:                                       # the first copy's source breaks after 3000 bytes, once
+            def __init__(self, f):
+                self.f, self.n = f, 0
+
+            def read1(self, k):
+                if self.n >= 3000:
+                    raise OSError(5, "Input/output error")
+                piece = self.f.read(min(k, 3000 - self.n))
+                self.n += len(piece)
+                return piece
+
+        def copy(src, partial, mode, done, size, progress, cancel):
+            calls.append((mode, done))
+            return real_copy(Hiccup(src) if len(calls) == 1 else src, partial, mode, done, size, progress, cancel)
+
+        with mock.patch.object(transfer, "_copy", copy):
+            self.assertEqual(self.fetch(str(source)).read_bytes(), BODY)
+        self.assertEqual(calls, [("wb", 0), ("ab", 3000)], "one more copy, from the byte the first one reached: no byte twice")
+
+
 if __name__ == "__main__":
     unittest.main()

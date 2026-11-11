@@ -312,7 +312,17 @@ def _transfer(location, partial: Path, have: int, size: int, progress, cancel, t
                 _copy(response, partial, "wb" if not have else "ab", done, size, progress, cancel)
         else:
             path = _local_path(location)
-            with path.open("rb") as source:
+            try:
+                opened = path.open("rb")
+            except (FileNotFoundError, NotADirectoryError, IsADirectoryError, PermissionError) as exc:
+                # a local source that cannot be OPENED does not get better by waiting: raised at once as before the network
+                # rule (a plain TransferError, so download() does not retry it), with main's words; a read that fails AFTER
+                # the open is still an Interrupted below, retried while bytes keep coming (a USB or network drive hiccup)
+                got = partial.stat().st_size if partial.exists() else 0
+                raise TransferError(f"the download of {location} was interrupted after {got} of {size} bytes "
+                                    f"({type(exc).__name__}: {exc}); the partial file is kept and the next try resumes it",
+                                    resumable=True) from None
+            with opened as source:
                 source.seek(have)
                 _copy(source, partial, "ab" if have else "wb", have, size, progress, cancel)
     except (Cancelled, Unreachable):
