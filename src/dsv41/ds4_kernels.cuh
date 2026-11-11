@@ -61,11 +61,6 @@ void finish(float* x, int n_vec, int len, long long stride, const Finish& f, cud
 /// pre / post / comb as hc_split_sinkhorn (comb[t][j * hc + k], j the source stream, k the destination).  Strides: mixes
 /// 32, pre / post 8, comb 64 floats a row.
 void hc_mix(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, cudaStream_t s);
-/// hc_mix then hc_split in one launch (cnt: T zeroed unsigned counters, left zero; n_mix <= 32, T <= kWin): the last block of a token
-/// runs the split - the same arithmetic as the two launches
-void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, float eps, float* mixes, unsigned* cnt,
-                  const float* scale, const float* base, int hc, int iters, float hc_eps, float* pre, float* post,
-                  float* comb, cudaStream_t s);
 void hc_split(const float* mixes, const float* scale, const float* base, int hc, int iters, float hc_eps, int T,
               float* pre, float* post, float* comb, cudaStream_t s);
 /// the same two in one dispatch (the Metal kernel ds4_hc_mix_split); the CUDA path calls hc_mix then hc_split.
@@ -75,6 +70,11 @@ void hc_mix_split(const float* h, const float* fn, int hcdim, int n_mix, int T, 
 /// x[t][e] = sum_s mix[t][s] h[t][s][e], then x = rmsnorm(x) * w (w null: no norm).
 void hc_pre_norm(const float* h, const float* mix, const float* w, int dim, int hc, int T, float eps, float* x,
                  cudaStream_t s);
+/// hc_pre_norm with hc_split of mixes in blocks beside it, the same arithmetic as the two launches: for a layer whose
+/// norm reads an earlier split's pre, so this split need not finish before the norm starts
+void hc_pre_norm_split(const float* h, const float* mix, const float* w, int dim, int hc, int T, float eps, float* x,
+                       const float* mixes, const float* scale, const float* base, int iters, float hc_eps, float* pre,
+                       float* post, float* comb, cudaStream_t s);
 /// out[t][k][e] = post[t][k] y[t][e] + sum_j comb[t][j][k] res[t][j][e]  (out must not alias res).
 void hc_post(const float* y, const float* res, const float* post, const float* comb, int dim, int hc, int T,
              float* out, cudaStream_t s);
