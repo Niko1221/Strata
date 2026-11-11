@@ -8415,6 +8415,8 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path == "/tokenize":
+                    self._tokenize(req)
                 elif path == "/v1/images/generations":
                     self._images(req)
                 else:
@@ -8977,6 +8979,33 @@ def make_handler(svc: Service):
                                           "reasoning.encrypted_content" in include, validator is not None)
             # the request is also the sampling dict, as on the chat path (temperature, top_p, top_k, seed, ...)
             return ids, thinking, tools, max_new, asm, validator, req
+
+        def _tokenize(self, req):
+            """POST /tokenize: the prompt this server would read, rendered and tokenized - the model does not run.
+            vLLM's /tokenize shape: a 'prompt' (plain text) or a chat 'messages' conversation, and the token ids,
+            their count and the context length.  A chat request is read as /v1/chat/completions would read it
+            (openai_to_messages: the same template, the same tools and thinking level), so the count a client
+            plans from here is the count its request would take.  The request's `model` is accepted like the other
+            routes accept it: this server has one model, and every name reaches it (the client's own deployment id)."""
+            if bool("prompt" in req) == bool("messages" in req):
+                raise ValueError("send a 'prompt' (a plain text) or a chat 'messages' conversation - not both, not neither")
+            if req.get("continue_final_message"):
+                raise ValueError("continue_final_message is not supported")
+            if "prompt" in req:
+                prompt = req["prompt"]
+                if not isinstance(prompt, str):
+                    raise ValueError("prompt: a text")
+                ids = svc.tok.encode(prompt, parse_special=True)
+            else:
+                messages, tools, kw = openai_to_messages(req)
+                require_messages(messages)
+                kw["add_generation_prompt"] = bool(req.get("add_generation_prompt", True))
+                ids = svc.encode_prompt(messages, tools, kw, store=False)
+                images = images_of(messages)
+                if images:
+                    ids, _ = svc.expand_image_tokens(images, ids)
+            self._json(200, {"count": len(ids), "tokens": ids,
+                             "max_model_len": svc.reported_ctx(), "token_strs": None})
 
         def _count_tokens(self, req):
             """Anthropic's token count, which Claude Code asks for its context figures: the prompt this server would
