@@ -1,0 +1,49 @@
+{
+  "exe": "C:\\Users\\<user>\\AppData\\Local\\Strata\\components\\engine\\0.1.57-windows-x86_64-hip-rdna2\\strata.exe",
+  "args": [
+    "--pack",
+    "F:\\Strata-data\\packs\\iq3_s",
+    "--native",
+    "F:\\Strata-data\\models\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf",
+    "F:\\Strata-data\\models\\IQ3_S\\Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile",
+    "F:\\Strata\\data\\expert-profile.bin",
+    "--expert-cache",
+    "auto",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.7",
+    "--pcie-frac",
+    "0.2",
+    "--mtp",
+    "F:\\Strata-data\\mtp\\rt",
+    "--max-context",
+    "131072",
+    "--kv",
+    "int8",
+    "--kv-resident",
+    "32768",
+    "--vram-reserve-mib",
+    "1280"
+  ],
+  "cwd": "F:\\Strata",
+  "tokenizer": "F:\\Strata-data\\packs\\iq3_s\\tokenizer",
+  "model_name": "qwen3.8-flash-next-iq3_s",
+  "log": "F:\\Strata\\strata-iq3_s-bench-20261110.log",
+  "lib_dirs": [
+    "C:\\Users\\<user>\\AppData\\Local\\Strata\\components\\engine\\0.1.57-windows-x86_64-hip-rdna2\\rocm\\bin"
+  ],
+  "port": 8080,
+  "backend": "hip",
+  "host": "127.0.0.1",
+  "fit_max_tokens": true,
+  "env": {
+    "STRATA_HIP_PROMPT_F16": "1",
+    "STRATA_PREFILL_CPU_SHARE": "auto",
+    "STRATA_SELECT_SIMT": "1"
+  }
+}
