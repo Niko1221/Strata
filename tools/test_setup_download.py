@@ -35,17 +35,18 @@ NAME = "t.gguf"
 
 def pause(seconds):
     """Wait without going through time.sleep: small_pieces() patches that module-wide, so a time.sleep here would be a no-op
-    as well.  A test that kills a download has to wait on something the client's shortened sleeps do not touch: unpaced, the
-    file reaches its last byte before the kill and there is no .part to resume (GitHub's macOS runners, head 8a79a6d5)."""
+    as well.  The wait for the pieces a killed download has written is not one of the client's waits to shorten."""
     threading.Event().wait(seconds)
 
 
 class Server:
     """A threaded HTTP server for one file.  `faults(path, start, end, nth)` may answer a request with an error."""
 
-    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None, live_delay=False):
+    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None, stall_at=None):
         self.data, self.ranges, self.length, self.redirect, self.delay = data, ranges, length, redirect, delay
-        self.live_delay = live_delay       # the delay must survive small_pieces(): a test that kills a download needs it paced
+        self.stall_at = stall_at           # bytes this server sends before it waits for release(): the killed-download test
+        self.sent = 0
+        self.gate = threading.Event()
         self.faults = faults
         self.lock = threading.Lock()
         self.gets, self.heads, self.redirects = [], 0, 0           # gets: (start, end) of every ranged GET
@@ -73,11 +74,27 @@ class Server:
     def url(self):
         return f"http://127.0.0.1:{self.port}/{NAME}"
 
+    def release(self):
+        """Let a held file finish.  A test that kills a download holds the rest of the file until its kill has landed."""
+        self.gate.set()
+
+    def _hold(self, nbytes):
+        """Whether the next slice of the body may be written.  With `stall_at` the server stops there and waits: the file then
+        cannot reach its last byte before the test kills the download, whatever the runner's speed.  A `delay` only moves
+        that moment about, and the client's own waits are patched away by small_pieces() anyway."""
+        with self.lock:
+            if self.stall_at is None or self.sent < self.stall_at or self.gate.is_set():
+                self.sent += nbytes
+                return True
+        self.gate.wait(60)                 # released by the test after its kill; the timeout only ends a stuck test
+        return False
+
     def __enter__(self):
         self.thread.start()
         return self
 
     def __exit__(self, *exc):
+        self.gate.set()                    # whatever is still held: the server is going away
         self.httpd.shutdown()
         self.httpd.server_close()
 
@@ -138,9 +155,11 @@ class Server:
                     if cut is not None and i >= cut:
                         h.connection.shutdown(2)           # the connection drops in the middle of the body
                         return
+                    if not self._hold(16384):
+                        return                             # held for a test that kills the download: not a byte more
                     h.wfile.write(body[i:i + 16384])
                     if self.delay:
-                        (pause if self.live_delay else time.sleep)(self.delay)
+                        time.sleep(self.delay)
             except OSError:
                 pass
         finally:
@@ -324,7 +343,9 @@ class Resume(unittest.TestCase):
             "setup.file_pin = lambda u: pin\n"
             "setup.download(sys.argv[1], __import__('pathlib').Path(sys.argv[2]) / %r, 'the model')\n"
             % (str(ROOT), str(ROOT / "tools"), CHUNK, len(DATA), hashlib.sha256(DATA).hexdigest(), NAME))
-        with small_pieces(), Server(delay=0.05, live_delay=True) as srv, tempfile.TemporaryDirectory() as d:
+        # The server stops after 36 of the 41 pieces and waits for release(): the download cannot reach its last byte
+        # before the kill below, on any runner (a paced server left only a window, and the pacing could be patched away).
+        with small_pieces(), Server(stall_at=36 * CHUNK) as srv, tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, STRATA_SOURCE="huggingface")
             err = Path(d) / "runner.err"                         # kept for the message below: CI saw the sidecar missing once (11-09)
             with open(err, "wb") as err_file:
@@ -348,6 +369,7 @@ class Resume(unittest.TestCase):
                 code = proc.poll()
                 proc.kill()
                 proc.wait()
+                srv.release()                                        # the held pieces: nothing reads them any more
             self.assertTrue((Path(d) / (NAME + ".part")).exists(), "the download finished before it was killed")
             if side.exists():
                 saved = json.loads(side.read_text())
