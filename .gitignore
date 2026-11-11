@@ -48,8 +48,7 @@ build-vision-cuda12.bat
 
 # setup.py outputs (engine, downloads) and release builds
 /engine/
-/engine-sycl/
-/engine-cuda12/
+/engine-*/
 /build-release*/
 /dist/
 *.done
