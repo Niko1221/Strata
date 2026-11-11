@@ -621,7 +621,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
-                                   const QsaState& draft, std::string& error) {
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -633,12 +633,46 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     conversation_checkpoint_join(captured.live.gdn.data());
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
+    return true;
+}
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
+}
+
+bool conversation_snapshot_sinks(std::vector<SessionKvSink>& sinks, const SessionState& ss, const ModelGeometry& g,
+                                 int64_t upto, const QsaState* draft, std::string& error) {
+    const size_t layers = owned_qsa(ss);
+    std::vector<SessionKvSink> out(layers + (draft ? 1 : 0));
+    for (size_t j = 0; j < layers; ++j)
+        if (!conversation_kv_sink(out[j], owned(ss, j), g, upto, true, error)) return false;
+    if (draft && !conversation_kv_sink(out.back(), *draft, g, upto, false, error)) return false;
+    sinks = std::move(out);
+    return true;
+}
+
+// Everything a streamed restore checks before any K/V byte moves: the meta against this runtime.
+// The first half of conversation_snapshot_validate, without the K/V layer checks (the image holds
+// no K/V; the sink declarations are checked per layer instead).  No stage_images check: a split
+// parent image goes through the pointer overload legitimately, and a streamed restore never
+// carries stage_images (the file format has no section for them; the writer separately refuses stage_parts).
+bool conversation_snapshot_meta_validate(const SavedConversation& meta, const SessionState& ss,
+                                         const ModelGeometry& g, std::string& error) {
+    if (!meta.live.stage_parts.empty())
+        return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
+    if (meta.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
+    // an image holds exactly one carve's running state and K/V: same layer range or nothing
+    if (meta.layer_lo != ss.layer_lo || meta.layer_hi != ss.layer_hi)
+        return fail(error, "snapshot from another session layer range");
+    const ConversationView view{meta.live.ids, meta.live.imgs, meta.checkpoints, meta.cvec};
+    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(meta.live, ss, g, error)) return false;
     return true;
 }
 
@@ -675,14 +709,7 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
 
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error) {
-    if (!image.live.stage_parts.empty())
-        return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
-    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
-    // an image holds exactly one carve's running state and K/V: same layer range or nothing
-    if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
-        return fail(error, "snapshot from another session layer range");
-    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
-    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
+    if (!conversation_snapshot_meta_validate(image, ss, g, error)) return false;
     const size_t layers = owned_qsa(ss);
     if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");
     const int64_t upto = (int64_t) image.live.ids.size();
