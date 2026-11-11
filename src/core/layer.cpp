@@ -805,7 +805,7 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 }
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
-                        const QsaState* share_rope, int64_t ring_cells) {
+                        const QsaState* share_rope, int64_t ring_cells, bool kv_host) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     const int64_t pages = p.pages;
@@ -916,7 +916,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.host_step[strata::kernels::kStepCount] = 0;
     // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout
     st.host = strata::kernels::KvHostPools{};
-    if (p.mode != 0) {
+    if (p.mode != 0 && kv_host) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;

@@ -296,6 +296,23 @@ public:
     /// (its windows use the pool), so no chunk of that read takes the share; false lets the read's chunks take it.
     static void set_share_blocked(bool blocked);
 
+    /// DUAL DATA-PARALLEL prompt path (STRATA_DP_PREFILL; nicejunjie's design, nicejunjie/Strata-rdna3).  Two prompt paths on two
+    /// GPUs both run ALL layers, each on every other chunk of a long prompt; chunk k+1 at layer l waits (cross-device
+    /// event) for chunk k's state of layer l, which the GPU that ran chunk k copies into the other GPU's state buffers
+    /// (GDN state, indexer rows and tail, PLE history; the K/V go through the streamed layers' shared host copy).
+    /// `foreign`: this GPU's session for the layers it does not own in decode (the owned ones stay in init's `ss`);
+    /// `own_lb`/`own_le`: the layers whose experts this GPU's cache holds (the others are streamed).  Both paths must
+    /// have run `init` with chunk >= the DP chunk.  `index` 0 / 1.
+    struct DpLink;
+    void set_dp(Prefill* peer, core::SessionState* foreign, int64_t own_lb, int64_t own_le, std::shared_ptr<DpLink> link,
+                int index);
+    bool dp_ready() const { return dp_link_ != nullptr; }
+    /// Read [pos0, pos0 + n) on `a` and `b` together in chunks of up to `chunk` tokens; the last chunk runs on `b` (the
+    /// drafter's GPU) and is at least `min_last` tokens when the prompt allows.  `b`'s on_chunk reports b's chunks.
+    static bool run_dp(Prefill& a, Prefill& b, const int64_t* tokens, int64_t n, int64_t pos0, int64_t chunk,
+                       int64_t min_last, std::string& err);
+    static std::shared_ptr<DpLink> make_dp_link(int n_layers, int dev_a, int dev_b, std::string& err);
+
     /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): true while `on_chunk` reports a sub-chunk before the end of
     /// its super-chunk.  The session state is already at the super-chunk's end then, so no checkpoint may be taken.
     /// On a layer split it is the last stage's (the one that reports the rows), asked through the first.
@@ -345,6 +362,18 @@ private:
     bool drain_pipeline(std::string& err);
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
+    // DP: see set_dp
+    Prefill* dp_peer_ = nullptr;
+    core::SessionState* dp_foreign_ = nullptr;
+    int64_t dp_own_lb_ = 0, dp_own_le_ = 0;
+    std::shared_ptr<DpLink> dp_link_;
+    int dp_index_ = 0;
+    struct DpChunk { int64_t c0, T, k; int who; };
+    std::vector<DpChunk> dp_plan_;      ///< set by run_dp for one prompt: every chunk, and who reads it
+    std::vector<int32_t> dp_res_;       ///< this GPU's residency view for one prompt (foreign layers -1)
+    bool dp_active_ = false;
+    bool dp_wait(int64_t l, int64_t k, std::string& err);
+    bool dp_publish(int64_t l, int64_t k, int64_t p0, int64_t T, std::string& err);
     std::vector<int> tap_layers_;
     std::vector<int> tap_local_;                  ///< the tapped layers this stage runs (run)
     int64_t tap_first_ = 0, tap_cap_ = 0;
