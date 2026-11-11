@@ -204,7 +204,7 @@ python3 serve/server.py --config my-config.json
 STRATA_ENGINE_URL=http://127.0.0.1:8080 python3 l2/reference_controller.py
 
 # Terminal 3: run the rotation benchmark
-python3 l2/bench_rotation.py --url http://127.0.0.1:8091 \
+python3 l2/bench_rotation.py --url http://127.0.0.1:8190 \
   --restart-cmd "systemctl restart my-engine"
 ```
 

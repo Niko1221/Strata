@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ENGINE_URL = os.environ.get("STRATA_ENGINE_URL", "http://127.0.0.1:8080")
 LISTEN_HOST = os.environ.get("STRATA_CONTROLLER_BIND", "127.0.0.1")
-LISTEN_PORT = int(os.environ.get("STRATA_CONTROLLER_PORT", "8091"))
+LISTEN_PORT = int(os.environ.get("STRATA_CONTROLLER_PORT", "8190"))
 SESSION_DIR = os.environ.get("STRATA_SESSION_DIR", "./sessions")
 INDEX_FILE = os.path.join(SESSION_DIR, "index.json")
 
