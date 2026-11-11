@@ -8757,6 +8757,102 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_F16_NOWIDEN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 569,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "",
+   "note": "[reviewed] =1 (HIP FP16 prompt path): the hc up projection and attn_qkv stay FP16 and are read as FP16; output bitwise identical (#5474)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "cf7decc8c3",
+   "last_commit": "cf7decc8c3",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
+  },
+  {
+   "name": "STRATA_F16_NOWIDEN_CHECK",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 3134,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "",
+   "note": "[reviewed] =N: the first N reads also run the widened path and report the difference (debug for STRATA_F16_NOWIDEN)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "cf7decc8c3",
+   "last_commit": "cf7decc8c3",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
+  },
+  {
+   "name": "STRATA_F16_NOWIDEN_QKV_CHECK",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 4320,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "",
+   "note": "[reviewed] =N: as STRATA_F16_NOWIDEN_CHECK for the attn_qkv slices (debug)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "cf7decc8c3",
+   "last_commit": "cf7decc8c3",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
+  },
+  {
    "name": "STRATA_F16_RANGE",
    "backends": [
     "cuda-hip"
@@ -38388,6 +38484,70 @@
    "note": "[auto] off unless set, not documented for users",
    "retire_after": "",
    "retired_in": ""
+  },
+  {
+   "name": "STRATA_SWIGLU_Q8",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/moe_mmq.cu",
+     "line": 778,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "",
+   "note": "[reviewed] =1 (HIP, experts 640 wide): the MMQ expert path fuses SwiGLU and the q8 quantisation of the down input; bitwise identical (#5474)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "cf7decc8c3",
+   "last_commit": "cf7decc8c3",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
+  },
+  {
+   "name": "STRATA_SWIGLU_Q8_CHECK",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 3112,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "",
+   "note": "[reviewed] =N: the first N groups also run swiglu + quantize and report differing bytes (debug for STRATA_SWIGLU_Q8)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "cf7decc8c3",
+   "last_commit": "cf7decc8c3",
+   "first_date": "2026-11-07",
+   "last_date": "2026-11-07"
   },
   {
    "name": "STRATA_SYCL_BF16_DET",
