@@ -7856,9 +7856,15 @@ int main(int argc, char** argv) {
     if (pool.plan_limit()[0] != '\0' && !pool.explicit_cores())   // the default count: what it was bounded by (a configured count is never changed; --pool-cores has its own line below)
         std::fprintf(stderr, "strata generate: CPU pool: %d workers by default (%d physical cores, %d logical processors; bounded by %s)\n",
                      pool.workers(), pool.plan_cores(), pool.plan_logical(), pool.plan_limit());
-    if (srcp == &arena_src && strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test)
+    if (srcp == &arena_src && arena_src.numa_placed()) {
+        // STRATA_ARENA_NUMA_PLACE: the arena was placed per node at open, for the split predicted there; checked now
+        arena_src.numa_place_report(strata::kernels::cpu::active_numa_split());
+    } else if (srcp == &arena_src && strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test) {
         std::fprintf(stderr, "strata generate: NUMA split on, but this model's experts come from the arena path: memory is "
                              "not placed per node (known limitation)\n");
+        if (!arena_src.numa_place_why().empty())
+            std::fprintf(stderr, "strata generate: the expert arena is not placed per node: %s\n", arena_src.numa_place_why().c_str());
+    }
     if (pool.is_hybrid() && pool.affinity() != strata::kernels::cpu::PoolAffinity::All) {
         const char* aff_str = pool.affinity() == strata::kernels::cpu::PoolAffinity::PCores ? "p-cores" :
                               pool.affinity() == strata::kernels::cpu::PoolAffinity::All ? "all" : "auto";
