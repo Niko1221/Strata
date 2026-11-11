@@ -32,5 +32,9 @@
  "gh31": "Cambiar moneda",
  "gh32": "Automática ({0})",
  "gh33": "Moneda",
- "gh34": "menos de {0}"
+ "gh34": "menos de {0}",
+ "gh35": "Unidad de temperatura",
+ "gh36": "Muestra todas las temperaturas en grados Celsius o Fahrenheit.",
+ "gh37": "Grados Celsius (°C)",
+ "gh38": "Grados Fahrenheit (°F)"
 }

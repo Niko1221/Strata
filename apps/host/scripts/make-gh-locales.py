@@ -42,6 +42,10 @@ EN = [
     "Automatic ({0})",
     "Currency",
     "less than {0}",
+    "Temperature unit",
+    "Show every temperature in degrees Celsius or Fahrenheit.",
+    "Celsius (°C)",
+    "Fahrenheit (°F)",
 ]
 
 T = {
@@ -80,6 +84,10 @@ T = {
     "自动（{0}）",
     "货币",
     "不足 {0}",
+    "温度单位",
+    "以摄氏度或华氏度显示所有温度。",
+    "摄氏度（°C）",
+    "华氏度（°F）",
 ],
 "ja": [
     "起動後の消費電力量",
@@ -116,6 +124,10 @@ T = {
     "自動（{0}）",
     "通貨",
     "{0} 未満",
+    "温度の単位",
+    "すべての温度を摂氏または華氏で表示します。",
+    "摂氏（°C）",
+    "華氏（°F）",
 ],
 "de": [
     "Energie seit dem Start",
@@ -152,6 +164,10 @@ T = {
     "Automatisch ({0})",
     "Währung",
     "weniger als {0}",
+    "Temperatureinheit",
+    "Alle Temperaturen in Grad Celsius oder Fahrenheit anzeigen.",
+    "Grad Celsius (°C)",
+    "Grad Fahrenheit (°F)",
 ],
 "es": [
     "Energía desde el inicio",
@@ -188,6 +204,10 @@ T = {
     "Automática ({0})",
     "Moneda",
     "menos de {0}",
+    "Unidad de temperatura",
+    "Muestra todas las temperaturas en grados Celsius o Fahrenheit.",
+    "Grados Celsius (°C)",
+    "Grados Fahrenheit (°F)",
 ],
 "ru": [
     "Энергия с запуска",
@@ -224,6 +244,10 @@ T = {
     "Автоматически ({0})",
     "Валюта",
     "меньше {0}",
+    "Единица температуры",
+    "Показывать все температуры в градусах Цельсия или Фаренгейта.",
+    "Цельсий (°C)",
+    "Фаренгейт (°F)",
 ],
 "pt": [
     "Energia desde o início",
@@ -260,6 +284,10 @@ T = {
     "Automática ({0})",
     "Moeda",
     "menos de {0}",
+    "Unidade de temperatura",
+    "Mostra todas as temperaturas em graus Celsius ou Fahrenheit.",
+    "Graus Celsius (°C)",
+    "Graus Fahrenheit (°F)",
 ],
 "ko": [
     "시작 이후 에너지",
@@ -296,6 +324,10 @@ T = {
     "자동({0})",
     "통화",
     "{0} 미만",
+    "온도 단위",
+    "모든 온도를 섭씨 또는 화씨로 표시합니다.",
+    "섭씨(°C)",
+    "화씨(°F)",
 ],
 "fr": [
     "Énergie depuis le démarrage",
@@ -332,6 +364,10 @@ T = {
     "Automatique ({0})",
     "Devise",
     "moins de {0}",
+    "Unité de température",
+    "Affiche toutes les températures en degrés Celsius ou Fahrenheit.",
+    "Degrés Celsius (°C)",
+    "Degrés Fahrenheit (°F)",
 ],
 }
 
