@@ -1,0 +1,2 @@
+group,arm,kind,n,tok_s,read_tok_s,acc_pct,util0,util1,utilsum,w0,w1,sm0,mem,temp,fan,stall_pct,pci,md0_r,cpu,eng,free,rows
+live,pw=0,prose,3,156.6,2606.2,90.41095890410959,33.0,29.0,62.0,229.98,255.04,1965.0,10001.0,58.0,49.0,0.0,12633.0,0.0,2.3,99.5,49.4,5

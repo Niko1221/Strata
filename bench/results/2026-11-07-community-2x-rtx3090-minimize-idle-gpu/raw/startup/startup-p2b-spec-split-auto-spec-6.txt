@@ -1,0 +1,40 @@
+[strata] 2026-11-07 13:30:45 engine started: /opt/strata/engine/strata --serve --pack /opt/strata/models/packs/unsloth-ud-iq4_xs --native /opt/strata/models/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile /opt/strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 6 --mtp /opt/strata/models/mtp/rt --max-context 786432 --rope-scaling yarn --rope-scale 3 --kv int8 --ple-io ram --kv-resident 32768 --vision --vram-reserve-mib 1280 --trim-stage-weights --pcie-frac 0.08 --spec-min-p 0.65 --conversation-cache-mib 32768 --conversation-cache-slots 16 --pipeline-windows 2 --layer-split auto
+strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+strata generate: note: --pipeline-windows 2 on a layer split of two stages without the draft layer on the first card (STRATA_MTP_STAGE0=1 asks for it): the draft chain then shares the last card with its window and the pipeline lost to the serial loop on 2x R9700 before 0.1.44 (docs/MULTI_GPU.md); kept as asked, --pipeline-windows 0 turns it off
+strata generate: profile /opt/strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+strata generate: layer split auto: CUDA0 82 SMs at 1.70 GHz -> 0.52 ms per layer, 15.25 GiB free before its session carve
+strata generate: layer split auto: CUDA1 82 SMs at 1.70 GHz -> 0.52 ms per layer, 20.75 GiB free before its session carve
+strata generate: layer split auto: CUDA0 link 26.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: CUDA1 link 26.3 GB/s -> miss cost x1.00
+strata generate: layer split auto: K=23 - predicted 28.1 ms per decode window; the caches hold 14041 of 24576 profiled pairs (~98.4% of the routed mass), best of 46 placements
+strata generate: layer split: CUDA1 loads the dense weights of layers 23-47 only
+strata generate: layer split, CUDA1: WARNING the split search priced this stage's weights at 2345 MiB, it took 3182 MiB
+strata generate: layer split: CUDA1 holds its weights; 20.12 GiB free (its session follows)
+strata generate: KV streaming: 32768 of 786432 cells per QSA layer in VRAM, the K/V in 3.87 GiB of pinned RAM
+strata generate: layer split: CUDA1 holds its weights, session [23, 48) and the head; 18.47 GiB free
+strata mtp: draft layer loaded, 837 MiB of VRAM (experts 675, dense 111), files read in 1.08 s (725 MiB/s)
+strata generate: loaded 55.43 GiB at 3.24 GiB/s
+strata generate: --pipeline-windows 2: 272 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+strata generate: expert cache auto: 15.73 GiB free, 1280 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 4306 slots
+strata generate: expert cache 6191 slots, 13.96 GiB of VRAM; policy is
+strata generate: pre-filled 6191 of 6191 slots from the profile in 0.6 s (24467 MB/s); slot 0 verified
+strata generate: layer split, CUDA1: 17.54 GiB free of 23.61, room for experts 16.04 GiB
+strata generate: layer split: CUDA1 runs layers 23-47, expert cache 7093 slots (16.04 GiB), 7093 of its 12800 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-22
+strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+strata generate: session is up (engine 0.1.55)
+strata serve: the prompt path borrows 2302 CUDA0 cache slots (5.20 GiB)
+strata serve:   CUDA1 prompt path borrows 2286 of its 7093 slots (5.20 GiB)
+strata serve: layer split: layers 0-22 (CUDA0), 23-47 (CUDA1), one hand-off per window
+strata mtp: draft head over 106299 tokens (212.9 MiB)
+strata serve: --pipeline-windows 2: two verifiers per stage, 2 stages overlap across windows (decode too; the GDN snapshots beside the window)
+strata serve: adaptive overlap: off: not on a layer split
+strata serve: 1284 MiB of VRAM free with everything loaded
+strata serve: CUDA1: 902 MiB of VRAM free with everything loaded
+strata pipeline switch: pw=2 theta=0.350 force_miss=0 short_read=64
+strata verify: capturing the 1-token window (1284 MiB of VRAM free)
+strata verify: capturing the 2-token window (1276 MiB of VRAM free)
+strata verify: capturing the 3-token window (1268 MiB of VRAM free)
+strata verify: capturing the 4-token window (1260 MiB of VRAM free)
+strata verify: capturing the 5-token window (1252 MiB of VRAM free)
+strata verify: capturing the 6-token window (1244 MiB of VRAM free)

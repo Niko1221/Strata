@@ -1,0 +1,6 @@
+Zustand      Config-Kern                         code pw=2  code pw=0  Prosa pw=2  Prosa pw=0   Gewinn  Prefill2k   W ges  uSumme     SM   °C
+Ist 300 W    θ0,35 · spec 4 · smp 0,65 · s13-verifikation-neu.jsonl  154.1  144.5  146.8  132.2   +11.1 %      1175       -       - %       -       -
+Ist 350 W    θ0,35 · spec 4 · smp 0,65 · p0-ist-350w.jsonl  168.1  143.2  151.1  133.8   +12.9 %      1206    636    145 %  1901   66
+opt 350 W    θ0,35 · spec 4 · smp 0,65 · p6-final-350w.jsonl  148.3  139.2  147.0  133.4   +10.2 %      1139    644    148 %  1890   70
+
+Hinweis: 'Gewinn' ist der mediane Unterschied desselben Schwungs zwischen pw=2 und pw=0 (gepaart pro Dokument und Runde), nicht der Wochen-Unterschied. Prefill2k ist die Rate frisch gelesener ~2k-Prompts (`reused == 0`) aus demselben Schwung.

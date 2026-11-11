@@ -1,0 +1,97 @@
+# Istzustand strata-l28 — aufgenommen 2026-11-07 13:18:54
+
+== 1 · Pod und Node ==
+  NAME                          READY   STATUS    RESTARTS   AGE   IP            NODE   NOMINATED NODE   READINESS GATES
+  strata-l28-6f559fbb8c-ppjwz   1/1     Running   0          48m   10.42.1.119   l28    <none>           <none>
+  git:    efb36cb 2026-11-06 00:54:55 +0100 strata g27/l28: keep pio mmap/ram
+  dirty:  
+  health: {"status": "ok", "max_context": 786432, "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs", "images": true, "api_key": false, "image_generation": false, "loaded": true, "service": "strata"}
+
+== 2 · Karten: Limit, Takt, Offset, Kuehlung ==
+  index, name, power.limit [W], power.default_limit [W], power.draw [W], clocks.current.sm [MHz], clocks.current.memory [MHz], clocks.max.sm [MHz], clocks.max.memory [MHz], temperature.gpu, utilization.gpu [%], memory.used [MiB], pcie.link.gen.current, pcie.link.width.current
+  0, NVIDIA GeForce RTX 3090, 350.00 W, 350.00 W, 24.40 W, 210 MHz, 405 MHz, 2100 MHz, 10251 MHz, 38, 0 %, 23017 MiB, 1, 16
+  1, NVIDIA GeForce RTX 3090, 350.00 W, 350.00 W, 20.67 W, 210 MHz, 405 MHz, 2100 MHz, 10251 MHz, 45, 0 %, 23409 MiB, 1, 16
+    --- LACT (wer die Karten hier haelt) ---
+      10DE:2203-10DE:1618-0000:83:00.0:
+        fan_control_enabled: true
+          temperature_key: edge
+        power_cap: 395.0
+        mem_clock_offsets:
+          0: 750
+      10DE:2204-196E:136A-0000:01:00.0:
+        fan_control_enabled: true
+          temperature_key: edge
+        power_cap: 350.0
+        mem_clock_offsets:
+          0: 1000
+      10DE:2204-19DA:1613-0000:83:00.0:
+        fan_control_enabled: true
+          temperature_key: edge
+        power_cap: 350.0
+        mem_clock_offsets:
+          0: 1000
+    --- last state of the fan curve ---
+  30 % 40 % 
+    --- md0 ---
+  Personalities : [raid0] 
+  md0 : active raid0 nvme4n1[0] nvme0n1[1] nvme3n1[3] nvme1n1[2]
+        8001065984 blocks super 1.2 256k chunks
+        
+    nvme2n1     INTEL SSDPEKNW020T8         1.9T 
+    nvme1n1     INTEL SSDPEKNW020T8         1.9T 
+    `-md0                                   7.5T /data-fast
+    nvme0n1     INTEL SSDPEKNW020T8         1.9T 
+    `-md0                                   7.5T /data-fast
+    nvme3n1     INTEL SSDPEKNW020T8         1.9T 
+    `-md0                                   7.5T /data-fast
+    nvme4n1     INTEL SSDPEKNW020T8         1.9T 
+    `-md0                                   7.5T /data-fast
+
+== 3 · Config: Git gegen das, was laeuft ==
+  args:  spec 4 | spec-min-p 0.65 | pipeline-windows 2 | layer-split (auto) | max-context 786432 | kv int8 | kv-resident 32768 | ple-io ram | pcie-frac 0.08 | conv 32768x16 | vram-reserve 1280 | trim-stage-weights on
+  json:  layer_split auto | mtp True | parallel 1 | lazy_load True | idle_unload_s 600 | gpu [0, 1] | port 8080
+  env:   {'STRATA_HC_Q8': '1', 'STRATA_PIPELINE_DEBUG': '1', 'STRATA_PIPELINE_SWITCH': '/opt/strata/scripts/pl_switch.txt', 'STRATA_ROUTE_TAIL_SKIP': '0', 'STRATA_SPEC_DEPTH': '1'}
+  switch: pw=2 theta=0.35
+  engine argv (lebt, nicht die Datei):
+    --serve --pack --native --expert-profile --expert-cache --prefill --spec --mtp --max-context --rope-scaling --rope-scale --kv --ple-io --kv-resident --vision --vram-reserve-mib --trim-stage-weights --pcie-frac --spec-min-p --conversation-cache-mib --conversation-cache-slots --pipeline-windows --layer-split
+
+== 4 · Letzte Startzeilen der Engine ==
+  [strata] 2026-11-07 12:08:13 engine started: /opt/strata/engine/strata --serve --pack /opt/strata/models/packs/unsloth-ud-iq4_xs --native /opt/strata/models/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf --expert-profile /opt/strata/data/expert-profile.bin --expert-cache auto --prefill auto --spec 4 --mtp /opt/strata/models/mtp/rt --max-context 786432 --rope-scaling yarn --rope-scale 3 --kv int8 --ple-io ram --kv-resident 32768 --vision --vram-reserve-mib 1280 --trim-stage-weights --pcie-frac 0.08 --spec-min-p 0.65 --conversation-cache-mib 32768 --conversation-cache-slots 16 --pipeline-windows 2 --layer-split auto
+  strata generate: layer split across 2 GPUs: CUDA0, then CUDA1 (split auto)
+  strata generate: note: --pipeline-windows 2 on a layer split of two stages without the draft layer on the first card (STRATA_MTP_STAGE0=1 asks for it): the draft chain then shares the last card with its window and the pipeline lost to the serial loop on 2x R9700 before 0.1.44 (docs/MULTI_GPU.md); kept as asked, --pipeline-windows 0 turns it off
+  strata generate: profile /opt/strata/data/expert-profile.bin: 24576 ranked pairs, built for 24576 slots
+  strata generate: layer split auto: CUDA0 82 SMs at 1.70 GHz -> 0.52 ms per layer, 15.25 GiB free before its session carve
+  strata generate: layer split auto: CUDA1 82 SMs at 1.70 GHz -> 0.52 ms per layer, 20.75 GiB free before its session carve
+  strata generate: layer split auto: CUDA0 link 26.3 GB/s -> miss cost x1.00
+  strata generate: layer split auto: CUDA1 link 26.3 GB/s -> miss cost x1.00
+  strata generate: layer split auto: K=23 - predicted 28.1 ms per decode window; the caches hold 14041 of 24576 profiled pairs (~98.4% of the routed mass), best of 46 placements
+  strata generate: layer split: CUDA1 loads the dense weights of layers 23-47 only
+  strata generate: layer split, CUDA1: WARNING the split search priced this stage's weights at 2345 MiB, it took 3182 MiB
+  strata generate: layer split: CUDA1 holds its weights; 20.12 GiB free (its session follows)
+  strata generate: layer split: CUDA1 holds its weights, session [23, 48) and the head; 18.47 GiB free
+  strata generate: loaded 55.43 GiB at 4.02 GiB/s
+  strata generate: --pipeline-windows 2: 272 MiB of CUDA0 kept out of the expert cache (the second verifier, the GDN snapshots)
+  strata generate: expert cache auto: 15.73 GiB free, 1280 MiB reserved (+0 MiB for the draft head, +256 MiB for what is allocated after the cache) -> 4306 slots
+  strata generate: expert cache 6191 slots, 13.96 GiB of VRAM; policy is
+  strata generate: pre-filled 6191 of 6191 slots from the profile in 0.6 s (24489 MB/s); slot 0 verified
+  strata generate: layer split, CUDA1: 17.54 GiB free of 23.61, room for experts 16.04 GiB
+  strata generate: layer split: CUDA1 runs layers 23-47, expert cache 7093 slots (16.04 GiB), 7093 of its 12800 profiled pairs; slot 0 verified
+  strata generate: layer split: CUDA0 runs layers 0-22
+  strata generate: layer split auto: L2 probe: the split is startable on the live free figures
+
+== 5 · Der Moment: geladen/gegen leer, md0-Durchsatz seit Boot ==
+  nvme2n1: read 1.6 GiB written 0.2 GiB
+  nvme1n1: read 22.6 GiB written 0.0 GiB
+  nvme0n1: read 22.6 GiB written 0.0 GiB
+  nvme3n1: read 22.6 GiB written 0.0 GiB
+  nvme4n1: read 22.6 GiB written 0.0 GiB
+  md0: read 90.3 GiB written 0.0 GiB
+  MemAvailable: 45.8 GiB   load: 6.61 13.25 7.71
+
+== 6 · Produktionslog seit dem letzten Start (Was die Box wirklich bedient hat) ==
+    file: /opt/strata/scripts/run-unsloth-ud-iq4_xs.sh.log (81383 Zeilen, 7.5M)
+      decode tok/s: n=8789 p10=107.7 median=129.6 p90=163.5 max=13189.6
+      Prompt-Zeilen seit Start: 0
+    file: /opt/strata/scripts/strata-unsloth-ud-iq4_xs.log (74272 Zeilen, 8.0M)
+      decode tok/s: n=212 p10=49.8 median=126.9 p90=175.0 max=1344.5
+      Prompt-Zeilen seit Start: 106

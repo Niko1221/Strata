@@ -1,0 +1,4 @@
+Referenzarm 'pw=0'; gepaart auf Dokument+Runde+Lauf; Bootstrap 4000 × Median
+arm                                  kind     n  Median            95 %-Ki    vorn
+pw=2 theta=0.35 smp=0.65             code     8  +13.3 % [  +8.1,  +21.4]  8/8
+pw=2 theta=0.35 smp=0.65             prose    8   +7.8 % [  +5.5,  +19.5]  8/8
