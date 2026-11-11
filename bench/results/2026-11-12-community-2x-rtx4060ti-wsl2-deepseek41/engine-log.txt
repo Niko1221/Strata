@@ -1,0 +1,45 @@
+[strata] 2026-11-12 00:27:01 engine started: /home/onkanat/.local/share/strata/install/engine-dsv41/0.1.59-linux-x86_64-cuda-cuda13/strata-dsv41 --serve --pack /home/onkanat/ds41/data/packs/deepseek-v4.1-flash-ist-das-1.75bpw --max-context 131072 --eos 1 --vision on --dspark auto --dspark-conf 0.65 --tp 2 --reserve-mib 900 --layer-split auto
+ds4: tensor parallel 2 -> 1: the experts' 256-value blocks split n_ff 2304 no other way (each GPU its own layers)
+ds4: prompts in chunks of 4096 tokens (the experts are copied into RAM, 16 GiB of graphics memory; --prefill-chunk N changes it)
+ds4: the one-GPU decode path (in-place pulls, windows streamed, landings): off (v1.1.27's path: not NVIDIA + one GPU)
+ds4: DSpark not loaded: the routed experts (115 GB) are far more than the GPU holds (30 GB), where its verify rounds read 3.3x a token's bytes and gain nothing (--dspark on loads it anyway)
+ds4: the experts VRAM leaves over (~96.0 GB) are read in place from the model's files (--mmap-experts off copies them into RAM) (111.4 GB of RAM free to keep them: the most-routed 96.0 GB read ahead; prompts in chunks of 4096)
+ds4: --mmap-experts auto: the CPU lane's experts (96.9 GB) fit the RAM this process can get (102.9 GB beside 9 GB for the rest): copied in at load, no demand store (--mmap-experts on keeps them in place)
+ds4: 12913 of the CPU lane's 12913 experts copied into RAM (96.3 GB, 1 NUMA part) in 126.2 s
+ds4: prompt path: the chunked pass from 96 tokens, windows of 16 below
+ds4: CUDA0 layers [0, 19]: weights 2.81 GB, experts 9.32 GB (1258 of 7680 in VRAM), caches 0.07 GB, 897 MiB free
+ds4: CUDA1 layers [20, 39] + head: weights 3.05 GB, experts 9.21 GB (1189 of 7680 in VRAM), caches 0.05 GB, 895 MiB free
+ds4: 12913 routed experts on the CPU lane (96.3 GB): 12913 copied into RAM (1 NUMA parts), the rest in place in the model's files; 8 threads
+maya ds4 serve: GEN <max_new> [keys] <ids>; GENI <max_new> [keys] <pictures> <ids>; STOP, QUIT
+ds4 slots: folder /home/onkanat/.local/state/strata/launch/ds4-slots: 0 conversation(s) kept from earlier runs (0.00 GB)
+maya ds4 serve: prompt 31 tokens = 0 reused + 31 read in 5078 ms (6.1 tok/s), 1 generated in 8 ms (131.29 tok/s); CPU lane 63.4% of the experts
+maya ds4 serve: prompt 54 tokens = 0 reused + 54 read in 4232 ms (12.8 tok/s), 256 generated in 26328 ms (9.72 tok/s); CPU lane 36.0% of the experts
+maya ds4 serve: prompt 327 tokens = 310 reused + 17 read in 1517 ms (11.2 tok/s), 239 generated in 21685 ms (11.02 tok/s); CPU lane 33.9% of the experts
+maya ds4 serve: prompt 54 tokens = 53 reused + 1 read in 89 ms (11.2 tok/s), 256 generated in 19467 ms (13.15 tok/s); CPU lane 30.2% of the experts
+maya ds4 serve: prompt 327 tokens = 310 reused + 17 read in 1452 ms (11.7 tok/s), 239 generated in 18845 ms (12.68 tok/s); CPU lane 29.3% of the experts
+maya ds4 serve: prompt 54 tokens = 0 reused + 54 read in 4293 ms (12.6 tok/s), 256 generated in 18893 ms (13.55 tok/s); CPU lane 28.3% of the experts
+maya ds4 serve: prompt 327 tokens = 310 reused + 17 read in 1062 ms (16.0 tok/s), 239 generated in 18945 ms (12.62 tok/s); CPU lane 28.0% of the experts
+maya ds4 serve: prompt 54 tokens = 0 reused + 54 read in 3984 ms (13.6 tok/s), 355 generated in 26698 ms (13.30 tok/s); CPU lane 27.3% of the experts
+maya ds4 serve: prompt 3014 tokens = 0 reused + 3014 read in 17769 ms (169.6 tok/s), 256 generated in 24004 ms (10.67 tok/s); CPU lane 12.1% of the experts
+maya ds4 serve: prompt 3287 tokens = 3270 reused + 17 read in 1285 ms (13.2 tok/s), 239 generated in 23409 ms (10.21 tok/s); CPU lane 13.2% of the experts
+ds4 slots: saved a 3525-token conversation (0.02 GB in RAM in 0.0 s); 1 in RAM, 0 in /home/onkanat/.local/state/strata/launch/ds4-slots
+maya ds4 serve: prompt 3014 tokens = 0 reused + 3014 read in 15965 ms (188.8 tok/s), 256 generated in 24778 ms (10.33 tok/s); CPU lane 9.3% of the experts
+maya ds4 serve: prompt 3287 tokens = 3270 reused + 17 read in 1847 ms (9.2 tok/s), 227 generated in 23288 ms (9.75 tok/s); CPU lane 10.1% of the experts
+ds4 slots: saved a 3513-token conversation (0.02 GB in RAM in 0.0 s); 2 in RAM, 0 in /home/onkanat/.local/state/strata/launch/ds4-slots
+maya ds4 serve: prompt 3014 tokens = 0 reused + 3014 read in 15658 ms (192.5 tok/s), 256 generated in 25721 ms (9.95 tok/s); CPU lane 8.2% of the experts
+maya ds4 serve: prompt 3287 tokens = 3270 reused + 17 read in 1351 ms (12.6 tok/s), 234 generated in 24869 ms (9.41 tok/s); CPU lane 8.8% of the experts
+ds4 slots: saved a 3520-token conversation (0.02 GB in RAM in 0.0 s); 3 in RAM, 0 in /home/onkanat/.local/state/strata/launch/ds4-slots
+maya ds4 serve: prompt 12072 tokens = 0 reused + 12072 read in 34473 ms (350.2 tok/s), 256 generated in 26636 ms (9.61 tok/s); CPU lane 4.9% of the experts
+maya ds4 serve: prompt 12345 tokens = 12328 reused + 17 read in 1707 ms (10.0 tok/s), 228 generated in 26711 ms (8.54 tok/s); CPU lane 5.3% of the experts
+ds4 slots: saved a 12572-token conversation (0.03 GB in RAM in 0.0 s); 4 in RAM, 0 in /home/onkanat/.local/state/strata/launch/ds4-slots
+maya ds4 serve: prompt 12072 tokens = 0 reused + 12072 read in 33569 ms (359.6 tok/s), 256 generated in 29224 ms (8.76 tok/s); CPU lane 3.9% of the experts
+maya ds4 serve: prompt 12345 tokens = 12328 reused + 17 read in 1482 ms (11.5 tok/s), 239 generated in 27794 ms (8.60 tok/s); CPU lane 4.2% of the experts
+ds4 slots: saved a 12583-token conversation (0.03 GB in RAM in 0.1 s); 4 in RAM, 1 in /home/onkanat/.local/state/strata/launch/ds4-slots
+maya ds4 serve: prompt 12072 tokens = 0 reused + 12072 read in 33501 ms (360.4 tok/s), 256 generated in 31014 ms (8.25 tok/s); CPU lane 3.4% of the experts
+maya ds4 serve: prompt 12345 tokens = 12328 reused + 17 read in 1538 ms (11.1 tok/s), 234 generated in 29070 ms (8.05 tok/s); CPU lane 3.6% of the experts
+ds4 slots: saved a 12578-token conversation (0.03 GB in RAM in 0.1 s); 4 in RAM, 2 in /home/onkanat/.local/state/strata/launch/ds4-slots
+maya ds4 serve: prompt 54 tokens = 0 reused + 54 read in 7251 ms (7.4 tok/s), 697 generated in 94302 ms (7.39 tok/s); CPU lane 4.4% of the experts
+maya ds4 serve: prompt 54 tokens = 53 reused + 1 read in 125 ms (8.0 tok/s), 646 generated in 84888 ms (7.61 tok/s); CPU lane 5.0% of the experts
+maya ds4 serve: prompt 28 tokens = 0 reused + 28 read in 2810 ms (10.0 tok/s), 512 generated in 65643 ms (7.80 tok/s); CPU lane 5.5% of the experts
+maya ds4 serve: prompt 28 tokens = 27 reused + 1 read in 111 ms (9.0 tok/s), 323 generated in 39148 ms (8.25 tok/s); CPU lane 5.8% of the experts
+ds4 slots: wrote 4 conversation(s) to /home/onkanat/.local/state/strata/launch/ds4-slots; 6 there in all
