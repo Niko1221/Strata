@@ -6,7 +6,7 @@
  * about 10 GB left for the system; whatever is left is read from the SSD. The same rules setup uses to choose its low-RAM mode
  * (setup.py: low_ram_gpu_gb, LOW_RAM_HEADROOM_GB), so the page and the engine agree.
  */
-export interface FitInput { ram_needed_gb?: number; experts_gb?: number | null; memory_gb?: number; mem_total?: boolean }
+export interface FitInput { ram_needed_gb?: number; experts_gb?: number | null; memory_gb?: number; mem_total?: boolean; /** the weight files without the lookup table, when the catalog states them (DeepSeek: `memory_gb` is the CPU's share) */ fit_gb?: number | null }
 export interface FitHardware { ram_gb?: number | null; vram_gb?: number | null }
 export interface Fit {
   /** RAM + VRAM the version needs (the n-gram table not counted). */
@@ -127,30 +127,35 @@ export function versionGroups<V extends { id: string; download_gb: number }>(ver
 }
 
 /**
- * What a version is on this computer. The list writes a word only for the two cases that need one: "SSD streaming · will run slower" (part of the
- * version is read from the SSD) and "Doesn't fit". A version that fits in memory says nothing.
+ * What a version is on this computer (owner's one rule, 2026-11-08): its files, WITHOUT the n-gram / PLE / Engram lookup table's file (the download size minus
+ * that file: `fit_gb`, else `memory_gb`), against the graphics memory plus the RAM, nothing taken off either side. They fit: 'fits', and the list says nothing.
+ * They do not: 'ssd', and the list says "may run slower" (part is read from the SSD while it answers). Nothing here refuses anything: no card, or a Mac with
+ * little memory, gets the same two words. (Not enough free disk is a different question; the download says it.)
  *
- * The figures are the app's own (`fitOn`: graphics memory, then RAM, then the SSD), the same ones the This computer card uses. The catalog's
- * `on_this_pc` is only a RAM comparison for the plain families (it ignores the graphics card and the SSD): it said "does not fit" for NVFP4 on a
- * 12 GB card with 63 GB of RAM, which runs with the rest read from the SSD. So the engine's "does not fit" is believed in exactly two cases:
- *   - the version needs a graphics card and this computer has none that counts (DeepSeek-V4.1-Flash: "does not fit: it needs one or more graphics cards");
- *   - this computer has less memory than anything has ever been run with (MIN_RUN_GB) and the engine says it does not fit.
- * Everything else that does not fit in memory is "ssd": it runs, slower. (Not enough free disk is a different question; the download says it.)
+ * `fitOn` (above) still places the experts for the This computer card; `on_this_pc` no longer decides anything here.
  */
-export type VersionFit = 'fits' | 'ssd' | 'no' | 'unknown';
-export const MIN_RUN_GB = 16;
+export type VersionFit = 'fits' | 'ssd' | 'unknown';
 export function versionFit(v: FitInput & { on_this_pc?: string | null }, hw: FitHardware | null | undefined, cache?: CacheChoice | null): VersionFit {
-  const words = String(v.on_this_pc ?? '').trim().toLowerCase();
-  const engineNo = words.startsWith('does not fit');
-  if (/needs? (one or more|a) graphics cards?/.test(words)) return 'no';
   const fit = fitOn(v, hw, true, cache);
-  if (!fit.known) return engineNo ? 'no' : 'unknown';
-  if (engineNo && Number(hw?.ram_gb) < MIN_RUN_GB) return 'no';
-  return fit.spillGb >= 1 ? 'ssd' : 'fits';
+  if (!fit.known) return 'unknown';
+  const size = typeof v.fit_gb === 'number' && Number.isFinite(v.fit_gb) ? v.fit_gb : fit.memoryGb;
+  return size <= Number(hw?.ram_gb) + (Number(hw?.vram_gb) || 0) ? 'fits' : 'ssd';
 }
 
 /** A card as the installer's hardware report lists it. */
-export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; arch?: string; uma?: boolean; integrated?: boolean; unified_gb?: number }
+export interface RunCard { index: number; name: string; vram_gb: number; usable?: boolean; vendor?: string; arch?: string; uma?: boolean; integrated?: boolean; unified_gb?: number; /** a unified-memory chip: its BIOS carve-out (setup.py amd_apply_uma) */ dedicated_gb?: number }
+
+/**
+ * The graphics memory that counts for the fit label, of the largest card: strata_control/fit_label.py card_room_gb, the same rule (the Terminal and the
+ * catalog's “on_this_pc” use it). A chip that shares the PC’s memory (Strix Halo: uma) counts only its own carve-out, because its “shared” part is the
+ * RAM, already counted (QAGUI-STRIX 11-09: Q8_0, 133.8 GB, against 63.6 GB RAM + 95.8 GB carve-out-plus-shared said nothing; Control says “may run slower”
+ * against 63.6 + 64). Pinned to the Python by tests/fit-label-rule.test.mjs.
+ */
+export function cardRoomGb(cards: readonly Pick<RunCard, 'vram_gb' | 'uma' | 'dedicated_gb'>[] | null | undefined): number {
+  let best = 0;
+  for (const c of cards ?? []) best = Math.max(best, c.uma ? Number(c.dedicated_gb) || 0 : Number(c.vram_gb) || 0);
+  return best;
+}
 
 /**
  * The cards a model can be placed on: the ones this engine can drive (strata_control/gpu_fit.py `usable_cards` and `for_vendor`, same rule).

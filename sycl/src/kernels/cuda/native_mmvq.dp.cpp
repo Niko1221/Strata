@@ -160,19 +160,6 @@ template <int SG> __dpct_inline__ float sg_sum(float x) {   // SYCL port: warp_s
         x += sycl::permute_group_by_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset);
     return x;
 }
-// SYCL port: the decode mmvq kernels as Xe2-native SIMD16 sub-groups (twice the registers per lane, same 128
-// threads per group) or as the CUDA-shaped 32-lane warp (default). STRATA_MMVQ_SG: 16 = all SIMD16, 1 = IQ4_XS
-// only, 2 = short outputs (n_out <= 1024) only, 3 = both. mmvq_sg_bench alone: SIMD16 wins on IQ4_XS (up to
-// 1.45x) and short outputs (up to 1.3x), loses 10-25% on the large K-quant projections.
-inline int mmvq_sg() {
-    static const int v = std::getenv("STRATA_MMVQ_SG") ? std::atoi(std::getenv("STRATA_MMVQ_SG")) : 32;
-    return v;
-}
-inline bool mmvq_sg16(bool iq4xs, int n_out) {
-    const int v = mmvq_sg();
-    return v == 16 || ((v & 1) && v < 4 && iq4xs) || ((v & 2) && v < 4 && n_out <= 1024);
-}
-
 __dpct_inline__ float warp_max(float x) {
 #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1) {
@@ -1632,87 +1619,7 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
             if (lane == 0 && row0 + r < n_out) y[std::size_t(j) * n_out + row0 + r] = v;
         }
 }
-// SYCL port: the wide Q6_K kernel with its weight loads issued U steps ahead. The wide kernel's 2560-wide rows
-// are ~3 steps of load -> wait -> dot per sub-group, so each sub-group has one 16-byte load per lane in flight
-// at a time and the kernel is latency-bound (~146 GB/s). Here a sub-group first issues the ql/qh/scale loads
-// of U steps (4U blocks), then does their dots; the activation reads stay inline (they are L1 hits, shared by
-// every row). One row per sub-group, WARPS rows per group.
-template <int NCOLS, int U, bool A2 = false>
-void native_mmvq_q6k_pf_kernel(const Q6KBlock* __restrict__ w, const Q81Block* __restrict__ x,
-                               float* __restrict__ y, int n_in, int n_out) {
-    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int lane = int(item.get_local_id(2)), warp = int(item.get_local_id(1));
-    const int row = int(item.get_group(2)) * WARPS + warp;
-    if (row >= n_out) return;
-    const int blocks_per_row = n_in / QK, x_stride = n_in / Q8K;
-    const int g = lane & 7, sub = lane >> 3;
-    const int vh_shift = 2 * ((g & 3) >> 1);
-    const int qh4_idx = 2 * (g >> 2) + (g & 1);
-    const int scale_offset = 8 * (g >> 2) + (g & 3);
-    const int bq8_offset = 4 * (g >> 2) + ((g & 3) >> 1);
-    const int u_int4 = g & 1;
-    const Q6KBlock* wr = w + std::size_t(row) * blocks_per_row;
-    float acc[NCOLS] = {};
-    for (int kb0 = 0; kb0 < blocks_per_row; kb0 += 4 * U) {
-        sycl::int4 ql4[U], qh4[U]; float dsc0[U], dsc1[U]; bool ok[U];
-#pragma unroll
-        for (int u = 0; u < U; ++u) {      // all U steps' weight loads first
-            const int kbx = kb0 + 4 * u + sub;
-            ok[u] = kbx < blocks_per_row;
-            const Q6KBlock* b = wr + (ok[u] ? kbx : 0);
-            if constexpr (A2) { ql4[u] = load16_a2(b->ql + 16 * g); qh4[u] = load16_a2(b->qh + 16 * qh4_idx); }
-            else { ql4[u] = reinterpret_cast<const sycl::int4*>(b->ql)[g];
-            qh4[u] = reinterpret_cast<const sycl::int4*>(b->qh)[qh4_idx]; }
-            const float d = b->d;
-            dsc0[u] = d * (float) b->scales[scale_offset]; dsc1[u] = d * (float) b->scales[scale_offset + 4];
-        }
-#pragma unroll
-        for (int u = 0; u < U; ++u) {
-            if (!ok[u]) continue;
-            const int kby = (kb0 + 4 * u + sub) * (QK / Q8K);
-            const int vl[4] = {ql4[u].x(), ql4[u].y(), ql4[u].z(), ql4[u].w()};
-            const int vh[4] = {qh4[u].x() >> vh_shift, qh4[u].y() >> vh_shift, qh4[u].z() >> vh_shift, qh4[u].w() >> vh_shift};
-            int vi0[4], vi1[4];
-#pragma unroll
-            for (int p = 0; p < 4; ++p) {
-                vi0[p] = q6_sub32((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030));
-                vi1[p] = q6_sub32(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030));
-            }
-#pragma unroll
-            for (int j = 0; j < NCOLS; ++j) {
-                const Q81Block* xb = x + std::size_t(j) * x_stride + kby + bq8_offset;
-                sycl::int4 a0, a1;
-                if constexpr (A2) {   // Q8_1 qs at offset 4 of a 36-byte block: four int loads (as the wide kernel)
-                    const int* p0 = reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4;
-                    const int* p1 = reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4;
-                    a0 = sycl::int4(p0[0], p0[1], p0[2], p0[3]);
-                    a1 = sycl::int4(p1[0], p1[1], p1[2], p1[3]);
-                } else {
-                    a0 = reinterpret_cast<const sycl::int4*>(xb[0].qs)[u_int4];
-                    a1 = reinterpret_cast<const sycl::int4*>(xb[2].qs)[u_int4];
-                }
-                int s0 = 0, s1 = 0;
-                s0 = strata::dp4a(vi0[0], a0.x(), s0); s0 = strata::dp4a(vi0[1], a0.y(), s0);
-                s0 = strata::dp4a(vi0[2], a0.z(), s0); s0 = strata::dp4a(vi0[3], a0.w(), s0);
-                s1 = strata::dp4a(vi1[0], a1.x(), s1); s1 = strata::dp4a(vi1[1], a1.y(), s1);
-                s1 = strata::dp4a(vi1[2], a1.z(), s1); s1 = strata::dp4a(vi1[3], a1.w(), s1);
-                acc[j] += (float) xb[0].ds[0] * dsc0[u] * (float) s0 + (float) xb[2].ds[0] * dsc1[u] * (float) s1;
-            }
-        }
-    }
-    auto sg = item.get_sub_group();
-#pragma unroll
-    for (int j = 0; j < NCOLS; ++j) {
-        float v = acc[j];
-#pragma unroll
-        for (int o = WARP / 2; o > 0; o >>= 1) v += sycl::permute_group_by_xor(sg, v, o);
-        if (lane == 0) y[std::size_t(j) * n_out + row] = v;
-    }
-}
-inline int q6k_pf() {   // STRATA_MMVQ_PF: weight-load steps issued ahead in the wide Q6_K kernel (0 = off)
-    static const int v = std::getenv("STRATA_MMVQ_PF") ? std::atoi(std::getenv("STRATA_MMVQ_PF")) : 0;
-    return v;
-}
+// (STRATA_MMVQ_PF, a prefetching wide Q6_K kernel, and STRATA_MMVQ_SG, SIMD16 sub-group variants of the decode mmvq, were removed in 0.2.13: no gain in the engine.)
 inline int q6k_wide_rpw() {
     static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
     return v;
@@ -1735,22 +1642,6 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     const auto* w = static_cast<const Q6KBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
     const int rpw = q6k_wide_rpw();
-    if (const int pf = q6k_pf(); pf > 0) {
-        const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-        const sycl::range<3> t(1, WARPS, WARP);
-#define STRATA_Q6PF(UU) if (pf == UU && q6k_a2()) { \
-            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf_a2, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
-                sycl::nd_range<3>(sycl::range(1, 1, blocks) * t, t), \
-                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_pf_kernel<NCOLS, UU, true>(w, x, y, n_in, n_out); }); \
-            return; } \
-        if (pf == UU) { \
-            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
-                sycl::nd_range<3>(sycl::range(1, 1, blocks) * t, t), \
-                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_pf_kernel<NCOLS, UU>(w, x, y, n_in, n_out); }); \
-            return; }
-        STRATA_Q6PF(2) STRATA_Q6PF(3) STRATA_Q6PF(4) STRATA_Q6PF(6)
-#undef STRATA_Q6PF
-    }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         if constexpr (NCOLS > 1) {
@@ -1784,14 +1675,6 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
                 native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out);
             });
-        return;
-    }
-    if (rpw == 1 && mmvq_sg16(false, n_out)) {
-        constexpr int NWG = WARPS * WARP / 16;
-        const unsigned blocks = unsigned((std::size_t(n_out) + NWG - 1) / NWG);
-        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide16, dpct_kernel_scalar<NCOLS>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, NWG, 16), sycl::range(1, NWG, 16)),
-            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, 16>(w, x, y, n_in, n_out); });
         return;
     }
     // RP rows per sub-group share each column's activation loads (the rows' own lanes, k order and butterfly: every
@@ -2207,25 +2090,6 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
                 native_mmvq_multi_kernel<F, NCOLS, NW, ROWS>(w, x, y, n_in, n_out);
             });
-        return;
-    }
-    if (mmvq_sg16(std::is_same_v<F, IQ4XSTraits>, n_out)) {   // same 128 threads as 8 SIMD16 sub-groups
-        constexpr int NW16 = WARPS * WARP / 16;
-        const sycl::range<3> t16(1, NW16, 16);
-        if (n_in / F::DIV < F::BPI) {
-            const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
-            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_multi16_small, F, dpct_kernel_scalar<NCOLS>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, blocks) * t16, t16),
-                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {
-                    native_mmvq_multi_kernel<F, NCOLS, NW16, WARPS, false, false, 16>(w, x, y, n_in, n_out);
-                });
-        } else {
-            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class native_mmvq_multi16, F, dpct_kernel_scalar<NCOLS>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_out)) * t16, t16),
-                [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {
-                    native_mmvq_multi_kernel<F, NCOLS, NW16, 1, false, false, 16>(w, x, y, n_in, n_out);
-                });
-        }
         return;
     }
     const dpct::dim3 threads(WARP, WARPS);

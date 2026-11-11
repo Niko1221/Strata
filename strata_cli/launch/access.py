@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from strata_cli.launch.settings import ACCESS_KINDS, LaunchSettings
+from strata_cli.launch.settings import LaunchSettings
 
 TUNNEL_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 WINDOWS = os.name == "nt"

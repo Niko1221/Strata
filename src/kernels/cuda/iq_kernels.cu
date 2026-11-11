@@ -6305,18 +6305,25 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
     // stream B: UD-Q4_K_XL's Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down (see S27 above)
     // MODEL-UPDATE: on by default on gfx12 (every output the old kernels' bits; R9700, UD-Q4_K_XL decode, 5 interleaved
-    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5); STRATA_EXPERT_V2K=0 turns it off, =1 turns it on
-    // elsewhere (not measured on other cards)
+    // pairs: story +1.2% 5/5, code +0.8% 5/5, after 6K +0.2% 4/5) and, since round 0215, on Windows gfx1151 (below);
+    // STRATA_EXPERT_V2K=0 turns it off, =1 turns it on elsewhere (not measured on other cards)
     static const bool v2k = [] {
         const char* v = std::getenv("STRATA_EXPERT_V2K");
         if (v != nullptr && v[0] != '\0') return v[0] == '1';
 #if defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
         int dev = 0;
         cudaDeviceProp p;
-        const bool g12 = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-                         strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+        const bool ok = cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess;
+        const bool g12 = ok && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
+#if defined(_WIN32)
+        // round 0215 (Strix Halo, Windows gfx1151, UD-Q4_K_XL, DFlash2 serve, 16 request pairs): window time -4.0 % (16 of 16 pairs faster,
+        // mean x1.040, range x1.020-1.056, the same window and token count in every pair); STRATA_EXPERT_V2K=0 turns it off
+        const bool strix = ok && strata::kernels::gfx_arch_is_gfx1151(p.gcnArchName);
+#else
+        const bool strix = false;
+#endif
         (void) cudaGetLastError();
-        return g12;
+        return g12 || strix;
 #else
         return false;
 #endif

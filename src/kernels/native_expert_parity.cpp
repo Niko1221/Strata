@@ -60,7 +60,7 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
-constexpr int64_t H = 2560, FF = 640;
+int64_t H = 2560, FF = 640;   // Q4KQ_PARITY_EMBD / Q4KQ_PARITY_FF override them in main (Q4-KQ: expert widths 512 and 1024)
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
@@ -190,7 +190,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 std::printf("          gate+up %d tokens one thread: %s %.0f us vs ggml %d x %.0f us\n", NT, tag, usn, NT, usg);
             };
             // guarded: the binary runs on AVX-2 CPUs too, and IQ4_XS has no AVX-512 kernel (an empty switch)
-            if (cpu::cpu_avx512_ok() && cpu::iq512_supported(f.gu_type)) check("avx512", true);
+            if (cpu::cpu_vnni_ok() && cpu::iq512_supported(f.gu_type)) check("avx512", true);
             if (cpu::cpu_avx2_ok() && cpu::iq256_supported(f.gu_type)) check("avx2", false);   // no AVX2: ggml-cpu only
         }
         for (int k = 0; k < NT; ++k) {
@@ -331,7 +331,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
             }
             cpu::q2_rows_any(blob.data() + f.down_off, f.d_row, (int) (FF / 64), ap, NT, altp, 0, (int) H);
             std::printf("          q2_0 %s down vs ggml down: rel %.2e\n",
-                        cpu::cpu_avx512_ok() ? "AVX-512" : "AVX-2", rel(alt, got_c));
+                        cpu::cpu_vnni_ok() ? "AVX-512" : "AVX-2", rel(alt, got_c));
         }
         if (f.d_type == 20 && cpu::cpu_avx2_ok()) {
             // (b3) the IQ4_NL multi-token AVX-2 kernel the pool now uses for IQ4_NL down projections,
@@ -902,6 +902,8 @@ int check_load(const char* pack, const char* gguf) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
+    if (const char* e = std::getenv("Q4KQ_PARITY_EMBD")) H = std::atoll(e);
+    if (const char* e = std::getenv("Q4KQ_PARITY_FF")) FF = std::atoll(e);
     if (argc < 2) {
         std::fprintf(stderr, "usage: native_expert_parity <shard.gguf> [layer ...]\n"
                              "       native_expert_parity --synthetic GU/DOWN ...   (ggml type names, e.g. q4_K/q5_1)\n"

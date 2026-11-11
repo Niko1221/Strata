@@ -16,6 +16,7 @@ child is still there.
 from __future__ import annotations
 
 from strata_control.private_files import private_mkdir as _private_mkdir
+from strata_control.childenv import quiet_crash_env
 import argparse
 import errno
 import hashlib
@@ -84,7 +85,7 @@ def _supported() -> None:
     POSIX uses an owner-private ``AF_UNIX`` socket. Windows uses a loopback-only TCP listener whose
     authority rests on the 256-bit control token plus a ``0700`` state directory, because the Python
     standard library cannot create a named pipe with a security descriptor; the difference is
-    recorded in ``owner_transport`` and in ``docs/work/IMPLEMENTATION_STATUS.md`` rather than being
+    recorded in ``owner_transport`` and in ``history/docs/work/IMPLEMENTATION_STATUS.md`` rather than being
     presented as equivalent. Anything else is refused.
     """
     if os.name == "nt" or (os.name == "posix" and hasattr(socket, "AF_UNIX")):
@@ -974,7 +975,7 @@ class Host:
                        "--owner-fd", "0" if WINDOWS else str(reader)]
         attestation_key = secrets.token_bytes(32)
         expected_attestation = launch_identity.attestation(attestation_key, source_bytes, server_args)
-        child_env = os.environ.copy()
+        child_env = quiet_crash_env(os.environ.copy())   # the server's engine and reader start no debugger on a user's machine
         child_env["STRATA_OWNER_ATTEST_KEY"] = attestation_key.hex()
         child_env["STRATA_NO_ACQUIRE"] = "1"      # a managed server never installs or downloads (acquisition.py)
         child_env["STRATA_RUNTIME_PROFILE"] = self.name   # the records of its engine say which profile they belong to
@@ -1558,6 +1559,7 @@ class Host:
 
 
 def main(argv: list[str] | None = None) -> int:
+    quiet_crash_env()                                   # the host's children inherit it (strata_control/childenv.py)
     parser = argparse.ArgumentParser(prog="strata-runtime-host")
     parser.add_argument("--host", required=True)
     parser.add_argument("--shutdown-timeout", type=float, default=30)
