@@ -13,6 +13,7 @@
 #include <optional>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <random>
 #include <string>
@@ -23,6 +24,7 @@
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <malloc.h>
 #include <process.h>
@@ -32,8 +34,9 @@
 #include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <deque>    // v2.4: readahead ring
-#include <future>   // v2.4: parallel block fetch
+#include <deque>    // [giphoo] v2.4: readahead ring
+#include <future>   // [giphoo] v2.4: parallel block fetch
+#endif
 
 
 // Format v1 stores integers and floats as this machine holds them in memory; it is defined as little-endian with
@@ -348,7 +351,7 @@ class RawFile {
 public:
     ~RawFile() { close(); }
     // a new file that did not exist (O_CREAT|O_EXCL: never an existing file or link), readable by its owner only
-    int pread_fd() const { return fd_; }   // v2.4: for the parallel readahead workers
+    int pread_fd() const { return fd_; }   // [giphoo] v2.4: for the parallel readahead workers
     bool create_new(int dirfd, const std::string& name) {
         fd_ = ::openat(dirfd, name.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         if (fd_ < 0) { kind_ = errno_kind(errno); error_ = std::strerror(errno); return false; }
@@ -525,6 +528,7 @@ bool free_space(const std::string& path, uint64_t& out) {
     out = (uint64_t) s.f_bavail * (uint64_t) s.f_frsize;
     return true;
 }
+#endif
 
 class FileSink {
 public:
@@ -674,13 +678,13 @@ struct Out {
     std::string read_error;
 };
 
-// L2 v2: templated so the v2 walker (conversation_file_v2.inc) reuses the same serialisation
+// [giphoo] l2-exp v2: templated so the v2 walker (conversation_file_v2.inc) reuses the same serialisation
 template<class Sink> void put_kv_header(Sink& o, int format, int64_t cells, int64_t heads, int64_t head_dim, int64_t page_size,
                    int64_t pooled_rows, int64_t idx_dim) {
     for (int64_t v : {int64_t(format), cells, heads, head_dim, page_size, pooled_rows, idx_dim}) o.i64(v);
 }
 
-// L2 v2: templated for the v2 walker (see conversation_file_v2.inc)
+// [giphoo] l2-exp v2: templated for the v2 walker (see conversation_file_v2.inc)
 template<class Sink> void put_checkpoint(Sink& o, const ConversationCheckpoint& c) {
     o.vec(c.ids);
     o.u64(c.imgs.size());
@@ -754,7 +758,7 @@ struct In {
     }
 };
 
-// L2 v2: templated for the v2 parser (see conversation_file_v2.inc)
+// [giphoo] l2-exp v2: templated for the v2 parser (see conversation_file_v2.inc)
 template<class InT> bool get_checkpoint(InT& in, ConversationCheckpoint& c) {
     if (!in.vec(c.ids, in.limits.max_tokens)) return false;
     uint64_t n = 0;
@@ -1122,7 +1126,7 @@ bool write_guarded(const std::string& path, const SavedConversation& image, cons
 } // namespace
 
 
-// L2: the whole v2 block-format toolkit lives in its own module
+// [giphoo] l2-exp: the whole v2 block-format toolkit lives in its own module
 #include "conversation_file_v2.inc"
 
 
@@ -1159,7 +1163,7 @@ uint64_t session_save_peak_bytes(const ConversationCheckpoint* deepest, const Se
     return n;
 }
 
-// L2 v2.2: the keep-set choice alone (deepest + pinned + HEAD anchors + depth fill),
+// [giphoo] l2-exp v2.2: the keep-set choice alone (deepest + pinned + HEAD anchors + depth fill),
 // no capture - the incremental save plans against this before it copies anything.
 std::vector<const ConversationCheckpoint*> session_pick_checkpoints(const std::vector<ConversationCheckpoint>& chain) {
     const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
@@ -1181,8 +1185,8 @@ std::vector<const ConversationCheckpoint*> session_pick_checkpoints(const std::v
     std::stable_sort(by_pos.begin(), by_pos.end(), [](const ConversationCheckpoint* a, const ConversationCheckpoint* b) {
         return a->ids.size() < b->ids.size();
     });
-    // L2 : HEAD ,  pick   
-    //  keep, HEAD3 ,  (332K  86K-332K )
+    // [giphoo] l2-exp ??: HEAD ????????????, ?? pick ?? ? ???
+    // ?????? keep, HEAD3 ????, ???????? (332K ??? 86K-332K ??)
     size_t heads = 0;
     for (const auto* c : by_pos) {
         if (heads >= head_n || pick.size() >= keep) break;
@@ -1190,9 +1194,9 @@ std::vector<const ConversationCheckpoint*> session_pick_checkpoints(const std::v
         add(c);
         if (pick.size() > before) ++heads;
     }
-    // L2:   , 
-    //   /2; ( by_depth :  ~100MB/, 
-    // ; )
+    // [giphoo] l2-exp: ???????? ? ????????????, ??????
+    // ???? ? ??/2; (? by_depth ????: ?????? ~100MB/?, ?????
+    // ?????; ???????????)
     if (pick.size() < keep) {
         std::vector<const ConversationCheckpoint*> rest;
         for (const auto* c : by_pos)
@@ -1213,7 +1217,7 @@ bool session_save_checkpoints(const std::vector<ConversationCheckpoint>& chain, 
                               std::vector<ConversationCheckpoint>& out, std::string& why) {
     out.clear();
     const ConversationCheckpoint* deepest = session_deepest_checkpoint(chain);
-    // L2 E4b (real wiring, 2026-10-27): STRATA_SESSION_CHK=N (default 1 = upstream's
+    // [giphoo] l2-exp E4b (real wiring, 2026-10-27): STRATA_SESSION_CHK=N (default 1 = upstream's
     // single resume point) keeps a grid - the deepest, every pinned shared-prefix anchor, the
     // HEAD anchors (STRATA_SESSION_CHK_HEAD, default 3: the earliest positions, so a small
     // conversation that shares this one's system+tools borrows from the file) and the deepest
@@ -1242,6 +1246,19 @@ int64_t session_phase_limit_s(uint64_t bytes) {
 bool session_file_write(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                         const SessionFileIdentity& id, size_t& bytes, std::string& error,
                         const SessionWriteOptions& options, SessionStatus* status) {
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (v3_is_archive(path) || v3_write_path(path, options)) {
+        SessionStatus st;
+        bool ok = false;
+        try {
+            ok = v3_full_write(path, meta, &kv, id, bytes, error, options, st);
+        } catch (const std::bad_alloc&) {
+            error = "session v3: out of memory while writing";
+            st.error = SessionError::memory;
+        }
+        if (status) *status = st;
+        return ok;
+    }
     if (session_v2_writes()) return write_v2_guarded(path, meta, &kv, id, bytes, error, options, status);
 #endif
     return write_guarded(path, meta, &kv, id, bytes, error, options, status);
@@ -1249,6 +1266,19 @@ bool session_file_write(const std::string& path, const SavedConversation& meta, 
 
 bool session_file_write(const std::string& path, const SavedConversation& image, const SessionFileIdentity& id,
                         size_t& bytes, std::string& error, const SessionWriteOptions& options, SessionStatus* status) {
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (v3_is_archive(path) || v3_write_path(path, options)) {
+        SessionStatus st;
+        bool ok = false;
+        try {
+            ok = v3_full_write(path, image, nullptr, id, bytes, error, options, st);
+        } catch (const std::bad_alloc&) {
+            error = "session v3: out of memory while writing";
+            st.error = SessionError::memory;
+        }
+        if (status) *status = st;
+        return ok;
+    }
     if (session_v2_writes()) return write_v2_guarded(path, image, nullptr, id, bytes, error, options, status);
 #endif
     return write_guarded(path, image, nullptr, id, bytes, error, options, status);
@@ -1261,6 +1291,9 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     error.clear();
     st = {};
     st.error = SessionError::invalid;   // every refusal below, unless the step says otherwise
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (v3_is_archive(path)) return v3_read(path, id, image, bytes, error, limits, nullptr, st);
+#endif
     RawFile raw;
     uint64_t size = 0;
     if (!raw.open_session(path, size)) {
@@ -1270,7 +1303,15 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     }
     if (size < kHeader + kTrailer) { error = "session file: size " + std::to_string(size) + " is below the minimum"; return false; }
     const uint64_t max_size = session_read_max_file_bytes(limits);
-    if (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max()) {
+    bool v2_magic = false;
+#ifdef STRATA_SESSION_V2_FORMAT
+    uint8_t magic[8];
+    v2_magic = raw.read_at(0, magic, sizeof magic) && std::memcmp(magic, kMagicV2, 8) == 0;
+#endif
+    // V2 is append-only between compactions: its physical file can retain old,
+    // unreferenced blocks.  Bound the CURRENT logical payload after the header
+    // instead of refusing an otherwise small restorable image by physical size.
+    if (!v2_magic && (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max())) {
         error = "session file: size " + std::to_string(size) + " exceeds this engine's limit" +
                 (max_size == UINT64_MAX ? std::string() : " of " + std::to_string(max_size));
         return false;
@@ -1287,7 +1328,15 @@ bool read_impl(const std::string& path, const SessionFileIdentity& id, SavedConv
     std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
     std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
     std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
-    if (std::memcmp(h, kMagicV2, 8) == 0) return read_v2_impl(raw, size, h, id, image, bytes, error, limits, st);
+#ifdef STRATA_SESSION_V2_FORMAT
+    if (std::memcmp(h, kMagicV2, 8) == 0) {
+        if (payload > max_size || payload > (uint64_t) std::numeric_limits<size_t>::max()) {
+            error = "session file: logical payload " + std::to_string(payload) + " exceeds this engine's limit" +
+                    (max_size == UINT64_MAX ? std::string() : " of " + std::to_string(max_size));
+            return false;
+        }
+        return read_v2_impl(raw, size, h, id, image, bytes, error, limits, st);
+    }
 #endif
     if (std::memcmp(h, kMagic, 8) != 0) { error = "session file: not a Strata session file (magic)"; return false; }
     if (hh != session_hash64(h, 56, 0)) { error = "session file: header checksum mismatch"; return false; }
@@ -1337,7 +1386,7 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
         st.error = SessionError::memory;
         ok = false;
     }
-    // L2 2.0  (4/4): state  ( conversation_file_l2.inc)
+    // [giphoo] L2 2.0 ??? (4/4): state ?? (????? conversation_file_l2.inc)
     if (ok) strata::core::l2two::hook_post_read(path, id, image);
     if (status) *status = st;
     return ok;

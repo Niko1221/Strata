@@ -1,28 +1,34 @@
 // =============================================================================================
-// L2: conversation_file_v2.inc ? the L2 block-format toolkit (v2.1/v2.2/v2.3/M3.1)
+// [giphoo] l2-exp: conversation_file_v2.inc ? the L2 block-format toolkit (v2.1/v2.2/v2.3/M3.1)
 //
 // Included once by conversation_file.cpp where the original writer namespace ended; it reaches
 // the host's anonymous-namespace plumbing (Out/In walkers, Publisher, RawFile, sat arithmetic)
 // and keeps EVERY v2/l2 change in this one module.  The host file's upstream diff is minimal:
 // three template signatures, this include, two dispatchers.  Design: docs/l2-blockformat-v2-design.md.
 //
-// Contents (all L2):
-//   format v2.1   block-compressed writer/reader (per-field segments, stored blocks, directory)
+// Contents (all [giphoo] l2-exp):
+//   format v2.1   block-compressed writer/reader (per-field segments, lz4 blocks, directory)
 //   SAVEINC v2.2  the incremental save (checkpoint/field-segment reuse, in-place append, peek)
 //   parked  v2.3  the streamed restore whose physical gate sees only transients (M3)
 //   RESTOREPP     partial restore by checkpoint - reads proportional to the borrow (M3.1)
 //   public entry  session_file_saveinc / saveinc_peek / read_parked / read_prefix
 // =============================================================================================
-// L2 v2: the block-compressed session format (docs/l2-blockformat-v2-design.md) needs lz4.
+// [giphoo] l2-exp v2: the block-compressed session format (docs/l2-blockformat-v2-design.md) needs lz4.
 // Without the header the v2 code compiles out: writes stay v1 and v2 files are refused with a clear error.
-// v2 session format: stored blocks only (no external compression library)
+#if __has_include(<lz4.h>)
+#define STRATA_SESSION_V2_FORMAT 1
+#include <lz4.h>
+#endif
+
+#ifdef STRATA_SESSION_V2_FORMAT
+#include <atomic>
 // =============================================================================================
-// L2 v2.1: the block-compressed session format (design: docs/l2-blockformat-v2-design.md).
+// [giphoo] l2-exp v2.1: the block-compressed session format (design: docs/l2-blockformat-v2-design.md).
 //
 //   header 64 B: magic 'STRSESS\x02', version 2, header size 64, model and config fingerprints,
 //                payload = the RAW (uncompressed) logical payload bytes, reserved 0, header hash.
 //   body:        segment streams.  A segment is a run of blocks; a block is
-//                [usize:u32][csize:u32][mode:u32] + csize bytes (mode 1 = stored (0 reserved)).
+//                [usize:u32][csize:u32][mode:u32] + csize bytes (mode 0 = lz4, 1 = stored).
 //                Segment order is fixed:
 //                  seg#0  kind 0  counts   - every scalar and size the parser needs, nothing else
 //                  seg#1  kind 4  live     - live state fields as raw bytes (ids, imgs, gdn, ...)
@@ -40,7 +46,7 @@
 //   Reads replay the logical model from the segments with every v1 limit checked in `counts`,
 //   before any payload allocation: geometry, layer range, token counts, state and K/V part sizes.
 //   Every block's raw bytes are hashed at write time and re-verified at decompression.
-#include "conversation_file_l2.inc"   // L2 2.0:  (hooks: strata::core::l2two::hook_*; ??? include, ?? cpp ???)
+#include "conversation_file_l2.inc"   // [giphoo] L2 2.0: ???????? (hooks: strata::core::l2two::hook_*; ??? include, ?? cpp ???)
 
 namespace {
 constexpr char kMagicV2[8] = {'S', 'T', 'R', 'S', 'E', 'S', 'S', '\x02'};
@@ -62,10 +68,10 @@ bool session_v2_writes() {
     return e && *e && *e != '0';   // opt-in until M4 flips production; the reader takes both versions
 }
 
-// L2 v2.4: parallel block readahead for the restore path.  The blocks of a segment are
+// [giphoo] l2-exp v2.4: parallel block readahead for the restore path.  The blocks of a segment are
 // independent (own offset/size/hash in the directory), so K workers can pread+decompress+verify
 // ahead of the consumer.  0 = the serial single-pread path; the raidz1 array of NVMe devices
-// delivers far more than one reader can pull through pread+hash in line.
+// delivers far more than one reader can pull through pread+lz4+hash in line.
 int v2_readahead_depth() {
     static const int d = [] {
         const char* e = std::getenv("STRATA_V2_READAHEAD");
@@ -118,7 +124,11 @@ struct V2Io {
     virtual bool write_all(const void* p, size_t n) = 0;
     virtual bool sync() = 0;
     virtual std::string error() const = 0;
-    virtual int pread_fd() const { return -1; }   // v2.4: >= 0 lets workers pread without shared state
+    virtual int pread_fd() const { return -1; }   // [giphoo] v2.4: >= 0 lets workers pread without shared state
+    virtual int block_fd(uint64_t offset, uint64_t& local_offset) {
+        local_offset = offset;
+        return pread_fd();
+    }
     virtual ~V2Io() = default;
 };
 struct V2FreshIo : V2Io {
@@ -133,7 +143,7 @@ private:
 };
 class V2RW : public V2Io {
 public:
-    // fix fd leak (2026-11-05 disk-full incident): V2RW owned fd_ but had no destructor,
+    // [giphoo] fix fd leak (2026-11-05 disk-full incident): V2RW owned fd_ but had no destructor,
     // so every early-return in saveinc_impl/saveinc_peek_impl leaked one fd per call; with the
     // gateway's evict/rename cycling inodes those fds held 600G+ of deleted-but-open files.
     V2RW() = default;
@@ -208,7 +218,7 @@ public:
         fd_ = -1;
         return ok;
     }
-    // v2.4.2: reopen for the post-verify rollback (the file is closed by then)
+    // [giphoo] v2.4.2: reopen for the post-verify rollback (the file is closed by then)
     bool reopen_rw(const std::string& path) {
         if (fd_ >= 0) return true;
         fd_ = ::open(path.c_str(), O_RDWR | O_NOFOLLOW | O_CLOEXEC);
@@ -235,7 +245,7 @@ public:
     std::vector<V2SegRec>& segments() { return segs_; }
     std::vector<V2BlockRec>& blocks() { return blocks_; }
     void set_progress(SessionProgress p, uint64_t expected) { progress_ = p; expected_ = expected; }
-    // saveinc: start from an existing file's block table, appending at `base`
+    // [giphoo] saveinc: start from an existing file's block table, appending at `base`
     void adopt(std::vector<V2BlockRec> old_blocks, uint64_t base, uint64_t raw_total) {
         blocks_ = std::move(old_blocks);
         off_ = base;
@@ -254,13 +264,13 @@ public:
         segs_.push_back(s);
         cur_seg_ = segs_.size() - 1;
     }
-    // saveinc: continue an existing segment - keep its identity and block list, then append
+    // [giphoo] saveinc: continue an existing segment - keep its identity and block list, then append
     void continue_segment(V2SegRec s) {
         flush_block();
         segs_.push_back(std::move(s));
         cur_seg_ = segs_.size() - 1;
     }
-    // v2.4: the live-ids segment's hash must describe the ids AS OF THIS SAVE, not the
+    // [giphoo] v2.4: the live-ids segment's hash must describe the ids AS OF THIS SAVE, not the
     // base file's era - a stale hash refuses the next extension (fail-closed) and blinds the
     // partial reader's live shortcut.  Stamp it right after the continuation is set up.
     void stamp_ids_hash(uint64_t h) { if (cur_seg_ < segs_.size()) segs_[cur_seg_].ids_hash = h; }
@@ -304,10 +314,13 @@ private:
         if (!buf_used_) return;
         V2BlockRec r;
         r.usize = (uint32_t) buf_used_;
-        r.mode = 1;   // stored (int8 KV is near-incompressible)
-r.csize = r.usize = (uint32_t) buf_used_;
-r.hash = session_hash64(buf_.data(), buf_used_, 0);
-ok_ = io_->write_all(hdr, 12) && io_->write_all(buf_.data(), r.csize);
+        r.mode = 1;
+        r.csize = r.usize;
+        r.hash = session_hash64(buf_.data(), buf_used_, 0);
+        r.offset = off_;
+        if (io_) {
+            const uint32_t hdr[3] = {r.usize, r.csize, r.mode};
+            ok_ = io_->write_all(hdr, 12) && io_->write_all(buf_.data(), r.csize);
         }
         off_ = sat_add(off_, 12 + (uint64_t) r.csize);
         blocks_.push_back(r);
@@ -315,7 +328,7 @@ ok_ = io_->write_all(hdr, 12) && io_->write_all(buf_.data(), r.csize);
         segs_[cur_seg_].raw_total = sat_add(segs_[cur_seg_].raw_total, buf_used_);
         raw_n_ = sat_add(raw_n_, buf_used_);
         buf_used_ = 0;
-        // the progress contract is monotonic done <= total: an incremental save's raw_n_
+        // [giphoo] the progress contract is monotonic done <= total: an incremental save's raw_n_
         // starts at the adopted payload (the old file's), so the total follows the high-water mark
         if (progress_) {
             prog_hi_ = std::max(prog_hi_, raw_n_);
@@ -327,7 +340,7 @@ ok_ = io_->write_all(hdr, 12) && io_->write_all(buf_.data(), r.csize);
     size_t cur_seg_ = 0, buf_used_ = 0;
     bool ok_ = true, read_failed_ = false;
     SessionProgress progress_;
-    std::vector<uint8_t> buf_ = std::vector<uint8_t>((size_t) kV2BlkMax), comp_;
+    std::vector<uint8_t> buf_ = std::vector<uint8_t>((size_t) kV2BlkMax);
     std::vector<V2SegRec> segs_;
     std::vector<V2BlockRec> blocks_;
 };
@@ -365,7 +378,7 @@ void v2_put_counts(V2Out& o, const SavedConversation& s, const std::vector<Sessi
     }
 }
 
-// each state field is its own segment (kind 4 live / kind 5 checkpoint; layer = the
+// [giphoo] each state field is its own segment (kind 4 live / kind 5 checkpoint; layer = the
 // checkpoint keep index, aux = the field index): every field grows append-only, so an incremental
 // save extends each field's segment at its own tail and the streams never shift out of place.
 enum { kV2FIds = 0, kV2FImgs, kV2FGdn, kV2FPle, kV2FTails, kV2FDead, kV2FBlockPos, kV2FCount };
@@ -465,7 +478,7 @@ void v2_dir_bytes(const std::vector<V2SegRec>& segs, const std::vector<V2BlockRe
     w64(dh);
 }
 
-bool v2_verify_structure(const std::string& path, std::string& error);   // v2.4: defined past the readers
+bool v2_verify_structure(const std::string& path, std::string& error);   // [giphoo] v2.4: defined past the readers
 
 bool write_v2_impl(const std::string& path, const SavedConversation& image, const std::vector<SessionKvSource>* sources,
                    const SessionFileIdentity& id, size_t& bytes, std::string& error, const SessionWriteOptions& opt,
@@ -648,8 +661,12 @@ bool v2_read_dir(V2Io& f, uint64_t size, V2Dir& d, std::string& error) {
 
 class V2SegReader {
 public:
-    V2SegReader(V2Io& f, const V2Dir& d, const V2SegRec& s, std::string& error)
-        : f_(f), d_(d), s_(s), error_(error), fd_(f.pread_fd()), depth_(v2_readahead_depth()) {}
+    struct ReadMeter {
+        std::atomic<uint64_t> payload{0};
+        std::atomic<uint64_t> blocks{0};
+    };
+    V2SegReader(V2Io& f, const V2Dir& d, const V2SegRec& s, std::string& error, ReadMeter* meter = nullptr)
+        : f_(f), d_(d), s_(s), error_(error), depth_(v2_readahead_depth()), meter_(meter) {}
     V2SegReader(const V2SegReader&) = delete;              // futures do not copy; the vector moves
     V2SegReader& operator=(const V2SegReader&) = delete;
     V2SegReader(V2SegReader&&) = default;                  // references rebind, deque<future> moves
@@ -662,6 +679,7 @@ public:
             p += c;
             n -= c;
             served_ += c;
+            if (meter_) meter_->payload.fetch_add(c, std::memory_order_relaxed);
         }
         return true;
     }
@@ -676,7 +694,7 @@ private:
         bool ok = false;
     };
     // header (12 bytes) and payload are contiguous in the file: one read
-    static PreBlock fetch_fd(int fd, const V2BlockRec* r) {
+    static PreBlock fetch_fd(int fd, const V2BlockRec* r, ReadMeter* meter) {
         PreBlock b;
         std::vector<uint8_t> raw(12u + r->csize);
         size_t got = 0;
@@ -686,15 +704,17 @@ private:
             if (n <= 0) { b.err = "session file: block read error"; return b; }
             got += (size_t) n;
         }
+        if (meter) meter->blocks.fetch_add(raw.size(), std::memory_order_relaxed);
         return finish(raw, r);
     }
-    static PreBlock fetch_io(V2Io* f, const V2BlockRec* r) {
+    static PreBlock fetch_io(V2Io* f, const V2BlockRec* r, ReadMeter* meter) {
         PreBlock b;
         std::vector<uint8_t> raw(12u + r->csize);
         if (!f->read_at(r->offset, raw.data(), raw.size())) {
             b.err = "session file: block read error: " + f->error();
             return b;
         }
+        if (meter) meter->blocks.fetch_add(raw.size(), std::memory_order_relaxed);
         return finish(raw, r);
     }
     static PreBlock finish(std::vector<uint8_t>& raw, const V2BlockRec* r) {
@@ -708,12 +728,8 @@ private:
             return b;
         }
         b.data.resize(r->usize);
-        if (r->mode == 0) {
-                b.error = "lz4 block (compression removed; re-save as stored)";
-                return {};
-            } else {
-            std::memcpy(b.data.data(), raw.data() + 12, r->csize);
-        }
+        if (r->mode != 1) { b.err = "session file: compressed blocks are not supported in this build"; return b; }
+        std::memcpy(b.data.data(), raw.data() + 12, r->csize);
         if (session_hash64(b.data.data(), b.data.size(), 0) != r->hash) {
             b.err = "session file: block checksum mismatch";
             return b;
@@ -723,9 +739,9 @@ private:
     }
     bool next_block() {
         if (pos_ >= s_.idx.size()) { error_ = "session file: segment data ends early"; return false; }
-        if (fd_ < 0 || depth_ <= 0) {
+        if (depth_ <= 0) {
             const V2BlockRec& r = d_.blocks[s_.idx[pos_]];
-            PreBlock b = fetch_io(&f_, &r);
+            PreBlock b = fetch_io(&f_, &r, meter_);
             if (!b.ok) { error_ = b.err; return false; }
             cur_ = std::move(b.data);
             have_ = cur_.size();
@@ -735,8 +751,15 @@ private:
         }
         while (fut_.size() < (size_t) depth_ && launched_ < s_.idx.size()) {
             const V2BlockRec* r = &d_.blocks[s_.idx[launched_++]];
-            const int fd = fd_;
-            fut_.emplace_back(std::async(std::launch::async, [fd, r] { return fetch_fd(fd, r); }));
+            uint64_t local_offset = r->offset;
+            const int fd = f_.block_fd(r->offset, local_offset);
+            if (fd < 0) {
+                fut_.emplace_back(std::async(std::launch::async, [this, r] { return fetch_io(&f_, r, meter_); }));
+            } else {
+                V2BlockRec local = *r;
+                local.offset = local_offset;
+                fut_.emplace_back(std::async(std::launch::async, [fd, local, this] { return fetch_fd(fd, &local, meter_); }));
+            }
         }
         if (fut_.empty()) { error_ = "session file: segment data ends early"; return false; }
         PreBlock b = fut_.front().get();
@@ -755,7 +778,8 @@ private:
     std::vector<uint8_t> cur_;
     size_t at_ = 0, have_ = 0, pos_ = 0, launched_ = 0;
     uint64_t served_ = 0;
-    int fd_ = -1, depth_ = 0;
+    int depth_ = 0;
+    V2SegReader::ReadMeter* meter_ = nullptr;
     std::deque<std::future<PreBlock>> fut_;
 };
 
@@ -778,6 +802,7 @@ struct V2In {
     uint64_t left;
     std::string& error;
     const SessionReadLimits& limits;
+    V2SegReader::ReadMeter* meter = nullptr;
     bool fail(const std::string& m) { if (error.empty()) error = "session file: " + m; return false; }
     bool raw(void* p, size_t c) {
         if (c > left) return fail("payload ends early");
@@ -799,7 +824,7 @@ struct V2In {
             return fail("payload order disagrees with the directory");
         if (s.raw_total > left) return fail("payload ends early");
         ++next_seg;
-        readers_.emplace_back(*file, *dir, s, error);
+        readers_.emplace_back(*file, *dir, s, error, meter);
         out = &readers_.back();
         return true;
     }
@@ -867,26 +892,12 @@ bool v2_read_state(V2In& in, uint8_t kind, uint16_t owner, ConversationCheckpoin
            take(c.dead, n.dead, 1, kV2FDead) && take(c.block_pos, n.block_pos, 1, kV2FBlockPos);
 }
 
-// v2.4: post-write structural verification.  Re-opens the published file and walks the
+// [giphoo] v2.4: post-write structural verification.  Re-opens the published file and walks the
 // SAME take_seg sequence the readers use - counts, live fields, checkpoint fields, non-empty K/V
 // parts - without reading payload blocks (~ms).  A file that fails this would fail every restore;
 // catching it at save time keeps the gateway's index pointing at the last good archive instead of
 // discovering the corruption minutes or hours later as a cold read.
-bool v2_verify_structure(const std::string& path, std::string& error) {
-    RawFile raw;
-    uint64_t size = 0;
-    if (!raw.open_session(path, size)) { error = "verify: cannot open: " + raw.error(); return false; }
-    uint8_t h[kHeader];
-    if (!raw.read_at(0, h, kHeader)) { error = "verify: header read"; return false; }
-    if (std::memcmp(h, kMagicV2, 8) != 0) { error = "verify: not the v2 magic"; return false; }
-    uint32_t version = 0;
-    uint64_t payload = 0;
-    std::memcpy(&version, h + 8, 4);
-    std::memcpy(&payload, h + 32, 8);
-    if (version != 2) { error = "verify: unsupported version"; return false; }
-    V2FreshIo io(raw);
-    V2Dir dir;
-    if (!v2_read_dir(io, size, dir, error)) { error = "verify: " + error; return false; }
+bool v2_verify_loaded(V2Io& io, const V2Dir& dir, std::string& error) {
     SessionReadLimits limits;
     std::string e2;
     V2In in{&io, &dir, 0, dir.payload_raw, e2, limits};
@@ -909,6 +920,24 @@ bool v2_verify_structure(const std::string& path, std::string& error) {
         return false;
     }
     return true;
+}
+
+bool v2_verify_structure(const std::string& path, std::string& error) {
+    RawFile raw;
+    uint64_t size = 0;
+    if (!raw.open_session(path, size)) { error = "verify: cannot open: " + raw.error(); return false; }
+    uint8_t h[kHeader];
+    if (!raw.read_at(0, h, kHeader)) { error = "verify: header read"; return false; }
+    if (std::memcmp(h, kMagicV2, 8) != 0) { error = "verify: not the v2 magic"; return false; }
+    uint32_t version = 0;
+    uint64_t payload = 0;
+    std::memcpy(&version, h + 8, 4);
+    std::memcpy(&payload, h + 32, 8);
+    if (version != 2) { error = "verify: unsupported version"; return false; }
+    V2FreshIo io(raw);
+    V2Dir dir;
+    if (!v2_read_dir(io, size, dir, error)) { error = "verify: " + error; return false; }
+    return v2_verify_loaded(io, dir, error);
 }
 
 bool get_payload_v2(V2In& in, const V2Counts& c, SavedConversation& s) {
@@ -945,11 +974,11 @@ bool get_payload_v2(V2In& in, const V2Counts& c, SavedConversation& s) {
     return true;
 }
 
-// L2 v2.3 (M3): the parked reader.  A v2 file's counts carry every size up front, so
+// [giphoo] l2-exp v2.3 (M3): the parked reader.  A v2 file's counts carry every size up front, so
 // the pool's budget is asked BEFORE any payload byte moves, and the physical RAM gate sees only the
 // streaming transients (one decompressed block and the small vectors) instead of the whole image -
 // the image lands in pool-managed RAM, which the budget already bounds.  This is the read-side key
-// to "L2 ": the old path asked the physical gate for image+floor (2.6G+2.5G) with ~3-4G free.
+// to "L2 ????": the old path asked the physical gate for image+floor (2.6G+2.5G) with ~3-4G free.
 bool read_v2_parked(RawFile& raw, uint64_t size, const uint8_t* h, const SessionFileIdentity& id,
                     SavedConversation& image, size_t& bytes, std::string& error, const SessionReadLimits& limits,
                     const std::function<bool(uint64_t image_bytes, std::string& why)>& fits, SessionStatus& st);
@@ -978,11 +1007,11 @@ bool read_v2_impl(RawFile& raw, uint64_t size, const uint8_t* h, const SessionFi
 
 // the shared v2 walk; `fits` (when given) switches on the parked semantics: no whole-image
 // physical admit, a pool-budget ask after counts, and a light transient-only floor check
-bool read_v2_common(V2Io& io, uint64_t size, uint64_t payload, const SessionFileIdentity& id, SavedConversation& image,
-                    size_t& bytes, std::string& error, const SessionReadLimits& limits,
-                    const std::function<bool(uint64_t, std::string&)>* fits, SessionStatus& st) {
-    V2Dir dir;
-    if (!v2_read_dir(io, size, dir, error)) { st.error = SessionError::invalid; return false; }
+bool read_v2_loaded_common(V2Io& io, uint64_t size, const V2Dir& dir, uint64_t payload,
+                           const SessionFileIdentity& id, SavedConversation& image, size_t& bytes,
+                           std::string& error, const SessionReadLimits& limits,
+                           const std::function<bool(uint64_t, std::string&)>* fits, SessionStatus& st) {
+    (void) id;
     if (dir.payload_raw != payload) { st.error = SessionError::invalid; error = "session file: payload size disagrees with the directory"; return false; }
     if (fits) {
         // transients only: one decompressed block pair, the small vectors, a margin
@@ -1036,6 +1065,14 @@ bool read_v2_common(V2Io& io, uint64_t size, uint64_t payload, const SessionFile
     return true;
 }
 
+bool read_v2_common(V2Io& io, uint64_t size, uint64_t payload, const SessionFileIdentity& id, SavedConversation& image,
+                    size_t& bytes, std::string& error, const SessionReadLimits& limits,
+                    const std::function<bool(uint64_t, std::string&)>* fits, SessionStatus& st) {
+    V2Dir dir;
+    if (!v2_read_dir(io, size, dir, error)) { st.error = SessionError::invalid; return false; }
+    return read_v2_loaded_common(io, size, dir, payload, id, image, bytes, error, limits, fits, st);
+}
+
 bool read_v2_parked(RawFile& raw, uint64_t size, const uint8_t* h, const SessionFileIdentity& id,
                     SavedConversation& image, size_t& bytes, std::string& error, const SessionReadLimits& limits,
                     const std::function<bool(uint64_t image_bytes, std::string& why)>& fits, SessionStatus& st) {
@@ -1061,44 +1098,28 @@ bool read_v2_parked(RawFile& raw, uint64_t size, const uint8_t* h, const Session
 }
 
 // ---- partial restore by checkpoint (M3.1) ------------------------------------------------------
-// Load only what a borrower needs: the deepest file checkpoint whose ids hash-match
+// [giphoo] Load only what a borrower needs: the deepest file checkpoint whose ids hash-match
 // the incoming prompt's prefix becomes the pool entry's live (kv truncated to its page-aligned
 // position).  Matching costs two small reads (directory + counts) and hash-vs-hash; the K/V
 // segments are read sequentially for exactly the prefix bytes, so only leading blocks move.
-bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
-                      const std::vector<int32_t>& prompt, SavedConversation& image, size_t& bytes,
-                      std::string& error, const SessionReadLimits& limits,
-                      const std::function<bool(uint64_t, std::string&)>& fits, SessionStatus& st,
-                      bool& live_would_match) {
+bool read_prefix_loaded(V2Io& io, uint64_t size, const V2Dir& dir, const SessionFileIdentity& id,
+                        const std::vector<int32_t>& prompt, SavedConversation& image, size_t& bytes,
+                        std::string& error, const SessionReadLimits& limits,
+                        const std::function<bool(uint64_t, std::string&)>& fits, SessionStatus& st,
+                        bool& live_would_match, SessionPrefixStats* prefix_stats) {
+    (void) id;
     live_would_match = false;
     st.error = SessionError::invalid;
-    RawFile raw;
-    uint64_t size = 0;
-    if (!raw.open_session(path, size)) {
-        st.error = raw.refused() ? SessionError::invalid : raw.kind();
-        error = "session file: " + path + ": " + raw.error();
-        return false;
+    if (prefix_stats) {
+        const bool v3_archive = prefix_stats->v3_archive;
+        *prefix_stats = {};
+        prefix_stats->v3_archive = v3_archive;
+        prefix_stats->archive_bytes = size;
     }
-    uint8_t h[kHeader];
-    if (!raw.read_at(0, h, kHeader)) { st.error = raw.kind(); error = "session file: header read error"; return false; }
-    if (std::memcmp(h, kMagicV2, 8) != 0) { error = "session file: the partial read needs the v2 format"; return false; }
-    {
-        uint32_t version = 0;
-        uint64_t model = 0, config = 0;
-        std::memcpy(&version, h + 8, 4);
-        std::memcpy(&model, h + 16, 8);
-        std::memcpy(&config, h + 24, 8);
-        if (version != 2 || model != id.model || config != id.config) {
-            error = "session file: saved with another model or configuration";
-            return false;
-        }
-    }
-    V2FreshIo io(raw);
-    V2Dir dir;
-    if (!v2_read_dir(io, size, dir, error)) return false;
+    V2SegReader::ReadMeter meter;
     SessionReadLimits open_limits;   // counts parse stays open; the caller's limits gate the image
     std::string e2;
-    V2In in{&io, &dir, 0, dir.payload_raw, e2, open_limits};
+    V2In in{&io, &dir, 0, dir.payload_raw, e2, open_limits, &meter};
     V2Counts c;
     if (!v2_get_counts(in, c)) { error = "session file: " + e2; return false; }
     // geometry gates before anything is allocated
@@ -1135,7 +1156,9 @@ bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
         session_hash64(prompt.data(), (size_t) c.cks[0].ids * sizeof(int32_t), 0) ==
             live_field[kV2FIds]->ids_hash)
         live_would_match = true;
-    // deepest checkpoint whose ids hash-match the prompt prefix
+    if (prefix_stats) prefix_stats->live_would_match = live_would_match;
+    // deepest checkpoint whose ids hash-match the prompt prefix: token depth wins, keep index only
+    // breaks an exact-length tie (the keep set is policy-ordered, not depth-ordered)
     int64_t pick = -1;
     uint64_t pick_len = 0;
     for (uint64_t i = 0; i < c.n_ck && i < 256; ++i) {
@@ -1143,15 +1166,65 @@ bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
         if (!len || len > prompt.size() || !ck_ids_hash_seg[i] || !ck_field[i][kV2FIds]) continue;
         if (session_hash64(prompt.data(), (size_t) len * sizeof(int32_t), 0) ==
             ck_ids_hash_seg[i]->ids_hash) {
-            if ((int64_t) i > pick) {
+            if (len > pick_len) {
                 pick = (int64_t) i;
                 pick_len = len;
             }
         }
     }
+    if (prefix_stats) prefix_stats->checkpoint_tokens = pick_len;
     if (pick < 0) {
         error = "session file: no checkpoint of this file is a prefix of the prompt";
         return false;
+    }
+    const auto& picked = c.cks[(size_t) pick + 1];
+    const uint64_t P = pick_len;
+    // The prefix plan is known from counts/directory: ask the pool for the image BEFORE any
+    // checkpoint field or K/V payload block moves.  A refusal then costs only metadata reads.
+    auto prefix_sizes = [&](size_t l, uint64_t (&sizes)[5]) -> bool {
+        const auto& hdr = c.layers[l];
+        const uint64_t cells_full = (uint64_t) hdr.f[1];
+        const int64_t page = hdr.f[4] > 0 ? hdr.f[4] : 1;
+        const uint64_t cells_P = (P + (uint64_t) page - 1) / (uint64_t) page * (uint64_t) page;
+        const uint64_t row_bytes = (uint64_t) hdr.f[6] * 4;
+        const uint64_t pooled_full = hdr.parts[4];
+        uint64_t rows_P = 0;
+        if (pooled_full && row_bytes) {
+            const uint64_t rows_full = pooled_full / row_bytes;
+            const uint64_t upto_full = c.cks[0].ids;
+            const uint64_t idx_block = rows_full > 1 && upto_full ? upto_full / (rows_full - 1) : 0;
+            rows_P = idx_block ? P / idx_block + 1 : rows_full;
+            rows_P = std::min<uint64_t>(rows_P, rows_full);
+        }
+        sizes[4] = rows_P * row_bytes;
+        if (cells_full)
+            for (int p = 0; p < 4; ++p) sizes[p] = cells_P * (hdr.parts[p] / cells_full);
+        for (int p = 0; p < 5; ++p)
+            if (sizes[p] && !part_seg[l][p]) return false;
+        return true;
+    };
+    uint64_t planned_image_bytes = sat_add(picked.ids * sizeof(int32_t), picked.imgs * sizeof(ConversationImageKey));
+    planned_image_bytes = sat_add(planned_image_bytes, picked.gdn);
+    planned_image_bytes = sat_add(planned_image_bytes, picked.ple);
+    planned_image_bytes = sat_add(planned_image_bytes, picked.tails);
+    planned_image_bytes = sat_add(planned_image_bytes, picked.dead);
+    planned_image_bytes = sat_add(planned_image_bytes, picked.block_pos);
+    for (size_t l = 0; l < c.n_layers; ++l) {
+        uint64_t sizes[5] = {};
+        if (!prefix_sizes(l, sizes)) {
+            error = "session file: the file lacks a K/V part segment";
+            return false;
+        }
+        for (uint64_t n : sizes) planned_image_bytes = sat_add(planned_image_bytes, n);
+    }
+    if (prefix_stats) prefix_stats->image_bytes = planned_image_bytes;
+    if (fits) {
+        std::string why;
+        if (!fits(planned_image_bytes, why)) {
+            st.error = SessionError::storage;
+            error = "session file: " + why;
+            return false;
+        }
     }
     // the picked checkpoint becomes the image's live: its seven field segments, whole
     SavedConversation out;
@@ -1159,27 +1232,25 @@ bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
     out.layer_lo = c.layer_lo;
     out.layer_hi = c.layer_hi;
     out.cvec = c.cvec;
-    out.live.used = c.cks[(size_t) pick + 1].used;
+    out.live.used = picked.used;
     for (int f = 0; f < kV2FCount; ++f) {
         if (!ck_field[pick][f]) { error = "session file: the file lacks a checkpoint field segment"; return false; }
-        V2SegReader rf(io, dir, *ck_field[pick][f], error);
-        const auto& n = c.cks[(size_t) pick + 1];
+        V2SegReader rf(io, dir, *ck_field[pick][f], error, &meter);
         auto take = [&](auto& v, uint64_t bytes) -> bool {
             using E = typename std::remove_reference_t<decltype(v)>::value_type;
             if (bytes % sizeof(E)) return false;
             v.resize((size_t) (bytes / sizeof(E)));
             return bytes == 0 || rf.read((uint8_t*) v.data(), (size_t) bytes);
         };
-        const bool okf = f == kV2FIds ? take(out.live.ids, n.ids * sizeof(int32_t)) :
-                          f == kV2FImgs ? take(out.live.imgs, n.imgs * sizeof(ConversationImageKey)) :
-                          f == kV2FGdn ? take(out.live.gdn, n.gdn) :
-                          f == kV2FPle ? take(out.live.ple, n.ple) :
-                          f == kV2FTails ? take(out.live.tails, n.tails) :
-                          f == kV2FDead ? take(out.live.dead, n.dead) :
-                                          take(out.live.block_pos, n.block_pos);
+        const bool okf = f == kV2FIds ? take(out.live.ids, picked.ids * sizeof(int32_t)) :
+                          f == kV2FImgs ? take(out.live.imgs, picked.imgs * sizeof(ConversationImageKey)) :
+                          f == kV2FGdn ? take(out.live.gdn, picked.gdn) :
+                          f == kV2FPle ? take(out.live.ple, picked.ple) :
+                          f == kV2FTails ? take(out.live.tails, picked.tails) :
+                          f == kV2FDead ? take(out.live.dead, picked.dead) :
+                                          take(out.live.block_pos, picked.block_pos);
         if (!okf) { error = "session file: checkpoint segment ends early"; return false; }
     }
-    const uint64_t P = pick_len;
     // K/V parts truncated to the checkpoint's page-aligned position
     out.kv.resize((size_t) c.n_layers);
     uint64_t image_bytes = 0;
@@ -1191,34 +1262,21 @@ bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
         k.head_dim = hdr.f[3];
         k.page_size = hdr.f[4];
         k.idx_dim = hdr.f[6];
-        const uint64_t cells_full = (uint64_t) hdr.f[1];
-        const int64_t page = hdr.f[4] > 0 ? hdr.f[4] : 1;
-        const uint64_t cells_P = (P + (uint64_t) page - 1) / (uint64_t) page * (uint64_t) page;
-        k.cells = (int64_t) cells_P;
-        // pooled rows: derive the index block from the full row count, then re-derive at P
+        uint64_t sizes_P[5] = {};
+        if (!prefix_sizes(l, sizes_P)) {
+            error = "session file: the file lacks a K/V part segment";
+            return false;
+        }
+        const uint64_t page = hdr.f[4] > 0 ? (uint64_t) hdr.f[4] : 1;
+        k.cells = (int64_t) ((P + page - 1) / page * page);
         const uint64_t row_bytes = (uint64_t) k.idx_dim * 4;
-        const uint64_t pooled_full = hdr.parts[4];
-        uint64_t rows_P = 0;
-        if (pooled_full && row_bytes) {
-            const uint64_t rows_full = pooled_full / row_bytes;
-            const uint64_t upto_full = c.cks[0].ids;
-            const uint64_t idx_block = rows_full > 1 && upto_full ? upto_full / (rows_full - 1) : 0;
-            rows_P = idx_block ? P / idx_block + 1 : rows_full;
-            rows_P = std::min<uint64_t>(rows_P, rows_full);
-        }
-        k.pooled_rows = (int64_t) rows_P;
-        uint64_t sizes_P[5] = {0, 0, 0, 0, rows_P * row_bytes};
-        if (cells_full) {
-            for (int p = 0; p < 4; ++p) sizes_P[p] = cells_P * (hdr.parts[p] / cells_full);
-        }
+        k.pooled_rows = (int64_t) (row_bytes ? sizes_P[4] / row_bytes : 0);
         for (int p = 0; p < 5; ++p) {
             const uint64_t n = sizes_P[p];
             ConversationBuffer* b = v2_img_part(k, (size_t) p);
             *b = {};
             if (!n) continue;
-            const V2SegRec* seg = part_seg[l][p];
-            if (!seg) { error = "session file: the file lacks a K/V part segment"; return false; }
-            V2SegReader r(io, dir, *seg, error);
+            V2SegReader r(io, dir, *part_seg[l][p], error, &meter);
             b->resize((size_t) n);
             if (!b->visit(0, (size_t) n, [&](uint8_t* q, size_t cn, size_t) { return r.read(q, cn); })) {
                 error = "session file: K/V part segment ends early";
@@ -1230,17 +1288,84 @@ bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
     image_bytes += (uint64_t) out.live.ids.size() * 4 + out.live.imgs.size() * 16 +
                    out.live.gdn.size() + out.live.ple.size() + out.live.tails.size() +
                    out.live.dead.size() + out.live.block_pos.size();
-    if (fits) {
-        std::string why;
-        if (!fits(image_bytes, why)) { st.error = SessionError::storage; error = "session file: " + why; return false; }
-    }
     image = std::move(out);
     bytes = (size_t) size;
+    if (prefix_stats) {
+        prefix_stats->checkpoint_hit = true;
+        prefix_stats->image_bytes = image_bytes;
+        prefix_stats->payload_read_bytes = meter.payload.load(std::memory_order_relaxed);
+        prefix_stats->block_read_bytes = meter.blocks.load(std::memory_order_relaxed);
+        prefix_stats->live_would_match = live_would_match;
+    }
     st.error = SessionError::none;
     return true;
 }
 
+bool read_prefix_impl(const std::string& path, const SessionFileIdentity& id,
+                      const std::vector<int32_t>& prompt, SavedConversation& image, size_t& bytes,
+                      std::string& error, const SessionReadLimits& limits,
+                      const std::function<bool(uint64_t, std::string&)>& fits, SessionStatus& st,
+                      bool& live_would_match, SessionPrefixStats* prefix_stats) {
+    RawFile raw;
+    uint64_t size = 0;
+    if (!raw.open_session(path, size)) {
+        st.error = raw.refused() ? SessionError::invalid : raw.kind();
+        error = "session file: " + path + ": " + raw.error();
+        return false;
+    }
+    uint8_t h[kHeader];
+    if (!raw.read_at(0, h, kHeader)) { st.error = raw.kind(); error = "session file: header read error"; return false; }
+    if (std::memcmp(h, kMagicV2, 8) != 0) { error = "session file: the partial read needs the v2 format"; return false; }
+    uint32_t version = 0;
+    uint64_t model = 0, config = 0;
+    std::memcpy(&version, h + 8, 4);
+    std::memcpy(&model, h + 16, 8);
+    std::memcpy(&config, h + 24, 8);
+    if (version != 2 || model != id.model || config != id.config) {
+        error = "session file: saved with another model or configuration";
+        return false;
+    }
+    V2FreshIo io(raw);
+    V2Dir dir;
+    if (!v2_read_dir(io, size, dir, error)) return false;
+    return read_prefix_loaded(io, size, dir, id, prompt, image, bytes, error, limits, fits, st,
+                              live_would_match, prefix_stats);
+}
+
 // ---- the incremental save (M2.2) --------------------------------------------------------------
+uint64_t saveinc_compact_env(const char* key, uint64_t fallback) {
+    const char* e = std::getenv(key);
+    if (!e || !*e) return fallback;
+    const long long value = std::strtoll(e, nullptr, 10);
+    return value >= 0 ? (uint64_t) value : fallback;
+}
+
+bool saveinc_compaction_values(uint64_t physical, uint64_t logical, std::string& reason) {
+    const uint64_t file_limit = saveinc_compact_env("STRATA_SAVEINC_COMPACT_FILE_BYTES", 12ull << 30);
+    const uint64_t slack = saveinc_compact_env("STRATA_SAVEINC_COMPACT_SLACK_BYTES", 1ull << 30);
+    const uint64_t ratio_x100 = saveinc_compact_env("STRATA_SAVEINC_COMPACT_RATIO_X100", 200);
+    const bool absolute = file_limit > 0 && physical >= file_limit;
+    const bool amplified = ratio_x100 > 0 && physical > logical && physical - logical > slack &&
+                           (long double) physical > (long double) logical * (long double) ratio_x100 / 100.0L;
+    if (!absolute && !amplified) return false;
+    reason = "saveinc: compaction required (physical=" + std::to_string(physical) +
+             ", logical=" + std::to_string(logical) + ", limit=" + std::to_string(file_limit) + ")";
+    return true;
+}
+
+bool saveinc_compaction_check(const std::string& path, std::string& reason) {
+    reason.clear();
+    V2RW f;
+    std::string why;
+    if (!f.open_existing(path, why)) return false;
+    uint8_t h[kHeader];
+    if (!f.read_at(0, h, kHeader) || std::memcmp(h, kMagicV2, 8) != 0) return false;
+    V2Dir dir;
+    std::string error;
+    if (!v2_read_dir(f, f.size(), dir, error)) return false;
+    return saveinc_compaction_values(f.size(), dir.payload_raw, reason);
+}
+
 // Appends to the existing v2.1 file in place: reused checkpoint segments and the K/V part prefixes
 // keep their blocks untouched; the live tail, the missing checkpoints, the part tails, the counts
 // block and the directory are appended.  The header is rewritten in place afterwards.  A crash
@@ -1273,6 +1398,7 @@ bool saveinc_impl(const std::string& path, const SavedConversation& meta, const 
     }
     V2Dir old;
     if (!v2_read_dir(f, f.size(), old, error)) { error = "saveinc: " + error; return false; }
+    if (saveinc_compaction_values(f.size(), old.payload_raw, why)) { error = why; return false; }
     // counts of the old file
     SessionReadLimits open_limits;
     std::string e2;
@@ -1364,7 +1490,7 @@ bool saveinc_impl(const std::string& path, const SavedConversation& meta, const 
         out.u64(c.dead.size() * v2_esz(c.dead));
         out.u64(c.block_pos.size() * v2_esz(c.block_pos));
     };
-    // L2 2.0  (1/4): split  + counts ( conversation_file_l2.inc)
+    // [giphoo] L2 2.0 ??? (1/4): split ?? + counts (????? conversation_file_l2.inc)
     const bool l2_split_ = strata::core::l2two::hook_split(meta.live, oc.cks[0]);
     strata::core::l2two::hook_put_counts(put_ck_counts, l2_split_, meta.live, oc.cks[0]);
     for (size_t i = 0; i < keep.size(); ++i) {
@@ -1400,10 +1526,10 @@ bool saveinc_impl(const std::string& path, const SavedConversation& meta, const 
         }
         return true;
     };
-    // L2 2.0  (2/4): split  + ids_hash  ( state )
+    // [giphoo] L2 2.0 ??? (2/4): split ????????? + ids_hash ??? (?? state ??)
     live_field(kV2FIds, live.ids.data(), strata::core::l2two::hook_field(l2_split_, live.ids.size(), olc.ids), olc.ids, sizeof(int32_t));
     if (!l2_split_)
-        out.stamp_ids_hash(v2_ids_hash(live.ids));   // v2.4: the hash now covers the CURRENT ids
+        out.stamp_ids_hash(v2_ids_hash(live.ids));   // [giphoo] v2.4: the hash now covers the CURRENT ids
     live_field(kV2FImgs, live.imgs.data(), strata::core::l2two::hook_field(l2_split_, live.imgs.size(), olc.imgs), olc.imgs, sizeof(ConversationImageKey));
     live_field(kV2FGdn, live.gdn.data(), strata::core::l2two::hook_field(l2_split_, live.gdn.size(), olc.gdn), olc.gdn, 1);
     live_field(kV2FPle, live.ple.data(), strata::core::l2two::hook_field(l2_split_, live.ple.size(), olc.ple), olc.ple, 1);
@@ -1415,7 +1541,7 @@ bool saveinc_impl(const std::string& path, const SavedConversation& meta, const 
         const auto& slot = keep[i];
         if (slot.reuse >= 0) {
             for (int f2 = 0; f2 < kV2FCount; ++f2) {
-                // v2.4.1: the keep position owns the segment's index.  A continued record carried
+                // [giphoo] v2.4.1: the keep position owns the segment's index.  A continued record carried
                 // the OLD file's layer number; under checkpoint rotation (the oldest dropped, a fresh one
                 // appended) the reuse index and the keep position disagree, and the emitted directory held
                 // kind-5 segments out of the ascending order every reader (and the post-write verifier)
@@ -1500,7 +1626,7 @@ bool saveinc_impl(const std::string& path, const SavedConversation& meta, const 
     {
         std::string verr;
         if (!v2_verify_structure(path, verr)) {
-            // v2.4.2: roll the file back to the pre-extension size - the extended
+            // [giphoo] v2.4.2: roll the file back to the pre-extension size - the extended
             // directory is already on disk and invalid; if the engine dies before the
             // fallback full save replaces the file, the archive would sit corrupt in the
             // index (761cbd/016161dd: two bugs' parting gift).  truncate restores the
@@ -1520,7 +1646,7 @@ bool saveinc_impl(const std::string& path, const SavedConversation& meta, const 
     }
     bytes = (size_t) f.size();
     st.error = SessionError::none;
-    // L2 2.0  (3/4): state  L2-1 ( conversation_file_l2.inc)
+    // [giphoo] L2 2.0 ??? (3/4): state ?????? L2-1 (????? conversation_file_l2.inc)
     strata::core::l2two::hook_post_saveinc(path, meta, id, opt, l2_split_);
     return true;
 }
@@ -1579,27 +1705,58 @@ bool saveinc_peek_impl(const std::string& path, const SessionFileIdentity& id, S
         if (s.kind == 5 && s.layer < c.n_ck && s.aux == kV2FIds) peek.ckpt_hashes[s.layer] = s.ids_hash;
     return true;
 }
+#include "conversation_file_v3.inc"
 } // namespace
-
+#endif // STRATA_SESSION_V2_FORMAT
 
 // ---- public entries (moved here from the host file: one toolkit, one home) --------------------
-bool session_file_verify(const std::string& path, std::string& error) { return v2_verify_structure(path, error); }
+#ifdef STRATA_SESSION_V2_FORMAT
+bool session_file_verify(const std::string& path, std::string& error) {
+    if (v3_is_archive(path)) return v3_verify_open(path, error);
+    return v2_verify_structure(path, error);
+}
 
 bool session_file_saveinc(const std::string& path, const SavedConversation& meta, const std::vector<SessionKvSource>& kv,
                           const SessionFileIdentity& id, const std::vector<SessionSaveIncSlot>& keep, size_t& bytes,
                           std::string& error, const SessionWriteOptions& options, SessionStatus* status) {
+    if (v3_is_archive(path)) {
+        SessionStatus st;
+        bool ok = false;
+        try {
+            ok = v3_saveinc(path, meta, kv, id, keep, bytes, error, options, st);
+        } catch (const std::bad_alloc&) {
+            error = "saveinc: out of memory while writing the V3 archive";
+            st.error = SessionError::memory;
+        }
+        if (status) *status = st;
+        return ok;
+    }
     return saveinc_guarded(path, meta, kv, id, keep, bytes, error, options, status);
 }
 
 bool session_file_saveinc_peek(const std::string& path, const SessionFileIdentity& id, SessionSaveIncPeek& peek,
                                std::string& error) {
+    if (v3_is_archive(path)) return v3_peek(path, id, peek, error);
     return saveinc_peek_impl(path, id, peek, error);
+}
+
+bool session_file_saveinc_needs_compaction(const std::string& path, std::string& reason) {
+    if (v3_is_archive(path)) return v3_saveinc_needs_compaction_open(path, reason);
+    return saveinc_compaction_check(path, reason);
 }
 #endif
 
-// L2 v2.3 (M3): the parked read.  v2 only; a v1 file is refused with `error` naming
+#ifndef STRATA_SESSION_V2_FORMAT
+bool session_file_saveinc_needs_compaction(const std::string&, std::string& reason) {
+    reason.clear();
+    return false;
+}
+#endif
+
+#ifdef STRATA_SESSION_V2_FORMAT
+// [giphoo] l2-exp v2.3 (M3): the parked read.  v2 only; a v1 file is refused with `error` naming
 // the ordinary read, so the caller can fall back.
-// L2 M3.1: partial restore by checkpoint. `prompt` is the incoming request's token
+// [giphoo] l2-exp M3.1: partial restore by checkpoint. `prompt` is the incoming request's token
 // ids; the deepest file checkpoint whose ids hash-match its prefix becomes the image (kv cut to
 // the checkpoint's page-aligned position). `live_would_match` = the file's live state itself is
 // a prefix (the caller then prefers a full restore); no matching checkpoint -> false with the
@@ -1608,11 +1765,19 @@ bool session_file_read_prefix(const std::string& path, const SessionFileIdentity
                               const std::vector<int32_t>& prompt, SavedConversation& image,
                               size_t& bytes, std::string& error, const SessionReadLimits& limits,
                               const std::function<bool(uint64_t image_bytes, std::string& why)>& fits,
-                              SessionStatus* status, bool* live_would_match) {
+                              SessionStatus* status, bool* live_would_match,
+                              SessionPrefixStats* prefix_stats) {
     SessionStatus st;
     bool ok = false, live = false;
     try {
-        ok = read_prefix_impl(path, id, prompt, image, bytes, error, limits, fits, st, live);
+        if (v3_is_archive(path)) {
+            if (prefix_stats) prefix_stats->v3_archive = true;
+            ok = v3_read_prefix(path, id, prompt, image, bytes, error, limits, fits, st, live,
+                                prefix_stats);
+        } else {
+            ok = read_prefix_impl(path, id, prompt, image, bytes, error, limits, fits, st, live,
+                                  prefix_stats);
+        }
     } catch (const std::bad_alloc&) {
         error = "session file: out of memory while partially reading " + path;
         st.error = SessionError::memory;
@@ -1620,6 +1785,7 @@ bool session_file_read_prefix(const std::string& path, const SessionFileIdentity
     }
     if (status) *status = st;
     if (live_would_match) *live_would_match = live;
+    if (prefix_stats) prefix_stats->live_would_match = live;
     return ok;
 }
 
@@ -1631,6 +1797,12 @@ bool session_file_read_parked(const std::string& path, const SessionFileIdentity
     bool ok = false;
     try {
         st.error = SessionError::invalid;
+        if (v3_is_archive(path)) {
+            const std::function<bool(uint64_t, std::string&)>* fits_ptr = &fits;
+            ok = v3_read(path, id, image, bytes, error, limits, fits_ptr, st);
+            if (status) *status = st;
+            return ok;
+        }
         RawFile raw;
         uint64_t size = 0;
         if (!raw.open_session(path, size)) {
@@ -1640,10 +1812,6 @@ bool session_file_read_parked(const std::string& path, const SessionFileIdentity
         }
         if (size < kHeader + 16) { error = "session file: size " + std::to_string(size) + " is below the minimum"; return false; }
         const uint64_t max_size = session_read_max_file_bytes(limits);
-        if (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max()) {
-            error = "session file: size " + std::to_string(size) + " exceeds this engine's limit";
-            return false;
-        }
         FileSource f(raw);
         if (!f.ok()) { st.error = SessionError::memory; error = "session file: " + f.error(); return false; }
         if (limits.progress) f.progress.emplace(limits.progress);
@@ -1652,6 +1820,12 @@ bool session_file_read_parked(const std::string& path, const SessionFileIdentity
         if (!f.read(h, kHeader)) { st.error = f.kind(); error = "session file: header read error: " + f.error(); return false; }
         if (std::memcmp(h, kMagicV2, 8) != 0) {
             error = "session file: the parked read needs the v2 format (use the ordinary read)";
+            return false;
+        }
+        uint64_t payload = 0;
+        std::memcpy(&payload, h + 32, 8);
+        if (payload > max_size || payload > (uint64_t) std::numeric_limits<size_t>::max()) {
+            error = "session file: logical payload " + std::to_string(payload) + " exceeds this engine's limit";
             return false;
         }
         ok = read_v2_parked(raw, size, h, id, image, bytes, error, limits, fits, st);
