@@ -243,5 +243,90 @@ class LocalSource(Scaled):
         self.assertEqual(calls, [("wb", 0), ("ab", 3000)], "one more copy, from the byte the first one reached: no byte twice")
 
 
+class Destination(Scaled):
+    """The .part file cannot be written (no permission, a full disk, a quota, a read-only drive): raised at once with the TransferError and words
+    it had before the network rule ("... (PermissionError: ...)" / "(OSError: [Errno 28] No space left on device)"), not retried for 5 minutes;
+    what was written stays, so freeing the space and fetching again resumes it."""
+
+    def fast_failure(self, url):
+        t0 = time.monotonic()
+        with self.assertRaises(transfer.TransferError) as cm:
+            self.fetch(url)
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertIs(type(cm.exception), transfer.TransferError, "a plain TransferError, as before: not an Interrupted that is retried")
+        self.assertTrue(cm.exception.resumable)
+        self.assertTrue(str(cm.exception).endswith("); the partial file is kept and the next try resumes it"), str(cm.exception))
+        return str(cm.exception)
+
+    def test_a_part_file_that_may_not_be_opened_fails_at_once(self):
+        source = self.dir / "source.bin"
+        source.write_bytes(BODY)
+        real_open = Path.open
+
+        def no_part(path, *a, **k):
+            if path.name == "f.part":
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_open(path, *a, **k)
+
+        with mock.patch.object(Path, "open", no_part):
+            said = self.fast_failure(str(source))
+        self.assertIn("after 0 of 10240 bytes (PermissionError: [Errno 13] Permission denied: ", said)
+        self.assertFalse((self.dir / "f.part").exists())
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() != 0, "a folder without write permission: POSIX, not root")
+    def test_a_folder_without_write_permission_fails_at_once(self):
+        source = self.dir / "source.bin"
+        source.write_bytes(BODY)
+        locked = self.dir / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        self.addCleanup(locked.chmod, 0o700)
+        t0 = time.monotonic()
+        with self.assertRaises(transfer.TransferError) as cm:
+            transfer.download(str(source), locked / "f.part", size=len(BODY), sha256=SHA)
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertIs(type(cm.exception), transfer.TransferError)
+        self.assertIn("(PermissionError: [Errno 13] Permission denied: ", str(cm.exception))
+        self.assertFalse((locked / "f.part").exists())
+
+    def test_a_full_disk_fails_at_once_keeps_what_was_written_and_resumes_once_there_is_room(self):
+        behave, st = ranged(chunk=2000, every=0.01)
+        srv = Server(behave)
+        self.addCleanup(srv.close)
+        real_open = Path.open
+
+        class Full:                                        # the disk takes the first write, then: no space left
+            def __init__(self, f):
+                self.f, self.n = f, 0
+
+            def write(self, data):
+                if self.n:
+                    raise OSError(28, "No space left on device")
+                self.n += len(data)
+                return self.f.write(data)
+
+            def flush(self):
+                self.f.flush()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.f.close()
+
+        def full_part(path, *a, **k):
+            f = real_open(path, *a, **k)
+            return Full(f) if path.name == "f.part" else f
+
+        with mock.patch.object(Path, "open", full_part):
+            said = self.fast_failure(srv.url("/e"))
+        kept = (self.dir / "f.part").read_bytes()
+        self.assertTrue(0 < len(kept) < len(BODY), len(kept))
+        self.assertEqual(kept, BODY[:len(kept)], "what was written is kept")
+        self.assertIn(f"after {len(kept)} of 10240 bytes (OSError: [Errno 28] No space left on device)", said)
+        self.assertEqual(self.fetch(srv.url("/e")).read_bytes(), BODY)       # room again: the next try resumes
+        self.assertEqual(st["ranges"][-1], f"bytes={len(kept)}-")
+
+
 if __name__ == "__main__":
     unittest.main()
