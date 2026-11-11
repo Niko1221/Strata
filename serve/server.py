@@ -3368,18 +3368,27 @@ class Vision:
 
     def _start_gpu_reader(self):
         """`_start_reader`, tried again when the start failed in the GPU context itself on a Linux Arm machine with shared memory (DGX Spark; see
-        vision_reader.retry_gpu_start): up to vision_reader.CONTEXT_RETRIES times, CONTEXT_RETRY_WAIT_S apart.  Every other start, and the last failure, are
-        `_start_reader`'s as before (the CPU reader follows in `_start`)."""
+        vision_reader.retry_gpu_start): a new spawn may start while less than CONTEXT_RETRY_BUDGET_S have passed since the first one started, at most CONTEXT_RETRIES
+        times, CONTEXT_RETRY_WAIT_S apart.  Every other start, and the last failure, are `_start_reader`'s as before (the CPU reader follows in `_start`).
+        STRATA_VIT_PROF=1 (the reader's diagnostic switch) prints the retry count and the time of a start that needed one."""
         args, log, _env = self.spawn
         retries = 0
+        first = time.monotonic()                      # the first spawn's start: a new spawn may start only within vision_reader.CONTEXT_RETRY_BUDGET_S of it
+        prof = bool(os.environ.get("STRATA_VIT_PROF"))
         while True:
             since = vision_log_size(log)
             try:
-                return self._start_reader()
+                res = self._start_reader()
+                if prof and retries:
+                    print(f"vit-prof: GPU reader started after {retries} retries, {time.monotonic() - first:.2f} s", flush=True)
+                return res
             except (RuntimeError, OSError) as e:
                 text = str(e) + chr(10) + vision_log_tail(log, since=since)
                 if not vision_reader.retry_gpu_start(linux=sys.platform.startswith("linux"), arm=platform.machine().lower() in ("aarch64", "arm64"),
-                                                     hip="hip" in Path(str(args[0])).name.lower(), text=text, retries_done=retries):
+                                                     hip="hip" in Path(str(args[0])).name.lower(), text=text, retries_done=retries,
+                                                     next_start_s=time.monotonic() - first + vision_reader.CONTEXT_RETRY_WAIT_S):
+                    if prof and retries:
+                        print(f"vit-prof: GPU reader did not start after {retries} retries, {time.monotonic() - first:.2f} s", flush=True)
                     raise
                 retries += 1
                 time.sleep(vision_reader.CONTEXT_RETRY_WAIT_S)

@@ -156,16 +156,22 @@ def vision_section(reader: Reader, base: dict) -> dict:
 #: A GPU reader's start that failed while it made its CUDA context on a Linux Arm machine with shared CPU / GPU memory (DGX Spark, GB10) is tried again.  Such a context needs
 #: physically contiguous memory (2 MiB blocks); when the kernel has almost none free, ggml's cudaSetDevice answers "CUDA error: out of memory ... in function
 #: ggml_cuda_init" and the reader aborts, although 20+ GiB are free.  The same start 1 to 5 s later works (the kernel compacts memory after the failed try; measured
-#: on a Spark: five failed tries in a row, then success after 6.1 s).  Without the retry the picture reader falls back to the CPU for good (90 s for a large picture).
-CONTEXT_RETRIES = 8
+#: on a Spark: three to five failed spawns in a row, then success: first failure to first success 9.6 to 14.6 s; one failed spawn takes 1.4 s, the pause is 1 s).  Without the
+#: retry the picture reader falls back to the CPU for good (90 s for a large picture, 9.7 s against 2.0 s at 1,024 tokens on the card).
+#: Bounded by time and by count: a new spawn may start only while less than CONTEXT_RETRY_BUDGET_S seconds have passed since the first spawn started (about 8 spawns at
+#: 2.4 s a cycle; the five measured failures end at 12 s), and at most CONTEXT_RETRIES retries (fast attempts).  The worst wait before the CPU reader takes over is the
+#: budget plus the last failed spawn, about 19.5 to 20 s.
+CONTEXT_RETRIES = 12
 CONTEXT_RETRY_WAIT_S = 1.0
+CONTEXT_RETRY_BUDGET_S = 18.0
 
 
-def retry_gpu_start(*, linux: bool, arm: bool, hip: bool, text: str, retries_done: int) -> bool:
+def retry_gpu_start(*, linux: bool, arm: bool, hip: bool, text: str, retries_done: int, next_start_s: float = 0.0) -> bool:
     """Should a failed GPU reader start be tried again?  Only for the context failure ("out of memory" in ggml_cuda_init / cudaSetDevice), only for the NVIDIA reader on
-    Linux on Arm, at most CONTEXT_RETRIES times.  A card another program filled says "cudaMalloc failed: out of memory" (a retry cannot help: reader_room reports it), every
+    Linux on Arm, at most CONTEXT_RETRIES times, and only if the next spawn would start less than CONTEXT_RETRY_BUDGET_S seconds after the first one (`next_start_s`: that
+    time, the pause included).  A card another program filled says "cudaMalloc failed: out of memory" (a retry cannot help: reader_room reports it), every
     other error (no device, no kernel image, busy) is not this case.  `text`: what the failed start said (its message and the tail of the reader's log)."""
-    if not linux or not arm or hip or retries_done >= CONTEXT_RETRIES:
+    if not linux or not arm or hip or retries_done >= CONTEXT_RETRIES or next_start_s >= CONTEXT_RETRY_BUDGET_S:
         return False
     t = text.lower()
     if "out of memory" not in t or "cudamalloc failed" in t or "failed to allocate" in t:
