@@ -13,12 +13,25 @@ out of the safetensors file - nothing decoded or rounded.
 instead dequantizes a GGUF's own token_embd.weight to BF16 (round-to-nearest-even, through gguf-py), for a file whose
 embedding type has no GPU dequantizer in the engine (Agention's Gyro-S stores it as Q6_K).  That is the GGUF's values
 rounded to BF16, not the checkpoint's.
+
+    python tools/embd_bf16_pack.py --fetch --out <token-embd-bf16.gguf>
+
+downloads and SHA-256-verifies Qwen3.8-Flash-Next's exact BF16 token-embd-bf16.gguf (1.27 GB) from Hugging Face.
 """
 import argparse
+import hashlib
 import json
 import pathlib
 import struct
 import sys
+import urllib.request
+
+QWEN38_BF16_EMBD_URL = (
+    "https://huggingface.co/Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata/"
+    "resolve/640a1db97446ddd5e89d2b70ecd0297987192c93/token-embd-bf16.gguf"
+)
+QWEN38_BF16_EMBD_BYTES = 1271398656
+QWEN38_BF16_EMBD_SHA256 = "386203af9070c7b43acb24ded8922876721d97bbad1a709b25cb49d694a7f51d"
 
 GGUF_TYPE_STRING = 8
 GGML_TYPE_BF16 = 30
@@ -88,13 +101,44 @@ def from_gguf(src, out):
     print("wrote %s (header %d B)" % (out, len(head)))
 
 
+def fetch_qwen38_bf16(out: pathlib.Path):
+    """Download and SHA-256-verify Qwen3.8-Flash-Next's pinned checkpoint BF16 token-embd-bf16.gguf."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists() and out.stat().st_size == QWEN38_BF16_EMBD_BYTES:
+        h = hashlib.sha256()
+        with open(out, "rb") as f:
+            while b := f.read(CHUNK):
+                h.update(b)
+        if h.hexdigest() == QWEN38_BF16_EMBD_SHA256:
+            print("verified existing %s (%d B)" % (out, QWEN38_BF16_EMBD_BYTES), flush=True)
+            return
+    tmp = out.with_suffix(out.suffix + ".part")
+    h = hashlib.sha256()
+    got = 0
+    print("downloading %s -> %s (%.2f GB)..." % (QWEN38_BF16_EMBD_URL, out, QWEN38_BF16_EMBD_BYTES / 1e9), flush=True)
+    with urllib.request.urlopen(QWEN38_BF16_EMBD_URL) as r, open(tmp, "wb") as w:
+        while b := r.read(CHUNK):
+            w.write(b)
+            h.update(b)
+            got += len(b)
+    if got != QWEN38_BF16_EMBD_BYTES or h.hexdigest() != QWEN38_BF16_EMBD_SHA256:
+        tmp.unlink(missing_ok=True)
+        sys.exit("download verification failed: %d B, sha256=%s" % (got, h.hexdigest()))
+    tmp.replace(out)
+    print("wrote and verified %s (%d B)" % (out, got), flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--model", help="the checkpoint directory (model.safetensors.index.json)")
     src.add_argument("--gguf", help="a model GGUF whose token_embd.weight is dequantized to BF16")
+    src.add_argument("--fetch", action="store_true", help="download and verify Qwen3.8-Flash-Next's BF16 token-embd-bf16.gguf")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+    if a.fetch:
+        fetch_qwen38_bf16(pathlib.Path(a.out))
+        return
     if a.gguf:
         from_gguf(pathlib.Path(a.gguf).absolute(), pathlib.Path(a.out))
         return
