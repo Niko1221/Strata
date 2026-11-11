@@ -32,9 +32,12 @@ namespace {
 namespace mmq = strata::prefill::mmq;
 namespace fused = strata::prefill::fused;
 
-constexpr int N = 2560, FF = 640, K = 10, GROUP = 16, Q2 = 42;   // GGML_TYPE_Q2_0
-constexpr size_t BLOB = 1382400, O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                 O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+// The compiled geometry's widths and top-k (Flash-Next: 2560 x 640, top 10); the blob is the Strata Q2 layout at that shape
+// (Flash-Next: 1,382,400 B): gate/up codes [2 FF][N / 4 B], down codes [N][FF / 4 B], gate/up scales [2 FF][N / 64] f16, down scales [N][FF / 64] f16.
+constexpr int N = fused::kMoeEmbd, FF = fused::kMoeFF, FF2 = fused::kMoeGuRows, K = (int) strata::core::kCompiledGeometry.n_expert_used, GROUP = 16, Q2 = 42;   // GGML_TYPE_Q2_0
+constexpr int ROW_GU = N / 4, ROW_D = FF / 4, SC_GU = N / 64, SC_D = FF / 64;
+constexpr size_t O_D_CODES = (size_t) FF2 * ROW_GU, O_GU_SC = O_D_CODES + (size_t) N * ROW_D, O_D_SC = O_GU_SC + (size_t) FF2 * SC_GU * 2,
+                 BLOB = O_D_SC + (size_t) N * SC_D * 2;
 
 void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
@@ -62,7 +65,7 @@ std::vector<uint8_t> make_blob(std::mt19937& rng) {
     return b;
 }
 
-// the blob's weights as floats: gate/up [1280][2560] (interleaved rows), down [2560][640]
+// the blob's weights as floats: gate/up [2 FF][N] (interleaved rows), down [N][FF]
 void dequant(const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn) {
     auto row = [&](size_t codes, size_t ld, size_t scales, int nb, int r, float* out) {
         for (int k = 0; k < nb * 64; ++k) {
@@ -72,10 +75,10 @@ void dequant(const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<
             out[k] = ggml_fp16_to_fp32(h) * (float) (q - 1);
         }
     };
-    gu.resize((size_t) 1280 * N);
+    gu.resize((size_t) FF2 * N);
     dn.resize((size_t) N * FF);
-    for (int r = 0; r < 1280; ++r) row(0, 640, O_GU_SC, 40, r, gu.data() + (size_t) r * N);
-    for (int r = 0; r < N; ++r) row(O_D_CODES, 160, O_D_SC, 10, r, dn.data() + (size_t) r * FF);
+    for (int r = 0; r < FF2; ++r) row(0, ROW_GU, O_GU_SC, SC_GU, r, gu.data() + (size_t) r * N);
+    for (int r = 0; r < N; ++r) row(O_D_CODES, ROW_D, O_D_SC, SC_D, r, dn.data() + (size_t) r * FF);
 }
 
 // activations: N(0, 1) with a few large values (the hidden state has outliers); token `zero` all zero
@@ -132,14 +135,14 @@ Routing sort_rows(const std::vector<int32_t>& ids, int E) {
 struct MmqBufs {
     Dev xq, gu, h, hq, dm, ident, bounds, grp_gu, grp_d;
     MmqBufs(int64_t rows, int E)
-        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * 1280 * 4), h((size_t) rows * FF * 4),
+        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * FF2 * 4), h((size_t) rows * FF * 4),
           hq(mmq::q8_bytes(rows, FF)),
           dm((size_t) rows * N * 4), ident((size_t) rows * 4), bounds((size_t) (2 * (E + E / GROUP + 2)) * 4),
-          grp_gu(GROUP * mmq::matrix_bytes(Q2, 1280, N) + 4096), grp_d(GROUP * mmq::matrix_bytes(Q2, N, FF) + 4096) {}
+          grp_gu(GROUP * mmq::matrix_bytes(Q2, FF2, N) + 4096), grp_d(GROUP * mmq::matrix_bytes(Q2, N, FF) + 4096) {}
 };
 void run_mmq(mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev, const int32_t* src_dev,
              const std::vector<const uint8_t*>& blob, int64_t rows, cudaStream_t s) {
-    const size_t gub = mmq::matrix_bytes(Q2, 1280, N), db = mmq::matrix_bytes(Q2, N, FF);
+    const size_t gub = mmq::matrix_bytes(Q2, FF2, N), db = mmq::matrix_bytes(Q2, N, FF);
     const int E = (int) r.cnt.size();
     std::vector<int32_t> order;
     for (int e = 0; e < E; ++e) if (r.cnt[(size_t) e] > 0) order.push_back(e);
@@ -166,11 +169,11 @@ void run_mmq(mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev
         ck(cudaMemsetAsync(b.grp_gu.as<uint8_t>() + (size_t) ngx * gub, 0, 4096, s), "tail");
         ck(cudaMemsetAsync(b.grp_d.as<uint8_t>() + (size_t) ngx * db, 0, 4096, s), "tail");
         mmq::Product gu;
-        gu.w = b.grp_gu.p; gu.type = Q2; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = gub;
+        gu.w = b.grp_gu.p; gu.type = Q2; gu.w_rows = FF2; gu.w_cols = N; gu.expert_bytes = gub;
         gu.n = ngx; gu.xq = b.xq.p; gu.bounds = b.bounds.as<int32_t>() + j0; gu.ids = b.ident.as<int32_t>();
-        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = 1280;
+        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = FF2;
         ctx.run(gu, s);
-        mmq::swiglu(b.gu.as<float>() + r0 * 1280, b.h.as<float>() + r0 * FF, nr, FF, true, s);
+        mmq::swiglu(b.gu.as<float>() + r0 * FF2, b.h.as<float>() + r0 * FF, nr, FF, true, s);
         mmq::quantize(b.h.as<float>() + r0 * FF, nullptr, b.hq.p, Q2, FF, FF, nr, s);
         mmq::Product dn;
         dn.w = b.grp_d.p; dn.type = Q2; dn.w_rows = N; dn.w_cols = FF; dn.expert_bytes = db;

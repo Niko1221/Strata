@@ -15,5 +15,10 @@
  "df14": "No se pudo descargar el predictor de DFlash2, así que el modelo arranca sin predictor. Cargando el modelo…",
  "df15": "Descargando el predictor de MTP…",
  "df16": "No se pudo descargar el predictor de MTP.",
- "df17": "Predicción: MTP (DFlash2 no arrancó)"
+ "df17": "Predicción: MTP (DFlash2 no arrancó)",
+ "df18": "Automático usa el motor de reparto entre todas las tarjetas con la capa de borrador MTP: unos {0} GB, una sola vez.",
+ "df19": "El motor de reparto entre todas las tarjetas no pudo arrancar, así que se usa el reparto normal por capas.",
+ "df20": "Predicción: desactivada (a las tarjetas les faltaba memoria)",
+ "df21": "En su Mac, en nuestras pruebas DFlash2 fue más rápido que MTP con este modelo.",
+ "df22": "DFlash2 está desactivado de forma predeterminada en esta tarjeta gráfica por ahora; elíjalo en Predicción para usarlo."
 }

@@ -107,6 +107,7 @@ class TuneResult:
     #: minutes, pairs, faster_pairs, preset_name
     values: dict[str, Any] = field(default_factory=dict)
     message: str = ""
+    not_tried: int = 0                 # candidates skipped for lack of free memory in a result that otherwise confirms the current settings (#5122)
     mode: str = "quick"
     seconds: float = 0.0
     waited_s: float = 0.0              # of those seconds, spent waiting (box lock, busy PC, memory)
@@ -198,6 +199,7 @@ class Tuner:
         self.cancel = cancel or threading.Event()
         self.history_bad = history_bad or set()
         self._ram_gave_up: tuple[float, float] | None = None
+        self._base_start_avail: float | None = None     # free memory (MiB) the base run was allowed to start with: what a candidate that adds nothing needs again (#5122)
         self.clock = clock
         self.sleep = sleep
         self.system = system or session.system
@@ -281,13 +283,19 @@ class Tuner:
                 need += base_rss
             elif self.total_ram:
                 need = max(need, self.o.min_free_ram_mib)
+            if self.base_runs and self._base_start_avail and self.base_runs[0].status == "PASS":
+                # like for like (#5122): the base run started with this much free and ran; its peak RSS counts file pages the kernel can take back, so
+                # "peak + floor" can ask for more than the PC had at the base start. A candidate needs what the base had plus what it adds.
+                need = min(need, max(self._base_start_avail + delta_mib, self.o.min_free_ram_mib + delta_mib))
             if avail >= need:
+                if not self.base_runs:
+                    self._base_start_avail = float(avail)
                 return None
             reason = (f"not enough free memory to start it safely ({avail / 1024:.1f} GiB free, "
                       f"{need / 1024:.1f} GiB needed)")
             prior = self._ram_gave_up
-            if prior is not None and need >= prior[0] and avail <= prior[1] + STAGNANT_MIB:
-                return reason                     # an earlier wait found nothing freed and this needs no less
+            if prior is not None and avail <= prior[1] + STAGNANT_MIB:
+                return reason                     # an earlier wait found nothing freed: waiting again for a candidate that needs less, but still more than is free, repeats it (#4895)
             if first_avail is None:
                 first_avail = avail
             stagnant = waited >= STAGNANT_WAIT_S and avail <= first_avail + STAGNANT_MIB
@@ -364,7 +372,8 @@ class Tuner:
         r.values = {"gain_pct": r.gain_pct, "gain_decode_pct": r.gain_decode_pct, "base_tok_s": base, "tuned_tok_s": tuned,
                     "noise_pct": round(100 * (r.noise or {}).get("spread", 0.0), 1) if r.noise else None,
                     "drift_pct": round(100 * (r.noise or {}).get("drift", 0.0), 1) if r.noise else None,
-                    "minutes": round(r.seconds / 60.0 - r.waited_s / 60.0, 1), "pairs": r.pairs, "faster_pairs": r.faster_pairs}
+                    "minutes": round(r.seconds / 60.0 - r.waited_s / 60.0, 1), "pairs": r.pairs, "faster_pairs": r.faster_pairs,
+                    "not_tried": r.not_tried}
 
     def _spec(self) -> RequestSet:
         long_tokens = 0
@@ -642,8 +651,13 @@ class Tuner:
                              "changed. Try again when the PC is quiet.")
             else:
                 r.outcome = "default_confirmed"
-                r.message = "Your current settings are already the fastest we found. Nothing was changed."
-                if r.noise.get("noisy"):
+                r.not_tried = sum(1 for a in arms if a.status == "skipped" and "memory" in (a.reason or ""))
+                if r.not_tried:                  # "already the fastest" would claim a comparison that never happened (#5122)
+                    r.reason_code = r.reason_code or "some_not_tried"
+                    r.message = f"{r.not_tried} setting{'s' if r.not_tried != 1 else ''} could not be tried: not enough free memory"
+                else:
+                    r.message = "Your current settings are already the fastest we found. Nothing was changed."
+                if r.noise.get("noisy") and not r.not_tried:
                     r.message += " (The PC was busy while measuring, so a small gain could be hidden.)"
         r.settings = {"args": chosen_args, "env": chosen_env, "per_request": per_request_chosen}
         cls, fields = "exact", []

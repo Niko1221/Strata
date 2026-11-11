@@ -1,15 +1,16 @@
 import { tr } from '../lib/i18n';
 import { PreviewControls } from './PreviewControls';
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog, Icon, IconBtn, Seg, type IconName } from './ui';
 import { CopyBtn, CopyMenuItem } from './CopyBtn';
-import { Markdown } from './Markdown';
+import { PreviewMarkdown } from './PreviewMarkdown';
 import { SyntaxCode } from './SyntaxCode';
 import { FloatingMenu } from './FloatingMenu';
 import { TablePreview } from './TablePreview';
 import { artifactFilename, artifactIcon, safePreviewUrl, type PreviewArtifact } from '../lib/artifacts';
 import { scrollBehavior } from '../lib/responsive';
+import { previewVersion } from '../lib/preview-merge';
 const PdfPreview = lazy(() => import('./PdfPreview'));
 export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, inline }: {
     items: PreviewArtifact[];
@@ -20,17 +21,22 @@ export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, 
     inline: boolean;
 }) {
     const current = items.find(a => a.id === selected);
+    // What the text loading depends on: the file's identity and its content version, not the object (the chat hands over new objects often).
+    const version = useMemo(() => current ? previewVersion(current) : '', [current]);
     const [text, setText] = useState(''), [error, setError] = useState(''), [mode, setMode] = useState<'preview' | 'source'>('preview'), [revision, setRevision] = useState(0), [loading, setLoading] = useState(false), [imageSize, setImageSize] = useState('fit');
     const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
     const [fileMenu, setFileMenu] = useState(false);
     const fileMenuRef = useRef<HTMLButtonElement>(null);
     useLayoutEffect(() => { setToolbarHost(inline && current ? document.getElementById('preview-file-actions') : null); }, [inline, current?.id]);
+    // A different file starts in the reading view; the same file with new content keeps the person's view.
     useEffect(() => {
-        setError('');
         setMode('preview');
-        setLoading(false);
         setImageSize('fit');
         setFileMenu(false);
+    }, [current?.id]);
+    useEffect(() => {
+        setError('');
+        setLoading(false);
         if (!current || !['markdown', 'code', 'table'].includes(current.kind))
             return;
         if (current.content !== undefined) {
@@ -61,7 +67,7 @@ export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, 
                 setLoading(false);
         });
         return () => abort.abort();
-    }, [current?.id, revision]);
+    }, [current?.id, version, revision]);
     // A closed panel leaves with a short slide instead of vanishing (a bare shell; the page itself is already gone).
     const hadCurrent = useRef(false);
     const [leaving, setLeaving] = useState(false);
@@ -84,7 +90,7 @@ export function ArtifactPanel({ items, selected, onSelect, onClose, onCloseTab, 
     const content = <aside className="artifact-panel" aria-label={tr("{0} preview", [current.kind])}>
     {tr(!inline ? <ArtifactTabs onCloseTab={onCloseTab} items={items} selected={selected} onSelect={onSelect}/> : null)}
     <div key={current.id} id="artifact-content" role="tabpanel" aria-labelledby={`artifact-tab-${items.findIndex(a => a.id === selected)}`} className="artifact-content">
-      {tr(current.kind === 'website' ? <><iframe key={`${current.id}-${revision}`} title={current.title} src={current.content ? undefined : url ?? undefined} srcDoc={current.content} sandbox="allow-scripts" referrerPolicy="no-referrer"/></> : current.kind === 'pdf' ? url ? <Suspense fallback={<p className="muted preview-placeholder">{tr("Opening PDF viewer\u2026")}</p>}><PdfPreview key={`${current.id}-${revision}`} url={url}/></Suspense> : <p>{tr("No PDF to display.")}</p> : current.kind === 'image' ? <div className="image-preview" data-size={imageSize === '1' ? 'actual' : 'fit'}>{tr(url ? <img key={`${current.id}-${revision}`} src={url} alt={current.title} onError={() => setError('Couldn’t load this image.')}/> : null)}{tr(error ? <p role="alert">{tr(error)}</p> : null)}</div> : loading ? <p className="muted preview-placeholder">{tr("Loading document\u2026")}</p> : error ? <p role="alert" className="inline-error preview-placeholder">{tr(error)}</p> : current.kind === 'code' ? <SyntaxCode text={text} filename={artifactFilename(current)} lineNumbers/> : current.kind === 'table' ? <TablePreview key={current.id} text={text}/> : mode === 'source' ? <SyntaxCode text={text} language="markdown" lineNumbers/> : <article className="document-markdown"><Markdown text={text}/></article>)}
+      {tr(current.kind === 'website' ? <><iframe key={`${current.id}-${revision}-${version}`} title={current.title} src={current.content ? undefined : url ?? undefined} srcDoc={current.content} sandbox="allow-scripts" referrerPolicy="no-referrer"/></> : current.kind === 'pdf' ? url ? <Suspense fallback={<p className="muted preview-placeholder">{tr("Opening PDF viewer\u2026")}</p>}><PdfPreview key={`${current.id}-${revision}-${version}`} url={url}/></Suspense> : <p>{tr("No PDF to display.")}</p> : current.kind === 'image' ? <div className="image-preview" data-size={imageSize === '1' ? 'actual' : 'fit'}>{tr(url ? <img key={`${current.id}-${revision}-${version}`} src={url} alt={current.title} onError={() => setError('Couldn’t load this image.')}/> : null)}{tr(error ? <p role="alert">{tr(error)}</p> : null)}</div> : loading ? <p className="muted preview-placeholder">{tr("Loading document\u2026")}</p> : error ? <p role="alert" className="inline-error preview-placeholder">{tr(error)}</p> : current.kind === 'code' ? <SyntaxCode text={text} filename={artifactFilename(current)} lineNumbers/> : current.kind === 'table' ? <TablePreview key={current.id} text={text}/> : mode === 'source' ? <SyntaxCode text={text} language="markdown" lineNumbers/> : <article className="document-markdown"><PreviewMarkdown text={text}/></article>)}
     </div>
     {tr(viewControls ? <div className="artifact-view-controls">{tr(viewControls)}</div> : null)}
   </aside>;

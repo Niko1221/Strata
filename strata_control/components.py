@@ -37,17 +37,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import platform
 import re
 import shutil
 import stat
 import tarfile
 import time
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable
 
 SCHEMA_VERSION = 1
 

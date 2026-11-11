@@ -19,7 +19,7 @@
 
 namespace strata::prefill::fused {
 
-/// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read; n_embd 2560, n_ff 640).
+/// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read; n_embd and n_ff are the compiled geometry's: 2560 and 640 for Flash-Next).
 struct NativeGeom {
     int gu_type = -1, d_type = -1;    ///< ggml types
     size_t gu_row = 0, d_row = 0;     ///< bytes per gate/up row and per down row
@@ -37,11 +37,15 @@ bool gfx12_iq2s_default();
 void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, void* stream);
 
 /// experts() for native blobs: b.blob[e - e0] is the native blob of expert e (gate at 0, up at g.up_off, down at
-/// g.down_off; 2-byte aligned).  `xa` from quantize_act_native; H in `ha` (act_bytes(n, 640)); down into `dm` at the
+/// g.down_off; 2-byte aligned).  `xa` from quantize_act_native; H in `ha` (act_bytes(n, n_ff)); down into `dm` at the
 /// rows of `group`.  `dm` 16-byte aligned (gfx12 stores float4; checked there - the prompt path's buffers are 256-aligned
 /// through Alloc's 256-byte takes from a 256-aligned cache slot or cudaMalloc).
 void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
                     const int32_t* src, void* ha, float* dm, void* stream);
+/// gfx11 F16 kernels: the next experts_native calls may write the down rows as FP16 (2,560 halves a row, saturated at +-65504) instead of FP32 when the
+/// down runs on an F16 kernel; dm_f16_used() says which form the last call wrote (false on every other path), for moe_combine16.
+void want_dm_f16(bool on);
+bool dm_f16_used();
 /// The NT = 256 kernels (STRATA_PF_FUSED_NT=256 or _F16=1) or the warp-specialized kernel (STRATA_PF_FUSED_WS=1) are
 /// set up on the current device: experts_native takes a WideBatch (STRATA_PF_BATCH up to kBatchRoom experts a launch).
 bool native_wide();
