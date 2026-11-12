@@ -7063,11 +7063,15 @@ int main(int argc, char** argv) {
         // requests (the server stayed up without it).  The sessions so far are one conversation's - the solo path's, on
         // every stage - so a slot needs what they pinned.  What the engine takes after this point is not in the
         // kernel's figure yet: the experts' host arena (every expert's bytes, page cache until it is registered) and
-        // the park's pre-faulted segments (filled at the first request); they are counted where the box holds them at
-        // all (a box too small for the arena reads it through the file cache and never pins it).  The conversation
-        // cache is not: it stops parking by itself when memory runs short.  A slot whose copy would leave less than
-        // the reserve free beside all that is not carved (STRATA_SLOT_RAM_RESERVE_GIB, default 8; 0: no check), and
-        // on a layer split the count stays a multiple of the stages, so the slots still divide into pipelined groups.
+        // an explicit --conversation-cache-mib budget (the conversation cache fills it as conversations park); they
+        // are counted where the box holds them at all (a box too small for the arena reads it through the file cache
+        // and never pins it).  Without the cache's budget the guard counted 46.8 GiB of 105.8 available, carved 4
+        // slots of 12.38 GiB at a 1M context with --conversation-cache-mib 16384, and the kernel killed the engine
+        // during start-up; counting the budget makes that 62.8 GiB and 2 slots.  A cache --serve sizes itself (no
+        // --conversation-cache-mib) is sized later from the RAM the slots leave, so it is not counted here.  A slot
+        // whose copy would leave less than the reserve free beside all that is not carved (STRATA_SLOT_RAM_RESERVE_GIB,
+        // default 8; 0: no check), and on a layer split the count stays a multiple of the stages, so the slots still
+        // divide into pipelined groups.
         {
             const char* re = std::getenv("STRATA_SLOT_RAM_RESERVE_GIB");
             const double reserve_gib = re != nullptr && re[0] != '\0' ? std::atof(re) : 8.0;
@@ -7079,7 +7083,7 @@ int main(int argc, char** argv) {
                 uint64_t later = 0;
                 for (int64_t l = 0; l < g.n_layers; ++l)
                     later += (uint64_t) g.n_expert * (!xl.native || (size_t) l < xl.bytes.size() ? xl.blob_bytes(l) : xl.max_blob);
-                if (const char* pf = std::getenv("STRATA_PARK_PREFAULT_MIB")) later += (uint64_t) std::max(0, std::atoi(pf)) << 20;
+                if (o.prompt_cache > 0 && o.conversation_cache_mib > 0) later += (uint64_t) o.conversation_cache_mib << 20;
                 const uint64_t base = (uint64_t) (reserve_gib * 1073741824.0);
                 const uint64_t avail = (uint64_t) hm.available;
                 const uint64_t reserve = avail >= later + base ? later + base : base;
@@ -7090,8 +7094,9 @@ int main(int argc, char** argv) {
                 if (ram_fit < fit) {
                     std::fprintf(stderr, "strata generate: WARNING: --batch %d: a slot's K/V takes %.2f GiB of pinned RAM, %.1f "
                                          "GiB are available and the engine still loads %.1f GiB (the experts' arena, the "
-                                         "park's segments): %d slot%s keep%s %.0f GiB free (a smaller --max-context makes "
-                                         "a slot smaller; STRATA_SLOT_RAM_RESERVE_GIB sets what stays free)\n",
+                                         "conversation cache's --conversation-cache-mib): %d slot%s keep%s %.0f GiB free "
+                                         "(a smaller --max-context makes a slot smaller; STRATA_SLOT_RAM_RESERVE_GIB sets "
+                                         "what stays free)\n",
                                  o.batch, (double) slot_host / 1073741824.0, (double) avail / 1073741824.0, later_gib,
                                  ram_fit, ram_fit == 1 ? "" : "s", ram_fit == 1 ? "s" : "", reserve_gib);
                     fit = ram_fit;
