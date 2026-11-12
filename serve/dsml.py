@@ -184,9 +184,11 @@ class DsmlOutputParser(OutputParser):
         return evs
 
     def _on_param(self, tool, name, is_string) -> None:
-        """string="true": the value is a string whatever it looks like ("123", "true"), as the template wrote it."""
+        """string="true": the value is a string whatever it looks like ("123", "true"), as the template wrote it.  `tool` is the
+        name as generated; an accepted short name (`lookup` for `ns.lookup`) is the declared tool here, as in the parser."""
         if not is_string:
             return
+        tool = self.aliases.get(tool, tool)
         spec = self.schemas.get(tool)
         if spec is None:
             return
