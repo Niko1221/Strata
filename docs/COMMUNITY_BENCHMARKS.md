@@ -12,6 +12,11 @@ takes 3 to 10 minutes and writes a report in the format below.
 The protocol is still a draft until a pilot has run on two kinds of hardware. The reports listed below were made before
 it existed and are not standard results; they stay valid under this guide.
 
+- [2026-10-20: dual V100 PCIe 32 GB, Ryzen 9 9950X, 128 GB RAM](../bench/results/2026-10-20-v100-sm70-defaults/README.md):
+  v0.2.0-beta IQ3_S/MTP4 optional six-switch stack, baseline/stack/baseline;
+  Japanese decode +5.8%, code +7.6%, nine matching output texts and repeated 32K/two-stream checks.
+  Diagnostic results, not the standard protocol; single V100 and other models unmeasured.
+
 Existing [benchmark reports](../bench/results/) provide examples. The
 [engine 0.1.26 speed report](../bench/results/2026-09-29-speed-0126/README.md)
 includes hardware, settings, and per-run JSON. The
@@ -19,6 +24,12 @@ includes hardware, settings, and per-run JSON. The
 and their limits. Report what you actually measured and label estimates separately.
 
 ## Community reports
+
+- [2026-10-31: dual V100 PCIe 32 GB, current-main B6-only/full-table comparison](../bench/results/2026-10-31-v100-b6-compatibility/README.md):
+  Three cycles, one CUDA 12.8/sm70 binary; B6-only Japanese/code +3.0%/+4.3%, combined table +10.7%/+12.7%;
+  decoded texts matched in all 12 comparisons per optimized arm, four 32K concurrent requests passed.
+  Community diagnostic; independent per-flag gains and broader hardware coverage not established.
+
 
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
