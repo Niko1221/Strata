@@ -133,6 +133,7 @@ sums round differently.
 | --- | --- | --- | --- |
 | `STRATA_SM60_PERF=0` | P100 | set of 7 on | Turns off the seven scheduling switches below. |
 | `STRATA_Q8_SM60=1` | GP100 | off | Q8_0 dense projections and head on a GP100 kernel. |
+| `STRATA_Q8_SM60_EXACT=1` | GP100 | off | With `STRATA_Q8_SM60=1`: the same kernel in the exact kernels' addition order (bitwise their output). |
 | `STRATA_IQ_STAGE_TABLES=1` | Pascal | off | IQ3_XXS / IQ3_S tables staged in shared memory (bitwise the same output). |
 | `STRATA_DEQUANT_WIDE=0` | sm_61 | on | Back to the old dequantization. |
 | `STRATA_SM61_TABLE=0` | sm_61 | on | Back to the CUDA expert layout and `native_mmvq`. |
@@ -160,6 +161,12 @@ GP100 (P100, PH402) is the one Pascal chip without `__dp4a`. Its dense projectio
   `src/kernels/cuda/q8_sm60.cuh`: a warp per row, 16-byte weight loads, activations copied once per workgroup into shared memory,
   the dot on `STRATA_DP4A`, no barrier per row. Shapes it declines keep the usual kernel. It is not bitwise the exact kernels.
   The packed copies cost their size in VRAM (Flash-Next: 2.9 GiB of dense projections over the stages and 0.6 GiB for the head).
+- **`STRATA_Q8_SM60_EXACT=1`** (with `STRATA_Q8_SM60=1`) runs the same packed planes, shared-memory activations and warp per row
+  with the exact kernels' arithmetic: each lane carries the four threads of `native_small_mmvq_kernel`'s row (blocks `tid / 4 + 32 k`,
+  ints `2 (tid % 4)`), the same per-block product, warp 0 + 1 + 2 + 3 in that order and the same xor butterfly. Every output is then
+  bitwise the exact kernels' (`tools/q8_sm60_exact_check.cu`: the shapes of Flash-Next and the head, 1-8 columns). Measured on two
+  Tesla P100 (2x Xeon E5-2696 v3, Qwen3.8-Flash-Next Unsloth layout, layer split): about 1% slower than the plain kernel, which
+  stays the faster choice where bitwise output does not matter.
 - The GSQ-RCO packs have no Q8_0 dense matrices, so the kernel needs a copy whose dense projections and head are Q8_0:
   `python tools/q8_dense_gguf.py <model>-00001-of-00002.gguf <new folder>` writes one (+3.5 GiB; experts keep their offsets,
   so the native pack is reused). Point `--native` and `--ple-gguf` at the new folder.
