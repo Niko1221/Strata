@@ -451,6 +451,67 @@ int native_gu_mt_min(int gu_type) {
     return iq3s_one && gu_type == 21 ? 1 : mt_min;
 }
 
+// STRATA_CPU_IQ_OWN1: ONE token of IQ2_XXS / IQ2_XS / IQ1_M rows on iq_own1_rows (iq_avx2.cpp) where ggml-cpu's dot ran: the
+// same bits, checked once per type on this CPU against that dot, with the block's indices, signs and scales unpacked by SIMD.
+// Measured on a 2x Xeon E5-2699 v4 (Broadwell, iq_own1_bench, rows of 2560 and 7168 weights): one thread from cache
+// 27-30 -> 21-23 ns/block (IQ2_XXS), 31 -> 20-21 (IQ2_XS), 28-29 -> 21-22 (IQ1_M); 44 threads from DRAM +17-31 % (IQ2_XXS),
+// +19-29 % (IQ2_XS), +25-34 % (IQ1_M).  On where it was measured: ggml-cpu built for AVX2 + FMA + F16C and no AVX-512 in the
+// CPU or in ggml-cpu.  STRATA_CPU_IQ_OWN1=0 turns it off.
+namespace {
+bool own1_matches_ggml(int type) {
+    const ggml_type_traits_cpu* tc = traits(type);
+    const ggml_type_traits_cpu* q8 = tc ? traits(tc->vec_dot_type) : nullptr;
+    if (tc == nullptr || tc->vec_dot == nullptr || q8 == nullptr || q8->from_float == nullptr) return false;
+    const int n = 2304, rows = 16;   // nine blocks: one full group of eight and a tail
+    const size_t rb = ggml_row_size((ggml_type) type, n), bb = ggml_type_size((ggml_type) type);
+    uint64_t st = 0x2545F4914F6CDD1Dull + (uint64_t) type;
+    auto next = [&st] { st ^= st << 13; st ^= st >> 7; st ^= st << 17; return st; };
+    std::vector<uint8_t> w(rb * rows), a(ggml_row_size(tc->vec_dot_type, n));
+    for (auto& b : w) b = (uint8_t) next();
+    for (size_t o = 0; o < w.size(); o += bb) {
+        const ggml_fp16_t d = ggml_fp32_to_fp16(0.002f + 0.001f * (float) (next() % 16));
+        if (type == 29) {   // IQ1_M keeps its f16 in the top nibbles of the four scale words
+            uint16_t sc[4];
+            std::memcpy(sc, &w[o + 48], 8);
+            for (int j = 0; j < 4; ++j) sc[j] = (uint16_t) ((sc[j] & 0x0fff) | ((d >> (4 * j)) & 0xf) << 12);
+            std::memcpy(&w[o + 48], sc, 8);
+        } else {
+            std::memcpy(&w[o], &d, sizeof d);
+        }
+    }
+    std::vector<float> x((size_t) n), o0(rows), o1(rows);
+    for (int k = 0; k < 3; ++k) {
+        for (auto& v : x) v = ((float) (next() % 2001) - 1000.0f) * 1e-3f;
+        q8->from_float(x.data(), a.data(), n);
+        for (int r = 0; r < rows; ++r) tc->vec_dot(n, &o0[(size_t) r], 0, w.data() + (size_t) r * rb, 0, a.data(), 0, 1);
+        iq_own1_rows(type, w.data(), rb, n, a.data(), o1.data(), 0, rows);
+        if (std::memcmp(o0.data(), o1.data(), sizeof(float) * rows) != 0) return false;
+    }
+    return true;
+}
+bool own1_on(int type) {
+    static const bool gate = [] {
+        const char* v = std::getenv("STRATA_CPU_IQ_OWN1");
+        if (v != nullptr && v[0] == '0' && v[1] == 0) return false;
+        // no AVX-512 of any tier: cpu_avx512_ok() needs VBMI, so a Skylake-X / Cascade Lake (F/BW/VL, VNNI, no VBMI) is excluded by
+        // cpu_avx512bw_ok() (0.2.12 runs the 512-bit rows there too: cpu_vnni_ok())
+        return cpu_avx2_ok() && !cpu_avx512_ok() && !cpu_avx512bw_ok() && ggml_cpu_has_avx2() && ggml_cpu_has_fma() &&
+               ggml_cpu_has_f16c() && !ggml_cpu_has_avx512();
+    }();
+    if (!gate || !iq_own1_supported(type)) return false;
+    static std::once_flag once[3];
+    static bool ok[3];
+    const int k = type == 16 ? 0 : type == 17 ? 1 : 2;
+    std::call_once(once[k], [&] {
+        ok[k] = own1_matches_ggml(type);
+        std::fprintf(stderr, ok[k] ? "strata ab: GATE=STRATA_CPU_IQ_OWN1 active=1 (type %d)\n"
+                                   : "strata cpu: STRATA_CPU_IQ_OWN1: the one-token rows of type %d differ from ggml-cpu's dot "
+                                     "on this CPU, not used\n", type);
+    });
+    return ok[k];
+}
+}  // namespace
+
 template <NativeArithmetic Arithmetic>
 void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1) {
@@ -617,6 +678,16 @@ void native_gu_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* co
         nvfp4_256_gu_rows(blob, f.gu_row, f.up_off, n, act, nt, ff, r0, r1, sg, su);
         return;
     }
+    if (nt == 1 && f.tail_off == 0 && own1_on(f.gu_type)) {   // STRATA_CPU_IQ_OWN1: ggml's dot below, the same bits
+        float g[64], u[64];
+        for (int c0 = r0; c0 < r1; c0 += 64) {
+            const int c1 = std::min(r1, c0 + 64);
+            iq_own1_rows(f.gu_type, blob + (size_t) c0 * f.gu_row, f.gu_row, n, act[0], g, 0, c1 - c0);
+            iq_own1_rows(f.gu_type, blob + f.up_off + (size_t) c0 * f.gu_row, f.gu_row, n, act[0], u, 0, c1 - c0);
+            for (int r = c0; r < c1; ++r) ff[0][r] = (g[r - c0] / (1.f + std::exp(-g[r - c0]))) * u[r - c0];
+        }
+        return;
+    }
     const ggml_vec_dot_t dot = traits(f.gu_type)->vec_dot;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = blob + (size_t) r * f.gu_row;
@@ -689,6 +760,10 @@ void native_down_rows_impl(const NativeFmt& f, const uint8_t* blob, const void* 
     static const bool nvfp4_256 = cpu_avx2_ok() && std::getenv("STRATA_NO_NVFP4_256") == nullptr;   // see above
     if (f.d_type == kNvfp4Type && nvfp4_256 && nvfp4_256_fits(n)) {
         nvfp4_256_rows(blob + f.down_off, f.d_row, n, hq, nt, out, r0, r1, sd);
+        return;
+    }
+    if (nt == 1 && f.tail_off == 0 && own1_on(f.d_type)) {   // STRATA_CPU_IQ_OWN1 (see the gate/up rows): ggml's dot, the same bits
+        iq_own1_rows(f.d_type, blob + f.down_off, f.d_row, n, hq[0], out[0], r0, r1);
         return;
     }
     const ggml_vec_dot_t dot = traits(f.d_type)->vec_dot;

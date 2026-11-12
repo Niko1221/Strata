@@ -96,16 +96,17 @@ void gg_cpu_set_iq256(int mode) { g_iq256 = mode; }
 // microcode - 1.8 GB/s against these rows' 33 GB/s on an EPYC 7452 (a 2.00 set decodes 3x slower on one card), 19-31 GB/s on Intel.
 // The rows are bit-identical, so taking them at every token count only changes the speed.
 static int min_tokens(int type) { return type == 21 ? 1 : type == 29 ? 1 : 2; }
+// impl 0: the AVX2 rows, 1: the AVX-512 rows, 2: the one-token rows (STRATA_CPU_IQ_OWN1, iq_own1_rows; one token only)
 static bool own_ok(int type, int impl) {
-    static std::once_flag once[2][32];
-    static bool ok[2][32];
+    static std::once_flag once[3][32];
+    static bool ok[3][32];
     const int k = type & 31;
     std::call_once(once[impl][k], [&] {
         ok[impl][k] = false;
         const ggml_type_traits_cpu* tc = ggml_get_type_traits_cpu((ggml_type) type);
         const ggml_type_traits_cpu* q8 = tc ? ggml_get_type_traits_cpu(tc->vec_dot_type) : nullptr;
         if (tc == nullptr || tc->vec_dot == nullptr || q8 == nullptr || q8->from_float == nullptr) return;
-        const int n = 1024, rows = 7;
+        const int n = impl == 2 ? 2304 : 1024, rows = 7;   // (impl 2: nine blocks, one full group of eight and a tail)
         const size_t rb = ggml_row_size((ggml_type) type, n), bb = ggml_type_size((ggml_type) type), ab = ggml_row_size(tc->vec_dot_type, n);
         uint64_t st = 0x9E3779B97F4A7C15ull + (uint64_t) type;
         auto next = [&st] { st ^= st << 13; st ^= st >> 7; st ^= st << 17; return st; };
@@ -123,6 +124,7 @@ static bool own_ok(int type, int impl) {
             }
         }
         for (int nt : {1, 2, 3, 4, 5, 6, 8, 16, 33}) {
+            if (impl == 2 && nt != 1) break;
             std::vector<std::vector<uint8_t>> a((size_t) nt, std::vector<uint8_t>(ab));
             std::vector<const void*> ap((size_t) nt);
             std::vector<std::vector<float>> o0((size_t) nt, std::vector<float>(rows)), o1 = o0;
@@ -135,11 +137,14 @@ static bool own_ok(int type, int impl) {
                 p1[(size_t) t] = o1[(size_t) t].data();
                 for (int r = 0; r < rows; ++r) tc->vec_dot(n, &o0[(size_t) t][(size_t) r], 0, w.data() + (size_t) r * rb, 0, ap[(size_t) t], 0, 1);
             }
-            if (impl == 1) strata::kernels::cpu::iq512x_rows(type, w.data(), rb, n, ap.data(), nt, p1.data(), 0, rows);
+            if (impl == 2) strata::kernels::cpu::iq_own1_rows(type, w.data(), rb, n, ap[0], p1[0], 0, rows);
+            else if (impl == 1) strata::kernels::cpu::iq512x_rows(type, w.data(), rb, n, ap.data(), nt, p1.data(), 0, rows);
             else strata::kernels::cpu::iq256x_rows(type, w.data(), rb, n, ap.data(), nt, p1.data(), 0, rows);
             for (int t = 0; t < nt; ++t)
                 if (std::memcmp(o0[(size_t) t].data(), o1[(size_t) t].data(), rows * sizeof(float)) != 0) {
-                    if (dbg() || std::getenv("DS4_GG_VERBOSE")) std::fprintf(stderr, "ds4: CPU lane type %d: AVX2 rows differ from ggml-cpu's dot at %d tokens, not used\n", type, nt);
+                    if (dbg() || std::getenv("DS4_GG_VERBOSE") || impl == 2)
+                        std::fprintf(stderr, "ds4: CPU lane type %d: %s rows differ from ggml-cpu's dot at %d tokens, not used\n", type,
+                                     impl == 2 ? "one-token (STRATA_CPU_IQ_OWN1)" : impl == 1 ? "AVX-512" : "AVX2", nt);
                     return;
                 }
         }
@@ -214,11 +219,33 @@ static int use_iq256(int type, int nt) {
     return own_ok(type, 0) ? 1 : 0;
 }
 
+// STRATA_CPU_IQ_OWN1: ONE token of IQ2_XXS / IQ2_XS / IQ1_M on iq_own1_rows instead of ggml-cpu's dot (IQ2) or the AVX2 rows
+// above (IQ1_M, min_tokens 1) - the same bits (own_ok checks it on this CPU), with the block's indices, signs and scales unpacked
+// by SIMD and no pdep/pext.  Measured on a 2x Xeon E5-2699 v4 (Broadwell, iq_own1_bench, rows of 7168 weights): one thread from
+// cache 27.2 -> 21.1 ns/block (IQ2_XXS, ggml), 30.7 -> 20.2 (IQ2_XS, ggml), 42.1 -> 20.8 (IQ1_M, the AVX2 rows; ggml's dot 28.3);
+// 44 threads from DRAM, each thread's rows on its node: 68-75 -> 87-89 GB/s (IQ2_XXS), 68 -> 84-88 (IQ2_XS), 41-42 -> 78-81
+// (IQ1_M).  So on where it was measured: ggml-cpu built for AVX2 + FMA + F16C, and no AVX-512 (those CPUs keep their rows).
+// Only in the automatic choice (DS4_GG_IQ256 unset): =0 keeps ggml-cpu's dots, =1 the AVX2 rows.  STRATA_CPU_IQ_OWN1=0 turns it off.
+static bool use_own1(int type) {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_CPU_IQ_OWN1");
+        if (v != nullptr && v[0] == '0' && v[1] == 0) return false;
+        return ggml_cpu_has_avx2() && ggml_cpu_has_fma() && ggml_cpu_has_f16c() && !ggml_cpu_has_avx512() &&
+               strata::kernels::cpu::cpu_avx2_ok() && !strata::kernels::cpu::cpu_avx512_ok() &&
+               !strata::kernels::cpu::cpu_avx512bw_ok();   // (cpu_avx512_ok needs VBMI: Skylake-X / Cascade Lake answer no there)
+    }();
+    return on && strata::kernels::cpu::iq_own1_supported(type) && own_ok(type, 2);
+}
+
 static void dots(int type, const uint8_t* w, size_t rb, int n, const void* const* act, int nt, float* const* out, int r0, int r1) {
     if (nt > 0) {
         const int impl = use_iq256(type, nt);
         if (impl == 2) {
             strata::kernels::cpu::iq512x_rows(type, w, rb, n, act, nt, out, r0, r1);
+            return;
+        }
+        if (nt == 1 && g_iq256 == 2 && use_own1(type)) {
+            strata::kernels::cpu::iq_own1_rows(type, w, rb, n, act[0], out[0], r0, r1);
             return;
         }
         if (impl == 1) {

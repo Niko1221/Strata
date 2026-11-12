@@ -383,6 +383,263 @@ namespace vnni {
 
 bool vnni_on() { return STRATA_AVXVNNI && cpu_avxvnni_ok(); }
 
+// ---- STRATA_CPU_IQ_OWN1: one token of an IQ2_XXS / IQ2_XS / IQ1_M row, ggml-cpu's AVX2 vec_dot (arch/x86/quants.c) bit for bit:
+// its int32 lanes and its float order (f16(d) * y.d, one fmadd per block, 0.125 * ggml's hsum), with the indices, signs
+// and scales of a block unpacked by SIMD instead of ggml's scalar table walk (ported from the llama.cpp fork's
+// ggml_vec_dot_iq2_xxs_q8_K / _iq2_xs_ / _iq1_m_, a6e2b1a7f).  No pext/pdep.
+namespace own1 {
+
+#if defined(__GNUC__) || defined(__clang__)
+#define STRATA_OWN1_INLINE inline __attribute__((always_inline))
+#else
+#define STRATA_OWN1_INLINE __forceinline
+#endif
+
+STRATA_OWN1_INLINE float hsum8(__m256 x) {
+    __m128 r = _mm256_extractf128_ps(x, 1);
+    r = _mm_add_ps(r, _mm256_castps256_ps128(x));
+    r = _mm_add_ps(r, _mm_movehl_ps(r, r));
+    r = _mm_add_ss(r, _mm_movehdup_ps(r));
+    return _mm_cvtss_f32(r);
+}
+
+// four 8-byte grid rows: one load and three broadcast + blend
+STRATA_OWN1_INLINE __m256i grid4_u16(const uint64_t* grid, const uint16_t* idx) {
+    uint32_t i01, i23;
+    std::memcpy(&i01, idx + 0, 4);
+    std::memcpy(&i23, idx + 2, 4);
+    __m256i g = _mm256_castsi128_si256(_mm_loadl_epi64((const __m128i*) (grid + (i01 & 0xffff))));
+    g = _mm256_blend_epi32(g, _mm256_set1_epi64x((long long) grid[i01 >> 16]), 0x0c);
+    g = _mm256_blend_epi32(g, _mm256_set1_epi64x((long long) grid[i23 & 0xffff]), 0x30);
+    g = _mm256_blend_epi32(g, _mm256_set1_epi64x((long long) grid[i23 >> 16]), 0xc0);
+    return g;
+}
+STRATA_OWN1_INLINE __m256i grid4_u8(const uint64_t* grid, const uint8_t* idx) {
+    uint32_t a;
+    std::memcpy(&a, idx, 4);
+    __m256i g = _mm256_castsi128_si256(_mm_loadl_epi64((const __m128i*) (grid + (a & 0xff))));
+    g = _mm256_blend_epi32(g, _mm256_set1_epi64x((long long) grid[(a >> 8) & 0xff]), 0x0c);
+    g = _mm256_blend_epi32(g, _mm256_set1_epi64x((long long) grid[(a >> 16) & 0xff]), 0x30);
+    g = _mm256_blend_epi32(g, _mm256_set1_epi64x((long long) grid[a >> 24]), 0xc0);
+    return g;
+}
+
+// signs: 32 bytes of 7 sign bits each (4 per 32 weights), sub-blocks in the order 0 1 4 5 | 2 3 6 7 per 128-bit lane;
+// bit 7 becomes the even parity (ksigns_iq2xs), then lane 0 takes the first two bytes of each sub-block and lane 1 the
+// last two, so sub-block c uses bytes 2w, 2w + 1 of both lanes, w = pos(c)
+alignas(32) static const uint8_t k_parity[32] = {
+    0x00, 0x80, 0x80, 0x00, 0x80, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00, 0x80, 0x00, 0x80, 0x80, 0x00,
+    0x00, 0x80, 0x80, 0x00, 0x80, 0x00, 0x00, 0x80, 0x80, 0x00, 0x00, 0x80, 0x00, 0x80, 0x80, 0x00};
+alignas(32) static const uint8_t k_pairs[32] = {
+    0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15, 0, 1, 4, 5, 8, 9, 12, 13, 2, 3, 6, 7, 10, 11, 14, 15};
+alignas(32) static const uint8_t k_bitsel[32] = {
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80};
+
+constexpr int pos(int c) { return (c & 1) | ((c & 2) << 1) | ((c & 4) >> 1); }
+
+STRATA_OWN1_INLINE __m256i signs(__m256i u) {
+    u = _mm256_or_si256(u, _mm256_shuffle_epi8(_mm256_load_si256((const __m256i*) k_parity),
+                                               _mm256_and_si256(_mm256_xor_si256(u, _mm256_srli_epi16(u, 4)),
+                                                                _mm256_set1_epi8(0x0f))));
+    return _mm256_permute4x64_epi64(_mm256_shuffle_epi8(u, _mm256_load_si256((const __m256i*) k_pairs)),
+                                    _MM_SHUFFLE(3, 1, 2, 0));
+}
+// sub-block C's signs as bytes -1 / +1 for _mm256_sign_epi8
+template <int C> STRATA_OWN1_INLINE __m256i sign_c(__m256i sg) {
+    constexpr long long w = 0x0101010101010101LL * (2 * pos(C));
+    const __m256i bs = _mm256_load_si256((const __m256i*) k_bitsel);
+    __m256i m = _mm256_shuffle_epi8(sg, _mm256_set_epi64x(w + 0x0101010101010101LL, w, w + 0x0101010101010101LL, w));
+    m = _mm256_cmpeq_epi8(_mm256_and_si256(m, bs), bs);
+    return _mm256_or_si256(m, _mm256_set1_epi8(1));
+}
+
+// IQ2_XXS: per sub-block c of 32 weights qs32[2c] holds 4 grid indices, qs32[2c + 1] 4 x 7 sign bits and the scale
+STRATA_OWN1_INLINE void xxs_prep(const block_iq2_xxs* x, __m256i& sg, __m256i& sc) {
+    const __m256i y0 = _mm256_loadu_si256((const __m256i*) (x->qs + 0));
+    const __m256i y1 = _mm256_loadu_si256((const __m256i*) (x->qs + 16));
+    const __m256i b = _mm256_castps_si256(_mm256_shuffle_ps(_mm256_castsi256_ps(y0), _mm256_castsi256_ps(y1),
+                                                            _MM_SHUFFLE(3, 1, 3, 1)));
+    const __m256i t = _mm256_or_si256(_mm256_and_si256(b, _mm256_set1_epi32(0x3fff)),
+                                      _mm256_slli_epi32(_mm256_and_si256(b, _mm256_set1_epi32(0x0fffc000)), 2));
+    const __m256i u = _mm256_or_si256(_mm256_and_si256(t, _mm256_set1_epi32(0x007f007f)),
+                                      _mm256_slli_epi32(_mm256_and_si256(t, _mm256_set1_epi32(0x3f803f80)), 1));
+    sg = signs(u);
+    // scales 2 * ls + 1 as int16, sub-block c at word pos(c) of both lanes
+    const __m256i v = _mm256_or_si256(_mm256_slli_epi32(_mm256_srli_epi32(b, 28), 1), _mm256_set1_epi32(1));
+    sc = _mm256_permute4x64_epi64(_mm256_packs_epi32(v, v), _MM_SHUFFLE(2, 0, 2, 0));
+}
+template <int C> STRATA_OWN1_INLINE __m256i xxs_scale(__m256i sc) {
+    constexpr int w = pos(C);
+    return _mm256_shuffle_epi8(sc, _mm256_set1_epi16((short) ((2 * w) | ((2 * w + 1) << 8))));
+}
+template <int C> STRATA_OWN1_INLINE __m256i xxs_step(__m256i sumi, const block_iq2_xxs* x, const block_q8_K* y, __m256i sg,
+                                                     __m256i sc) {
+    const __m256i q8 = _mm256_loadu_si256((const __m256i*) (y->qs + 32 * C));
+    const __m256i g = grid4_u8(iq2xxs_grid, (const uint8_t*) x->qs + 8 * C);
+    const __m256i dot = _mm256_maddubs_epi16(g, _mm256_sign_epi8(q8, sign_c<C>(sg)));
+    return _mm256_add_epi32(sumi, _mm256_madd_epi16(dot, xxs_scale<C>(sc)));
+}
+
+float dot_iq2xxs(const uint8_t* row, int nb, const block_q8_K* y) {
+    const auto* x = (const block_iq2_xxs*) row;
+    __m256 acc = _mm256_setzero_ps();
+    __m256i sg[8], sc[8];
+    // the signs and scales of up to 8 blocks first, with a prefetch of the row ahead (from DRAM it waits otherwise)
+    for (int i0 = 0; i0 < nb; i0 += 8) {
+        const int ne = nb - i0 < 8 ? nb - i0 : 8;
+        for (int j = 0; j < ne; ++j) {
+            const char* pf = (const char*) row + (size_t) (i0 + j + 16) * sizeof(block_iq2_xxs);
+            _mm_prefetch(pf, _MM_HINT_T0);
+            _mm_prefetch(pf + 64, _MM_HINT_T0);
+            xxs_prep(x + i0 + j, sg[j], sc[j]);
+        }
+        for (int j = 0; j < ne; ++j) {
+            const int i = i0 + j;
+            __m256i s = _mm256_setzero_si256();
+            s = xxs_step<0>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<1>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<2>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<3>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<4>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<5>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<6>(s, x + i, y + i, sg[j], sc[j]);
+            s = xxs_step<7>(s, x + i, y + i, sg[j], sc[j]);
+            const float d = h2f(x[i].d) * y[i].d;
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(s), acc);
+        }
+    }
+    return 0.125f * hsum8(acc);
+}
+
+// IQ2_XS: qs[k] holds the 9-bit grid index and 7 sign bits of 8 weights, scales[c] the 4-bit scales of sub-block c's halves
+STRATA_OWN1_INLINE void xs_idx(const block_iq2_xs* x, uint16_t* idx) {
+    const __m256i m511 = _mm256_set1_epi16(511);
+    _mm256_storeu_si256((__m256i*) (idx + 0), _mm256_and_si256(_mm256_loadu_si256((const __m256i*) (x->qs + 0)), m511));
+    _mm256_storeu_si256((__m256i*) (idx + 16), _mm256_and_si256(_mm256_loadu_si256((const __m256i*) (x->qs + 16)), m511));
+}
+STRATA_OWN1_INLINE void xs_prep(const block_iq2_xs* x, __m256i& sg, __m256i& sc) {
+    const __m256i w0 = _mm256_loadu_si256((const __m256i*) (x->qs + 0));
+    const __m256i w1 = _mm256_loadu_si256((const __m256i*) (x->qs + 16));
+    sg = signs(_mm256_packus_epi16(_mm256_srli_epi16(w0, 9), _mm256_srli_epi16(w1, 9)));
+    // scales 2 * s + 1 as bytes: lane 0 the first 16 weights of sub-block c at byte c, lane 1 the last 16
+    uint64_t aux64;
+    std::memcpy(&aux64, x->scales, 8);
+    const __m256i v = _mm256_and_si256(_mm256_srlv_epi64(_mm256_set1_epi64x((long long) aux64), _mm256_set_epi64x(4, 4, 0, 0)),
+                                       _mm256_set1_epi8(0x0f));
+    sc = _mm256_or_si256(_mm256_slli_epi16(v, 1), _mm256_set1_epi8(1));
+}
+template <int C> STRATA_OWN1_INLINE __m256i xs_step(__m256i sumi, const uint16_t* idx, const block_q8_K* y, __m256i sg,
+                                                    __m256i sc) {
+    const __m256i q8 = _mm256_loadu_si256((const __m256i*) (y->qs + 32 * C));
+    const __m256i g = grid4_u16(iq2xs_grid, idx + 4 * C);
+    const __m256i dot = _mm256_maddubs_epi16(g, _mm256_sign_epi8(q8, sign_c<C>(sg)));
+    return _mm256_add_epi32(sumi, _mm256_madd_epi16(dot, _mm256_shuffle_epi8(sc, _mm256_set1_epi16((short) (0x8000 | C)))));
+}
+
+float dot_iq2xs(const uint8_t* row, int nb, const block_q8_K* y) {
+    const auto* x = (const block_iq2_xs*) row;
+    __m256 acc = _mm256_setzero_ps();
+    alignas(32) uint16_t idx[8 * 32];   // the indices of up to 8 blocks, read back as scalars for the table lookups
+    for (int i0 = 0; i0 < nb; i0 += 8) {
+        const int ne = nb - i0 < 8 ? nb - i0 : 8;
+        for (int j = 0; j < ne; ++j) xs_idx(x + i0 + j, idx + 32 * j);
+        for (int j = 0; j < ne; ++j) {
+            const int i = i0 + j;
+            __m256i sg, sc;
+            xs_prep(x + i, sg, sc);
+            const uint16_t* ix = idx + 32 * j;
+            __m256i s = _mm256_setzero_si256();
+            s = xs_step<0>(s, ix, y + i, sg, sc);
+            s = xs_step<1>(s, ix, y + i, sg, sc);
+            s = xs_step<2>(s, ix, y + i, sg, sc);
+            s = xs_step<3>(s, ix, y + i, sg, sc);
+            s = xs_step<4>(s, ix, y + i, sg, sc);
+            s = xs_step<5>(s, ix, y + i, sg, sc);
+            s = xs_step<6>(s, ix, y + i, sg, sc);
+            s = xs_step<7>(s, ix, y + i, sg, sc);
+            const float d = h2f(x[i].d) * y[i].d;
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(d), _mm256_cvtepi32_ps(s), acc);
+        }
+    }
+    return 0.125f * hsum8(acc);
+}
+
+// IQ1_M: per sub-block of 32 weights the grid and the delta terms are summed in int16 with the scale
+// taken by maddubs (|sum| <= 8 * 15 * 2 * 128 < 2^15); after madd with ones the int32 lanes are ggml's.  The f16 scale from
+// the four scale words' top nibbles by shifts (no pext: microcoded on AMD Zen 1/2).
+alignas(32) static const uint8_t k_iq1m_qh_eo[32] = {
+    0, 2, 4, 6, 8, 10, 12, 14, 0, 2, 4, 6, 8, 10, 12, 14, 1, 3, 5, 7, 9, 11, 13, 15, 1, 3, 5, 7, 9, 11, 13, 15};
+
+// the 32 grid indices qs[k] | (bits 0..2 of nibble k of qh) << 8, in the order of the 256-bit unpacks: sub-block c at m_pos(c)
+STRATA_OWN1_INLINE void m_idx(const block_iq1_m* x, uint16_t* idx) {
+    const __m256i m7 = _mm256_set1_epi8(7);
+    const __m256i qh2 = _mm256_permute4x64_epi64(_mm256_castsi128_si256(_mm_loadu_si128((const __m128i*) x->qh)), 0x50);
+    const __m256i f = _mm256_unpacklo_epi8(_mm256_and_si256(qh2, m7), _mm256_and_si256(_mm256_srli_epi16(qh2, 4), m7));
+    const __m256i qs = _mm256_loadu_si256((const __m256i*) x->qs);
+    _mm256_storeu_si256((__m256i*) (idx + 0), _mm256_unpacklo_epi8(qs, f));
+    _mm256_storeu_si256((__m256i*) (idx + 16), _mm256_unpackhi_epi8(qs, f));
+}
+// dl: bit 7 of byte 2c + k is the delta sign of group 4c + k (lane 0) or 4c + 2 + k (lane 1); ls: the scales 2s + 1 of the
+// first / last 16 weights of sub-block c in lane 0 / lane 1 at byte 2 (c / 2) + 8 (c % 2)
+STRATA_OWN1_INLINE void m_prep(const block_iq1_m* x, __m256i& ls, __m256i& dl, uint16_t& scale) {
+    const __m128i qh = _mm_loadu_si128((const __m128i*) x->qh);
+    const __m256i qhe = _mm256_shuffle_epi8(_mm256_broadcastsi128_si256(qh), _mm256_load_si256((const __m256i*) k_iq1m_qh_eo));
+    dl = _mm256_or_si256(_mm256_unpacklo_epi8(_mm256_slli_epi16(qhe, 4), qhe), _mm256_set1_epi8(1));
+    uint64_t sc;
+    std::memcpy(&sc, x->scales, 8);
+    const __m256i s3 = _mm256_srlv_epi64(_mm256_set1_epi64x((long long) sc), _mm256_set_epi64x(9, 3, 6, 0));
+    ls = _mm256_or_si256(_mm256_slli_epi16(_mm256_and_si256(s3, _mm256_set1_epi16(7)), 1), _mm256_set1_epi16(1));
+    uint16_t s16[4];
+    std::memcpy(s16, x->scales, 8);
+    scale = (uint16_t) ((s16[0] >> 12) | ((s16[1] >> 8) & 0x00f0) | ((s16[2] >> 4) & 0x0f00) | (s16[3] & 0xf000));
+}
+constexpr int m_pos(int c) { return ((c & 1) << 2) | ((c & 2) << 3) | ((c & 4) << 1); }
+template <int C> STRATA_OWN1_INLINE void m_step(__m256i& sum1, __m256i& sum2, const uint16_t* idx, const block_q8_K* y,
+                                                __m256i ls, __m256i dl) {
+    constexpr long long w = 0x0101010101010101LL * (2 * C);
+    const __m256i q8 = _mm256_loadu_si256((const __m256i*) (y->qs + 32 * C));
+    const __m256i g = grid4_u16(iq1s_grid, idx + m_pos(C));
+    const __m256i l = _mm256_shuffle_epi8(ls, _mm256_set1_epi8((char) (2 * (C >> 1) + 8 * (C & 1))));
+    const __m256i e = _mm256_shuffle_epi8(dl, _mm256_set_epi64x(w + 0x0101010101010101LL, w, w + 0x0101010101010101LL, w));
+    sum1 = _mm256_add_epi16(sum1, _mm256_maddubs_epi16(l, _mm256_sign_epi8(q8, g)));
+    sum2 = _mm256_add_epi16(sum2, _mm256_maddubs_epi16(l, _mm256_sign_epi8(q8, e)));
+}
+
+float dot_iq1m(const uint8_t* row, int nb, const block_q8_K* y) {
+    const auto* x = (const block_iq1_m*) row;
+    const __m256i ones = _mm256_set1_epi16(1);
+    __m256 acc1 = _mm256_setzero_ps(), acc2 = _mm256_setzero_ps();
+    alignas(32) uint16_t idx[8 * 32];
+    for (int i0 = 0; i0 < nb; i0 += 8) {
+        const int ne = nb - i0 < 8 ? nb - i0 : 8;
+        for (int j = 0; j < ne; ++j) m_idx(x + i0 + j, idx + 32 * j);
+        for (int j = 0; j < ne; ++j) {
+            const int i = i0 + j;
+            __m256i ls, dl;
+            uint16_t scale;
+            m_prep(x + i, ls, dl, scale);
+            const uint16_t* ix = idx + 32 * j;
+            __m256i s1 = _mm256_setzero_si256(), s2 = _mm256_setzero_si256();
+            m_step<0>(s1, s2, ix, y + i, ls, dl);
+            m_step<1>(s1, s2, ix, y + i, ls, dl);
+            m_step<2>(s1, s2, ix, y + i, ls, dl);
+            m_step<3>(s1, s2, ix, y + i, ls, dl);
+            m_step<4>(s1, s2, ix, y + i, ls, dl);
+            m_step<5>(s1, s2, ix, y + i, ls, dl);
+            m_step<6>(s1, s2, ix, y + i, ls, dl);
+            m_step<7>(s1, s2, ix, y + i, ls, dl);
+            const __m256 d = _mm256_set1_ps(y[i].d * h2f(scale));
+            acc1 = _mm256_fmadd_ps(d, _mm256_cvtepi32_ps(_mm256_madd_epi16(s1, ones)), acc1);
+            acc2 = _mm256_fmadd_ps(d, _mm256_cvtepi32_ps(_mm256_madd_epi16(s2, ones)), acc2);
+        }
+    }
+    return hsum8(acc1) + IQ1M_DELTA * hsum8(acc2);
+}
+
+#undef STRATA_OWN1_INLINE
+}  // namespace own1
+
 }  // namespace
 
 // ggml's quantize_row_q8_K_ref (ggml-quants.c), which is also what ggml-cpu runs on x86 (no SIMD version there),
@@ -550,6 +807,20 @@ void iq256x_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void
 #endif
     if (g) plain::dot_type<true, true>(type, nt, w, row_bytes, n, act, out, r0, r1);
     else plain::dot_type<false, true>(type, nt, w, row_bytes, n, act, out, r0, r1);
+}
+
+bool iq_own1_supported(int type) noexcept { return type == 16 || type == 17 || type == 29; }
+
+void iq_own1_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* act, float* out, int r0, int r1) {
+    const auto* y = (const block_q8_K*) act;
+    const int nb = n / QK_K;
+    if (type == 16) {
+        for (int r = r0; r < r1; ++r) out[r] = own1::dot_iq2xxs(w + (size_t) r * row_bytes, nb, y);
+    } else if (type == 17) {
+        for (int r = r0; r < r1; ++r) out[r] = own1::dot_iq2xs(w + (size_t) r * row_bytes, nb, y);
+    } else if (type == 29) {
+        for (int r = r0; r < r1; ++r) out[r] = own1::dot_iq1m(w + (size_t) r * row_bytes, nb, y);
+    }
 }
 
 void iq4nl256_down_rows_v(int variant, const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt,

@@ -228,6 +228,16 @@ int main(int argc, char** argv) {
 
     const double t_gg = pass(0, p0.data());
     const double t_own = pass(1, p1.data());
+    // the default dispatch (DS4_GG_IQ256 unset): ggml-cpu's dot below min_tokens(type), where one token of IQ2_XXS / IQ2_XS takes
+    // the one-token rows (STRATA_CPU_IQ_OWN1) where they apply; bit for bit against ggml-cpu's dot too
+    std::vector<std::vector<float>> o2 = o0;
+    std::vector<float*> p2;
+    for (int t = 0; t < nt; ++t) p2.push_back(o2[(size_t) t].data());
+    const double t_def = pass(2, p2.data());
+    long differ_def = 0;
+    for (int t = 0; t < nt; ++t)
+        for (long r = 0; r < rows; ++r)
+            if (std::memcmp(&o0[(size_t) t][(size_t) r], &o2[(size_t) t][(size_t) r], 4) != 0) ++differ_def;
     if (!dump.empty()) {
         if (std::FILE* df = std::fopen(dump.c_str(), "wb")) {
             for (int t = 0; t < nt; ++t) std::fwrite(o0[(size_t) t].data(), 4, (size_t) rows, df);
@@ -302,10 +312,12 @@ int main(int argc, char** argv) {
     std::printf("type %d nt %d threads %d: %.2f GB of weights (%ld rows)\n", type, nt, threads, gb, rows);
     std::printf("  ggml-cpu rows %.3f s = %.1f GB/s | Strata AVX2 rows %.3f s = %.1f GB/s (x%.2f) | plain read %.1f GB/s\n", t_gg, gb / t_gg,
                 t_own, gb / t_own, t_gg / t_own, gb / t_rd);
+    std::printf("  default dispatch %.3f s = %.1f GB/s (x%.2f of ggml-cpu); %ld of %ld differ in bits from ggml-cpu's dot\n", t_def,
+                gb / t_def, t_gg / t_def, differ_def, (long) nt * rows);
     std::printf("  results: %ld of %ld differ in bits, worst |x-y|/|x| %.2e, %ld beyond 1e-5\n", differ, (long) nt * rows, worst, bad);
     std::printf("  vs a double reference on %d sampled rows: worst %.2e of the L1 norm (tol 1e-5); |x-y| max %.2e of |x| max %.2e\n",
                 sampled, worst_ref, absdiff, absmax);
-    if (worst_ref > 1e-5 || absdiff > 1e-6 * absmax + 1e-30 || (exact && differ != 0)) {
+    if (worst_ref > 1e-5 || absdiff > 1e-6 * absmax + 1e-30 || (exact && differ != 0) || (exact && differ_def != 0)) {
         std::printf("FAIL\n");
         return 1;
     }
