@@ -97,6 +97,8 @@ export interface AppState {
   /** Price of one kWh for the Monitor's cost line (0 = not set) and the currency the person picked instead of the detected one ('' = automatic) (#3628). */
   electricityPrice: number;
   electricityCurrency: string;
+  /** The unit every temperature is shown in (the host and engine report °C; only the display converts). */
+  temperatureUnit: 'C' | 'F';
   /** Opt-in: a short sound when a task finishes (#3586). */
   doneSound: boolean;
   /** Opt-in: a desktop notification when Manual mode waits for an approval (#3477). */
@@ -177,6 +179,7 @@ export interface Prefs {
   uiScale: number;
   electricityPrice: number;
   electricityCurrency: string;
+  temperatureUnit: 'C' | 'F';
   doneSound: boolean;
   approvalNotify: boolean;
   /** What Enter does while an answer is being written: wait, send after, or interrupt (#4783). */
@@ -200,6 +203,7 @@ const PREFS_DEFAULTS: Prefs = {
   uiScale: DEFAULT_UI_SCALE,
   electricityPrice: 0,
   electricityCurrency: '',
+  temperatureUnit: 'C',
   doneSound: false,
   approvalNotify: false,
   whileBusy: 'wait',
@@ -266,6 +270,7 @@ function loadPrefs(): Prefs {
         sizeDefaults: SIZE_DEFAULTS_VERSION,
         electricityPrice: Number.isFinite(Number(parsed.electricityPrice)) && Number(parsed.electricityPrice) > 0 && Number(parsed.electricityPrice) < 1000 ? Number(parsed.electricityPrice) : 0,
         electricityCurrency: typeof parsed.electricityCurrency === 'string' && /^[A-Za-z]{3}$/.test(parsed.electricityCurrency) ? parsed.electricityCurrency.toUpperCase() : '',
+        temperatureUnit: parsed.temperatureUnit === 'F' ? 'F' : 'C',
         doneSound: parsed.doneSound === true,
         approvalNotify: parsed.approvalNotify === true,
         whileBusy: validWhileBusy(parsed.whileBusy) ? parsed.whileBusy : 'wait',
@@ -305,6 +310,7 @@ let state: AppState = {
   uiScale: prefs.uiScale,
   electricityPrice: prefs.electricityPrice,
   electricityCurrency: prefs.electricityCurrency,
+  temperatureUnit: prefs.temperatureUnit,
   doneSound: prefs.doneSound,
   approvalNotify: prefs.approvalNotify,
   whileBusy: prefs.whileBusy,
@@ -538,6 +544,7 @@ function savePrefs() {
     uiScale: state.uiScale,
     electricityPrice: state.electricityPrice,
     electricityCurrency: state.electricityCurrency,
+    temperatureUnit: state.temperatureUnit,
     doneSound: state.doneSound,
     approvalNotify: state.approvalNotify,
     whileBusy: state.whileBusy,
@@ -647,6 +654,12 @@ export function setMotion(motion: 'system' | 'full' | 'reduced') {
 
 export function setTransparency(transparency: 'translucent' | 'opaque') {
   set({ transparency });
+  savePrefs();
+}
+
+/** The unit the Monitor shows temperatures in: 'C' (the default) or 'F'. */
+export function setTemperatureUnit(unit: 'C' | 'F') {
+  set({ temperatureUnit: unit === 'F' ? 'F' : 'C' });
   savePrefs();
 }
 

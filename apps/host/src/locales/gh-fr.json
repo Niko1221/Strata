@@ -32,5 +32,9 @@
  "gh31": "Changer de devise",
  "gh32": "Automatique ({0})",
  "gh33": "Devise",
- "gh34": "moins de {0}"
+ "gh34": "moins de {0}",
+ "gh35": "Unité de température",
+ "gh36": "Affiche toutes les températures en degrés Celsius ou Fahrenheit.",
+ "gh37": "Degrés Celsius (°C)",
+ "gh38": "Degrés Fahrenheit (°F)"
 }
