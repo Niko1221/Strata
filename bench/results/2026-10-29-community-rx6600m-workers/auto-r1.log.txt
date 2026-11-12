@@ -1,0 +1,61 @@
+strata generate: PCIe probe: 6.5 GB/s host->device (best of 6.5 6.5 6.5 6.5) -> pcie_frac 0.18 (default 0.55)
+strata generate: this CPU has no AVX-512: the expert kernels run on AVX-2 (multi-token for the i-quant gate/up rows)
+strata generate: native pack: D:\strata-data\packs\coder-iq1_m experts (largest blob 2.66 MB), token embedding IQ4_XS in mapped host memory (322 MiB, 0.5 s)
+strata generate: 1406 MiB of weights loaded from D:\strata-data\packs\coder-iq1_m in 0.7 s (302 canonical tensors skipped: served natively)
+strata generate: 300 native projection matrices, 2018.88 MiB of weights, in 3.7 s
+strata generate: PLE direct read probe: 43830 rows/s (fine)
+strata generate: the SSD is kept awake while rows are read: one page of the table after 100 ms without a read, until 60 s after the last request (STRATA_SSD_KEEPALIVE=0 turns it off)
+strata generate: profile D:\strata\data\expert-profile-coder.bin: 12288 ranked pairs, built for 12288 slots
+strata generate: PLE on, table 320001536 rows of D:\strata-data\models\Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00002-of-00002.gguf
+strata generate: experimental native Q5_K head, 521472000 bytes, in 0.8 s
+strata generate: GPU 0: AMD Radeon RX 6600M (gfx1032)
+strata generate: HIP runtime D:\strata2\.rocm-win\Lib\site-packages\_rocm_sdk_devel\bin\amdhip64_7.dll
+strata prefill: warmed the BF16 and FP16 GEMM libraries on GPU 0 in 1220 ms (STRATA_PREFILL_WARM=0 skips)
+strata generate: expert arena read unbuffered (0 of 16 probe reads from the file cache; 48.7 GiB available, 27.6 GiB of files)
+strata generate: expert arena: cudaHostRegister PORTABLE ok; large pages (2097152 B)
+strata generate: loaded 23.42 GiB at 1.18 GiB/s
+strata generate: CPU pool tasks/phase: 30 (automatic), participating threads: 10
+strata generate: CPU pool: 9 workers by default (14 physical cores, 20 logical processors; bounded by the performance cores and half of the efficiency cores)
+strata generate: 9 pool workers on logical processors 2,4,6,8,10,12,13,14,15, the host thread on 0 (draining too) (--host-core first)
+strata generate: CPU workers on logical processors 2,4,6,8,10,12,13,14,15 (9 workers, one per physical core; host on 0)
+strata aux cpus: not available on this system
+strata: Windows budgets 7378 of this card's 8176 MiB for this process; free VRAM is counted within that (STRATA_WDDM_BUDGET=0: off)
+strata generate: expert cache auto: 2.93 GiB free, 700 MiB reserved (+0 MiB for the draft head) -> 906 slots
+strata prefill: HIP device 0 gfx1032 - tip: STRATA_HIP_PROMPT_F16=1 reads long prompts about 2x faster here (FP16 prompt GEMMs, rocBLAS is tuned only for FP16 on gfx103x; the numbers differ slightly, see docs/AMD_HIP.md)
+strata generate: expert cache 1165 slots, 2.25 GiB of VRAM; policy is
+strata generate: the GPU computes the experts in the cache; it rounds differently from the CPU,
+                 so a reply can differ slightly from a run without the cache (same quality:
+                 bench/results/2026-09-27-cache-parity).
+                 PROFILE, ranked by routing frequency, no eviction.
+strata generate: pre-filled 1165 of 1165 slots from the profile in 0.7 s (3294 MB/s); slot 0 verified
+strata generate: R4 hit path ON - resident experts are computed on the GPU
+strata generate: 9 expert-pool workers + the host thread
+strata generate: session is up (engine 0.1.53)
+strata generate: sampling greedy
+strata generate: token graph hit path: 1165 resident experts, decided on the device
+strata generate: prompt chunk auto: 256 tokens
+strata generate: prompt path borrows 175 cache slots (0.33 GiB)
+strata generate: 175 lent slots refilled in 56.5 ms
+strata generate: prefill 4 tokens in 1 chunks, 15581.3 ms (0.3 tok/s); experts streamed 1181 (1181 by DMA, host 3.0 ms), resident 65, on the CPU 0 (share 0.00); PLE 2.6 ms
+strata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)
+strata verify: window up to 6 tokens, 74.4 MiB of device buffers
+strata verify: capturing the 1-token window (558 MiB of VRAM free)
+strata verify: captured the 1-token window (upload no error, sync no error)
+strata verify: capturing the 4-token window (558 MiB of VRAM free)
+strata verify: captured the 4-token window (upload no error, sync no error)
+strata verify: capturing the 3-token window (558 MiB of VRAM free)
+strata verify: captured the 3-token window (upload no error, sync no error)
+strata verify: capturing the 2-token window (558 MiB of VRAM free)
+strata verify: captured the 2-token window (upload no error, sync no error)
+speculation              56 rounds of 6, drafts accepted 8 of 152 (0.053), 1.14 tokens per round
+suffix drafts            8 windows, drafts accepted 8 of 11
+accepted per round       0:48 1:8 2:0 3:0 4:0 5:0
+verify window            wait for rings 214.752  pool 53.633  host 3.007  commit 0.047 ms/round; CPU experts 9.56 distinct / 12.89 routed per layer
+pool multi               gate/up 34.832  quantize 0.293  down 14.513 ms/round; 18.9 GB/s over the rows phases; CPU pool call 50.605 ms/round
+dispatch                 plan 0.326  activation quantize 0.444  jobs 0.092  run 49.677 ms/round
+adaptive tier            1088 experts swapped into the VRAM tier (every 4 rounds, 0.060 ms/round)
+pcie experts             1.43 distinct experts per layer read over PCIe (share 45/256 of the misses)
+prompt  : 760 6511 314 9338 369
+output  : 11751 13 561 6511 314 9564 369 19241 13 561 6511 314 14898 369 21047 13 561 6511 314 17163 369 23327 13 561 6511 314 32208 369 77916 13 561 6511 314 31868 369 35938 13 561 6511 314 279 24844 369 36492 13 561 6511 314 33741 369 44745 13 561 6511 314 28169 369 13762 13 561 6511 314 33200 369
+decode                   64 tokens in 16443.6 ms  ->  3.89 tok/s
+prefill                  4 tokens in 15637.9 ms  ->  0.26 tok/s  (time to first token 16000.9 ms)
