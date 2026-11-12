@@ -54,6 +54,8 @@ const Dims kQwen36 = {41, 2048, 16, 2, 256, 256, 8, 512, 512, 4, 128, 16, 32, 40
 const Dims kFlashNext = {48, 2560, 24, 2, 256, 512, 10, 640, 640, 4, 128, 16, 48, 6144, 4, 0, 4, 320, 4, 128};
 // tiny models of each family for the layout checks (every tensor F32, a few KB)
 const Dims kTiny36 = {5, 64, 2, 1, 16, 4, 2, 32, 32, 4, 8, 2, 4, 32, 4, 1, 0, 0, 0, 0};
+// a dense qwen35 (Qwen3.5-4B / Qwen3.8-4B distill): the same trunk, one dense MLP, no experts, MTP optional
+const Dims kTinyDense = {5, 64, 2, 1, 16, 0, 0, 32, 32, 4, 8, 2, 4, 32, 4, 1, 0, 0, 0, 0};
 const Dims kTinyFlash = {8, 64, 2, 1, 16, 4, 2, 32, 32, 4, 8, 2, 4, 32, 4, 0, 2, 8, 2, 8};
 
 std::vector<Kv> metadata(const char* arch, const Dims& d, uint64_t vocab) {
@@ -65,10 +67,6 @@ std::vector<Kv> metadata(const char* arch, const Dims& d, uint64_t vocab) {
                           fixture::u32(p + "attention.head_count_kv", d.heads_kv),
                           fixture::u32(p + "attention.key_length", d.key_len),
                           fixture::u32(p + "attention.value_length", d.key_len),
-                          fixture::u32(p + "expert_count", d.experts),
-                          fixture::u32(p + "expert_used_count", d.used),
-                          fixture::u32(p + "expert_feed_forward_length", d.ff),
-                          fixture::u32(p + "expert_shared_feed_forward_length", d.ff_sh),
                           fixture::u32(p + "ssm.conv_kernel", d.conv),
                           fixture::u32(p + "ssm.state_size", d.state),
                           fixture::u32(p + "ssm.group_count", d.groups),
@@ -77,7 +75,20 @@ std::vector<Kv> metadata(const char* arch, const Dims& d, uint64_t vocab) {
                           fixture::u32(p + "full_attention_interval", d.interval)};
     if (std::string(arch) == "qwen35moe") {
         kv.push_back(fixture::u32(p + "nextn_predict_layers", d.nextn));
+        kv.push_back(fixture::u32(p + "expert_count", d.experts));
+        kv.push_back(fixture::u32(p + "expert_used_count", d.used));
+        kv.push_back(fixture::u32(p + "expert_feed_forward_length", d.ff));
+        kv.push_back(fixture::u32(p + "expert_shared_feed_forward_length", d.ff_sh));
+    } else if (std::string(arch) == "qwen35") {
+        // one dense MLP: feed_forward_length, no expert keys, and nextn only when the file has an MTP block
+        kv.push_back(fixture::u32(p + "feed_forward_length", d.ff));
+        if (d.nextn) kv.push_back(fixture::u32(p + "nextn_predict_layers", d.nextn));
     } else {
+        // Flash-Next is MoE too: its guard requires both expert counts
+        kv.push_back(fixture::u32(p + "expert_count", d.experts));
+        kv.push_back(fixture::u32(p + "expert_used_count", d.used));
+        kv.push_back(fixture::u32(p + "expert_feed_forward_length", d.ff));
+        kv.push_back(fixture::u32(p + "expert_shared_feed_forward_length", d.ff_sh));
         kv.push_back(fixture::u32(p + "hyper_connection.count", d.hc));
         kv.push_back(fixture::u32(p + "hyper_connection.low_rank", d.hc_lr));
         kv.push_back(fixture::u32(p + "attention.indexer.head_count", d.idx_heads));
@@ -115,7 +126,7 @@ std::string layout_error(const fs::path& dir, const char* arch, const Dims& d, u
     strata::core::ModelGeometry g;
     int64_t k = 0;
     std::string err;
-    if (std::string(arch) == "qwen35moe") {
+    if (std::string(arch) == "qwen35moe" || std::string(arch) == "qwen35") {
         if (!geometry_of(meta, g, k, err)) return "geometry: " + err;
     } else {
         // the qwen4exp guard pins Flash-Next's own block count and widths, so the tiny model's geometry is set here
@@ -257,6 +268,67 @@ int main(int argc, char** argv) {
         fixture::write(wp, metadata("qwen35moe", wrong, 8), {});
         check(!geometry_of(wp, f, k, err) && err.find("ssm.inner_size") != std::string::npos,
               "an inconsistent ssm.inner_size is refused");
+    }
+    {
+        // the dense qwen35 family (Qwen3.5-4B, Qwen3.8-4B distills): the same trunk, one dense MLP, no experts
+        const fs::path dn = d.path / "dense.gguf";
+        fixture::write(dn, metadata("qwen35", kTinyDense, 16), {});
+        const strata::GgufFile df(dn.string());
+        check(strata::model_family(df) == strata::ModelFamily::Qwen35, "model_family: qwen35 is the dense family");
+        check(strata::check_architecture(df).empty(),
+              "the architecture guard accepts a dense qwen35 file (no expert keys required)");
+        check(strata::check_engine_architecture(df).find("dense qwen35") != std::string::npos,
+              "the engine path guard names the dense family it does not run");
+        strata::core::ModelGeometry g;
+        int64_t k = -1;
+        std::string err;
+        const bool ok = geometry_of(dn, g, k, err);
+        check(ok, "dense geometry reads" + (ok ? std::string() : ": " + err));
+        check(g.n_expert == 0 && k == 0 && g.n_ff == 32 && g.n_ff_shexp == 32,
+              "dense: no experts; the MLP width is feed_forward_length and fills the shared-expert slot");
+        check(g.n_layers == 4 && g.n_mtp_layers == 1 && g.n_qsa_layers() == 1 && g.n_gdn_layers() == 3,
+              "dense: 4 trunk layers + 1 MTP block, 1 attention / 3 GDN");
+        check(!g.has_indexer() && !g.has_hyper_connections() && g.ssm_conv_channels == 2 * 8 * 2 + 32,
+              "dense: no indexer, no hyper-connections, GDN conv channels from the ssm keys");
+        Dims nomtp = kTinyDense;
+        nomtp.nextn = 0;
+        nomtp.block_count = 4;   // without an MTP block the trunk itself must be a multiple of the attention interval
+        const fs::path d0 = d.path / "dense0.gguf";
+        fixture::write(d0, metadata("qwen35", nomtp, 16), {});
+        check(geometry_of(d0, g, k, err) && g.n_layers == 4 && g.n_mtp_layers == 0,
+              "dense: a file without nextn_predict_layers has no MTP block (the official Qwen3.5-4B)");
+        std::string e = layout_error(d.path, "qwen35", kTinyDense, 16, nullptr);
+        check(e.empty(), "a complete dense qwen35 file passes its layout (dense ffn + nextn MTP block)" +
+                             (e.empty() ? std::string() : ": " + e));
+        e = layout_error(d.path, "qwen35", kTinyDense, 16, [](std::vector<Tensor>& ts) {
+            for (auto it = ts.begin(); it != ts.end(); ++it)
+                if (it->name == "output.weight") { ts.erase(it); break; }
+        });
+        check(e.empty(), "a dense file with a tied head (no output.weight) passes its layout" +
+                             (e.empty() ? std::string() : ": " + e));
+        e = layout_error(d.path, "qwen35", kTinyDense, 16, [](std::vector<Tensor>& ts) {
+            ts.push_back({"blk.0.ffn_gate_exps.weight", {64, 32, 1}, F32, 98});
+        });
+        check(e.find("blk.0.ffn_gate_exps.weight") != std::string::npos && e.find("not in the") != std::string::npos,
+              "a dense file carrying an expert tensor is refused");
+        e = layout_error(d.path, "qwen35", kTinyDense, 16, [](std::vector<Tensor>& ts) {
+            for (auto it = ts.begin(); it != ts.end(); ++it)
+                if (it->name == "blk.2.ffn_down.weight") { ts.erase(it); break; }
+        });
+        check(e == "missing blk.2.ffn_down.weight", "a dense file missing its MLP down projection is refused");
+        Dims noff = kTinyDense;
+        const fs::path nf = d.path / "noff.gguf";
+        std::vector<Kv> kv = metadata("qwen35", noff, 16);
+        for (auto it = kv.begin(); it != kv.end(); ++it)
+            if (it->key == "qwen35.feed_forward_length") { kv.erase(it); break; }
+        fixture::write(nf, kv, {});
+        check(strata::check_architecture(strata::GgufFile(nf.string())).find("feed_forward_length") != std::string::npos,
+              "a dense file without feed_forward_length is refused, naming the key");
+        const std::string mo = layout_error(d.path, "qwen35moe", kTiny36, 16, [](std::vector<Tensor>& ts) {
+            for (auto it = ts.begin(); it != ts.end(); ++it)
+                if (it->name == "output.weight") { ts.erase(it); break; }
+        });
+        check(mo == "missing output.weight", "a qwen35moe file without output.weight is still refused");
     }
     {
         // the layout tables
