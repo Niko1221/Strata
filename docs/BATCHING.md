@@ -1,5 +1,25 @@
 # Several requests at once (batch slots)
 
+## Cache-aware admission (opt-in)
+
+`STRATA_ADMIT_UNCACHED=1` lets `STRATA_ADMIT_SHORT_FIRST` and the prompt give-way rule compare estimated unread
+tokens. A returning request with 100K cached tokens and 600 new ones is then treated as a short read. The estimate
+uses idle slot histories and a bounded mirror of completed streams; the engine's reported reuse removes stale mirror
+entries. It affects scheduling only. The engine still decides which tokens it can reuse. Images use the full length.
+
+`STRATA_SLOT_AFFINITY=1` prefers overwriting empty or short histories, then histories also held in another idle slot,
+and protects histories needed by waiting requests. Existing prefix matches and group balancing take precedence.
+`STRATA_SLOT_KEEP_MIN` sets the short-history threshold (default 4096 tokens).
+
+Both switches default to off. Set them in the server environment or the run config's `"env"` block. With uncached
+admission enabled, set `STRATA_ADMIT_SHORT_FIRST` too (for example 4096) to order new admissions by estimated read size.
+`STRATA_ADMIT_MIRROR` optionally overrides the mirror's entry cap; its default is batch slots + parked slots + 1.
+The mirror is an estimate of the current process's cache, cleared on restart, and may underestimate branch reuse.
+`/metrics` adds `live.swarm` with estimate, reuse and stale-entry counters when either switch is on.
+
+There is no measured TTFT improvement for this upstream port yet. These options target avoidable queue waits and
+history eviction; run a paired workload with returning conversations before choosing them for a deployment.
+
 By default Strata serves **one request at a time**: the others wait in the server's queue. With `"parallel": N`
 (the engine's `--batch N`, also spelled `--slots N`) the engine keeps up to N conversations open and decodes them
 **together**: every verify window then carries one token of each conversation, so the dense weights, the shared
