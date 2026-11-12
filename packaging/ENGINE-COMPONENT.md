@@ -143,7 +143,8 @@ with the package). `packaging/stage_tuning.py` does it for the Linux build scrip
 
 A Windows CUDA component ships `strata-vision-cpu.exe` beside the CUDA reader. If a manifest-marked CUDA component lacks that companion,
 CPU-mode startup stops with an update/repair message rather than launching the CUDA-linked reader. Directly starting the CUDA reader
-without `--gpu` also returns a clear error directing callers to `strata-vision-cpu.exe`; it does not initialize CUDA for CPU work.
+without `--gpu` also returns a clear error before `llama_backend_init()` and directs callers to `strata-vision-cpu.exe`. The CUDA reader
+still links CUDA DLLs; only the companion avoids loading those runtime dependencies for CPU work.
 
 `python packaging/package_engine.py --stamp-vision <stage> --vision-archs "60;61;70;75;80;86;89"` writes the record for a reader built by hand.
 At run time a reader that still cannot start tells why (stderr tail, exit status, and for a kernel-image error the card hint).
