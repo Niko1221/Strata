@@ -490,7 +490,18 @@ __device__ __forceinline__ void deq8(const uint8_t* __restrict__ row, int kb, in
         const uint8_t* qs = b + 16 + 32 * n + 8 * p;
 #pragma unroll
         for (int j = 0; j < 8; ++j) w[j] = dl * (float) ((qs[j] >> (2 * jj)) & 3) - ml;
+    } else if constexpr (T == kMXFP4) {   // e, qs[16]: value j in qs[j]'s low nibble, j + 16 in its high one (ggml's dequantize_row_mxfp4)
+        const uint32_t e = b[0];
+        const float dl = __uint_as_float(e < 2 ? 0x00200000u << e : (e - 1) << 23);   // (GGML_E8M0_TO_FP32_HALF, as decode_b)
+        const uint8_t* qs = b + 1 + 8 * (p & 1);
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const uint32_t c = p < 2 ? qs[j] & 15u : qs[j] >> 4;   // kvalues_mxfp4: 0 1 2 3 4 6 8 12, the top bit the sign
+            const int v = (int) (((c & 4u ? 0x0C080604u : 0x03020100u) >> (8 * (c & 3u))) & 255u);
+            w[j] = dl * (float) (c & 8u ? -v : v);
+        }
     } else {   // Q3_K
+        static_assert(T == kQ3_K, "deq8: a type with no decode here");
         const int n = ib >> 2, jj = ib & 3;
         const float dl = h2f(b + 108) * (float) q3k_scale(b + 96, 8 * n + 2 * jj + (p >> 1));
         const uint8_t* qs = b + 32 + 32 * n + 8 * p;
@@ -1119,6 +1130,7 @@ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps 
         case kQ4_K: F(kQ4_K); break;       \
         case kQ2_K: F(kQ2_K); break;       \
         case kQ3_K: F(kQ3_K); break;       \
+        case kMXFP4: F(kMXFP4); break;     \
         default: return false;       \
     }
 
@@ -1497,7 +1509,8 @@ bool supported(int t) {
     // The MSL kernels (metal/src/engine/msl/ds4_iq.metal) implement the 2.0-bit types plus IQ1_M; IQ1_S and IQ4_NL
     // have CUDA kernels here but no Metal ones.  Saying so makes those layers "cpu only" (ds4_model.cu, expert_layout),
     // so their experts stay on the CPU lane instead of stopping in "kernel launch with no Metal dispatch".
-    if (t == kIQ4_NL) return false;   // (IQ1_S: ds4_iq1s_mvn + the tile kernel since the Unsloth sets)
+    if (t == kIQ4_NL) return false;   // (IQ1_S: ds4_iq1s_mvn + the tile kernel since the Unsloth sets; IQ3_S: ds4_iq3s_mvn,
+                                      //  ds4_w32_iq3s in ds4_iq_gu / ds4_iq_dn and DS4_MM_INST(T_IQ3_S, 21) since UD-Q2_K_XL)
 #endif
     // the types the kernels below are instantiated for (DS4_IQ_SWITCH + the trellis ones + the dense K-quants)
     switch (t) {
@@ -1505,6 +1518,8 @@ bool supported(int t) {
         case kIQ1_S: case kIQ1_M: case kIQ4_NL:
         case kQ4_K: case kQ5_K: case kQ6_K: case kQ2_K: case kQ3_K:
             return true;
+        case kMXFP4:   // (a low-bit layer's MXFP4 role: Unsloth's UD-Q2_K_XL has IQ2_S / IQ2_XS gate and up with MXFP4 down; on Metal
+            return true;   //  ds4_iq.metal's ds4_w32_mxfp4 / ds4_mxfp4_mvn and ds4_mm.metal's DS4_MM_INST(T_MXFP4, 39))
         default:
             return is_tq(t);
     }
@@ -1513,7 +1528,7 @@ bool supported(int t) {
 bool known(int t) { return block_bytes(t) > 0; }
 
 int block_values(int t) {
-    if (t == kIQ4_NL) return 32;   // (ggml's QK4_NL: the only type here whose block is not 256 values)
+    if (t == kIQ4_NL || t == kMXFP4) return 32;   // (ggml's QK4_NL and QK_MXFP4: the types here whose block is not 256 values)
     return is_tq(t) ? 128 : block_bytes(t) > 0 ? 256 : 0;
 }
 
@@ -1534,6 +1549,7 @@ int block_bytes(int t) {
         case kIQ1_S: return Ty<kIQ1_S>::B;
         case kIQ1_M: return Ty<kIQ1_M>::B;
         case kIQ4_NL: return Ty<kIQ4_NL>::B;
+        case kMXFP4: return Ty<kMXFP4>::B;
         default: return 0;
     }
 }
@@ -1560,6 +1576,7 @@ const char* name(int t) {
         case kIQ1_S: return "IQ1_S";
         case kIQ1_M: return "IQ1_M";
         case kIQ4_NL: return "IQ4_NL";
+        case kMXFP4: return "MXFP4";
         default: return "?";
     }
 }
@@ -1710,7 +1727,7 @@ static unsigned grid_for(long long items) {
 bool f16_rows_ok(int type) {   // (the DS4_IQ_SWITCH list)
     switch (type) {
         case kIQ2_XXS: case kIQ2_XS: case kIQ2_S: case kIQ3_XXS: case kIQ3_S: case kIQ4_XS: case kIQ1_S: case kIQ1_M:
-        case kIQ4_NL: case kQ4_K: case kQ2_K: case kQ3_K:
+        case kIQ4_NL: case kQ4_K: case kQ2_K: case kQ3_K: case kMXFP4:
             return true;
         default:
             return false;

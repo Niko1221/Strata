@@ -768,6 +768,8 @@ bool iq_mv(const void* jobs, int nj) {
             case 16: tn = "ds4_iq2xxs_mvn"; break;
             case 17: tn = "ds4_iq2xs_mvn"; break;
             case 18: tn = "ds4_iq3xxs_mvn"; break;
+            case 21: tn = "ds4_iq3s_mvn"; break;   // (UD-Q2_K_XL's IQ3_S down: ds4_iq.metal's ds4_w32_iq3s)
+            case 39: tn = "ds4_mxfp4_mvn"; break;   // (a low-bit layer's MXFP4 down: ds4_w32_mxfp4; the MXFP4 layers' own go to mx_mv)
             case 22: tn = "ds4_iq2s_mvn"; break;
             case 19: tn = "ds4_iq1s_mvn"; break;   // (Unsloth UD-IQ1_S / UD-IQ1_M experts: ds4_w32_iq1s)
             case 29: tn = "ds4_iq1m_mvn"; break;   // (the 2.00 bpw pack's IQ1_M: ds4_iq.metal's ds4_w32_iq1m)
@@ -1484,7 +1486,7 @@ static inline void* cpu_addr(void* p) {
 bool engram_dequant(const uint8_t* rows, const uint8_t* scales, int n, int hd, float* out, int fmt) {
     (void) scales;   // (fmt 2 keeps every block's scale in its own 18 bytes)
     if (n <= 0 || hd <= 0) return true;
-    if (fmt != 2 || rows == nullptr || out == nullptr) return false;
+    if ((fmt != 2 && fmt != 4) || rows == nullptr || out == nullptr) return false;   // (4: Q5_K, UD-Q2_K_XL's tables)
     if (!ensure()) return false;
     void* hr = cpu_addr((void*) rows);
     void* ho = cpu_addr((void*) out);
@@ -2474,8 +2476,43 @@ namespace {
 int g_lib_moe = -2;
 mtl::Buffer g_mm_xs, g_mm_hs, g_mm_ys;   // grow-only scratch: the sorted rows' half activations; the gate/up's swiglu rows (the down's input)
 bool g_mm_hs_ok = false;
-// bytes of a 256-value block per type: the tile kernels are instantiated for exactly these (DS4_MM_INST)
-size_t iq_bs(int type) { return type == 16 ? 66 : type == 17 ? 74 : type == 22 ? 82 : type == 18 ? 98 : type == 29 ? 56 : type == 19 ? 50 : 0; }
+int g_mm_k4 = -1;   // the matmul2d right-input layout: 1 the M5's (ds4_mm_gu_ / dn_), 0 another (the staged ds4_mm_gus_ / dns_)
+// metal/tests/coop_probe.h's coop_k4, with a wait: this runtime's run() only queues the dispatch, so the probe read its output
+// before the GPU had written it - all zeros, no element checked, "true" on every GPU, and the M2 Max's tiles came out wrong
+bool mm_coop_k4() {
+    if (const char* e = std::getenv("COOP_K4")) return std::atoi(e) != 0;
+    const int lib = g_cx->compile({"mm_bench.metal"}, "#define NO_GGML_COMMON 1\n");
+    for (const char* tile : {"coop_layout_16_64_32", "coop_layout_16_32_32"}) {
+        mtl::Pipeline p = g_cx->pipeline(lib, tile);
+        mtl::Buffer out = g_cx->alloc(4 * 3 * 32 * 128 * 4);
+        mtl::Dispatch d;
+        d.p = &p;
+        d.args = {mtl::Arg::B(out)};
+        d.tg[0] = 32;
+        g_cx->run({d});
+        g_cx->flush_runs();
+        if (void* t = g_cx->mark()) g_cx->wait_mark(t);
+        // every lane: elements 4j .. 4j + 3 are (k, n) .. (k + 3, n), and element i + cap / 2 is (k + 16, n) with k % 32 < 16
+        const int* o = out.as<int>();
+        bool k4 = true;
+        for (int l = 0; l < 32 && k4; ++l) {
+            const int* q = o + l * 128 * 4;
+            const int cap = q[2];
+            if (cap <= 0) k4 = false;   // (nothing written: not a layout)
+            for (int i = 0; k4 && i + 3 < cap; i += 4)
+                for (int j = 1; j < 4; ++j)
+                    if (q[(i + j) * 4] != q[i * 4] + j || q[(i + j) * 4 + 1] != q[i * 4 + 1]) k4 = false;
+            for (int i = 0; k4 && i < cap / 2; i += 4)
+                if (q[(i + cap / 2) * 4] != q[i * 4] + 16 || q[(i + cap / 2) * 4 + 1] != q[i * 4 + 1] || (q[i * 4] & 31) >= 16)
+                    k4 = false;
+        }
+        g_cx->free(out);
+        if (!k4) return false;
+    }
+    return true;
+}
+// bytes of a 256-value block per type (MXFP4: eight 17-byte blocks): the tile kernels are instantiated for exactly these (DS4_MM_INST)
+size_t iq_bs(int type) { return type == 16 ? 66 : type == 17 ? 74 : type == 22 ? 82 : type == 18 ? 98 : type == 21 ? 110 : type == 39 ? 136 : type == 29 ? 56 : type == 19 ? 50 : 0; }
 struct DsMmArgsH {
     unsigned long gate_off, up_off, down_off, stride;
     unsigned gu_row, d_row, n_embd, n_ff;
@@ -2487,6 +2524,12 @@ bool mm_prepare() {
     if (g_lib_moe == -2) {
         g_lib_moe = g_cx->compile({"quant.metal", "units.metal", "mma.metal", "moe_mm.metal", "../src/engine/msl/ds4_mm.metal"});
         if (g_lib_moe < 0) std::fprintf(stderr, "dsv41 metal: compiling ds4_mm.metal failed\n");
+    }
+    if (g_lib_moe >= 0 && g_mm_k4 < 0) {
+        g_mm_k4 = mm_coop_k4() ? 1 : 0;
+        if (!g_mm_k4)
+            std::fprintf(stderr, "ds4: prompt tiles: this GPU's matmul2d layout is not the M5's: the weight tiles go through "
+                                 "threadgroup memory (ds4_mm_gus / ds4_mm_dns)\n");
     }
     return g_lib_moe >= 0;
 }
@@ -2535,7 +2578,8 @@ static bool mm_set(bool gate_up, const uint8_t* wbase, size_t stride, const size
     // constant cache instead of threadgroup memory.
     static const bool mm_ctab = std::getenv("DS4_MM_CTAB") != nullptr;
     try {
-        const std::string fn = std::string(gate_up ? "ds4_mm_gu_" : "ds4_mm_dn_") + std::to_string(type);
+        const std::string fn = std::string(gate_up ? (g_mm_k4 == 1 ? "ds4_mm_gu_" : "ds4_mm_gus_")
+                                                   : (g_mm_k4 == 1 ? "ds4_mm_dn_" : "ds4_mm_dns_")) + std::to_string(type);
         if (mm_ctab) {
             mtl::Constants cs;
             cs.b(23, true);

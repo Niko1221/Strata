@@ -65,6 +65,11 @@ It uses its own engine, a separate download that the app and `strata launch` fet
 The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
 you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.
 
+**Unsloth UD-Q2_K_XL** (`--model UD-Q2_K_XL`, 343 GB with its own n-gram table) is larger than 2.25 and needs more RAM. On one
+Radeon AI PRO R9700 with 251 GB of RAM it answered at 19 to 26 tokens a second. Against Unsloth's UD-Q8_K_XL it is closer than 2.25 (KL 0.064 against 0.145; the same top
+token 91% of the time against 86%). It ran on an M2 Max with 96 GB at about 4 tokens a second, but setup does not offer it on a Mac yet.
+Details: [DEEPSEEK41.md](DEEPSEEK41.md#unsloth-ud-q2_k_xl).
+
 **Supported hardware**
 
 | Hardware | Systems |

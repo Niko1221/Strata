@@ -38,7 +38,9 @@ bool gg_cpu_type(int type) {
     // placed in VRAM, but a pack may hand any of them to this lane
     switch (type) {
         case 10: case 11: case 12: case 13: case 14: case 16: case 17: case 18: case 19: case 20: case 21: case 22:
-        case 23: case 29: return true;
+        case 23: case 29:
+        case 39:   // MXFP4 as one role of a low-bit layer (UD-Q2_K_XL's down; ggml-cpu's MXFP4 dot, Q8_0 activations); an all-MXFP4 layer keeps cpu_experts_mx
+            return true;
         default: return false;
     }
 }

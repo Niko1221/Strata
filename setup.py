@@ -910,6 +910,20 @@ DSV41_UD_FILES = {
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00004-of-00005.gguf": (24358544704, "71c6c54dd1f20008e2130188cc655742d3738a365de4571d21a56de503b206b7"),
     "DeepSeek-V4.1-Flash-1017-UD-IQ1_S-00005-of-00005.gguf": (110595290592, "771805301e695d72d268151dfc43043581ba904298574aa879d4349cbe67b020"),
 }
+# Unsloth's UD-Q2_K_XL (in the pinned 2026-10-30 commit, 8a6ec9cf: the same names, sizes and SHA-256 at main, 2688c0c3): seven shards, shard 1 = metadata, shards 2-6 =
+# the model (191.1 GB of experts: IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS / IQ3_S, and MXFP4 downs in 7 layers; dense Q6_K / Q8_0), shard 7 = its OWN Engram table
+# (per_layer_token_embd in Q5_K, 135.2 GB: not ISTA-DAS's IQ4_NL data, so it is downloaded with the set and never shared).  Needs an engine with Q5_K Engram rows and
+# MXFP4 in a low-bit layer (ds4_q5k.cuh, ds4_iq.cu); the Metal engine has neither yet.
+DSV41_UD7_SHARD = "DeepSeek-V4.1-Flash-1017-{quant}-{i:05d}-of-00007.gguf"
+DSV41_UD_FILES.update({
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00001-of-00007.gguf": (5780868, "6b6e9ace54298156974cc3e024e5ba86d50c40c06482da8f64fece77d7f73452"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00002-of-00007.gguf": (49290279808, "fa56e7cb79f88d992170bbc41b192991bd89b9534c53106e328fc03a5d26afed"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00003-of-00007.gguf": (49745070208, "b279f9bbb331460d182658a9ec6a49eb232ef7d8c69600a2c53d5d797bf037b4"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00004-of-00007.gguf": (48680128800, "c7fed7b94a11aeafbf07e164940718fab26e99a5f1d9986af0602c6515d18bff"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00005-of-00007.gguf": (49970937696, "c8d6bd8063607e788db7daed01487f4e87a9529d5756dd561481bed78fea7d6d"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00006-of-00007.gguf": (1929325664, "2f62bf418b0f722254728bdd88b4b1c88c1b64a4d664c7b696c08fecd49abd76"),
+    "DeepSeek-V4.1-Flash-1017-UD-Q2_K_XL-00007-of-00007.gguf": (135172021792, "a653c5309b7c74a6c41580aaa8c2d2bbdae0342253bca2cd3fc9e69d05f3d0eb"),
+})
 DSV41_FILES.update(DSV41_UD_FILES)      # (the repository's pins: REPO_PINS)
 # The ISTA-DAS Coder (2026-11-01; the official ISTA-DASLab repository since 2026-11-02): ISTA-DAS's coding variant of this model, "the layout of the
 # IQ2_XXS set with half of the experts removed": 192 routed experts a layer instead of 384 (the router, the experts and the routing biases are narrower; every other tensor has the 2.00
@@ -1014,6 +1028,16 @@ MULTI_FILE_FAMILIES["deepseek41"]["models"] = {
         "shards": [DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=i) for i in range(1, 5)],
         "engram_shard": DSV41_UD_SHARD.format(quant="UD-IQ1_M", i=5),
         "shared": [DSV41_ISTA_ENGRAM, DSV41_DSPARK]},
+    "UD-Q2_K_XL": {
+        "label": "Unsloth UD-Q2_K_XL",
+        "about": "Unsloth's 2-bit dynamic version with more 3-bit experts: 200 GB of model (experts in IQ2_XXS / IQ2_XS / IQ2_S / IQ3_XXS / IQ3_S, MXFP4 in a few layers; attention in Q6_K / Q8_0) "
+                 "+ its own 135 GB n-gram table + 8 GB drafter (343 GB of disk). Bigger than ISTA-DAS 2.25 bpw and needs more RAM (about 58 GB, an estimate). One Radeon AI PRO R9700 with "
+                 "251 GB of RAM: answers at 19-26 tokens a second, a 2,000-token prompt at 130-190 tokens a second. Against Unsloth's UD-Q8_K_XL it is closer than ISTA-DAS 2.25 bpw "
+                 "(KL 0.064 against 0.145)",
+        "ram_gb": 58, "recipe": "udlow", "own_engram": True, "subdir": "UD-Q2_K_XL", "legacy_subdir": None, "profile": "profile-2.25.bin", "hf": hf(DSV41_REPO) + "UD-Q2_K_XL/",
+        "shards": [DSV41_UD7_SHARD.format(quant="UD-Q2_K_XL", i=i) for i in range(1, 8)],
+        "engram_shard": DSV41_UD7_SHARD.format(quant="UD-Q2_K_XL", i=7),
+        "shared": [DSV41_DSPARK]},
     "UD-Q8_K_XL": {
         "label": "Unsloth UD-Q8_K_XL",
         "about": "Unsloth Dynamic 8-bit: the experts in MXFP4 as DeepSeek made them, the rest in BF16 (the checkpoint's own precision); "
@@ -9390,6 +9414,18 @@ def dsv41_pack_cmd(folder: Path, shards: list, engram: Path, meta: Path, dspark:
             "--dspark-noise-token", "128799", "--dspark-markov-rank", "256", *(["--mmproj", str(mmproj)] if mmproj else []), "--out", str(pack)]
 
 
+def dsv41_set_pack_cmd(md: dict, folder: Path, shards: list, shared: list, pack: Path, mmproj: Path | None = None) -> list:
+    """dsv41_pack_cmd for a set's files as install_dsv41 holds them (shards: the set's own files in order; shared: its "shared" files as found):
+    an ISTA-DAS set: shared = [Engram, metadata shard, drafter]; Unsloth's UD-IQ1 sets and the Coder ("udlow" / "coder"): their shard 1 is the
+    metadata, shared = [Engram, drafter]; UD-Q2_K_XL ("own_engram"): its LAST shard is its own Engram, shard 1 the metadata, shared = [drafter]."""
+    names = [Path(f).name for f in shards]
+    if md.get("recipe") in ("udlow", "coder") and md.get("own_engram"):
+        return dsv41_pack_cmd(folder, names[:-1], shards[-1], shards[0], shared[0], pack, mmproj)
+    if md.get("recipe") in ("udlow", "coder"):
+        return dsv41_pack_cmd(folder, names, shared[0], shards[0], shared[1], pack, mmproj)
+    return dsv41_pack_cmd(folder, names, shared[0], shared[1], shared[2], pack, mmproj)
+
+
 # Pictures on a card with memory of its own (HIP / CUDA): the engine keeps --reserve-mib free on each card (default 600) and a picture turn takes the tower's encode buffers and
 # hipBLASLt's first start from it.  One R9700 placed 2,902 experts and left 564 MiB: the first picture died with "out of memory at hipblaslt.cpp:147" (SPLIT-HIP, 2026-11-02);
 # 2,639 experts and 570 MiB passed.  SPLIT-HIP could not repeat the crash at any value (the one crash probably came from another program on the card), but the margin at 600 is only about 10 MiB in the worst case (the tower's ~319 MiB plus hipBLASLt's ~250 MiB start), so with pictures on the reserve is 900: it costs about 36 experts (0.3 GB, 1.2% of the resident ones).
@@ -9714,6 +9750,8 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
     say("  Its GGUF files: " + ("ISTA-DAS / ISTA-DASLab (huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), with the DSpark drafter and a small metadata file from Unsloth"
                               if md.get("recipe") == "ista" else
                               "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF); the Engram table is the same data as ISTA-DAS's, so a copy of it already here is used"
+                              if md.get("recipe") == "udlow" and not md.get("own_engram") else
+                              "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF), with its own n-gram table (Q5_K, 135 GB: not the ISTA-DAS one)"
                               if md.get("recipe") == "udlow" else
                               f"{DSV41_CODER_REPO} (huggingface.co); its Engram table is the same data as ISTA-DAS's, so a copy of it already here is used"
                               if md.get("recipe") == "coder" else "Unsloth (huggingface.co/unsloth/DeepSeek-V4.1-Flash-1017-GGUF)"))
@@ -9912,10 +9950,7 @@ def install_dsv41(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopted, 
             engine_doubt = reason
     if not have_pack:
         if ista:
-            if udlow:       # the set's own shard 1 carries the metadata (and the drafter's geometry); shared = [Engram, drafter]
-                run(dsv41_pack_cmd(folder, [f.name for f in shards], shared[0], shards[0], shared[1], pack, mmproj_file))
-            else:
-                run(dsv41_pack_cmd(folder, [f.name for f in shards], shared[0], shared[1], shared[2], pack, mmproj_file))
+            run(dsv41_set_pack_cmd(md, folder, shards, shared, pack, mmproj_file))
             dsv41_write_pack_source(pack)
         else:
             run([sys.executable, str(ROOT / "tools" / "dsv41" / "pack_gguf.py"), "--model", str(folder), "--out", str(pack),

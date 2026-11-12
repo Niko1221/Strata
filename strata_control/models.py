@@ -668,6 +668,7 @@ def _dsv41_plan(path: Path, details) -> dict | None:
     folder_holds: list[dict] = []
     missing_shards: list[str] = []
     candidate = None
+    gate_line = None                                    # the set's own "not on this computer" line (dsv41_fit.not_here), said as its plain issue too
     place, row = (complete[0] if complete else found[0])
     if len(complete) > 1:
         issues.append("multiple_model_groups")
@@ -684,6 +685,7 @@ def _dsv41_plan(path: Path, details) -> dict | None:
                      "expected_tensor_count": None,
                      "setup_args_hint": ["--family", dsv41_sets.FAMILY, "--model", row["model"], "--gguf-dir", str(place)]}
         line = _not_here(row["model"])
+        gate_line = line
         if line:       # recommend, never force: say what does work and stop before anything is copied or packed (Mac: no Metal IQ1_S kernel; DGX Spark: never run)
             issues.append("not_on_this_mac" if sys.platform == "darwin" else "not_on_this_spark")
             candidate = None
@@ -700,7 +702,7 @@ def _dsv41_plan(path: Path, details) -> dict | None:
             messages.append("The first part is the version ISTA-DASLab re-published on 26 October 2026 (a larger chat template); Strata uses it as it is.")
         messages.append("Strata checks the files once when it sets them up (about 5 minutes on a fast drive); nothing is copied or downloaded for them.")
     sizes = _dsv41_files(place)
-    wanted = list(row["present"]) + ([row["engram"]] if row["engram"] else [])
+    wanted = list(dict.fromkeys(list(row["present"]) + ([row["engram"]] if row["engram"] else [])))   # (a set's own Engram is one of its shards)
     files = [{"name": n, "path": str(place / n), "bytes": sizes.get(n, 0), "gguf_version": None} for n in sorted(wanted)]
     shards = [place / n for n in sorted(row["present"])]
     already = None
@@ -712,6 +714,7 @@ def _dsv41_plan(path: Path, details) -> dict | None:
     return {"source": str(path), "model_dir": str(place), "scope": "local_gguf_candidate", "files": files, "file_count": len(files),
             "total_bytes": sum(item["bytes"] for item in files), "metadata": None, "candidate_selection": candidate,
             "plain_issues": list(dict.fromkeys((missing_words(missing_shards) if (i == "incomplete_or_invalid_shard_set" and missing_shards)
+                                                else gate_line.rstrip(".") if (gate_line and i in ("not_on_this_mac", "not_on_this_spark"))
                                                 else plain_issue(i)) for i in issues)),
             "observed_expert_types": [], "observed_tensor_count": 0, "ignored_auxiliary_files": [], "projectors": [], "messages": messages,
             "already_set_up": already, "reads_pictures": False, "folder_holds": folder_holds, "missing_shards": missing_shards,

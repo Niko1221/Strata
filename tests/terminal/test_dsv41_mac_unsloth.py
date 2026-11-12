@@ -149,7 +149,7 @@ class OfferedOnAMac(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def test_the_gate_is_empty_and_both_sets_have_a_pack(self):
-        self.assertEqual(dsv41_fit.MAC_NOT_YET, ())
+        self.assertEqual(dsv41_fit.MAC_NOT_YET, ("UD-Q2_K_XL",))     # (UD-Q2_K_XL: held back until it has run on a Mac; tools/test_setup_udq2.py)
         for m in ("UD-IQ1_S", "UD-IQ1_M"):
             self.assertIn(m, dsv41_fit.MAC_SET_PACK)
             self.assertIsNone(dsv41_fit.not_here(m))
@@ -346,7 +346,7 @@ class SparkOffered(unittest.TestCase):
     """Both Unsloth sets ran on a DGX Spark (2026-10-30): the production rule hides nothing there."""
 
     def test_nothing_is_hidden_on_a_spark(self):
-        self.assertEqual(dsv41_fit.AARCH64_NOT_YET, ())
+        self.assertEqual(dsv41_fit.AARCH64_NOT_YET, ("UD-Q2_K_XL",))   # (UD-Q2_K_XL: its new kernels were not built for CUDA yet; tools/test_setup_udq2.py)
         with spark():
             for m in BOTH + ("IST-DAS-2.25bpw",):
                 self.assertIsNone(dsv41_fit.not_here(m))

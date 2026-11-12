@@ -93,6 +93,52 @@ for the Coder; 0.104, 0.108, 0.202, 0.303, 0.138 for 2.00. One run per cell unle
 engines): on an Apple M5 Max 19 to 22 tokens a second with all 7,680 experts in memory (a 6,054-token needle read at 300 tokens a second), and on a Ryzen AI Max (Strix Halo, Windows, 64 GB of RAM)
 19 to 22 tokens a second with 7,734 of 8,064 experts in graphics memory.
 
+## Unsloth UD-Q2_K_XL
+
+Unsloth's 2-bit dynamic version, with more 3-bit experts than the ISTA-DAS sets. `strata launch --family deepseek41 --model UD-Q2_K_XL`. Download 343 GB:
+200 GB of model, its own 135 GB n-gram table and the 8 GB drafter. Its n-gram table is Q5_K, not the IQ4_NL table the ISTA-DAS sets share, so it is downloaded
+with the set even when another set is installed. Seven files from `unsloth/DeepSeek-V4.1-Flash-1017-GGUF` (folder `UD-Q2_K_XL/`), pinned by size and SHA-256.
+
+The experts are IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS and IQ3_S; in 7 of the 43 layers the down matrices are MXFP4 next to IQ2 gate and up matrices. The engine
+reads both since this change (Q5_K n-gram rows; MXFP4 in a low-bit layer). An older engine stops at load with "MXFP4 does not mix with the others".
+
+Measured on one Radeon AI PRO R9700 (32 GB), 251 GB of RAM, Linux, 1M context, every expert the card does not hold in RAM (169.6 GB), no drafter (the
+engine's `--dspark auto` leaves it unloaded here), 2026-11-10. Each cell is the range of 6 code answers or 4 prose answers of 512 tokens, and of 4
+prompts of each size with 5 experts or 2 with 6 (each prompt new to the server):
+
+| | 5 experts a word (Faster) | 6 experts a word (Full quality) |
+| --- | ---: | ---: |
+| Answer, code | 22.0 to 25.6 tokens/s | 21.3 to 24.8 tokens/s |
+| Answer, prose | 18.6 to 21.5 tokens/s | 20.1 to 21.2 tokens/s |
+| Prompt, 1,500 to 1,900 tokens | 185 to 190 tokens/s | 127 to 191 tokens/s |
+| Prompt, 14,700 to 18,200 tokens | 671 to 756 tokens/s | 642 to 682 tokens/s |
+
+The 127 was the first prompt after the server started. The same files on mainline llama.cpp on the same card (2026-11-08, `--cpu-moe`,
+37 layers on the card, ubatch 256, the DSpark drafter on) gave 61 and 51 tokens/s on the two prompt sizes and 10 to 13 tokens/s on code,
+8 to 9 on prose.
+
+Quality, against Unsloth's UD-Q8_K_XL (BF16 dense weights, MXFP4 experts) on the same 4,995 positions of `data/quant_quality/v1`
+(tokenized for DeepSeek with `tools/quant_quality.py ids`), `strata-dsv41 --score` with 6 experts a word, window 16, on the same R9700, 2026-11-10,
+one run per set. KL is over the reference's 64 most likely tokens; top-1 is how often both pick the same next token; lower KL is closer:
+
+| | KL | Top-1 | Code KL | Docs KL | English KL | Multilingual KL | Agent KL |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| UD-Q2_K_XL (343 GB) | 0.064 | 90.8% | 0.068 | 0.075 | 0.070 | 0.058 | 0.047 |
+| ISTA-DAS 2.25 bpw (274 GB) | 0.145 | 86.2% | 0.146 | 0.157 | 0.181 | 0.151 | 0.089 |
+| ISTA-DAS 2.00 bpw | 0.209 | 82.3% | 0.212 | 0.235 | 0.304 | 0.180 | 0.114 |
+
+UD-Q2_K_XL is the closest of the three in every part. Its perplexity is 3% below the reference's (5.49 against 5.66): that is noise around the
+reference, not a better model. The reference here is not the original model, so these numbers do not compare with the ones at the top of this page.
+
+On a Mac: a MacBook Pro with an M2 Max and 96 GB (macOS 27.2, the files on the internal SSD, other programs holding 22-36 GB), 2026-11-09, one run
+per row, served with setup's Mac settings and `--vram-experts 0.3` (21 GB of experts in GPU memory). It answered correctly ("The capital of France is
+Paris."; values asked for from 1,535- and 13,661-token prompts). Answers ran at 3.8 to 4.1 tokens/s, a 1,582-token prompt at 69 tokens/s and a 12,607-token
+one at 189 tokens/s. The engine's own choice of expert share (47 GB) answered at 0.76 tokens/s: with 96 GB it leaves too little memory for the experts
+read from the SSD. Setup still keeps the set off a Mac.
+
+Not measured yet: a computer with less RAM (the 58 GB in the plan is the 2.00 set's measured 40 GB scaled by the experts' size), NVIDIA cards (the new
+kernels were built with CUDA 13.1 but run on HIP only) and a DGX Spark (setup keeps the set off it).
+
 ## Install
 
 ```
