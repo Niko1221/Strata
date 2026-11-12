@@ -882,7 +882,7 @@ endpoints are refused with an error that says so.
 
 | Request | What Strata does |
 | --- | --- |
-| `input` as a string or items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)` |
+| `input` as a string or items | `message` items (`user`, `assistant`, `system`, `developer`; text and images), `reasoning`, `function_call`, `function_call_output`, `custom_tool_call(_output)`, `multi_agent_call(_output)`, `agent_message` |
 | `instructions` | The system message (with leading `developer` messages) |
 | `tools` | `function`, `namespace` and `custom` tools. Hosted tools (`web_search`, `file_search`, ...) are left out because the model cannot run them |
 | `tool_choice` | `"none"` hides the tools; anything else lets the model choose (it cannot be forced) |
