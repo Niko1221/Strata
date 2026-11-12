@@ -466,6 +466,43 @@ void gu_launch(int T, dim3 grid, cudaStream_t s, const MoeW& w, const Job* jobs,
     }
 }
 
+// gate|up with the shared expert's swiglu and down as extra rows of blocks (the other expert types' version of k_moe_gu_q4k's sd rows): 256-thread blocks (the shared
+// expert's q8s blocks are Q8S_THREADS wide), G lanes a row as k_moe_gu has them, so every row sums its terms in the same order and the answers are the same bits
+template <ggml_type TA, int G, int TT>
+__global__ void __launch_bounds__(Q8S_THREADS) k_moe_gu_sd(MoeW w, const Job* __restrict__ jobs, const int* __restrict__ njobs,
+                                                         const block_q8_1* __restrict__ y, float* __restrict__ out, const ShexpDown sd, int sd_rows) {
+    if ((int) blockIdx.y < sd_rows) {
+        shexp_down_blocks<TT>(sd, blockIdx.y * gridDim.x + blockIdx.x, sd_rows * gridDim.x);
+        return;
+    }
+    const int ji = blockIdx.y - sd_rows;
+    if (ji >= *njobs) return;
+    __shared__ Job jb;
+    if (threadIdx.x == 0) jb = jobs[ji];
+    __syncthreads();
+    const int row = blockIdx.x * (Q8S_THREADS / G) + threadIdx.x / G;
+    const bool live = row < w.nrows;
+    const int r = live ? row : 0;
+    float tmp[TT] = {};
+    job_rows<TA, G, TT>(moe_expert(w, jb.w) + (size_t) r * w.row_a, live, w.ncols, jb.n, y, jb.y, w.ncols / 32, tmp);
+    job_store<G, TT>(tmp, jb.n, live, row, jb.out, out, w.nrows);
+}
+
+template <ggml_type TA>
+void gu_sd_launch(int T, const MoeW& w, const Job* jobs, const int* njobs, int njobs_max, const block_q8_1* y, float* out, cudaStream_t s, const ShexpDown& sd) {
+    if (moe_g<TA>(w.ncols) != 32) throw std::runtime_error("moe gate|up: only 32 lanes a row are compiled (rows of N columns)");
+    const int gx = (w.nrows + Q8S_THREADS / 32 - 1) / (Q8S_THREADS / 32), sd_blocks = (sd.rows + Q8S_THREADS / 32 - 1) / (Q8S_THREADS / 32);
+    const int sd_rows = sd.rows ? (sd_blocks + gx - 1) / gx : 0;
+    const dim3 grid(gx, njobs_max + sd_rows);
+#define FNX_GS(t) case t: k_moe_gu_sd<TA, 32, t><<<grid, Q8S_THREADS, 0, s>>>(w, jobs, njobs, y, out, sd, sd_rows); break;
+    switch (T) {
+        FNX_GS(1) FNX_GS(2) FNX_GS(3) FNX_GS(4) FNX_GS(5) FNX_GS(6) FNX_GS(7) FNX_GS(8)
+        FNX_GS(9) FNX_GS(10) FNX_GS(11) FNX_GS(12) FNX_GS(13) FNX_GS(14) FNX_GS(15) FNX_GS(16)
+        default: throw std::runtime_error("moe gate|up (shared expert): T out of range");
+    }
+#undef FNX_GS
+}
+
 template <ggml_type TA>
 void moe_launch(bool down, const MoeW& w, const Job* jobs, const int* njobs, int njobs_max, const void* in, float* out,
                 cudaStream_t s, int T) {

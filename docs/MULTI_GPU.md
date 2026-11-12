@@ -212,6 +212,29 @@ DeepSeek V4.1-Flash runs in the app and the Terminal and spreads its experts and
 the Qwen layer split described above. On four Radeon AI PRO R9700 cards it reaches about 31 tokens/s. Hardware, sets and speeds:
 [MODELS.md](MODELS.md#deepseek-v41-flash).
 
+## Small cards: what a split gives up when it is short of memory
+
+Two 8 GB cards used to stop at the start ("expert cache: no room", "the GPU has too little free VRAM for the prompt path"): every card loads a copy of the
+dense weights (3.5 GiB for IQ3_S) beside its session, its share of the head and the draft layer, a working expert cache and the prompt path's buffers. A split now
+walks the same steps a single card does, per card, mildest first, and says each one in one line (`short of GPU memory: ...`). The context you asked for and the
+number of requests are never changed; the cost is speed. A card with room never takes a step. Cards that hold every expert of their layers (two 96 GB cards) give the same
+greedy answers as before (5 of 5 hashes); a card that holds only part of them has a cache 256 MiB smaller (the last paragraph), which can change the last bits.
+
+1. **Trim**: a card that is too short for a full copy of the dense weights loads only the weights of its own layers (`--trim-stage-weights`, bit-exact in itself). Under `auto`
+   the split is then chosen from what each card has free, so every card gets the same cache bytes per layer. `STRATA_STAGE_TRIM=0` keeps the copies.
+2. **KV window**: when no placement can start the prompt path, the search runs again with 20480, 8192, then 4096 cells of the KV window in VRAM (the rest streams from RAM).
+3. **Drafter**: the draft layer (or DFlash2) is dropped on the card that holds it when that card cannot hold it and a working cache. `STRATA_MTP_KEEP=1` keeps it.
+4. **Prompt buffers**: a stage whose cache cannot lend the prompt path a 256-token chunk keeps 16 slots behind the loan instead of 128; CUDA0 reads prompts with its own small buffers.
+5. **Head**: the output head moves to pinned host memory on the card that holds it (about 3x slower logits), only when the cache would otherwise have no room.
+6. **Fewer cards**: under `auto`, a card with under 3 GiB free is left out of the split, and so is the card with the least room when even the whole walk cannot pay for every
+   layer on the cards that are left; with none left, the start is the single card's, with the rest of the experts in RAM.
+
+A later stage also keeps 256 MiB free for what it allocates after its cache (cuBLAS, the MMQ pool, as the single card has done since 0.2.7): two 16 GB cards used to start and then
+run out of memory in the first long prompt. `STRATA_SPILL_OFF=1` turns every step off; `STRATA_DEFAULTS=026` keeps the 0.2.6 reserve.
+
+When a start still ends because a card ran out of memory, `strata launch` and the server repeat it once without a drafter (never with the MTP in place of DFlash2, which takes more
+memory), and the last line shown is the engine's own reason.
+
 ## Limits
 
 - Every card needs compute capability 7.5 (RTX 20 or newer), unless you opt into the CUDA 12 engine for older cards.

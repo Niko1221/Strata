@@ -25,7 +25,7 @@ strata launch --family unsloth --model UD-Q4_K_XL
 
 - **Where the experts live.** Every expert goes into RAM when its 72 GiB plus 16 GiB more fit (about 88 GB of RAM). On a
   PC with less RAM, or on a unified-memory APU, setup keeps a RAM budget: the hottest experts in RAM, the rest read
-  from the GGUF on the SSD. It needs 48 GB of RAM or more. With less it asks (default no), and
+  from the GGUF on the SSD. It fits when its files (without the n-gram table) are no bigger than your graphics memory and RAM together; then the menu says "fits", otherwise "may run slower" and setup asks (default no), and
   `--model UD-Q4_K_XL --yes` installs it anyway.
 - **The RAM budget** is the PC's RAM less 24 GB (`--resident-budget-gib 40` on 64 GB), at most all 71 GiB of experts. From
   a 64K context up, where the KV cache moves to RAM, its size comes out of the budget. `--resident-budget-gib N` at
@@ -35,8 +35,10 @@ strata launch --family unsloth --model UD-Q4_K_XL
   deleted, so the next run downloads it again.
 - **Packing.** `--compat-bf16`, and never an `experts.bin` (`--low-ram` does not apply).
 - **Defaults it writes** into the run config's `env`: `STRATA_HC_Q8=1` on CUDA (the GGUF's own Q8_0 hyper-connection
-  projections, closer to the file and faster), and `STRATA_ROUTE_TAIL_SKIP=0` where every expert is in RAM. UD-Q4_K_XL
-  keeps `STRATA_MMQ_KQ` opt-in.
+  projections, closer to the file and faster), and `STRATA_ROUTE_TAIL_SKIP=0` where every expert is in RAM, except on
+  Linux AMD gfx12 (R9700, RX 9000), where the engine's own default (the skip on, rank 7) stays: UD-Q4_K_XL decodes 6-16%
+  faster there at an unchanged 61-task suite (`STRATA_ROUTE_TAIL_SKIP=0` turns it off). UD-Q4_K_XL keeps `STRATA_MMQ_KQ`
+  opt-in in the config (the Linux gfx12 engine takes it by itself since 0.2.10.1).
 - **Context.** It recommends 8K on a GPU under 14 GB, because every GB of KV cache is a GB less of cached experts.
 - **GPUs.** NVIDIA or AMD. One GPU is the default in the budget mode. With several GPUs, each card caches the experts of
   its own layers and the budget holds the hottest of the rest by the whole expert profile. Setup asks; `--gpus 0,1`
@@ -65,7 +67,7 @@ Windows). Hugging Face snapshot symlinks work if you pass the snapshot's file na
 | | |
 | --- | --- |
 | Disk | 111.3 GB for the four files, 1.4 GB for the pack, about 6 GB for the MTP draft layer if you have none yet. There is **no `experts.bin`**: the engine reads the experts from the GGUF files in place. An NVMe SSD matters, because experts that fit neither VRAM nor the RAM budget are read from it for every token. |
-| RAM | 48 GB minimum; about 88 GB for every expert in RAM. The RAM budget holds the most-used experts and the rest come from the SSD through the OS file cache. |
+| Memory | Its files (without the n-gram table) no bigger than your graphics memory and RAM together, or the menu says "may run slower"; about 88 GB of RAM for every expert in RAM. The RAM budget holds the most-used experts and the rest come from the SSD through the OS file cache. |
 | GPU | 12 GB works: after the weights, the draft layer and the buffers, the expert cache held 1,280 of the 24,576 experts (3.7 GiB) at 4K context on an RTX 5070. |
 
 ## The pack (by hand)
@@ -201,7 +203,7 @@ same top 20 per position.
 | `STRATA_KQ256=1` | Multi-token AVX2 kernels for the Q4_K / Q5_1 / Q8_0 experts. Bit-exact with ggml's, but measured no faster, so off. |
 | `STRATA_PARTIAL_PIN=1` | Registers the hottest part of the RAM budget (up to `STRATA_PARTIAL_PIN_GIB`, default 24) with the GPU driver, so the GPU computes a share of the misses over PCIe (`--pcie-frac`). Measured no faster, and it changes the numerics of those experts, so off. |
 | `STRATA_FETCH_THREADS=N` | Threads that read the experts from the GGUF while it answers (default 8). The prompt path has its own: `STRATA_STAGER_THREADS` (default 32 here) and `STRATA_STAGER_RING` (128). |
-| `STRATA_RESIDENT_PIN=0` | Ordinary pageable memory for the RAM budget (see above). |
+| `STRATA_RESIDENT_PIN=0` | Ordinary pageable memory for the RAM budget, also for the RAM copy the engine makes on its own (see above). |
 
 ## UD-IQ4_XS
 

@@ -3,9 +3,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir as osTmpdir } from 'node:os';
+// the canonical scratch root: on a Mac the temp folder is /var/folders/..., which resolves to /private/var/...; the paths the host reports are the resolved ones
+const tmpdir = () => realpathSync(osTmpdir());
 import { bundledPython, componentsDirectory, controlEnvironment, createControl, findControl, runCli } from '../server/control-runtime.mjs';
 import { resolvePython } from '../server/python-resolver.mjs';
 import { createNativeControl } from '../server/native-control.mjs';
@@ -120,6 +122,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   const spawned = [];
   const rpc = [];
   let startFailure = null, startFailureLeft = Infinity;
+  let statusAnswer = { state: 'ready' }, metricsDown = false, healthDown = false;
   const control = {
     control: { dir: join(root, 'control'), python: join(root, 'control', 'python', 'python.exe') }, version: controlVersion,
     async installedModels(options) { calls.push(['installedModels', options?.installDir ?? null]); return { install_dir: install, models: configs.map(c => ({ id: c.id, name: `Qwen ${c.id}`, source_config: c.path, component_status: 'present', context_tokens: 32768, backend: 'cuda' })) }; },
@@ -133,11 +136,17 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
     async saveProfile(name, path) { calls.push(['saveProfile', name, basename(path)]); saved.push(JSON.parse(readFileSync(path, 'utf8'))); return {}; },
     async start(name, options) { calls.push(['start', name, options?.waitSeconds]); if (startFailure && startFailureLeft-- > 0) { const e = new Error(startFailure.message); e.output = startFailure.output; throw e; } return { ok: true, state: 'ready' }; },
     async stop(name) { calls.push(['stop', name]); return { ok: true, state: 'stopped' }; },
+    async status(name) { calls.push(['status', name]); return typeof statusAnswer === 'function' ? statusAnswer(name) : statusAnswer; },
     ...(repair ? { async repairAccess() { calls.push(['repairAccess']); return { ok: true }; } } : {}),
     ...(updater ? { async updateCheck() { calls.push(['updateCheck']); return updater.report; }, async update(options) { calls.push(['update', options.engine, options.control]); return updater.update(options); } } : {}),
   };
   const requests = [];
-  const fetcher = async url => { calls.push(['fetch', url.replace(/:\d+/, ':PORT')]); return Response.json({ status: 'ok' }); };
+  const fetcher = async url => {
+    calls.push(['fetch', url.replace(/:\d+/, ':PORT')]);
+    if (metricsDown && /\/(metrics|mcp)/.test(url)) throw new Error('the engine does not answer');
+    if (healthDown && /\/health/.test(url)) throw new Error('the engine does not answer');
+    return Response.json({ status: 'ok' });
+  };
   // The only process the host may start is Control's installer (its bundled tools/strata_mcp.py on Control's Python); the fake
   // answers like it: the catalog, the hardware with the GPUs, and an install plan or job.
   const catalog = { families: [{ family: 'qwen', title: 'Qwen3.8-Flash-Next', about: 'x', images: true, experimental: false, sizes: [
@@ -169,7 +178,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
   };
   const native = createNativeControl({ control, directory: data, spawnProcess, fetcher, requests: () => requests });
   const others = () => spawned.filter(s => !String(s.args[0]).endsWith('strata_mcp.py'));
-  return { native, calls, saved, spawned, others, rpc, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { if (earlierInstallEnv === undefined) delete process.env.STRATA_INSTALL_DIR; else process.env.STRATA_INSTALL_DIR = earlierInstallEnv; rmSync(root, { recursive: true, force: true }); } };
+  return { native, calls, saved, spawned, others, rpc, setStatus: v => { statusAnswer = v; }, setMetricsDown: v => { metricsDown = v; }, setHealthDown: v => { healthDown = v; }, failStart: (v, times = Infinity) => { startFailure = v; startFailureLeft = times; }, catalog, hardware, install, root, cleanup: () => { if (earlierInstallEnv === undefined) delete process.env.STRATA_INSTALL_DIR; else process.env.STRATA_INSTALL_DIR = earlierInstallEnv; rmSync(root, { recursive: true, force: true }); } };
 }
 const finish = async (native, id) => { for (let i = 0; i < 400; i++) { const job = native.state().jobs.find(j => j.id === id); if (job.state !== 'running') return job; await new Promise(r => setTimeout(r, 10)); } throw new Error('job did not finish'); };
 
@@ -427,6 +436,67 @@ test('packaged: retrySafer false keeps the single try', async () => {
     const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs', retrySafer: false }).id);
     assert.equal(job.state, 'error');
     assert.equal(f.calls.filter(c => c[0] === 'start').length, 1);
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: a Control whose wait ran out has not stopped the engine, so the load is kept and watched, not failed (#5177 #4293)', async () => {
+  /* `runtime start --wait N` answers "startup_wait_expired" (exit 8) while the engine is still loading, and "runtime operation wait expired" when the owner
+     was too busy to answer a status question in time; neither stops the engine. Control is asked: starting or ready means the app keeps the load. */
+  for (const message of ['The engine did not start.', 'runtime operation wait expired; inspect runtime status']) {
+    const f = packagedFixture();
+    try {
+      await f.native.refresh(true);
+      f.setStatus({ ok: true, state: 'starting', phase: 'loading' });
+      f.failStart({ message, output: { ok: false, state: 'starting', error: message.startsWith('runtime') ? undefined : 'startup_wait_expired', phase: 'loading', exit_code: 8 } }, 1);
+      const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+      assert.equal(job.state, 'done', job.error);
+      assert.equal(f.calls.filter(c => c[0] === 'start').length, 1, 'a wait that ran out is not a failure: no second try');
+      assert.equal(f.calls.filter(c => c[0] === 'stop').length, 1, 'the one stop is startWith clearing the slot; the loading engine is never stopped by the app');
+      assert.equal(f.native.state().instances[0].status, 'ready', 'ready once /health answers');
+      assert.ok(f.calls.some(c => c[0] === 'status' && c[1] === 'app-1'), 'Control was asked before the load was kept');
+    } finally { await f.native.close(); f.cleanup(); }
+  }
+});
+
+test('packaged: an expired wait with an engine Control says is gone is a failure, and an adopted load whose engine dies ends as one', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    f.setStatus({ ok: false, state: 'failed', error: 'server_exited', engine_exit_code: 1 });
+    f.failStart({ message: 'The engine did not start.', output: { ok: false, state: 'starting', error: 'startup_wait_expired', exit_code: 8 } }, 1);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs', retrySafer: false }).id);
+    assert.equal(job.state, 'error', 'Control says the engine is gone: nothing to adopt');
+  } finally { await f.native.close(); f.cleanup(); }
+  const g = packagedFixture();
+  try {
+    await g.native.refresh(true);
+    g.setHealthDown(true);                                           // never answers /health ...
+    let asked = 0;                                                    // the first look (is the wait's engine still loading?) says starting, every later one says it ended
+    g.setStatus(() => (++asked === 1 ? { ok: true, state: 'starting', phase: 'loading' } : { ok: false, state: 'failed', error: 'server_exited', engine_exit_code: 3 }));
+    g.failStart({ message: 'The engine did not start.', output: { ok: false, state: 'starting', error: 'startup_wait_expired', exit_code: 8 } }, 1);
+    const started = g.native.operation('load', { model: 'iq2_xs' });
+    const job = await finish(g.native, started.id);
+    assert.equal(job.state, 'error');
+    assert.match(String(job.error ?? ''), /server_exited/);
+  } finally { await g.native.close(); g.cleanup(); }
+});
+
+test('packaged: a ready instance whose engine stopped answering is marked stopped once Control says so, and stays ready while the engine is only busy (#4973)', async () => {
+  const f = packagedFixture();
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('load', { model: 'iq2_xs' }).id);
+    assert.equal(job.state, 'done', job.error);
+    f.setMetricsDown(true);
+    f.setStatus({ ok: true, state: 'ready' });                       // busy, not gone
+    await new Promise(r => setTimeout(r, 5200));
+    assert.equal(f.native.state().instances[0].status, 'ready');
+    assert.equal(f.native.state().instances[0].phase, 'unavailable');
+    f.setStatus({ ok: true, state: 'stopped' });                     // the owner left with its engine
+    await new Promise(r => setTimeout(r, 2600));
+    const instance = f.native.state().instances[0];
+    assert.equal(instance.status, 'error');
+    assert.match(instance.error, /Engine stopped/);
   } finally { await f.native.close(); f.cleanup(); }
 });
 

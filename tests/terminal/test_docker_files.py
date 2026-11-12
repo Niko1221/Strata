@@ -64,6 +64,14 @@ class Scripts(unittest.TestCase):
             self.assertTrue({"dsv41/pack_gguf", "dsv41/tune"} <= tools)          # the nested ones this assertion exists for
             for name in sorted(tools):
                 self.assertTrue((ctx / "terminal-src" / "tools" / f"{name}.py").is_file(), f"build.sh did not copy tools/{name}.py into the context")
+            # the Mac repack scripts the bundle carries (the v0.2.11 image build stopped at "No such file ... metal/tools/metal_repack.py")
+            metal: set[str] = set()
+            for node in pt.body:
+                if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "INSTALLER_METAL_TOOLS" for t in node.targets):
+                    metal.update(ast.literal_eval(node.value))
+            self.assertTrue(metal)
+            for name in sorted(metal):
+                self.assertTrue((ctx / "terminal-src" / "metal" / "tools" / f"{name}.py").is_file(), f"build.sh did not copy metal/tools/{name}.py into the context")
 
     def test_scripts_use_unix_line_ends(self):
         for name in ("entrypoint.sh", "strata-wrapper.sh", "healthcheck.sh", "build.sh", "publish.sh"):

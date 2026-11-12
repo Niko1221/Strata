@@ -19,6 +19,7 @@ export function nativeCatalogModels(families:NativeFamily[]):CatalogModel[]{
  if(!families.length)return[];
  const groups:CatalogModel[]=[{family:'qwen3.8',title:'Qwen3.8-Flash-Next',about:'',experimental:false,images:false,sizes:[]},{family:'qwen3.6',title:'Qwen3.6-35B-A3B',about:'',experimental:false,images:false,sizes:[]}];
  for(const family of families){
+  if(family.feed){groups.push({family:family.family,title:family.title,about:family.about??'',experimental:false,images:family.images,available:family.available,unavailable_reason:family.unavailable_reason,feed:true,sizes:family.sizes.map(size=>({...size,sourceFamily:family.family,edition:'',images:family.images}))});continue;}
   if(family.family==='deepseek41'){const sizes=family.sizes.filter(size=>!/^UD-Q8/i.test(size.model));if(sizes.length)groups.push({family:'deepseek41',title:family.title||'DeepSeek-V4.1-Flash',about:family.about??'',experimental:false,images:sizes.some(size=>size.images!==false),sizes:sizes.map(size=>({...size,sourceFamily:family.family,edition:'',images:size.images!==false}))});continue;}
   const target=/qwen3[._-]?6|35b[-_]?a3b/i.test(family.title+' '+family.family)?groups[1]:['qwen','swift','coder','unsloth','gyro'].includes(family.family)||/qwen3[._-]?8|flash.next/i.test(family.title)?groups[0]:undefined;
   if(!target)continue;

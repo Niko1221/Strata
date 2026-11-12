@@ -15,5 +15,10 @@
  "df14": "Não foi possível baixar o preditor do DFlash2, então o modelo inicia sem preditor. Carregando o modelo…",
  "df15": "Baixando o preditor do MTP…",
  "df16": "Não foi possível baixar o preditor do MTP.",
- "df17": "Previsão: MTP (o DFlash2 não iniciou)"
+ "df17": "Previsão: MTP (o DFlash2 não iniciou)",
+ "df18": "O automático usa o motor de divisão entre todas as placas com a camada de rascunho MTP: cerca de {0} GB, uma vez.",
+ "df19": "O motor de divisão entre todas as placas não conseguiu iniciar, então a divisão normal por camadas está em uso.",
+ "df20": "Previsão: desligada (faltou memória nas placas)",
+ "df21": "No seu Mac, nos nossos testes o DFlash2 foi mais rápido que o MTP com este modelo.",
+ "df22": "O DFlash2 está desligado por predefinição nesta placa de vídeo por agora; escolha-o em Previsão para o usar."
 }

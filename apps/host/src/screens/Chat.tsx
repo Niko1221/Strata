@@ -2,14 +2,17 @@ import {localeTag} from '../lib/i18n';
 import { tr } from '../lib/i18n';
 import { UsageDashboard } from '../components/UsageDashboard';
 import { FloatingMenu } from '../components/FloatingMenu';
-import { TimeSkipPanel } from '../components/TimeSkipPanel';
+import { lazyScreen } from '../lib/lazy-screen';
+import { measureFrame } from '../lib/overlay-place';
 import { timeSkipPrompt, timeSkipTabId, type TimeSkipRun } from '../lib/time-skip';
-import { TimeSkipWorking } from '../components/TimeSkipWorking';
 import { ChatToolbar } from '../components/ChatToolbar';
 import { ChatTelemetry } from '../components/TelemetryPopover';
 import { ArtifactCard } from '../components/ArtifactCard';
 import { ChatMedia } from '../components/ChatMedia';
 import { closePreviewTab } from '../lib/preview-tabs';
+import { endPreviewDeferral, previewsDeferred } from '../lib/recovery';
+import { messageArtifacts, openItem, syncArtifacts } from '../lib/preview-merge';
+import { createImeGuard } from '../lib/ime-enter';
 import { mainCodePreview, setSelectedPreviewId } from '../lib/code-preview';
 import { ArtifactPanel } from '../components/ArtifactPanel';
 import { PreviewResizeHandle } from '../components/PreviewResizeHandle';
@@ -37,7 +40,7 @@ import { openExternal } from '../lib/open-external';
 import { busyPlan } from '../lib/while-busy';
 import { composeQuoted, parseQuoted, type Quote } from '../lib/quotes';
 /** Chat — talk to the one loaded model. */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../components/Markdown';
 import { Btn, Icon, IconBtn, ErrorNotice, type IconName } from '../components/ui';
 import { composerCap, scrollBehavior } from '../lib/responsive';
@@ -49,6 +52,9 @@ import { getSlashCommands } from '../lib/commands';
 import { useLocation } from '../lib/router';
 import { composerSends } from '../lib/shortcut-bindings';
 import type { ChatMessage, Session, ToolCall } from '../lib/types';
+// The Time-skip panel and its progress card are only drawn in a chat that has a Time-skip run: their code loads then (and a few seconds after start, see main.tsx).
+const TimeSkipPanel = lazyScreen(() => import('../components/TimeSkipPanel'), (m) => m.TimeSkipPanel);
+const TimeSkipWorking = lazyScreen(() => import('../components/TimeSkipWorking'), (m) => m.TimeSkipWorking);
 export function ChatScreen() {
     const location = useLocation();
     const sessions = useStore((s) => s.sessions);
@@ -87,7 +93,9 @@ export function ChatScreen() {
             const text = sel.toString().trim();
             if (!host || !el.contains(host) || text.length < 2) { setSelection(null); return; }
             const rect = range.getBoundingClientRect();
-            setSelection({ text, messageId: host.getAttribute('data-message-id') ?? '', role: host.classList.contains('st-msg--user') ? 'user' : 'assistant', x: Math.min(window.innerWidth - 96, Math.max(8, rect.left)), y: Math.max(8, rect.top - 40) });
+            // screen units of this engine, written back in the page's own pixels (lib/overlay-place.ts: Interface size zooms the page)
+            const { scale, viewport } = measureFrame();
+            setSelection({ text, messageId: host.getAttribute('data-message-id') ?? '', role: host.classList.contains('st-msg--user') ? 'user' : 'assistant', x: Math.min(viewport.width - 96 * scale, Math.max(8, rect.left)) / scale, y: Math.max(8, rect.top - 40 * scale) / scale });
         };
         document.addEventListener('selectionchange', read);
         return () => document.removeEventListener('selectionchange', read);
@@ -167,24 +175,27 @@ export function ChatScreen() {
     const resizeHandle = !setupVisible && inlinePreview && selectedPreview && !expanded ? <PreviewResizeHandle container={splitRef} total={splitWidth} fraction={previewFraction} onChange={setPreviewFraction} controls={selectedRun ? 'time-skip-content' : planShown ? 'plan-content' : 'artifact-content'}/> : null;
     const runCount = timeSkipRuns.length;
     const previewCount = session?.messages.reduce((n, m) => n + (m.artifacts?.length ?? 0), 0) ?? 0;
-    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
+    useEffect(() => { const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()]; setPreviews(items.filter(a => !session?.closedPreviews?.includes(a.id))); setSelectedPreview(session && previewsDeferred(session.id) || session?.closedPreviews?.includes(session.previewOpen ?? '') ? null : session?.previewOpen?.startsWith('time-skip:') && !timeSkipRuns.some(r => timeSkipTabId(r.id) === session.previewOpen) ? null : session?.previewOpen ?? null); }, [session?.id]);
     useEffect(() => {
-        const items = [...new Map((session?.messages.flatMap(m => m.artifacts ?? []) ?? []).map(a => [a.id, a])).values()];
+        // A message's copy of a file never replaces one that was read later (lib/preview-merge.ts); nothing changed = the same array = no update.
+        const items = messageArtifacts(session?.messages);
         if (items.length)
-            setPreviews(old => [...old.filter(a => !items.some(b => a.id === b.id)), ...items.filter(a => !session?.closedPreviews?.includes(a.id))]);
+            setPreviews(old => syncArtifacts(old, items, session?.closedPreviews));
     }, [previewCount]);
     const localUrls = useRef<string[]>([]);
     useEffect(() => {
         const id = session?.previewOpen;
-        if (id?.startsWith('time-skip:') && timeSkipRuns.some(r => timeSkipTabId(r.id) === id) && !session?.closedPreviews?.includes(id))
+        if (id?.startsWith('time-skip:') && timeSkipRuns.some(r => timeSkipTabId(r.id) === id) && !session?.closedPreviews?.includes(id) && !(session && previewsDeferred(session.id)))
             setSelectedPreview(id);
     }, [session?.id, runCount]);
     useEffect(() => () => localUrls.current.forEach(url => URL.revokeObjectURL(url)), []);
     function openPreview(item: PreviewArtifact) {
+        endPreviewDeferral();
         if (item.url?.startsWith('blob:'))
             localUrls.current.push(item.url);
         setPreviewTabClosed(session?.id, item.id, false, item.id);
-        setPreviews(old => old.some(a => a.id === item.id) ? old : [...old, item]);
+        // The file was read just now: it replaces the tab of the same id when its content differs (it used to be dropped, keeping the first copy).
+        setPreviews(old => openItem(old, item));
         setSelectedPreview(item.id);
     }
     /* A run that finishes with a file the sidebar can show opens its main result there by itself (one file, never several). Only a run seen
@@ -214,6 +225,7 @@ export function ChatScreen() {
         }
     }
     function selectPreview(id: string) {
+        endPreviewDeferral();
         setSelectedPreview(id);
         setPreviewTabClosed(session?.id, id, false, id);
     }
@@ -528,7 +540,7 @@ export function ChatScreen() {
                 <Icon name="chevron" size={18}/></button>) : null)}</div>
           <Composer draft={draft} setDraft={updateDraft} loaded={!!loaded} streaming={streaming} onSubmit={submit} onKey={onComposerKey} session={session} onPreview={openPreview} textareaRef={textarea}/>
         </DropZone>
-        {tr(!setupVisible && selectedRun && session ? <TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/> : null)}
+        {tr(!setupVisible && selectedRun && session ? <Suspense fallback={null}><TimeSkipPanel key={selectedRun.id} run={selectedRun} sessionId={session.id} inline={inlinePreview} expanded={expanded} onCompare={setExpanded} onPreview={openPreview} onClose={() => { setSelectedPreview(null); setExpanded(false); }}/></Suspense> : null)}
         {tr(!setupVisible && planShown ? <PlanPanel chatId={session?.id}/> : null)}
         <ArtifactPanel items={previews} onCloseTab={closeTab} selected={setupVisible || planShown ? null : selectedPreview} onSelect={selectPreview} onClose={() => setSelectedPreview(null)} inline={inlinePreview}/>
         {tr(resizeHandle)}
@@ -611,6 +623,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
     const [slashOpen, setSlashOpen] = useState(false);
     const [slashDismissed, setSlashDismissed] = useState(false);
     const slashHostRef = useRef<HTMLDivElement>(null);
+    const ime = useRef(createImeGuard());
     const slashQuery = slashDismissed ? null : slashOpen ? '' : draft.startsWith('/') && !/\s/.test(draft) ? draft.slice(1) : null;
     const matches = slashQuery === null ? [] : commands.filter((c) => c.label.slice(1).startsWith(slashQuery.toLowerCase()));
     useEffect(() => { setSlashDismissed(false); }, [draft, session?.id]);
@@ -640,7 +653,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
           {tr(parkedList.length ? <div className="parked" role="status">{tr(parkedList.map((text, i) => <div className="parked__item" key={`${i}-${text}`}><span className="xs muted">{tr("Waiting to send")}</span><span className="parked__text" title={text}>{text}</span><IconBtn name="x" size={14} title={tr("Take back")} onClick={() => { const back = takeParked(session!.id, i); if (back !== undefined && !draft.trim()) setDraft(back); }}/></div>))}</div> : null)}
           <div className="st-composer" style={{ boxShadow: 'var(--st-sh-bar)' }}>
           {tr(photos.length ? <ChatPhotos photos={photos} onRemove={id => removeChatPhoto(id, session?.id)}/> : null)}
-          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onPaste={(e) => {
+          <textarea ref={textareaRef} rows={1} value={draft} aria-label={tr("Message Strata")} placeholder={tr(canChat ? 'Message Strata…' : 'Try /time-skip, or load a model to chat…')} onFocus={() => setSlashDismissed(false)} onBlur={() => ime.current.reset()} onCompositionStart={() => ime.current.compositionStart()} onCompositionEnd={(e) => ime.current.compositionEnd(e.timeStamp)} onPaste={(e) => {
             // A picture on the clipboard (a screenshot, a copied image) is attached like a dropped file; text pastes as usual.
             const files = pastedFiles(e.clipboardData);
             if (!files.length)
@@ -648,6 +661,9 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
             e.preventDefault();
             window.dispatchEvent(new CustomEvent(DROP_EVENT, { detail: files }));
         }} onChange={(e) => { setSlashOpen(false); setSlashDismissed(false); setDraft(e.target.value); e.currentTarget.style.height = "auto"; e.currentTarget.style.height = `${Math.min(180, e.currentTarget.scrollHeight)}px`; }} onKeyDown={(e) => {
+            // A key that belongs to the IME (the Enter that commits a conversion, in the order each engine delivers it) is not ours (#5071).
+            if (ime.current.keyDown({ key: e.key, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode }, e.timeStamp))
+                return;
             // The command menu owns the keyboard while it is open.
             if (slashQuery !== null && e.key === 'Escape') {
                 e.preventDefault();
@@ -676,7 +692,7 @@ function Composer({ draft, setDraft, loaded, streaming, onSubmit, onKey, session
                 }
             }
             onKey(e);
-            if (!e.nativeEvent.isComposing && composerSends(e)) {
+            if (composerSends(e)) {
                 e.preventDefault();
                 onSubmit();
             }
@@ -770,7 +786,7 @@ function MessageView({ message: m, isLast, onEditPrompt, onPreview, onClosePrevi
       {tr(m.deliverables?.length && !m.streaming ? <div className="deliverables">{m.deliverables.length >= COMPACT_FILES_FROM ? <FilesSummary files={m.deliverables} answer={m.content} sessionId={activeSession ?? ''} onPreview={onPreview}/> : <>{m.deliverables.map(f => <FileCard key={f.path} file={f} sessionId={activeSession ?? ''} onPreview={onPreview}/>)}<EditedFiles files={m.deliverables} sessionId={activeSession ?? ''} onPreview={onPreview}/></>}</div> : null)}
       {tr(m.streaming && isLast && !m.timeSkipId ? <StatusLine sessionId={activeSession} startedAt={Date.parse(m.at) || Date.now()} tokens={m.tokens}/> : null)}
 
-      {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
+      {tr(m.timeSkipId && timeSkipReal && !timeSkipDone && timeSkipRun ? <Suspense fallback={null}><TimeSkipWorking run={timeSkipRun} sessionId={activeSession ?? ''}/></Suspense> : m.timeSkipId && (!timeSkipReal || (timeSkipRun?.job?.files?.length ?? 0) > 0) ? <button className="timeskip-chat-card" onClick={() => onOpenTimeSkip(m.timeSkipId!)}><Icon name="branch" size={20}/><span><strong>{tr("Time-skip")}</strong><span>{tr(timeSkipDone ? 'Result ready · compare versions' : 'Revising · follow progress')}</span></span><Icon name="chevron" size={16} className="timeskip-card-arrow"/></button> : null)}
       {tr(m.media?.length ? <ChatMedia items={m.media} onPreview={onPreview}/> : null)}
       {tr(m.artifacts?.length ? <div className="artifact-cards">{tr(m.artifacts.map(a => <ArtifactCard key={a.id} artifact={a} onPreview={onPreview}/>))}</div> : null)}
 

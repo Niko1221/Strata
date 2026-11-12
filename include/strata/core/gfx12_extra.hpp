@@ -19,6 +19,11 @@
 //                            the owner's trade between "ordinary prompts keep their exact answers" and a few percent more at 32K.
 //                            Chosen over PR 3073's simt2 (author Vop3p), which is slower below 32K, has KL 0.0029 / 0.0095 and yields to WMMA on gfx12.
 //                            Off: STRATA_SELECT_WMMA=0, STRATA_GFX12_DEFAULTS=0, STRATA_DEFAULTS=026.
+//   STRATA_MMQ_KQ=1  (Linux only, owner 11-03 "do all 5")  the K-quant experts of Unsloth's UD-Q4/Q5/Q6_K_XL files (Q4_K / Q5_K / Q5_1 / Q6_K) run their prompt
+//                            products on llama.cpp's MMQ kernels instead of being dequantized to FP16 and multiplied by hipBLASLt (setup already wrote it for UD-Q5/Q6).
+//                            R9700 (r9700, UD-Q4_K_XL, serve, same job, interleaved): prompt 4K +10.3%, 8K +14.3%, 32K +16.8%; first-token KL against the FP16 path
+//                            0.031 (24 prompts of ~2K; agent turns 0.065), top-1 23/24.  A pack without K-quant experts (IQ3_S...) never reads the variable.
+//                            Off: STRATA_MMQ_KQ=0, STRATA_GFX12_DEFAULTS=0, STRATA_DEFAULTS=026.  (The fused variant, STRATA_PF_FUSED_KQ, stays a flag.)
 #pragma once
 
 #include <cstdlib>
@@ -27,6 +32,7 @@
 #include <vector>
 
 #include "strata/core/defaults_026.hpp"
+#include "strata/core/gfx12_platform_defaults.hpp"
 #include "strata/kernels/gfx_arch.hpp"
 
 namespace strata::core {
@@ -54,6 +60,7 @@ inline std::vector<std::pair<std::string, std::string>> gfx12_value_changing_env
     if (defaults026) return t;
     t.push_back({"STRATA_SELECT_WMMA", "1"});
     t.push_back({"STRATA_SELECT_ALT_MIN_TOKENS", "28672"});
+    if (kGfx12PromptDefaultsOn) t.push_back({"STRATA_MMQ_KQ", "1"});   // Linux only, like the other approved gfx12 prompt defaults
     return t;
 }
 inline std::vector<std::pair<std::string, std::string>> gfx12_value_changing_env(const char* gcn_arch) {

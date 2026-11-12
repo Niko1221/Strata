@@ -1,3 +1,13 @@
+# A lab script, not a unit test: it needs the owner PC's work folder (the drafter's weights and config) and the reference model
+# file under phaseA-tests/ornith_tmp. pytest collects it as a module, so it says so and skips when they are not there.
+import os
+_LAB = (r"C:\dflash2-work", r"C:\Users\AI-Server\Desktop\Strata\phaseA-tests\ornith_tmp\gh_model.py")
+if not all(os.path.exists(p) for p in _LAB):
+    try:
+        import pytest
+        pytest.skip("needs the DFlash2 lab files on the owner PC: " + " and ".join(_LAB), allow_module_level=True)
+    except ImportError:
+        raise SystemExit("needs the DFlash2 lab files on the owner PC: " + " and ".join(_LAB))
 import sys, importlib.util, json, torch
 sys.path.insert(0, r"C:\dflash2-work")
 import dflash2_ref as R

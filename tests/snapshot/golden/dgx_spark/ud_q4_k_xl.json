@@ -1,0 +1,520 @@
+{
+ "machine": "dgx_spark",
+ "set": "ud_q4_k_xl",
+ "entries": {
+  "setup": {
+   "entry": "setup",
+   "command": "strata setup --family unsloth --model UD-Q4_K_XL --yes --no-start",
+   "inputs": {
+    "family": "unsloth",
+    "model": "UD-Q4_K_XL",
+    "ram_gb": 128.0,
+    "gpu": {
+     "arch": "121",
+     "count": 1,
+     "dedicated_gb": 0.0,
+     "index": 0,
+     "name": "NVIDIA GB10",
+     "shared_gb": 122.0,
+     "uma": true,
+     "vram_gb": 122.0
+    },
+    "context": 131072,
+    "kv": "int8",
+    "vision": "gpu",
+    "low_ram": false,
+    "resident": false,
+    "ram_budget_gib": 71,
+    "in_budget": true,
+    "engine_version": "0.2.12"
+   },
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "9658",
+     "--prefill",
+     "auto:32768",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--mtp-q4",
+     "all",
+     "--mtp-hnorm",
+     "stream",
+     "--ple-io",
+     "ram",
+     "--kv-resident",
+     "32768",
+     "--resident-budget-gib",
+     "71",
+     "--vision",
+     "--vram-reserve-mib",
+     "700"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+    "log": "<REPO>/strata-unsloth-ud-q4_k_xl.log",
+    "lib_dirs": [],
+    "port": 8080,
+    "vision": {
+     "exe": "<ROOT>/engine/strata-vision",
+     "mmproj": "<ROOT>/data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+     "model": "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "gpu": true,
+     "max_tokens": 1024
+    }
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "9658",
+     "--prefill",
+     "auto:32768",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--mtp-q4",
+     "all",
+     "--mtp-hnorm",
+     "stream",
+     "--ple-io",
+     "ram",
+     "--kv-resident",
+     "32768",
+     "--resident-budget-gib",
+     "71",
+     "--vision",
+     "--vram-reserve-mib",
+     "700"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)"
+    ]
+   },
+   "setup_says": [
+    "[ok] unified memory: the experts are read from the model files in place (--mmap-experts), so the GPU's cache holds them instead of a second copy in RAM",
+    "[ok] prompt chunk 32,768 (--prefill auto:32768), the draft layer as 4-bit copies (--mtp-q4 all) and one norm per hyper-connection stream in it (--mtp-hnorm stream): measured faster on this part, the answers are unchanged",
+    "Tip: for English or code only, --draft-vocab en measured +3.1% decode on this part (the default keeps Chinese, Japanese and Korean drafts).",
+    "[ok] 128 GB of RAM: the 29 GB n-gram table is kept in RAM (--ple-io ram), so a new prompt does not wait for its rows from the SSD (a 4K prompt about 18% sooner on a fast card); remove --ple-io ram from the config's args to read it from the SSD instead",
+    "[ok] KV streaming on: the context's KV cache lives in RAM (1.8 GB), more experts fit in VRAM",
+    "[ok] RAM budget: 71 GiB (less the KV cache's RAM)",
+    "[ok] expert cache: 9658 slots (not auto): this GPU shares the RAM with the 71 GiB budget, so setup leaves 24 GB of the RAM for the OS and the desktop (#1715). --expert-cache N in the config's args sets it"
+   ]
+  },
+  "launch": {
+   "entry": "launch",
+   "command": "strata launch --model UD-Q4_K_XL --yes --no-tui --context 131072",
+   "fetches": [
+    {
+     "call": "ensure",
+     "file": "qwen3.8-flash-next-dflash2.q4_0.pack",
+     "gb": 1.2
+    }
+   ],
+   "setup_args": [
+    "--yes",
+    "--no-start",
+    "--family",
+    "unsloth",
+    "--model",
+    "UD-Q4_K_XL",
+    "--context",
+    "131072",
+    "--vision",
+    "gpu",
+    "--drafter",
+    "dflash2",
+    "--data-dir",
+    "<ROOT>/data"
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto:32768",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--mtp-q4",
+     "all",
+     "--mtp-hnorm",
+     "stream",
+     "--resident-budget-gib",
+     "48"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+    "log": "<ROOT>/<STATE>/launch/ud-q4_k_xl-128k.engine.log",
+    "lib_dirs": [],
+    "port": 8080,
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "engine_ready_s": 1230,
+    "args_derived": "=args",
+    "args_written": "=args"
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto:32768",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--resident-budget-gib",
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.q4_0.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.35"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
+    ]
+   }
+  },
+  "app_plain": {
+   "entry": "app_plain",
+   "command": "plain Load unsloth-ud-q4_k_xl",
+   "fetches": [
+    {
+     "call": "ensure",
+     "file": "qwen3.8-flash-next-dflash2.q4_0.pack",
+     "gb": 1.2
+    }
+   ],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": true,
+      "choice": "dflash2",
+      "drafter": "mtp",
+      "gb": 1.2,
+      "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
+      "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "dflash2",
+      "drafter": "dflash2",
+      "gb": 0,
+      "line": "Drafting: DFlash2",
+      "note": "",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto:32768",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--mtp-q4",
+     "all",
+     "--mtp-hnorm",
+     "stream",
+     "--resident-budget-gib",
+     "48"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+    "log": "<ROOT>/install/strata-unsloth-ud-q4_k_xl.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "unsloth-ud-q4_k_xl"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto:32768",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--resident-budget-gib",
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.q4_0.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.35"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
+    ]
+   }
+  },
+  "app_models": {
+   "entry": "app_models",
+   "command": "Models screen: Load unsloth-ud-q4_k_xl with Drafting = Auto",
+   "fetches": [
+    {
+     "call": "ensure",
+     "file": "qwen3.8-flash-next-dflash2.q4_0.pack",
+     "gb": 1.2
+    }
+   ],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": "auto",
+     "noSplit": false,
+     "result": {
+      "needed": true,
+      "choice": "dflash2",
+      "drafter": "mtp",
+      "gb": 1.2,
+      "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
+      "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto:32768",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--mtp-q4",
+     "all",
+     "--mtp-hnorm",
+     "stream",
+     "--resident-budget-gib",
+     "48"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_q4_k_xl/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-q4_k_xl",
+    "log": "<ROOT>/install/strata-unsloth-ud-q4_k_xl.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "drafting": "auto",
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "unsloth-ud-q4_k_xl"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_q4_k_xl",
+     "--native",
+     "<ROOT>/data/models/UD-Q4_K_XL/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00003.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto:32768",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--mmap-experts",
+     "--resident-budget-gib",
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.q4_0.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.35"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.35)"
+    ]
+   }
+  }
+ }
+}
