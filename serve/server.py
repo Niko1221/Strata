@@ -2807,7 +2807,7 @@ class Vision:
     @staticmethod
     def reader_args(cfg: dict) -> list:
         absolute = lambda p: os.path.abspath(p) if os.path.dirname(str(p)) else p   # the encoder runs in its own dir (#480)  # noqa: E731
-        args = [absolute(cfg["exe"]), "--mmproj", absolute(cfg["mmproj"]), "--model", absolute(cfg["model"])]
+        args = [absolute(vision_reader.executable_for(cfg)), "--mmproj", absolute(cfg["mmproj"]), "--model", absolute(cfg["model"])]
         if cfg.get("gpu"):
             args.append("--gpu")
         if cfg.get("threads"):

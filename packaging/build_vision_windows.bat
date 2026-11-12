@@ -1,5 +1,6 @@
 @echo off
-rem The Windows CUDA picture reader for an engine package: strata-vision.exe built for the SAME architectures as the package's strata.exe.
+rem The Windows CUDA picture readers for an engine package: strata-vision.exe (CUDA) built for the SAME architectures as strata.exe,
+rem plus strata-vision-cpu.exe (portable, no CUDA runtime) for CPU mode and GPU-reader fallback.
 rem
 rem   packaging\build_vision_windows.bat cuda12 <stage folder>     CUDA 12.9: 60;61;70;75;80;86;89 (+ 89 PTX)  the Pascal / Volta package
 rem   packaging\build_vision_windows.bat cuda13 <stage folder>     CUDA 13.0: 75;86;89;120 (+ 120 PTX)
@@ -13,10 +14,11 @@ rem Needs: Visual Studio 2022 Build Tools (run from a "x64 Native Tools" prompt,
 rem the variant (CUDA_PATH_V12_9 / CUDA_PATH_V13_0, or CUDA_PATH already pointing at it), and the pinned llama.cpp (python -c "import setup;
 rem setup.get_llama_cpp()", or STRATA_GGML_DIR).
 rem
-rem Settings (all optional): STRATA_GGML_DIR  the llama.cpp checkout (default third_party\llama.cpp)   VISION_BUILD_DIR  the build folder
-rem   VISION_ARCHS  override the architecture list (semicolons)      BUILD_JOBS  the number of compile jobs (default 4: the CUDA compiler uses RAM)
+rem Settings (all optional): STRATA_GGML_DIR  the llama.cpp checkout (default third_party\llama.cpp)   VISION_BUILD_DIR  the CUDA build folder
+rem   VISION_CPU_BUILD_DIR  the CPU build folder (default: build-vision-<variant>-cpu-win)   VISION_ARCHS  override architectures (semicolons)
+rem   BUILD_JOBS  the number of compile jobs (default 4: the CUDA compiler uses RAM)
 rem
-rem It copies strata-vision.exe into <stage folder> and writes vision_archs into <stage folder>\BUILD.json. Nothing is uploaded.
+rem It copies both readers into <stage folder> and writes the CUDA reader's vision_archs into BUILD.json. Nothing is uploaded.
 setlocal EnableDelayedExpansion
 set "VARIANT=%~1"
 set "STAGE=%~2"
@@ -38,6 +40,7 @@ if not defined STRATA_GGML_DIR set "STRATA_GGML_DIR=%SRC%\third_party\llama.cpp"
 set "LLAMA=%STRATA_GGML_DIR:\=/%"
 if not exist "%LLAMA%/tools/mtmd" (echo llama.cpp with tools/mtmd not found in %LLAMA% - set STRATA_GGML_DIR & exit /b 1)
 if not defined VISION_BUILD_DIR set "VISION_BUILD_DIR=%SRC%\build-vision-%VARIANT%-win"
+if not defined VISION_CPU_BUILD_DIR set "VISION_CPU_BUILD_DIR=%SRC%\build-vision-%VARIANT%-cpu-win"
 if not exist "%STAGE%" mkdir "%STAGE%"
 
 where cl >nul 2>nul || (
@@ -47,6 +50,12 @@ where cl >nul 2>nul || (
   if defined VCVARS call "!VCVARS!" >nul
 )
 where cl >nul 2>nul || (echo cl.exe not found: run this from an x64 Native Tools prompt & exit /b 1)
+
+rem CPU-mode requests must not load or initialize the CUDA runtime; build a separate reader without CUDA enabled.
+cmake -G Ninja -S "%SRC%\tools\vision" -B "%VISION_CPU_BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="%LLAMA%" ^
+  -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=ON -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl || exit /b 1
+cmake --build "%VISION_CPU_BUILD_DIR%" --target strata-vision -j %BUILD_JOBS% || exit /b 1
+copy /y "%VISION_CPU_BUILD_DIR%\bin\strata-vision.exe" "%STAGE%\strata-vision-cpu.exe" >nul || exit /b 1
 
 rem every arch real, and PTX for the newest one, the way the engine is built
 set "REAL="
@@ -61,7 +70,7 @@ cmake -G Ninja -S "%SRC%\tools\vision" -B "%VISION_BUILD_DIR%" -DCMAKE_BUILD_TYP
 cmake --build "%VISION_BUILD_DIR%" --target strata-vision -j %BUILD_JOBS% || exit /b 1
 copy /y "%VISION_BUILD_DIR%\bin\strata-vision.exe" "%STAGE%\strata-vision.exe" >nul || exit /b 1
 py -3 "%~dp0package_engine.py" --stamp-vision "%STAGE%" --vision-archs "%ARCHS%" || exit /b 1
-echo built: %STAGE%\strata-vision.exe  (%VARIANT%, archs %ARCHS%)
+echo built: %STAGE%\strata-vision-cpu.exe (CPU only) and %STAGE%\strata-vision.exe (%VARIANT%, archs %ARCHS%)
 exit /b 0
 
 :usage
