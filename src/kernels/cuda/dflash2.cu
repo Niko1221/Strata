@@ -1007,6 +1007,17 @@ static int df2_q4_auto(int rows) {
         return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess && strata::kernels::gfx_arch_is_gfx12(p.gcnArchName);
     }();
     if (gfx12) return rows <= 640 ? 31 : 26;
+    // STRATA_DF2_Q4_RDNA2=1 (opt-in, gfx103x): dflash2_gemm_bench q4 on 2x RX 6900 XT (gfx1030, 80 CUs, 8 columns, cold weights, both cards the same):
+    // 17 is 21% slower in sum over the round's eight matrices.  By rows: gate+up / qkv (15360 / 6144 rows) 21 (89 -> 64, 48 -> 32 us); down / o / fc
+    // (2560 rows) 38 (51 -> 46, 38 -> 32, 77 -> 77); kv (2048) and akp / sel (640 / 256) 20 (19 -> 12, 12 -> 6 us).  All bitwise the same results.
+    static const bool rdna2 = [] {
+        const char* e = std::getenv("STRATA_DF2_Q4_RDNA2");
+        if (e == nullptr || e[0] != '1') return false;
+        int dev = 0;
+        cudaDeviceProp p;
+        return cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess && std::strncmp(p.gcnArchName, "gfx103", 6) == 0;
+    }();
+    if (rdna2) return rows >= 6144 ? 21 : rows >= 2560 ? 38 : 20;
 #endif
     (void) rows;
     return 17;

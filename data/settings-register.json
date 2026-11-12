@@ -5201,6 +5201,38 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DF2_Q4_RDNA2",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "src/kernels/cuda/dflash2.cu",
+     "line": 1014,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "opt-in",
+   "owner": "",
+   "note": "[reviewed] =1 (HIP gfx103x): DFlash2 Q4_0 GEMMs take the RDNA2 variant table (bitwise identical kernels, faster draft step) (#5146)",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "3e15a40b8",
+   "last_commit": "3e15a40b8",
+   "first_date": "2026-11-03",
+   "last_date": "2026-11-03"
+  },
+  {
    "name": "STRATA_DF2_RING_LOG",
    "backends": [
     "cuda-hip",
