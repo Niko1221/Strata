@@ -1,6 +1,6 @@
-# CUDA1-3 expert caches and the peer tier (experimental)
+# Helper-GPU expert caches and the peer tier (experimental)
 
-This page is for people who tune the engine by hand and want a second, third or fourth card to hold extra experts. These are
+This page is for people who tune the engine by hand and want one or more additional cards to hold extra experts. These are
 experimental engine settings. For ordinary multi-GPU use in the app or `strata launch`, see [MULTI_GPU.md](MULTI_GPU.md). The
 settings go into the run config (`strata-*.json`) as `"args"` entries; they are engine flags, not `strata launch` flags.
 
@@ -10,13 +10,13 @@ settings go into the run config (`strata-*.json`) as `"args"` entries; they are 
 
 ## How it works
 
-CUDA0 keeps the dense layers, the KV and state, the draft layer (MTP) and its own expert cache. Up to three independent expert
-caches fill CUDA1, CUDA2 and CUDA3 in that order. Each expert has one owner: CUDA0, one helper card, or the CPU pool. Each
-helper computes its rows while the CPU pool works, and the results return through private pinned host buffers before CUDA0
-continues the layer. Each layer waits for all helpers.
+CUDA0 keeps the dense layers, the KV and state, the draft layer (MTP) and its own expert cache. Each configured helper ordinal
+fills one additional visible GPU, in order. Each expert has one owner: CUDA0, one helper card, or the CPU pool. Each helper
+computes its rows while the CPU pool works, and the results return through private pinned host buffers before CUDA0 continues
+the layer. Each layer waits for all configured helpers.
 
 - No peer-to-peer access is needed. Prompt prefill still uses CUDA0; helpers serve decode, including draft verification.
-- Each helper card must keep at least 512 MiB free. Enable the tiers in order (CUDA1 before CUDA2).
+- Each helper card must keep at least 512 MiB free. Enable helper ordinals consecutively, starting with 1; `--expert-cache-device1..3` remain compatible, and higher ordinals can be specified when corresponding helper GPUs are visible.
 - The startup log reports slots and GiB per card, and each request reports how many expert entries each helper computed.
   Compare identical requests at one, two and four GPUs. VRAM use alone does not show useful offload.
 - Longer contexts reserve more KV on CUDA0 and shrink its automatic expert cache.
@@ -29,17 +29,17 @@ continues the layer. Each layer waits for all helpers.
 
 | Engine flag | Meaning |
 | --- | --- |
-| `--expert-cache-device1 N\|auto` | Fill CUDA1 with N experts, or as many as fit. |
-| `--expert-cache-device2 N\|auto` | Fill CUDA2 with more experts. |
-| `--expert-cache-device3 N\|auto` | Fill CUDA3 with more experts. |
+| `--expert-cache-deviceN SLOTS\|auto` | Fill helper ordinal N (starting at 1) with SLOTS experts, or as many as fit. The ordinal must be available and enabled consecutively. |
 | `--expert-cache-remote-placement stripe\|layer` | `stripe` (default) spreads the ranked expert list over the helpers. `layer` gives each layer to one helper (layer number modulo the number of cards), which can reduce device switches on USB4 but may be slower. |
 
-The shipped profile ranks 8,000 `(layer, expert)` pairs. CUDA0 takes its usual `--expert-cache auto` share. With only CUDA1 it
-takes the first remaining pairs. With CUDA2 or CUDA3 the remaining ranked pairs go round robin to the helpers, then all other
-pairs in expert-then-layer order, so the extra VRAM fills even though unranked experts may rarely be routed.
+The shipped profile ranks 8,000 `(layer, expert)` pairs. CUDA0 takes its usual `--expert-cache auto` share. With one helper it
+takes the first remaining pairs. With multiple helpers the remaining ranked pairs go round robin, then all other pairs in
+expert-then-layer order, so the extra VRAM fills even though unranked experts may rarely be routed.
 
 `auto` fills each helper from its assigned ranking using actual aligned expert bytes and free VRAM, keeping the 512 MiB allowance.
-It sizes capacity at startup, not throughput, and a card's truncated tail is not moved to another card. Explicit numbers still work.
+It sizes capacity at startup, not throughput; there is no benchmark-based helper selection or slow-helper exclusion. All enabled
+helpers participate, and a card's truncated tail is not moved to another card. Explicit numbers still work. Test multi-helper
+performance on the target hardware; only two-card CUDA operation is currently documented as measured.
 
 Example engine arguments beside the model and profile arguments:
 
@@ -91,11 +91,11 @@ Through the server, list both cards in the config's `"gpu"` (for example `[0, 1]
 `--peer-device` is not among the args.
 
 `--peer-device` requires `--expert-profile` and an enabled expert cache, and the device must be visible. It refuses
-`--layer-split` and `--expert-cache-device1..3`:
+`--layer-split` and `--expert-cache-deviceN`:
 
 ```text
 strata generate: --peer-device cannot be combined with --layer-split (use one or the other)
-strata generate: --peer-device cannot be combined with --expert-cache-device1..3 (the peer tier already caches experts there)
+strata generate: --peer-device cannot be combined with --expert-cache-deviceN (the peer tier already caches experts there)
 ```
 
 With a peer, the prompt path keeps the MMQ path (the fused int8 prompt path is not combined with the peer's rows). The tier size
@@ -113,7 +113,7 @@ The engine runs the model on the device the runtime numbers 0. Windows' HIP runt
 `HIP_VISIBLE_DEVICES` only filters, so when the faster card comes second, the model can only land on the slower one.
 `STRATA_PRIMARY_DEVICE=N` picks another visible ordinal as primary. Unset or 0 keeps the default.
 
-- The helper caches (`--expert-cache-device1..3`) take the visible devices other than the primary, in order.
+- The helper caches (`--expert-cache-deviceN`) take the visible devices other than the primary, in order.
 - The peer tier uses the same ordinal.
 - A layer split is refused when this is set.
 - NVIDIA cards do not need it: `CUDA_VISIBLE_DEVICES` with `CUDA_DEVICE_ORDER=PCI_BUS_ID` already reorders.

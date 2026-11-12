@@ -9871,8 +9871,11 @@ VISION_ON_DEMAND_BY_DEFAULT = True
 #: "elastic": true in the vision section asks for it.  Set True if the expert cache can give its room on HIP.
 VISION_ON_DEMAND_AMD_BY_DEFAULT = False
 VISION_RESERVE_MIB = 2048
-_ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device", "--expert-cache-device1", "--expert-cache-device2",
-                       "--expert-cache-device3")
+_ON_DEMAND_NOT_WITH = ("--kv-grow", "--batch", "--slots", "--peer-device")
+
+
+def _has_helper_cache_arg(args: list[str]) -> bool:
+    return any(re.fullmatch(r"--expert-cache-device[1-9][0-9]*", arg.split("=", 1)[0]) for arg in args)
 
 
 def vision_on_demand_by_default(cfg: dict) -> bool:
@@ -9888,7 +9891,7 @@ def vision_on_demand_by_default(cfg: dict) -> bool:
     if (cfg.get("arch") or "") == "deepseek41" or backend not in (None, "cuda", "hip"):
         return False
     args = [str(a) for a in (cfg.get("args") or [])]
-    if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH):
+    if len(gpu_list(cfg)) > 1 or parallel_slots(cfg) or any(a in args for a in _ON_DEMAND_NOT_WITH) or _has_helper_cache_arg(args):
         return False
     name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
     if backend == "hip":       # AMD: the HIP reader, with the CPU reader setup wrote beside it to read when the card has no room

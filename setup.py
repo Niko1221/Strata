@@ -2434,12 +2434,16 @@ def split_budget(cfg: dict, yes: bool = False, explicit: bool = False) -> bool:
 
 
 REMOTE_EXPERT_OPT = "--remote-expert-opt"
-HELPER_CACHE_FLAGS = ("--expert-cache-device1", "--expert-cache-device2", "--expert-cache-device3")
+
+
+def is_helper_cache_flag(arg: str) -> bool:
+    flag = arg.split("=", 1)[0]
+    return re.fullmatch(r"--expert-cache-device[1-9][0-9]*", flag) is not None
 
 
 def recommend_remote_expert_opt(cfg: dict, off: bool = False) -> None:
     """0.1.39b (#578): a config on two or more GPUs with a helper cache gets --remote-expert-opt - the helper expert caches
-    (--expert-cache-device1..3) then stay complementary to the main GPU's, return their rows already weighted and skip
+    (--expert-cache-deviceN) then stay complementary to the main GPU's, return their rows already weighted and skip
     the CPU's activation quantization where no expert is left to it (dual RTX 4090: +63% mixed, +132% code over the
     plain helper path).  The engine uses it only with a helper cache; a layer split runs as before.  A recommendation:
     `off` (setup's --no-remote-expert-opt) or "remote_expert_opt": false in the config keeps it out, and a single-GPU
@@ -2463,10 +2467,10 @@ def recommend_remote_expert_opt(cfg: dict, off: bool = False) -> None:
             ok("multi-GPU: --pipeline-windows is set, so --remote-expert-opt is not added (the helper caches turn the "
                "pipeline off; docs/MULTI_GPU.md)")
         return
-    # #1447: the flag acts only on the helper caches (--expert-cache-device1..3); without one the engine builds nothing
-    # from it, and a plain layer split gained a flag that says "helpers" for no reason. Setup adds it only beside a
-    # helper cache; a flag already in the config stays (the user's, or an earlier setup's - harmless).
-    if not any(a.split("=", 1)[0] in HELPER_CACHE_FLAGS for a in args):
+    # #1447: the flag acts only on helper caches; without one the engine builds nothing from it, and a plain layer split
+    # gained a flag that says "helpers" for no reason. Setup adds it only beside a helper cache; a flag already in the
+    # config stays (the user's, or an earlier setup's - harmless).
+    if not any(isinstance(a, str) and is_helper_cache_flag(a) for a in args):
         return
     if REMOTE_EXPERT_OPT not in args:
         args.append(REMOTE_EXPERT_OPT)

@@ -341,6 +341,16 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(split_walk_test PRIVATE include)
   add_test(NAME split_walk_test COMMAND split_walk_test)
 
+  # helper cache option parsing is independent of GPU availability
+  add_executable(remote_helper_options_test tests/program/remote_helper_options_test.cpp)
+  target_include_directories(remote_helper_options_test PRIVATE include)
+  add_test(NAME remote_helper_options_test COMMAND remote_helper_options_test)
+
+  # the helper expert cache's 512 MiB reserve check, independent of GPU availability
+  add_executable(remote_expert_capacity_test tests/program/remote_expert_capacity_test.cpp)
+  target_include_directories(remote_expert_capacity_test PRIVATE include)
+  add_test(NAME remote_expert_capacity_test COMMAND remote_expert_capacity_test)
+
   # the prompt planner's host-memory model (#2824): header-only, no GPU
   add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
   target_include_directories(prefill_plan_test PRIVATE include)

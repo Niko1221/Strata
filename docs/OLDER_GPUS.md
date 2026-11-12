@@ -233,7 +233,7 @@ the slots are filled. Only the CUDA build with `STRATA_EXPERIMENTAL_SM60` has th
   their own when their cards have room, #340). `STRATA_EXPERT_NIBBLE_SKIP=<layers>` keeps layers in their GGUF slots;
   `STRATA_EXPERT_NIBBLE_FMTS=22,18,21` picks the formats.
 - **It does not start with what it cannot serve.** With the switch set, a build without `STRATA_EXPERIMENTAL_SM60`, a card other
-  than compute capability 6.0, `--peer-device`, `--expert-cache-device1..3`, `--kv-grow`, `--vram-elastic`, no `--expert-profile`,
+  than compute capability 6.0, `--peer-device`, `--expert-cache-deviceN`, `--kv-grow`, `--vram-elastic`, no `--expert-profile`,
   `--expert-cache 0`, `STRATA_MMQ_DIRECT`, `STRATA_PREFILL_MMQ=0`, `STRATA_PF_FUSED=1`, `STRATA_FS_SLOTS`, `STRATA_EXPERT_V2=1` or
   `STRATA_EXP_MODE` other than 0 or 8 make the engine say so in a warning and start with the usual GGUF slots. What is only known
   later (a layer with an expert out of VRAM, a loan of cache slots, a prompt chunk other than the one the run without the switch
