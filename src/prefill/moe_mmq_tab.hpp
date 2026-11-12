@@ -26,5 +26,8 @@ extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ3_S>(ggml_backend_cuda_conte
 extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ4_NL>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 extern template bool mul_mat_q_tab_case<GGML_TYPE_IQ4_XS>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
 extern template bool mul_mat_q_tab_case<GGML_TYPE_Q8_0>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+#if defined(STRATA_MMQ_TAB_Q6K)   // UD-Q6_K_XL's gate/up (CMake: STRATA_MMQ_TAB with STRATA_MMQ_KQUANTS)
+extern template bool mul_mat_q_tab_case<GGML_TYPE_Q6_K>(ggml_backend_cuda_context&, const mmq_args&, const mmq_x_tab&, cudaStream_t);
+#endif
 
 }  // namespace strata::prefill::mmq

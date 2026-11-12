@@ -265,7 +265,8 @@ __global__ void prep_group_kernel(GuardTab g, int64_t guard, uint8_t* tail_gu, u
 }
 
 // the pointer-table MMQ per type: the native packs' nine types (CMake's _strata_mmq_tab_types, all of them checked
-// bit for bit by prefill_mmq_tab_test).  false: no instance - the optional Q5_0 and K-quant experts keep the gather
+// bit for bit by prefill_mmq_tab_test), and Q6_K in a STRATA_MMQ_KQUANTS build (STRATA_MMQ_TAB_Q6K; its layer still
+// needs supported(14), i.e. the K-quant MMQ on).  false: no instance - Q5_0, Q4_K, Q5_K and Q5_1 keep the gather
 bool run_tab(ggml_backend_cuda_context* ctx, const mmq_args* a, const mmq_x_tab* tab, cudaStream_t s) {
     const ggml_type t = a ? a->type_x : GGML_TYPE_COUNT;
 #define STRATA_TAB_CASE(T) case T: return ctx == nullptr || mul_mat_q_tab_case<T>(*ctx, *a, *tab, s)
@@ -279,6 +280,9 @@ bool run_tab(ggml_backend_cuda_context* ctx, const mmq_args* a, const mmq_x_tab*
         STRATA_TAB_CASE(GGML_TYPE_IQ4_NL);
         STRATA_TAB_CASE(GGML_TYPE_IQ4_XS);
         STRATA_TAB_CASE(GGML_TYPE_Q8_0);
+#if defined(STRATA_MMQ_TAB_Q6K)
+        STRATA_TAB_CASE(GGML_TYPE_Q6_K);
+#endif
         default: return false;
     }
 #undef STRATA_TAB_CASE
