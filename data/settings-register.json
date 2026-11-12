@@ -11543,6 +11543,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_GRID_PAD",
+   "backends": [
+    "hip"
+   ],
+   "reads": [
+    {
+     "file": "include/strata/kernels/grid_pad.hpp",
+     "line": 50,
+     "backend": "hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/AMD_HIP.md:710"
+   ],
+   "status": "opt-in",
+   "owner": "kernels",
+   "note": "[reviewed] Off by default; =1 pads selected gfx12 T=1 grids. Other launches keep their grid.",
+   "retire_after": "",
+   "retired_in": "",
+   "first_commit": "37bd5cb75f",
+   "first_date": "2026-11-10",
+   "since": null,
+   "last_commit": "37bd5cb75f",
+   "last_date": "2026-11-10"
+  },
+  {
    "name": "STRATA_GROUPED_PAIR_MIN_HITS",
    "backends": [
     "cuda-hip",
