@@ -4283,8 +4283,8 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
     // of submitting every node (2-3.3 ms a window under WDDM, during which the GPU sat idle before or inside layer 0).
     // A graph the driver will not take as a conditional body falls back to the plain graph (logged once).
     static const bool graph_cond = [] {
-        const char* v = std::getenv("STRATA_GRAPH_COND");   // 1 = the verify windows, 2 = also the MTP draft graphs
-        return v != nullptr && (v[0] == '1' || v[0] == '2');
+        const char* v = std::getenv("STRATA_GRAPH_COND");
+        return v != nullptr && v[0] == '1';
     }();
     cudaGraph_t wrapped = nullptr;
     if (graph_cond) {
