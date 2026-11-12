@@ -108,6 +108,10 @@ int env_tri(const char* name) {
     return v != nullptr ? (std::atoi(v) != 0 ? 1 : 0) : -1;
 }
 
+// (DS4_LOOKUP: the window rollback's buffers are allocated without the drafter too; one lookup a round is
+//  proposed by the host loop, the model only ever sees its verified window)
+static const bool g_lk_alloc = env_tri("DS4_LOOKUP") == 1;
+
 double now_ms() {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -3233,8 +3237,13 @@ struct Model::Impl {
                 !dalloc(d, d.n_groups, 4, err))
                 return false;
             if (g.n_mtp > 0 && !dalloc(d, d.tap, (size_t) tap_cap * D, err)) return false;
-            if (g.n_mtp > 0 && (int) di == head_dev &&
-                (!dalloc(d, d_confv, kWin, err) || !dalloc(d, d_ints, 64, err) || !dalloc(d, d_specq, kWin, err)))
+            if (g.n_mtp > 0 && (int) di == head_dev && !dalloc(d, d_confv, kWin, err)) return false;
+            if (g.n_mtp > 0 && (int) di == head_dev && (!dalloc(d, d_ints, 64, err) || !dalloc(d, d_specq, kWin, err)))
+                return false;
+            // (DS4_LOOKUP verifies windows without the drafter too: the argmax scratch and the point-mass
+            //  q table for the sampled rejection - 64 ints and 16 SpecLists, nothing else of the drafter's)
+            if (g.n_mtp == 0 && g_lk_alloc && (int) di == head_dev &&
+                (!dalloc(d, d_ints, 64, err) || !dalloc(d, d_specq, kWin, err)))
                 return false;
             CK(cudaEventCreateWithFlags(&d.ev_out, cudaEventDisableTiming));
             cudaSetDevice(d.id);
@@ -5139,7 +5148,9 @@ struct Model::Impl {
                 }
             }
             if (!dalloc(d, l.win, (size_t) g.win * win_rb(), err, &d.caches)) return false;
-            if (g.n_mtp > 0 && !l.mtp) {
+            if ((g.n_mtp > 0 || g_lk_alloc) && !l.mtp) {
+                // (DS4_LOOKUP verifies windows without the drafter too: the ring backup and the compressor's
+                //  snapshot belong to the window rollback, not to the drafter itself)
                 if (!dalloc(d, l.ring_bak, (size_t) kWin * win_rb(), err)) return false;
                 // (--parallel: a multi step's verify windows share the window's rows - the ring's backups and the
                 //  compressor's rows by row - and each its own compressor snapshot, one a conversation; Project Maya #611)
