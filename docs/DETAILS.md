@@ -1103,6 +1103,14 @@ them on your own card.
 | `STRATA_KEEP_EMPTY_TURNS=1`, `STRATA_TOPK_STREAM=0` | | See [TROUBLESHOOTING.md](TROUBLESHOOTING.md). | |
 | HIP `STRATA_DENSE_MMQ=1`, `STRATA_HIP_ADAPT_KERNEL_COPY=1` | HIP | See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration). | |
 
+### Experimental grouped expert decode kernels
+
+`STRATA_FUSE_GU=1..5` combines Q6_K gate/up, SwiGLU and hidden Q8_1 quantization in one CUDA launch. It applies only to 2560 input columns, a positive hidden width divisible by 32, ordinary Q6_K rows, and no NVFP4 tail or Hadamard down transform. Unsupported layouts use the existing kernels. The values select launch variants; `4` uses 16 warps and staged activations. `fuse_gu_bench` compares hidden Q8_1 bytes and output floats against the existing path and times eager and graph launches.
+
+`STRATA_Q8_DOWN=1..3` separately selects existing grouped Q8_0 down kernels for a 640-column hidden width: `1` uses four rows per warp, `2` uses two, and `3` uses the multi-entry kernel. Unsupported layouts use the existing path. `expdec_bench` includes a Q6_K/Q8_0 pair and compares each choice with the existing path.
+
+Both switches default to off and must be set before graph capture. They are independent. These experimental paths have historical RTX 4080 fork measurements; those measurements do not establish performance or runtime parity of a new upstream build.
+
 ### CUDA opt-in kernels (sm_80 and newer)
 
 Each was measured as an A/B on an RTX 3060 and an RTX A4000; the gain is small there and larger on the Turing cards the authors
