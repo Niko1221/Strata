@@ -768,3 +768,46 @@ On top of `GEN` / `GENI`:
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
+
+## A serving calibration: single and parallel requests
+
+`strata engine calibrate` measures its decode at a fixed single-stream workload. `tools/calibrate_serving.py`
+is the serving-side half: it starts the server from a run config and compares env-only arms at one request
+(`--mode single`) or several cold prompts together and staggered (`--mode multi`, the default; `--single` /
+`--multi` are the short flags). `--shape both|loop|stagger` picks the multi arrival shape; single ignores it.
+It reads each request's queue wait (`first_engine_token_s - prompt_ms`) and prompt time (`prompt_ms`) from the
+JSON `/metrics`.
+
+```
+module/strata/.venv/bin/python module/strata/tools/calibrate_serving.py \
+  --config module/strata/strata-nvfp4-nvfp4-131072-p4.json \
+  --out data/serving-cal.json --apply --multi
+# the solo path: the same command with --single instead of --multi
+```
+
+The arms are:
+
+| arm | env |
+| --- | --- |
+| `baseline` | the config as it is |
+| `routed` | `STRATA_PREFILL_ROUTED_STREAM=1` |
+| `routed_adapt` | routed + `STRATA_PIPE_ADAPT_EVERY=32` |
+| `coalesce` | `STRATA_COALESCE_PREFILL=4` (multi only) |
+
+In multi mode the score is the queue wait first, then the sum of prompt times, then the longest decode gap; an
+arm that loses more than 3% of the baseline's token rate is not picked, and a win under 2% leaves the config alone.
+In single mode it is throughput first (a 2% loss is refused), with the prompt time as the tie-break. `--apply`
+writes the winner's engine env into the run config's `env` with a `.bak-<time>` copy. A key the server itself
+reads (`STRATA_COALESCE_PREFILL`, `STRATA_ADMIT_SHORT_FIRST`) goes to `<config>.server-env.json` instead: the
+config's `env` only reaches the engine, so set that one in the server/profile environment. It needs the GPUs to
+itself, so stop the server for that config first (the launcher's calibration does that). `--root module/fork/strata`
+starts the fork clone's server instead of this module (the default); the arms are env-only, so they work on both.
+
+Measured on 2x RTX PRO 4000 Blackwell (CUDA1 on a Gen4 x4 link), Qwen3.8-Flash-Next NVFP4, `--parallel 4
+--batch-groups auto`, `STRATA_PIPED_CONCURRENT=1`, four prompts of about 1.1K tokens sent 5 s apart: the
+baseline read each prompt in 6.9-10.4 s and the later requests waited 14.6 s and about 19 s in the queue.
+With `STRATA_PREFILL_ROUTED_STREAM=1` the reads fell to 3.3-4.8 s, every queue wait to under 0.3 s, and the
+pipelined line went from 28.5-33.0 to 52.1 rows/s. The routed walk drops the experts no token of the chunk
+routes to and copies every routed entry into the slot it has today, so the products are the same bits
+(`include/strata/prefill/routed_stream.hpp`; `tests/prefill/routed_stream_test.cpp`). At 600-token prompts the
+same switch made no difference, which is why the tool's default probe uses 1,024 words.
