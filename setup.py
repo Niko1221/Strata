@@ -5599,7 +5599,7 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
                  "(or --image-backend vulkan / cpu)")
         root = Path(nvcc).resolve().parent.parent
         defs = QI.cmake_defs("cuda", arch=arch, cuda_root=root) + [f"-DCMAKE_CUDA_COMPILER={nvcc}"] + \
-            host_compiler_defs(True)
+            host_compiler_defs(True, nvcc)
         vcvars = find_vcvars(cuda_v) if WIN else None
         lib_dirs = [str(root / "bin")] if WIN else [str(d) for d in (root / "lib64", root / "lib") if d.is_dir()]
     elif backend == "hip":
@@ -6460,15 +6460,107 @@ def isa_floor_defs(floor: str, bdir: Path, meta: dict) -> list:
     return [f"-DSTRATA_ISA_FLOOR={floor}"] if floor else []
 
 
-def host_compiler_defs(cuda: bool) -> list:
+def cuda_host_gcc_limit(nvcc) -> int | None:
+    """The newest GCC the toolkit beside `nvcc` accepts, from that toolkit's own include/crt/host_config.h
+    (`#if __GNUC__ > 14` in CUDA 12.9, `> 16` in 13.4); None when it cannot be read (Windows drives MSVC there)."""
+    if WIN or not nvcc:
+        return None
+    header = Path(nvcc).resolve().parent.parent / "include" / "crt" / "host_config.h"
+    try:
+        m = re.search(r"__GNUC__\s*>\s*(\d+)", header.read_text(encoding="utf-8", errors="ignore"))
+    except OSError:
+        return None
+    return int(m.group(1)) if m else None
+
+
+def gcc_major(compiler) -> int | None:
+    """The major version a compiler reports (`14` for g++-14), or None."""
+    m = re.match(r"(\d+)", out([compiler, "-dumpversion"]).strip())
+    return int(m.group(1)) if m else None
+
+
+def distro_id() -> str:
+    """This distribution's ID from /etc/os-release (`cachyos`, `arch`, `ubuntu`, ...), "" when it cannot be read."""
+    try:
+        osr = dict(line.split("=", 1) for line in
+                   open("/etc/os-release", encoding="utf-8").read().splitlines() if "=" in line)
+    except (OSError, ValueError):
+        return ""
+    return osr.get("ID", "").strip().strip("\"'").lower()
+
+
+def install_hint(limit: int) -> tuple:
+    """(the command for this distro, True when the hint already names the CC / CXX / CUDAHOSTCXX way out - so the
+    caller does not repeat it).  CachyOS packages gcc14 in its own repository; plain Arch - and the other
+    Arch-derived distributions, which take Arch's repositories - has it in the AUR only, so a pacman line there
+    dies on "target not found" and an AUR helper builds it instead.  The command is printed, never run: setup.py
+    never invokes sudo (it runs in non-interactive contexts), and a managed node or container where installing is
+    impossible has the CC / CXX way out.
+    """
+    if WIN:
+        return ("", True)                            # Windows drives MSVC; cuda_host_compilers() warns on nothing
+    if shutil.which("pacman"):
+        if distro_id() == "cachyos":                 # its repository carries gcc14, no dash; -libs beside it
+            return f"sudo pacman -S gcc{limit} gcc{limit}-libs", False
+        helper = shutil.which("paru") or shutil.which("yay")
+        if helper:                                   # AUR-only: the helper takes the repository package first
+            return f"{Path(helper).name} -S gcc{limit} gcc{limit}-libs", False
+        return (f"install gcc{limit} from the AUR, or set CC, CXX and CUDAHOSTCXX to a compiler nvcc supports",
+                True)
+    if shutil.which("apt"):
+        return f"sudo apt install gcc-{limit} g++-{limit}", False
+    if shutil.which("dnf"):                          # Fedora: gcc14 / gcc14-c++ (no dash).
+        return f"sudo dnf install gcc{limit} gcc{limit}-c++", False
+    if shutil.which("zypper"):
+        return f"sudo zypper install gcc{limit} gcc{limit}-c++", False
+    return (f"install gcc-{limit} and g++-{limit} with your package manager, or set CC, CXX and CUDAHOSTCXX to a "
+            f"compiler nvcc supports", True)
+
+
+def cuda_host_compilers(nvcc) -> tuple:
+    """(cc, cxx) to build with instead of this PC's default gcc - else (None, None), the default stays as it was.
+
+    nvcc drives the host half of every .cu with a GCC it knows, and a rolling distribution ships one newer than the
+    toolkit does (Arch / CachyOS: gcc 16 against CUDA 12.9's GCC 14): the C++ sources compile, then every .cu fails on
+    "unsupported GNU version" - a late, misleading failure (#1645 was the same shape, from the other side). The newest
+    gcc-N / g++-N the toolkit does accept is used instead - on a PC that also builds llama.cpp with CUDA, the one that
+    build needs (g++-14). CC / CXX still win: an explicit choice is never overridden."""
+    limit = cuda_host_gcc_limit(nvcc)
+    default = shutil.which("g++")
+    if limit is None or default is None:
+        return (None, None)
+    have = gcc_major(default)
+    if have is None or have <= limit:
+        return (None, None)                          # the default gcc is one nvcc accepts: nothing to change
+    for n in range(limit, 7, -1):
+        cxx, cc = shutil.which(f"g++-{n}"), shutil.which(f"gcc-{n}")
+        if cxx and cc:
+            ok(f"host compiler: GCC {n} ({cxx}) - this PC's g++ is {have} and nvcc accepts up to GCC {limit}; "
+               f"CC / CXX choose another")
+            return (str(Path(cc)), str(Path(cxx)))
+    hint, has_escape = install_hint(limit)                   # this distro's command, printed never run
+    tail = "" if has_escape else ("; or set CC, CXX and CUDAHOSTCXX to a compiler nvcc supports "
+                                  "- the CUDA files fail without it")
+    warn(f"this PC's g++ is {have} but nvcc accepts up to GCC {limit}: {hint}{tail}")
+    return (None, None)
+
+
+def host_compiler_defs(cuda: bool, nvcc=None) -> list:
     """CC / CXX / CUDAHOSTCXX pick the host compilers of a build - as -D definitions, so an existing build folder
     takes them too (the environment reaches CMake only on a folder's first configure, which is why CXX=g++-14 alone
     could die at the last step, #1645).  CUDAHOSTCXX is nvcc's host compiler (-ccbin); it defaults to CXX, as
     CMake's does.  `cuda`: the project compiles CUDA (the host-compiler definition means nothing to a C++-only
-    one)."""
+    one).  `nvcc`: nothing named and this PC's gcc is newer than that toolkit accepts (cuda_host_compilers): the
+    newest GCC it does accept is used, so a newer-than-nvcc gcc needs no environment at all.  CUDAHOSTCXX is such
+    a name too: it already gives nvcc its host compiler (and may name one outside PATH), so nothing is picked for
+    CC / CXX - that would change the C++ build, and warn about an install that is not needed.
+    """
     cc = os.environ.get("CC", "").strip()
     cxx = os.environ.get("CXX", "").strip()
-    hostcxx = os.environ.get("CUDAHOSTCXX", "").strip() or cxx
+    hostcxx = os.environ.get("CUDAHOSTCXX", "").strip()
+    if cuda and not cc and not cxx and not hostcxx:
+        cc, cxx = cuda_host_compilers(nvcc)
+    hostcxx = hostcxx or cxx
     return ([f"-DCMAKE_C_COMPILER={cc}"] if cc else []) + \
            ([f"-DCMAKE_CXX_COMPILER={cxx}"] if cxx else []) + \
            ([f"-DCMAKE_CUDA_HOST_COMPILER={hostcxx}"] if cuda and hostcxx else [])
@@ -6558,7 +6650,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
                      f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
                      f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
-                     *host_compiler_defs(True), *engine_defs(archs, toolkit),
+                     *host_compiler_defs(True, nvcc), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
         if stale_binary(bdir / EXE):                      # #2054: the stamp below is written only for a binary of this source
@@ -6573,7 +6665,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
         defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
-                "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
+                "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu", nvcc)]   # native, like the engine
         if vision == "gpu":
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
                      *toolkit_root_defs(nvcc)]
