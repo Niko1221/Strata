@@ -103,6 +103,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="which drafter guesses words ahead to make answers faster, one at a time: auto (recommended: DFlash2 for Qwen3.8-Flash-Next where the engine has it, "
                         "else the MTP), mtp, dflash2 (downloads its drafter once, 0.3 to 1.2 GB depending on the model; the size is shown before the download) or off. Auto uses the MTP when several requests run at once; --drafting dflash2 runs with the --parallel count you set. "
                         "If DFlash2 cannot run (on a model it is not for, for example) the MTP is used alone and the start says why")
+    g.add_argument("--draft-vocab", type=_choice("a draft vocabulary", S.DRAFT_VOCAB_MODES), metavar="cjk|en|cyrillic|fr",
+                   help="which tokens the MTP or DFlash2 drafter may guess; fr includes English, code and French text")
     g.add_argument("--split-engine", type=_choice("a split-engine setting", S.SPLIT_MODES), metavar="auto|on|off",
                    help="NVIDIA, two or more cards: the engine that splits every layer across the cards (faster answers). auto (the default) uses it by itself "
                         "where it is supported and starts the normal layer split everywhere else; on asks for it and says in one line why it cannot run; "
@@ -247,6 +249,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.mtp = a.mtp
     if a.drafting:
         s.drafting = a.drafting
+    if a.draft_vocab:
+        s.draft_vocab = a.draft_vocab
     if getattr(a, "split_engine", None):
         s.split_engine = a.split_engine
     if getattr(a, "full_quality", False):
@@ -881,7 +885,8 @@ def run_launch(a: argparse.Namespace) -> int:
             notices.append(S.Notice("warn", backend_note, ""))
         if not machine:
             _interrupted_move_notice()
-        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "split_engine", None) or getattr(a, "speed", None) or getattr(a, "full_quality", False))
+        have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or
+                            a.draft_vocab or getattr(a, "split_engine", None) or getattr(a, "speed", None) or getattr(a, "full_quality", False))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
         no_screens_package = None
