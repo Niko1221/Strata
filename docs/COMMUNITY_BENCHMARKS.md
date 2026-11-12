@@ -73,6 +73,8 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-11: 4x AMD Radeon W7900D 48 GB (gfx1100), two EPYC 9334, ~1 TiB RAM](../bench/results/2026-11-11-community-4x-w7900d-dsv41/README.md):
+  `strata-dsv41` 0.1.59 source build (v0.2.13), ISTA-DAS 2.00 IQ2_XXS, 8K, `--experts 6`; short prompt median 53.0 / 61.5 tok/s; 4K prompt 274.6 -> 314.5 tok/s with `DS4_FAST_ATTN` (median of 3, greedy ids identical). `ds4_iq_test` IQ4_XS failed (2.00 unused). Not a comparison with R9700.
 
 ## Run the standard benchmark
 

@@ -3,7 +3,7 @@
 # data for the listed archs, packaged as an engine component whose entry point is strata-dsv41.  The Qwen engine packages (build_hip_linux.sh) are not
 # touched: DeepSeek ships as its own package per card family, the way the Qwen packages are split (rx9070 / rx7900 / rx6000 / halo).
 #
-#   VARIANT=rx7900     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100 gfx1101 gfx1102: built, NOT tested on a real RX 7000 card) | a name + ARCHS=
+#   VARIANT=rx7900     rx9070 (gfx1200 gfx1201) | rx7900 (gfx1100: run on 4 x W7900D; gfx1101 gfx1102: built, not run) | a name + ARCHS=
 #   ARCHS="gfx1100;gfx1101;gfx1102"   the code objects (default: the variant's); BUILD.json "archs" and the manifest list exactly these
 #   SRC=<this checkout>  LLAMA=<llama.cpp checkout at the pinned commit>  HP=<ROCm devel root>  CORE=<ROCm core root>  LIBW=<ROCm libraries root>
 #   OUT=<work folder>  PKGVER=0.1.59  COMMIT=<source commit for the build id>  JOBS=16
@@ -27,7 +27,7 @@ case "$V" in
   rx7900) ARCHS=${ARCHS:-gfx1100;gfx1101;gfx1102} ;;
   *)      ARCHS=${ARCHS:?ARCHS=gfx...} ;;
 esac
-NOTE_EXTRA=""; [ "$V" = rx7900 ] && NOTE_EXTRA=" (built, not tested on a real RX 7000 card)"
+NOTE_EXTRA=""; [ "$V" = rx7900 ] && NOTE_EXTRA=" (gfx1100 run on 4 x W7900D; gfx1101/1102 built, not run)"
 ARCHLIST=${ARCHS//;/ }
 DATAARCH=${ARCHS//;/,}
 mkdir -p "$OUT"; S=$OUT/build.status

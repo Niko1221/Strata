@@ -1,0 +1,45 @@
+{
+  "hardware": {
+    "gpus": "4 x AMD Radeon W7900D 48 GB gfx1100",
+    "device_id": "0x744b",
+    "cu": 96,
+    "wave": 32,
+    "cpu": "2 x AMD EPYC 9334",
+    "threads": 128,
+    "numa": 2,
+    "ram_tib_os": 1,
+    "os": "Ubuntu 24.04",
+    "rocm": "7.2.4"
+  },
+  "software": {
+    "strata_tag": "v0.2.13",
+    "commit": "d2f096475817d4666c364c820b0ca830f751cfc5",
+    "engine": "0.1.59",
+    "arch": "gfx1100",
+    "extra_env": ["HSA_USERPTR_FOR_PAGED_MEM=0"]
+  },
+  "model": {
+    "set": "ISTA-DAS-2.00bpw",
+    "repo": "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF",
+    "revision": "cb02422c900df489cea5833e8a92171224059b3c",
+    "experts": 6,
+    "max_context": 8192
+  },
+  "runs": [
+    {"name": "greedy1", "prompt_tokens": 17, "gen_tokens": 8, "prompt_toks": 51.39, "decode_toks": 61.83, "ids": "671,6102,294,8760,344,11111,16,1"},
+    {"name": "greedy2", "prompt_tokens": 17, "gen_tokens": 8, "prompt_toks": 54.19, "decode_toks": 61.51, "ids": "671,6102,294,8760,344,11111,16,1"},
+    {"name": "greedy3", "prompt_tokens": 17, "gen_tokens": 8, "prompt_toks": 53.00, "decode_toks": 61.06, "ids": "671,6102,294,8760,344,11111,16,1"},
+    {"name": "prompt4k_scalar_1", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 263.51, "decode_toks": 90.25},
+    {"name": "prompt4k_scalar_2", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 274.60, "decode_toks": 90.50},
+    {"name": "prompt4k_scalar_3", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 275.16, "decode_toks": 90.41},
+    {"name": "prompt4k_fast_attn_1", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 314.48, "decode_toks": 91.02, "env": "DS4_FAST_ATTN=1"},
+    {"name": "prompt4k_fast_attn_2", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 315.92, "decode_toks": 91.66, "env": "DS4_FAST_ATTN=1"},
+    {"name": "prompt4k_fast_attn_3", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 312.07, "decode_toks": 91.37, "env": "DS4_FAST_ATTN=1"},
+    {"name": "greedy_fast_attn", "prompt_tokens": 17, "gen_tokens": 8, "prompt_toks": 50.93, "decode_toks": 61.69, "ids": "671,6102,294,8760,344,11111,16,1", "env": "DS4_FAST_ATTN=1"},
+    {"name": "prompt4k_default_rebuild_1", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 312.78, "decode_toks": 90.28, "note": "patched binary, DS4_FAST_ATTN unset"},
+    {"name": "prompt4k_default_rebuild_2", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 312.69, "decode_toks": 89.04, "note": "patched binary, DS4_FAST_ATTN unset"},
+    {"name": "prompt4k_default_rebuild_3", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 313.66, "decode_toks": 91.08, "note": "patched binary, DS4_FAST_ATTN unset"},
+    {"name": "greedy_dspark_off", "prompt_tokens": 17, "gen_tokens": 8, "prompt_toks": 53.50, "decode_toks": 36.51, "ids": "671,6102,294,8760,344,11111,16,1", "note": "diagnostic; DS4_PROF GPU 25.67 ms/token, attention 12.14"},
+    {"name": "prompt4k_split_8_11_11_10", "prompt_tokens": 4096, "gen_tokens": 32, "prompt_toks": 274.45, "decode_toks": 91.50, "repeats": 1, "note": "DS4_SPLIT=8,11,11,10"}
+  ]
+}

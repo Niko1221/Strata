@@ -62,7 +62,7 @@ the default). The tested driver is AMD Adrenalin 26.10.1 (driver 32.0.32015.7029
 
 Measured: an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive answers at about 4.7 tokens/s and reads prompts at 121
 tokens/s (4K) to 231 tokens/s (8K, layer-major path); an RTX 3060 (12 GB) with 46 GB of RAM about 8 to 10 tokens/s (code 9.9, agent work 7.8; 149 tokens/s at 8K; DSpark stays off there, `--dspark on` adds 2-13%); four R9700 about 48
-tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
+tokens/s on 2.00 and 80 on 2.25 (code, with the shipped hot-expert profile). On four Radeon W7900D (48 GB each, gfx1100, source `VARIANT=rx7900` build, 2.00 bpw, `--experts 6`, 8K): a 17-token prompt 53 tok/s prompt / 61.5 tok/s decode (median of 3); a 4,096-token prompt 274.6 / 90.4 tok/s on the scalar kernels, 314.5 / 91.4 with `DS4_FAST_ATTN=1` (median of 3, +14.5% prompt, same greedy ids). A rebuild with that path the Linux gfx1100 default and the env unset: 312.8 / 90.3. 15,234 of 15,360 experts in VRAM. Three greedy runs matched. One box; not a comparison with the R9700 numbers. Report: [bench/results/2026-11-11-community-4x-w7900d-dsv41](../bench/results/2026-11-11-community-4x-w7900d-dsv41/README.md). Under about 40 GB of RAM it is untested and slow; setup says so and still installs.
 
 **RTX 40 series (sm_89).** The engine packages carry machine code for sm_86, sm_89 and sm_120 since 0.2.7 (before, an RTX 40 card ran the sm_86 code through
 CUDA's same-generation rule). We have no RTX 40 card: the sm_89 build was compiled here but not run. A user's own build for sm_89 ran the 2.00 set on an

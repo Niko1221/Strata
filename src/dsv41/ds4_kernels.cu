@@ -2064,12 +2064,13 @@ bool split_enabled() {
 // QK/PV sums are the matrix cores' order, so the outputs differ from the scalar kernel's in the last places (the owner
 // approved the trade for the prefill; the decode path stays on the scalar kernels).
 // 0.2.7: ON by default on gfx1200 / gfx1201 (RDNA4: the R9700, RX 9000), where it was measured and gated (KL 0.0003 against the
-// 0.006 gate, ids identical); gfx11 and gfx1151 (Strix Halo) are untested and keep the scalar kernels.  DS4_FAST_ATTN=0 is the
+// 0.006 gate, ids identical); other gfx11 parts kept the scalar kernels until measured.  DS4_FAST_ATTN=0 is the
 // off switch (exactly the 0.2.6 arithmetic), DS4_FAST_ATTN=1 turns it on elsewhere.  Decided per device (the first call there).
 // The Marlin stream measured it ON on 4x R9700 (gfx1201), 2.25 bpw, 8K code prompts: 1180 -> 1354 ppts (+14.7%), the same ids,
 // KL 0.10833 against 0.10925 for the scalar path.  gfx1151 on Windows was the untested part; measured on Strix Halo 2026-10-28
 // (32K prompt, 2.00 bpw): 101.6 -> 70.8 s (+43.6%), the sparse-attention stage 38.3 -> 7.0 s, the same greedy first token
-// (27408,), so it joins the default there and stays opt-in on every other gfx11 part.
+// (27408,), so it joins the default there.  Linux gfx1100 (4 x W7900D, 2.00 bpw, 8K): 4K prompt 274.6 -> 314.5 tok/s
+// (median of 3), greedy ids identical, decode unchanged, so it joins the default there.  Other gfx11 parts stay opt-in.
 #if defined(STRATA_USE_HIP)
 bool device_is_gfx12() {
     static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
@@ -2081,6 +2082,21 @@ bool device_is_gfx12() {
         cudaDeviceProp prop{};
         const bool yes = cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
                          (std::strncmp(prop.gcnArchName, "gfx1200", 7) == 0 || std::strncmp(prop.gcnArchName, "gfx1201", 7) == 0);
+        c = yes ? 2 : 1;
+        cache[dev].store(c);
+    }
+    return c == 2;
+}
+bool device_is_gfx1100() {
+    static std::atomic<int> cache[64];   // 0 unknown, 1 no, 2 yes
+    int dev = 0;
+    cudaGetDevice(&dev);
+    if (dev < 0 || dev >= 64) return false;
+    int c = cache[dev].load();
+    if (c == 0) {
+        cudaDeviceProp prop{};
+        const bool yes = cudaGetDeviceProperties(&prop, dev) == cudaSuccess &&
+                         std::strncmp(prop.gcnArchName, "gfx1100", 7) == 0;
         c = yes ? 2 : 1;
         cache[dev].store(c);
     }
@@ -2112,7 +2128,7 @@ bool fast_attn_enabled() {
 #if defined(_WIN32)
     return strata::ds4::fast_attn_default(env, device_is_gfx12(), device_is_gfx1151win(), strata::ds4::defaults_026());
 #else
-    return strata::ds4::fast_attn_default(env, device_is_gfx12(), false, strata::ds4::defaults_026());
+    return strata::ds4::fast_attn_default(env, device_is_gfx12(), false, strata::ds4::defaults_026(), device_is_gfx1100());
 #endif
 #else
     return strata::ds4::fast_attn_default(env, false, false, strata::ds4::defaults_026());

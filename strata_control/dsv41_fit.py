@@ -159,9 +159,13 @@ def variant(model: str | None) -> dict | None:
     return next((v for k, v in ISTA_SETS.items() if k.lower() == str(model).lower()), None)
 
 
-#: The AMD cards the DeepSeek engine package holds code for (packaging/build_hip_linux.sh: strata-dsv41 ships in the rx9070 build, gfx1200 and
-#: gfx1201).  setup passes the installed package's own list when it has one.
-DSV41_HIP_ARCHS = ("gfx1200", "gfx1201")
+#: Official Linux feed is RDNA4 only (rx9070: gfx1200/gfx1201). Source VARIANT=rx7900 also
+#: builds gfx1100/1101/1102; only gfx1100 was run (4 x W7900D). Keep the families apart:
+#: _is_rdna4 must not see gfx1100 or W7900D would default to 5 experts. gfx1101/1102 stay
+#: out of the default picker until measured; an installed package's `covered` list still wins.
+DSV41_HIP_ARCHS_RDNA4 = ("gfx1200", "gfx1201")
+DSV41_HIP_ARCHS_RDNA3 = ("gfx1100",)
+DSV41_HIP_ARCHS = DSV41_HIP_ARCHS_RDNA3 + DSV41_HIP_ARCHS_RDNA4
 
 
 def _on_windows() -> bool:
@@ -174,7 +178,7 @@ def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: b
     `strata launch --plan`, setup and the app share, so the plan says what the run does.
     Every card that counts (gpu_fit.usable_cards: no integrated chip beside a card with memory of its own, no card under 8 GB).  AMD:
     on Windows one card only (several AMD cards sharing a model is Linux-only, setup.py), and only cards the engine package holds code for
-    (`covered`, default DSV41_HIP_ARCHS): a PC with an RX 9070 and an RX 7900 uses the RX 9070 and says why the other is left out.
+    (`covered`; without it, mixed RDNA3+RDNA4 keeps RDNA4 only, pure gfx1100 keeps DSV41_HIP_ARCHS, gfx1101/1102 stay out): a PC with an RX 9070 and an RX 7900 uses the RX 9070 and says why the other is left out.
     `named`: the person named these cards: they are used as named (setup warns about one the package has no code for)."""
     mine = gpu_fit.for_vendor(list(cards or []), vendor)[0] if vendor else list(cards or [])
     keep, ignored = gpu_fit.usable_cards(mine)
@@ -193,9 +197,19 @@ def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: b
     amd = not named and bool(keep) and all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
     if amd:
         win = _on_windows() if windows is None else windows
-        # the list of architectures: the package's own (`covered`), else the Linux package's (gfx1200, gfx1201).  Windows ships a different
-        # DeepSeek package (hip-rdna3), so without a list of its own nothing is filtered there.
-        archs = tuple(covered) if covered else (() if win else DSV41_HIP_ARCHS)
+        # the list of architectures: the package's own (`covered`), else Linux source-build
+        # arches. Mixed RDNA3+RDNA4 without a covered list keeps RDNA4 only (official rx9070
+        # feed). Pure gfx1100 is kept so a W7900D box is usable. gfx1101/1102 without a
+        # package list stay out. Windows ships hip-rdna3, so without a list of its own
+        # nothing is filtered there.
+        if covered is not None:
+            archs = tuple(covered)
+        elif win:
+            archs = ()
+        else:
+            rdna4 = any(str(c.get("arch") or "").startswith(DSV41_HIP_ARCHS_RDNA4) for c in keep)
+            rdna3 = any(str(c.get("arch") or "").startswith(DSV41_HIP_ARCHS_RDNA3) for c in keep)
+            archs = DSV41_HIP_ARCHS_RDNA4 if (rdna4 and rdna3) else DSV41_HIP_ARCHS
         if archs:
             known = [c for c in keep if c.get("arch")]
             ok = [c for c in keep if not c.get("arch") or c["arch"] in archs]
@@ -214,7 +228,7 @@ def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: b
 
 
 def _is_rdna4(card: dict) -> bool:
-    return str(card.get("vendor") or "").lower() == "amd" and str(card.get("arch") or "").lower().startswith(DSV41_HIP_ARCHS)
+    return str(card.get("vendor") or "").lower() == "amd" and str(card.get("arch") or "").lower().startswith(DSV41_HIP_ARCHS_RDNA4)
 
 
 def rdna4_faster(cards: list[dict] | None, model: str | None, vendor: str | None = None, named: bool = False) -> bool:
