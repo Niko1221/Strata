@@ -188,6 +188,8 @@ def check_split(files) -> None:
                          "carries the metadata")
     total = meta0.get("split.tensors.count")
     for i, g in enumerate(files):
+        if len(g.tensors) == 1 and g.tensors[0].name == "per_layer_token_embd.weight":
+            continue
         md = g.metadata
         if md.get("split.count") != n or md.get("split.no") != i or \
                 (total is not None and md.get("split.tensors.count") != total):

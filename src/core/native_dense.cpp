@@ -303,6 +303,8 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             const auto* count = gguf.get("split.count");
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
+            const bool ple_only_shard = gguf.tensors().size() == 1 &&
+                                        gguf.tensors()[0].name == "per_layer_token_embd.weight";
             if (gguf.get("general.architecture") && (!number || number->u == 0)) {
                 // splitter may copy general.architecture into every shard (Huihui abliterated re-split)
                 err = strata::check_engine_architecture(gguf);
@@ -312,13 +314,14 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     split_count = count->u;
                     split_tensors = tensors->u;
                 }
-            } else if (!have_architecture || !split_count || !count || !number || !tensors ||
-                       count->u != split_count || number->u == 0 || number->u >= split_count ||
-                       tensors->u != split_tensors) {
+            } else if (!ple_only_shard &&
+                       (!have_architecture || !split_count || !count || !number || !tensors ||
+                        count->u != split_count || number->u == 0 || number->u >= split_count ||
+                        tensors->u != split_tensors)) {
                 err = "native dense: additional shard must match the architecture-validated first shard's split metadata";
                 return false;
             }
-            if (number && !split_numbers.insert(number->u).second) {
+            if (!ple_only_shard && number && !split_numbers.insert(number->u).second) {
                 err = "native dense: duplicate split shard number"; return false;
             }
             std::vector<uint64_t> offsets;

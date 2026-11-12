@@ -616,6 +616,10 @@ private:
         uint64_t tensors = 0;
         for (size_t i = 0; i < n; ++i) {
             const GgufFile& g = *shards_[i];
+            if (g.tensors().size() == 1 && g.tensors()[0].name == "per_layer_token_embd.weight") {
+                tensors += g.tensors().size();
+                continue;
+            }
             const MetaValue* count = g.get("split.count");
             const MetaValue* no = g.get("split.no");
             const MetaValue* tc = g.get("split.tensors.count");
