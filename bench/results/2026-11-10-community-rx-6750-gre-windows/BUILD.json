@@ -1,0 +1,23 @@
+{
+ "source": "f-0214-int",
+ "backend": "hip",
+ "platform": "windows-x64",
+ "version": "0.1.57",
+ "archs": [
+  "gfx1030",
+  "gfx1031"
+ ],
+ "rocm": "10.2.0a20260930",
+ "hipblaslt_version": 100500,
+ "vision": "cpu+hip",
+ "lib_dirs": [
+  "rocm/bin"
+ ],
+ "vision_cpu": "strata-vision.exe",
+ "vision_gpu": "strata-vision-hip.exe",
+ "vision_archs": [
+  "gfx1030",
+  "gfx1031"
+ ],
+ "commit": "0bdcef4682c5"
+}
