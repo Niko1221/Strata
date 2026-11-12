@@ -367,6 +367,19 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
             locked_bytes = lr.locked_bytes;
             note = lr.note + "; " + note;
         }
+        // Without this every expert the prompt streams is first memcpy'd into a stager buffer: ~6 GB/s on an Arc Pro B60
+        // against 15-23 GB/s straight from the imported arena (4 GiB of 2 MiB blobs, driver 32.0.101.8976).
+        // STRATA_ARENA_COPY_REGISTER=0 keeps the stager path.
+        const char* reg = std::getenv("STRATA_ARENA_COPY_REGISTER");
+        if (!reg || std::string(reg) != "0") {
+            try {
+                sycl::ext::oneapi::experimental::prepare_for_device_copy(base, bytes, dpct::get_in_order_queue());
+                copy_registered_bytes = bytes;
+                note = "imported for device copies; " + note;
+            } catch (const sycl::exception& e) {
+                note = std::string("import for device copies refused (") + e.what() + "), copies go through the stager; " + note;
+            }
+        }
     }
     return;
 #endif
@@ -575,6 +588,14 @@ catch (sycl::exception const &exc) {
 
 PinnedArena::~PinnedArena() {
     if (base) {
+        if (copy_registered_bytes) {
+            try {
+                sycl::ext::oneapi::experimental::release_from_device_copy(base, dpct::get_in_order_queue());
+            } catch (const sycl::exception&) {
+                // the process is releasing the arena either way; a failed release leaves nothing to undo
+            }
+            copy_registered_bytes = 0;
+        }
         if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
         if (slice_bytes) {
             /*
