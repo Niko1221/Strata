@@ -1,0 +1,9 @@
+device: AMD Radeon RX 7900 XTX  SMs 48  clock 2526 MHz
+
+shape          ncols         ms       GB/s  ceiling      ratio   ncols 1,2,4,8 (ms | GB/s | ratio | y-sum)
+2560   x248320   [1]    0.759 ms    890.7 GB/s  x0.62  sum nan  [2]    0.811 ms    835.0 GB/s  x0.66  sum nan  [4]    0.858 ms    791.5 GB/s  x0.70  sum -nan  [8]    0.982 ms    695.9 GB/s  x0.80  sum nan   (ceiling 553.4 GB/s)
+6144   x2560     [1]    0.048 ms    348.2 GB/s  x0.98  sum -nan  [2]    0.050 ms    333.9 GB/s  x1.02  sum nan  [4]    0.060 ms    281.5 GB/s  x1.21  sum nan  [8]    0.077 ms    219.8 GB/s  x1.55  sum nan   (ceiling 341.3 GB/s)
+2560   x10240    [1]    0.065 ms    430.2 GB/s  x1.32  sum -nan  [2]    0.069 ms    406.3 GB/s  x1.40  sum -nan  [4]    0.085 ms    329.1 GB/s  x1.73  sum nan  [8]    0.107 ms    264.7 GB/s  x2.15  sum -nan   (ceiling 569.8 GB/s)
+2560   x6144     [1]    0.053 ms    318.5 GB/s  x1.14  sum -nan  [2]    0.064 ms    263.6 GB/s  x1.38  sum nan  [4]    0.067 ms    251.7 GB/s  x1.44  sum -nan  [8]    0.087 ms    194.3 GB/s  x1.87  sum -nan   (ceiling 362.8 GB/s)
+2560   x12288    [1]    0.071 ms    473.9 GB/s  x1.25  sum nan  [2]    0.075 ms    445.4 GB/s  x1.33  sum nan  [4]    0.093 ms    360.2 GB/s  x1.64  sum -nan  [8]    0.116 ms    292.7 GB/s  x2.02  sum -nan   (ceiling 591.3 GB/s)
+2560   x512      [1]    0.031 ms     45.6 GB/s  x0.77  sum -nan  [2]    0.033 ms     43.0 GB/s  x0.81  sum nan  [4]    0.031 ms     44.9 GB/s  x0.78  sum -nan  [8]    0.034 ms     41.7 GB/s  x0.84  sum nan   (ceiling 34.9 GB/s)
