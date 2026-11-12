@@ -22,6 +22,7 @@ unchanged. Numbers are the reporters' own, on one machine each, unless the text 
 | Cards | Compute capability | How it runs | What is different on it |
 | --- | --- | --- | --- |
 | Quadro M6000, GTX 900 series (Maxwell) | 5.2 | a source build with CUDA 12.x | Opt-in, one reporter, [below](#maxwell-sm_52). No native half-precision arithmetic. Not in the ready-made CUDA 12 engine |
+| Tesla M10 | 5.0 | experimental CUDA 12 source build, helper-only | Build-checked path; no M10 runtime validation. `STRATA_EXPERIMENTAL_SM50=ON` refuses sm_50 as the primary GPU or a layer-split stage; see [below](#tesla-m10-sm_50-helper-only-experiment) |
 | Tesla P100 | 6.0 | the CUDA 12 engine | `__dp4a` emulated (bit-exact); BF16 projections through fp32; seven scheduling switches on by default ([below](#tesla-p100-sm_60)); opt-in `STRATA_Q8_SM60=1` ([below](#pascal-gp100-a-q8_0-decode-kernel-opt-in)) |
 | Tesla P40 / P4, GTX 10 series | 6.1 | the CUDA 12 engine | BF16 projections through fp32 (cuBLAS has no BF16 GEMM there); dense weights dequantized by a wide kernel; expert mode 8 and its own interleaved-matvec table; opt-in `STRATA_DENSE_F32=1` ([below](#tesla-p40-sm_61-what-was-measured-and-changed)) |
 | Tesla V100, Titan V | 7.0 | the CUDA 12 engine | BF16 projections on the FP16 tensor cores; prompt attention on `mma.m8n8k4`; a leaner attention kernel. See [NVIDIA_V100.md](NVIDIA_V100.md) |
@@ -58,6 +59,21 @@ CMake prints a warning for sm_52 and goes on. A release build still needs sm_75 
 the build stops as before. `setup.py` does not install an engine for a Maxwell card, because none of the ready-made engines holds
 code for it. On a PC with only Maxwell cards it lists the card as not supported, prints this recipe as a warning and stops. If you
 try the build, please post a short chat and one code answer from the card.
+
+### Tesla M10 (sm_50): helper-only experiment
+
+This opt-in path is for **remote MoE expert-cache helpers only**. In this build, Strata rejects an sm_50 GPU as the primary inference device or a layer-split stage. The generic CUDA expert kernel uses the existing pre-sm_61 `STRATA_DP4A` fallback; the build check does not prove kernel correctness or performance on Tesla M10 hardware. No M10 device was available for runtime validation here. Do not treat the community benchmark in #4145 as validation of this path or configuration.
+
+Use a CUDA 12.x toolkit (CUDA 13 dropped sm_50). The architecture list must include the actual main GPU(s); this example targets an M10 helper, V100 main GPU, and RTX 30 main GPU:
+
+```sh
+cmake -S . -B build-m10 -G Ninja -DSTRATA_ENABLE_CUDA=ON \
+  -DSTRATA_EXPERIMENTAL_SM60=ON -DSTRATA_EXPERIMENTAL_SM50=ON \
+  -DCMAKE_CUDA_ARCHITECTURES="50;70;86"
+cmake --build build-m10 --target strata
+```
+
+The M10 dies are separate CUDA devices, but the current upstream helper CLI is limited to three helper caches. Supporting all eight dies across two M10 cards requires the separate dynamic-helper change in #5781; until that change lands, this build does not provide eight helper slots. This is an experimental build recipe, not a claim that M10 expert execution is verified.
 
 ## NVIDIA: the CUDA 12 engine
 
