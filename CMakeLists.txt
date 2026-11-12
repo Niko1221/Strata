@@ -341,6 +341,11 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(split_walk_test PRIVATE include)
   add_test(NAME split_walk_test COMMAND split_walk_test)
 
+  # sm_50 experimental builds permit Maxwell only as a remote expert-cache helper
+  add_executable(sm50_helper_policy_test tests/program/sm50_helper_policy_test.cpp)
+  target_include_directories(sm50_helper_policy_test PRIVATE include)
+  add_test(NAME sm50_helper_policy_test COMMAND sm50_helper_policy_test)
+
   # the prompt planner's host-memory model (#2824): header-only, no GPU
   add_executable(prefill_plan_test tests/program/prefill_plan_test.cpp)
   target_include_directories(prefill_plan_test PRIVATE include)

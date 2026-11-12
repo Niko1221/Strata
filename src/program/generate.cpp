@@ -28,6 +28,7 @@
 #include "strata/program/adaptive_range.hpp"
 #include "strata/core/run_manifest.hpp"
 #include "strata/core/device.hpp"
+#include "strata/core/sm50_helper_policy.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/expert_nibble.hpp"
@@ -4089,6 +4090,23 @@ int main(int argc, char** argv) {
         return n > 0 ? n : 0;
     }();
     strata::core::set_primary_device(primary_device);
+#if defined(STRATA_EXPERIMENTAL_SM50)
+    {
+        cudaDeviceProp primary_prop{};
+        if (cudaGetDeviceProperties(&primary_prop, primary_device) != cudaSuccess) {
+            cudaGetLastError();
+            std::fprintf(stderr, "strata generate: cannot verify primary CUDA%d for the experimental sm_50 helper build\n",
+                         primary_device);
+            return 2;
+        }
+        if (!strata::core::sm50_primary_or_stage_supported(primary_prop.major * 10 + primary_prop.minor)) {
+            std::fprintf(stderr, "strata generate: CUDA%d (%s, sm_%d%d) is supported only as an expert-cache helper; "
+                                 "choose a compute capability 5.2 or newer primary GPU\n",
+                         primary_device, primary_prop.name, primary_prop.major, primary_prop.minor);
+            return 2;
+        }
+    }
+#endif
     // parking with --layer-split saves every stage (SavedConversation::stage_images)
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  KV
@@ -4170,6 +4188,22 @@ int main(int argc, char** argv) {
                                  "GPUs, not \"24,12,6,6\" (got \"%s\")\n", n_dev - 1, o.layer_split.c_str());
             return 2;
         }
+#if defined(STRATA_EXPERIMENTAL_SM50)
+        for (const int d : split_devs) {
+            cudaDeviceProp stage_prop{};
+            if (cudaGetDeviceProperties(&stage_prop, d) != cudaSuccess) {
+                cudaGetLastError();
+                std::fprintf(stderr, "strata generate: cannot verify CUDA%d used by --layer-split\n", d);
+                return 2;
+            }
+            if (!strata::core::sm50_primary_or_stage_supported(stage_prop.major * 10 + stage_prop.minor)) {
+                std::fprintf(stderr, "strata generate: CUDA%d (%s, sm_%d%d) may only be an expert-cache helper, "
+                                     "not a --layer-split stage\n",
+                             d, stage_prop.name, stage_prop.major, stage_prop.minor);
+                return 2;
+            }
+        }
+#endif
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
     // STRATA_PRIMARY_DEVICE: a later stage's list (`--split-device` values must be > 0) still assumes the
