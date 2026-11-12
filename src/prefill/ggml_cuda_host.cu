@@ -140,7 +140,16 @@ struct CachingPool : ggml_cuda_pool {
 };
 }  // namespace
 
+#if __has_include("graph.cuh")   // this one really is a header question: upstream moved struct ggml_cuda_stream_context
+                                // out of common.cuh into graph.cuh (17701e48d7), and only then must it be complete here
+#include "graph.cuh"   // completes ggml_cuda_stream_context, destroyed by the context destructor below
+#endif
+#if defined(STRATA_MMQ_TILE_SPEC_API)   // CMake read mmq.cuh's signature (strata_ggml_mmq_types): the tree with
+                                        // the 5-argument helpers is also the one whose new_pool_for_device has the context
+std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(ggml_backend_cuda_context &, int, int) {
+#else
 std::unique_ptr<ggml_cuda_pool> ggml_backend_cuda_context::new_pool_for_device(int, int) {
+#endif
     return std::unique_ptr<ggml_cuda_pool>(new CachingPool());
 }
 

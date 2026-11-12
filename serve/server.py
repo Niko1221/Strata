@@ -6765,7 +6765,13 @@ class Service:
                             started = st.get("started", time.time())
                             cvec = (getattr(self.engine, "info", {}) or {}).get("cvec", 0)
                             loaded = str(cvec) not in ("0", "", "None")
-                            hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+                            # lookups 0 is a measured 0% (the fields are on the DONE line). Missing fields stay unknown.
+                            # A positive lookups keeps hits/lookups, the same rate Qwen already reports.
+                            if "lookups" in last:
+                                looked = last["lookups"] or 0
+                                hit_rate = round((last.get("hits") or 0) / looked, 3) if looked else 0.0
+                            else:
+                                hit_rate = None
                             # #588: the share the GPU read over PCIe (--pcie-frac) or another GPU computed - not in
                             # the hit rate's lookups, which is the VRAM share of the rest (None: an older engine)
                             routed = (last.get("lookups") or 0) + (last.get("offloaded") or 0)

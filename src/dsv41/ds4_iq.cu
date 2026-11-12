@@ -11,7 +11,7 @@
 #include "ds4_experts_rule.hpp"
 
 #include <cuda_fp16.h>
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <mma.h>
 #endif
 
@@ -813,7 +813,7 @@ __global__ void __launch_bounds__(kThreads) set_kernel(const SetArgs a) {
     }
 }
 
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
 namespace wm = nvcuda::wmma;
 constexpr int kLdT = 40;
@@ -1083,7 +1083,7 @@ __global__ void __launch_bounds__(kThreads) light_kernel_rows(const SetArgs a, c
 }
 
 bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps the F32 kernel
-#if defined(STRATA_USE_HIP)
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
     return false;
 #else
     // (per device: the cards of a multi-GPU run need not be the same generation)
@@ -1187,7 +1187,7 @@ void launch_set(const SetArgs& a, dim3 grid, cudaStream_t s) {
 #if defined(STRATA_USE_HIP)
     if (hipk::launch<T, GU>(a, s)) return;   // (gfx12, STRATA_DS4_HIPK=1: the matrix-core tiles)
 #endif
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     if (tc_ok()) {
         strata_ds4_launch(set_tc_kernel<T, GU>, grid, kThreads, 0, s, a);
         return;

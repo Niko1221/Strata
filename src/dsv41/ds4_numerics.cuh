@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Peasant Smith and the Project Maya contributors (MIT; https://github.com/mw00/project-maya, v1.1.17).
 // Ported into Strata (third_party/project-maya/NOTICE.md, LICENSE); changes are in the git history of this file.
 // src/ds4/ds4_numerics.cuh - the BF16 and FP8 (E4M3) conversions of maya-ds4's kernels, on CUDA through its
-// intrinsics (cuda_bf16.h / cuda_fp8.h) and on HIP in plain arithmetic that gives the same bits: BF16 round to
+// intrinsics (cuda_bf16.h / cuda_fp8.h) and on HIP and gfx906 in plain arithmetic that gives the same bits: BF16 round to
 // nearest even; E4M3 (OCP "fn": no infinities, max 448) decoded exactly, rounded to nearest even and saturated.
 #pragma once
 
 #include <cstdint>
 #include <cuda_runtime.h>
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
@@ -27,7 +27,7 @@ __device__ __forceinline__ uint16_t bf16_rn(float f) {
 
 /// An E4M3 code's value (exact in F32).
 __device__ __forceinline__ float e4m3_value(uint8_t q) {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     const __half_raw h = __nv_cvt_fp8_to_halfraw((__nv_fp8_storage_t) q, __NV_E4M3);
     return __half2float(__half(h));
 #else
@@ -42,7 +42,7 @@ __device__ __forceinline__ float e4m3_value(uint8_t q) {
 
 /// v rounded to the nearest E4M3 value (ties to even), saturated at +-448.
 __device__ __forceinline__ float e4m3_round(float v) {
-#if !defined(STRATA_USE_HIP)
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
     const __nv_fp8_storage_t q = __nv_cvt_float_to_fp8(v, __NV_SATFINITE, __NV_E4M3);
     const __half_raw h = __nv_cvt_fp8_to_halfraw(q, __NV_E4M3);
     return __half2float(__half(h));

@@ -65,6 +65,23 @@ endmacro()
 
 # the MMQ instances to build and where the trellis (Gyro) variants come from: the vendored ggml-cuda-tq folder, a fork's ggml, or the overlay of a STRATA_GGML_DIR llama.cpp
 macro(strata_ggml_mmq_types)
+  # Which MMQ entry points this ggml-cuda has: tile_spec and a src1 precision (llama.cpp 7894e8b9) or the older four
+  # arguments.  The sources used to ask __has_include("mmid.cuh"), which is wrong: mmid.cuh arrived before the entry
+  # points changed, so the pinned tree has the header and still the 4-argument ggml_cuda_mmq_get_config (the
+  # gfx906 build failed on exactly that, ggml-tq-overlay/mmq.cuh:236 "requires 4 arguments, but 5 were provided").
+  # Read the signature instead, the way cmake/strata_ggml_tq_overlay.cmake reads it, and hand the answer to the
+  # sources as a define: nothing is compiled at configure time, and a tree with neither form keeps today's call.
+  # A macro like the rest of this file, so the variable is visible to strata_cuda_mmq / strata_hip_mmq below.
+  set(STRATA_MMQ_TILE_SPEC_API OFF)
+  set(_strata_mmq_hdr "${_strata_ggml_root}/ggml/src/ggml-cuda/mmq.cuh")
+  if(EXISTS "${_strata_mmq_hdr}")
+    file(READ "${_strata_mmq_hdr}" _strata_mmq_text LIMIT 262144)
+    if(_strata_mmq_text MATCHES "ggml_cuda_mmq_get_nthreads\\(ggml_type type, int J, bool fallback, ggml_prec prec_src1\\)")
+      set(STRATA_MMQ_TILE_SPEC_API ON)
+    endif()
+    unset(_strata_mmq_text)
+  endif()
+  message(STATUS "MMQ entry points: tile_spec + src1 precision = ${STRATA_MMQ_TILE_SPEC_API}")
   set(_strata_mmq_types q2_0 iq2_xxs iq2_xs iq2_s iq3_xxs iq3_s iq4_nl iq4_xs q8_0)
   # APR: the agention llama.cpp fork has MMQ instances for its trellis expert types (f62fdead0); any other ggml
   # tree leaves them to the FP16 prompt path

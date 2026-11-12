@@ -36,6 +36,16 @@ class Gfx906CMake(unittest.TestCase):
         self.assertIn("target_sources(strata_mmq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_f16_kq.cu)", tail)
         self.assertLess(tail.index("moe_f16_kq.cu"), tail.index("set_source_files_properties(${_strata_cu} PROPERTIES LANGUAGE HIP)"))
 
+    def test_dsv41_builds_on_gfx906_when_asked(self):
+        # the DeepSeek target is no longer skipped on gfx906; Qwen3.6 stays out (cublasSgemm, wave32 kernels)
+        self.assertNotIn("if(STRATA_BUILD_DSV41 AND NOT STRATA_HIP_GFX906)", TEXT)
+        self.assertRegex(
+            TEXT,
+            r'option\(STRATA_BUILD_DSV41 "Build the DeepSeek-V4.1 engine path \(strata-dsv41\)" OFF\)\n'
+            r"  if\(STRATA_BUILD_DSV41\)\n",
+        )
+        self.assertRegex(TEXT, r"if\(NOT STRATA_HIP_GFX906\)\n  add_library\(strata_qwen35")
+
 
 if __name__ == "__main__":
     unittest.main()

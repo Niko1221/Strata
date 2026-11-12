@@ -101,6 +101,11 @@ macro(strata_cuda_mmq)
     add_library(strata_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_iq4_w4a8.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
                 src/prefill/mmq_nvfp4_w4a8.cu
                 src/prefill/ggml_cuda_host.cu ${_strata_quantize_cu})
+    if(STRATA_MMQ_TILE_SPEC_API)
+      # moe_mmq.cu, mmq_nvfp4_w4a8.cu and ggml_cuda_host.cu take their 5-argument / tile_spec forms
+      # (strata_ggml_mmq_types decides which)
+      target_compile_definitions(strata_mmq PRIVATE STRATA_MMQ_TILE_SPEC_API=1)
+    endif()
     if(STRATA_EXPERIMENTAL_SM60 AND NOT STRATA_HIP_GFX906)
       # GP100 (sm_60): a resident layer's experts weight-stationary, one launch per product (moe_ws.hpp; opt-in at
       # run time, STRATA_MMQ_WS=1, and only where every visible GPU is cc 6.0)
@@ -145,6 +150,10 @@ macro(strata_cuda_mmq)
     list(TRANSFORM _strata_w4a4_archs REPLACE "^(12[0-9])$" "\\1a")
     list(TRANSFORM _strata_w4a4_archs REPLACE "^(12[0-9])-(real|virtual)$" "\\1a-\\2")
     add_library(strata_mmq_w4a4 STATIC src/prefill/mmq_nvfp4_w4a4.cu)
+    if(STRATA_MMQ_TILE_SPEC_API)
+      # its probe is the same one moe_mmq.cu takes: mmq_nvfp4_w4a4.cu calls mul_mat_q_case<type, GGML_PREC_Q8> here
+      target_compile_definitions(strata_mmq_w4a4 PRIVATE STRATA_MMQ_TILE_SPEC_API=1)
+    endif()
     set_target_properties(strata_mmq_w4a4 PROPERTIES CUDA_ARCHITECTURES "${_strata_w4a4_archs}")
     target_include_directories(strata_mmq_w4a4 PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq})
     target_compile_options(strata_mmq_w4a4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -use_fast_math>)
@@ -224,6 +233,10 @@ macro(strata_cuda_mmq)
         target_link_libraries(strata_mmq PUBLIC ${CMAKE_DL_LIBS})
       endif()
       add_library(strata_kq SHARED src/prefill/mmq_kq_lib.cu src/prefill/ggml_cuda_host.cu)
+      if(STRATA_MMQ_TILE_SPEC_API)
+        # ggml_cuda_host.cu defines new_pool_for_device for this copy of the host symbols too
+        target_compile_definitions(strata_kq PRIVATE STRATA_MMQ_TILE_SPEC_API=1)
+      endif()
       foreach(_t IN LISTS _strata_kq_types)
         target_sources(strata_kq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
       endforeach()

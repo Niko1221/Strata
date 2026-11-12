@@ -229,6 +229,17 @@ cmake -S . -B build-dsv41 -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CU
 cmake --build build-dsv41 --target strata-dsv41 -j 8
 ```
 
+An Instinct MI50 (gfx906) builds the same engine from source with the wave64 compat layer. gfx906 has no WMMA, so this build uses the scalar and FMA
+kernels, not the wave32 HIP backend. `STRATA_BUILD_DSV41` stays off unless you set it, so a gfx906 build of the Qwen engine is unchanged. The signed
+packages do not include this card.
+
+```
+cmake -S . -B build-906 -G Ninja -DCMAKE_BUILD_TYPE=Release -DSTRATA_HIP_GFX906=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_NATIVE_EXPERTS=ON \
+  -DSTRATA_GGML_DIR=third_party/llama.cpp \
+  -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
+cmake --build build-906 --target strata-dsv41
+```
+
 Use your card's number in `CMAKE_CUDA_ARCHITECTURES`: 86 for RTX 30, 89 for RTX 40, 120 for RTX 50, or `native` for the cards in this computer. Without the
 option a DeepSeek build is made for 86, 89 and 120. On Windows, `packaginguild_dsv41_windows.bat BUILD_DIR` does the same (`DSV41_ARCH` names the cards);
 on Linux, `packaging/build_dsv41_cuda.sh` (`ARCH=...`). Then copy the file into the `engine` folder of your Strata install (next to `strata`); setup finds it there and does not download an engine:

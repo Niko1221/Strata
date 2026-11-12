@@ -2462,6 +2462,19 @@ class PcieShare(unittest.TestCase):
         self.assertEqual([r["pcie_share"] for r in rows], [0.2, 0.0, None])
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
 
+    def test_zero_lookups_is_zero_percent(self):
+        """A DONE line that carries hits and lookups, even when both are 0, is 0%. An older line without them stays unknown."""
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX, done_lines=[
+            "DONE 4 20 40.0 30.0 stop 3 5 0 0 0",          # fields present, nothing looked up
+            "DONE 4 20 40.0 30.0 stop 3 5 0",              # no hits/lookups fields
+            "DONE 4 20 40.0 30.0 stop 3 5 0 60 100"])      # Qwen's non-zero path
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(3):
+                list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        self.assertEqual([r["hit_rate"] for r in svc.history], [0.0, None, 0.6])
+
 
 class PeerDevice(unittest.TestCase):
     """#665: several GPUs in the config are a layer split, but --peer-device uses the second card as an expert-cache

@@ -22,6 +22,10 @@
 #include <cstdlib>
 
 #define STRATA_HIP_GFX906 1
+// CUDA's by-value kernel argument hint. HIP has no counterpart; the argument is passed by value.
+#ifndef __grid_constant__
+#define __grid_constant__
+#endif
 
 // ---- runtime: types and constants ------------------------------------------------------------------------
 #define cudaError_t hipError_t
@@ -75,6 +79,8 @@
 #define cudaDevAttrMaxSharedMemoryPerBlockOptin hipDeviceAttributeSharedMemPerBlockOptin
 #define cudaDevAttrMemoryClockRate hipDeviceAttributeMemoryClockRate
 #define cudaDevAttrGlobalMemoryBusWidth hipDeviceAttributeMemoryBusWidth
+#define cudaDevAttrIntegrated hipDeviceAttributeIntegrated
+#define cudaDevAttrCanUseHostPointerForRegisteredMem hipDeviceAttributeCanUseHostPointerForRegisteredMem
 
 // ---- runtime: functions ----------------------------------------------------------------------------------
 #define cudaGetErrorString hipGetErrorString
@@ -109,6 +115,8 @@ inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, in
 #define cudaMemcpyPeerAsync hipMemcpyPeerAsync
 #define cudaMemcpyPeer hipMemcpyPeer
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
+#define cudaMemcpy2D hipMemcpy2D
+#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
 #define cudaMemset hipMemset
 #define cudaMemsetAsync hipMemsetAsync
 // Mapped host memory is how the GPU and the CPU talk inside a running graph (the doorbells, the CPU experts'
@@ -130,6 +138,8 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamQuery hipStreamQuery
@@ -164,6 +174,13 @@ inline hipError_t cudaFuncGetName(const char** name, const void*) { *name = null
 template <typename Kernel>
 inline hipError_t cudaFuncSetAttribute(Kernel kernel, hipFuncAttribute attribute, int value) {
     return hipFuncSetAttribute(reinterpret_cast<const void*>(kernel), attribute, value);
+}
+// A template, not a macro: call sites pass a kernel template (mv_kernel<K, cb>) and a macro would split on the comma.
+template <typename Func>
+inline hipError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int* numBlocks, Func func, int blockSize,
+                                                                size_t dynamicSMemSize) {
+    return hipOccupancyMaxActiveBlocksPerMultiprocessor(numBlocks, reinterpret_cast<const void*>(func), blockSize,
+                                                        dynamicSMemSize);
 }
 #define cudaMemcpyToSymbol(sym, src, ...) hipMemcpyToSymbol(HIP_SYMBOL(sym), src, __VA_ARGS__)
 #define cudaMemcpyFromSymbol(dst, sym, ...) hipMemcpyFromSymbol(dst, HIP_SYMBOL(sym), __VA_ARGS__)
@@ -245,6 +262,23 @@ static __device__ __forceinline__ unsigned int strata_dp4a(unsigned int a, unsig
     return c + va[0] * vb[0] + va[1] * vb[1] + va[2] * vb[2] + va[3] * vb[3];
 }
 #define __dp4a strata_dp4a
+
+// __ldcv: last-use load. HIP has no cache-evicting load. Vector types have no volatile copy, so the bits are
+// read as words (the same way ds4_kernels.cu's HIP path loads a fresh value).
+template <typename T>
+__device__ __forceinline__ T strata_ldcv(const T* p) {
+    if constexpr (sizeof(T) < 4) {
+        return *static_cast<const volatile T*>(p);
+    } else {
+        T v;
+        const volatile uint32_t* s = reinterpret_cast<const volatile uint32_t*>(p);
+        uint32_t* d = reinterpret_cast<uint32_t*>(&v);
+#pragma unroll
+        for (int i = 0; i < (int) (sizeof(T) / 4); ++i) d[i] = s[i];
+        return v;
+    }
+}
+#define __ldcv(p) strata_ldcv(p)
 
 // SIMD-in-a-word byte ops (CUDA semantics: __vsub4 wraps per byte, __vsubss4 saturates, __vcmp*4 give 0xff)
 typedef int8_t strata_i8x4 __attribute__((ext_vector_type(4)));

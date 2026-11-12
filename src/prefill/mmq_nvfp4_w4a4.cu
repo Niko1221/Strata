@@ -43,7 +43,11 @@ bool w4a4_available() {
     return ran && h == 1;
 }
 void run_nvfp4_w4a4(ggml_backend_cuda_context& ctx, const mmq_args& a, cudaStream_t s) {
+#if defined(STRATA_MMQ_TILE_SPEC_API)   // CMake read mmq.cuh's signature; see moe_mmq.cu
+    strata_w4a4_mul_mat_q_case<GGML_TYPE_NVFP4, GGML_PREC_Q8>(ctx, a, s);
+#else
     strata_w4a4_mul_mat_q_case<GGML_TYPE_NVFP4>(ctx, a, s);
+#endif
 }
 void quantize_nvfp4_w4a4(const float* x, const int32_t* ids, void* xq, float* yscale, bool aligned, int64_t cols,
                          int64_t ld, int64_t rows, int64_t padded, cudaStream_t s) {

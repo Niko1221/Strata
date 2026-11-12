@@ -576,6 +576,10 @@ ninja -C build-906 strata
 `--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --ulimit memlock=-1`; on some boards
 `HSA_OVERRIDE_GFX_VERSION=9.0.6` is needed for the runtime to accept the card.
 
+**DeepSeek-V4.1.** `strata-dsv41` stays out of this build unless you ask for it. Add `-DSTRATA_BUILD_DSV41=ON` and build the
+`strata-dsv41` target. gfx906 has no WMMA, so the engine uses the scalar and FMA kernels. It does not use the wave32 backend.
+Leave the option off and the Qwen engine builds as before. The signed DeepSeek packages do not include gfx906.
+
 **What differs from the CUDA build** (each A/B switch restores the CUDA layout, and was checked bitwise against it):
 
 | | gfx906 | Switch |
