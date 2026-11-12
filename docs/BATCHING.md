@@ -610,6 +610,24 @@ before: a longer turn, a conversation the slot does not hold, a parked copy that
 then) was measured and is not in: the next request's read waited behind that admission instead of running beside it,
 two conversations sending their turns together lost 11% of their total tokens/s, and the first token came no sooner.
 
+**A slot alone in its group reads whole windows** (`STRATA_SLOT_READ_WIDE`, default on; `=0`: off). A slot's part of a
+window is its token and its drafts - 5 rows at `--spec 3`, 4 with two slots a group - and its read took the same rows.
+Prompt tokens need no draft: while it is the only slot of its group that runs and has a window's worth left, a reading
+slot takes all 8 rows. Every group's window, hand-off rows and saved commit rows are sized for that, and a slot's
+drafter catches up 8 rows a round; only the whole window is taken, because a layout of rows is a set of graphs on each
+stage (20 to 30 MiB of VRAM), so a read adds one layout a slot and not one for every size in between. A prompt row
+costs nearly the same wherever it sits - about 3 ms a stage at 32K tokens, 5 ms at 440K - so what is gained is the
+windows saved, not the rows:
+
+| two conversations sending their turns together, one build | read, tokens/s a slot | first token | total tok/s of the round |
+| --- | ---: | ---: | ---: |
+| 32K tokens, four slots (one pair) | 120-138 -> 134-165 | 4.2 -> 3.7 s | 126.2 -> 135.0 |
+| 177K tokens, two slots (ABBA) | | 5.0 -> 4.7 s | 114.6 -> 118.6 |
+| 440K tokens, two slots (one pair) | 91-114 -> 94-124 | 6.1 -> 5.8 s | 104.6 -> 102.8 |
+
+With two slots at a 1M context the cards have 40 and 52 MiB less free once everything is loaded (the saved rows 31.8
+-> 50.9 MiB a stage, the verifiers' windows 5 -> 8 rows); the expert caches keep their slots but two.
+
 **Parks that keep nothing are skipped** (`STRATA_SLOT_PARK_SKIP`, default on; `=0`: off). An admission through the main
 sessions parked the conversation they held before - with batch slots, a stale copy of a conversation that a slot holds
 further - and parked the slot's reply before the same conversation's next turn replaced it. Both wrote a whole snapshot
