@@ -117,7 +117,7 @@ bool gfx12_prefill_share_default(const char* gcn_arch) {
 
 bool igpu_prompt_defaults_arch(const char* gcn_arch) {
     return strata::kernels::gfx_arch_is(gcn_arch, "gfx1103") || strata::kernels::gfx_arch_is(gcn_arch, "gfx1150") ||
-           strata::kernels::gfx_arch_is(gcn_arch, "gfx1151");
+           strata::kernels::gfx_arch_is(gcn_arch, "gfx1151") || strata::kernels::gfx_arch_is(gcn_arch, "gfx1152");
 }
 
 bool igpu_prompt_set_enabled(const char* gcn_arch, bool windows) {

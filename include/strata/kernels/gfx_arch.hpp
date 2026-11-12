@@ -1,7 +1,7 @@
 // include/strata/kernels/gfx_arch.hpp - which AMD architecture names the gfx11 matrix-core code (and the gfx12 native
 // prompt-expert kernels) was built for.
 //
-// The WMMA kernels select their intrinsic with `#if defined(__gfx1100__) || ... || defined(__gfx1151__)`: a gfx11 part
+// The WMMA kernels select their intrinsic with `#if defined(__gfx1100__) || ... || defined(__gfx1151__) || defined(__gfx1152__)`: a gfx11 part
 // outside that list (gfx1152, ...) gets an empty or trapping body.  The runtime gates therefore match the SAME
 // list, not the "gfx11" prefix, so such a part falls back to hipBLASLt / the portable kernels instead of launching code
 // that is not there.  Pure string matching (no HIP headers), usable from host code of any build.
@@ -22,7 +22,7 @@ inline bool gfx_arch_is(const char* gcn, const char* name) {
 /// The gfx11 targets the matrix-core kernels (prompt GEMM / attention / scorer / fused experts) are compiled for.
 inline bool gfx_arch_is_gfx11_wmma(const char* gcn) {
     return gfx_arch_is(gcn, "gfx1100") || gfx_arch_is(gcn, "gfx1101") || gfx_arch_is(gcn, "gfx1102") || gfx_arch_is(gcn, "gfx1103") ||
-           gfx_arch_is(gcn, "gfx1150") || gfx_arch_is(gcn, "gfx1151");
+           gfx_arch_is(gcn, "gfx1150") || gfx_arch_is(gcn, "gfx1151") || gfx_arch_is(gcn, "gfx1152");
 }
 
 /// The gfx12 (RDNA4) targets the gfx12 matrix-core kernels are compiled for (`#if defined(__gfx1200__) ||
