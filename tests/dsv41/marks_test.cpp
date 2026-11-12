@@ -13,6 +13,7 @@
 #include <vector>
 
 using strata::ds4::latest_point;
+using strata::ds4::learn_point;
 using strata::ds4::mark_plan;
 using strata::ds4::mark_victim;
 using strata::ds4::MarkAt;
@@ -286,6 +287,46 @@ int main() {
         TailCost cheap;
         assert(cheap.add(10000.0, 20000, 450.0, 512) && cheap.add(10000.0, 20000, 460.0, 512));
         assert(cheap.measured() && !cheap.costly());
+    }
+    // learn_point: one more restore point where a prompt parts from one the engine knows (STRATA_DS4_LEARN_STARTS).
+    // The numbers are a coding agent's new session: the system prompt and tools end at 9000 (the shared start, where
+    // this read begins), the instructions its first message opens with are the last session's up to token 22000.
+    {
+        std::vector<MarkAt> cuts = {{9000, true}, {48000, false}};
+        assert(learn_point(cuts, 22000, 9000, 49000, 8, 2048, 1024, 16) == 21992);   // 8 short of the place
+        assert(cuts.size() == 3 && cuts[1].pos == 21992 && !cuts[1].shared);       // (added in order)
+        // the read starts fewer than `least` tokens before the place: not worth a point
+        cuts = {{9000, true}};
+        assert(learn_point(cuts, 10500, 9000, 49000, 8, 2048, 1024, 16) == -1 && cuts.size() == 1);
+        // a point the request asks for within the gap before it stands in for it
+        cuts = {{9000, true}, {21985, false}, {48000, false}};
+        assert(learn_point(cuts, 22000, 9000, 49000, 8, 2048, 1024, 16) == 21985 && cuts.size() == 3);
+        // one within the gap after it does not (it may hold this prompt's own words): the learned point moves back
+        cuts = {{9000, true}, {22001, false}, {48000, false}};
+        assert(learn_point(cuts, 22000, 9000, 49000, 8, 2048, 1024, 16) == 21985);   // 22001 - 16
+        assert(cuts.size() == 4 && cuts[1].pos == 21985 && cuts[2].pos == 22001);
+        // ... and a point within the gap before that place then stands in
+        cuts = {{9000, true}, {21975, false}, {22001, false}};
+        assert(learn_point(cuts, 22000, 9000, 49000, 8, 2048, 1024, 16) == 21975 && cuts.size() == 3);
+        // never ahead of a shared start: a read from token 0 that parts inside the system prompt and tools (another
+        // tool list) keeps the shared start as its first point, and the serve loop keeps that one apart
+        cuts = {{9000, true}, {48000, false}};
+        assert(learn_point(cuts, 5000, 0, 49000, 8, 2048, 1024, 16) == -1 && cuts.size() == 2);
+        // the cap holds
+        cuts = {{9000, true}, {30000, false}};
+        assert(learn_point(cuts, 22000, 9000, 49000, 8, 2048, 1024, 2) == -1 && cuts.size() == 2);
+        // a start shorter than the shortest start kept
+        cuts = {};
+        assert(learn_point(cuts, 900, 0, 49000, 8, 512, 1024, 16) == -1 && cuts.empty());
+        // the prompt's last token is left to the usual checkpoints
+        cuts = {};
+        assert(learn_point(cuts, 3000, 0, 3001, 0, 512, 1024, 16) == -1 && cuts.empty());
+        // the point the read starts at stands in for one fewer than a gap past it: nothing to keep
+        cuts = {{9000, true}};
+        assert(learn_point(cuts, 9020, 9000, 49000, 8, 0, 1024, 16) == -1 && cuts.size() == 1);
+        // off through the cap (a conversation that keeps no restore points)
+        cuts = {};
+        assert(learn_point(cuts, 22000, 9000, 49000, 8, 2048, 1024, 0) == -1);
     }
     std::printf("ds4_marks_test: ok\n");
     return 0;

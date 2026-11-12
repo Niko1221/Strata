@@ -133,6 +133,10 @@ The server speaks to the engine as it does for the other models, so `/v1/chat/co
   back when the next prompt continues it, also after a restart. Slots live in `ds4-slots` next to the run log, are capped at 2 GB
   (`STRATA_DS4_SLOT_GB`) and are removed after a week. The system prompt and tools shared by an agent
   and its sub-agents are kept as a checkpoint too. `STRATA_DS4_SLOT_KEEP=0` and `STRATA_DS4_AUTO_PIN=0` turn this off.
+  With `STRATA_DS4_LEARN_STARTS=1` (off by default) the engine also keeps a start where a new conversation parts from
+  an earlier one. An agent that opens every session with the same instructions in its first message then stops reading
+  them again: the second session behind them keeps the start, and the ones after it read only from their own first
+  words on.
 
 Pictures are on by default: the engine reads them with its own vision tower (no separate picture reader). The tower waits in RAM (about 1 GB of pinned
 memory) and takes its 319 MiB of graphics memory only while a picture is being read, out of the room `--reserve-mib` keeps free; the experts get that room
