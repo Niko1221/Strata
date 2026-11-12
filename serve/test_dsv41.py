@@ -495,6 +495,18 @@ class Api(ApiBase):
         tc = r["choices"][0]["message"]["tool_calls"][0]
         self.assertEqual((tc["function"]["name"], json.loads(tc["function"]["arguments"])), ("get_weather", {"city": "Rome"}))
 
+    def test_forced_tool_choice_on_responses(self):
+        for choice in ({"type": "function", "name": "get_weather"}, "required"):     # one tool: "required" names it
+            with self.subTest(choice=choice):
+                self.start('<｜DSML｜ parameter name="city" string="true">Rome</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>')
+                status, r = self.post("/v1/responses", {"input": "hi", "reasoning": {"effort": "none"},
+                                                        "tools": [{"type": "function", **WEATHER["function"]}],
+                                                        "tool_choice": choice})
+                self.assertEqual(status, 200, r)
+                self.assertTrue(self.prompt().endswith('<｜Assistant｜></think><｜DSML｜ calls>\n<｜DSML｜ invoke name="get_weather">\n'), self.prompt()[-120:])
+                self.assertEqual([(o["type"], o["name"], json.loads(o["arguments"])) for o in r["output"]],
+                                 [("function_call", "get_weather", {"city": "Rome"})])
+
     # -- anthropic ---------------------------------------------------------------------------------
     def test_anthropic_tool_use(self):
         self.start("Weather needed.</think>" + call(("get_weather", [("city", "Oslo", True), ("days", "1", False)])))
