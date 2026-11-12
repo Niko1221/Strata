@@ -74,6 +74,25 @@ and their limits. Report what you actually measured and label estimates separate
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
+- [2026-11-08: 4x RTX 2080 Ti 22 GB (sm_75), Xeon E5-2680 v4 without AVX-512, 121 GiB RAM](../bench/results/2026-11-08-t-final8/2026-11-08-community-4x-rtx-2080-ti-deepseek-v4-1-flash/README.md):
+  DeepSeek-V4.1-Flash, ISTA-DASLab 2.00 bpw with the DSpark drafter, 131,072-token context, tensor parallel 4 with the
+  CPU-lane experts in RAM; five `--long` runs each at 4,096 / 16,384 / 32,768 prompt tokens plus the chat and agent suites.
+  Decode 39.1 tok/s chat and 31.4 agent; prompt 539 / 905 / 1035 tok/s; a 128-token decode at 32K runs at 34.96 ms a
+  token. Not a standard-protocol result (`tools/strata_bench.py`, labelled in the report). `DS4_DEFAULTS=075` changes
+  numerics and stays opt-in, recorded with its quality numbers. Not tested: HIP build (no toolchain), Windows package.
+
+- [2026-11-09: 4x RTX 2080 Ti 22 GB (sm_75), Xeon E5-2680 v4 without AVX-512, 121 GiB RAM — coder set](../bench/results/2026-11-09-t-coder/2026-11-09-community-4x-rtx-2080-ti-deepseek-v4-1-flash/README.md):
+  the same box on ISTA-DASLab's `DeepSeek-V4.1-Flash-1017-GSQ-RCO-Coder` (IQ2_XXS, 272 G parameters, six shards with the
+  set's Engram as shard 6), DSpark `Q8_0`, 131,072-token context, tensor parallel 4, five `--long` runs: decode 42.6 tok/s
+  chat and 39.1 agent, prompt 487.5 / 892.7 / 1054.9 tok/s at 4,096 / 16,384 / 32,768 tokens. Same provenance and limits
+  as the report: `tools/strata_bench.py`, not the standard protocol; `DS4_DEFAULTS=075` was tuned on the non-coder set.
+
+- [2026-11-09: 4x RTX 2080 Ti 22 GB (sm_75), Xeon E5-2680 v4 without AVX-512, 121 GiB RAM — 2.25 bpw set](../bench/results/2026-11-09-t-225/2026-11-09-community-4x-rtx-2080-ti-deepseek-v4-1-flash/README.md):
+  the same box on ISTA-DASLab's 2.25 bits-per-weight set (149.1 GB of experts at 2.19 bpw, 544 G parameters), DSpark `Q8_0`,
+  131,072-token context, tensor parallel 4, five `--long` runs: decode 32.3 tok/s chat and 26.9 agent, prompt 534.7 / 941.1 /
+  1060.6 tok/s at 4,096 / 16,384 / 32,768 tokens. Its CPU-lane experts are copied into RAM as on the other sets (80.2 GB); the slower decode
+  comes from 13.5% more bytes a routed expert (9.71 MB against 8.55) and a larger file-backed share.
+
 ## Run the standard benchmark
 
 ```sh
