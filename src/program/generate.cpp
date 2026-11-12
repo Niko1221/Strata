@@ -14007,6 +14007,7 @@ int main(int argc, char** argv) {
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
+                        "experts=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
@@ -14017,6 +14018,7 @@ int main(int argc, char** argv) {
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
                         (long long) slots_all, (long long) mib_all,
+                        (long long) g.n_expert,
                         (long long) slots_primary, (long long) mib_primary,
                         o.spec, o.mtp_max_t,
                         o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
@@ -14305,10 +14307,10 @@ int main(int argc, char** argv) {
                          (long long) (free_b >> 20), (long long) o.prefill_chunk,
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), note.c_str());
             std::printf("VRAM reserve_mib=%lld expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
-                        "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve,
+                        "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld experts=%lld\n", reserve,
                         (long long) xcache.slots(), (long long) xcache.full_slots(),
                         (long long) (xcache.mapped_bytes() >> 20), (long long) (xcache.full_bytes() >> 20),
-                        (long long) (free_b >> 20), (long long) o.prefill_chunk);
+                        (long long) (free_b >> 20), (long long) o.prefill_chunk, (long long) g.n_expert);
             return true;
         };
         // ---- --batch: the slots of the batch windows

@@ -14818,8 +14818,9 @@ struct Model::Impl {
         char b[512];
         // kv=fp4: DeepSeek's own cache layout (the compressed KV and the index keys FP4, the window FP8)
         std::snprintf(b, sizeof b, "INFO context=%lld kv=fp4 kv_resident=%lld expert_slots=%d engine_kind=ds4 "
-                                   "cpu_experts=%d ram_experts=%d engine=ds4-0.1",
-                      (long long) o.max_context, (long long) o.max_context, g.nl * g.n_exp - nh, nh, ram_held);
+                                   "cpu_experts=%d ram_experts=%d experts=%d engine=ds4-0.1",
+                      (long long) o.max_context, (long long) o.max_context, g.nl * g.n_exp - nh, nh, ram_held,
+                      g.n_exp);
         v.push_back(b);
         if (commit_kept > 0) {   // (Windows, an integrated GPU: the commit kept experts off the GPU - the server says so)
             std::snprintf(b, sizeof b,

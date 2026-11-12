@@ -47,11 +47,12 @@ class EngineCommand(unittest.TestCase):
     def test_the_line_and_the_answer(self):
         e = self.engine(["strata serve: something else\n",
                          "VRAM reserve_mib=6000 expert_slots=1200 expert_slots_full=3700 expert_cache_mib=1536 "
-                         "expert_cache_full_mib=4900 vram_free_mib=6100 prompt_chunk=2048\n"])
+                         "expert_cache_full_mib=4900 vram_free_mib=6100 prompt_chunk=2048 experts=256\n"])
         out = e.vram(6000)
         self.assertEqual(e.proc.stdin.getvalue(), "VRAM 6000\n")
         self.assertEqual(out["expert_slots"], 1200)
         self.assertEqual(out["prompt_chunk"], 2048)
+        self.assertEqual(out["experts"], 256)
         self.assertEqual(e.info["expert_slots"], 1200)
         e = self.engine(["VRAM reserve_mib=700 expert_slots=3700\n"])
         e.vram(None)
