@@ -245,5 +245,9 @@
   "tool.running": "En marcha",
   "tool.skipped": "No ejecutada",
   "tool.writing": "Escribiendo",
-  "undo": "Deshacer"
+  "undo": "Deshacer",
+  "sidebar.import": "Recuperar un chat guardado",
+  "sidebar.imported": "Chat recuperado",
+  "sidebar.importFailed": "Nada que recuperar",
+  "sidebar.importFailedText": "No hay conversaciones en el archivo. El guardado escribe '## You' y las respuestas del modelo."
 }
