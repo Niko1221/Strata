@@ -1,0 +1,41 @@
+{
+  "description": "Only publication copies were modified; measurements and raw generated outputs are preserved. SHA256SUMS covers all publication files except itself.",
+  "transformations": [
+    {
+      "path": "before-standard/results.json",
+      "source_sha256": "4cbe3d9dd4e3fa944c6bb489c60b9601fd945ff8c37ce295f817dafdee244518",
+      "published_sha256": "ca35712a9ba147a168c9a964f7f5b41df4e7c1872682d05a50f0c0c70bae9d8c",
+      "reason": "replace private benchmark output directory with <RESULTS>/"
+    },
+    {
+      "path": "after-standard/results.json",
+      "source_sha256": "70310b382d7a3e4bdee3181e26f1d6f00aa1e24de975bbc526fb3147f36a7395",
+      "published_sha256": "5875c68f307cce633620447e9c474387f1ec8576de56460c2d38d9127e41aeee",
+      "reason": "replace private benchmark output directory with <RESULTS>/"
+    },
+    {
+      "path": "before-community/README.md",
+      "source_sha256": "222787da8e01f451f6e9161733411681b9567299e82a50202c1047a367594a4d",
+      "published_sha256": "16c93c242c698973591839753d6d4bd802a1b2c9e185e60c7ad19661c7e7cbe6",
+      "reason": "omit unrelated drive inventory"
+    },
+    {
+      "path": "before-community/results.json",
+      "source_sha256": "c441ece813b77441b3d7005af80e8a8bb00dbc010d59ac49ac361bbfc3ac1dc6",
+      "published_sha256": "c887c5f0f277061efd1d56be4b03eb523567ce4515c1c8139af5b12e0c477a87",
+      "reason": "omit unrelated drive inventory"
+    },
+    {
+      "path": "after-community/README.md",
+      "source_sha256": "d413b0e91f7ed71f8a5e85e9e69d56b05926e0a056b7de3b50deb13e896396d3",
+      "published_sha256": "2ce31b2014e8c6a420e05773a3d5eb7a77c2357dfec3aa077ea3ef826b2fd65c",
+      "reason": "omit unrelated drive inventory"
+    },
+    {
+      "path": "after-community/results.json",
+      "source_sha256": "2f8e6792c7cd22f552458782250b85f3258d4e56e882a026e9a3d902b168e004",
+      "published_sha256": "ab6744bdb422f376edea986b9d1e325adfb1bb80d635928b065533dc35701681",
+      "reason": "omit unrelated drive inventory"
+    }
+  ]
+}
