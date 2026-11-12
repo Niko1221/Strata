@@ -127,6 +127,12 @@ inline std::vector<int> restrict_list(const std::vector<int>& list, const std::v
     return out;
 }
 
+/// The threads release_host_inheritors moved off the host's CPUs, and the two placements (CPU numbers).
+struct Inheritors {
+    std::vector<int> tids;
+    std::vector<int> host, off;
+};
+
 /// What `--aux-cpus` / STRATA_AUX_CPUS said.  `on`: placed from the start-up; `use_list`: the list, not `auto`.
 struct Config {
     bool on = false;
@@ -325,8 +331,9 @@ inline bool place_off_host() {
 
 /// Called on the host thread: every other thread that runs on exactly the host's CPUs (it inherited them: the prefill
 /// copy threads started by the first prompt, a helper the host started) goes where place_off_host puts a thread.  The
-/// pool's workers and the host threads are never moved.  Returns how many moved.
-inline int release_host_inheritors() {
+/// pool's workers and the host threads are never moved.  Returns how many moved; `moved` (when given) gets them, for
+/// restore_host_inheritors.
+inline int release_host_inheritors(Inheritors* moved = nullptr) {
     detail::State& s = detail::state();
     std::lock_guard<std::mutex> lk(s.mu);
     cpu_set_t host, all, to;
@@ -343,8 +350,43 @@ inline int release_host_inheritors() {
         cpu_set_t m;
         CPU_ZERO(&m);
         if (sched_getaffinity(tid, sizeof m, &m) != 0 || !detail::same_mask(m, host)) continue;
-        if (sched_setaffinity(tid, sizeof to, &to) == 0) ++n;
+        if (sched_setaffinity(tid, sizeof to, &to) == 0) {
+            ++n;
+            if (moved != nullptr) moved->tids.push_back(tid);
+        }
     }
+    if (moved != nullptr && !moved->tids.empty()) {
+        moved->host.clear();
+        moved->off.clear();
+        for (int c = 0; c < CPU_SETSIZE; ++c) {
+            if (CPU_ISSET(c, &host)) moved->host.push_back(c);
+            if (CPU_ISSET(c, &to)) moved->off.push_back(c);
+        }
+    }
+    return n;
+}
+
+/// Puts the threads release_host_inheritors moved back on the host's CPUs - those still alive and still where it put
+/// them (a thread somebody placed since, or a tid that came back for another thread on other CPUs, is left alone).
+/// Returns how many; `m` is emptied.  (STRATA_ADMIT_OVERLAP: after its read, as before it.)
+inline int restore_host_inheritors(Inheritors& m) {
+    if (m.tids.empty()) return 0;
+    detail::State& s = detail::state();
+    std::lock_guard<std::mutex> lk(s.mu);
+    cpu_set_t host, off;
+    CPU_ZERO(&host);
+    CPU_ZERO(&off);
+    for (int c : m.host) CPU_SET(c, &host);
+    for (int c : m.off) CPU_SET(c, &off);
+    int n = 0;
+    for (int tid : m.tids) {
+        if (s.owned.find(tid) != s.owned.end() || !detail::alive(tid)) continue;
+        cpu_set_t now;
+        CPU_ZERO(&now);
+        if (sched_getaffinity(tid, sizeof now, &now) != 0 || !detail::same_mask(now, off)) continue;
+        if (sched_setaffinity(tid, sizeof host, &host) == 0) ++n;
+    }
+    m.tids.clear();
     return n;
 }
 
@@ -417,7 +459,8 @@ inline int restore() { return 0; }
 inline void set_enabled(bool) {}
 inline bool enabled() { return false; }
 inline bool place_off_host() { return false; }   // (a new thread does not inherit the host's CPU set here)
-inline int release_host_inheritors() { return 0; }
+inline int release_host_inheritors(Inheritors* = nullptr) { return 0; }
+inline int restore_host_inheritors(Inheritors& m) { m.tids.clear(); return 0; }
 inline std::vector<int> plan() { return {}; }
 inline std::string set_topology(int, const std::vector<int>&) { return "strata aux cpus: not available on this system"; }
 
