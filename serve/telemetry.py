@@ -3,9 +3,11 @@
 A background thread samples once a second and keeps the last 60 readings of each series for the sparklines:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On macOS (Metal backend): IOKit's
-  IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and an Apple
-  Silicon GPU sits on the die, so there is no PCIe link.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  With the SYCL backend (#5353, a container
+  without the NVIDIA library): an Intel Arc's xe-driver sysfs files - temperature, power and PCIe link; load and
+  VRAM from the root sampler's /run/gpustat.json when one runs (sycl/tools/gpustat.py).  On macOS (Metal backend):
+  IOKit's IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and
+  an Apple Silicon GPU sits on the die, so there is no PCIe link.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import collections
 import ctypes
+import json
 import os
 from strata_control import sysinfo
 import re
@@ -345,13 +348,128 @@ class _Metal:
         return out
 
 
+# ------------------------------------------------------------------ Intel Arc (Linux sysfs, the xe driver)
+class _Xe:
+    """#5353: an Intel Arc's readings from sysfs (Linux; the xe driver - no oneAPI library needed), with _Nvml's
+    interface: temperature (the hwmon sensor labeled "pkg"), power (the delta of the hwmon energy counter between
+    samples - xe has no instantaneous power file), its cap (power1_cap) and the PCIe link the card trained at; the
+    hwmon files are world-readable, so this works in a container.  Load and VRAM come from a root sampler's
+    /run/gpustat.json (sycl/tools/gpustat.py): the only VRAM accounting xe exposes is per client in
+    /proc/*/fdinfo, which only root can read - without the sampler those two stay None.
+    The card is the index'th Intel GPU in sysfs order carrying a tile0 folder - the discrete Arcs do, an iGPU on
+    the old i915 driver in front of the card (hybrid hosts) does not, so a vendor match alone would pick the wrong
+    card (#2001).  sycl/serve/xe_telemetry.py is this reader's root-capable sibling for the host install."""
+
+    ARC_NAMES = {"e223": "Arc Pro B70", "e221": "Arc Pro B60", "e211": "Arc Pro B60", "e20b": "Arc B580",
+                 "e20c": "Arc B570", "e212": "Arc B50", "56a0": "Arc A770", "56a1": "Arc A750", "56a2": "Arc A580",
+                 "56a5": "Arc A380", "56a6": "Arc A310", "5690": "Arc A770M"}
+    STAT = "/run/gpustat.json"
+
+    def __init__(self, index=0, sysfs=None):
+        import glob
+        root = os.path.join(sysfs or SYSFS, "class", "drm")
+        cards = []                              # the Intel cards in sysfs order, as setup_intel.py numbers them
+        for d in sorted(glob.glob(os.path.join(root, "card[0-9]*/device"))):
+            try:
+                if self._rd(os.path.join(d, "vendor")) == "0x8086" and os.path.isdir(os.path.join(d, "tile0")):
+                    cards.append(os.path.realpath(d))
+            except OSError:
+                continue
+        self.dev = cards[index] if 0 <= index < len(cards) else None
+        self.hwmon = None
+        for n in glob.glob(os.path.join(self.dev, "hwmon", "hwmon*", "name")) if self.dev else []:
+            self.hwmon = os.path.dirname(n)
+        self._e = None                          # (t, card energy uJ) for power without the sampler
+
+    def ok(self):
+        return self.dev is not None and sys.platform.startswith("linux")
+
+    @staticmethod
+    def _rd(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return None
+
+    def _stat(self):
+        """The sampler's last reading, or None when there is none / it is stale (>15 s: the sampler died)."""
+        try:
+            with open(self.STAT, encoding="utf-8") as f:
+                st = json.load(f)
+            return st if time.time() - float(st.get("ts", 0)) < 15 else None
+        except (OSError, ValueError):
+            return None
+
+    def _link(self):
+        """The link the card trained at: its own functions sit behind an internal x1 switch, so the first port up
+        the path wider than x1; the max is what card AND slot allow (the root port caps it)."""
+        gen = {"2.5": 1, "5.0": 2, "8.0": 3, "16.0": 4, "32.0": 5, "64.0": 6}
+        d, chain = self.dev, []
+        while d and os.path.exists(os.path.join(d, "current_link_speed")):
+            chain.append(d)
+            d = os.path.dirname(d)
+        for p in chain:
+            w = int(self._rd(os.path.join(p, "current_link_width")) or 0)
+            if w > 1:
+                g = lambda q, k: gen.get((self._rd(os.path.join(q, k + "_link_speed")) or "").split(" ")[0])
+                card, slot = g(p, "max"), g(chain[-1], "max")
+                return g(p, "current"), min((x for x in (card, slot) if x), default=None), w
+        return None, None, None
+
+    def name(self):
+        st = self._stat()
+        if (st or {}).get("name"):
+            return st["name"]
+        dev = self._rd(os.path.join(self.dev, "device")) if self.dev else None
+        return "Intel " + self.ARC_NAMES.get((dev or "").lower().replace("0x", ""), "Arc GPU")
+
+    def read(self):
+        out: dict = {"pcie_rx_mb": None, "pcie_tx_mb": None}   # xe exposes no PCIe traffic counters
+        st = self._stat()
+        if st:
+            out["util"] = st.get("busy_pct")
+            if st.get("vram_used_mb") is not None:
+                out["mem_used"] = st["vram_used_mb"] * 2**20
+                out["mem_total"] = st.get("vram_total_mb", 0) * 2**20 or None
+            out["temp"] = st.get("temp_pkg")
+            out["power"] = st.get("power_w")
+            out["power_limit"] = st.get("power_cap_w")
+            out["vram_temp"] = st.get("temp_vram_max") or st.get("temp_vram")
+        if self.hwmon:
+            if out.get("temp") is None:
+                for lab in os.listdir(self.hwmon):
+                    if lab.endswith("_label") and self._rd(os.path.join(self.hwmon, lab)) == "pkg":
+                        v = self._rd(os.path.join(self.hwmon, lab[:-6] + "_input"))
+                        out["temp"] = int(v) / 1000 if v else None
+            if out.get("power") is None:               # energy counter: W = dµJ / dt
+                e, t = self._rd(os.path.join(self.hwmon, "energy1_input")), time.time()
+                if e and e.isdigit():
+                    if self._e and t > self._e[0] and int(e) >= self._e[1]:
+                        out["power"] = (int(e) - self._e[1]) / 1e6 / (t - self._e[0])
+                    self._e = (t, int(e))
+            if out.get("power_limit") is None:
+                cap = self._rd(os.path.join(self.hwmon, "power1_cap"))
+                out["power_limit"] = int(cap) / 1e6 if cap and cap.isdigit() and int(cap) > 0 else None
+        out["pcie_gen"], out["pcie_gen_max"], out["pcie_width"] = self._link()
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or IOKit's
-    IOAccelerator registry on macOS (Metal backend).  `amd` comes first: no Mac runs the HIP backend, and the
-    tests' AMD trees are read on a Mac too."""
+    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), an Intel Arc's
+    sysfs files with the SYCL backend (#5353), or IOKit's IOAccelerator registry on macOS (Metal backend).
+    `amd` comes first: no Mac runs the HIP backend, and the tests' AMD trees are read on a Mac too.  NVML answers
+    first everywhere it has a card; the xe sysfs reader takes an Intel Arc when NVML finds nothing (an NVIDIA
+    library on an Intel host, the SYCL container: #2001 showed the wrong card must not answer)."""
     if amd:
         return _Amd(index)
-    return _Metal(index) if sys.platform == "darwin" else _Nvml(index)
+    if sys.platform == "darwin":
+        return _Metal(index)
+    nv = _Nvml(index)
+    if nv.ok():
+        return nv
+    xe = _Xe(index)
+    return xe if xe.ok() else nv
 
 
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
