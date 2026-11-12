@@ -4,6 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/core/bw_dense_defaults.hpp"
+#include "strata/kernels/ep_kernels.hpp"
 #include "strata/core/geometry.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/core/sm120_series.hpp"
@@ -1426,7 +1427,8 @@ template <int NT>
 __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __restrict__ ids, int n, int k, const int32_t* __restrict__ res,
                                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off,
                                      long long blob, int32_t* __restrict__ pl, long long capx, uint32_t* skip,
-                                     uint32_t ring, volatile uint32_t* plan_err) {
+                                     uint32_t ring, volatile uint32_t* plan_err, const int32_t* __restrict__ res_other,
+                                     int ep_role) {
     constexpr int NW = NT / 32;
     __shared__ int32_t s_ids[NT];
     __shared__ int32_t s_excl[NT];
@@ -1438,11 +1440,16 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
 
     int32_t eid = -1;
     int32_t slot = -1;
+    bool foreign = false;   // expert parallelism: the other card computes this entry
     if (tid < n) {
         eid = ids[tid];
         s_ids[tid] = eid;
-        slot = (eid >= 0 && eid < n_expert) ? res[eid] : -1;
-        if (slot < 0) atomicOr(&s_bad, 1);
+        const bool in_range = eid >= 0 && eid < n_expert;
+        slot = in_range ? res[eid] : -1;
+        // card 0 owns what it holds; card 1 owns what card 0 does not hold (`res` is the planning card's own table)
+        if (ep_role == 1 && slot < 0 && in_range) foreign = res_other != nullptr && res_other[eid] >= 0;
+        if (ep_role == 2 && in_range && res_other != nullptr && res_other[eid] >= 0) { foreign = true; slot = -1; }
+        if (slot < 0 && !foreign) atomicOr(&s_bad, 1);
     }
     __syncthreads();
     if (s_bad) {
@@ -1502,7 +1509,7 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
         ptr[grp_idx] = (unsigned long long) (cache_base + (slot_off ? (size_t) slot_off[slot] : (size_t) slot * (size_t) blob));
         start[grp_idx] = ent_start;
     }
-    if (tid < n) {
+    if (tid < n && !foreign) {
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
@@ -1514,18 +1521,19 @@ __global__ void __launch_bounds__(NT) resident_plan_kernel(const int32_t* __rest
         tok[out_idx] = tid / k;
     }
     if (tid == 0) {
-        int groups;
-        if constexpr (NW == 4) groups = (s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3]) & 0xffff;   // (the 128-thread kernel as it was)
+        int packed;
+        if constexpr (NW == 4) packed = s_wsum[0] + s_wsum[1] + s_wsum[2] + s_wsum[3];   // (the 128-thread kernel as it was)
         else {
-            groups = 0;
+            packed = 0;
 #pragma unroll
-            for (int w = 0; w < NW; ++w) groups += s_wsum[w];
-            groups &= 0xffff;
+            for (int w = 0; w < NW; ++w) packed += s_wsum[w];
         }
-        start[groups] = n;
-        start2[0] = n;
+        const int groups = packed & 0xffff;
+        const int ents = ep_role != 0 ? (packed >> 16) : n;   // without a peer every entry is in a group
+        start[groups] = ents;
+        start2[0] = ents;
         counts[0] = groups;
-        counts[1] = n;
+        counts[1] = ents;
         counts[2] = 0;
         if (skip != nullptr) {
             __threadfence();
@@ -1622,16 +1630,37 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     if (n_entries > kResidentPlanNarrow) {   // a 9..16-row window (kResidentPlanMax == 256 only in a wide build)
         if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
             resident_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
-                                                              blob, plan, capx, skip, ring, plan_err);
+                                                              blob, plan, capx, skip, ring, plan_err, nullptr, 0);
         else {
             std::fprintf(stderr, "resident_plan: %d entries, at most %d\n", n_entries, kResidentPlanMax);
             std::exit(1);
         }
     } else {
         resident_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, res_layer, n_expert, cache_base, slot_off,
-                                                              blob, plan, capx, skip, ring, plan_err);
+                                                              blob, plan, capx, skip, ring, plan_err, nullptr, 0);
     }
     check("resident_plan");
+}
+void resident_plan_ep(const int32_t* ids, int n_entries, int k, const int32_t* res0, const int32_t* res1, int role,
+                      int n_expert, const uint8_t* cache_base, const unsigned long long* slot_off, long long blob,
+                      int32_t* plan, long long capx, void* stream, uint32_t* plan_err) {
+    const int32_t* own = role == 1 ? res0 : res1;
+    const int32_t* other = role == 1 ? res1 : res0;
+    if (n_entries > kResidentPlanNarrow) {
+        if (kResidentPlanMax > kResidentPlanNarrow && n_entries <= kResidentPlanMax)
+            resident_plan_kernel<kResidentPlanMax><<<1, kResidentPlanMax, 0, (cudaStream_t) stream>>>(ids, n_entries, k, own, n_expert, cache_base,
+                                                                                                      slot_off, blob, plan, capx, nullptr, 0,
+                                                                                                      plan_err, other, role);
+        else {
+            std::fprintf(stderr, "resident_plan_ep: %d entries, at most %d\n", n_entries, kResidentPlanMax);
+            std::exit(1);
+        }
+    } else {
+        resident_plan_kernel<kResidentPlanNarrow><<<1, kResidentPlanNarrow, 0, (cudaStream_t) stream>>>(ids, n_entries, k, own, n_expert, cache_base,
+                                                                                                        slot_off, blob, plan, capx, nullptr, 0,
+                                                                                                        plan_err, other, role);
+    }
+    check("resident_plan_ep");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
     wait_flag_ge_or_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, skip);

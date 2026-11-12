@@ -23,6 +23,9 @@ namespace strata::core {
 static bool g_peer_portable = false;
 void set_peer_portable(bool on) { g_peer_portable = on; }
 bool peer_portable() { return g_peer_portable; }
+static bool g_peer_prompt = false;
+void set_peer_prompt(bool on) { g_peer_prompt = on; }
+bool peer_prompt() { return g_peer_prompt; }
 
 namespace {
 

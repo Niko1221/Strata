@@ -84,6 +84,19 @@ class RemoteExpertOpt;
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);
 
+/// Expert parallelism (--expert-parallel-device, kernels/ep_kernels.hpp): a second card holds the experts this card
+/// does not and computes their rows of every window at the same time.  Set before init.
+struct VerifyEp {
+    int device = -1;                                 ///< the peer card; -1: off
+    const int32_t* h_res1 = nullptr;                 ///< the peer's residency table, host [n_layers * n_expert]
+    const int32_t* res1 = nullptr;                   ///< ... in the peer's memory
+    const int32_t* res1_on0 = nullptr;               ///< ... a copy in this card's memory
+    const int32_t* res0_on1 = nullptr;               ///< this card's table, a copy in the peer's memory
+    const uint8_t* cache_base1 = nullptr;            ///< the peer's expert arena
+    const unsigned long long* slot_off1 = nullptr;   ///< the peer's per-slot offsets, its memory (null: slot * blob1)
+    int64_t blob1 = 0;
+};
+
 struct VerifyHits {
     const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert] slot or -1
     const int32_t* h_res = nullptr;      ///< host [n_layers * n_expert] slot or -1 (when all >= 0 in stage: zero-doorbell)
@@ -100,6 +113,8 @@ public:
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
     void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
+    void set_ep(const VerifyEp& ep) { ep_cfg_ = ep; }                       // expert parallelism: before init
+    bool ep_on() const { return ep_cfg_.device >= 0; }
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
@@ -579,6 +594,37 @@ private:
     bool ar_off_ = false;
     bool ar_on() const { return all_resident_ && !ar_off_; }
     void refresh_ar();
+    // ---- expert parallelism (set_ep).  The peer's half of each window is a graph of its own, recorded by
+    // record_window beside this card's, launched just before it.  HIP IPC between the two 7900 XT fails, so every
+    // region the other card writes is host-mapped memory both cards address (each has its own device alias), and
+    // the flags use the engine's mapped-flag idiom (volatile reads, __threadfence_system, a 64-byte line per ring).
+    VerifyEp ep_cfg_;
+    cudaStream_t ep_q_ = nullptr;                  ///< the peer's stream
+    uint32_t* ep_ctr0_ = nullptr;                  ///< this card's window epoch
+    uint32_t* ep_ctr1_ = nullptr;                  ///< the peer's window epoch
+    void* ep_inbox_ = nullptr;                     ///< host region: per group, ids then q8_1 rows
+    void* ep_inbox_d0_ = nullptr;                  ///< ... this card's alias
+    void* ep_inbox_d1_ = nullptr;                  ///< ... the peer's alias
+    void* ep_inflag_ = nullptr;                    ///< host region: one 64-byte line per ring, card 0 -> card 1
+    void* ep_inflag_d0_ = nullptr; void* ep_inflag_d1_ = nullptr;
+    void* ep_rows_ = nullptr;                      ///< host region: the peer's rows; card 0 copies them into parts_
+    void* ep_rows_d0_ = nullptr; void* ep_rows_d1_ = nullptr;
+    void* ep_ret_ = nullptr;                       ///< host region: one 64-byte line per ring, card 1 -> card 0
+    void* ep_ret_d0_ = nullptr; void* ep_ret_d1_ = nullptr;
+    uint8_t* ep_in1_ = nullptr;                    ///< the peer's local copy of its inbox (two groups)
+    float* ep_rows1_ = nullptr;                    ///< the peer's rows before ep_send_rows, its memory
+    uint32_t* ep_done1_ = nullptr;                 ///< ep_send_rows' work-group counter, the peer's memory
+    int32_t* ep_plan1_ = nullptr;                  ///< the peer's plans (two groups), its memory
+    uint8_t* ep_scratch1_ = nullptr;               ///< the peer's native_expert_grouped scratch
+    uint32_t* h_ep_err0_ = nullptr; uint32_t* ep_err0_ = nullptr;             ///< host words a timed-out wait sets
+    uint32_t* h_ep_err1_ = nullptr; uint32_t* ep_err1_ = nullptr;
+    uint32_t* h_ep_plan_err1_ = nullptr; uint32_t* ep_plan_err1_ = nullptr;   ///< the peer's plan error (on neither card)
+    uint32_t ep_spin_ = 2000000u;                  ///< STRATA_EP_SPIN_MAX: reads before a wait gives up
+    size_t ep_slot_bytes_ = 0, ep_xq_off_ = 0;     ///< inbox: bytes per group, offset of the q8_1 rows
+    cudaGraphExec_t ep_exec_[9] = {};              ///< the peer's graph per window size
+    bool ep_init(std::string& err);
+    void ep_free();
+    bool ep_check(std::string& err);               ///< after a window: the waits and the peer's plan did not fail
     uint32_t* h_plan_err_ = nullptr; uint32_t* m_plan_err_ = nullptr;   // set by resident_plan on a -1 (all-resident graph)
     const int32_t* h_res_ = nullptr;      ///< the host residency table (VerifyHits::h_res)
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
