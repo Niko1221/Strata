@@ -142,6 +142,14 @@ the document's experts in the file cache. So it stays opt-in. Reading everything
 decode 9-13%; a larger or smaller RAM budget, more fetch threads, a deeper read-ahead or a wider look-ahead did not
 help.
 
+**NVIDIA without a RAM budget** (3x RTX 3060 12 GB in a layer split, Xeon E5-2697 v2 with the AVX build, 31 GiB, two
+SATA SSDs in RAID0: Swift 1.5 IQ3_XXS with `--resident-experts`, 14.7-15.9 GiB of its 40 GiB of experts in RAM and the
+rest read from `experts.bin` through the file cache): `STRATA_PROMPT_DIRECT=1` applies here too (Linux, `experts.bin`).
+A cold 69.5K-token prompt: 127-147 tokens/s and 318-327K major faults without it, 193-219 tokens/s and 15-38K with it,
+about 200-240 GB read from the drive either way (2 prompts per setting, the "with" pair repeated). The first window's
+logits differed between the two settings no more than between two runs of the same setting (KL 5e-5 to 2e-3, the same
+top token).
+
 **Several cards** (R9700 box, every expert in RAM, layer split, 2 runs each): UD-Q4_K_XL on 1 / 2 / 3 / 4 cards writes
 63 / 64 / 55 / 52 tokens/s on the short story and 88 / 96 / 123 / 96 on code, and reads a 32K prompt at 1,110 /
 1,275 / 1,987 / 2,381 tokens/s; UD-Q5_K_XL 57 / 60 / 62 / 46 and 83 / 94 / 101 / 89, prompt 1,264 / 1,177 / 1,767 /

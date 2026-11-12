@@ -1910,11 +1910,16 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (files && std::getenv("STRATA_STAGER_RING") == nullptr) m.stager->kRing = 4 * threads;
         // pp-opt: with files, each thread claims runs of neighbouring blobs and reads them as one request (copy_blobs);
         // STRATA_STAGER_BATCH=1 is the A/B arm (one blob per request, as before)
+        // prompt_reads (STRATA_PROMPT_DIRECT=1, experts.bin): the source reads every unpinned blob itself, 8 neighbours
+        // per request by default, on the RAM profile's threads; the ring holds every thread's batch twice over
+        const bool preads = src != nullptr && src->prompt_reads();
         {
             const char* bv = std::getenv("STRATA_STAGER_BATCH");
-            const int want = bv ? std::atoi(bv) : files ? 8 : 1;
+            const int want = bv ? std::atoi(bv) : (files || preads) ? 8 : 1;
             m.stager->batch = std::clamp(want, 1, Stager::kMaxBatch);
         }
+        if (preads && !files && std::getenv("STRATA_STAGER_RING") == nullptr)
+            m.stager->kRing = std::clamp(2 * m.stager->batch * threads, 16, 256);
         if (!m.stager->init((size_t) MAXBLOB(), threads)) ok = false;
         m.stager->batch = std::min(m.stager->batch, m.stager->kRing);
     }
@@ -3775,7 +3780,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
                     int job = -1;
                     const uint8_t* b = nullptr;
-                    if (m.src->transient(l, e)) {   // CS-T: copied by the source into the stager's buffer
+                    // CS-T / prompt_reads: copied by the source into the stager's buffer
+                    if (m.src->transient(l, e) || (m.src->prompt_reads() && !m.src->pinned(l, e))) {
                         job = (int) js.size();
                         js.push_back({nullptr, (size_t) lay0.blob_bytes(l), m.src, (int32_t) l, e});
                     } else {
@@ -5684,7 +5690,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                                 if (m.src->pinned(l, e)) continue;
                                 job_of[j] = (int) js.size();
-                                if (m.src->transient(l, e)) {   // CS-T: copied by the source
+                                if (m.src->transient(l, e) || m.src->prompt_reads()) {   // CS-T / prompt_reads: by the source
                                     js.push_back({nullptr, (size_t) lay.blob_bytes(l), m.src, (int32_t) l, e});
                                     continue;
                                 }
@@ -7014,7 +7020,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
         std::fill(pf_job.begin(), pf_job.end(), -1);
         if (m.src == nullptr || !pf_on) return true;
         std::vector<Stager::Job> js;
-        const bool pdirect = false;   // (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
+        const bool pdirect = m.src->prompt_reads();   // STRATA_PROMPT_DIRECT=1, experts.bin (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
         for (int32_t e = 0; e < NE; ++e) {
             if ((m.host_res && m.cache && m.host_res[(size_t) l * NE + e] >= 0) || m.src->pinned(l, e)) continue;
             pf_job[(size_t) e] = (int) js.size();
@@ -7079,7 +7085,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
             if (cnt[(size_t) e] == 0 && pf_job[(size_t) e] >= 0) m.stager->skip(pf_job[(size_t) e]);
         if (!pf_on && m.src != nullptr) {   // STRATA_LM_PREFETCH=0: the routed experts only, started now
             std::vector<Stager::Job> js;
-            const bool pdirect = false;   // (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
+            const bool pdirect = m.src->prompt_reads();   // STRATA_PROMPT_DIRECT=1, experts.bin (STRATA_PREFILL_DIRECT, #1670's other commit, is not ported)
             for (size_t u = 0; u < uniq.size(); ++u) {
                 const int32_t e = uniq[u];
                 if (resident(e) || m.src->pinned(l, e)) continue;
