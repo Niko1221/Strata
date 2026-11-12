@@ -1,0 +1,99 @@
+# Engine timing log excerpt for run 20261108T073052Z-5b747d5c (strata engine log, from the model load of this run to the end of the standard suite; the engine was freshly loaded and served no other requests). Home directory replaced with $HOME.
+strata metal: HC read in Q8_0 (STRATA_HC_Q8=0: BF16): 290 matrices, 680 MB, made in 96 ms
+strata metal: decode window on Apple M3 Max: $HOME/Documents/Strata/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf wrapped (54.8 GB), 131200 cells, PLE on, ready in 2983 ms
+strata metal: MTP draft round in one command buffer (embedding type 23 on the GPU: max |GPU - host| 0 over 8 rows)
+strata metal: MTP draft layer from $HOME/Documents/Strata/mtp/mtp-q2_0.gguf (0.89 GB, 9 norms folded), draft head over 106299 tokens
+strata serve: conversation cache sized from the free RAM: 4608 MiB for up to 4 parked conversations, so an agent's next turn reuses its prompt (--conversation-cache-mib N sets it, 0 turns it off)
+strata serve: STRATA_ROUTE_TAIL_SKIP=7 is ON (default): a missed expert that every token of a verify window routes at rank 7 or lower is skipped (+10..20% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); STRATA_ROUTE_TAIL_SKIP=0 turns it off
+strata serve: adaptive overlap: off (STRATA_ADAPT_OVERLAP=1 turns it on)
+strata serve: 46001 MiB of VRAM free with everything loaded
+strata metal: prompt kernels (mac-kern's prompt chain) for chunks of 70 rows, the older expert / attention kernels (no M5 layout), ready in 88 ms
+strata serve: prompt 75 tokens = 0 reused + 75 read in 2365 ms (31.7 tok/s), 128 generated in 2263 ms (56.6 tok/s), drafts accepted 55 of 75, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 2 windows, 5 of 5 drafts accepted
+strata serve: conversation cache: parked 202 tokens in 21.4 ms; parked=1 bytes=239246168 evictions=0 snapshot_bytes=239246168 reused_kv_bytes=0
+strata metal: prompt kernels (mac-kern's prompt chain) for chunks of 72 rows, the older expert / attention kernels (no M5 layout), ready in 27 ms
+strata serve: prompt 77 tokens = 0 reused + 77 read in 498 ms (154.7 tok/s), 352 generated in 6162 ms (57.1 tok/s), drafts accepted 147 of 208, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 9 windows, 11 of 13 drafts accepted
+strata serve: conversation cache: parked 428 tokens in 18.5 ms; parked=2 bytes=481918528 evictions=0 snapshot_bytes=242672360 reused_kv_bytes=0
+strata metal: prompt kernels (mac-kern's prompt chain) for chunks of 2048 rows, the older expert / attention kernels (no M5 layout), ready in 257 ms
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 7767 ms (527.0 tok/s), 512 generated in 9902 ms (51.7 tok/s), drafts accepted 191 of 326, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 25 windows, 27 of 31 drafts accepted
+strata serve: conversation cache: parked 4604 tokens in 29.8 ms; parked=3 bytes=788366120 evictions=0 snapshot_bytes=306447592 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 34187 ms (479.3 tok/s), 512 generated in 10186 ms (50.3 tok/s), drafts accepted 196 of 326, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 24 windows, 29 of 34 drafts accepted
+strata serve: conversation cache: parked 16899 tokens in 72.1 ms; parked=4 bytes=1282592068 evictions=0 snapshot_bytes=494225948 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 686 ms (112.2 tok/s), 386 generated in 6962 ms (55.4 tok/s), drafts accepted 164 of 223, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 14 windows, 14 of 16 drafts accepted
+strata serve: conversation cache: parked 462 tokens in 7.3 ms; parked=4 bytes=1286561756 evictions=1 snapshot_bytes=243215856 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 8500 ms (481.5 tok/s), 512 generated in 9538 ms (53.7 tok/s), drafts accepted 229 of 309, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 32 windows, 51 of 58 drafts accepted
+strata serve: conversation cache: parked 4605 tokens in 13.0 ms; parked=4 bytes=1350391904 evictions=2 snapshot_bytes=306502508 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 33606 ms (487.6 tok/s), 512 generated in 13922 ms (36.8 tok/s), drafts accepted 201 of 344, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 26 windows, 44 of 60 drafts accepted
+strata serve: conversation cache: parked 16898 tokens in 62.3 ms; parked=4 bytes=1538170256 evictions=3 snapshot_bytes=494225944 reused_kv_bytes=0
+strata serve: prompt 77 tokens = 0 reused + 77 read in 611 ms (125.9 tok/s), 283 generated in 7499 ms (37.7 tok/s), drafts accepted 123 of 168, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 15 windows, 21 of 23 drafts accepted
+strata serve: conversation cache: parked 360 tokens in 41.0 ms; parked=4 bytes=1285578444 evictions=4 snapshot_bytes=241634136 reused_kv_bytes=0
+strata serve: prompt 4093 tokens = 0 reused + 4093 read in 10448 ms (391.8 tok/s), 512 generated in 17303 ms (29.6 tok/s), drafts accepted 219 of 334, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 30 windows, 57 of 71 drafts accepted
+strata serve: conversation cache: parked 4605 tokens in 16.9 ms; parked=4 bytes=1348865096 evictions=5 snapshot_bytes=306502508 reused_kv_bytes=0
+strata serve: prompt 16387 tokens = 0 reused + 16387 read in 50152 ms (326.7 tok/s), 512 generated in 19380 ms (26.4 tok/s), drafts accepted 196 of 336, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 34 windows, 47 of 55 drafts accepted
+strata serve: conversation cache: parked 16898 tokens in 60.2 ms; parked=4 bytes=1536588532 evictions=6 snapshot_bytes=494225944 reused_kv_bytes=0
+strata serve: prompt 82 tokens = 0 reused + 82 read in 729 ms (112.5 tok/s), 68 generated in 1989 ms (34.2 tok/s), drafts accepted 33 of 36, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 14 windows, 16 of 16 drafts accepted
+strata serve: conversation cache: parked 149 tokens in 36.8 ms; parked=4 bytes=1280814844 evictions=7 snapshot_bytes=238452256 reused_kv_bytes=0
+strata serve: prompt 90 tokens = 0 reused + 90 read in 838 ms (107.4 tok/s), 56 generated in 1670 ms (33.5 tok/s), drafts accepted 25 of 30, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 4 windows, 4 of 4 drafts accepted
+strata serve: conversation cache: parked 145 tokens in 18.2 ms; parked=4 bytes=1277571924 evictions=8 snapshot_bytes=238391216 reused_kv_bytes=0
+strata serve: prompt 85 tokens = 0 reused + 85 read in 717 ms (118.6 tok/s), 94 generated in 2828 ms (33.2 tok/s), drafts accepted 44 of 50, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 17 windows, 17 of 17 drafts accepted
+strata serve: conversation cache: parked 179 tokens in 19.3 ms; parked=4 bytes=1209949196 evictions=9 snapshot_bytes=238879780 reused_kv_bytes=0
+strata serve: prompt 71 tokens = 0 reused + 71 read in 686 ms (103.5 tok/s), 44 generated in 1280 ms (34.4 tok/s), drafts accepted 19 of 24, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 3 windows, 3 of 3 drafts accepted
+strata serve: conversation cache: parked 114 tokens in 6.7 ms; parked=4 bytes=953625820 evictions=10 snapshot_bytes=237902568 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 10908 ms (374.9 tok/s), 66 generated in 1882 ms (35.1 tok/s), drafts accepted 30 of 36, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 8 windows, 8 of 8 drafts accepted
+strata serve: conversation cache: parked 4155 tokens in 20.5 ms; parked=4 bytes=1014774928 evictions=11 snapshot_bytes=299601364 reused_kv_bytes=0
+strata serve: prompt 4089 tokens = 0 reused + 4089 read in 10664 ms (383.4 tok/s), 65 generated in 1735 ms (37.5 tok/s), drafts accepted 30 of 34, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 6 windows, 6 of 6 drafts accepted
+strata serve: conversation cache: parked 4153 tokens in 14.4 ms; parked=4 bytes=1075985068 evictions=12 snapshot_bytes=299601356 reused_kv_bytes=0
+strata serve: prompt 16382 tokens = 0 reused + 16382 read in 43031 ms (380.7 tok/s), 79 generated in 2216 ms (35.7 tok/s), drafts accepted 34 of 44, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 7 windows, 7 of 7 drafts accepted
+strata serve: conversation cache: parked 16460 tokens in 23.1 ms; parked=4 bytes=1324619444 evictions=13 snapshot_bytes=487514156 reused_kv_bytes=0
+strata serve: prompt 16390 tokens = 0 reused + 16390 read in 42576 ms (385.0 tok/s), 117 generated in 3276 ms (35.7 tok/s), drafts accepted 51 of 66, 2 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 9 windows, 9 of 9 drafts accepted
+strata serve: conversation cache: parked 16507 tokens in 44.2 ms; parked=4 bytes=1693086732 evictions=14 snapshot_bytes=606369856 reused_kv_bytes=0
+strata serve: prompt 325 tokens = 0 reused + 325 read in 1293 ms (251.4 tok/s), 77 generated in 1996 ms (38.6 tok/s), drafts accepted 38 of 41, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 5 windows, 7 of 7 drafts accepted
+strata serve: conversation cache: parked 402 tokens in 7.5 ms; parked=4 bytes=1635786136 evictions=15 snapshot_bytes=242300768 reused_kv_bytes=0
+strata serve: prompt 335 tokens = 0 reused + 335 read in 1417 ms (236.5 tok/s), 93 generated in 2474 ms (37.6 tok/s), drafts accepted 42 of 51, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 9 windows, 9 of 9 drafts accepted
+strata serve: conversation cache: parked 428 tokens in 7.6 ms; parked=4 bytes=1578858172 evictions=16 snapshot_bytes=242673392 reused_kv_bytes=0
+strata serve: prompt 352 tokens = 0 reused + 352 read in 1408 ms (250.0 tok/s), 102 generated in 2525 ms (40.4 tok/s), drafts accepted 48 of 53, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 11 windows, 11 of 11 drafts accepted
+strata serve: conversation cache: parked 453 tokens in 7.2 ms; parked=4 bytes=1334438824 evictions=17 snapshot_bytes=243094808 reused_kv_bytes=0
+strata serve: prompt 339 tokens = 0 reused + 339 read in 1320 ms (256.9 tok/s), 77 generated in 2022 ms (38.1 tok/s), drafts accepted 36 of 41, 1 checkpoints
+strata serve: expert tiers: GPU 0 hits this request; since the start RAM 0 blobs, files 0 blobs 169.9 MB read (the GGUF in place)
+strata serve: suffix drafts: 4 windows, 4 of 4 drafts accepted
