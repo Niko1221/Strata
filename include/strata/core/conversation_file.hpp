@@ -80,8 +80,23 @@ struct SessionConfig {
     uint64_t cvec = 0;
     // the arithmetic switches that change the computed state (name, value), in a fixed order
     std::vector<std::pair<std::string, int64_t>> switches;
+    // every STRATA_* variable the process carries that is not runtime-only, sorted by name (#5379): the engine's
+    // fast paths are chosen by these at load time, and none of them appear in the resolved settings above
+    // (STRATA_HC_Q8 changes which bytes exist; STRATA_ROUTE_TAIL_SKIP changes which scoring path runs).
+    std::vector<std::pair<std::string, std::string>> env;
+    // the engine's device plan, in stage order: stage 0's device first, then the --layer-split devices.  One entry
+    // per device, "name|cc|total MiB": a stage that moved to another card is a different computed state, and neither
+    // the model fingerprint nor any setting above can see that.  Single-device engines carry one entry.
+    std::vector<std::string> devices;
 };
 uint64_t session_config_fingerprint(const SessionConfig& config);
+
+// The identity-relevant environment (#5379): every STRATA_* variable in the process environment, sorted by name,
+// minus the runtime-only names (the park's own placement - the park bytes are unchanged by them - the manifest path and
+// the report/trace knobs that print without changing what the saved bytes mean).  Variables the engine itself sets
+// at start count too: the identity is the resolved environment.  The rule is inclusive by default: an unknown
+// variable joins the fingerprint; a wrong inclusion costs one re-save, a wrong exclusion costs correctness.
+void session_env_identity(std::vector<std::pair<std::string, std::string>>& out);
 
 // One model input the engine loaded and the role it plays ("native shard 1", "expert blk.3.ffn_up", ...).  The role,
 // not the path, enters the fingerprint, so a moved model folder still matches.  Every (role, file) pair counts: one
