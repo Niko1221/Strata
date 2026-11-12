@@ -8,7 +8,9 @@
 //
 // --serve speaks what serve/server.py's StrataEngine expects: INFO lines, then `READY <context> stop`; per request
 // `GEN <max_new> [key=value ...] <id,id,...>` answered by `T <id>` lines and `DONE <generated> <prompt> <prompt ms>
-// <decode ms> <stop|length|cancel> 0 0 <reused> 0 0`; `STOP` ends a request early, `QUIT` the engine.  A prompt that
+// <decode ms> <stop|length|cancel> <drafts accepted> <drafts offered> <reused> <hits> <lookups>`; `STOP` ends a request
+// early, `QUIT` the engine.  hits/lookups are the decode's routed experts already in a VRAM slot, and every routed
+// expert (the same split as STAT's vram_hit).  A prompt that
 // continues the state (the conversation so far) reuses it; one that only shares the last prompt's start goes back to
 // that prompt's end; anything else starts over.  `GENI <max_new> [keys] <file> <ids>` carries the prompt's pictures
 // (the file: see read_pics); the state is shared only where the same picture sits at the same place.  With
@@ -1000,6 +1002,17 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         }
         return out;
     };
+    // DONE's last two numbers, over a decode (from `before` to `after`): experts already in a VRAM slot, and every
+    // routed expert.  The same split as vram_hit above.  A decode that routed nothing is 0 0, which the server shows
+    // as 0%; a dash is only an engine that leaves the two fields off the line.
+    struct CacheHL { long long hits, lookups; };
+    const auto cache_counts = [](const strata::ds4::Stats& before, const strata::ds4::Stats& after) {
+        const long long ex = (long long) (after.experts - before.experts);
+        const long long cx = (long long) (after.cpu_experts - before.cpu_experts);
+        const long long sx = (long long) (after.stream_experts - before.stream_experts);
+        const long long hits = ex - cx - sx;
+        return CacheHL{hits > 0 ? hits : 0, ex > 0 ? ex : 0};
+    };
     // a request's prompt into the bound conversation (one conversation's requests and --parallel's alike): its
     // pictures read, the state it continues reused (in place, a checkpoint, or a kept conversation), the rest read.
     // Its lines carry `tag` (" <rid>" with --parallel), stop_now() is its STOP; false: it ended here (its ERR or
@@ -1472,8 +1485,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         // (a request that ended on an ERR line - the NaN stop above - is over with that line: a DONE after it would be read by the
         //  next request as its own, and every answer after it would arrive one request late)
         if (!nan_stop) {
-            std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", produced, r.ids.size(), t1 - t0, t2 - t1, finish,
-                        d_acc, d_off, from);
+            const CacheHL hl = cache_counts(s_dec, m.stats());
+            std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu %lld %lld\n", produced, r.ids.size(), t1 - t0, t2 - t1,
+                        finish, d_acc, d_off, from, hl.hits, hl.lookups);
             std::fflush(stdout);
         }
         const auto& s = m.stats();
@@ -1514,6 +1528,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             unsigned long long counter = 0;   // (its own: its picks the same alone or beside others)
             int tok = -1;                     // written next, not fed yet
             std::vector<int> got;             // a round's tokens still to write, the last first
+            strata::ds4::Stats dec{};         // counters as the answer starts (DONE's hits/lookups are the decode's)
+            bool dec_have = false;
         };
         const int nseq = m.seq_count();
         std::vector<long long> seq_rid((size_t) nseq, -1);   // the request in each conversation (-1: idle)
@@ -1570,8 +1586,9 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         };
         const auto finish_act = [&](Act& a) {
             const double t2 = now_ms();
-            std::printf("DONE %lld %lld %zu %.1f %.1f %s %lld %lld %zu 0 0\n", a.r.rid, a.produced, a.r.ids.size(),
-                        a.t1 - a.P.t0, t2 - a.t1, a.finish, a.d_acc, a.d_off, a.P.from);
+            const CacheHL hl = a.dec_have ? cache_counts(a.dec, m.stats()) : CacheHL{0, 0};
+            std::printf("DONE %lld %lld %zu %.1f %.1f %s %lld %lld %zu %lld %lld\n", a.r.rid, a.produced, a.r.ids.size(),
+                        a.t1 - a.P.t0, t2 - a.t1, a.finish, a.d_acc, a.d_off, a.P.from, hl.hits, hl.lookups);
             std::fflush(stdout);
             std::fprintf(stderr,
                          "maya ds4 serve: request %lld: prompt %zu tokens = %zu reused + %zu read in %.0f ms (%.1f tok/s), "
@@ -1775,6 +1792,8 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
             a.limit = a.r.max_new > 0 ? a.r.max_new : m.max_context() - (long long) a.r.ids.size();
             penalties(a.r);
             a.tok = m.sample(a.r.temperature, a.r.top_p, a.r.top_k, a.r.min_p, a.r.seed, a.counter++);
+            a.dec = m.stats();   // (after the prompt, as the one-conversation path's s_dec)
+            a.dec_have = true;
         };
         // the next `piece` tokens of its prompt into its conversation (a STOP ends it here, its DONE written); `yield`:
         // the piece ends early at a chunk the model reaches once a line is waiting
