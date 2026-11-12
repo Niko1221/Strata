@@ -16,6 +16,11 @@ What goes in
   `pip install --require-hashes --no-deps --only-binary=:all:` at BUILD time only: every package, direct or
   transitive, is named with an exact version and the SHA-256 of the wheel(s) accepted, so nothing else can land in
   the bundle. pip itself is the one the interpreter shipped with (not upgraded);
+* pip's vendored dependency copies (`pip/_vendor/`) swapped for the fixed versions installed in
+  site-packages, with pip's vendor.txt and its embedded CycloneDX BOM re-aligned: the bundle's
+  runtime packages stay exactly the lock's, but pip vendors its own deps and never upgrades them
+  with itself, and security scanners count those stale vendored copies as real packages
+  (`refresh_pip_vendored`);
 * the application: `strata.py`, `strata_control`, `strata_cli`, `serve`, a `VERSION` file and the docs the CLI
   references;
 * the read-only tooling under `tools/` that the terminal paths import. Everything else under `tools/` is engine
@@ -220,6 +225,97 @@ def install_locked(py: Path, lock: Path, root: Path, wheelhouse: Path | None = N
     if extra or wrong:
         raise SystemExit(f"the bundle does not match its lock: extra {extra}, wrong/missing {wrong}")
     return have
+
+
+#: pip vendors its own dependencies in pip/_vendor/ and does not upgrade them when it upgrades
+#: itself, so the bundled pip can ship vendored copies far older than the locked ones. Security
+#: scanners count those copies as real packages: in the published 0.2.9-cuda13 image, 6 of the 8
+#: remaining HIGH/CRITICAL carriers after a requirements fix were pip/_vendor copies (one
+#: CRITICAL, certifi 2026.6.17 with revoked emSign roots — reachable by pip itself during the
+#: first-start downloads). These two are not in the runtime locks; the fixed versions are
+#: installed into the bundle at build time only for the vendored swap below.
+VENDOR_FIXES = ("msgpack>=1.2.3,<2", "setuptools>=78.1.1,<79")
+#: pip's vendored copies that get replaced by the version installed in site-packages
+VENDOR_SWAPS = ("certifi", "msgpack", "urllib3", "pkg_resources")
+
+
+def refresh_pip_vendored(py: Path, root: Path) -> list[str]:
+    """Replace pip's vendored dependency copies with the fixed versions shipped in site-packages,
+    align pip's vendor.txt manifest with the swaps and refresh the CycloneDX BOM pip embeds so the
+    declared versions match the files actually shipped. Packaging internals only: the bundle's
+    runtime packages stay exactly the lock's, and pip itself is not upgraded."""
+    env = {**os.environ, "PYTHONNOUSERSITE": "1", "PIP_NO_INPUT": "1",
+           "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_CONFIG_FILE": os.devnull}
+    for name in ("PYTHONHOME", "PYTHONPATH"):
+        env.pop(name, None)
+    subprocess.run([str(py), "-m", "pip", "install", "--isolated", "--no-cache-dir",
+                    "--no-warn-script-location", *VENDOR_FIXES],
+                   check=True, cwd=str(root), env=env)
+    script = r'''
+import glob, json, os, re, shutil, subprocess, sys
+import pip
+sp = os.path.dirname(os.path.dirname(pip.__file__))
+vendor = os.path.join(sp, "pip", "_vendor")
+swapped = []
+for name in ("certifi", "msgpack", "urllib3", "pkg_resources"):
+    src = os.path.join(sp, name)
+    dst = os.path.join(vendor, name)
+    if not os.path.isdir(src) or not os.path.isdir(dst):
+        continue
+    shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    swapped.append(name)
+# pip's vendored-deps manifest still names the old versions; scanners parse it too
+vt = os.path.join(vendor, "vendor.txt")
+if os.path.exists(vt):
+    with open(vt) as f:
+        lines = f.readlines()
+    with open(vt, "w") as f:
+        for line in lines:
+            m = re.match(r"^([A-Za-z0-9_.-]+)==(.+)$", line.strip())
+            if m:
+                name = m.group(1)
+                # pkg_resources ships with setuptools: swapping pkg_resources updates setuptools too
+                if name.lower() in swapped or (name.lower() == "setuptools" and "pkg_resources" in swapped):
+                    dists = glob.glob(os.path.join(sp, name.replace("-", "[_.-]") + "-*.dist-info"))
+                    if dists:
+                        base = os.path.basename(dists[0])[:-len(".dist-info")]
+                        f.write("%s==%s\n" % (name, base.rsplit("-", 1)[1]))
+                        continue
+            f.write(line)
+# the license directory of pip's own dist-info ships full source trees of the vendored deps;
+# only the old copies live there — drop the redundant ones (license texts stay in pip's licenses)
+for p in glob.glob(os.path.join(sp, "pip-*.dist-info", "licenses", "src", "pip", "_vendor", "*")):
+    if os.path.isdir(p) and os.path.basename(p) in swapped:
+        shutil.rmtree(p)
+# the CycloneDX BOM pip embeds must match the files shipped: sync versions and purls from dist-info
+bom = os.path.join(vendor, "bom.cdx.json")
+if os.path.exists(bom):
+    real = {}
+    for d in glob.glob(os.path.join(sp, "*.dist-info")):
+        base = os.path.basename(d)[:-len(".dist-info")]
+        real[re.sub(r"[-_.]+", "-", base.rsplit("-", 1)[0]).lower()] = base.rsplit("-", 1)[1]
+    with open(bom) as f:
+        doc = json.load(f)
+    for c in doc.get("components", []):
+        n = re.sub(r"[-_.]+", "-", c.get("name", "")).lower()
+        if n in real and c.get("version") != real[n]:
+            c["version"] = real[n]
+            if c.get("purl") and "@" in c["purl"]:
+                c["purl"] = c["purl"].rsplit("@", 1)[0] + "@" + real[n]
+    with open(bom, "w") as f:
+        json.dump(doc, f)
+# prove pip still works with the swapped copies
+subprocess.run([sys.executable, "-m", "pip", "--version"], check=True)
+print("swapped:", ",".join(sorted(swapped)))
+'''
+    out = subprocess.run([str(py), "-c", script], cwd=str(root), text=True, env=env,
+                         capture_output=True)
+    if out.returncode != 0:
+        sys.stderr.write(out.stdout + out.stderr)
+        raise SystemExit("the pip vendored copies could not be refreshed")
+    swapped = [ln for ln in out.stdout.splitlines() if ln.startswith("swapped: ")]
+    return sorted(swapped[-1].removeprefix("swapped: ").split(",")) if swapped else []
 
 
 def drop_build_path_launchers(root: Path, staging: Path, target: str) -> list[str]:
@@ -432,6 +528,7 @@ def main() -> int:
         if not args.skip_deps:
             print("installing the locked runtime wheels into the bundled interpreter (build time only)")
             installed = install_locked(py, lock, root, Path(args.wheelhouse).resolve() if args.wheelhouse else None)
+            vendored = refresh_pip_vendored(py, root)
             removed = drop_build_path_launchers(root, staging, target)
             # nothing the bundle writes while it is built may stay: compiled files are rebuilt on first use
             for cache_dir in list(root.rglob("__pycache__")):
@@ -467,6 +564,7 @@ def main() -> int:
             "lock": {"file": lock.relative_to(ROOT).as_posix(), "sha256": sha256(lock),
                      "install": "pip install --require-hashes --no-deps --only-binary=:all: (build time only)"},
             "installed": installed,
+            "pip_vendored_swapped": vendored,
             "launchers_removed": removed,
             "payload": list(PAYLOAD),
             "tools_subset": list(TOOLS_SUBSET),
