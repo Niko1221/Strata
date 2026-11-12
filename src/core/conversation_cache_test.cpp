@@ -745,5 +745,27 @@ int main() {
         check(cache.drop_superseded(slot_ids, {}, slot_chain, true) == 1 && cache.size() == 0,
               "the slot's chain supersedes the richer copy");
     }
+    {
+        // PARKLOAD's truncation hazard, pinned as the current contract: PARKSAVE keeps only the shallowest and
+        // the deepest checkpoint, so two sibling branches that diverged AFTER their last shared checkpoint come
+        // back with IDENTICAL chains - put()'s supersede rule (#342: the old copy's deepest checkpoint is held,
+        // "apart from the tail this conversation rewrote") cannot tell a rewritten conversation from a sibling
+        // and the branch read second silently supersedes the first. supersedes_richer (#4420) is blind to it -
+        // nothing richer survives the truncation. The engine now reports such load-time drops (park load counts
+        // evictions/superseded deltas) and the sweep keeps the dropped copy's files young, so the loss is
+        // visible and bounded to RAM, not durable. A semantics fix belongs upstream: held() would also have to
+        // check the entry's LIVE ids.
+        ConversationCache cache(1u << 24, 8);
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        SavedConversation first_branch = image({1, 2, 3, 4, 5, 6});
+        first_branch.checkpoints = {cp({1, 2}), cp({1, 2, 3, 4, 5})};
+        SavedConversation other = image({1, 2, 3, 4, 5, 7, 8, 9});   // diverged at 5, holds its own tail
+        other.checkpoints = {cp({1, 2}), cp({1, 2, 3, 4, 5})};       // the same truncated chain PARKSAVE wrote
+        check(cache.put(std::move(first_branch)), "the first branch loads");
+        check(!cache.supersedes_richer(other.live.ids, other.live.imgs, other.checkpoints, other.cvec),
+              "the #4420 predicate does not see it: the chains are identical");
+        check(cache.put(std::move(other)) && cache.size() == 1 && cache.superseded() == 1,
+              "the second silently supersedes the first - the live tail is lost (the documented hazard)");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
