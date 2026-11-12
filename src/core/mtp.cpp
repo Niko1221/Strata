@@ -252,7 +252,8 @@ bool MtpDrafter::make_q4_head(std::string& err) {
         tt->to_float(src.data() + (size_t) r * in_row, row.data(), N);
         ggml_quantize_chunk(GGML_TYPE_Q4_0, row.data(), dst.data() + (size_t) r * out_row, 0, 1, N, nullptr);
     }
-    // the Q4_0 rows replace the subset in place (they are smaller)
+    // the Q4_0 rows replace the subset in place; load() sized the buffer for max(head row, Q4_0 row), because a head in a
+    // smaller format than Q4_0 (IQ4_XS) has rows smaller than the Q4_0 ones
     if (cudaMemcpy(dhead_, dst.data(), dst.size(), cudaMemcpyHostToDevice) != cudaSuccess) { err = "mtp: writing the draft head"; return false; }
     dhead_type_ = GGML_Q4_0;
     std::fprintf(stderr, "strata mtp: --mtp-q4: draft head over %lld tokens as Q4_0 (%.1f MiB read per step, was %.1f)\n",
@@ -798,8 +799,13 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         if (read_file(vocab_file(), raw) && raw.size() >= 4 && raw.size() % 4 == 0) {
             n_dvocab_ = (int64_t) (raw.size() / 4);
             const int64_t row_bytes = (int64_t) head->row_bytes();   // a vocabulary row of the native head
+            // --mtp-q4 rewrites the subset as Q4_0 rows in place (make_q4_head). A head stored in a format with fewer bits per
+            // weight than Q4_0 (IQ4_XS: 1360 B/row at n_embd 2560 against 1440 B for Q4_0) has smaller rows than the Q4_0 copy,
+            // so the buffer is sized for the larger of the two.
+            const int64_t q4_row_bytes = (q4_head_ && g_->n_embd % 32 == 0) ? (g_->n_embd / 32) * 18 : 0;
+            const int64_t head_cap = std::max(row_bytes, q4_row_bytes);
             if (cudaMalloc((void**) &dvocab_, raw.size()) != cudaSuccess ||
-                cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * row_bytes)) != cudaSuccess) {
+                cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * head_cap)) != cudaSuccess) {
                 err = "mtp: the draft head does not fit";
                 draft_head_hint(n_dvocab_, row_bytes);
                 return false;
@@ -836,7 +842,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 strata::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
             }
             cudaDeviceSynchronize();
-            vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
+            vram_ += (uint64_t) (n_dvocab_ * head_cap) + raw.size();
             std::fprintf(stderr, "strata mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
             dhead_type_ = head->type();
