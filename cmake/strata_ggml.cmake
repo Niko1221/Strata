@@ -60,7 +60,46 @@ macro(strata_ggml_configure_root)
   else()
     set(GGML_NATIVE ON CACHE BOOL "" FORCE)
   endif()
+  # ggml-cpu's AVX2 IQ1_S / IQ1_M dot products (ggml-cpu/arch/x86/quants.c) build their grid indices with BMI2 `pdep`
+  # where __BMI2__ is defined.  AMD Zen 1 / Zen+ / Zen 2 (family 17h, and Hygon's 18h) run pdep in microcode (on the
+  # order of a hundred cycles or more, against a few on Intel and Zen 3+), and there those two dots are 10-19x slower than
+  # their #else branch, which builds the same indices with shifts and masks: the same integer sums, bit for bit.  They
+  # are ggml's only __BMI2__ code (besides ggml_cpu_has_bmi2(), a report).  STRATA_GGML_PDEP=AUTO (the default)
+  # compiles ggml-cpu without __BMI2__ in a native build whose build machine is such a CPU; OFF does it in every build,
+  # ON in none.  The portable (release) build keeps pdep under AUTO: it also runs on the CPUs where pdep is fast.
+  # __BMI2__ comes from GGML_BMI2 (MSVC, and -mbmi2 in a non-native build) or from -march=native (GCC / Clang).
+  set(STRATA_GGML_PDEP "AUTO" CACHE STRING "ggml-cpu's IQ1_S/IQ1_M dots with BMI2 pdep: AUTO (not on a Zen 1/2 build machine), ON, OFF")
+  set_property(CACHE STRATA_GGML_PDEP PROPERTY STRINGS AUTO ON OFF)
+  set(_strata_no_pdep OFF)
+  if(STRATA_GGML_PDEP STREQUAL "OFF")
+    set(_strata_no_pdep ON)
+  elseif(STRATA_GGML_PDEP STREQUAL "AUTO" AND NOT STRATA_PORTABLE AND NOT STRATA_ISA_FLOOR)
+    set(_strata_cpu_vendor "")
+    set(_strata_cpu_family "")
+    if(EXISTS "/proc/cpuinfo")
+      file(STRINGS "/proc/cpuinfo" _strata_cpuinfo LIMIT_COUNT 32)
+      string(REGEX MATCH "vendor_id[ \t]*: ([A-Za-z]+)" _m "${_strata_cpuinfo}")
+      set(_strata_cpu_vendor "${CMAKE_MATCH_1}")
+      string(REGEX MATCH "cpu family[ \t]*: ([0-9]+)" _m "${_strata_cpuinfo}")
+      set(_strata_cpu_family "${CMAKE_MATCH_1}")
+    elseif(WIN32 AND DEFINED ENV{PROCESSOR_IDENTIFIER})   # "AMD64 Family 23 Model 49 Stepping 0, AuthenticAMD"
+      string(REGEX MATCH "Family ([0-9]+) .*, ([A-Za-z]+)$" _m "$ENV{PROCESSOR_IDENTIFIER}")
+      set(_strata_cpu_family "${CMAKE_MATCH_1}")
+      set(_strata_cpu_vendor "${CMAKE_MATCH_2}")
+    endif()
+    if((_strata_cpu_vendor STREQUAL "AuthenticAMD" AND _strata_cpu_family STREQUAL "23") OR
+       (_strata_cpu_vendor STREQUAL "HygonGenuine" AND _strata_cpu_family STREQUAL "24"))
+      set(_strata_no_pdep ON)
+    endif()
+  endif()
+  if(_strata_no_pdep)
+    set(GGML_BMI2 OFF CACHE BOOL "" FORCE)
+    message(STATUS "Strata: ggml-cpu without BMI2 pdep in its IQ1_S/IQ1_M dots (STRATA_GGML_PDEP=${STRATA_GGML_PDEP})")
+  endif()
   add_subdirectory(${_strata_ggml_root}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+  if(_strata_no_pdep AND NOT MSVC)
+    target_compile_options(ggml-cpu PRIVATE -U__BMI2__)   # -march=native defines it whatever GGML_BMI2 says
+  endif()
 endmacro()
 
 # the MMQ instances to build and where the trellis (Gyro) variants come from: the vendored ggml-cuda-tq folder, a fork's ggml, or the overlay of a STRATA_GGML_DIR llama.cpp
