@@ -64,6 +64,44 @@ struct MmTile4 {
 template <> struct MmTile<GGML_TYPE_Q4_0> : MmTile4<false> {};
 template <> struct MmTile<GGML_TYPE_IQ4_NL> : MmTile4<true> {};
 
+// Q5_0: 22 bytes = d (f16), qh (u32: the high bits, one per value), qs[16] (4-bit codes);
+// value j = ((qs nibble) + (qh bit) * 16 - 16) * d, the file's own dequantization (ggml dequantize_q5_0).
+template <> struct MmTile<GGML_TYPE_Q5_0> {
+    uint16_t v[11];
+    bool live, item;
+    __device__ __forceinline__ void fetch(const char* we, size_t row_a, int nrows, int row0, int k0, int kc) {
+        const int r = threadIdx.x / MM_TPR, u = threadIdx.x % MM_TPR, row = row0 + r;
+        item = u * 32 < kc;
+        live = item && row < nrows;
+        if (live) {
+            const uint8_t* b = (const uint8_t*) we + (size_t) row * row_a + (size_t) (k0 / 32 + u) * 22;
+#pragma unroll
+            for (int l = 0; l < 11; ++l) v[l] = (uint16_t) mq_ld16(b + 2 * l);
+        }
+    }
+    __device__ __forceinline__ void put(int, int, __half* sw) const {
+        if (!item) return;
+        const int r = threadIdx.x / MM_TPR, u = threadIdx.x % MM_TPR;
+        if (!live) {
+            mq_zero32(sw + r * MM_LD + u * 32);
+            return;
+        }
+        const float d = mq_half(v[0]);
+        const uint32_t qh = (uint32_t) v[1] | ((uint32_t) v[2] << 16);
+        float f[32];
+#pragma unroll
+        for (int j = 0; j < 16; ++j) {
+            const uint8_t q = (uint8_t) ((v[3 + j / 2] >> (8 * (j % 2))) & 0xFF);
+            const int lo = (int) (q & 0xF) + ((int) ((qh >> j) & 1u) << 4);
+            const int hi = (int) (q >> 4) + ((int) ((qh >> (16 + j)) & 1u) << 4);
+            f[j] = d * (float) (lo - 16);
+            f[16 + j] = d * (float) (hi - 16);
+        }
+        mq_put32(sw + r * MM_LD + u * 32, f);
+    }
+};
+
+
 // IQ4_XS: 136 bytes = d (f16), scales_h (u16), scales_l[4], qs[128]; sub-block ib has 16 qs bytes at 8 + 16 ib and a 6-bit scale
 template <> struct MmTile<GGML_TYPE_IQ4_XS> {
     uint32_t hd[2], q[4];

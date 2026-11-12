@@ -111,6 +111,7 @@ int main(int argc, char** argv) {
                     case T_Q4_K: run<GGML_TYPE_Q4_K>(d_we, row_a, nrows, ncols, d_out); break;
                     case T_Q5_K: run<GGML_TYPE_Q5_K>(d_we, row_a, nrows, ncols, d_out); break;
                     case T_Q5_1: run<GGML_TYPE_Q5_1>(d_we, row_a, nrows, ncols, d_out); break;
+                    case T_Q5_0: run<GGML_TYPE_Q5_0>(d_we, row_a, nrows, ncols, d_out); break;
                     case T_Q8_0: run<GGML_TYPE_Q8_0>(d_we, row_a, nrows, ncols, d_out); break;
                     default: std::printf("skip %s type %u\n", t.name.c_str(), t.type); cudaFree(d_we); cudaFree(d_out); continue;
                 }
