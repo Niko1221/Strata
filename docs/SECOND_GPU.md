@@ -85,6 +85,12 @@ Whether the two cards can really exchange data is tested once at start with a co
 says so and the prompt path uses the host route (activations and rows through mapped host memory). `STRATA_PEER_NO_P2P=1` asks
 for that route by hand.
 
+`STRATA_PF_PEER_PIECES=1` (opt-in, host route only) sends each MoE layer's two transfers in 8 pieces. The activations start
+towards the peer before the router, and the peer begins on each piece as soon as it arrives. The peer's per-token sums come back
+the same way, and the primary copies each piece into its own memory as it lands. The result is bit for bit the same.
+On 2x Tesla V100-PCIE-32GB without P2P, ~9K-token prompts were read 7.6 % faster and ~38K-token prompts 7.7 % faster
+(medians of 4 rounds, every round faster; [bench/results/2026-11-10-peer-pieces](../bench/results/2026-11-10-peer-pieces/README.md)).
+
 Through the server, list both cards in the config's `"gpu"` (for example `[0, 1]`, numbered as `nvidia-smi` numbers them) and add
 `--peer-device 1` to `"args"`. The number is the card's position in that list (with `"gpu": [2, 0]`, `--peer-device 1` is
 `nvidia-smi`'s card 0). Several GPUs in `"gpu"` are otherwise a layer split; the server adds `--layer-split` only when

@@ -1,0 +1,18 @@
+main docs 34000 39394 200 5ea37bcb8259780f 'Der Text ist eine umfassende technische Dokumentation und Re'
+main docs 24000 30535 200 219a65a0add9e1bf 'Der Kern des Textes ist eine **technische Dokumentation und '
+main code 16000 21202 200 77ee6e7ee9e4c7f0 'Der Kern des Textes ist der **Quellcode für eine Reihe von h'
+main docs 8000 9243 200 ed83b75e547d58a3 'Der Kern des Textes ist eine **technische Anleitung zur Inst'
+main code 3000 5004 200 a365d7c050a8e1fb 'Der Kern des Textes ist die **Implementierung einer hochperf'
+off docs 34000 39394 200 5ea37bcb8259780f 'Der Text ist eine umfassende technische Dokumentation und Re'
+off docs 24000 30535 200 219a65a0add9e1bf 'Der Kern des Textes ist eine **technische Dokumentation und '
+off code 16000 21202 200 77ee6e7ee9e4c7f0 'Der Kern des Textes ist der **Quellcode für eine Reihe von h'
+off docs 8000 9243 200 ed83b75e547d58a3 'Der Kern des Textes ist eine **technische Anleitung zur Inst'
+off code 3000 5004 200 a365d7c050a8e1fb 'Der Kern des Textes ist die **Implementierung einer hochperf'
+on docs 34000 39394 200 5ea37bcb8259780f 'Der Text ist eine umfassende technische Dokumentation und Re'
+on docs 24000 30535 200 219a65a0add9e1bf 'Der Kern des Textes ist eine **technische Dokumentation und '
+on code 16000 21202 200 77ee6e7ee9e4c7f0 'Der Kern des Textes ist der **Quellcode für eine Reihe von h'
+on docs 8000 9243 200 ed83b75e547d58a3 'Der Kern des Textes ist eine **technische Anleitung zur Inst'
+on code 3000 5004 200 a365d7c050a8e1fb 'Der Kern des Textes ist die **Implementierung einer hochperf'
+done
+
+[exited with code 0]
