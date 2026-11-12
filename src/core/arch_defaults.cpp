@@ -1,6 +1,8 @@
 // src/core/arch_defaults.cpp - see include/strata/core/arch_defaults.hpp.
 #include "strata/core/arch_defaults.hpp"
 #include "strata/core/defaults_026.hpp"
+#include "strata/core/amd_community.hpp"
+#include "strata/core/gfx12_extra.hpp"
 
 #include "strata/kernels/gfx_arch.hpp"
 
@@ -50,6 +52,12 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         t.push_back({"STRATA_ATTN_MERGE_V2", "1"});
         t.push_back({"STRATA_TSUM", "1"});
         t.push_back({"STRATA_EXPDEC", "1"});
+        // AMD-Q (p620, R9700, IQ3_S, serve, interleaved pairs): the constant-trip loads of Blackwell's BW-DENSE (bit 0 the router-shaped bf16 read,
+        // bit 1 the GDN a/b projection) and two load-ordering variants of the Q8 hyper-connection read (2 rows a warp loaded together in the
+        // up read, the down read's staging loads of all tokens together); each is the same arithmetic in the same order (kernel hashes equal).
+        t.push_back({"STRATA_SMALL_UNR", "3"});
+        t.push_back({"STRATA_GR_Q32_G", "2"});
+        t.push_back({"STRATA_GR_Q8_PFS", "1"});
         return t;
     }
     if (!strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
@@ -87,8 +95,24 @@ std::vector<std::pair<std::string, std::string>> arch_default_env(const char* gc
         for (auto it = t.begin(); it != t.end(); ++it) {
             if (it->first == "STRATA_SH_STREAM") { t.erase(it); break; }
         }
+        // round 0215 (STRIX-PK): two load-ordering switches of the decode kernels, each the same arithmetic in the same order as without it
+        // (the kernel hashes are equal; first-token logits and outputs identical in the engine).  UD-Q4_K_XL on a Strix Halo Windows PC, DFlash2
+        // serve, 4 request rounds x 2 passes x 4 prompts, interleaved: window time -0.25% (25 of 32 pairs faster, the same window and token count in
+        // every pair), alone +0.2% / +0.3%.  Small but consistent; Linux gfx1151 is unmeasured and keeps its table.
+        t.push_back({"STRATA_SMALL_UNR", "3"});
+        t.push_back({"STRATA_GR_Q8_PFS", "1"});
     }
     return t;
+}
+
+bool gfx12_prefill_share_default(const char* gcn_arch, bool defaults026) {
+    if (defaults026 || !strata::kernels::gfx_arch_is_gfx12(gcn_arch)) return false;
+    const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
+    return !(off12 != nullptr && off12[0] == '0');
+}
+
+bool gfx12_prefill_share_default(const char* gcn_arch) {
+    return gfx12_prefill_share_default(gcn_arch, strata::qwen_defaults_026());
 }
 
 bool igpu_prompt_defaults_arch(const char* gcn_arch) {
@@ -159,6 +183,10 @@ std::vector<std::pair<std::string, std::string>> igpu_default_env(const char* gc
             // interleaved x3, same 16 greedy ids: IQ3_S 4K 1,187 -> 1,296 and 8K 1,285 -> 1,399 tok/s (x1.09), UD-IQ4_XS 4K 1,119 ->
             // 1,221 and 8K 1,180 -> 1,270; decode unchanged.  The rounding differs from the int8 kernels (KL is information only).
             {"STRATA_PF_F16", "1"},
+            // Round 0215 (STRIX-FIT): the down rows of the F16 expert kernels go to the combine as FP16 (half the bytes written and read).  Windows gfx1151,
+            // interleaved 8K pairs, same engine: IQ3_S x1.022 (4 of 4 pairs), UD-IQ4_XS x1.026 (3 of 3), UD-Q4_K_XL x1.012 (3 of 4); the first-token KL
+            // is 1e-4 at 8K and 0.02-0.04 on agent transcripts (information).  STRATA_PF_DM16=0 turns it off.
+            {"STRATA_PF_DM16", "1"},
         };
     }
     return t;
@@ -172,12 +200,125 @@ static void set_default(const std::pair<std::string, std::string>& kv) {
 #endif
 }
 
-std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated) {
+static std::vector<std::pair<std::string, std::string>> parallel_stack_table() {
+    return {
+        {"STRATA_CKPT_POOL", "1"},
+        {"STRATA_CKPT_POOL_READY", "4"},
+        {"STRATA_SLOT_CKPT_MOVE", "1"},
+        {"STRATA_SLOT_COPY_DIRECT", "1"},
+        {"STRATA_SLOT_COPY_BATCHSYNC", "1"},
+        {"STRATA_BATCH_GDN_GROUPS", "1"},
+        {"STRATA_BATCH_ATTN_ROWS", "1"},
+        {"STRATA_BATCH_SELF_COMMIT", "1"},
+        {"STRATA_QSA_SLOTS", "1"},
+    };
+}
+
+std::vector<std::pair<std::string, std::string>> parallel_default_env(const char* gcn_arch, bool windows, int batch_slots) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (!windows || batch_slots < 2 || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
+    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+    if (off != nullptr && off[0] == '0') return t;
+    return parallel_stack_table();
+}
+
+std::vector<std::pair<std::string, std::string>> parallel_default_env_cuda(bool linux_cuda, int batch_slots) {
+    if (!linux_cuda || batch_slots < 2) return {};
+    return parallel_stack_table();
+}
+
+std::vector<std::string> apply_parallel_defaults_cuda(bool linux_cuda, int batch_slots) {
     std::vector<std::string> set;
+    for (const auto& kv : parallel_default_env_cuda(linux_cuda, batch_slots)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
+std::vector<std::pair<std::string, std::string>> gdn_default_env_cuda(bool linux_cuda) {
+    if (!linux_cuda) return {};
+    return {{"STRATA_GDN_TC", "1"}, {"STRATA_GDN_CONVL2", "2"}};
+}
+
+std::vector<std::string> apply_gdn_defaults_cuda(bool linux_cuda) {
+    std::vector<std::string> set;
+    for (const auto& kv : gdn_default_env_cuda(linux_cuda)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
+std::vector<std::pair<std::string, std::string>> gdn_chunked_default_env(bool linux_host, bool all_gfx12) {
+    if (!linux_host || !all_gfx12) return {};
+    return {{"STRATA_GDN_CHUNKED", "1"}};
+}
+
+std::vector<std::string> apply_gdn_chunked_default(bool linux_host, bool all_gfx12) {
+    std::vector<std::string> set;
+    for (const auto& kv : gdn_chunked_default_env(linux_host, all_gfx12)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, =0 included
+        set_default(kv);
+        set.push_back(kv.first);
+    }
+    return set;
+}
+
+std::vector<std::pair<std::string, std::string>> launch_default_env(const char* gcn_arch, bool windows) {
+    std::vector<std::pair<std::string, std::string>> t;
+    if (!windows || !strata::kernels::gfx_arch_is_gfx1151(gcn_arch)) return t;
+    const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
+    if (off != nullptr && off[0] == '0') return t;
+    t = {{"STRATA_VERIFY_ASYNC_LAUNCH", "1"}};
+    return t;
+}
+
+std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrated, int batch_slots) {
+    std::vector<std::string> set;
+    // the community-made gfx1010 / gfx1030 changes (amd_community.hpp): one line, and only on those two cards
+    if (const std::string note = strata::amd_community::startup_line(gcn_arch); !note.empty())
+        std::fprintf(stderr, "%s\n", note.c_str());
     for (const auto& kv : arch_default_env(gcn_arch)) {
         if (std::getenv(kv.first.c_str()) != nullptr) continue;   // the user's setting wins, whatever it is
         set_default(kv);
         set.push_back(kv.first);
+    }
+    {   // gfx12 extras kept apart from the table (gfx12_extra.hpp); not counted in the returned list
+        std::vector<std::string> extra;
+        for (const auto& kv : gfx12_exact_extra_env(gcn_arch)) {
+            if (std::getenv(kv.first.c_str()) != nullptr) continue;
+            set_default(kv);
+            extra.push_back(kv.first);
+        }
+        if (!extra.empty()) {
+            std::fprintf(stderr, "strata: gfx12 (RDNA4): exact extra switches on by default (STRATA_GFX12_DEFAULTS=0 turns them off; a switch you set is kept): ");
+            for (size_t i = 0; i < extra.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", extra[i].c_str() + 7);
+            std::fprintf(stderr, "\n");
+        }
+    }
+    {   // gfx12 defaults that change the answers (gfx12_extra.hpp): the matrix-core QSA scorer from 28,672 tokens; its own line
+        const auto vc = gfx12_value_changing_env(gcn_arch);
+        bool any = false, kq = false;
+        for (const auto& kv : vc) {
+            if (std::getenv(kv.first.c_str()) != nullptr) continue;
+            set_default(kv);
+            if (kv.first == "STRATA_MMQ_KQ") kq = true; else any = true;
+        }
+        if (kq)   // the engine says nothing more on a pack without K-quant experts: the variable is never read there
+            std::fprintf(stderr, "strata: gfx12 (RDNA4): a model with K-quant experts (Unsloth UD-Q4/Q5/Q6_K_XL) reads its prompt on llama.cpp's MMQ kernels (+10..17%% prompt speed on an R9700, "
+                                 "first-token KL against the FP16 path about 0.03; STRATA_MMQ_KQ=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
+        const char* wm = std::getenv("STRATA_SELECT_WMMA");   // the line is only true while the scorer switch is not set to 0
+        if (any && !(wm != nullptr && wm[0] == '0'))
+            std::fprintf(stderr, "strata: gfx12 (RDNA4): the matrix-core QSA block scorer is on once a prompt is past 28,672 tokens (+5.7%% prompt speed at 98K on an R9700, shorter prompts unchanged; "
+                                 "the first-token KL against the warp kernel is 0.002 on average above 30K; STRATA_SELECT_WMMA=0 or STRATA_GFX12_DEFAULTS=0 turns it off)\n");
+    }
+    if (strata::kernels::gfx_arch_is_gfx12(gcn_arch) && std::getenv("STRATA_GDN_CHUNKED") == nullptr) {   // the length-gated chunked GDN scan (prefill/kernels.cu: gdn_chunked_auto)
+        const char* off12 = std::getenv("STRATA_GFX12_DEFAULTS");
+        if (!(off12 != nullptr && off12[0] == '0'))
+            std::fprintf(stderr, "strata: RDNA4 (gfx12): prompt chunks of 30,000+ tokens use the chunked GDN scan (STRATA_GDN_CHUNKED=0 turns it off)\n");
     }
     if (!set.empty()) {
         const bool g12 = strata::kernels::gfx_arch_is_gfx12(gcn_arch);
@@ -204,6 +345,33 @@ std::vector<std::string> apply_arch_defaults(const char* gcn_arch, bool integrat
 #endif
         std::fprintf(stderr, "\n");
         set.insert(set.end(), igpu.begin(), igpu.end());
+    }
+    std::vector<std::string> par;
+#if defined(_WIN32)
+    const bool win_host = true;
+#else
+    const bool win_host = false;
+#endif
+    for (const auto& kv : parallel_default_env(gcn_arch, win_host, batch_slots)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;
+        set_default(kv);
+        par.push_back(kv.first);
+    }
+    if (!par.empty()) {
+        std::fprintf(stderr, "strata: gfx1151 (Strix Halo): the exact parallel-request switches are on for %d batch slots (STRATA_GFX1151_DEFAULTS=0 turns them off; a switch you set is kept): ", batch_slots);
+        for (size_t i = 0; i < par.size(); ++i) std::fprintf(stderr, "%s%s", i ? " " : "", par[i].c_str() + 7);
+        std::fprintf(stderr, "\n");
+        set.insert(set.end(), par.begin(), par.end());
+    }
+    std::vector<std::string> lau;
+    for (const auto& kv : launch_default_env(gcn_arch, win_host)) {
+        if (std::getenv(kv.first.c_str()) != nullptr) continue;
+        set_default(kv);
+        lau.push_back(kv.first);
+    }
+    if (!lau.empty()) {
+        std::fprintf(stderr, "strata: gfx1151 (Strix Halo): the verify window's graph is launched from a helper thread (the main thread serves the doorbells meanwhile; STRATA_GFX1151_DEFAULTS=0 or STRATA_VERIFY_ASYNC_LAUNCH=0 turns it off)\n");
+        set.insert(set.end(), lau.begin(), lau.end());
     }
     return set;
 }

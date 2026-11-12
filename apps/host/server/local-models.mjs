@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { basename, dirname, extname, isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { readGGUF } from './gguf.mjs';
-const ARCHITECTURES=new Set(['qwen2','qwen2moe','qwen3','qwen3moe','qwen3next','qwen35','qwen35moe','llama','gemma','gemma2','gemma3','phi3']);
+const ARCHITECTURES=new Set(['qwen2','qwen2moe','qwen3','qwen3moe','qwen3next','qwen35','qwen35moe','qwen4exp','llama','gemma','gemma2','gemma3','phi3']);
 const QUANTS={0:'F32',1:'F16',2:'Q4_0',3:'Q4_1',7:'Q8_0',8:'Q5_0',9:'Q5_1',10:'Q2_K',11:'Q3_K_S',12:'Q3_K_M',13:'Q3_K_L',14:'Q4_K_S',15:'Q4_K_M',16:'Q5_K_S',17:'Q5_K_M',18:'Q6_K',19:'IQ2_XXS',20:'IQ2_XS',21:'Q2_K_S',22:'IQ3_XS',23:'IQ3_XXS',24:'IQ1_S',25:'IQ4_NL',26:'IQ3_S',27:'IQ3_M',28:'IQ2_S',29:'IQ2_M',30:'IQ4_XS',31:'IQ1_M',32:'BF16'};
 const clean=value=>String(value??'').replace(/[\x00-\x1f\x7f]/g,' ').trim().slice(0,160);
 function fullPath(input){if(typeof input!=='string'||!input.trim()||input.includes('\0'))throw new Error('Choose a model file or enter its full path.');const path=input.trim().replace(/^~(?=$|[\\/])/,homedir());if(!isAbsolute(path))throw new Error('Enter a full path.');try{return realpathSync(path);}catch{throw new Error('This file or folder is unavailable. Check its location and permissions.');}}

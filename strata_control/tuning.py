@@ -49,6 +49,8 @@ from __future__ import annotations
 import json
 import os
 import platform
+from strata_control import sysinfo
+from strata_control.childenv import quiet_crash_env
 import statistics
 import subprocess
 import time
@@ -196,7 +198,7 @@ def engine_env(engine: Path | str) -> dict[str, str] | None:
     if not (folder / "engine-component.json").is_file():
         return None
     var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
-    env = dict(os.environ)
+    env = quiet_crash_env(dict(os.environ))
     from strata_control import engine_component
     env[var] = os.pathsep.join(engine_component.package_lib_dirs(folder) + ([env[var]] if env.get(var) else []))
     return env
@@ -803,9 +805,9 @@ def machine_identity() -> dict[str, Any]:
     comparable — which is why this is recorded with every report rather than assumed stable.
     """
     return {
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "processor": platform.processor(),
+        "platform": sysinfo.platform_string(),
+        "machine": sysinfo.machine(),
+        "processor": sysinfo.processor(),
         "python": platform.python_version(),
         "cpu_count": os.cpu_count(),
     }

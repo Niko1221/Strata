@@ -6,14 +6,12 @@ launch-aware extras: a Connect view (key 7) and a quit question (keep serving in
 
 from __future__ import annotations
 
-import json
 import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rich.text import Text
 from textual.app import App
 from textual.binding import Binding
 
@@ -23,12 +21,12 @@ from strata_cli.launch import settings as S
 from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, read_config
-from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, FolderScreen,
+from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, DraftingScreen, FolderScreen,
                                        ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, SpeedScreen, StartScreen,
                                        TuningScreen, flow_for)
 from strata_cli.launch.widgets import CSS, Glyphs
 
-SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen,
+SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen, "drafting": DraftingScreen,
            "parallel": ParallelScreen, "tuning": TuningScreen, "advanced": AdvancedScreen, "access": AccessScreen, "save": SaveScreen}
 
 
@@ -71,8 +69,13 @@ class Ctx:
     def warnings(self) -> list[str]:
         s = self.settings
         out = [n.line() for n in S.check_access(s)]
-        out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
         deepseek = bool(s.family and self.catalog.strata.multi_family(s.family))
+        if deepseek:
+            if s.parallel and s.parallel > 1:
+                from strata_cli.launch.cmd import parallel_notices
+                out += [n.line() for n in parallel_notices(s, self.computer)]
+        else:
+            out += [n.line() for n in S.check_parallel(s, vram_gb=self.computer.main_vram_gb or None)]
         out += [n.line() for n in S.check_context(s, deepseek=deepseek, pack_limit=self.catalog.pack_limit(s.family, s.model) if deepseek else None)]
         r = next((x for x in self.rows if (x.family, x.model) == (s.family, s.model)), None)
         if r is not None and r.verdict != "fits":
@@ -111,7 +114,8 @@ class Ctx:
         from strata_cli.launch import modelstate
         s = self.settings
         return modelstate.assess(self.catalog, s.family, s.model, vision=s.vision, model_path=s.model_path,
-                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp, drafting=s.drafting)
+                                 data_dir=data_dir if data_dir is not None else s.data_dir, rows=self.rows, mtp=s.mtp,
+                                 drafting=modelstate.resolved_drafting(s.drafting, s.family))
 
     def default_folder(self) -> Path:
         """The folder the Folder step starts with: where the chosen model already is (installed, or the person's own files with their
@@ -122,7 +126,7 @@ class Ctx:
                 from strata_control import discovery
                 p = Path(s.model_path).expanduser()
                 first = p if p.is_file() else next(iter(sorted(p.glob("*.gguf"))), None)
-                found = discovery.prepared_beside(first)["data_dir"] if first else None
+                found = discovery.writable_beside(first) if first else None     # not a folder Strata cannot write to, nor a Hugging Face cache
                 if found:
                     return Path(found)
             except OSError:
@@ -334,9 +338,7 @@ class LaunchApp(App):
         def show() -> None:
             self.push_screen(ConfirmScreen(title, text, options or [("go", "Download anyway"), ("no", "Not now")]), done)
 
-        try:
-            self.call_from_thread(show)
-        except Exception:                                    # noqa: BLE001 - the app is closing
+        if not self._call(show):                             # the app is closing
             return False
         while not answered.wait(0.2):
             if self.cancel.is_set():
@@ -346,10 +348,21 @@ class LaunchApp(App):
     def _emit(self, ev: Event) -> None:
         screen = self.run_screen
         if screen is not None:
-            try:
-                self.call_from_thread(screen.handle_event, ev)
-            except Exception:                                # noqa: BLE001 - the app is closing
-                pass
+            self._call(screen.handle_event, ev)
+
+    def _call(self, fn, *args) -> bool:
+        """call_from_thread from a worker thread, False when it could not be made: after a quit the app's loop is closed and
+        the call raises ("Event loop is closed"); the screen is gone then, so there is nothing to tell.  A loop already closed is not
+        asked at all: Textual makes the call's coroutine before it finds the loop closed, and that left a "coroutine was
+        never awaited" warning on the terminal."""
+        loop = getattr(self, "_loop", None)
+        if loop is not None and loop.is_closed():
+            return False
+        try:
+            self.call_from_thread(fn, *args)
+        except Exception:                                    # noqa: BLE001 - the app is closing
+            return False
+        return True
 
     def _work(self) -> None:
         screen = self.run_screen
@@ -357,15 +370,15 @@ class LaunchApp(App):
             result = self.runner.run()               # type: ignore[union-attr]
         except Cancelled:
             self.running = False
-            self.call_from_thread(self._after_cancel)
+            self._call(self._after_cancel)
             return
         except LaunchError as e:
             self.running = False
-            self.call_from_thread(screen.on_failure, f"{e.text} {e.next}".strip())
+            self._call(screen.on_failure, f"{e.text} {e.next}".strip())
             return
         except Exception as e:                           # noqa: BLE001
             self.running = False
-            self.call_from_thread(screen.on_failure, f"Something unexpected went wrong: {type(e).__name__}: {e}")
+            self._call(screen.on_failure, f"Something unexpected went wrong: {type(e).__name__}: {e}")
             return
         self.running = False
         self._save_pending()                         # a runner that never asked (nothing was running) still saves what was chosen
@@ -377,8 +390,8 @@ class LaunchApp(App):
         except Exception:                                # noqa: BLE001
             pass
         self.result = result
-        self.call_from_thread(screen.on_finished)
-        self.call_from_thread(self.exit, result)
+        self._call(screen.on_finished)
+        self._call(self.exit, result)
 
     def _after_cancel(self) -> None:
         self.run_screen.on_failure("Stopped. Nothing was started.")     # type: ignore[union-attr]
@@ -422,10 +435,9 @@ def run_monitor(info: dict, *, keep_default: bool = True, color: str = "auto") -
     from strata_cli.launch.monitor_ext import LaunchMonitor
     local = next((u for u in info.get("urls", []) if "127.0.0.1" in u), None) or f"http://127.0.0.1:{info.get('port', S.DEFAULT_PORT)}"
     endpoint = Endpoint(local, info.get("key"), 3.0, "")
-    app = LaunchMonitor(endpoint, None, info=info, color=color)
+    app = LaunchMonitor(endpoint, None, info={**info, "daily_check": True}, color=color)     # (the quiet once-a-day check for a newer engine: this monitor only)
     app.run()
     if app.stop_requested:
-        from strata_cli.launch.runner import Runner as R
         from strata_control import runtime
         try:
             runtime.stop(info["profile"], timeout=180)

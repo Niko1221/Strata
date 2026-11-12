@@ -67,6 +67,9 @@ public:
         done_.store(0, std::memory_order_relaxed);
         ticket_.store(g << 32, std::memory_order_release);
         gen_.store(g, std::memory_order_release);
+        // (store -> load: without the fence x86 may read sleeping_ before gen_ is visible, and a worker going to sleep
+        // at that instant - its fetch_add, then gen_ - misses both the generation and the notify)
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (sleeping_.load(std::memory_order_acquire) > 0) {
             std::lock_guard<std::mutex> lk(mu_);
             cv_.notify_all();
@@ -94,7 +97,7 @@ private:
         }
     }
     void loop() {
-        uint64_t seen = gen_.load();
+        uint64_t seen = 0;   // (gen_ at construction: a batch start()ed before this thread first ran is still new)
         for (;;) {
             const auto t0 = std::chrono::steady_clock::now();
             uint64_t g;

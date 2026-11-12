@@ -3,6 +3,7 @@
 #include "strata/core/gfx12_platform_defaults.hpp"
 #include "strata/core/sm120_series.hpp"
 #include "strata/core/defaults_026.hpp"
+#include "strata/core/spill_gate.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +30,70 @@ static void put(const char* k, const char* v) {
 
 int main() {
     using namespace strata::core;
+    unset("STRATA_GFX1151_DEFAULTS");
+    // 0.2.10: the parallel-request stack, Windows gfx1151 with 2 or more batch slots only
+    unset("STRATA_GFX1151_DEFAULTS");
+    CHECK(parallel_default_env("gfx1151", true, 4).size() == 9);
+    CHECK(parallel_default_env("gfx1151:sramecc-:xnack-", true, 2).size() == 9);
+    CHECK(parallel_default_env("gfx1151", true, 1).empty());
+    CHECK(parallel_default_env("gfx1151", true, 0).empty());
+    CHECK(parallel_default_env("gfx1151", false, 4).empty());      // Linux: the launcher sets its own stack
+    CHECK(parallel_default_env("gfx1201", true, 4).empty());
+    CHECK(parallel_default_env("", true, 4).empty());
+    put("STRATA_GFX1151_DEFAULTS", "0");
+    CHECK(parallel_default_env("gfx1151", true, 4).empty());
+    unset("STRATA_GFX1151_DEFAULTS");
+    for (const auto& kv : parallel_default_env("gfx1151", true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
+    // the same nine on Linux CUDA with 2 or more slots (was serve/server.py PARALLEL_STACK_ENV)
+    CHECK(parallel_default_env_cuda(true, 2).size() == 9);
+    CHECK(parallel_default_env_cuda(true, 8).size() == 9);
+    CHECK(parallel_default_env_cuda(true, 1).empty());
+    CHECK(parallel_default_env_cuda(true, 0).empty());
+    CHECK(parallel_default_env_cuda(false, 4).empty());            // HIP, Windows, Metal, SYCL builds
+    for (const auto& kv : parallel_default_env_cuda(true, 4)) CHECK(kv.first != "STRATA_BATCH_CONCURRENT_READ");
+    {
+        const auto cuda = parallel_default_env_cuda(true, 4), gfx = parallel_default_env("gfx1151", true, 4);
+        CHECK(cuda == gfx);                                         // one table for both
+        unset("STRATA_QSA_SLOTS");
+        put("STRATA_CKPT_POOL", "0");                               // the user's =0 stays
+        const auto set = apply_parallel_defaults_cuda(true, 4);
+        CHECK(set.size() == 8);
+        CHECK(std::getenv("STRATA_CKPT_POOL") != nullptr && std::string(std::getenv("STRATA_CKPT_POOL")) == "0");
+        CHECK(std::getenv("STRATA_QSA_SLOTS") != nullptr && std::string(std::getenv("STRATA_QSA_SLOTS")) == "1");
+        for (const auto& kv : cuda) unset(kv.first.c_str());
+        CHECK(apply_parallel_defaults_cuda(true, 1).empty());
+        CHECK(std::getenv("STRATA_QSA_SLOTS") == nullptr);
+    }
+    // QUAL-GDN on Linux CUDA
+    CHECK(gdn_default_env_cuda(true).size() == 2);
+    CHECK(gdn_default_env_cuda(false).empty());
+    {
+        unset("STRATA_GDN_TC"); put("STRATA_GDN_CONVL2", "0");
+        CHECK(apply_gdn_defaults_cuda(true).size() == 1);
+        CHECK(std::string(std::getenv("STRATA_GDN_TC")) == "1" && std::string(std::getenv("STRATA_GDN_CONVL2")) == "0");
+        unset("STRATA_GDN_TC"); unset("STRATA_GDN_CONVL2");
+        CHECK(apply_gdn_defaults_cuda(false).empty() && std::getenv("STRATA_GDN_TC") == nullptr);
+    }
+    // the chunked GDN scan: Linux, every card gfx12
+    CHECK(gdn_chunked_default_env(true, true).size() == 1);
+    CHECK(gdn_chunked_default_env(true, false).empty());
+    CHECK(gdn_chunked_default_env(false, true).empty());
+    {
+        unset("STRATA_GDN_CHUNKED");
+        CHECK(apply_gdn_chunked_default(true, true).size() == 1 && std::string(std::getenv("STRATA_GDN_CHUNKED")) == "1");
+        put("STRATA_GDN_CHUNKED", "0");
+        CHECK(apply_gdn_chunked_default(true, true).empty() && std::string(std::getenv("STRATA_GDN_CHUNKED")) == "0");
+        unset("STRATA_GDN_CHUNKED");
+    }
+    // 0.2.10 (STRIX-TDR): the helper-thread launch, Windows gfx1151 only
+    unset("STRATA_GFX1151_DEFAULTS");
+    CHECK(launch_default_env("gfx1151", true).size() == 1 && launch_default_env("gfx1151", true)[0].first == "STRATA_VERIFY_ASYNC_LAUNCH");
+    CHECK(launch_default_env("gfx1151:sramecc-:xnack-", true).size() == 1);
+    CHECK(launch_default_env("gfx1151", false).empty());
+    CHECK(launch_default_env("gfx1201", true).empty());
+    CHECK(launch_default_env("", true).empty());
+    put("STRATA_GFX1151_DEFAULTS", "0");
+    CHECK(launch_default_env("gfx1151", true).empty());
     unset("STRATA_GFX1151_DEFAULTS");
     // other architectures (and CUDA, which passes an empty name): nothing
     CHECK(arch_default_env("gfx1100").empty());
@@ -66,8 +131,14 @@ int main() {
             CHECK(find(win26, "STRATA_SH_STREAM") != nullptr);     // STRATA_DEFAULTS=026: v0.2.6's table on Windows too
             CHECK(find(lin26, "STRATA_SH_STREAM") != nullptr);
             CHECK(win26 == lin26 && win26 == lin);                 // under 026 and on Linux the whole table is the same
-            CHECK(win.size() + 1 == lin.size());                   // Windows loses that one entry and nothing else
-            for (const auto& kv : win) CHECK(find(lin, kv.first.c_str()) != nullptr && *find(lin, kv.first.c_str()) == kv.second);
+            CHECK(win.size() == lin.size() + 1);                   // Windows loses SH_STREAM and gains the two round-0215 decode switches
+            CHECK(find(win, "STRATA_SMALL_UNR") != nullptr && *find(win, "STRATA_SMALL_UNR") == "3" && find(lin, "STRATA_SMALL_UNR") == nullptr);
+            CHECK(find(win, "STRATA_GR_Q8_PFS") != nullptr && *find(win, "STRATA_GR_Q8_PFS") == "1" && find(lin, "STRATA_GR_Q8_PFS") == nullptr);
+            CHECK(find(win26, "STRATA_SMALL_UNR") == nullptr && find(win26, "STRATA_GR_Q8_PFS") == nullptr);   // STRATA_DEFAULTS=026 keeps v0.2.6's table
+            for (const auto& kv : win) {
+                if (kv.first == "STRATA_SMALL_UNR" || kv.first == "STRATA_GR_Q8_PFS") continue;
+                CHECK(find(lin, kv.first.c_str()) != nullptr && *find(lin, kv.first.c_str()) == kv.second);
+            }
         }
         // other architectures: the platform changes nothing
         for (const char* a : {"gfx1100", "gfx1030", "gfx1103", "gfx1150", "gfx1152", "gfx1201", "gfx1200", ""}) {
@@ -108,11 +179,20 @@ int main() {
         unset("STRATA_QFUSE");
         unset("STRATA_TSUM");
     }
-    // gfx12: the five prompt switches and four bit-identical decode switches, no bit-changing one
+    // AMD-Q: the CPU prefill share is a default of a gfx12 card only (the caller adds single card / experts missing)
+    unset("STRATA_GFX12_DEFAULTS");
+    CHECK(gfx12_prefill_share_default("gfx1201", false) && gfx12_prefill_share_default("gfx1200", false) &&
+          gfx12_prefill_share_default("gfx1201:sramecc-:xnack-", false));
+    CHECK(!gfx12_prefill_share_default("gfx1201", true));   // STRATA_DEFAULTS=026
+    for (const char* a : {"gfx1151", "gfx1150", "gfx1103", "gfx1100", "gfx1030", "gfx906", "gfx90a", ""}) CHECK(!gfx12_prefill_share_default(a, false));
+    put("STRATA_GFX12_DEFAULTS", "0");
+    CHECK(!gfx12_prefill_share_default("gfx1201", false));
+    unset("STRATA_GFX12_DEFAULTS");
+    // gfx12: the five prompt switches and seven bit-identical decode switches, no bit-changing one
     unset("STRATA_GFX12_DEFAULTS");
     for (const char* a : {"gfx1200", "gfx1201", "gfx1201:sramecc-:xnack-"}) {
         const auto t = arch_default_env(a);
-        CHECK(t.size() == 9);
+        CHECK(t.size() == 12);
         bool attn_lane = false, attn_merge = false, tsum = false, expdec = false;
         for (const auto& kv : t) {
             if (kv.first == "STRATA_ATTN_LANECELL") attn_lane = kv.second == "1";
@@ -185,7 +265,7 @@ int main() {
         // 0.2.8: Strix Halo (gfx1151, integrated) gets the matrix-core prompt set on Windows; the 780M and the 890M are
         // not measured there and stay off
         const bool win_on = m.expect_on && m.integrated && std::string(m.gcn).rfind("gfx1151", 0) == 0;
-        CHECK(igpu_default_env(m.gcn, m.integrated).size() == (win_on ? 7u : 0u));
+        CHECK(igpu_default_env(m.gcn, m.integrated).size() == (win_on ? 8u : 0u));
 #else
         CHECK(igpu_default_env(m.gcn, m.integrated).size() == (want ? 5u : 0u));
 #endif
@@ -219,10 +299,10 @@ int main() {
 #if defined(_WIN32)
             halo_win = std::string(m.gcn).rfind("gfx1151", 0) == 0;
 #endif
-            CHECK(t.size() == (halo_win ? 7u : 5u));
+            CHECK(t.size() == (halo_win ? 8u : 5u));
             std::vector<const char*> want = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_HC_UPMIX"};
             want.push_back("STRATA_SELECT_WMMA");
-            if (halo_win) { want.push_back("STRATA_PF_FUSED"); want.push_back("STRATA_PF_F16"); }
+            if (halo_win) { want.push_back("STRATA_PF_FUSED"); want.push_back("STRATA_PF_F16"); want.push_back("STRATA_PF_DM16"); }
             for (const char* w : want) {
                 bool found = false;
                 for (const auto& kv : t) found = found || (kv.first == w && kv.second == "1");
@@ -249,17 +329,21 @@ int main() {
     const char* five[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_SELECT_WMMA", "STRATA_HC_UPMIX"};
     for (const char* k : five) unset(k);
     CHECK(apply_arch_defaults("gfx1100", false).empty());
-    // gfx12: a discrete RDNA4 card gets its own nine switches (five prompt, four decode); a second call has nothing to do
+    // gfx12: a discrete RDNA4 card gets its own twelve switches (five prompt, seven decode); a second call has nothing to do
     const char* g12[] = {"STRATA_GDN_HEAD", "STRATA_GDN_PP",  "STRATA_GDN_CONVL2",    "STRATA_GDN_NOY", "STRATA_CVEC_FUSE",
                          "STRATA_ATTN_LANECELL", "STRATA_ATTN_MERGE_V2", "STRATA_TSUM", "STRATA_EXPDEC"};
     for (const char* k : g12) unset(k);
+    unset("STRATA_SMALL_UNR"); unset("STRATA_GR_Q32_G"); unset("STRATA_GR_Q8_PFS");
     const auto g12set = apply_arch_defaults("gfx1201", false);
-    CHECK(g12set.size() == 9);
+    CHECK(g12set.size() == 12);
     for (const char* k : g12) {
         CHECK(std::getenv(k) != nullptr);
         CHECK(std::string(std::getenv(k)) == (std::strcmp(k, "STRATA_GDN_PP") == 0 ? "2" : "1"));
     }
+    CHECK(std::string(std::getenv("STRATA_SMALL_UNR")) == "3" && std::string(std::getenv("STRATA_GR_Q32_G")) == "2" &&
+          std::string(std::getenv("STRATA_GR_Q8_PFS")) == "1");
     CHECK(apply_arch_defaults("gfx1201", false).empty());
+    unset("STRATA_SELECT_WMMA"); unset("STRATA_SELECT_ALT_MIN_TOKENS"); unset("STRATA_HEAD_MIX_MULTI");   // gfx12_extra.hpp's defaults (own test: gfx12_extra_test)
     CHECK(apply_arch_defaults("gfx1103", false).empty());   // integrated == false: a mixed box (iGPU + dGPU) keeps the old defaults
     for (const char* k : five) CHECK(std::getenv(k) == nullptr);
     put("STRATA_HC_UPMIX", "0");
@@ -284,20 +368,20 @@ int main() {
     CHECK(!igpu_prompt_set_enabled("gfx1103", true));
     {
         const auto t = igpu_default_env("gfx1151", true);
-        CHECK(t.size() == 7);
+        CHECK(t.size() == 8);
         auto has = [&t](const char* k) {
             for (const auto& kv : t) if (kv.first == k) return kv.second == "1";
             return false;
         };
         CHECK(has("STRATA_HIP_WMMA") && has("STRATA_PF_GEMM") && has("STRATA_PA_FAST") && has("STRATA_HC_UPMIX") &&
-              has("STRATA_PF_FUSED") && has("STRATA_SELECT_WMMA") && has("STRATA_PF_F16"));
+              has("STRATA_PF_FUSED") && has("STRATA_SELECT_WMMA") && has("STRATA_PF_F16") && has("STRATA_PF_DM16"));
         CHECK(igpu_default_env("gfx1151", false).empty());   // a gfx1151 reported as a discrete card
         CHECK(igpu_default_env("gfx1150", true).empty());    // 890M: unchanged
         CHECK(igpu_default_env("gfx1103", true).empty());    // 780M on Windows: unchanged
     }
     {
         const char* halo[] = {"STRATA_HIP_WMMA", "STRATA_PF_GEMM", "STRATA_PA_FAST", "STRATA_HC_UPMIX", "STRATA_PF_FUSED",
-                              "STRATA_SELECT_WMMA", "STRATA_PF_F16"};
+                              "STRATA_SELECT_WMMA", "STRATA_PF_F16", "STRATA_PF_DM16"};
         for (const char* k : halo) unset(k);
         const auto set = apply_arch_defaults("gfx1151", true);
         for (const char* k : halo) {
@@ -393,7 +477,7 @@ int main() {
         CHECK(prompt_attn_imma_default(false, 86, false));
         CHECK(!prompt_attn_imma_default(false, 86, true));
         CHECK(!prompt_attn_imma_default(false, 120, true));
-        // the gfx12 decode switches: the arch table is v0.2.6's five prompt switches under 026, nine otherwise; gfx1151 and the others do not move
+        // the gfx12 decode switches: the arch table is v0.2.6's five prompt switches under 026, twelve otherwise; gfx1151 and the others do not move
         {
             const auto t26 = strata::core::arch_default_env("gfx1201", true);
             const auto t27 = strata::core::arch_default_env("gfx1201", false);
@@ -401,10 +485,12 @@ int main() {
                 for (const auto& kv : t) if (kv.first == k) return true;
                 return false;
             };
-            CHECK(t26.size() == 5 && t27.size() == 9);
+            CHECK(t26.size() == 5 && t27.size() == 12);
             CHECK(has(t26, "STRATA_GDN_HEAD") && has(t26, "STRATA_CVEC_FUSE"));
             CHECK(!has(t26, "STRATA_ATTN_LANECELL") && !has(t26, "STRATA_ATTN_MERGE_V2") && !has(t26, "STRATA_TSUM") && !has(t26, "STRATA_EXPDEC"));
             CHECK(has(t27, "STRATA_ATTN_LANECELL") && has(t27, "STRATA_ATTN_MERGE_V2") && has(t27, "STRATA_TSUM") && has(t27, "STRATA_EXPDEC"));
+            CHECK(has(t27, "STRATA_SMALL_UNR") && has(t27, "STRATA_GR_Q32_G") && has(t27, "STRATA_GR_Q8_PFS"));   // AMD-Q: bitwise load-ordering switches
+            CHECK(!has(t26, "STRATA_SMALL_UNR") && !has(t26, "STRATA_GR_Q32_G") && !has(t26, "STRATA_GR_Q8_PFS"));
             CHECK(strata::core::arch_default_env("gfx1200", true).size() == 5);
             CHECK(strata::core::arch_default_env("gfx1151", true) == strata::core::arch_default_env("gfx1151", false));
             CHECK(strata::core::arch_default_env("gfx1100", true).empty() && strata::core::arch_default_env("gfx1100", false).empty());
@@ -476,9 +562,35 @@ int main() {
     }
     {
         using namespace strata;
-        // the layer-major prompt walk (#3976): on by default for a CUDA layer split only
-        CHECK(prefill_layer_major_default(false, 2));                       // 2x RTX A4000 / A6000: measured 5x time to first token
-        CHECK(prefill_layer_major_default(false, 4));
+        // the small-card prompt path: one CUDA card, a native pack, a default prompt chunk below 8,192 tokens
+        auto sc = [](long long chunk, bool hip = false, int stages = 1, bool native = true, bool v026 = false, bool fe = false, bool le = false) {
+            return small_card_prompt_path(chunk, hip, stages, native, v026, fe, le);
+        };
+        CHECK(sc(2048).fused_off && sc(2048).layer_major);                  // ~1.3K engine slots (measured -29% / -44% / -50%)
+        CHECK(sc(3840).fused_off && sc(3840).layer_major);
+        CHECK(sc(5888).fused_off && sc(5888).layer_major);                  // ~1.9K slots: still a win (-9..-16%)
+        CHECK(sc(8191).any());                                              // the boundary: below 8,192 ...
+        CHECK(!sc(8192).any());                                             // ... and not at it (the default is the faster path from there: +7..+25%)
+        CHECK(!sc(16384).any());
+        CHECK(!sc(0).any());                                                // no chunk (no borrowing, or an explicit --prefill): nothing to decide on
+        CHECK(!sc(-1).any());
+        CHECK(!sc(2048, true).any());                                       // a HIP build: no layer-major, the fused experts differ
+        CHECK(!sc(2048, false, 2).any());                                   // a layer split: the owner has not decided that one
+        CHECK(!sc(2048, false, 4).any());
+        CHECK(sc(2048, false, 0).any());                                    // (stages 0 = not counted: one card)
+        CHECK(!sc(2048, false, 1, false).any());                            // a non-native (Q2_0) pack: not measured
+        CHECK(!sc(2048, false, 1, true, true).any());                       // STRATA_DEFAULTS=026
+        CHECK(!sc(2048, false, 1, true, false, true).any());                // STRATA_PF_FUSED named by the user (either value): the user's path
+        CHECK(sc(2048, false, 1, true, false, false, true).fused_off);      // STRATA_PREFILL_LAYER_MAJOR named: the walk is theirs ...
+        CHECK(!sc(2048, false, 1, true, false, false, true).layer_major);   // ... the expert path still follows the rule
+        CHECK(!sc(2048, false, 1, true, false, true, true).any());          // both named: nothing changes
+    }
+    {
+        using namespace strata;
+        // the layer-major prompt walk (#3976): off by default on every build (owner's yes 2026-11-02: a layer split reads 32K 37-55% sooner chunk-major on
+        // 2x A6000, 8K level); it was on for a CUDA layer split
+        CHECK(!prefill_layer_major_default(false, 2));                      // 2x RTX A4000 / A6000 (was on)
+        CHECK(!prefill_layer_major_default(false, 4));
         CHECK(!prefill_layer_major_default(false, 1));                      // one GPU: opt-in only
         CHECK(!prefill_layer_major_default(false, 0));
         CHECK(!prefill_layer_major_default(true, 2));                       // HIP builds
@@ -493,11 +605,53 @@ int main() {
         CHECK(prefill_layer_major_resolve("2", false, 1));                  // any non-zero number is on
         CHECK(!prefill_layer_major_resolve("off", false, 2));               // text that reads as 0 is off (atoi), as before this rule existed
         // unset or empty: the rule
-        CHECK(prefill_layer_major_resolve(nullptr, false, 2));
-        CHECK(prefill_layer_major_resolve("", false, 2));
+        CHECK(!prefill_layer_major_resolve(nullptr, false, 2));             // unset on a layer split: chunk-major
+        CHECK(!prefill_layer_major_resolve("", false, 2));                  // (empty text is unset)
+        CHECK(prefill_layer_major_resolve("1", false, 2));                  // by hand it still turns it on on a split
+        CHECK(prefill_layer_major_resolve("1", false, 4, true));            // and beats STRATA_DEFAULTS=026
+        CHECK(!prefill_layer_major_resolve("0", false, 3));
         CHECK(!prefill_layer_major_resolve(nullptr, false, 1));
         CHECK(!prefill_layer_major_resolve(nullptr, false, 2, true));
         CHECK(!prefill_layer_major_resolve(nullptr, true, 2));
+    }
+    {   // STRATA_PLE_BATCH: on everywhere but an engine built with CUDA 12.8 on a compute capability 12.0 card (issues #220, #224)
+        using strata::ple_batch_default;
+        using strata::ple_batch_resolve;
+        const int rt128 = 12080, rt129 = 12090, rt130 = 13000, rt132 = 13020, rt127 = 12070;
+        // the one case that is off: CUDA 12.8 build, cc 12.0
+        CHECK(!ple_batch_default(rt128, false, 12, 0));
+        CHECK(!ple_batch_default(12089, false, 12, 0));                       // any 12.8.x
+        // every other toolkit keeps it on on the same card
+        CHECK(ple_batch_default(rt130, false, 12, 0));                        // the released cuda13 package
+        CHECK(ple_batch_default(rt132, false, 12, 0));
+        CHECK(ple_batch_default(rt129, false, 12, 0));
+        CHECK(ple_batch_default(rt127, false, 12, 0));
+        // every other card keeps it on with 12.8
+        CHECK(ple_batch_default(rt128, false, 8, 6));                         // sm_86
+        CHECK(ple_batch_default(rt128, false, 8, 9));
+        CHECK(ple_batch_default(rt128, false, 7, 5));
+        CHECK(ple_batch_default(rt128, false, 12, 1));                        // GB10 (sm_121) is not the 12.0 card
+        CHECK(ple_batch_default(rt128, false, 9, 0));
+        // a HIP build never turns it off (a gfx12 card reports 12.0 as well; there is no CUDART there)
+        CHECK(ple_batch_default(0, true, 12, 0));
+        CHECK(ple_batch_default(rt128, true, 12, 0));
+        // the variable wins both ways, on any toolkit and card
+        CHECK(ple_batch_resolve("1", rt128, false, 12, 0));                   // on anyway
+        CHECK(!ple_batch_resolve("0", rt130, false, 12, 0));
+        CHECK(!ple_batch_resolve("0", rt128, false, 8, 6));
+        CHECK(ple_batch_resolve("2", rt128, false, 12, 0));
+        CHECK(!ple_batch_resolve("off", rt130, false, 8, 6));                 // text that reads as 0 is off (atoi), as before
+        // unset: the rule
+        CHECK(!ple_batch_resolve(nullptr, rt128, false, 12, 0));
+        CHECK(ple_batch_resolve(nullptr, rt130, false, 12, 0));
+        CHECK(ple_batch_resolve(nullptr, rt128, false, 8, 6));
+    }
+    {   // the spill gate: only a discrete GPU may have its start moved off VRAM (draft layer dropped, head on the host, loan of 16, KV window below 20480)
+        using strata::spill_allowed;
+        CHECK(spill_allowed(false, false));     // CUDA / HIP discrete
+        CHECK(!spill_allowed(true, false));     // Metal: one pool, "free VRAM" is the OS's available RAM
+        CHECK(!spill_allowed(false, true));     // an integrated GPU (Strix Halo gfx1151, APUs): the same
+        CHECK(!spill_allowed(true, true));
     }
     return fails ? 1 : 0;
 }

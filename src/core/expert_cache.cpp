@@ -97,7 +97,20 @@ namespace {
 // NVIDIA's reference snippet): an expert cache that pushes the system into swap would be far slower than a smaller one.
 size_t device_free_bytes() {
     size_t free_b = 0, total_b = 0;
-    cudaMemGetInfo(&free_b, &total_b);
+    if (const cudaError_t e = cudaMemGetInfo(&free_b, &total_b); e != cudaSuccess) {
+        // #5708: a failed query is not a full card.  It still counts as nothing free (the callers size from it), but the
+        // engine says why, once per kind of error, so a "0.00 GiB free" after it is not read as a measurement; the error
+        // is taken off the thread's last-error state so a later check does not report it as its own.
+        free_b = 0;
+        (void) cudaGetLastError();
+        static std::atomic<int> said{(int) cudaSuccess};
+        if (said.exchange((int) e) != (int) e)
+            // the error's text and number: cudaGetErrorName is not in every build's runtime layer (the Mac's
+            // metal_compat, the HIP shim)
+            std::fprintf(stderr, "strata: the free graphics memory could not be read (%s, error %d); the expert cache "
+                                 "counts it as none free, so it may start with no GPU slots. If this repeats, restart "
+                                 "the computer.\n", cudaGetErrorString(e), (int) e);
+    }
 #if defined(__linux__) && !defined(STRATA_HIP_GFX906)   // (the gfx906 compat layer has no cudaDevAttrIntegrated; that GPU is discrete)
     // per device: a box can mix an integrated GPU (an APU) with a discrete one, and the answer is the CURRENT device's
     static std::atomic<int> uma_cache[64];   // 0 unknown, 1 integrated (unified memory), 2 discrete
@@ -383,6 +396,17 @@ bool map_segment(const Vmm& v, int dev, CUdeviceptr va, size_t bytes, unsigned l
 }  // namespace
 #endif
 
+#if !defined(STRATA_EC_NO_VMM)
+// the driver and this GPU offer the virtual memory functions the segmented arena needs (the check open_segmented makes first)
+static bool segmented_supported() {
+    const Vmm& v = vmm();
+    int dev = 0, supported = 0;
+    CUdevice cu = 0;
+    return v.ok && cudaGetDevice(&dev) == cudaSuccess && v.device_get(&cu, dev) == CUDA_SUCCESS &&
+           v.attribute(&supported, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, cu) == CUDA_SUCCESS && supported;
+}
+#endif
+
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
 #if defined(STRATA_EC_NO_VMM)
     (void) want;
@@ -593,6 +617,13 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         }
     }
 
+#if !defined(STRATA_EC_NO_VMM)
+    if (seg_req_ > 0 && !segmented_supported()) {   // a driver without them: one block, the engine starts all the same
+        std::fprintf(stderr, "ExpertCache: --vram-elastic is off: the driver or this GPU offers no virtual memory management; "
+                             "the cache is one block\n");
+        seg_req_ = 0;
+    }
+#endif
     if (seg_req_ > 0) {   // #533: --vram-elastic: physical segments behind one address range (zeroed below)
         if (!open_segmented(want, err)) return false;
     } else if (g_cache_vmm && vmm_available()) {
