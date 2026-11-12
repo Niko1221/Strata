@@ -24243,39 +24243,6 @@
    "retired_in": ""
   },
   {
-   "name": "STRATA_PARK_PREFAULT_MIB",
-   "backends": [
-    "cuda-hip"
-   ],
-   "reads": [
-    {
-     "file": "src/program/generate.cpp",
-     "line": 7082,
-     "backend": "cuda-hip",
-     "fn": "getenv"
-    }
-   ],
-   "parse": "int",
-   "default_state": null,
-   "code_default": null,
-   "engine_sets": [],
-   "engine_defaults": [],
-   "launch_files": [],
-   "launch_sets": [],
-   "launch_reads": [],
-   "doc_mentions": [],
-   "first_commit": "9f7e09ccdd",
-   "first_date": "2026-11-12",
-   "since": null,
-   "last_commit": "9f7e09ccdd",
-   "last_date": "2026-11-12",
-   "status": "research",
-   "owner": "program",
-   "note": "[reviewed] Read only by the slot RAM guard (added to what parking will pre-fault); the feature that sets it is not on main. [src/program/generate.cpp:7082]",
-   "retire_after": "",
-   "retired_in": ""
-  },
-  {
    "name": "STRATA_PARK_TRACE",
    "backends": [
     "cuda-hip"
