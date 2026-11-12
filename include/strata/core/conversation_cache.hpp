@@ -526,6 +526,16 @@ public:
         }
         return longest;
     }
+    /// Whether a parked entry of this steering mode holds a checkpoint with exactly these tokens and pictures: a chain
+    /// whose checkpoints are all parked already loses none of them when its session is overwritten without a park.
+    bool has_checkpoint(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images, bool cvec) const {
+        for (const auto& e : entries_) {
+            if (e.cvec != cvec) continue;
+            for (const auto& c : e.checkpoints)
+                if (c.ids == ids && c.imgs == images) return true;
+        }
+        return false;
+    }
 
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();

@@ -185,6 +185,13 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   engine copies its state back (50-60 ms for a short conversation) instead of reading the history again - also for
   a client that drops the reply's thinking from the history (the checkpoint matches up to the new turn). A new
   conversation takes an empty slot, else the one used longest ago.
+- **With `INFO slot_read=1` the next turn is read in its slot** (the pipelined groups with drafts,
+  [below](#a-conversations-next-turn-is-read-in-its-slot-strata_slot_read)): the server sends `BGEN ... slot_read=1`,
+  the engine answers without an admission token and the slot reads the new tokens in its own windows - no copy of
+  the conversation, no other slot stopped. While several conversations are going on (requests in two or more
+  slots within `STRATA_PARALLEL_STICKY_S` seconds, default 20) a conversation then stays in its slot: its next
+  turn goes there even when nothing else runs at that moment, and a request left alone in its slot does not move
+  to the solo path. Once the others have been quiet that long, the next turn takes the solo path again.
 - Slots are assigned so that consecutive requests land in different pipeline groups (`--batch-groups`).
 - A client that disconnects stops its slot (`BSTOP`); the others go on.
 
@@ -536,6 +543,129 @@ run without it; inside one run every slot still equals its own solo decode.
 Not run: AMD (HIP), the draft layer on the first stage, helper expert caches, more than two stages, SYCL (the SYCL
 tree has its own copy of the batch code and does not have this).
 
+## Two cards with a CPU expert tier: the pipelined groups beside the drafts
+
+`STRATA_PIPED_MTP` (above) was measured with every expert in VRAM. On two cards that hold three quarters of the experts,
+and with conversations of 30K to 180K tokens that go on turn after turn, four more things decided what several
+conversations got; each is on where it applies and has a switch for the A/B. Hardware for every figure of this section:
+2x RTX 3090 at a 250 W cap each, 32 vCPU, Swift-Qwen3.8-Flash-Next IQ3_S, `--layer-split 27`, a 1M context with
+`--kv-resident 32768`, `"parallel": 2` (2 groups of 1 slot), `--batch-mtp` with `STRATA_PIPED_MTP=2` and
+`STRATA_BATCH_SELF_COMMIT=0`, through `serve/server.py`, two conversations sending their turns at the same moment;
+"tok/s" is the total of both while both decode.
+
+**A slot's rows in one launch a layer** (`STRATA_BATCH_SLOT_RUNS`, default on; `=0`: a launch per row). A slot's rows of a
+window - its token and its proposals - are consecutive cells of one conversation. The QSA layers ran their K/V append,
+indexer step, block scores, top-k, K/V resolve and attention once per row; they now run once per run of rows of one slot,
+as the solo window does. 164.3 -> 181.5 tok/s (+10.5%, an ABBA of two runs each, five tasks of 500 tokens on 32K-token
+conversations). The tokens are the same (the exactness runs below).
+
+**The prompt lookup's drafts** (`STRATA_PIPED_LOOKUP`, on with `STRATA_PIPED_MTP` where `--suffix-draft` is on; `=0`: off).
+Each slot keeps its own lookup history (its prompt and what it wrote). A window carries the lookup's drafts instead of the
+draft layer's where the draft policy expects more tokens a millisecond from them, as on the solo path, and a slot then takes
+up to min(the solo window's size, 8 / slots per group) rows: 5 at `--spec 3` with the lookup, 4 with two slots a group.
+On mixed tasks +2 to 4%, more where a reply quotes its prompt (one such task: 1,693 of 1,714 lookup drafts kept in 430
+windows).
+
+**The adaptive tier's interval follows its rounds** (`STRATA_PIPE_ADAPT_EVERY=auto`). A round empties the pipeline, so a
+fixed interval is either late when the text changes or wasted once the tier has caught up: with intervals of 16, 32 and 64
+windows the same continuing conversations gave 156.7, 165.1 and 160.1 tok/s (149 without rounds; the experts' hit rate 87%
+without and 95-96% with them). `auto` starts at 32 windows, halves the interval after a round that moved nearly all a round
+may move and doubles it after one that found little, between 32 and 256.
+
+**K/V copies keep the VRAM residency** (`STRATA_KV_COPY_RESIDENT`, default on; `=0`: the reset). A direct K/V copy between a
+slot and the main sessions emptied the target's streamed residency, so the copied conversation read every block it attends
+to from RAM again: the windows behind an admission took 23 + 19 ms where they take 12 + 10. The copy now carries the
+resident pages and the map, device to device, and a hand-back from a slot's turn checkpoint copies the K/V directly too
+(`STRATA_SLOT_CKPT_KV_DIRECT`, default on). 147.9 -> 158.7 tok/s (+7%) on continuing conversations.
+
+**Slots that do not fit in RAM are not carved.** With KV streaming a slot's K/V is pinned RAM: 12.4 GiB a slot at a 1M
+context. `"parallel": 4` there left 4 GB of 156 free when the engine was ready, and the first requests ended it (the
+kernel's OOM killer). The engine now counts what it still loads after the slots - the experts' arena, the park's
+pre-faulted segments - and carves only the slots that leave `STRATA_SLOT_RAM_RESERVE_GIB` free (default 8; 0: no check),
+a multiple of the stages on a layer split, and says so: `--batch 4: a slot's K/V takes 12.38 GiB of pinned RAM ... 2
+slots keep 8 GiB free`. Four conversations need a smaller `--max-context` on this box (512K: 6.2 GiB a slot).
+
+### A conversation's next turn is read in its slot (`STRATA_SLOT_READ`)
+
+An admission reads a request's prompt on the main sessions and copies the result into the slot. For the next turn of a
+conversation that a slot already holds that is: the slot's K/V copied to the main sessions, whatever conversation those
+held parked, the prompt path's cache slots lent, the new tokens read, the lent slots refilled, a checkpoint saved, and
+the K/V copied back - with every slot stopped throughout. Measured with two 178K-token conversations: 3.2 to 3.5 s for a
+turn of 400 to 580 new tokens (the two copies 0.3 s each, the park 0.5 s, the read 1.2 to 1.9 s, the refill 0.3 s), and
+everything but the read grows with the conversation.
+
+With `STRATA_SLOT_READ` (on where the pipelined groups draft; `=0`: off) the slot reads the turn itself. The request's
+new tokens are rows of the slot's own windows, all kept without a verdict; the last one's pick is the reply's first
+token. Where the prompt leaves what the slot holds - a client renders the history again without the reply's thinking -
+the slot's turn checkpoint is restored in place first (the cells below it are the slot's own), and the checkpoint of the
+new turn boundary is taken from the slot's sessions when the read reaches it (the pipeline is empty for that moment, 85
+to 90 ms). Nothing is copied and no other slot stops. The server asks for it with `slot_read=1` on `BGEN` (it must take an
+admission that answers `DONE` with 0 tokens and `BADM <slot> 1` at once); the engine says `INFO slot_read=1`.
+
+A window reads a few rows at a decode row's cost, so the read itself is slower than the prompt path's: 105 to 155
+tokens/s a slot at 178K tokens (the lower end with both slots reading), where the prompt path reads 475 tokens in
+1.3 s. So it takes a turn of at most `STRATA_SLOT_READ_MAX` new tokens (default 1024). Anything else is admitted as
+before: a longer turn, a conversation the slot does not hold, a parked copy that holds more, pictures, `logprobs`,
+`pin=`. A lower limit for a turn that arrives while no other slot decodes (nothing would stop for the prompt path
+then) was measured and is not in: the next request's read waited behind that admission instead of running beside it,
+two conversations sending their turns together lost 11% of their total tokens/s, and the first token came no sooner.
+
+**Parks that keep nothing are skipped** (`STRATA_SLOT_PARK_SKIP`, default on; `=0`: off). An admission through the main
+sessions parked the conversation they held before - with batch slots, a stale copy of a conversation that a slot holds
+further - and parked the slot's reply before the same conversation's next turn replaced it. Both wrote a whole snapshot
+(0.45 to 0.65 s at 178K tokens, every slot stopped). The first is skipped once the chain's root and any pinned prefix
+are parked (what other chats start from stays in the cache); the second follows `--conversation-cache-rewind-keep`, as
+on the solo path.
+
+### Measured, exact, not run
+
+Through `serve/server.py` on the hardware above, with conversations that go on: every client sends its next turn (1,400
+characters of new text and a task - an agent step, code, a copy, prose; 400 to 750 tokens) and takes a 900-token reply,
+four rounds, sampled with a seed. "Before" is `"parallel"` alone on the engine before this section's changes (no drafts
+in the slots); "after" adds `--batch-mtp`, `STRATA_PIPED_MTP=2`, `STRATA_BATCH_SELF_COMMIT=0`,
+`STRATA_PIPE_ADAPT_EVERY=auto` and `STRATA_PW_WITH_BATCH=1`.
+
+Two conversations of 177K tokens, 1M context, `"parallel": 2` (three runs before and two after, interleaved):
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| turns sent together: total tok/s while both decode | 121.2 | 182.1 | +50% |
+| ... total tok/s of the round, the turns' reads included | 78.5 | 117.9 | +50% |
+| ... first token, mean of the two | 5.3 s | 4.9 s | |
+| turns 5 s apart: a conversation's tok/s from its request to its last token | 48.6 | 62.3 | +28% |
+| ... its tok/s while it decodes | 60.5 | 86.1 | +42% |
+| ... first token | 3.6 s | 3.8 s | |
+| one conversation alone on that config (the solo path) | 121.2 | 131.5 | +9% |
+
+Four conversations of 32K tokens, 256K context, `"parallel": 4` (2 groups of 2 slots; ABBA, two runs each):
+
+| | before | after | |
+| --- | ---: | ---: | ---: |
+| four at once: total tok/s while all decode | 196.9 | 242.9 | +23% |
+| ... total tok/s of the round, the turns' reads included | 119.8 | 164.4 | +37% |
+| ... a conversation's tok/s from its request to its last token | 30.3 | 42.8 | +41% |
+| ... first token: mean / the latest of a run | 6.2 s / 27.6 s | 6.3 s / 8.6 s | |
+| two of the four slots in use: total tok/s while both decode | 131.7 | 193.7 | +47% |
+| ... a conversation's tok/s from its request to its last token | 52.9 | 66.7 | +26% |
+| ... first token, mean of the two | 2.5 s | 4.3 s | |
+
+The last row is the turn read's price where it buys least: at 32K tokens the main sessions' copies are small and their
+admission of a 500-token turn takes 1.3 s, where the slot takes 3.8 to 4.4 s at 4 rows a window. The turn as a whole
+still ends sooner. `STRATA_SLOT_READ=0` is the earlier first token.
+
+Exact. `tools/slot_read_test.py` runs two conversations of three turns twice on a fresh engine with the expert placement
+fixed - every turn admitted through the main sessions, then turns 2 and 3 read in their slots; one conversation is
+rendered again without the reply's thinking, so its read restarts at the slot's turn checkpoint, the other continues
+what its slot holds, and the two turns of a round arrive back to back. The replies' tokens are the same, greedy and
+sampled with a presence penalty (8 turns of 61 to 102 tokens, each read in its slot). Two slots on 32K-token
+conversations gave the 220 tokens of their solo decodes, greedy and sampled (the method of `tools/batch_test.py`, with
+the per-run launches, the lookup's drafts and the residency copies on).
+
+Without `"parallel"` none of this runs: one 177K-token conversation on the same settings with and without the five
+above gave 142.7 and 134.3 tok/s (runs of one arm are 3 to 7% apart), the first token after 1.8 s in both.
+
+Not run: AMD (HIP), one card, more than two stages, SYCL, and `"parallel": 4` at a 1M context (the RAM of this box).
+
 ## Windows of 16 rows, and the four-card AMD profile
 
 A verify or batch window held at most 8 rows. On a layer split every group of the pipeline is its own window, so 32 slots ran as
@@ -634,9 +764,15 @@ counter-based draw (Philox(seed, position)).
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
 - Admissions are one at a time: two new long prompts are read one after the other.
-- `--batch-groups` needs every stage on its own GPU. A pipelined slot is a conversation cache again (0.1.41): a request left alone in its slot goes back to the solo path with its drafts, as on one GPU.
+- `--batch-groups` needs every stage on its own GPU. A pipelined slot is a conversation cache again (0.1.41): a request left alone in its slot goes back to the solo path with its drafts, as on one GPU - unless the server keeps it there (`INFO slot_read=1`, above).
 - The pipelined `--batch-groups` path adapts the VRAM tier only with `STRATA_PIPE_ADAPT_EVERY` (above).
-- The slot sessions take VRAM (above) and, with KV streaming, pinned RAM.
+- The slot sessions take VRAM (above) and, with KV streaming, pinned RAM: slots that would not leave
+  `STRATA_SLOT_RAM_RESERVE_GIB` free are not carved.
+- A slot that decodes alone in the pipelined groups runs its windows through the stages one after another (nothing to
+  overlap them with), slower than the solo path: the reason a conversation goes back to that path once the others
+  have been quiet for `STRATA_PARALLEL_STICKY_S` seconds.
+- A turn read in its slot (`STRATA_SLOT_READ`) reads at the windows' rate, slower than the prompt path: a turn of more
+  than `STRATA_SLOT_READ_MAX` new tokens is admitted through the main sessions as before.
 
 ## Measured
 
@@ -720,13 +856,14 @@ two long conversations alternating through the HTTP server: the first turns took
 
 ## Testing
 
-Four scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`
+Five scripts drive a built engine or a running server; each exits non-zero on a failure. `serve/test_parallel.py`
 tests the server's side with a scripted engine (no GPU).
 
 | Script | What it checks |
 | --- | --- |
 | `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
 | `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. On a two-stage layer split with pipelined groups add `--batch 4 --batch-groups 2` to `--extra` (its 3 slots do not divide into two groups) and set `STRATA_PIPED_READ_PIECE`; run it without a conversation cache, or step 4 restores the prompt instead of reading it. |
+| `tools/slot_read_test.py` | two conversations, three turns each, on a fresh engine twice: every later turn read in its slot (`slot_read=1`: from the slot's turn checkpoint for a turn rendered without the reply's thinking, from its live state otherwise) gives the tokens the same turn gives admitted through the main sessions. Needs the pipelined groups with drafts (`--batch-mtp`, `STRATA_PIPED_MTP`, `STRATA_BATCH_SELF_COMMIT=0`); `--keys` for sampled turns and penalties. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |
 
@@ -740,6 +877,8 @@ python3 tools/batch_interleave_test.py --exe engine/strata --config strata-<mode
 python3 tools/parking_test.py --exe engine/strata --config strata-<model>.json \
     --extra "--layer-split 12,24,36 --conversation-cache-mib 8192 --conversation-cache-slots 4 --pcie-frac 0"
 STRATA_KEY=<key> python3 tools/early_close_test.py http://127.0.0.1:8080
+STRATA_PIPED_MTP=2 STRATA_BATCH_SELF_COMMIT=0 python3 tools/slot_read_test.py --exe engine/strata \
+    --config strata-<model>.json --extra "--batch-mtp --pcie-frac 0 --adapt-every 1000000 --short-read 100000"
 ```
 
 For single-GPU `--batch-mtp`, use a model with `rt/draft_vocab.bin` to exercise admission with a
@@ -756,15 +895,15 @@ On top of `GEN` / `GENI`:
 
 | Line | Direction | Meaning |
 | --- | --- | --- |
-| `BGEN <slot> <max_new> [keys] <ids>` | in | read the prompt (as `GEN 1`), then continue in `<slot>` |
+| `BGEN <slot> <max_new> [keys] <ids>` | in | read the prompt (as `GEN 1`), then continue in `<slot>`. With the key `slot_read=1` the engine may read the next turn of the conversation `<slot>` holds in the slot itself: it then answers `DONE` with 0 generated tokens and `BADM <slot> 1` at once, and the reply's first token is the slot's first `BT` |
 | `BGENI <slot> <max_new> [keys] <file> <ids>` | in | the same with images |
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
-| `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
+| `BDONE <slot> <generated> <stop/length/cancel> <ms> [read=<ms>]` | out | the slot is free again (it keeps its conversation); `read=`: what the slot's own read of the turn took (`slot_read`), not in `<ms>` |
 | `BSTOP <slot>` | in | end that slot at its next window |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
-| `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
+| `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`); `slot_read=1`: it reads a conversation's next turn in its slot when asked (`BGEN ... slot_read=1`) |
 
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
