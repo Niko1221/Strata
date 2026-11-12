@@ -1,0 +1,33 @@
+{
+ "access": "local",
+ "context": 65536,
+ "data_dir": "<model_dir>/app-data",
+ "drafting": null,
+ "dsv41_package": null,
+ "extra": {
+  "--cpu-threads": "22",
+  "--dspark": "auto",
+  "--prefill-chunk": "8192",
+  "--reserve-mib": "512",
+  "--vram-experts": "0.995"
+ },
+ "family": "deepseek41",
+ "gpu_roles": null,
+ "gpus": [
+  0,
+  1
+ ],
+ "key": "e3b0c44298fc1c14",
+ "kv": null,
+ "model": "IST-DAS-2.00bpw",
+ "model_path": "<model_dir>/gguf",
+ "mtp": null,
+ "no_key": false,
+ "parallel": 1,
+ "port": 8080,
+ "speed": "full",
+ "split_engine": null,
+ "tune": "skip",
+ "tune_allow_small": false,
+ "vision": "off"
+}

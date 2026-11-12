@@ -1,0 +1,50 @@
+{
+ "exe": "<strata_worktree>/engine-dsv41/strata-dsv41",
+ "args": [
+  "--pack",
+  "<model_dir>/app-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw",
+  "--max-context",
+  "65536",
+  "--eos",
+  "1",
+  "--vision",
+  "off",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--tp",
+  "2"
+ ],
+ "cwd": "<strata_worktree>",
+ "tokenizer": "<model_dir>/app-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw/tokenizer",
+ "model_name": "deepseek-v4.1-flash",
+ "arch": "deepseek41",
+ "log": "<home>/strata-029/strata-deepseek-v4.1-flash-ist-das-2.00bpw.log",
+ "lib_dirs": [
+  "<strata_worktree>/engine-dsv41"
+ ],
+ "port": 8080,
+ "engine_ready_s": 3600,
+ "gpu": [
+  0,
+  1
+ ],
+ "gpus_asked": true,
+ "args_written": [
+  "--pack",
+  "<model_dir>/app-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw",
+  "--max-context",
+  "65536",
+  "--eos",
+  "1",
+  "--vision",
+  "off",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--tp",
+  "2"
+ ]
+}

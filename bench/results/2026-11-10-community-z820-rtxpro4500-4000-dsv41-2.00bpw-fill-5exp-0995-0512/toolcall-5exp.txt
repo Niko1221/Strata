@@ -1,0 +1,32 @@
+  [ok  ] perfect 1-arg call         expected PASS, scorer said PASS
+  [ok  ] wrong city                 expected FAIL, scorer said FAIL
+  [ok  ] wrong tool                 expected FAIL, scorer said FAIL
+  [ok  ] no call at all             expected FAIL, scorer said FAIL
+  [ok  ] typed args correct         expected PASS, scorer said PASS
+  [ok  ] int sent as STRING         expected FAIL, scorer said FAIL
+  [ok  ] bool sent as STRING        expected PASS, scorer said PASS
+  [ok  ] required arg MISSING       expected FAIL, scorer said FAIL
+  [ok  ] control stayed quiet       expected PASS, scorer said PASS
+  [ok  ] control OVER-called        expected FAIL, scorer said FAIL
+  [ok  ] call leaked as raw text    expected FAIL, scorer said FAIL
+  [ok  ] arguments not valid JSON   expected FAIL, scorer said FAIL
+  [ok  ] synonym / plural arg       expected PASS, scorer said PASS
+  [ok  ] nested array correct       expected PASS, scorer said PASS
+  [ok  ] nested array wrong shape   expected FAIL, scorer said FAIL
+
+selftest: 15/15 fixtures behave as declared
+
+=== tool-call probe: 5exp  (effort=low, temp=0, http://127.0.0.1:8080/v1/chat/completions) ===
+case           want                       called                      ok       s
+call-1arg      get_weather                get_weather                YES     9.1
+call-3arg      get_weather                get_weather                YES     8.9
+pick-shell     bash                       bash                       YES     6.8
+pick-math      calculator                 calculator                 YES     6.5
+pick-file      read_file                  read_file                  YES     6.8
+two-in-one     get_weather,read_file      get_weather,read_file      YES     9.6
+no-tool-fact   (none)                     TEXT                       YES     5.2
+no-tool-chat   (none)                     TEXT                       YES     6.0
+
+5exp: 8/8 correct
+5exp: reasoning tokens emitted on 0/8 cases -- if 0, this measured reflex, not reasoning
+wrote <model_dir>/bench-results/2026-11-10-community-rtx-pro-4500-blackwell-deepseek-v4-1-flash-4/toolcall-5exp.json

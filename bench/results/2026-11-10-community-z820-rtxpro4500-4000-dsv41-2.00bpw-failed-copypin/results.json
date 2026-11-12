@@ -1,0 +1,618 @@
+{
+ "schema": 1,
+ "tool": "tools/strata_bench.py",
+ "date": "2026-11-10",
+ "params": {
+  "runs": 3,
+  "think": false,
+  "clients": 0,
+  "long": true,
+  "started_server": false,
+  "command": "python tools/strata_bench.py --long"
+ },
+ "elapsed_s": 48.0272319316864,
+ "machine": {
+  "gpu": [
+   "NVIDIA RTX PRO 4500 Blackwell"
+  ],
+  "gpu_vram_mib": 32623,
+  "gpu_driver": "580.178.04",
+  "gpu_detail": [
+   {
+    "power_limit_w": "200.00",
+    "power_draw_w": "47.20",
+    "pcie": "gen3 x16",
+    "pstate": "P1",
+    "temp_c": "45"
+   }
+  ],
+  "cuda": "13.0",
+  "engine_build": null,
+  "cpu": "Intel(R) Xeon(R) CPU E5-2697 v2 @ 2.70GHz",
+  "cpu_cores": 24,
+  "storage": "sda     SanDisk 3.2Gen1                 usb; sdb     CT1000BX500SSD1                 sas; sdc     CT2000BX500SSD1                 sas; sdd     Compact Flash                   usb; sde     SM/xD-Picture                   usb; sdf     SD/MMC                          usb; sdg     M.S./M.S.Pro/HG                 usb; sdh     SD/MMC/M.S.PRO                  usb; sr0     DVD A DH16ACSHR                 sas; zram0; nvme0n1 WD PC SN5000S SDEPNSJ-1T00-1006 nvme",
+  "cpu_threads": 48,
+  "ram_gib": 251.8,
+  "os": "Linux 7.0.14-101.fc43.x86_64",
+  "python": "3.12.9",
+  "strata_version": "0.1.59.1",
+  "strata_commit": "628f7495",
+  "engine_version": "ds4-0.1",
+  "model": "deepseek-v4.1-flash",
+  "quant": null,
+  "context": 65536,
+  "parallel_slots": 1,
+  "config": {},
+  "launch": null,
+  "engine_info": {
+   "model": "deepseek-v4.1-flash",
+   "max_context": 65536,
+   "images": false,
+   "version": "ds4-0.1",
+   "context": 65536,
+   "kv": "fp4",
+   "kv_resident": 65536,
+   "expert_slots": 4841,
+   "engine_kind": "ds4",
+   "cpu_experts": 10519,
+   "ram_experts": 10519,
+   "engine": "ds4-0.1",
+   "engram_layers": 2,
+   "engram_lookups": 48,
+   "drafting": "off",
+   "drafting_note": ""
+  },
+  "vram_after": {
+   "elastic": false
+  }
+ },
+ "results": {
+  "chat": {
+   "requests": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.078,
+     "total_s": 5.422,
+     "prompt_tokens": 38,
+     "reused_tokens": 0,
+     "read_tokens": 38,
+     "generated_tokens": 100,
+     "prompt_tps": 35.4,
+     "prompt_tps_source": "engine",
+     "decode_tps": 23.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 1073.6,
+     "decode_ms": 4343.1,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 0,
+     "prompt": 0
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.414,
+     "total_s": 7.221,
+     "prompt_tokens": 29,
+     "reused_tokens": 0,
+     "read_tokens": 29,
+     "generated_tokens": 100,
+     "prompt_tps": 20.6,
+     "prompt_tps_source": "engine",
+     "decode_tps": 17.2,
+     "decode_tps_source": "engine",
+     "prompt_ms": 1408.5,
+     "decode_ms": 5807.1,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 0,
+     "prompt": 1
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 1.051,
+     "total_s": 5.987,
+     "prompt_tokens": 32,
+     "reused_tokens": 0,
+     "read_tokens": 32,
+     "generated_tokens": 100,
+     "prompt_tps": 30.6,
+     "prompt_tps_source": "engine",
+     "decode_tps": 20.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 1045.1,
+     "decode_ms": 4935.3,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 0,
+     "prompt": 2
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.77,
+     "total_s": 4.223,
+     "prompt_tokens": 38,
+     "reused_tokens": 0,
+     "read_tokens": 38,
+     "generated_tokens": 100,
+     "prompt_tps": 49.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 29.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 764.5,
+     "decode_ms": 3452.7,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 1,
+     "prompt": 0
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.625,
+     "total_s": 3.936,
+     "prompt_tokens": 29,
+     "reused_tokens": 0,
+     "read_tokens": 29,
+     "generated_tokens": 100,
+     "prompt_tps": 46.7,
+     "prompt_tps_source": "engine",
+     "decode_tps": 30.2,
+     "decode_tps_source": "engine",
+     "prompt_ms": 620.4,
+     "decode_ms": 3310.0,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 1,
+     "prompt": 1
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.711,
+     "total_s": 4.417,
+     "prompt_tokens": 32,
+     "reused_tokens": 0,
+     "read_tokens": 32,
+     "generated_tokens": 100,
+     "prompt_tps": 45.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 27.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 705.7,
+     "decode_ms": 3705.9,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 1,
+     "prompt": 2
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.734,
+     "total_s": 4.066,
+     "prompt_tokens": 38,
+     "reused_tokens": 0,
+     "read_tokens": 38,
+     "generated_tokens": 100,
+     "prompt_tps": 52.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 30.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 728.3,
+     "decode_ms": 3331.3,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "prompt": 0
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.529,
+     "total_s": 3.528,
+     "prompt_tokens": 29,
+     "reused_tokens": 0,
+     "read_tokens": 29,
+     "generated_tokens": 100,
+     "prompt_tps": 55.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 33.4,
+     "decode_tps_source": "engine",
+     "prompt_ms": 524.1,
+     "decode_ms": 2998.2,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "prompt": 1
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 0.618,
+     "total_s": 4.104,
+     "prompt_tokens": 32,
+     "reused_tokens": 0,
+     "read_tokens": 32,
+     "generated_tokens": 100,
+     "prompt_tps": 52.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 28.7,
+     "decode_tps_source": "engine",
+     "prompt_ms": 613.4,
+     "decode_ms": 3485.5,
+     "drafts_offered": 0,
+     "drafts_accepted": 0,
+     "run": 2,
+     "prompt": 2
+    }
+   ],
+   "decode_tps": {
+    "median": 28.7,
+    "min": 17.2,
+    "max": 33.4,
+    "n": 9
+   },
+   "ttft_s": {
+    "median": 0.734,
+    "min": 0.529,
+    "max": 1.414,
+    "n": 9
+   },
+   "generated_tokens": {
+    "median": 100,
+    "min": 100,
+    "max": 100,
+    "n": 9
+   },
+   "prompt_tokens": {
+    "median": 32,
+    "min": 29,
+    "max": 38,
+    "n": 9
+   }
+  },
+  "prompts": {
+   "4K": {
+    "target_tokens": 4096,
+    "requests": [
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.07,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 0
+     },
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.067,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 1
+     },
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.065,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 2
+     }
+    ],
+    "prompt_tps": null,
+    "ttft_s": null,
+    "prompt_tokens": null,
+    "reused_tokens": null
+   },
+   "16K": {
+    "target_tokens": 16384,
+    "requests": [
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.595,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 0
+     },
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.302,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 1
+     },
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.352,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 2
+     }
+    ],
+    "prompt_tps": null,
+    "ttft_s": null,
+    "prompt_tokens": null,
+    "reused_tokens": null
+   },
+   "32K": {
+    "target_tokens": 32768,
+    "requests": [
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.373,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 0
+     },
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.288,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 1
+     },
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.287,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 2
+     }
+    ],
+    "prompt_tps": null,
+    "ttft_s": null,
+    "prompt_tokens": null,
+    "reused_tokens": null
+   }
+  },
+  "agent": {
+   "sessions": [
+    [
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.069,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 0,
+      "turn": 0
+     }
+    ],
+    [
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.065,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 1,
+      "turn": 0
+     }
+    ],
+    [
+     {
+      "ok": false,
+      "err": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}",
+      "ttft_s": null,
+      "total_s": 0.065,
+      "prompt_tokens": null,
+      "reused_tokens": null,
+      "read_tokens": null,
+      "generated_tokens": 0,
+      "prompt_tps": null,
+      "prompt_tps_source": null,
+      "decode_tps": null,
+      "decode_tps_source": null,
+      "prompt_ms": null,
+      "decode_ms": null,
+      "drafts_offered": null,
+      "drafts_accepted": null,
+      "run": 2,
+      "turn": 0
+     }
+    ]
+   ],
+   "hit_pct": null,
+   "reread_tokens": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3
+   },
+   "new_tokens": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3
+   },
+   "turn_ttft_s": null,
+   "last_turn_prompt_tokens": null,
+   "turn_decode_tps": null,
+   "first_turn_ttft_s": null
+  },
+  "clients": {},
+  "skipped": {},
+  "failures": [
+   {
+    "where": "4K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "4K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "4K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "16K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "16K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "16K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "agent",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "agent",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "agent",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "32K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "32K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   },
+   {
+    "where": "32K",
+    "error": "{'type': 'server_error', 'message': 'cudaMemcpyAsync(dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2), cudaMemcpyHostToDevice, c.cs): invalid argument'}"
+   }
+  ]
+ }
+}

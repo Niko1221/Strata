@@ -1,0 +1,22 @@
+=== arithmetic precision chain: 5exp ===
+selftest OK: chains recompute, renderer emits every step, extractor parses
+  n=5   rep0  want=26059176     got=26059176      OK     (6.3s, 43 tok)
+  n=5   rep1  want=4662         got=559446        WRONG  (3.8s, 3 tok)
+  n=5   rep2  want=23361        got=5191          WRONG  (3.0s, 3 tok)
+  --> n=5    1/3 correct
+
+  n=10  rep0  want=220          got=220           OK     (6.6s, 79 tok)
+  n=10  rep1  want=138560769    got=6852          WRONG  (2.3s, 3 tok)
+  n=10  rep2  want=580619860    got=-113          WRONG  (2.4s, 3 tok)
+  --> n=10   1/3 correct
+
+  n=20  rep0  want=619241710    got=651168        WRONG  (3.0s, 3 tok)
+  n=20  rep1  want=11116177     got=356           WRONG  (2.9s, 2 tok)
+  n=20  rep2  want=74723        got=74723         OK     (19.8s, 424 tok)
+  --> n=20   1/3 correct
+
+SUMMARY 5exp
+ steps      correct   accuracy
+     5         1/3            33%
+    10         1/3            33%
+    20         1/3            33%
