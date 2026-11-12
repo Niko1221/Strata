@@ -64,6 +64,16 @@ public:
     /// and bf16() / f16() / native() run the GEMM with FP16 out (rocBLAS's tuned kernels there), widened in place in
     /// Y's own rows.  Off (default): every call is what it was.  Set by Prefill::init, together with set_act_f16.
     void set_f16_io(bool on) { f16_io_ = on; }
+    /// STRATA_F16_NOWIDEN: the next FP16-out product of all n_full columns in one GEMM leaves Y as FP16 (each
+    /// row's halves at its start, 2 * ldy halves a row) instead of widening it; take_kept_f16 says whether it did and
+    /// clears the request (a sliced product widens as before)
+    void keep_f16_once(int64_t n_full) { keep_n_ = n_full; kept_f16_ = false; }
+    bool take_kept_f16() { const bool k = kept_f16_; keep_n_ = 0; kept_f16_ = false; return k; }
+    /// STRATA_F16_NOWIDEN: the next native()/bf16() product with N == n_full leaves EVERY row slice's
+    /// FP16 output unwidened (slice r0's halves at row t from half t * 2 * ldy + 2 * r0); take_kept_rows gives the slice
+    /// width (N when it ran unsliced) or 0 when that product took a path that writes FP32 (MMQ, padded, no FP16 I/O)
+    void keep_f16_slices_once(int64_t n_full) { keep_all_n_ = n_full; kept_rows_ = 0; }
+    int64_t take_kept_rows() { const int64_t r = kept_rows_; keep_all_n_ = 0; kept_rows_ = 0; return r; }
 
     /// Caller-owned buffers only: the scratch and workspace moved (the prompt path laid its buffers out again).
     void rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
@@ -113,6 +123,10 @@ private:
     void* hipblaslt_state_ = nullptr;
     void* rocblas_state_ = nullptr;   // HIP: the rocBLAS solution table of f16_inplace (STRATA_ROCBLAS_TUNING)
     bool f16_io_ = false;
+    int64_t keep_n_ = 0;      // keep_f16_once's column count (0 = widen)
+    bool kept_f16_ = false;
+    int64_t keep_all_n_ = 0, kept_rows_ = 0;
+    bool skip_widen_ = false;
     /// cuBLAS 12 answers the default FP16 algorithm of a few (N, K) shapes with CUBLAS_STATUS_INTERNAL_ERROR once
     /// another CUDA device in the process has initialized its context (issue #1650, Turing + Pascal).  A fixed
     /// algorithm (ALGO2) survives that state, but is markedly slower for the wide shapes, so only the shapes that
