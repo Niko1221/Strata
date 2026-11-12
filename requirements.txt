@@ -15,7 +15,8 @@ requests==2.34.2
 pillow==13.0.0; python_version >= "3.11"
 pillow==12.3.0; python_version < "3.11"
 psutil==7.2.2
-llguidance==1.9.1
+# llguidance (the mask path's grammar engine) is NOT here on purpose: its 1.9.1 wheel is cp39-abi3 only, which the
+# cp312 hash locks cannot carry, and every default deployment would pay for it. Opt-in: pip install llguidance.
 
 # their dependencies
 markupsafe==3.0.3

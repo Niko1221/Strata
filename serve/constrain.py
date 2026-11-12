@@ -18,7 +18,7 @@ turn that calls tools stays a tool call (the server's own parser reads it), a tu
 token for token.  Leading whitespace is allowed before either.  The thinking is not constrained: the mask starts
 after </think> (or at once when the prompt has already closed it, i.e. thinking off).
 
-llguidance is optional (`pip install llguidance`): without it, or with an engine that does not say token_mask=1 or
+llguidance is opt-in (`pip install llguidance` into the venv; the default install does not include it): without it, or with an engine that does not say token_mask=1 or
 token_mask=2, nothing changes - the prompt directive and the validation after the turn (serve/structured.py) remain
 the contract.
 The validation also stays ON with the mask: it is the check that the mask and the schema agree, not the guarantee.

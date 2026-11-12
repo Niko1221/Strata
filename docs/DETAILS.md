@@ -616,7 +616,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
   Intel (SYCL) port do not check.
 
 This is **schema prompting followed by server validation** on the ordinary path. When the engine takes token masks
-(its INFO line says `token_mask=1`) and the Python package `llguidance` is installed (setup adds it), the chat
+(its INFO line says `token_mask=1`) and the Python package `llguidance` is installed (opt-in: `pip install llguidance` into
+the venv; the default install does not include it, so every deployment pays nothing for the mask path), the chat
 route's JSON formats are also **grammar-constrained**: before every generation window the engine asks the server
 (MQ) and the server answers with the tokens the grammar allows (MK) or free sampling (MF), so every emitted token
 advances the schema; a turn that opens a tool call leaves the grammar. Without the engine support or the package
