@@ -65,6 +65,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, parser
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages, require_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve import cf_access  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.webfiles import subtree_file as web_subtree_file  # noqa: E402
 from strata_control import engine_component  # noqa: E402
@@ -4923,6 +4924,7 @@ class Service:
         self.slot_save_path = None                    # --slot-save-path: /slots/0?action=save|restore (off when None)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
+        self.cf_access = cf_access.from_env()         # Cloudflare Access opt-in (STRATA_CF_ACCESS_TEAM)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
         # turn before the answer instead of the top of the prompt, so switching it keeps the cached conversation
         self.effort_end = False
@@ -7797,12 +7799,20 @@ def make_handler(svc: Service):
                              f"turns this check off"}})
             return False
 
+        def _given_key(self) -> str:
+            auth = self.headers.get("Authorization", "")
+            return auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
+
         def _foreign_page(self) -> bool:
-            """Without an API key, a /v1 POST from a browser page of another site (any site can POST text/plain
-            there without a CORS preflight) would burn GPU time: an Origin header must name an allowed page, and
-            then the body must be JSON.  No Origin (curl, the SDKs, other servers): any content type, as before."""
+            """Without an API key (or when authenticating via ambient browser credentials such as Cloudflare Access),
+            a /v1 POST from a browser page of another site (any site can POST text/plain there without a CORS preflight)
+            would burn GPU time: an Origin header must name an allowed page, and then the body must be JSON.  No Origin
+            (curl, the SDKs, other servers): any content type, as before."""
             origin = self.headers.get("Origin")
-            if svc.api_key or not origin:
+            if not origin:
+                return False
+            # An explicitly provided valid API key bypasses the check (developer scripts, curl, extensions):
+            if svc.api_key and key_matches(self._given_key(), svc.api_key):
                 return False
             if not origin_allowed(origin, self.headers.get("Host"), svc.host_names,
                                   [*svc.trusted_origins, *svc.cors_origins]):
@@ -7909,12 +7919,17 @@ def make_handler(svc: Service):
             self.end_headers()
             self.wfile.write(body)
 
+        def _access_claims(self) -> dict | None:
+            verifier = getattr(svc, "cf_access", None)
+            if verifier is None or self.client_address[0] not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+                return None
+            tok = cf_access.token_of(self.headers)
+            return verifier.verify(tok) if tok else None
+
         def _authorized(self) -> bool:
             if not svc.api_key:
                 return True
-            auth = self.headers.get("Authorization", "")
-            given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
-            if key_matches(given, svc.api_key):
+            if key_matches(self._given_key(), svc.api_key) or self._access_claims() is not None:
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
             return False
@@ -7922,10 +7937,10 @@ def make_handler(svc: Service):
         def _authorized_telemetry(self) -> bool:
             if not svc.api_key and not svc.telemetry_key:
                 return True
-            auth = self.headers.get("Authorization", "")
-            given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
+            given = self._given_key()
             if (svc.api_key and key_matches(given, svc.api_key)) or \
-                    (svc.telemetry_key and key_matches(given, svc.telemetry_key)):
+                    (svc.telemetry_key and key_matches(given, svc.telemetry_key)) or \
+                    self._access_claims() is not None:
                 return True
             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong telemetry key"}})
             return False
@@ -10446,6 +10461,10 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         raise SystemExit(f"[strata] config {e}")
     if svc.aliases:
         print(f"[strata] model aliases: {', '.join(svc.aliases)}", flush=True)
+    if getattr(svc, "cf_access", None) is not None:
+        print(f"[strata] Cloudflare Access logins from {svc.cf_access.issuer} are accepted in place of the API key"
+              if svc.cf_access.auds else f"[strata] Cloudflare Access: STRATA_CF_ACCESS_AUD is not set; the first "
+              f"login from {svc.cf_access.issuer} logs its AUD tag", flush=True)
     svc.api_key = preflight_api_key
     try:
         svc.telemetry_key = api_key_of(os.environ.get("STRATA_TELEMETRY_KEY") or cfg.get("telemetry_read_key", ""))
