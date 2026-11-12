@@ -70,6 +70,54 @@ inline std::vector<MarkAt> mark_plan(const std::vector<int64_t>& asked, int64_t 
     return out;
 }
 
+// A learned start (STRATA_DS4_LEARN_STARTS).  The shared start a request names ends with the system prompt and its
+// tools, but a new conversation often shares more with an earlier one: an agent that opens every session with the same
+// instructions in its first user message parts from the last session only where its own first words begin.  `parts` is
+// the first token at which the prompt differs from the furthest of what the engine knows (the conversation it sets
+// aside, the kept conversations, the kept starts).  When the read of tokens [from, total) starts at least `least`
+// tokens before the point `back` tokens short of that place (the tokenizer may merge across it), the read keeps one
+// more restore point there, and the serve loop keeps the state at it apart like a shared start, so the next prompt
+// that begins the same way reads only what follows.  `cuts` are the points the read keeps already (mark_plan's: in
+// order, a gap apart):
+//  - one within the gap at or before the learned point stands in for it (nothing is added);
+//  - one within the gap after it does not - it may lie past the place the prompt parts, and a start that holds this
+//    prompt's own words is no start for the next one: the learned point moves back to stay a gap short of it;
+//  - none is added ahead of a shared start (the serve loop keeps that one apart only as the read's first point), past
+//    the cap, fewer than a gap past `from`, at the prompt's last token, or where the start would be shorter than
+//    `floor` (the shortest start kept).
+// Returns the position (one of `cuts` then, added in order if it was not there), or -1: none.
+inline int64_t learn_point(std::vector<MarkAt>& cuts, int64_t parts, int64_t from, int64_t total, int64_t back,
+                           int64_t least, int64_t floor, int cap, int64_t gap = 16) {
+    if (cap <= 0 || parts - back - from < least || parts - back < floor) return -1;
+    int64_t at = parts - back;
+    const auto stand_in = [&]() {
+        for (const MarkAt& c : cuts)
+            if (c.pos <= at && at - c.pos < gap) {
+                at = c.pos;
+                return true;
+            }
+        return false;
+    };
+    bool have = stand_in();
+    if (!have) {
+        for (const MarkAt& c : cuts)   // (in order: the first one after `at` is the nearest)
+            if (c.pos > at && c.pos - at < gap) {
+                at = c.pos - gap;
+                break;
+            }
+        have = stand_in();
+    }
+    if (at - from < gap || at >= total - 1) return -1;
+    if (!have) {
+        for (const MarkAt& c : cuts)
+            if (c.shared && c.pos > at) return -1;
+        if ((int) cuts.size() >= cap) return -1;
+        cuts.insert(std::upper_bound(cuts.begin(), cuts.end(), at, [](int64_t p, const MarkAt& c) { return p < c.pos; }),
+                    MarkAt{at, false});
+    }
+    return at;
+}
+
 // The tail point's cost on this PC (the server's tail=<pos>, MAYA_DS4_RESTORE_TAIL; #668).  The read stops there, so
 // the tokens after it are a run of their own: where most experts are not in VRAM, that short run costs nearly a whole
 // pass over them (each expert's weights read for a few rows - on the CPU lane, or lent to the GPU's prompt path one

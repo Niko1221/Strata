@@ -872,6 +872,20 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
         return true;
     };
+    // LEARNED STARTS (opt-in: STRATA_DS4_LEARN_STARTS=1; unset or 0, every read is as before).  A prompt that does not
+    // continue the conversation in the model is compared with what the engine knows - the conversation it sets aside,
+    // the kept conversations, the kept starts - and when its read would start at least STRATA_DS4_LEARN_MIN tokens
+    // (2048) before the place it parts from the furthest of them, the read keeps one more restore point
+    // STRATA_DS4_LEARN_BACK tokens (8) short of that place (ds4_marks.hpp learn_point) and the state there is kept
+    // apart like a shared start (prefix_keep, within STRATA_DS4_PREFIX_KEEP and STRATA_DS4_PREFIX_GB).  The next
+    // prompt that begins the same way - a new session of an agent that opens with the same instructions - takes it
+    // back and reads only what follows.  Text only, as the kept starts are.
+    static const bool learn_starts = [] {
+        const char* v = std::getenv("STRATA_DS4_LEARN_STARTS");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
+    const size_t learn_min = (size_t) std::max(64.0, env_num("STRATA_DS4_LEARN_MIN", 2048));
+    const size_t learn_back = (size_t) std::max(0.0, env_num("STRATA_DS4_LEARN_BACK", 8));
     if (slot_max > 0) {
         slot_dir = std::getenv("STRATA_DS4_SLOT_DIR") ? std::filesystem::path(std::getenv("STRATA_DS4_SLOT_DIR"))
                                                       : std::filesystem::path(pack) / "slots";
@@ -1014,6 +1028,7 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
         std::vector<strata::ds4::MarkAt> cuts;   // the restore points the read stops at (ds4_marks.hpp)
         size_t next_cut = 0;                     // (the next of them)
         int64_t tail_at = -1;                    // (the tail point the read keeps, TailCost)
+        int64_t learn_at = -1;                   // (the learned start the read keeps apart, -1: none)
         double ms_main = 0.0, ms_tail = 0.0;
     };
     // a request's prompt in three steps (Project Maya #587): prompt_begin (its pictures read, the state it continues
@@ -1182,6 +1197,26 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 cuts = strata::ds4::mark_plan(asked, shared, (int64_t) from, (int64_t) total, m.marks_cap(), 16, spans);
             }
         }
+        // the learned start (STRATA_DS4_LEARN_STARTS): the first token at which this prompt differs from the furthest of
+        // what the engine knows, and the restore point the read keeps short of it (kept apart in prompt_piece)
+        P.learn_at = -1;
+        if (learn_starts && !continued && prefix_max > 0 && m.marks_cap() > 0 && pics.empty() && total > 2) {
+            const auto agrees = [&](const std::vector<int32_t>& t) {
+                const size_t lim = std::min(t.size(), total - 2);
+                size_t k = 0;
+                while (k < lim && t[k] == r.ids[k]) ++k;
+                return k;
+            };
+            size_t parts = std::min(c, total - 2);   // (c: with the conversation the model held when the request came)
+            for (const Slot& sl : slots) parts = std::max(parts, agrees(sl.tokens));
+            for (const Prefix& p : prefixes) parts = std::max(parts, agrees(p.tokens));
+            P.learn_at = strata::ds4::learn_point(cuts, (int64_t) parts, (int64_t) from, (int64_t) total,
+                                                  (int64_t) learn_back, (int64_t) learn_min, (int64_t) prefix_min,
+                                                  m.marks_cap());
+            if (P.learn_at >= 0)
+                std::fprintf(stderr, "ds4: this prompt parts at token %zu from one the engine knows and its read starts at "
+                                     "%zu: keeping a start at %lld\n", parts, from, (long long) P.learn_at);
+        }
         // a STOP while the prompt is read ends it there (the engine's run of chunks at a layer or chunk, windows between
         // feeds, --parallel's between pieces) and goes back to the state before this prompt - kept here first, in
         // checkpoint 1, which the prompt's own end overwrites as before - so the next request still shares the
@@ -1266,6 +1301,13 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                     for (const Pic& q : pics) pic = pic || (int64_t) q.start < cuts[0].pos;
                     if (!pic) prefix_keep((size_t) cuts[0].pos);
                 }
+                if (ok && P.learn_at >= 0)   // (the learned start: the state at its restore point, kept apart)
+                    for (const auto& in : inner)
+                        if ((int64_t) in.first == P.learn_at) {
+                            prefix_keep((size_t) P.learn_at);
+                            P.learn_at = -1;
+                            break;
+                        }
             } else if (fin && last_window) {
                 ok = (n < 2 || m.feed(r.ids.data() + done, (int) n - 1, 0, err));
                 if (ok && n >= 2 && (size_t) m.fed() < n - 1) took = (size_t) m.fed();
@@ -1301,6 +1343,10 @@ int serve(strata::ds4::Model& m, const std::string& eos_list, bool spec, float c
                 bool pic = false;
                 for (const Pic& q : pics) pic = pic || (size_t) q.start < done;
                 if (sh && from == 0 && next_cut == 1 && !pic) prefix_keep();
+                if (P.learn_at >= 0 && (int64_t) done == P.learn_at && !pic) {   // (the learned start)
+                    prefix_keep((size_t) P.learn_at);
+                    P.learn_at = -1;
+                }
             }
             if (ok && (done >= next_pp || done == total)) {
                 const double ms = now_ms() - t0;
