@@ -1,4 +1,4 @@
-#include "strata/core/conversation_memory.hpp"
+﻿#include "strata/core/conversation_memory.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -76,17 +76,24 @@ Value read_value(const fs::path& path) {
     return v;
 }
 
-// The one reclaimable kind that is credited: clean inactive file cache, from the same group's memory.stat
-// (v2 inactive_file, v1 total_inactive_file), less its dirty and writeback pages when those are listed, and never
-// more than the group's charged usage.  active_file (it holds mlocked pages) and shmem (pinned complements, the KV
-// pool) are not credited.  A memory.stat that is missing or unparsable gives no credit - not an unknown sample.
+// The reclaimable kinds that are credited: clean file cache from the same group's memory.stat
+// (v2 inactive_file + active_file, v1 totals), less its dirty and writeback pages when those are
+// listed, and never more than the group's charged usage. active_file joins the
+// credit - an mmap-heavy engine (model files read through mappings) keeps its whole file cache on
+// the active list, and the inactive-only credit read 0 on a group holding 25G of clean cache
+// (measured: inactive 0, active 17.5G, mapped 9G, dirty 0, unevictable 0), refusing 50 MiB reads
+// with 28G really free.  mlocked pages sit in `unevictable`, not active_file; shmem (the KV pool's
+// pinned complements) stays uncredited.  A memory.stat that is missing or unparsable gives no
+// credit - not an unknown sample.
 uint64_t reclaimable_cache(const fs::path& dir, uint64_t current, bool v1) {
     std::ifstream stat(dir / "memory.stat");
     if (!stat) return 0;
     const char* inactive_key = v1 ? "total_inactive_file" : "inactive_file";
+    const char* active_key = v1 ? "total_active_file" : "active_file";
     const char* dirty_key = v1 ? "total_dirty" : "file_dirty";
     const char* writeback_key = v1 ? "total_writeback" : "file_writeback";
     std::optional<uint64_t> inactive;
+    std::optional<uint64_t> active;
     uint64_t dirty = 0, writeback = 0;
     std::string line;
     while (std::getline(stat, line)) {
@@ -98,10 +105,12 @@ uint64_t reclaimable_cache(const fs::path& dir, uint64_t current, bool v1) {
         const auto parsed = std::from_chars(value.data(), value.data() + value.size(), n);
         const bool ok = parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size();
         if (key == inactive_key) { if (!ok || inactive) return 0; inactive = n; }
+        else if (key == active_key) { if (!ok) return 0; active = n; }
         else if (target != nullptr) { if (!ok) return 0; *target = n; }
     }
     if (!inactive) return 0;
-    uint64_t credit = std::min(*inactive, current);
+    uint64_t cache = *inactive + (active ? *active : 0);
+    uint64_t credit = std::min(cache, current);
     credit = dirty >= credit ? 0 : credit - dirty;
     credit = writeback >= credit ? 0 : credit - writeback;
     return credit;
