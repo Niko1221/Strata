@@ -925,8 +925,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
                 }
             }
         }
-        return;
-    }
+    } else {
 #pragma unroll
     for (int r = 0; r < R2; ++r) {
         if (r >= nrows) break;
@@ -960,6 +959,7 @@ __global__ void __launch_bounds__(THREADS) gr_down_v3_kernel(GrMulti m, float* _
             if (lane == 0) part[(((size_t) k * HC + c) * S + h) * PR + prow] = v;
         }
         }
+    }
     }
 }
 
