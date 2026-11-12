@@ -71,6 +71,11 @@ and their limits. Report what you actually measured and label estimates separate
   Source builds of 0.1.40.4 and 0.1.41 on the distribution's ROCm 6.2 (host patches in BUILD.json), IQ2_XS at 131K with KV streaming; decode 24.2/24.0/23.7 tok/s, prompt 350/339/284 tok/s at 4K/32K/128K, two sweeps with telemetry. Build logs trimmed (TRIMMED.md).
 - [2026-10-08: RTX 4070 12 GB, Core i5-12600KF, 32 GB DDR4](../bench/results/2026-10-08-community-rtx4070-iq2-xs/README.md):
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
+- [2026-11-12: NVIDIA RTX 2080 Ti 22 GiB (sm_75, PCIe 3.0 x16), Intel Xeon E5-2697 v2 (Ivy Bridge-EP, AVX+F16C, no AVX2/FMA, 12C/24T), 128 GiB DDR3 ECC, Windows 11](../bench/results/2026-11-12-community-rtx-2080-ti-qwen3-8-flash-next-unsloth-ud-iq4-xs-v31/README.md):
+  Strata engine 0.1.59.1 (custom MSVC/Ninja source build, AVX+F16C floor, sm_75), Qwen3.8-Flash-Next Unsloth UD-IQ4_XS-v31, 204,800-token context, `--kv int8 --spec 4 --mtp rt`;
+  3 runs each for short chat, 4K and 16K fresh prompts, plus 3×6-turn agent sessions.
+  Decode **66.9 tok/s** (54.7–92.4), prompt **790.6 tok/s** at 4K and **1409.7 tok/s** at 16K, TTFT 0.56 s / 5.12 s / 11.44 s; agent cache hit 70.0 %.
+  Custom AVX+F16C engine build on a Haswell-era Ivy Bridge-EP platform; confirms sm_75 BF16 TC path (`STRATA_SM75_PERF=1`).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
 
