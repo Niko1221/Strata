@@ -39,6 +39,52 @@ def text(evs):
 
 
 class Misspelt(unittest.TestCase):
+    def test_missing_open_angle_inside_real_wrapper(self):
+        malformed = "<tool_call>\n" + BODY.replace("<function=bash>", "function=bash>") + "</tool_call>"
+        for stream in (False, True):
+            for step in (1, 3, 1000):
+                with self.subTest(stream=stream, step=step):
+                    evs = run(malformed, stream, True, step=step)
+                    self.assertEqual(calls(evs), [("bash", ARGS)])
+                    self.assertEqual(text(evs).strip(), "")
+
+    def test_missing_open_angle_requires_recovery_and_declared_name(self):
+        malformed = "<tool_call>\n" + BODY.replace("<function=bash>", "function=bash>") + "</tool_call>"
+        self.assertEqual(calls(run(malformed, recover=False)), [])
+        self.assertEqual(text(run(malformed, recover=False)), malformed)
+        unknown = malformed.replace("function=bash>", "function=undeclared>")
+        self.assertEqual(calls(run(unknown)), [])
+        self.assertEqual(text(run(unknown)), unknown)
+
+    def test_invoke_opener_inside_real_wrapper(self):
+        # live (UD-IQ4_XS-v31, Pi on /v1/chat/completions): `<tool_call>\n=\n<invoke name="write">` and then the
+        # template's own closers; the block came back as answer text with finish_reason "stop" and the turn ended
+        invoke = BODY.replace("<function=bash>", '<invoke name="bash">')
+        for opener in ("<tool_call>\n=\n", "<tool_call>\n"):
+            for stream in (False, True):
+                for step in (1, 3, 1000):
+                    with self.subTest(opener=opener, stream=stream, step=step):
+                        evs = run(opener + invoke + "</tool_call>", stream, True, step=step)
+                        self.assertEqual(calls(evs), [("bash", ARGS)])
+                        self.assertEqual(text(evs).strip(), "")
+
+    def test_invoke_opener_requires_recovery_and_declared_name(self):
+        malformed = "<tool_call>\n=\n" + BODY.replace("<function=bash>", '<invoke name="bash">') + "</tool_call>"
+        self.assertEqual(calls(run(malformed, recover=False)), [])
+        self.assertEqual(text(run(malformed, recover=False)), malformed)
+        unknown = malformed.replace('name="bash"', 'name="undeclared"')
+        self.assertEqual(calls(run(unknown)), [])
+        self.assertEqual(text(run(unknown)), unknown)
+
+    def test_invoke_opener_prose_and_cut_off_stay_text(self):
+        for prose in ("The wrapper <tool_call> = one call.", "<tool_call>\n=\n<invoke", "<tool_call>\n=",
+                      '```\n<tool_call>\n=\n<invoke name="bash">\n```'):
+            for step in (1, 3, 1000):
+                with self.subTest(prose=prose, step=step):
+                    evs = run(prose, step=step)
+                    self.assertEqual(calls(evs), [])
+                    self.assertEqual(text(evs), prose)
+
     def test_issue_block(self):
         for opener in ("<toolcall>", "<tool-call>"):
             for stream in (False, True):

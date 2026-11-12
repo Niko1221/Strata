@@ -779,6 +779,15 @@ FUNC_END = "</function>"
 # #3441: the opener a model writes when it drifts by a token inside the envelope the template documents:
 # `<=NAME>` (the word `function` dropped), `<function:NAME>`, `<function =NAME>`, or the bare `<NAME>`
 _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*>")
+# A live Pi turn omitted only the opening angle bracket: `function=write>`.
+# Recovery accepts it only immediately inside an explicit wrapper and only for
+# a declared tool; the ordinary content path never scans for this spelling.
+_MISSING_FUNC_OPEN = re.compile(r"function\s*=\s*([A-Za-z0-9_.\-]+)\s*>")
+# Another live Pi turn (UD-IQ4_XS-v31) opened the call in another vendor's spelling, after a stray `=` line:
+# `=\n<invoke name="write">`.  Same limits as the missing angle: only immediately inside an explicit wrapper
+# and only for a declared tool.  _INVOKE_PART is such an opener still arriving (group 1: the name so far).
+_INVOKE_OPEN = re.compile(r'(?:=\s*)?<invoke\s+name\s*=\s*"([A-Za-z0-9_.\-]+)"\s*>')
+_INVOKE_PART = re.compile(r'<invoke\s+(?:n|na|nam|name\s*(?:=\s*(?:"([A-Za-z0-9_.\-]*)"?\s*)?)?)?')
 _PREFIX_LOOKBACK = 256     # how far before a new delta a prefixed name or a misspelt opener can start (see OutputParser._prefixed)
 # #5409: `<function=tools actio>` / `<function=tools>`; the prefixes are the ones of #4751
 _PREFIX_SPACED = re.compile(r"(<function=\s*(?:tools|functions|default_api)[ \t]+)([^<>\s]+)\s*>")
@@ -1303,6 +1312,25 @@ class OutputParser:
         (a declared tool's name written as `<parameter=NAME>`), "json" (`{`), "wait" (not decided yet) or "text"."""
         if after.startswith(FUNC_START):
             return "call"
+        missing = _MISSING_FUNC_OPEN.match(after)
+        if missing:
+            return "missing" if self._callable(missing.group(1)) else "text"
+        if "\n" not in after:
+            partial = after.strip()
+            if partial and "function=".startswith(partial):
+                return "wait"
+            m = re.fullmatch(r"function\s*=\s*([A-Za-z0-9_.\-]*)", partial)
+            if m and any(name.startswith(m.group(1)) for name in self.schemas if isinstance(name, str)):
+                return "wait"
+        invoke = _INVOKE_OPEN.match(after)
+        if invoke:
+            return "invoke" if self._callable(invoke.group(1)) else "text"
+        if after.startswith(("=", "<i")):
+            partial = after[1:].lstrip() if after.startswith("=") else after
+            part = _INVOKE_PART.fullmatch(partial)
+            if "<invoke".startswith(partial) or (part and any(
+                    name.startswith(part.group(1) or "") for name in self.schemas if isinstance(name, str))):
+                return "wait"
         if after.startswith(PARAM_START):
             gt = after.find(">")
             if gt < 0:
@@ -1876,15 +1904,19 @@ class OutputParser:
                 if (after.startswith("<") and kind is None and not FUNC_START.startswith(after)
                         and not after.startswith(FUNC_START)):
                     self.unread += 1
-                if kind in ("param", "json"):
+                if kind in ("param", "json", "missing", "invoke"):
                     if i and self.buf[:i].strip():
                         out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
                     rest = self.buf[i + len(CALL_START):]
                     if kind == "param":                  # <parameter=NAME> as the opener: the call's <function=NAME>
                         at = len(rest) - len(after)
                         rest = rest[:at] + FUNC_START + after[len(PARAM_START):]
+                    elif kind in ("missing", "invoke"):  # `function=NAME>` or `=\n<invoke name="NAME">`: the call's <function=NAME>
+                        match = (_MISSING_FUNC_OPEN if kind == "missing" else _INVOKE_OPEN).match(after)
+                        at = len(rest) - len(after)
+                        rest = rest[:at] + FUNC_START + match.group(1) + ">" + after[match.end():]
                     self.buf = rest
-                    self.state = "call" if kind == "param" else "json"
+                    self.state = "json" if kind == "json" else "call"
                     continue
                 if kind == "wait":
                     after = ""
