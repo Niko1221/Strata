@@ -3262,8 +3262,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const OnDevice on_device(device_);
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
-    // a layer split's hand-off buffers hold kVerifyMaxT rows
-    if (T > kVerifyMaxT && (next_ != nullptr || lb_ > 0)) { err = "verify: windows past 8 tokens need one stage"; return false; }
+    // a layer split's hand-off buffers hold kVerifyMaxT rows (STRATA_SPLIT_LONG_LOOKUP=1 sized them for kVerifyLongT
+    // in serve, single conversation: the split then runs the window's two token groups over the stages too)
+    static const bool long_over_split = [] { const char* v = std::getenv("STRATA_SPLIT_LONG_LOOKUP"); return v != nullptr && v[0] == '1'; }();
+    if (T > kVerifyMaxT && (next_ != nullptr || lb_ > 0) && !long_over_split) { err = "verify: windows past 8 tokens need one stage"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;

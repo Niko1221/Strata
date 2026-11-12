@@ -11505,11 +11505,19 @@ int main(int argc, char** argv) {
         auto pcie_num_of = [](double f) { return std::max(0, std::min(256, (int) (f * 256.0 + 0.5))); };
         const int n_stages = split_devs.empty() ? 1 : (int) split_at.size() + 1;
         // a layer split's hand-off buffers (and its pipelined windows) hold kVerifyMaxT rows: --lookup-max-t stops there
-        if (n_stages > 1 && o.spec > strata::kernels::kVerifyNarrowT) {
+        // (2x P40: the long lookup windows ran clean on a 2-GPU split - 16-row windows, 200+ copy rounds - so on a
+        // single-conversation server they can stay; opt-in: STRATA_SPLIT_LONG_LOOKUP=1 lets them through, and
+        // without it every split keeps the upstream clamp byte for byte)
+        const bool split_long_ok = n_stages > 1 && o.spec > strata::kernels::kVerifyNarrowT &&
+                                   o.lookup_max_t > 0 && o.batch <= 1 && o.pipeline_windows == 0 &&
+                                   [] { const char* v = std::getenv("STRATA_SPLIT_LONG_LOOKUP"); return v != nullptr && v[0] == '1'; }();
+        if (n_stages > 1 && o.spec > strata::kernels::kVerifyNarrowT && !split_long_ok) {
             std::fprintf(stderr, "strata serve: --lookup-max-t %d: a layer split's windows stop at %d tokens\n",
                          o.lookup_max_t, strata::kernels::kVerifyNarrowT);
             o.spec = strata::kernels::kVerifyNarrowT;
-        }
+        } else if (split_long_ok)
+            std::fprintf(stderr, "strata serve: --lookup-max-t %d: long lookup windows ON over the layer split "
+                                 "(opt-in STRATA_SPLIT_LONG_LOOKUP=1)\n", o.lookup_max_t);
         // --pipeline-windows (decided where the split was): two verifiers per stage, one for the even windows and one
         // for the odd ones, sharing one stream of their card, and a hand-off per parity - so stage 0 can run window
         // K+1 while stage 1 still reads window K's hand-off.  With more stages every stage but the last is a "front"
@@ -11543,9 +11551,12 @@ int main(int argc, char** argv) {
             // wide build holds more only for a batch of more than that: the buffer is not made larger for a run that
             // never forms a window of 9..16 rows)
             // (STRATA_PIPED_MTP: per slot its token and up to pm_drafts proposals)
+            // (STRATA_SPLIT_LONG_LOOKUP=1: the long lookup windows make windows of 9..16 rows on a single-conversation
+            // split, so its hand-off holds kVerifyLongT rows too)
             const int hrows = piped_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT, (1 + pm_drafts) * o.batch)
                             : !batch_mtp && o.batch_groups > 1 ? std::max<int>(strata::kernels::kVerifyNarrowT, o.batch)
-                            : !batch_mtp ? std::max<int>(strata::kernels::kVerifyNarrowT,
+                            : !batch_mtp ? std::max<int>(split_long_ok ? (int) strata::kernels::kVerifyLongT
+                                                                       : strata::kernels::kVerifyNarrowT,
                                                          std::min<int>(o.batch, strata::kernels::kVerifyMaxT))
                                          : strata::kernels::kVerifyNarrowT;
             const size_t hb = (size_t) hrows * (size_t) strata::core::Verifier::handoff_floats(g) * sizeof(float);
@@ -14163,7 +14174,8 @@ int main(int argc, char** argv) {
             });
         policy.set_sizes(lookup_size_mask(o));
         // a layer split's hand-off buffers hold kVerifyNarrowT rows: its windows stay at that
-        if (n_stages > 1) policy.set_sizes(policy.sizes() & ((2u << strata::kernels::kVerifyNarrowT) - 1u));
+        // (STRATA_SPLIT_LONG_LOOKUP=1 sized the hand-off for kVerifyLongT rows above: the split keeps the wide sizes too)
+        if (n_stages > 1 && !split_long_ok) policy.set_sizes(policy.sizes() & ((2u << strata::kernels::kVerifyNarrowT) - 1u));
         if (o.lookup_max_t > 0)
             std::fprintf(stderr, "strata serve: --lookup-max-t %d: MTP windows up to %d tokens, window sizes %s\n",
                          o.lookup_max_t, S_mtp, size_list(policy.sizes(), S).c_str());
