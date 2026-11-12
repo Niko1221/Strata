@@ -807,14 +807,14 @@ def _settle_hip_variants(fitting: list, hardware: dict, reasons: list[str]) -> l
     hip = [p for p in fitting if p.backend == "hip"]
     if len({p.variant for p in hip}) < 2:
         return fitting
-    from strata_control import engine_component as ec
+    from strata_control.amd_gpus import arch_from_name
     chosen, why = [], ""
     wanted = str(hardware.get("variant_wanted") or "").lower()
     if wanted:
         chosen = [p for p in hip if p.variant.lower() == wanted]
         why = f"the {wanted} build was asked for"
     if not chosen:
-        guesses = {g for g in (ec.gfx_from_name(n) for n in hardware.get("gpu_names") or []) if g}
+        guesses = {g for g in (arch_from_name(n) for n in hardware.get("gpu_names") or []) if g}
         chosen = [p for p in hip if any(a in guesses for a in p.archs)]
         why = f"the GPU name ({', '.join(hardware.get('gpu_names') or [])}) is a {', '.join(sorted(guesses))}" if chosen else ""
     if not chosen and hardware.get("installed_variant"):

@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from strata_control import engine_component as ec, feed as feedmod, updater
+from strata_control import amd_gpus, engine_component as ec, feed as feedmod, updater
 
 WIN = "windows-x86_64"
 
@@ -67,9 +67,12 @@ class Names(unittest.TestCase):
         table = {"AMD Radeon RX 9070 XT": "gfx1201", "AMD Radeon RX 9060 XT": "gfx1200", "AMD Radeon AI PRO R9700": "gfx1201",
                  "AMD Radeon RX 7900 XTX": "gfx1100", "AMD Radeon RX 7800 XT": "gfx1101", "AMD Radeon RX 7700 XT": "gfx1101",
                  "AMD Radeon RX 7600 XT": "gfx1102", "AMD Radeon(TM) 8060S Graphics": "gfx1151", "AMD Radeon 780M Graphics": "gfx1103",
-                 "AMD Radeon 890M Graphics": "gfx1150", "AMD Radeon RX 6800 XT": "gfx1030", "NVIDIA GeForce RTX 4090": "", "": ""}
+                 "AMD Radeon 890M Graphics": "gfx1150", "AMD Radeon RX 6800 XT": "gfx1030", "NVIDIA GeForce RTX 4090": "", "": "",
+                 "AMD Radeon PRO W6800": "gfx1030",              # from the name alone, no PCI id asked (strata_control/amd_gpus.py)
+                 "AMD Radeon PRO W7800": "gfx1100",              # a workstation 7800 is Navi 31, not the gaming card's gfx1101 (#881's lesson)
+                 "AMD Radeon RX 7600M XT": "gfx1102", "AMD Radeon RX 6800M": ""}   # laptop SKUs: RX 6800M is not an RX 6800 (#881)
         for name, gfx in table.items():
-            self.assertEqual(ec.gfx_from_name(name), gfx, name)
+            self.assertEqual(amd_gpus.arch_from_name(name), gfx, name)
 
     def test_a_card_with_an_unlisted_pci_id_is_identified_by_its_name(self):
         cards = ec.windows_amd_cards([{"vendor": "1002", "device": 0x7551 + 0x100, "name": "AMD Radeon RX 9070 XT", "vram_gb": 0.0}])

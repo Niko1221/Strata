@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from strata_control import acquisition, longpath
+from strata_control.amd_gpus import DEVICE_ARCH, IGPU_IDS, UMA_ARCH, arch_from_name
 from strata_control.targets import BACKEND_MATRIX, backend_supported, host_platform
 
 SCHEMA_VERSION = 2
@@ -690,52 +691,7 @@ def _drm_vendor_backend(root: str = "/sys/class/drm") -> str | None:
     return dict(order)[chosen]
 
 
-#: Windows AMD cards by PCI device id (VEN_1002), the same table as setup.py's _WIN_AMD_DID (tests/terminal/test_engine_component.py
-#: keeps the two equal): the architecture Strata runs the card as. Integrated Radeons are not in it (the one APU that is supported,
-#: Strix Halo, 0x1586, is in WIN_AMD_UMA_IDS), so an integrated Radeon beside a card never counts as "the GPU".
-WIN_AMD_DEVICE_ARCH = {0x744C: "gfx1100", 0x7448: "gfx1100", 0x745E: "gfx1100", 0x747E: "gfx1101", 0x7480: "gfx1102",
-                       0x7590: "gfx1200", 0x7550: "gfx1201", 0x7551: "gfx1201",
-                       0x73BF: "gfx1030", 0x73AF: "gfx1030", 0x73A5: "gfx1030", 0x73DF: "gfx1031"}
-WIN_AMD_UMA_IDS = {0x1586: "gfx1151"}                                   # Strix Halo: unified memory, supported
-WIN_AMD_IGPU_IDS = {0x150E, 0x1114, 0x1902, 0x15BF, 0x15C8, 0x164F, 0x1900, 0x1901, 0x1681, 0x1638, 0x1636, 0x15D8, 0x15E7}
 _WIN_DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-
-
-def gfx_from_name(name: str) -> str:
-    """The AMD architecture a card's marketing name implies ("" when the name says nothing): the fallback when the PCI device id is
-    not in the table. Only names Strata knows a gfx for; an integrated Radeon with no supported build still maps (it then simply
-    fits no package)."""
-    text = re.sub(r"\s+", " ", str(name or "")).upper()
-    if "AMD" not in text and "RADEON" not in text and "RYZEN" not in text:
-        return ""
-    if re.search(r"\b(?:8060S|8050S)\b", text) or "RYZEN AI MAX" in text:
-        return "gfx1151"
-    if re.search(r"\bR9700\b|\bR97\d\d\b|\bAI PRO R97", text) or re.search(r"\bRX 9070\b", text):
-        return "gfx1201"
-    if re.search(r"\bRX 906\d\b|\bR96\d\d\b|\bAI PRO R96", text):
-        return "gfx1200"
-    found = re.search(r"\b(?:RX |W)(7[5-9]\d\d)\b", text)
-    if found:
-        series = int(found.group(1)) // 100
-        return {79: "gfx1100", 78: "gfx1101", 77: "gfx1101", 76: "gfx1102", 75: "gfx1102"}[series]
-    if re.search(r"\b(?:780M|760M|740M)\b", text):
-        return "gfx1103"
-    if re.search(r"\b(?:880M|890M)\b", text):
-        return "gfx1150"
-    if re.search(r"\b860M\b", text):
-        return "gfx1152"
-    found = re.search(r"\bRX (6\d{3})\b", text)
-    if found:
-        number = int(found.group(1))
-        if number >= 6800:
-            return "gfx1030"
-        if number in (6700, 6750) or "6700 XT" in text:
-            return "gfx1031"
-        if 6600 <= number < 6700:
-            return "gfx1032"
-        if number in (6500, 6400):
-            return "gfx1034"
-    return ""
 
 
 _CIM_CACHE: dict = {}
@@ -845,13 +801,13 @@ def windows_amd_cards(adapters: list[dict] | None = None) -> list[dict]:
         if adapter.get("vendor") != "1002":
             continue
         device = adapter.get("device")
-        arch = WIN_AMD_DEVICE_ARCH.get(device) or WIN_AMD_UMA_IDS.get(device) or ""
-        if not arch and device not in WIN_AMD_IGPU_IDS:
-            guess = gfx_from_name(adapter.get("name", ""))              # a card whose id is not in the table: its name says
+        arch = DEVICE_ARCH.get(device) or UMA_ARCH.get(device) or ""
+        if not arch and device not in IGPU_IDS:
+            guess = arch_from_name(adapter.get("name", ""))                    # a card whose id is not in the table: its name says
             if guess in ("gfx1103", "gfx1150", "gfx1152"):               # (those are integrated Radeons)
                 continue
             arch = guess
-        if not arch and (device in WIN_AMD_IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
+        if not arch and (device in IGPU_IDS or float(adapter.get("vram_gb") or 0) < 3.0):
             continue                                                    # an integrated Radeon (512 MB of carve-out)
         cards.append({"arch": arch, "name": adapter.get("name", ""), "device": device})
     return cards
@@ -934,7 +890,7 @@ def hip_archs_from_pci(drm_root: str = "/sys/class/drm", lspci: bool = True) -> 
                             ids.append(int(found.group(1), 16))
             except (OSError, subprocess.SubprocessError):
                 pass
-    return sorted({WIN_AMD_DEVICE_ARCH.get(i) or WIN_AMD_UMA_IDS.get(i) or "" for i in ids} - {""})
+    return sorted({DEVICE_ARCH.get(i) or UMA_ARCH.get(i) or "" for i in ids} - {""})
 
 
 _SMI_CACHE: dict = {}

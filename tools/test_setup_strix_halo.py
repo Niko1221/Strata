@@ -28,6 +28,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import setup  # noqa: E402
+from strata_control import amd_gpus  # noqa: E402
 
 AURORA_RAM_GB = 127098456 * 1024 / 2 ** 30          # /proc/meminfo MemTotal on Aurora: 121.2 GiB
 GIB = 1 << 30
@@ -156,14 +157,14 @@ class PciIds(unittest.TestCase):
     def test_strix_halo_id(self):
         # pci.ids: one id for every Strix Halo part (8060S, 8050S, 8040S share it; they differ by CU count)
         self.assertEqual(setup.STRIX_HALO_PCI_IDS, {0x1586})
-        self.assertEqual(setup.AMD_IGPU_PCI[0x1586], "gfx1151")
+        self.assertEqual(amd_gpus.UMA_ARCH[0x1586], "gfx1151")
 
     def test_other_igpus_are_not_strix_halo(self):
         for did, arch in ((0x150E, "gfx1150"), (0x1114, "gfx1152"), (0x1902, "gfx1152"), (0x15BF, "gfx1103"),
                           (0x15C8, "gfx1103"), (0x164F, "gfx1103"), (0x1900, "gfx1103"), (0x1901, "gfx1103")):
-            self.assertEqual(setup.AMD_IGPU_PCI[did], arch)
+            self.assertEqual(amd_gpus.IGPU_ARCH[did], arch)
             self.assertNotIn(did, setup.STRIX_HALO_PCI_IDS)
-        self.assertEqual([a for a in setup.AMD_IGPU_PCI.values() if a == "gfx1151"], ["gfx1151"])
+        self.assertEqual([a for a in amd_gpus.IGPU_ARCH.values() if a == "gfx1151"], [])    # only Strix Halo is gfx1151
 
     def test_windows_id_then_name(self):
         f = setup.win_amd_arch
