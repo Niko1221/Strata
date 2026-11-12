@@ -71,6 +71,8 @@ int main(int argc, char** argv) {
     ck(cudaMalloc(&ids_old, (size_t) (nq * cap) * 4), "malloc");
     ck(cudaMalloc(&ids_new, (size_t) (nq * cap) * 4), "malloc");
     const int64_t active = steps[(size_t) ((nq - 1) * k::kStepCount + k::kStepNBid)] + 1;
+    // QSA_BENCH_TOPK_DECODE=1: the top-k as a decode window calls it (no block count: the capacity rule)
+    const int64_t tk_active = std::getenv("QSA_BENCH_TOPK_DECODE") ? 0 : active;
     if (std::getenv("QSA_BENCH_DECODE")) {   // a decode window's call: no block count (block_scores_multi_kernel)
         auto run_dec = [&] { k::qsa_block_scores(d_pooled, d_dead, d_q, d_steps, nq, max_blocks, s, sc_old, nullptr, -1); };
         run_dec();
@@ -106,10 +108,10 @@ int main(int argc, char** argv) {
     if (have_tc) run_new();
     else ck(cudaMemcpy(sc_new, sc_old, (size_t) (nq * max_blocks) * 4, cudaMemcpyDeviceToDevice), "copy");
     k::qsa_block_topk_ref(sc_old, d_steps, nq, max_blocks, cap, s, ids_old, nullptr);
-    k::qsa_block_topk(sc_new, d_steps, nq, max_blocks, cap, s, ids_new, nullptr, active);
+    k::qsa_block_topk(sc_new, d_steps, nq, max_blocks, cap, s, ids_new, nullptr, tk_active);
     int32_t* ids_reg = nullptr;   // the register top-k on the OLD scores: must equal the reference exactly
     ck(cudaMalloc(&ids_reg, (size_t) (nq * cap) * 4), "malloc");
-    k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr, active);
+    k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr, tk_active);
     ck(cudaDeviceSynchronize(), "warm");
     // compare
     std::vector<float> a((size_t) (nq * max_blocks)), b(a.size());
@@ -199,7 +201,7 @@ int main(int argc, char** argv) {
     };
     const float t_old = timed(run_old), t_new = have_tc ? timed(run_new) : t_old;
     const float t_tk = timed([&] { k::qsa_block_topk_ref(sc_old, d_steps, nq, max_blocks, cap, s, ids_old, nullptr); });
-    const float t_tk2 = timed([&] { k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr, active); });
+    const float t_tk2 = timed([&] { k::qsa_block_topk(sc_old, d_steps, nq, max_blocks, cap, s, ids_reg, nullptr, tk_active); });
     std::printf("top-k %.3f -> %.3f ms (%.1fx), register top-k identical to the reference %lld/%lld\n", t_tk, t_tk2,
                 t_tk / t_tk2, (long long) reg_same, (long long) nq);
     std::printf("%s accuracy vs FP64 (score scale %.3g): warp kernel max err %.3g, fast scorer max err %.3g (%.2g of scale)\n",
