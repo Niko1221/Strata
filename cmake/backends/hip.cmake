@@ -65,6 +65,10 @@ macro(strata_hip_mmq)
     set_source_files_properties(src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu src/prefill/moe_f16_kq.cu
                                 PROPERTIES INCLUDE_DIRECTORIES "${STRATA_HIP_COMPAT_INCLUDE_DIR}")
     add_library(strata_mmq STATIC ${_strata_mmq_sources})
+    if(STRATA_MMQ_TILE_SPEC_API)
+      # moe_mmq.cu and ggml_cuda_host.cu take the 5-argument / tile_spec forms (strata_ggml_mmq_types)
+      target_compile_definitions(strata_mmq PRIVATE STRATA_MMQ_TILE_SPEC_API=1)
+    endif()
     target_include_directories(strata_mmq
       PRIVATE "${_strata_gg}/include" "${_strata_gg}/src" "${_strata_mmq}"
       PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

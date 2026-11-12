@@ -7,8 +7,10 @@
 #include "mmq.cuh"
 #include "quantize.cuh"
 // llama.cpp master (cd4ed902, past the pin 3cf03257) added tile_spec and a src1 precision to the MMQ entry points.
-// The pin and the vendored ggml have neither mmid.cuh nor those arguments, so their calls stay as they were.
-#if __has_include("mmid.cuh")
+// The pin and the vendored ggml have neither those arguments, so their calls stay as they were.  STRATA_MMQ_TILE_SPEC_API
+// comes from CMake, which reads mmq.cuh's own signature: mmid.cuh appeared before the entry points changed, so its
+// presence does not say which API this tree has (the pin has mmid.cuh and the 4-argument helpers).
+#if defined(STRATA_MMQ_TILE_SPEC_API)
 #define STRATA_MMQ_CFG(t, J, fb, cc) ggml_cuda_mmq_get_config((ggml_type) (t), (J), (fb), (cc), GGML_PREC_Q8)
 #define STRATA_MMQ_CASE(type) mul_mat_q_case<type, GGML_PREC_Q8>
 #define STRATA_MMQ_TILE_SPEC 1
