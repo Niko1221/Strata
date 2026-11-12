@@ -628,6 +628,21 @@ windows saved, not the rows:
 With two slots at a 1M context the cards have 40 and 52 MiB less free once everything is loaded (the saved rows 31.8
 -> 50.9 MiB a stage, the verifiers' windows 5 -> 8 rows); the expert caches keep their slots but two.
 
+**A slot that reads alone sends windows ahead** (`STRATA_SLOT_READ_AHEAD`, default on with the whole-window read;
+`=0`: off). A decode window waits for its verdict before the slot's next one can start, so a slot alone in the pipeline
+has one window in it and every stage stands idle half the time. Prompt rows are kept whatever the last stage picks.
+So a window of prompt rows alone is committed by each stage as it launches it, not after the verdict, and while
+another group stands idle the reading slot's next whole window goes through that group's rows behind the one in
+flight: two windows in the pipeline, one a stage. Nothing is allocated for it; the borrowed rows are one more layout a
+slot. A window in flight ends at the turn boundary whose checkpoint is still to take, and a stop lets what is in
+flight land (the slot keeps what it read). Two 177K-token conversations taking turns (each sends when the other has
+ended, 500-token replies; ABBA on one build): the slot reads 193 to 292 tokens/s where it read 135 to 182, the first
+token comes after 2.2 s instead of 3.5, and a conversation's tokens/s from its request to its last token go from 62.3
+to 72.6 (+17%). At 440K tokens (one pair, whole windows and windows ahead against neither): 178 to 239 tokens/s
+where the slot read 117 to 144, the first token after 3.0 s instead of 4.6, 52.9 -> 63.8 tokens/s a turn (+21%). Where
+both conversations read at once the pipeline is full already: there it sends 2 to 5 windows ahead a turn and the first
+token comes after 4.5 s instead of 4.7.
+
 **Parks that keep nothing are skipped** (`STRATA_SLOT_PARK_SKIP`, default on; `=0`: off). An admission through the main
 sessions parked the conversation they held before - with batch slots, a stale copy of a conversation that a slot holds
 further - and parked the slot's reply before the same conversation's next turn replaced it. Both wrote a whole snapshot
@@ -790,7 +805,9 @@ counter-based draw (Philox(seed, position)).
   overlap them with), slower than the solo path: the reason a conversation goes back to that path once the others
   have been quiet for `STRATA_PARALLEL_STICKY_S` seconds.
 - A turn read in its slot (`STRATA_SLOT_READ`) reads at the windows' rate, slower than the prompt path: a turn of more
-  than `STRATA_SLOT_READ_MAX` new tokens is admitted through the main sessions as before.
+  than `STRATA_SLOT_READ_MAX` new tokens is admitted through the main sessions as before. Two slots that read at the
+  same moment fill the pipeline; only a slot that reads while another group stands idle reads faster than that
+  (`STRATA_SLOT_READ_AHEAD`).
 
 ## Measured
 
@@ -881,7 +898,7 @@ tests the server's side with a scripted engine (no GPU).
 | --- | --- |
 | `tools/batch_test.py` | the same prompts alone (`GEN`) and together in the batch slots (`BGEN`): every slot's greedy tokens equal its solo tokens; prints the aggregate rate. `--batch-groups` in `--extra` tests the pipeline, `--keys "temperature=0.7"` the sampled rows. |
 | `tools/batch_interleave_test.py` | a long prompt read while two slots decode, a prompt that gives way (`BYIELD`) and goes on, and a next turn continued from its slot: each equal to its solo tokens. On a two-stage layer split with pipelined groups add `--batch 4 --batch-groups 2` to `--extra` (its 3 slots do not divide into two groups) and set `STRATA_PIPED_READ_PIECE`; run it without a conversation cache, or step 4 restores the prompt instead of reading it. |
-| `tools/slot_read_test.py` | two conversations, three turns each, on a fresh engine twice: every later turn read in its slot (`slot_read=1`: from the slot's turn checkpoint for a turn rendered without the reply's thinking, from its live state otherwise) gives the tokens the same turn gives admitted through the main sessions. Needs the pipelined groups with drafts (`--batch-mtp`, `STRATA_PIPED_MTP`, `STRATA_BATCH_SELF_COMMIT=0`); `--keys` for sampled turns and penalties. |
+| `tools/slot_read_test.py` | two conversations, three turns each, on a fresh engine twice: every later turn read in its slot (`slot_read=1`: from the slot's turn checkpoint for a turn rendered without the reply's thinking, from its live state otherwise) gives the tokens the same turn gives admitted through the main sessions. Needs the pipelined groups with drafts (`--batch-mtp`, `STRATA_PIPED_MTP`, `STRATA_BATCH_SELF_COMMIT=0`); `--keys` for sampled turns and penalties. `--alone --later-pad 400 --expect-ahead`: the turns one after the other, long enough that each slot reads with windows ahead (`STRATA_SLOT_READ_AHEAD`), and the test fails when none was sent; `--stop-read 300` stops a read on its way and sends the turn again. |
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |
 
