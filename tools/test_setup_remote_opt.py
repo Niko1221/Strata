@@ -43,6 +43,11 @@ class Rule(unittest.TestCase):
         eq = {"args": ["--expert-cache-device2=auto"], "gpu": [0, 1, 2]}
         setup.recommend_remote_expert_opt(eq)
         self.assertIn(FLAG, eq["args"])
+        many = {"args": ["--expert-cache-device12", "auto"], "gpu": list(range(13))}
+        setup.recommend_remote_expert_opt(many)
+        self.assertIn(FLAG, many["args"])
+        self.assertFalse(setup.is_helper_cache_flag("--expert-cache-device0"))
+        self.assertFalse(setup.is_helper_cache_flag("--expert-cache-device12x"))
 
     def test_one_gpu_is_untouched(self):
         for gpu in (None, 0, [0]):

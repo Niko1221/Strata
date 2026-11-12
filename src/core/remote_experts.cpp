@@ -1,6 +1,7 @@
 #include "strata/core/remote_experts.hpp"
 #include "strata/core/device.hpp"   // primary_device() (STRATA_PRIMARY_DEVICE)
 #include "strata/core/remote_expert_opt.hpp"
+#include "strata/core/remote_expert_capacity.hpp"
 
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/cpu/hadamard.hpp"
@@ -162,7 +163,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         const size_t index = (size_t) pair.first * (size_t) experts + (size_t) pair.second;
         if (primary.slot_of(pair.first, pair.second) < 0 && !claimed[index] && !picked[index]) {
             const uint64_t bytes = lay.native ? (lay.blob_bytes(pair.first) + 255) / 256 * 256 : lay.max_blob;
-            if (auto_size && needed + bytes + (512ull << 20) > free_bytes) break;
+            if (auto_size && !remote_expert_capacity_fits(needed, bytes, free_bytes)) break;
             selected.push_back(pair);
             needed += bytes;
             picked[index] = 1;
@@ -180,7 +181,7 @@ bool RemoteExperts::open(int device, int slots, int64_t layers, int64_t experts,
         for (const auto& pair : selected) sizes.push_back((int64_t) lay.blob_bytes(pair.first));
     }
     // Leave room for the CUDA context, staging and later driver allocations, especially under WDDM.
-    if (needed + (512ull << 20) > free_bytes) {
+    if (!remote_expert_capacity_fits(needed, 0, free_bytes)) {
         err = "CUDA" + std::to_string(device) + " experts: slots leave less than 512 MiB free; reduce --expert-cache-device" + std::to_string(device);
         close(); return false;
     }

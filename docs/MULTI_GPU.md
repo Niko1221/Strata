@@ -186,7 +186,7 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
   It runs exactly two cards, so one card, Arc A-series cards and three or more cards stay serial.
 - **Draft layer placement:** with the pipeline on, the draft layer loads on the first card, whose window has finished when the
   chain starts. `STRATA_MTP_STAGE0=0` keeps the old place.
-- **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-device1..3`, which
+- **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-deviceN`, which
   `--remote-expert-opt` builds on), a split onto one GPU, no draft layer, and on three or more stages `--pipeline-windows 1` and
   `--adapt-async 1`. A request with repetition penalties or coupled draft sampling decodes serially.
 - **Cost:** a second verify window on each card, 160 MiB less expert cache per card, plus two copies of the first card's
@@ -240,7 +240,7 @@ memory), and the last line shown is the engine's own reason.
 - Every card needs compute capability 7.5 (RTX 20 or newer), unless you opt into the CUDA 12 engine for older cards.
 - Works across cards: images (`--vision`), control vectors, KV streaming (`--kv-resident`) and mid-prompt checkpoints
   (`--prompt-cache-every`). Each card keeps its own part.
-- The older helper-GPU caches (`--expert-cache-device1..3`, [SECOND_GPU.md](SECOND_GPU.md)) take the visible GPUs no stage runs on.
+- The older helper-GPU caches (`--expert-cache-deviceN`, [SECOND_GPU.md](SECOND_GPU.md)) take the visible GPUs no stage runs on.
   A weak helper can make decoding slower, because its per-layer round trip costs more than the CPU pool needs for those experts.
 - `--mmap-experts` needs a canonical pack (`experts.bin`); a native (IQ) pack says so at start.
 - The prompt path has its own buffers on every card (1.5 GB each at the default 2048-token chunk; `--prefill 1024` halves that).

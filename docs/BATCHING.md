@@ -250,7 +250,7 @@ so the slots never wait for the read and the read is one run with no drain insid
   there, the pipeline is drained and the part read waits in a slot, as off the pipeline. A read nobody waits for is not cut.
 - Off, said once, where the read's thread would allocate or free (`STRATA_PREFILL_HELP=1`, `STRATA_SPLIT_MTP_BATCH=1`),
   where serving a doorbell makes a CUDA call (`--pcie-mode dma`, `STRATA_FS_SLOTS`, the helper caches
-  `--expert-cache-device1..3`), and with an expert source that hands out buffers it recycles (the GGUF in place, an
+  `--expert-cache-deviceN`), and with an expert source that hands out buffers it recycles (the GGUF in place, an
   unbuffered source, `STRATA_IO_PREFETCH`): the experts come from the RAM arena or the mapped file. A prompt with
   pictures is read the usual way.
 

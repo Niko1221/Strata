@@ -16,7 +16,7 @@ struct PipelineAutoInputs {
     int spec = 0;                  ///< --spec after the engine's own widening (>= 2 means a draft window)
     int batch = 0;                 ///< --batch slots
     bool peer_device = false;      ///< --peer-device
-    bool helper_caches = false;    ///< --expert-cache-device1..3
+    bool helper_caches = false;    ///< --expert-cache-deviceN
     bool first_is_battlemage = false;   ///< stage 0's GPU is a Battlemage card (architecture id)
     bool later_is_battlemage = false;   ///< the second stage's GPU is a Battlemage card
 };

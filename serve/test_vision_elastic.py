@@ -337,6 +337,8 @@ class OnDemandByDefault(unittest.TestCase):
         self.assertFalse(f(self.cfg(backend="sycl", vision={"exe": "/e/strata-vision-sycl"})))
         self.assertFalse(f(self.cfg(gpu=[0, 1])))                                     # a layer split
         self.assertFalse(f(self.cfg(args=["--vision", "--kv-grow"])))
+        self.assertFalse(f(self.cfg(args=["--vision", "--expert-cache-device12", "100"])))
+        self.assertFalse(f(self.cfg(args=["--vision", "--expert-cache-device12=auto"])))
         self.assertTrue(f(self.cfg(args=["--vision", "--resident-budget-gib", "30"])))   # no cache to shrink is needed
         self.assertFalse(f(self.cfg(parallel=4)))
         self.assertFalse(f(self.cfg(arch="deepseek41")))

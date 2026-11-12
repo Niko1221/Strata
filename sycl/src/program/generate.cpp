@@ -83,6 +83,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
+#include "strata/program/remote_helper_options.hpp"
 #include "strata/spec/draft_policy.hpp"
 #include "strata/spec/draft_source.hpp"
 #include "strata/spec/suffix_drafter.hpp"
@@ -551,10 +552,10 @@ struct Options {
     /// true is that the ADMISSION POLICY gave every slot to the first position, which is why the earlier
     /// measurement found nothing - see `expert_cache_per_layer`.
     int expert_cache = 0;
-    std::array<int, 3> expert_cache_remote{}; ///< CUDA1..3 slots; CUDA0 keeps dense/state/MTP
-    std::array<bool, 3> expert_cache_remote_auto{};
+    std::vector<int> expert_cache_remote = std::vector<int>(3); ///< helper cache slots; device 0 keeps dense/state/MTP
+    std::vector<bool> expert_cache_remote_auto = std::vector<bool>(3);
     bool remote_expert_opt = false; ///< optional optimization of the existing remote-expert decode path
-    std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to CUDA1..3
+    std::string expert_cache_remote_placement = "stripe"; ///< stripe experts or assign complete layers to helper GPUs
     bool expert_cache_cpu_order = false;
     /// **R4.2g.  ROUND 328 MEASURED THAT THE GLOBAL ADMISSION POLICY CANNOT WORK, AND THIS IS THE FIX.**
     /// The default policy hands out slots in arrival order from one counter shared by all 48 layers, so the
@@ -764,6 +765,18 @@ struct Options {
     int cvec_single = -1;                  ///< --cvec-dir single:L (project mode): layer L's direction everywhere
 };
 
+bool has_remote_helpers(const Options& o) {
+    return strata::program::remote_helpers::has_enabled_helpers(o.expert_cache_remote);
+}
+
+size_t remote_helper_count(const Options& o) {
+    return strata::program::remote_helpers::enabled_helper_count(o.expert_cache_remote);
+}
+
+bool remote_helper_gap(const Options& o) {
+    return strata::program::remote_helpers::has_helper_gap(o.expert_cache_remote);
+}
+
 void usage() {
     std::fprintf(stderr,
                  "strata generate --pack DIR --tokens \"1,2,3\" [options]\n"
@@ -934,15 +947,14 @@ void usage() {
                  "                       GPU via `moe_hit_grouped_s2`.  DEFAULT 0.  Measured at 4096 slots\n"
                  "                       with --expert-cache-per-layer: 54.4%% hits, CPU pool drain 19.1 -> 10.3\n"
                  "                       ms/token, -2.7 ms/token end to end.\n"
-                 "  --expert-cache-device1 N|auto  fill CUDA1 with N experts or as many as fit\n"
-                 "  --expert-cache-device2 N|auto  fill CUDA2 with more experts\n"
-                 "  --expert-cache-device3 N|auto  fill CUDA3 with more experts\n"
+                 "  --expert-cache-deviceN SLOTS|auto  fill helper N with SLOTS experts or as many as fit\n"
+                 "                       (N starts at 1; device1..3 remain compatible)\n"
                  "  --remote-expert-opt   enable remote-expert decode optimizations (serve mode)\n"
                  "  --expert-cache-remote-placement stripe|layer  distribute expert ranks or whole\n"
-                 "                       layers across CUDA1..3 (default: stripe)\n"
+                 "                       layers across all helper GPUs (default: stripe)\n"
                  "  --peer-device N      a second GPU as an adaptive expert-cache tier (rows over P2P; it also\n"
                  "                       computes its experts' prompt rows).  Not with --layer-split or\n"
-                 "                       --expert-cache-device1..3.  Default output unchanged without it.\n"
+                 "                       --expert-cache-deviceN.  Default output unchanged without it.\n"
                  "  --peer-reserve-mib N  VRAM the peer tier leaves free on its card (default 600)\n"
                  "  --peer-slots N       expert slots on the peer (default: what fits)\n"
                  "  --peer-adapt-swaps N  peer cache swaps per adaptation step (default: --adapt-swaps)\n"
@@ -1815,6 +1827,8 @@ int main(int argc, char **argv) try {
     bool borrow_explicit = false;   // SYCL port: --prefill-borrow / --no-prefill-borrow given (else chosen by context)
     bool have_tokens = false;
     bool have_logits_stride = false;
+    std::map<size_t, std::pair<int, bool>> remote_cache_options;
+    std::vector<int> helper_gpu_devices;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&](const char* what) -> const char* {
@@ -1939,11 +1953,22 @@ int main(int argc, char **argv) try {
             const std::string v = next("--expert-cache");
             o.expert_cache = (v == "auto") ? -1 : std::atoi(v.c_str());
         }
-        else if (a == "--expert-cache-device1" || a == "--expert-cache-device2" || a == "--expert-cache-device3") {
-            const size_t r = (size_t) (a.back() - '1');
+        else if (a.rfind("--expert-cache-device", 0) == 0) {
+            size_t helper = 0;
+            if (strata::program::remote_helpers::parse_option_name(a, helper) !=
+                strata::program::remote_helpers::OptionName::Valid) {
+                std::fprintf(stderr, "strata generate: invalid helper option '%s' (expected --expert-cache-deviceN, N >= 1)\n",
+                             a.c_str());
+                return 2;
+            }
             const std::string v = next(a.c_str());
-            o.expert_cache_remote_auto[r] = v == "auto";
-            o.expert_cache_remote[r] = v == "auto" ? std::numeric_limits<int>::max() : std::atoi(v.c_str());
+            int slots = 0;
+            bool automatic = false;
+            if (!strata::program::remote_helpers::parse_cache_size(v, slots, automatic)) {
+                std::fprintf(stderr, "strata generate: %s expects a non-negative slot count or auto\n", a.c_str());
+                return 2;
+            }
+            remote_cache_options[helper] = {slots, automatic};
         }
         else if (a == "--remote-expert-opt") o.remote_expert_opt = true;
         else if (a == "--expert-cache-remote-placement")
@@ -2146,6 +2171,47 @@ int main(int argc, char **argv) try {
         }
         }
     }
+    const bool any_enabled_remote_option = std::any_of(remote_cache_options.begin(), remote_cache_options.end(),
+        [](const auto& option) { return option.second.first > 0; });
+    if (any_enabled_remote_option) {
+        int n_visible = 0;
+        if (DPCT_CHECK_ERROR(n_visible = dpct::device_count()) != 0 || n_visible < 1) {
+            std::fprintf(stderr, "strata generate: cannot enumerate devices for helper expert caches\n");
+            return 2;
+        }
+        try {
+            const auto primary_backend = dpct::get_device(0).get_backend();
+            for (int d = 0; d < n_visible; ++d) {
+                const sycl::device dev = dpct::get_device(d);
+                if (dev.is_gpu() && dev.get_backend() == primary_backend) helper_gpu_devices.push_back(d);
+            }
+        } catch (...) {
+            std::fprintf(stderr, "strata generate: cannot inspect GPU devices for helper expert caches\n");
+            return 2;
+        }
+        if (helper_gpu_devices.size() < 2) {
+            std::fprintf(stderr, "strata generate: helper expert caches need a second GPU on the primary backend\n");
+            return 2;
+        }
+        for (const auto& [helper, setting] : remote_cache_options) {
+            if (setting.first <= 0) continue;
+            if (helper >= helper_gpu_devices.size() - 1) {
+                std::fprintf(stderr, "strata generate: --expert-cache-device%zu needs a compatible helper GPU (only %zu available)\n",
+                             helper + 1, helper_gpu_devices.size() - 1);
+                return 2;
+            }
+            if (helper >= o.expert_cache_remote.size()) {
+                o.expert_cache_remote.resize(helper + 1, 0);
+                o.expert_cache_remote_auto.resize(helper + 1, false);
+            }
+            o.expert_cache_remote[helper] = setting.first;
+            o.expert_cache_remote_auto[helper] = setting.second;
+        }
+    }
+    if (remote_helper_gap(o)) {
+        std::fprintf(stderr, "strata generate: helper cache devices must be enabled consecutively from --expert-cache-device1\n");
+        return 2;
+    }
 #if defined(STRATA_USE_HIP)
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
         // any engine code reads its switches (they are read at first use), and the user's own settings are kept
@@ -2266,17 +2332,17 @@ int main(int argc, char **argv) try {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts requires --mmap-experts and a static --expert-profile\n");
         return 2;
     }
-    const bool remote_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 ||
-                               o.expert_cache_remote[2] > 0;
+    const bool remote_caches = has_remote_helpers(o);
     // A layer split keeps the resident RAM mode: every stage's GPU cache is left out of the RAM copy, and an adaptive
     // swap copies an evicted expert back from the card that owns its layer (resident_stage_swaps).
     if (o.resident_cpu_experts && remote_caches) {
         std::fprintf(stderr, "strata generate: --resident-cpu-experts does not support remote expert caches\n");
         return 2;
     }
-    // the helper-GPU expert caches (--expert-cache-remote, docs/SECOND_GPU.md): CUDA1..3 on one GPU; with a layer
-    // split, the visible GPUs no stage runs on, in order
-    int remote_dev[3] = {1, 2, 3};
+    // The helper-GPU expert caches use visible devices after CUDA0, or devices unused by a layer split.
+    std::vector<int> remote_dev(o.expert_cache_remote.size());
+    for (size_t r = 0; r < remote_dev.size(); ++r)
+        remote_dev[r] = r + 1 < helper_gpu_devices.size() ? helper_gpu_devices[r + 1] : (int) r + 1;
     if (multi_gpu) {
         if (o.expert_profile.empty()) {
             std::fprintf(stderr, "strata generate: a layer split across GPUs needs --expert-profile\n");
@@ -2344,24 +2410,19 @@ int main(int argc, char **argv) try {
                              why.c_str());
             }
         }
-        int n_vis = 1;
-        if (DPCT_CHECK_ERROR(n_vis = dpct::device_count()) != 0 || n_vis < 1)
-            n_vis = 1;
-        /*
-        DPCT1026: The call to cudaGetLastError was removed because this
-        functionality is redundant in SYCL.
-        */
-        int next_free = 1;
-        for (int r = 0; r < 3; ++r) {
-            if (o.expert_cache_remote[(size_t) r] <= 0) continue;
-            while (next_free < n_vis &&
-                   std::find(split_devs.begin(), split_devs.end(), next_free) != split_devs.end()) ++next_free;
-            if (next_free >= n_vis) {
-                std::fprintf(stderr, "strata generate: --expert-cache-remote with a layer split needs a GPU that runs no "
-                                     "stage (%d visible, %zu used by the split)\n", n_vis, split_devs.size() + 1);
+        size_t next_helper_gpu = 1;
+        for (size_t r = 0; r < o.expert_cache_remote.size(); ++r) {
+            if (o.expert_cache_remote[r] <= 0) continue;
+            while (next_helper_gpu < helper_gpu_devices.size() &&
+                   std::find(split_devs.begin(), split_devs.end(), helper_gpu_devices[next_helper_gpu]) != split_devs.end())
+                ++next_helper_gpu;
+            if (next_helper_gpu >= helper_gpu_devices.size()) {
+                std::fprintf(stderr, "strata generate: --expert-cache-deviceN with a layer split needs a compatible GPU that runs no "
+                                     "stage (%zu compatible GPUs, %zu used by the split)\n",
+                             helper_gpu_devices.size(), split_devs.size() + 1);
                 return 2;
             }
-            remote_dev[r] = next_free++;
+            remote_dev[r] = helper_gpu_devices[next_helper_gpu++];
         }
         std::string devs;
         for (const int d : split_devs) devs += (devs.empty() ? "" : ",") + std::to_string(d);
@@ -2413,8 +2474,8 @@ int main(int argc, char **argv) try {
         // card would otherwise fail later with "invalid device function")
         std::vector<int> used{0};
         if (multi_gpu) used.insert(used.end(), split_devs.begin(), split_devs.end());
-        for (int r = 0; r < 3; ++r)
-            if (o.expert_cache_remote[(size_t) r] > 0) used.push_back(remote_dev[r]);
+        for (size_t r = 0; r < o.expert_cache_remote.size(); ++r)
+            if (o.expert_cache_remote[r] > 0) used.push_back(remote_dev[r]);
         for (const int d : used) {
             if (const std::string why = strata::core::gpu_arch_problem(d); !why.empty()) {
                 std::fprintf(stderr, "strata generate: %s\n", why.c_str());
@@ -2607,9 +2668,7 @@ int main(int argc, char **argv) try {
     if (!std::isfinite(o.temperature) || o.temperature < 0 || !std::isfinite(o.top_p) ||
         o.top_p <= 0 || o.top_p > 1 || o.top_k < 0 || o.expert_cache < -1 ||
         o.pool_workers < 0 || std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
-                                           [](int slots) { return slots < 0; }) ||
-        (o.expert_cache_remote[1] > 0 && o.expert_cache_remote[0] == 0) ||
-        (o.expert_cache_remote[2] > 0 && o.expert_cache_remote[1] == 0)) {
+                                           [](int slots) { return slots < 0; }) || remote_helper_gap(o)) {
         std::fprintf(stderr, "strata generate: invalid sampling or resource parameter\n");
         return 2;
     }
@@ -2623,10 +2682,10 @@ int main(int argc, char **argv) try {
     }
     // the peer tier is the second card's only user: a layer split or a remote expert cache would put a second engine
     // part (and a second copy of the same experts) on it
-    if (o.peer_device >= 1 && (!o.layer_split.empty() || o.expert_cache_remote[0] > 0)) {
+    if (o.peer_device >= 1 && (!o.layer_split.empty() || has_remote_helpers(o))) {
         std::fprintf(stderr, "strata generate: --peer-device cannot be combined with %s\n",
                      !o.layer_split.empty() ? "--layer-split (use one or the other)"
-                                            : "--expert-cache-device1..3 (the peer tier already caches experts there)");
+                                            : "--expert-cache-deviceN (the peer tier already caches experts there)");
         return 2;
     }
 
@@ -2739,7 +2798,8 @@ int main(int argc, char **argv) try {
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
     const char* early_env = std::getenv("STRATA_EARLY_REMOTE_CONTEXTS");
     const bool early_remote = early_env && early_env[0] == '1';
-    for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0 && (r == 0 || early_remote)) {
+    for (size_t r = 0; r < o.expert_cache_remote.size(); ++r)
+        if (o.expert_cache_remote[r] > 0 && (r == 0 || early_remote)) {
         // Keep CUDA1's proven startup order: initialise its context before
         // allocating GPU0 weights or mapping the large host expert arena.
         double free_gib = 0;
@@ -3438,7 +3498,7 @@ int main(int argc, char **argv) try {
         std::vector<std::pair<int32_t, int32_t>> prof;
         int64_t pslots = 0;
         std::string perr;
-        const bool remote = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        const bool remote = has_remote_helpers(o);
         if (remote || o.expert_profile.empty() ||
             !strata::core::read_expert_profile(o.expert_profile, g.n_layers, g.n_expert, prof, pslots, perr)) {
             std::fprintf(stderr, "strata generate: --split-skip-if-fits: %s; the split stays\n",
@@ -3517,7 +3577,7 @@ int main(int argc, char **argv) try {
         in.auto_off = ae != nullptr && std::atoi(ae) == 0;
         in.has_mtp = !o.mtp.empty(); in.spec = o.spec; in.batch = o.batch;
         in.peer_device = o.peer_device >= 1;     // the same test as the validation below
-        in.helper_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        in.helper_caches = has_remote_helpers(o);
         if (split_devs.size() == 1) {            // the devices are looked at only for a split the pipeline could take
             in.first_is_battlemage = battlemage(0);
             in.later_is_battlemage = battlemage(split_devs[0]);
@@ -3529,7 +3589,7 @@ int main(int argc, char **argv) try {
                                  "B-series cards (--pipeline-windows 0 or STRATA_PIPELINE_AUTO=0 turns it off)\n");
     }
     if (o.pipeline_windows > 0) {
-        const bool helpers = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        const bool helpers = has_remote_helpers(o);
         const char* off = !o.serve ? "it needs --serve"
                         : split_same ? "it needs each stage of the layer split on its own GPU"
                         : !multi_gpu ? "it needs a layer split on two GPUs"
@@ -3537,7 +3597,7 @@ int main(int argc, char **argv) try {
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
                         : o.batch != 0 ? "not with --batch slots"
                         : o.peer_device >= 1 ? "not with --peer-device"
-                        : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
+                        : helpers ? "not with the helper caches (--expert-cache-deviceN, --remote-expert-opt)"
                         : nullptr;
         if (off != nullptr) {
             std::fprintf(stderr, "strata generate: --pipeline-windows %d is off: %s\n", o.pipeline_windows, off);
@@ -4510,7 +4570,8 @@ int main(int argc, char **argv) try {
     }
     // Create the additional contexts after MTP has secured CUDA0 memory, but
     // before the host arena maps its expert pages into their address spaces.
-    for (int r = 1; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0 && !early_remote) {
+    for (size_t r = 1; r < o.expert_cache_remote.size(); ++r)
+        if (o.expert_cache_remote[r] > 0 && !early_remote) {
         double free_gib = 0;
         if (!strata::core::RemoteExperts::preflight(remote_dev[r], free_gib, err)) {
             std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -4655,7 +4716,7 @@ int main(int argc, char **argv) try {
         // in the resident arena; their streamed experts go through the pinned staging ring.  A Linux driver has no
         // such limit, so there the whole arena is pinned (#253).  STRATA_ARENA_PIN_GIB overrides both ways.
         const int pin_env = strata::core::arena_pin_cap_gib();   // -1 unset, -2 "auto" (#243, Windows sliced pin)
-        const bool pin_wddm_cap = pin_env < 0 && (o.expert_cache_remote[0] > 0 || multi_gpu) && under_wddm();
+        const bool pin_wddm_cap = pin_env < 0 && (has_remote_helpers(o) || multi_gpu) && under_wddm();
         const uint64_t pin_limit = pin_env >= 0 ? (uint64_t) pin_env << 30 : pin_wddm_cap ? (8ull << 30) : 0;
         if (pin_env >= 0)
             std::fprintf(stderr, "strata generate: STRATA_ARENA_PIN_GIB=%d: %s\n", pin_env,
@@ -5453,10 +5514,11 @@ int main(int argc, char **argv) try {
                          (long long) later_misses);
     }
 
-    std::array<strata::core::RemoteExperts, 3> remote_experts;
+    std::vector<strata::core::RemoteExperts> remote_experts(o.expert_cache_remote.size());
     std::unique_ptr<strata::core::RemoteExpertOpt> remote_opt;
     if (o.remote_expert_opt && o.expert_cache_remote[0] > 0) remote_opt = std::make_unique<strata::core::RemoteExpertOpt>();
-    const bool multi_remote = o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+    const bool multi_remote = std::any_of(o.expert_cache_remote.begin() + 1, o.expert_cache_remote.end(),
+                                         [](int slots) { return slots > 0; });
     if (o.expert_cache_remote[0] > 0) {
         if (o.expert_cache <= 0 || profile.empty() || o.no_pool) {
             std::fprintf(stderr, "strata generate: remote experts need --expert-profile, "
@@ -5483,14 +5545,14 @@ int main(int argc, char **argv) try {
                     if (!seen[(size_t) l * (size_t) g.n_expert + (size_t) e])
                         ranked.emplace_back((int32_t) l, (int32_t) e);
             std::fprintf(stderr, "strata generate: remote ranking: %zu profiled pairs, "
-                                 "%zu other pairs to fill CUDA1..3\n", profile.size(), ranked.size() - profile.size());
+                                 "%zu other pairs to fill helper GPUs\n", profile.size(), ranked.size() - profile.size());
         }
-        std::array<std::vector<std::pair<int32_t, int32_t>>, 3> by_device;
+        std::vector<std::vector<std::pair<int32_t, int32_t>>> by_device(remote_helper_count(o));
         if (multi_remote) {
             // Either stripe experts for parallel GPU work, or give each layer one
             // secondary GPU to reduce switches and transfers over shared USB4.
             std::vector<uint8_t> assigned((size_t) g.n_layers * (size_t) g.n_expert, 0);
-            const int devices = 1 + (o.expert_cache_remote[1] > 0) + (o.expert_cache_remote[2] > 0);
+            const int devices = (int) by_device.size();
             int next = 0;
             for (const auto& pair : ranked) {
                 if (pair.first < 0 || pair.first >= g.n_layers || pair.second < 0 || pair.second >= g.n_expert ||
@@ -5501,8 +5563,7 @@ int main(int argc, char **argv) try {
                 if (o.expert_cache_remote_placement == "layer") {
                     target = pair.first % devices;
                     // Other layers' owners may still have room: keep scanning ranks.
-                    if (by_device[(size_t) target].size() >=
-                        (size_t) o.expert_cache_remote[(size_t) target]) continue;
+                    if (by_device[(size_t) target].size() >= (size_t) o.expert_cache_remote[(size_t) target]) continue;
                 } else {
                     for (int i = 0; i < devices; ++i) {
                         const int r = (next + i) % devices;
@@ -5527,17 +5588,17 @@ int main(int argc, char **argv) try {
             for (const auto& pr : st->profile)
                 if (st->cache.slot_of(pr.first, pr.second) >= 0)
                     claimed[(size_t) pr.first * (size_t) g.n_expert + (size_t) pr.second] = 1;
-        for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0) {
-            if (remote_opt) remote_opt->attach(remote_experts[(size_t) r]);
-            if (!remote_experts[(size_t) r].open(remote_dev[r], o.expert_cache_remote[(size_t) r],
-                     g.n_layers, g.n_expert, by_device[(size_t) r], xcache, *srcp, claimed, err,
-                     o.expert_cache_remote_auto[(size_t) r])) {
+        for (size_t r = 0; r < o.expert_cache_remote.size(); ++r) if (o.expert_cache_remote[r] > 0) {
+            if (remote_opt) remote_opt->attach(remote_experts[r]);
+            if (!remote_experts[r].open(remote_dev[r], o.expert_cache_remote[r],
+                     g.n_layers, g.n_expert, by_device[r], xcache, *srcp, claimed,
+                     o.expert_cache_remote_auto[r])) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
             std::fprintf(stderr, "strata generate: CUDA%d: %lld additional experts, %.2f GiB; "
                                  "results return through pinned host rows\n", remote_dev[r],
-                         (long long) remote_experts[(size_t) r].resident(), remote_experts[(size_t) r].gib());
+                         (long long) remote_experts[r].resident(), remote_experts[r].gib());
         }
     }
 
@@ -5572,8 +5633,10 @@ int main(int argc, char **argv) try {
             if (drive.d.remote[r]->holds(l, e)) return true;
         return false;
     };
-    for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
-        drive.d.remote[drive.d.remote_count++] = &remote_experts[(size_t) r];
+    for (size_t r = 0; r < o.expert_cache_remote.size(); ++r) if (o.expert_cache_remote[r] > 0) {
+        drive.d.remote.push_back(&remote_experts[r]);
+        ++drive.d.remote_count;
+    }
     drive.d.peer = peer.valid() ? &peer : nullptr;
     drive.d.hit_cpu_order = o.expert_cache_cpu_order;
     drive.d.split_rows = !o.no_split_rows;
@@ -7176,7 +7239,7 @@ int main(int argc, char **argv) try {
                     std::fprintf(stderr, "strata serve:   a card this small can serve as a helper expert cache "
                                          "instead of a split stage: without --layer-split, with %s "
                                          "(docs/SECOND_GPU.md)\n",
-                                 dev == 1 ? "--expert-cache-device1 N" : "--expert-cache-device1..3 N, in order");
+                                 dev == 1 ? "--expert-cache-device1 N" : "--expert-cache-deviceN N (helper ordinals start at 1)");
                 }
             }
             if (chunk > 0) {
@@ -9099,8 +9162,8 @@ int main(int argc, char **argv) try {
                 slots_all += (int64_t) st->cache.slots();
                 mib_all += (int64_t) (st->cache.bytes() >> 20);
             }
-            for (int r = 0; r < 3; ++r)
-                if (o.expert_cache_remote[(size_t) r] > 0) {
+            for (size_t r = 0; r < o.expert_cache_remote.size(); ++r)
+                if (o.expert_cache_remote[r] > 0) {
                     slots_all += remote_experts[(size_t) r].resident();
                     mib_all += (int64_t) (remote_experts[(size_t) r].gib() * 1024.0);
                 }
@@ -10322,13 +10385,13 @@ int main(int argc, char **argv) try {
             bool bad = false;
             for (int64_t t : ids) bad = bad || t < 0 || t >= n_vocab;
             if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); continue; }
-            std::array<int64_t, 3> remote_before{};
-            std::array<int64_t, 3> launches_before{};
-            std::array<uint64_t, 3> compact_before{}, full_before{};
+            std::vector<int64_t> remote_before(remote_experts.size());
+            std::vector<int64_t> launches_before(remote_experts.size());
+            std::vector<uint64_t> compact_before(remote_experts.size()), full_before(remote_experts.size());
             // ms_begin/ms_wait are cumulative since boot; the log line used to print them next to per-request deltas,
             // so the host time read as if it belonged to this request.  Take deltas here like every other column.
-            std::array<double, 3> begin_before{}, wait_before{};
-            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+            std::vector<double> begin_before(remote_experts.size()), wait_before(remote_experts.size());
+            for (size_t r = 0; r < o.expert_cache_remote.size(); ++r) if (o.expert_cache_remote[r] > 0)
             {
                 remote_before[(size_t) r] = remote_experts[(size_t) r].computed();
                 launches_before[(size_t) r] = remote_experts[(size_t) r].launched_layers();
@@ -12622,7 +12685,7 @@ int main(int argc, char **argv) try {
                                      "of %lld windows\n", (long long) t2_rej[0], (long long) t2_hit[0], (long long) t2_rej[1],
                              (long long) t2_hit[1], (long long) t2_rej[2], (long long) t2_hit[2], (long long) t2_rej[3],
                              (long long) t2_hit[3], (long long) dec_windows);
-            for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+            for (size_t r = 0; r < o.expert_cache_remote.size(); ++r) if (o.expert_cache_remote[r] > 0)
                 std::fprintf(stderr, "strata serve: CUDA%d: %lld expert entries, %lld active layer launches, %.1f MiB returned "
                                      "(%.1f MiB with full rows) in this request; host %.0f ms staging+launching, %.0f ms "
                                      "waiting for it in this request\n", r + 1,
@@ -13829,9 +13892,9 @@ int main(int argc, char **argv) try {
                         "  pool phases", wp / per, dr / per, rp / per);
         }
         std::printf("%-24s %lld blobs read\n", "  expert blobs", (long long) srcp->reads());
-        for (int r = 0; r < 3; ++r) if (o.expert_cache_remote[(size_t) r] > 0)
+        for (size_t r = 0; r < o.expert_cache_remote.size(); ++r) if (o.expert_cache_remote[r] > 0)
             std::printf("  CUDA%d experts           %lld routed entries computed\n",
-                        r + 1, (long long) remote_experts[(size_t) r].computed());
+                        remote_dev[r], (long long) remote_experts[r].computed());
         // ---- **R4's DISPATCH MEASUREMENT: h, ON THE ENGINE'S OWN ROUTING.**  No offline trace, no corpus
         // question, no k-fold - these are the ids the router actually produced on this run.  Reported as
         // hits/lookups so it can be read directly as the h the cache would deliver, and alongside `refused`
