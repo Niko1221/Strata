@@ -9460,6 +9460,8 @@ def api_key_limits_of(value, slots: int):
     limiting less or more than meant: a value that is not a whole number, a key that is empty or "none", a field
     the server does not know, two entries sharing a name, or reservations that leave some key no slot at all
     (`slots` is the "parallel" the server starts with; KeyLimits follows the engine's own batch from then on).
+    A wrong entry is named by its place in the block ("entry 2"), never by its key: a start that fails is read
+    off the console and pasted into reports, and the keys themselves stay inside the config.
     Returns [{"key", "name", "max_concurrent", "reserved_capacity"}] in config order."""
     if value is None or value == "" or value == {}:
         return []
@@ -9472,22 +9474,22 @@ def api_key_limits_of(value, slots: int):
             raise ValueError(f'api_keys entry {i} is not a usable key (empty, or "none")')
         pol = {} if pol is None else pol
         if not isinstance(pol, dict):
-            raise ValueError(f'api_keys entry "{key}" must be an object (or null)')
+            raise ValueError(f"api_keys entry {i} must be an object (or null)")
         unknown = sorted(set(pol) - {"name", "max_concurrent", "reserved_capacity"})
         if unknown:
-            raise ValueError(f'api_keys entry "{key}" says {", ".join(map(repr, unknown))}, '
+            raise ValueError(f'api_keys entry {i} says {", ".join(map(repr, unknown))}, '
                              "which is not a limit (the fields are name, max_concurrent, reserved_capacity)")
         name = str(pol.get("name") or f"key {i}").strip() or f"key {i}"
         if name == KeyLimits.OTHER:
-            raise ValueError(f'api_keys entry "{key}" may not be named "{KeyLimits.OTHER}"')
+            raise ValueError(f'api_keys entry {i} may not be named "{KeyLimits.OTHER}"')
         mc = pol.get("max_concurrent")
         if mc is not None and (isinstance(mc, bool) or not isinstance(mc, int) or mc < 1):
-            raise ValueError(f'api_keys entry "{key}": max_concurrent must be a whole number of requests, at least 1')
+            raise ValueError(f"api_keys entry {i}: max_concurrent must be a whole number of requests, at least 1")
         rc = pol.get("reserved_capacity")
         if rc is None:
             rc = 0
         if isinstance(rc, bool) or not isinstance(rc, int) or rc < 0:
-            raise ValueError(f'api_keys entry "{key}": reserved_capacity must be a whole number of slots, 0 or more')
+            raise ValueError(f"api_keys entry {i}: reserved_capacity must be a whole number of slots, 0 or more")
         out.append({"key": key, "name": name, "max_concurrent": mc, "reserved_capacity": rc})
     if len({p["name"] for p in out}) != len(out):
         raise ValueError("api_keys: two entries share a name; names must differ (GET /status shows them)")

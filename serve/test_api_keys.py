@@ -76,6 +76,16 @@ class Parse(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.limits(bad)
 
+    def test_config_errors_name_the_place_not_the_key(self):
+        secret = "s3cret-key"            # a failed start is read off the console and pasted into reports
+        for bad in ({secret: "max 1"}, {secret: {"nonsense": 1}}, {secret: {"max_concurrent": 0}},
+                    {secret: {"max_concurrent": "1"}}, {secret: {"reserved_capacity": -1}},
+                    {secret: {"reserved_capacity": 1.5}}, {secret: {"name": KeyLimits.OTHER}}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError) as got:
+                    self.limits(bad)
+                self.assertNotIn(secret, str(got.exception))
+
     def test_names_are_unique_and_not_the_shared_bucket(self):
         with self.assertRaises(ValueError):
             self.limits({"a": {"name": "x"}, "b": {"name": "x"}})
