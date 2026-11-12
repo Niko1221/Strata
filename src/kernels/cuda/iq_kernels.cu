@@ -5,6 +5,7 @@
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/fuse_gu.hpp"
 #include "strata/core/defaults_026.hpp"
 #include "strata/core/expert_nibble.hpp"
 #include "strata/core/sm75_series.hpp"
@@ -25,6 +26,7 @@
 #include "tq_lut_i8.cuh"       // int8 copy of the trellis codebook (one global scale) for the dp4a dot
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -4213,6 +4215,54 @@ bool expdec_down(const NativeExpertLayout& L, int64_t gy, int64_t cap_groups, cu
     return true;
 }
 
+// ---- STRATA_Q8_DOWN (T51, p58/t51-down, opt-in): the Q8_0 down rows of ANY gate/up format (UD-Q6_K_XL: Q6_K gate/up,
+// Q8_0 down at n_ff 640, where the V2K path above is never taken because it admits only Q4_K / Q5_K gate/up) through a
+// kernel that loads each weight word once per chunk of GRP_NC entries, instead of native_down_kernel<8> (one entry at a
+// time, the row re-read per entry):
+//   1 = s27_down_kernel<8, LX, 4 rows a warp, no TSUM>: the V2K down (the chunk's q8_1 rows staged in LDS)
+//   2 = the same, 2 rows a warp (twice the blocks)
+//   3 = native_down_multi_kernel<8> (STRATA_KQ_SPLIT's Q8_0 down, here for the down only: gate/up, dense mmvq and the
+//       drafter keep their kernels)
+// Each (row, entry) is bitwise native_down_kernel<8>'s: S27<8>::apply(load()) is Fmt<8>::dot's expression with the same
+// lane-strided k order and warp_sum (the V2K note above; expdec_bench memcmp's every cell).  0 / unset: the default
+// kernel.  Read at first use (before graph capture); native_expert_set_q8_down overrides it (the bench).
+std::atomic<int> g_q8_down{-1};   // bench override, set before graph capture
+int q8_down_mode() {
+    static const int configured = [] {
+        const int v = env_int_or("STRATA_Q8_DOWN", 0);
+        return (v >= 1 && v <= 3) ? v : 0;
+    }();
+    const int override = g_q8_down.load(std::memory_order_relaxed);
+    return override >= 0 ? override : configured;
+}
+bool q8_down_alt(const NativeExpertLayout& L, dim3 gd, int64_t cap_groups, cudaStream_t s, const unsigned long long* grp_ptr,
+                 const int32_t* grp_start, const int32_t* n_groups, const int32_t* ent_dst, const block_q8_1* hq, float* out) {
+    const int m = q8_down_mode();
+    // NVFP4 tails (s_down) and Hadamard-folded downs are not Q8_0; the LDS stage holds S26_HMAX blocks per entry
+    if (m == 0 || g_old_kernels || L.d_type != 8 || L.tail_off != 0 || L.had_block > 0 || L.n_ff != 32 * S26_HMAX) return false;
+    const int rpw = m == 2 ? 2 : 4;
+    if (m != 3 && L.n_embd % (8 * rpw) != 0) return false;
+    static std::once_flag noted;
+    std::call_once(noted, [&] {
+        cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
+        (void) cudaStreamIsCapturing(s, &cs);
+        std::fprintf(stderr, "strata: STRATA_Q8_DOWN=%d: Q8_0 down (n_embd %lld, n_ff %lld, gate/up type %d) runs %s%s\n", m,
+                     (long long) L.n_embd, (long long) L.n_ff, L.gu_type,
+                     m == 3 ? "native_down_multi_kernel<8>" : (m == 2 ? "s27_down_kernel<8> RPW 2" : "s27_down_kernel<8> RPW 4"),
+                     cs != cudaStreamCaptureStatusNone ? " (captured into a graph)" : "");
+    });
+    if (m == 3) {   // the caller's grid: 8 rows a block, gy group rows (the kernel strides the groups)
+        if (g_no_sub16_gu) native_down_multi_kernel<8, false><<<gd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        else native_down_multi_kernel<8, true><<<gd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        return true;
+    }
+    // s27_down_kernel takes group blockIdx.y only (no group stride), so one block row per possible group, as s27_launch
+    const dim3 g((unsigned) (L.n_embd / (8 * rpw)), (unsigned) cap_groups);
+    if (m == 2) s27_down_kernel<8, true, 2, false><<<g, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    else s27_down_kernel<8, true, 4, false><<<g, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    return true;
+}
+
 template<int TG>
 void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, const int32_t* grp_start,
                const int32_t* n_groups, const int32_t* ent_tok, const block_q8_1* X, const NativeExpertLayout& L,
@@ -5319,6 +5369,9 @@ constexpr bool nib_layout(const NativeExpertLayout& L) {
 
 }  // namespace
 
+// STRATA_FUSE_GU (p58/fuse-gu): Q6_K gate/up + SwiGLU + q8_1 in one launch (fuse_gu.cuh)
+#include "fuse_gu.cuh"
+
 void iq_set_old_kernels(bool old) { g_old_kernels = old; }
 bool iq_old_kernels() { return g_old_kernels; }
 
@@ -6239,6 +6292,7 @@ bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
 
 void native_expert_set_expdec(int on) { g_expdec = on < 0 ? -1 : (on ? 1 : 0); }
+void native_expert_set_q8_down(int v) { g_q8_down = v < 0 ? -1 : ((v >= 1 && v <= 3) ? v : 0); }
 int native_expert_expdec() { return expdec_mode(); }
 void native_expert_set_expdec_params(const NativeExpertExpdecParams& p) {
     if (p.gu_rows_per_lane > 0) g_expdec_r = p.gu_rows_per_lane;
@@ -6399,6 +6453,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         }
         if (gs_done) check("native_expert_grouped/gu+swiglu");
     }
+    // STRATA_FUSE_GU=1..5 (p58/fuse-gu, fuse_gu.cuh): Q6_K gate/up + SwiGLU + q8_1 in one launch where the CUDA layout's
+    // native_gu_kernel<14> + swiglu_q8_1_entries_kernel would run; bitwise the same hq (fuse_gu_bench)
+    if (!gs_done && gs_layout && !v1 && !g_old_kernels && g_exp_phase != 2 &&
+        fuse_gu_launch(L, gy, s, grp_ptr, grp_start, n_groups, ent_tok, X, hq)) {
+        gs_done = true;
+        check("native_expert_grouped/fuse gu");
+        if (g_exp_phase == 3) return;
+    }
     {   // BW-MEASURE: which gate/up form ran: 1 = fused gate/up/SwiGLU/q8_1 (em 8), 2 = GU_SWIGLU one launch, 3 = separate gate/up + SwiGLU launches
 #if STRATA_EXP_LAYOUTS
         const int gu_form = fused_gu ? 1 : (gs_done ? 2 : 3);
@@ -6522,7 +6584,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     } else
 #undef STRATA_D_AMD
 #endif
-    if (!expdec_down(L, gy, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, out))   // STRATA_EXPDEC=1
+    if (!q8_down_alt(L, gd, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, out) &&   // STRATA_Q8_DOWN=1|2|3 (T51)
+        !expdec_down(L, gy, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, hq, out))   // STRATA_EXPDEC=1
     switch (L.d_type) {
 #define STRATA_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
         STRATA_D_FMTS(STRATA_DOWN)

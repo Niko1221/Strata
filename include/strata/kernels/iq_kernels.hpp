@@ -117,6 +117,10 @@ const float* hadamard_device_signs(const float* host, int width);
 /// (STRATA_EXPDEC=1).  Set before graph capture; captured graphs keep the kernels they captured.
 void native_expert_set_expdec(int on);
 int native_expert_expdec();
+/// STRATA_Q8_DOWN (T51, opt-in): the Q8_0 down of any gate/up format through a decode-once kernel - 1 s27_down_kernel
+/// 4 rows a warp, 2 the same with 2 rows, 3 native_down_multi_kernel<8>; 0 the default native_down_kernel<8>; -1 back
+/// to the environment's value.  Bitwise the default kernel.  Set before graph capture (the bench).
+void native_expert_set_q8_down(int v);
 /// Its knobs, read from the environment at startup (STRATA_EXPDEC_R 1 | 2, _DR 1 | 2 | 4, _MINB 2 | 4, _D20 0 | 1,
 /// _RB, _DRB, _MINBLK): gate/up and down rows per lane, the gate/up kernel's __launch_bounds__ minimum blocks per SM
 /// (2 = up to 128 registers, 4 = up to 64), EXPDEC for the IQ4_NL down too, gate/up and down rows per block (0 = auto

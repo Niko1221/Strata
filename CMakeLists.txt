@@ -499,6 +499,11 @@ if(STRATA_NATIVE_EXPERTS)
     add_executable(expdec_bench EXCLUDE_FROM_ALL src/kernels/expdec_bench.cpp)
     target_include_directories(expdec_bench PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(expdec_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+    # STRATA_FUSE_GU (p58/fuse-gu): the Q6_K gate/up + SwiGLU + q8_1 fused kernel against the default path on a real
+    # UD-Q6_K_XL layer's experts, bit for bit and in microseconds (eager and CUDA-graph launches)
+    add_executable(fuse_gu_bench EXCLUDE_FROM_ALL src/kernels/fuse_gu_bench.cpp)
+    target_include_directories(fuse_gu_bench PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(fuse_gu_bench PRIVATE strata_kernels strata_kernels_cpu strata_artifact ${_strata_gpu_runtime_target})
     if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
       # Unsloth UD-Q4_K_XL's three expert pairs (and Q8_0 alone, its embedding) on synthetic ggml-quantized weights
       # at 2560/640: GPU and CPU experts against the float reference, GPU dequantizers against to_float.
