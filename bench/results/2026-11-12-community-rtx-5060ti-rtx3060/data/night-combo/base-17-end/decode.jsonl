@@ -1,0 +1,6 @@
+{"tag": "base-17-end/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 76.0, "completion": 400, "reasoning_chars": 0, "answer_chars": 1803, "finish": "length", "wall": 5.5}
+{"tag": "base-17-end/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 79.9, "completion": 303, "reasoning_chars": 0, "answer_chars": 1071, "finish": "stop", "wall": 4.0}
+{"tag": "base-17-end/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 70.7, "completion": 400, "reasoning_chars": 0, "answer_chars": 1484, "finish": "length", "wall": 5.9}
+{"tag": "base-17-end/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 72.9, "completion": 400, "reasoning_chars": 0, "answer_chars": 1786, "finish": "length", "wall": 5.8}
+{"tag": "base-17-end/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 81.9, "completion": 400, "reasoning_chars": 0, "answer_chars": 1325, "finish": "stop", "wall": 5.1}
+{"tag": "base-17-end/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 70.7, "completion": 400, "reasoning_chars": 0, "answer_chars": 1606, "finish": "length", "wall": 5.9}

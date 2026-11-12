@@ -73,6 +73,10 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-12: RTX 5060 Ti 16 GB + RTX 3060 12 GB (layer split, 3060 at PCIe 4.0 x4), Core i5-14400F, 62.6 GB RAM](../bench/results/2026-11-12-community-rtx-5060ti-rtx3060/README.md):
+  0.1.59.1 (0.2.13.1) source build, Flash-Next IQ3_S at 262,144 tokens: `STRATA_SPLIT_MTP_BATCH` + `STRATA_PROMPT_ATTN_IMMA` + `STRATA_PF_FUSED`
+  raise prompt speed +6/+6/+3% at 8K/32K/100K (+8/+9/+6% on 0.1.45.3) with decode unchanged; DFlash2 decodes 12% slower than MTP on reasoning;
+  layer boundary 17 is best.
 
 ## Run the standard benchmark
 

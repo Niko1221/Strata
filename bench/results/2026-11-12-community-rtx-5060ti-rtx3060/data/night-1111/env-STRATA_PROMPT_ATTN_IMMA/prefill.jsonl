@@ -1,0 +1,6 @@
+{"size": "8k", "rep": 0, "prompt_n": 7888, "cache_n": 0, "prompt": 1036.9, "wall": 8.2}
+{"size": "8k", "rep": 1, "prompt_n": 7890, "cache_n": 0, "prompt": 1112.0, "wall": 7.3}
+{"size": "32k", "rep": 0, "prompt_n": 31330, "cache_n": 0, "prompt": 1697.8, "wall": 18.7}
+{"size": "32k", "rep": 1, "prompt_n": 31329, "cache_n": 0, "prompt": 1668.5, "wall": 18.9}
+{"size": "100k", "rep": 0, "prompt_n": 94704, "cache_n": 0, "prompt": 1950.4, "wall": 48.9}
+{"size": "100k", "rep": 1, "prompt_n": 94705, "cache_n": 0, "prompt": 1930.2, "wall": 49.3}

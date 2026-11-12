@@ -1,0 +1,6 @@
+{"tag": "combo3/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 76.2, "completion": 400, "reasoning_chars": 0, "answer_chars": 1779, "finish": "length", "wall": 5.5}
+{"tag": "combo3/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 78.0, "completion": 400, "reasoning_chars": 0, "answer_chars": 1336, "finish": "length", "wall": 5.4}
+{"tag": "combo3/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 68.1, "completion": 400, "reasoning_chars": 0, "answer_chars": 1650, "finish": "length", "wall": 6.2}
+{"tag": "combo3/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 75.8, "completion": 400, "reasoning_chars": 0, "answer_chars": 1722, "finish": "length", "wall": 5.6}
+{"tag": "combo3/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 76.4, "completion": 400, "reasoning_chars": 0, "answer_chars": 1366, "finish": "length", "wall": 5.5}
+{"tag": "combo3/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 68.6, "completion": 400, "reasoning_chars": 0, "answer_chars": 1553, "finish": "length", "wall": 6.1}

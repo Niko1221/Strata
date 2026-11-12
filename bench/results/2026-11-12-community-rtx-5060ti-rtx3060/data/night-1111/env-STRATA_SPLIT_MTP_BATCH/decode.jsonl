@@ -1,0 +1,6 @@
+{"tag": "env-STRATA_SPLIT_MTP_BATCH/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 77.7, "completion": 400, "reasoning_chars": 0, "answer_chars": 1734, "finish": "length", "wall": 5.4}
+{"tag": "env-STRATA_SPLIT_MTP_BATCH/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 76.3, "completion": 293, "reasoning_chars": 0, "answer_chars": 1042, "finish": "stop", "wall": 4.1}
+{"tag": "env-STRATA_SPLIT_MTP_BATCH/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 70.2, "completion": 400, "reasoning_chars": 0, "answer_chars": 1561, "finish": "length", "wall": 6.0}
+{"tag": "env-STRATA_SPLIT_MTP_BATCH/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 77.4, "completion": 400, "reasoning_chars": 0, "answer_chars": 1716, "finish": "length", "wall": 5.5}
+{"tag": "env-STRATA_SPLIT_MTP_BATCH/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 81.0, "completion": 285, "reasoning_chars": 0, "answer_chars": 1026, "finish": "stop", "wall": 3.8}
+{"tag": "env-STRATA_SPLIT_MTP_BATCH/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 68.1, "completion": 400, "reasoning_chars": 0, "answer_chars": 1598, "finish": "length", "wall": 6.1}

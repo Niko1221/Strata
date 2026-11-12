@@ -1,0 +1,6 @@
+{"tag": "env-STRATA_PF_FUSED/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 78.3, "completion": 400, "reasoning_chars": 0, "answer_chars": 1745, "finish": "length", "wall": 5.3}
+{"tag": "env-STRATA_PF_FUSED/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 79.0, "completion": 400, "reasoning_chars": 0, "answer_chars": 1361, "finish": "length", "wall": 5.3}
+{"tag": "env-STRATA_PF_FUSED/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 69.2, "completion": 400, "reasoning_chars": 0, "answer_chars": 1585, "finish": "length", "wall": 6.1}
+{"tag": "env-STRATA_PF_FUSED/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 76.2, "completion": 400, "reasoning_chars": 0, "answer_chars": 1740, "finish": "length", "wall": 5.5}
+{"tag": "env-STRATA_PF_FUSED/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 82.7, "completion": 295, "reasoning_chars": 0, "answer_chars": 1055, "finish": "stop", "wall": 3.8}
+{"tag": "env-STRATA_PF_FUSED/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 70.4, "completion": 400, "reasoning_chars": 0, "answer_chars": 1586, "finish": "length", "wall": 6.0}

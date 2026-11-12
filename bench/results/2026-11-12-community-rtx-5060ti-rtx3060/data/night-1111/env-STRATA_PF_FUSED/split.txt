@@ -1,0 +1,2 @@
+strata generate: layer split: CUDA1 runs layers 17-47, expert cache 4803 slots (9.52 GiB), 4803 of its 15872 profiled pairs; slot 0 verified
+strata generate: layer split: CUDA0 runs layers 0-16
