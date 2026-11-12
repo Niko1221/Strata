@@ -502,6 +502,9 @@ class Recommendation(unittest.TestCase):
         t = setup.hipblaslt_table("gfx1151", [], 100401)
         self.assertIsNotNone(t)
         self.assertEqual(t.name, "gfx1151-hipblaslt-100401.txt")
+        t = setup.hipblaslt_table("gfx1151", [], 100202)                     # a system ROCm 7.2.4
+        self.assertIsNotNone(t)
+        self.assertEqual(t.name, "gfx1151-hipblaslt-100202.txt")
 
 
 class LowRamUsesTheCarveOutOnly(unittest.TestCase):
