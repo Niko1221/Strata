@@ -75,6 +75,12 @@ void gdn_recurrence(float* state, const float* h, const float* gate, const float
 void gdn_recurrence_variant(int variant, float* state, const float* h, const float* gate, const float* beta,
                             const float* z, const float* gamma, float eps, float* y, uint16_t* y16, int64_t T,
                             void* stream, int64_t ld16 = 0);
+/// HIP gfx12 only, STRATA_GDN_CHUNKED=1 (STRATA_GDN_FUSE=0 off): gdn_conv + gdn_recurrence on the chunked matrix-core path with
+/// the conv output kept as FP16 in `hbuf` (the FP32 h buffer of gdn_conv, reused).  Returns false, having launched nothing, when
+/// it does not apply (not gfx12, short prompt, unaligned stride, off): the caller then calls the two.
+bool gdn_conv_recurrence_fused(float* history, const float* qkv, const float* conv_w, float* hbuf, float* state, const float* gate,
+                               const float* beta, const float* z, const float* gamma, float eps, float l2eps, float* y,
+                               uint16_t* y16, int64_t T, void* stream, int64_t ld16 = 0);
 /// KVA (CUDA/HIP only): the same recurrence kernels as gdn_recurrence, bit for bit, without the output
 /// normalization: state, h, gate, beta and the scratch `y` only.  The output projection and the gated residual
 /// write have no consumer when only the state advances, and their input (z, the gate projection) is not needed
@@ -104,6 +110,9 @@ void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
                  int64_t T, void* stream, const float* row_sd = nullptr);
+/// moe_combine with the expert rows as FP16 (2,560 halves a row, fused::dm_f16_used()); shared and bo 16-byte aligned.
+void moe_combine16(const uint16_t* Dm16, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo, int64_t T,
+                   void* stream);
 /// Layer-major prefill (STRATA_PREFILL_LAYER_MAJOR=1): acc[t, :] = shared[t, :] * sigmoid(sg[t]) - the shared expert's
 /// part of moe_combine, written before the routed experts are known.
 void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream);
@@ -141,6 +150,12 @@ void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, 
 /// scaling (rope_scaling.hpp) rides in as the process config - none is today's arithmetic exactly.
 void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0,
           const strata::kernels::RopeScaling& scaling, void* stream);
+/// rms_rows + rope (+ split_q) in one pass, the same bits as the separate kernels (STRATA_QSA_FUSE_NR, default on):
+/// out[t * out_ts + h * dim + d] = rope(rms(in[t * in_ts + h * in_hs + :]) * w), 64 <= dim <= 256, rotating the first
+/// 64 dims at position pos0 + t.  `in` and `out` may be the same buffer.
+void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, int64_t out_ts, const float* w, int64_t T,
+                   int64_t heads, int64_t dim, float eps, int64_t pos0, const strata::kernels::RopeScaling& scaling,
+                   void* stream);
 /// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
 void split_q(const float* q_full, float* q, int64_t T, void* stream);
 /// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)

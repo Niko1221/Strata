@@ -1,0 +1,1479 @@
+/* ============================================================================
+   Strata — the liquid layer
+   ----------------------------------------------------------------------------
+   Refinements on top of app.css. Everything here is expressed in the tokens the
+   app already declares (kit/tokens.css and app.css section 1), so light and dark
+   stay one layout and the reduced-motion / reduced-transparency gates still hold.
+
+   The design intent, in one paragraph: the app should read as a single pane of
+   glass resting on a lit surface, not as a white rectangle with lines drawn on
+   it. Depth comes from one ambient wash behind the shell, from a translucent
+   navigation layer that samples it, and from hairlines and specular edges rather
+   than from heavier borders or louder fills. Motion stays short and calm; a
+   control answers the pointer, it does not perform.
+
+   Load order matters: this file is imported after app.css, so a rule here wins
+   over an equal-specificity rule there. Prefer editing the source rule in
+   app.css when the intent changes; use this layer for the material, depth and
+   interaction treatment that the shell shares.
+   ========================================================================== */
+
+/* ------------------------------------------------------- 1. depth: ambient --
+   Apple's material only means anything when there is something behind it. In the
+   packaged app that is the desktop, through a translucent window; everywhere
+   else it is this: two very low-opacity light fields over the page colour, fixed
+   to the window, so the navigation glass has a gradient to sample and the shell
+   has a light direction (warm at the top left, cool at the bottom right).
+
+   It is one layer, it never moves, and it is deliberately too quiet to read as a
+   gradient: at 6% accent over #f9fafb the strongest corner is ~1.015:1 from the
+   page. No card, table or transcript sits on it — it is the light the shell is
+   lit by, and only the glass in front of it reacts to it.
+
+   The main column deliberately keeps the flat page colour. A material is
+   supposed to be visibly a material: the sidebar is a pane, so it can be a
+   slightly different tone from the page behind a hairline, the way a frosted
+   sidebar reads on a desktop. Painting the same wash across both sides removed
+   that edge and turned the whole window into a tinted wallpaper.
+
+   Both accessibility gates remove it, because without the glass it has no job:
+   reduced transparency and the app's own "opaque" preference. */
+:root {
+  --st-ambient-warm: color-mix(in srgb, var(--st-accent) 6%, transparent);
+  --st-ambient-cool: color-mix(in srgb, var(--st-info) 2.5%, transparent);
+  --st-hairline: color-mix(in srgb, var(--st-line) 70%, transparent);
+  --st-hairline-strong: color-mix(in srgb, var(--st-line) 92%, transparent);
+  --st-nav-material: color-mix(in srgb, var(--st-surface) 68%, transparent);
+  --st-fill-hover: color-mix(in srgb, var(--st-ink) 5%, transparent);
+  --st-fill-press: color-mix(in srgb, var(--st-ink) 9%, transparent);
+}
+
+body {
+  background-color: var(--st-bg);
+  background-image:
+    radial-gradient(130% 100% at 0% 0%, var(--st-ambient-warm), transparent 55%),
+    radial-gradient(80% 60% at 100% 100%, var(--st-ambient-cool), transparent 50%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  body {
+    background-image: none;
+  }
+}
+[data-transparency='opaque'] body {
+  background-image: none;
+}
+
+/* ------------------------------------------------- 2. the sidebar material --
+   The sidebar is the navigation layer, which is precisely what Liquid Glass is
+   for: it is chrome over the working surface, it holds no content of its own, and
+   it is the one region of the shell that is always present. It used to be painted
+   flat `--st-surface` with a hard right border, which read as a separate window
+   glued to the side of the app.
+
+   Now it samples the ambient layer through the thick material, carries a hairline
+   instead of a rule, and lets the footer dissolve into it rather than stacking a
+   second opaque panel under the first.
+
+   The material token is what collapses the blur under reduced transparency, so
+   the geometry is identical when the effect is off. */
+.nav {
+  background: var(--st-nav-material);
+  -webkit-backdrop-filter: var(--st-material-thick);
+  backdrop-filter: var(--st-material-thick);
+  border-right: 1px solid var(--st-hairline);
+}
+.nav__top {
+  border-bottom: 1px solid var(--st-hairline);
+}
+.nav__foot {
+  background: transparent;
+  border-top: 1px solid var(--st-hairline);
+}
+
+/* The brand row is a window control, not a header: it keeps the height of the
+   working bar but drops the rule, so the top of the sidebar reads as one
+   continuous pane. */
+.nav__top {
+  border-bottom-color: transparent;
+}
+
+/* --------------------------------------------- 3. navigation interaction ----
+   Rows answer the pointer with a translucent wash rather than an opaque grey
+   rectangle, and the current row is marked with the accent at low strength plus
+   a hairline ring — a selected item in a sidebar, not a button. */
+.navitem,
+.navsession,
+.ws__name,
+.enginechip {
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    color var(--st-t-control) var(--st-ease-standard),
+    box-shadow var(--st-t-control) var(--st-ease-standard);
+}
+.navitem:hover,
+.navsession:hover,
+.ws__name:hover {
+  background: var(--st-fill-hover);
+}
+.navitem:active,
+.navsession:active {
+  background: var(--st-fill-press);
+}
+.navitem[aria-current='page'] {
+  background: color-mix(in srgb, var(--st-accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 16%, transparent);
+  color: var(--st-ink);
+}
+.navsession[aria-current='page'],
+.navsession[aria-current='true'] {
+  background: color-mix(in srgb, var(--st-accent) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 14%, transparent);
+}
+
+/* A navigational row is already marked by its hover surface; the browser's
+   default underline on a hovered link is the one piece of web chrome that was
+   still showing in the sidebar. */
+.navitem,
+.navsession,
+.ws__name,
+.nav__brand,
+.ws-view {
+  text-decoration: none;
+}
+.navitem:hover,
+.navsession:hover,
+.ws__name:hover,
+.nav__brand:hover,
+.ws-view:hover {
+  text-decoration: none;
+}
+
+/* The engine chip is the one row in the footer that carries state, so it keeps a
+   surface of its own — but a hairline one, so the dot does the talking. */
+.enginechip {
+  background: color-mix(in srgb, var(--st-ink) 4%, transparent);
+  box-shadow: inset 0 0 0 1px var(--st-hairline);
+}
+.enginechip:hover {
+  background: color-mix(in srgb, var(--st-ink) 7%, transparent);
+}
+
+/* --------------------------------------------- 4. sidebar typography ------
+   Group labels ("Tasks", "Workspaces") were 14px at regular weight, the same
+   size as the rows beneath them, so the two levels read as one flat list. They
+   are one step down and one weight up now: still sentence case (this is a
+   sidebar, not a form), but no longer mistakable for a destination.
+
+   The empty line under a group sits at the same left edge as the titles it
+   stands in for, instead of hanging 16px to their left. */
+.ws__head .navgroup__label,
+.task-tree .navgroup__label {
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--st-ink-muted);
+}
+.task-tree .navsessions .ws__empty,
+.ws .navsessions .ws__empty {
+  padding-left: 26px;
+}
+
+/* The theme switch shared a row with "More" but was 42px tall against a 36px
+   row, so the pair sat three pixels out of line. It matches the row now, and the
+   two icon-only window controls at either end of the sidebar take the same
+   shape — the kit makes a control a capsule, and at 36×36 that is a circle. */
+.nav__bottom .theme-switch {
+  width: 36px;
+  height: 36px;
+}
+.nav__top .nav__collapse {
+  border-radius: var(--st-r-pill);
+}
+
+/* --------------------------------------------------- 5. sheets over glass --
+   A modal was a white rectangle on a flat 36% black wash: the working screen
+   behind it neither dimmed gradually nor lost focus, it just went grey. The
+   scrim now frosts what is behind it, so the sheet sits over the app rather than
+   over a colour, and the sheet itself takes the specular top edge and the same
+   entrance every other surface uses.
+
+   The scrim is the one place a material is deliberately heavy: it covers a whole
+   screen, and it is removed entirely under reduced transparency. */
+.dialog-scrim {
+  -webkit-backdrop-filter: var(--st-material-thin);
+  backdrop-filter: var(--st-material-thin);
+}
+.dialog-surface {
+  box-shadow: var(--st-sh-pop), inset 0 1px 0 var(--st-specular);
+  animation: st-enter var(--st-t-local) var(--st-ease-enter);
+}
+.dialog-head {
+  border-bottom: 1px solid var(--st-hairline);
+}
+.dialog-actions {
+  border-top: 1px solid var(--st-hairline);
+}
+
+/* ---------------------------------------------- 6. the settings value column --
+   A field's control column is a fixed 260px, which is right for a select or a
+   toggle. The electricity price is three things — a number, its unit and a
+   currency button — and at 260px the unit wrapped to five lines beside the
+   input. A control that is itself a stack gets the room it needs, and the row
+   wraps cleanly when it still runs out. */
+.field__control:has(> .stack) {
+  width: min(100%, 380px);
+}
+.field__control > .stack {
+  width: 100%;
+  align-items: flex-end;
+}
+.field__control .row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 12px;
+}
+
+/* The selected section in the settings index is the same kind of state as the
+   selected row in the sidebar, so it takes the same treatment (accent tint and
+   a hairline ring), not a flat grey fill. */
+.settings-dialog .settingsindex__item[aria-selected='true'] {
+  background: color-mix(in srgb, var(--st-accent) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 15%, transparent);
+  color: var(--st-ink);
+}
+.settings-dialog .settingsindex__item {
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    color var(--st-t-control) var(--st-ease-standard),
+    box-shadow var(--st-t-control) var(--st-ease-standard);
+}
+
+/* --------------------------------------------------- 7. failures, quietly ---
+   An error card was a white box with a full-strength red rule around it — the
+   loudest border in the app, on the one surface a person is already worried
+   about. It takes the danger tint and a danger hairline instead, so it reads as
+   a flagged area rather than an alarm, and keeps the 14px surface radius. */
+.error-notice {
+  background: color-mix(in srgb, var(--st-danger) 4%, var(--st-surface));
+  border-color: color-mix(in srgb, var(--st-danger) 26%, transparent);
+  border-radius: var(--st-r-md);
+}
+.error-notice > svg {
+  color: var(--st-danger-text);
+}
+.error-notice details > summary {
+  color: var(--st-ink-muted);
+}
+
+/* ------------------------------------------------- 8. seams and scrollbars --
+   The working bar met the page with a full-strength `--st-line` rule in some
+   screens and a fade in others. One hairline now, so the bar reads as the top of
+   the same pane rather than as a separate strip.
+
+   Scrollbars: the thumb was `--st-line`, which on a white page is almost the
+   colour of the page. It is the ink at 14% instead — visible when you look for
+   it, never before. */
+.chat-toolbar,
+.main__head {
+  border-bottom-color: var(--st-hairline);
+}
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--st-ink) 14%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 12px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--st-ink) 26%, transparent);
+}
+* {
+  scrollbar-color: color-mix(in srgb, var(--st-ink) 20%, transparent) transparent;
+}
+[data-theme='dark'] *::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--st-ink) 16%, transparent);
+}
+[data-theme='dark'] * {
+  scrollbar-color: color-mix(in srgb, var(--st-ink) 22%, transparent) transparent;
+}
+
+/* ------------------------------------------------ 9. selection controls ----
+   A checkbox is drawn by the operating system — a 13px grey square with a blue
+   tick — and it sat in these screens beside capsule buttons, tinted toggles and
+   hairline cards as the one control that came from somewhere else. It is a
+   18px rounded square in the app's own accent now, with the tick drawn by the
+   element itself.
+
+   `appearance: none` is only applied where the element is not inside forced
+   colours, so a high-contrast theme still gets the system control. */
+@media not (forced-colors: active) {
+  input[type='checkbox'] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    flex: none;
+    margin: 0;
+    display: inline-grid;
+    place-items: center;
+    border: 1.5px solid color-mix(in srgb, var(--st-ink) 22%, var(--st-line));
+    border-radius: 6px;
+    background: var(--st-surface);
+    cursor: pointer;
+    transition:
+      background-color var(--st-t-micro) var(--st-ease-standard),
+      border-color var(--st-t-micro) var(--st-ease-standard);
+  }
+  input[type='checkbox']:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--st-ink) 26%, var(--st-line));
+  }
+  input[type='checkbox']:checked {
+    background: var(--st-accent);
+    border-color: var(--st-accent);
+  }
+  input[type='checkbox']:checked::after {
+    content: '';
+    width: 9px;
+    height: 5px;
+    margin-top: -2px;
+    border: 2px solid var(--st-accent-ink);
+    border-top: 0;
+    border-right: 0;
+    transform: rotate(-45deg);
+  }
+  input[type='checkbox']:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}
+
+/* "Other local models..." is part of the Model files card, beside "Storage settings"
+   (owner, 11-01), as a quiet text action. */
+.model-files__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.model-files__actions .other-models {
+  font-weight: 500;
+}
+
+/* ------------------------------------------- 10. the primary action, quiet ---
+   "New chat" is the one action on every screen, so it has to read as a control
+   without becoming the brightest object in the window.
+
+   Light mode used to give it the full #10b981 fill with the near-black accent
+   ink. The owner asked for white or green text instead, and white on #10b981 is
+   2.54:1 (it failed `npm run contrast`, passes 1 and 7 of the pass log). White
+   needs a deeper green behind it, but every other primary in light mode is the
+   tinted accent surface with deep-green text (New skill, Run now, Connect an
+   app...), so a deep solid button would be the one object in the app that
+   looked different. It takes the same tinted surface and green text as they do:
+   #086a4a on the 20% tint is 5.47:1, and the hover and edge come from the same
+   tokens, so there is one primary button, not two.
+
+   Dark mode takes the tinted accent material below, because a large saturated
+   fill on a near-black page is the one thing that actually glares (9.86:1
+   against the page; see interaction-guidelines §12).
+
+   Both carry the specular top edge, so the control is lit the same way as every
+   other surface in the shell. */
+.nav-new.st-btn--primary {
+  background: var(--st-accent-surface);
+  border: 1px solid var(--st-accent-surface-edge);
+  color: var(--st-accent-surface-ink);
+  box-shadow:
+    inset 0 1px 0 var(--st-specular),
+    var(--st-sh-card);
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    box-shadow var(--st-t-control) var(--st-ease-standard);
+}
+.nav-new.st-btn--primary:hover:not(:disabled) {
+  background: var(--st-accent-surface-hover);
+}
+.nav-new.st-btn--primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--st-accent) 36%, var(--st-surface));
+}
+[data-theme='dark'] .nav-new.st-btn--primary {
+  background: color-mix(in srgb, var(--st-accent) 22%, var(--st-surface));
+  border-color: color-mix(in srgb, var(--st-accent) 30%, transparent);
+  color: var(--st-accent-surface-ink);
+  box-shadow: inset 0 1px 0 var(--st-specular-soft);
+}
+[data-theme='dark'] .nav-new.st-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--st-accent) 30%, var(--st-surface));
+}
+
+/* -------------------------------------------- 11. the first place you type ---
+   The empty chat focuses its composer, and that focus was a 1.5px saturated ring
+   around a 740px box — the loudest thing on the first screen, before the reader
+   has done anything. The ring is now the accent at reading strength with a soft
+   halo outside the border, so the field reads as lit rather than outlined. */
+.chatcol:has(.first-chat-start) .st-composer:focus-within {
+  border-color: color-mix(in srgb, var(--st-accent) 42%, var(--st-line));
+  outline: 4px solid color-mix(in srgb, var(--st-accent) 9%, transparent);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------- 12. the switch ---
+   The switch's knob was `--st-ink-muted`: a grey disc on a grey track, so the
+   off state read as a disabled control, and the on state — a solid green track
+   with a near-white disc — belonged to a different design language than every
+   other control on the screen.
+
+   The knob is now the surface (and the ink in dark mode, where the surface is
+   darker than the track it sits on), with the same soft elevation the rest of
+   the control layer uses. The track keeps the full accent when on: a switch is
+   a small fill, well under the area that makes the accent glare. */
+.st-toggle {
+  border: 1px solid var(--st-hairline-strong);
+  background: color-mix(in srgb, var(--st-ink) 10%, var(--st-surface));
+}
+.st-toggle::after {
+  background: var(--st-surface);
+  border: 1px solid var(--st-hairline);
+  box-shadow: var(--st-sh-card);
+}
+.st-toggle[aria-checked='true'] {
+  background: var(--st-accent);
+  border-color: color-mix(in srgb, var(--st-accent) 72%, var(--st-ink));
+}
+.st-toggle[aria-checked='true']::after {
+  background: var(--st-surface);
+}
+[data-theme='dark'] .st-toggle::after,
+[data-theme='dark'] .st-toggle[aria-checked='true']::after {
+  background: var(--st-ink);
+}
+
+/* ------------------------------------------------ 13. empty states, one voice --
+   `Empty` drew a 48px grey tile with a navy glyph, while the chat's first screen
+   and the new Tasks state drew a tinted accent tile — three empty screens, two
+   languages. The shared component takes the tinted tile now, so every screen
+   that says "nothing here yet" says it the same way.
+
+   The Serving search field was 170px wide (a browser default) and its own
+   placeholder — "Client, model or request ID…" — was cut off mid-word. The
+   toolbar fields get a width that fits their label; the Tasks field keeps its
+   narrower one because that row also carries a view switch and a sort menu. */
+.empty {
+  gap: 14px;
+}
+.empty__icon {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--st-r-lg);
+  border: 1px solid color-mix(in srgb, var(--st-accent) 18%, transparent);
+  background: color-mix(in srgb, var(--st-accent) 7%, var(--st-surface));
+  color: var(--st-accent-text);
+}
+.section-toolbar > .st-input:not(.tasks-search) {
+  width: 236px;
+}
+
+/* ------------------------------------------------ 14. an empty screen ------
+   Tasks, with nothing in it, was a 72px grey clock hanging a third of the way
+   down a 270px box, a heading, and a sentence that pointed at a "+" in the far
+   corner. The block now fills most of the working area (so it reads as the
+   screen's state, not as the first item of a list), the clock is a tinted tile
+   in the same language as the chat's hero, and the advice is the action itself:
+   a labelled primary button, using the string the header's + already carries. */
+.tasks-empty {
+  min-height: clamp(360px, calc(100dvh - 240px), 900px);
+  gap: 18px;
+}
+.tasks-empty__art {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 2px;
+  border-radius: var(--st-r-lg);
+  border: 1px solid color-mix(in srgb, var(--st-accent) 18%, transparent);
+  background: color-mix(in srgb, var(--st-accent) 7%, var(--st-surface));
+  color: var(--st-accent-text);
+}
+.tasks-empty h2,
+.tasks-empty p {
+  margin: 0;
+}
+.tasks-empty p {
+  font-size: var(--st-fs-sm);
+}
+.tasks-empty .st-btn {
+  margin-top: 6px;
+}
+
+/* --------------------------------------------------- 15. the transcript -----
+   Three things a long conversation needed:
+
+   1. A question is a new turn, an answer is its continuation, so the space
+      before a question is larger than the space after it. Both were 22px.
+   2. A code block floated on the page with no edge of its own. In light mode the
+      dark fill did the separating; in dark mode the fill (#0a0c0e) was darker
+      than the page (#0e1113) by almost nothing, so the block read as a hole with
+      text in it. It is a panel now: a slightly raised fill in dark and a 12%
+      specular edge in both themes.
+   3. The block's header was 59px tall for one word and one button. It is a
+      40px bar with a 28px copy target. */
+.chat__inner > .st-msg--user:not(:first-child) {
+  margin-top: 10px;
+}
+.st-code {
+  border: 1px solid color-mix(in srgb, var(--st-code-ink) 12%, transparent);
+}
+[data-theme='dark'] {
+  --st-code-bg: color-mix(in srgb, var(--st-surface) 78%, var(--st-bg));
+}
+.st-code__head {
+  min-height: 40px;
+  padding: 4px 6px 4px 14px;
+}
+.st-code .st-btn--icon {
+  width: 28px;
+  height: 28px;
+}
+
+/* Reasoning is one quiet line until it is opened. Closed, the 2px rule was a
+   short stray bar beside the bulb — the quote mark of a block that is not
+   showing anything. The rule belongs to the opened state, where it marks the
+   passage that the answer came from. */
+.rz {
+  border-left: 0;
+  padding-left: 0;
+}
+.rz[open] {
+  border-left: 2px solid var(--st-hairline);
+  padding-left: 12px;
+}
+
+/* ------------------------------------------------- 16. the working bar ------
+   The chat header held the conversation title at 13px, a 26px bordered model
+   chip at 12px, and a borderless 36px "Subagents" control at 13px: three sizes
+   and two shapes for one row. The title is the row's subject and takes the
+   reading step; both dropdowns are quiet capsules of the same height, with the
+   border left to the hover state so the chrome stays behind the conversation. */
+.chat-toolbar__conversation h1,
+.main__head .main__title {
+  font-size: var(--st-fs-md);
+  letter-spacing: -0.01em;
+}
+/* One title step for the chat's "New conversation" and every screen header
+   (Tasks, Skills, Monitor, Serving, Model, Engine): --st-fs-md, 600. */
+.main__head .main__title { font-weight: 600; }
+.chat-model-badge.chat-model-picker,
+.chat-agents {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--st-r-pill);
+  background: transparent;
+  font-size: var(--st-fs-sm);
+  color: var(--st-ink-muted);
+  transition:
+    background-color var(--st-t-micro) var(--st-ease-standard),
+    border-color var(--st-t-micro) var(--st-ease-standard),
+    color var(--st-t-micro) var(--st-ease-standard);
+}
+.chat-model-badge.chat-model-picker:hover,
+.chat-model-badge.chat-model-picker[aria-expanded='true'],
+.chat-agents:hover,
+.chat-agents[aria-expanded='true'] {
+  background: var(--st-fill-hover);
+  border-color: var(--st-hairline);
+  color: var(--st-ink);
+}
+
+/* ----------------------------------------------------- 17. the composer ----
+   The row under the field had three heights in it (34px add, 33px choices,
+   42px Send) and two label sizes (12px choices, 13px Send). It is one 36px row
+   now, and the three text controls are capsules like every other control in the
+   app, so "Manual" and "Medium" read as settings rather than as captions. */
+.composer-choice {
+  height: calc(36px * var(--st-ui-scale));
+  padding: 6px 9px;
+  border-radius: var(--st-r-pill);
+  font-size: var(--st-fs-sm);
+  transition:
+    background-color var(--st-t-micro) var(--st-ease-standard),
+    color var(--st-t-micro) var(--st-ease-standard);
+}
+.composer-add {
+  width: calc(36px * var(--st-ui-scale));
+  height: calc(36px * var(--st-ui-scale));
+}
+/* Attach and dictate are peers in the same bar: the add button had a filled
+   circle and the microphone was a bare glyph, so one looked like a tool and the
+   other like an ornament. Both are 36px circles now. */
+.composer .st-composer__bar > .st-btn--icon {
+  width: calc(36px * var(--st-ui-scale));
+  height: calc(36px * var(--st-ui-scale));
+  background: var(--st-surface-2);
+}
+.composer .st-composer__bar > .st-btn--icon:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--st-ink) 8%, var(--st-surface));
+  color: var(--st-ink);
+}
+.composer-mic {
+  width: calc(36px * var(--st-ui-scale));
+  height: calc(36px * var(--st-ui-scale));
+  border-radius: var(--st-r-pill);
+  background: var(--st-surface-2);
+}
+.composer-mic:hover,
+.composer-mic[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--st-ink) 8%, var(--st-surface));
+}
+.composer-mic[aria-pressed='true'] {
+  color: var(--st-accent-text);
+}
+.composer__inner .st-btn--primary {
+  height: calc(36px * var(--st-ui-scale));
+}
+.folderchip__pick {
+  border-radius: var(--st-r-pill);
+}
+
+/* ------------------------------------------- 18. the conversation list -----
+   In a 268px sidebar a chat title had about 118px: a fixed 64px timestamp, a
+   6px unread dot and a 36px overflow button were all reserved whether or not
+   they were showing, so every title was cut after a dozen characters ("Which
+   Qwen size fit…").
+
+   The actions move out of the flow and appear over the row on hover, the time
+   takes only the width its words need, and the title gets the rest — roughly
+   180px, long enough to tell two chats apart. On hover the time and dot fade
+   out as the "…" fades in, so the same corner is never claimed twice.
+
+   The active workspace used to be a full-width grey band with its two actions
+   always visible. It is a stronger label instead (ink name, accent folder), and
+   the actions join it on hover. */
+.ws__row {
+  position: relative;
+}
+.ws__row.is-active {
+  background: transparent;
+}
+.ws__row.is-active .ws__name {
+  color: var(--st-ink);
+}
+.ws__row.is-active .ws__name .st-icon {
+  color: var(--st-accent-text);
+}
+.ws__row > .st-btn--icon {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 28px;
+  height: 28px;
+  translate: 0 -50%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+.ws__row > .st-btn--icon:nth-last-child(2) {
+  right: 30px;
+}
+.ws__row:hover > .st-btn--icon,
+.ws__row:focus-within > .st-btn--icon {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ws__session {
+  position: relative;
+}
+.ws__session .navsession {
+  position: relative;
+  padding-right: 22px;
+}
+.ws__session .navsession__time {
+  width: auto;
+  min-width: 0;
+  margin-left: auto;
+  padding-left: 8px;
+  white-space: nowrap;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+/* The unread dot takes a gutter of its own at the right edge, so every
+   timestamp ends on the same line whether or not its chat is unread. */
+.ws__session .navsession__unread {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  margin: 0;
+  translate: 0 -50%;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+/* A chat that has a turn running: a small ring turns BEFORE the chat's name (GUI feedback 2, item 6). It is an SVG circle, not a bordered box: a border-radius
+   on a 12px box at 90% interface size lands on fractional pixels and the turning corners looked square; a stroked circle with round caps stays round at
+   any size and any angle. The unread dot keeps the gutter at the right. Reduced motion holds it still (a quarter arc). */
+.ws__session .navsession__working {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--st-info);
+}
+.ws__session .navsession__working svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  shape-rendering: geometricPrecision;
+  animation: st-spin 1.1s linear infinite;
+  will-change: transform;
+}
+.navsession__track,
+.navsession__arc {
+  fill: none;
+  stroke-width: 2;
+}
+.navsession__track {
+  stroke: color-mix(in srgb, var(--st-info) 22%, transparent);
+}
+.navsession__arc {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-dasharray: 26 74;
+}
+.navsession[data-working] .navsession__title {
+  color: var(--st-ink);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws__session .navsession__working svg {
+    animation: none;
+  }
+}
+html[data-motion='reduced'] .ws__session .navsession__working svg {
+  animation: none;
+}
+.ws__session .session-overflow {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 28px;
+  height: 28px;
+  translate: 0 -50%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--st-t-micro) var(--st-ease-standard);
+}
+.ws__session:hover .session-overflow,
+.ws__session:focus-within .session-overflow {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws__session:hover .navsession__time,
+.ws__session:hover .navsession__unread {
+  opacity: 0;
+}
+
+/* ---------------------------------------------- 19. the overlays' backdrop --
+   The command palette and the first-run sheet dim the app through `.scrim`,
+   which was the one surface explicitly barred from carrying a material — so the
+   two overlays people meet most often were the only ones with a flat grey
+   backdrop, beside dialogs that frost. Same frost, same gate: the token falls
+   back to `none` under reduced transparency. */
+.scrim[data-open='true'] {
+  -webkit-backdrop-filter: var(--st-material-thin) !important;
+  backdrop-filter: var(--st-material-thin) !important;
+}
+
+
+/* ------------------------------------------------- 20. the palette foot ----
+   The palette explained nothing about what to do once a row was highlighted:
+   Enter and Escape were only in the muscle memory of people who already use
+   command palettes. A 34px footer names both, with the same key chips the rows
+   already use, and the list gets the flexible slot so the footer stays put. */
+.palette__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.palette__foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--st-hairline);
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+}
+.palette__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.modal__head {
+  border-bottom-color: var(--st-hairline);
+}
+
+
+/* ------------------------------------------------ 21. focus mode, actually --
+   Focus mode exists to leave the conversation alone. Its own note says the bar
+   keeps "what is loaded, what it is doing, and the way out", and the composer
+   was trimmed to "the field and Send" — but the chat toolbar (title, model
+   picker, Subagents, more) stayed at full height, and the composer still showed
+   attach, dictate, mode and effort. Two bars and five controls in a mode whose
+   purpose is removing chrome.
+
+   The bar already names the model and its state, so the toolbar goes; the field
+   and Send are what a reader needs, so the rest of the row goes with it. */
+.app[data-focus='true'] .chat-toolbar {
+  display: none;
+}
+.app[data-focus='true'] .composer-add,
+.app[data-focus='true'] .composer-mic,
+.app[data-focus='true'] .composer-choice,
+.app[data-focus='true'] .folderchip {
+  display: none;
+}
+
+
+/* ---------------------------------------------- 22. the screen header ------
+   The header row of a screen had 42px buttons beside the 40px family picker on
+   Models, so two controls on the same line sat two pixels out of alignment.
+   Header actions take the height of that picker; the 2px is small, but a header
+   is the one row where every edge is read at a glance. */
+.main__actions .st-btn {
+  height: calc(40px * var(--st-ui-scale));
+}
+
+
+/* ----------------------------------------------------- 23. soft seams ------
+   Form rows were divided by a full-strength soft line, which in a settings card
+   reads as a stack of boxes. The row is still separated, but by the same
+   hairline the rest of the shell uses. */
+.field {
+  border-top-color: var(--st-hairline);
+}
+
+
+/* ------------------------------------------- 24. one checkbox, everywhere ---
+   The Models screen carried its own checkbox rules (17px, 4px radius, white
+   tick) that beat the shared control, so a checkbox there was a different
+   object from the one in the first-run sheet and in a list. They are the same
+   control: 18px, 6px radius, accent fill, ink tick. */
+.native-image-reading input[type='checkbox'],
+.native-gpu-options input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 1.5px solid color-mix(in srgb, var(--st-ink) 22%, var(--st-line));
+  border-radius: 6px;
+  background: var(--st-surface);
+}
+.native-image-reading input[type='checkbox']::after,
+.native-gpu-options input[type='checkbox']::after {
+  width: 9px;
+  height: 5px;
+  margin-top: -2px;
+  border: 2px solid var(--st-accent-ink);
+  border-top: 0;
+  border-right: 0;
+  transform: rotate(-45deg);
+}
+.native-image-reading input[type='checkbox']:checked,
+.native-gpu-options input[type='checkbox']:checked {
+  background: var(--st-accent);
+  border-color: var(--st-accent);
+}
+
+
+/* ------------------------------------------- 25. expert hints, readable ----
+   The expert toggles carried their explanation at 11px — the smallest text in
+   the app, on the screen that asks the most of its reader. They take the normal
+   small step (13px). The "Read pictures" hint beside it ran the full card width
+   (~105 characters); it is capped at the reading measure so it wraps. */
+.native-toggle small {
+  font-size: var(--st-fs-sm);
+  line-height: 1.5;
+}
+.native-image-reading label > span > small {
+  display: block;
+  max-width: 68ch;
+  line-height: 1.55;
+}
+
+
+/* ---------------------------------------- 26. secondary actions, one shape --
+   The Storage tab's two headings carried bordered 34px buttons ("Change
+   folder", "Change directory"), while the same kind of secondary action on
+   Models is a ghost button. They agree now: text and icon, a hover wash, no
+   frame — the heading's subject stays the loudest thing on the row. */
+.storage-directory__heading .st-btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--st-ink-muted);
+}
+.storage-directory__heading .st-btn:hover:not(:disabled) {
+  background: var(--st-fill-hover);
+  border-color: transparent;
+  color: var(--st-ink);
+}
+
+
+/* ------------------------------------------------ 27. the settings pane ----
+   Two details in the panels that do not use the generic field rows:
+
+   1. Their intro sentence ran ~95 characters on one line while every other
+      prose block in the app sits at the 68ch measure. It wraps there now.
+   2. Tools drew its section headings at .h4 (16px) while Appearance draws the
+      same level at .h3 (18px); two panels, one dialog, two hierarchies. Tools
+      takes the 18px step. */
+.settings-models__intro {
+  max-width: 68ch;
+}
+.settings-tools .settings-section > h2 {
+  font-size: var(--st-fs-lg);
+}
+
+
+/* ---------------------------------------------- 28. the deliverable card ---
+   The file-type badge ("MD", "TS") was a white chip with a hairline, sitting a
+   few pixels from an Open button drawn the same way — two outline boxes, one of
+   which is clickable. The badge is a tinted label now, and the split Open
+   control takes capsule ends like every other control in the app. */
+.fcard__type {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--st-ink) 6%, var(--st-surface));
+  color: var(--st-ink-soft);
+}
+.fcard__open {
+  border-radius: var(--st-r-pill) 0 0 var(--st-r-pill);
+}
+.fcard__more {
+  border-radius: 0 var(--st-r-pill) var(--st-r-pill) 0;
+}
+
+
+/* The activity line is a disclosure trigger with no pointer feedback at all:
+   it looked like a caption. On hover the sentence and its chevron take the ink
+   colour, which is the same cue the sidebar's rows use without a capsule across
+   the full transcript width. */
+.act__line:hover:not(:disabled),
+.act__line:hover:not(:disabled) .act__chev {
+  color: var(--st-ink);
+}
+
+
+/* ------------------------------------------- 29. empty states in settings --
+   The Models panel's empty state drew a bare 26px glyph inside its dashed card,
+   while every other empty screen uses the tinted tile. The tile is drawn on the
+   existing <svg> (a padding box around the same 26px glyph), so the component's
+   markup is untouched. */
+.provider-empty > svg {
+  box-sizing: content-box;
+  padding: 15px;
+  margin-bottom: 4px;
+  border: 1px solid color-mix(in srgb, var(--st-accent) 18%, transparent);
+  border-radius: var(--st-r-lg);
+  background: color-mix(in srgb, var(--st-accent) 7%, var(--st-surface));
+  color: var(--st-accent-text);
+}
+
+
+/* ------------------------------------------- 30. two hover fills, one wash --
+   The edited-files rows and the Monitor tables hovered to an opaque grey
+   (--st-surface-2) while every other row in the app answers with a translucent
+   ink wash. On a card whose surface is not pure white the opaque fill reads as a
+   different material; the same wash is used here. */
+.edited__row:hover:not(:disabled) {
+  background: var(--st-fill-hover);
+}
+.st-table tbody tr:hover td {
+  background: var(--st-fill-hover);
+}
+
+
+/* The slash menu's selected row was an opaque surface-2 band on a material
+   surface. Selection is a wash here too: 7% ink, so it darkens whatever the
+   menu is sitting on and stays quieter than the accent icon. */
+.slashmenu__item[data-active='true'] {
+  background: color-mix(in srgb, var(--st-ink) 7%, transparent);
+}
+
+
+/* ------------------------------------------------ 31. hover that eases ----
+   The file cards' Open halves and the edited-file rows swapped their hover fill
+   instantly while every other row eases. The same micro duration as the rest of
+   the control layer, and still none when motion is reduced. */
+.fcard__open,
+.fcard__more,
+.edited__row {
+  transition:
+    background-color var(--st-t-micro) var(--st-ease-standard),
+    color var(--st-t-micro) var(--st-ease-standard);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fcard__open,
+  .fcard__more,
+  .edited__row {
+    transition: none;
+  }
+}
+
+
+/* ------------------------------------- 32. the same ease for every row ------
+   Rows and menu items swapped their hover fill instantly; the file cards now ease
+   (pass 77). The table cells, menu items and palette rows take the same micro
+   duration, so a pointer moving across the control layer never hits a snap. */
+.menu__item,
+.palette__row,
+.st-table tbody td {
+  transition:
+    background-color var(--st-t-micro) var(--st-ease-standard),
+    color var(--st-t-micro) var(--st-ease-standard);
+}
+@media (prefers-reduced-motion: reduce) {
+  .menu__item,
+  .palette__row,
+  .st-table tbody td {
+    transition: none;
+  }
+}
+
+
+/* ------------------------------------------- 33. a menu row's second line ----
+   The chat model picker draws each row as <span><strong>name</strong>
+   <small>GPU 1</small></span>, but the small was inline: the menu read
+   “Qwen3.8-Flash-NextGPU 1”. The caption takes its own muted line, the same
+   pattern the mode menu uses. */
+.menu__item > span > small {
+  display: block;
+  margin-top: 2px;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+  font-weight: 400;
+}
+
+
+/* The picker's rows are menuitemradio; the current model now carries the same
+   check the mode menu uses, pushed to the row's trailing edge. */
+.menu__check {
+  margin-left: auto;
+  flex: none;
+  color: var(--st-accent-text);
+}
+
+
+/* The composer menus' group headings (“Reasoning effort”, “Thinking budget”)
+   were 12px regular muted — body-sized text introducing 15px rows. They take the
+   same label step as the saved-settings and slash menus. */
+.composer-menu-heading {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--st-ink-muted);
+}
+
+
+/* Provider rows carried their icon as a bare 20px glyph while identity rows
+   elsewhere sit in a small tinted tile. The tile is drawn on the svg's padding
+   box, so the component markup is untouched. */
+.provider-card svg {
+  box-sizing: content-box;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--st-surface-2);
+  color: var(--st-ink-soft);
+}
+
+
+/* The task board's columns were top-aligned at their content height, so an
+   empty board showed four cards of three different heights. A board reads as
+   columns: they share the row's height and their empty states line up. */
+.board {
+  align-items: stretch;
+}
+
+
+/* The dashboard's “Favorite model” is the only stat that can be longer than its
+   tile. Values are single-line ellipsed; the model may use two lines at a hyphen
+   rather than losing its identity to “Qwen3.8-Flash-…”. */
+.usage-stats > div:last-child dd {
+  white-space: normal;
+  text-overflow: clip;
+  line-height: 1.2;
+  padding-top: 2px;
+}
+
+/* ------------------------------------------------ 17. the motion system -----
+   One scale (app.css section 1: micro 100, control 160, local 240, surface 320,
+   choreo 460ms; standard / enter / exit curves) and three habits, so the app
+   answers a touch the same way everywhere:
+
+   - a control that is pressed gives a little (a 3% scale, micro time);
+   - a surface that appears arrives from the side it belongs to, decelerating,
+     and leaves faster than it came (enter = local/surface, exit = control);
+   - a disclosure opens by growing and fading in, never by snapping.
+
+   Everything animates transform, opacity, or one small block-size (a disclosure),
+   never a transcript's layout, so streaming text and scrolling cost nothing
+   extra on a weak GPU while a heavy model is running beside the app. The
+   reduced-motion gate zeroes the durations (tokens) and the distances below. */
+:root {
+  --st-press-scale: 0.97;
+  --st-panel-shift: 28px;
+}
+.st-btn {
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    border-color var(--st-t-control) var(--st-ease-standard),
+    color var(--st-t-control) var(--st-ease-standard),
+    box-shadow var(--st-t-control) var(--st-ease-standard),
+    transform var(--st-t-micro) var(--st-ease-standard);
+}
+.st-btn:not(:disabled):active {
+  transform: scale(var(--st-press-scale));
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --st-press-scale: 1; --st-panel-shift: 0px; }
+}
+
+/* Reasoning ("Thought for 38s"): the summary is a control (hover wash, press),
+   the chevron turns, and the passage grows open and fades in — it used to jump.
+   The rule that marks the passage belongs to the body, so the line above it
+   never moves. Where ::details-content is not supported it simply opens. */
+.rz > summary {
+  width: fit-content;
+  max-width: 100%;
+  margin-left: -8px;
+  padding: 2px 8px;
+  border-radius: var(--st-r-pill);
+  transition:
+    background-color var(--st-t-control) var(--st-ease-standard),
+    transform var(--st-t-micro) var(--st-ease-standard);
+}
+.rz > summary:hover {
+  background: var(--st-fill-hover);
+}
+.rz > summary:active {
+  background: var(--st-fill-press);
+  transform: scale(var(--st-press-scale));
+}
+.rz > summary:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--st-ink-muted);
+}
+.rz__chev {
+  transition: transform var(--st-t-local) var(--st-ease-standard);
+}
+.rz[open] {
+  border-left: 0;
+  padding-left: 0;
+}
+.rz__body {
+  margin-left: 2px;
+  padding-left: 12px;
+  border-left: 2px solid var(--st-hairline);
+}
+@supports (interpolate-size: allow-keywords) {
+  .rz::details-content {
+    block-size: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition:
+      content-visibility var(--st-t-surface) allow-discrete,
+      block-size var(--st-t-surface) var(--st-ease-standard),
+      opacity var(--st-t-local) var(--st-ease-standard);
+  }
+  .rz[open]::details-content {
+    block-size: auto;
+    opacity: 1;
+  }
+}
+
+/* Code blocks: a block is a figure inside the answer, so it gets room before and
+   after, and it is lighter than the text around it — a 34px bar, 10px of padding,
+   code at the reading step below the body (12px minimum at the default size: pass 37's
+   floor stays; 13px against 16px body at the larger sizes). */
+.st-bubble .st-code {
+  margin: 16px 0 20px;
+}
+.st-bubble .st-code:first-child {
+  margin-top: 0;
+}
+.st-bubble .st-code:last-child {
+  margin-bottom: 0;
+}
+.st-code__head {
+  min-height: 34px;
+  padding-block: 2px;
+}
+.st-code pre {
+  padding: 10px 14px;
+  line-height: 1.5;
+}
+.st-code .st-btn--icon {
+  width: 28px;
+  height: 28px;
+}
+.st-code .st-btn--icon[data-open] {
+  color: var(--st-accent);
+  background: color-mix(in srgb, var(--st-code-ink) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-accent) 45%, transparent);
+}
+
+/* The sidebar preview arrives from the right with a rise and fade, the
+   chosen file's content crossfades when you switch tabs, and a closed panel
+   leaves the same way (a bare shell over the column it vacated; the page itself
+   is already gone, so nothing heavy is animated). Both take the 460 ms step of
+   the motion scale (`--st-t-choreo`), slower than a menu or a drawer so the
+   panel arrives and leaves calmly, with the same easings as before; reduced
+   motion makes the step 1 ms. */
+.chatsplit .artifact-panel {
+  animation: st-panel-in var(--st-t-choreo) var(--st-ease-enter) both;
+}
+.chatsplit .artifact-panel[data-leaving] {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(48%, 640px);
+  z-index: 3;
+  pointer-events: none;
+  animation: st-panel-out var(--st-t-choreo) var(--st-ease-exit) both;
+}
+.artifact-content {
+  animation: st-enter var(--st-t-control) var(--st-ease-enter) both;
+  --st-from-y: 4px;
+}
+@keyframes st-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--st-panel-shift));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes st-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--st-panel-shift));
+  }
+}
+.st-code__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ------------------------------------------- 18. "This computer" on Models ----
+   Free graphics memory and free RAM come first (real readings, a bar that is
+   filled by what is in use), a loaded model gets its own tinted block with what
+   it takes, and the SSD appears only in that block or in the fit line when the
+   model does not fit in memory. */
+.pc-label {
+  margin: 0;
+  font-size: var(--st-fs-xs);
+  font-weight: 600;
+  color: var(--st-ink-muted);
+}
+.pc-free {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pc-free .pc-meter__track i {
+  width: 100%;
+  transform-origin: left center;
+  transition: transform var(--st-t-surface) var(--st-ease-standard);
+}
+.pc-meter[data-low] .pc-meter__track i {
+  background: var(--st-warn);
+}
+
+
+/* -------------------------------------------- 27. GUI feedback 2 (11-02) ----
+   Item 2: a checkbox's tick is white on the accent fill in light mode (it was the dark ink: a black tick on green); dark mode keeps the dark ink on its
+   lighter green. Item 4: a checkbox that is locked while a load runs keeps its tick at nearly full strength, so a locked "on" still reads as on. */
+:root { --st-check-ink: #ffffff; }
+[data-theme='dark'] { --st-check-ink: var(--st-accent-ink); }
+@media not (forced-colors: active) {
+  input[type='checkbox']:checked::after,
+  .native-image-reading input[type='checkbox']::after,
+  .native-gpu-options input[type='checkbox']::after {
+    border-color: var(--st-check-ink);
+  }
+  input[type='checkbox']:disabled:checked,
+  .native-image-reading input[type='checkbox']:disabled:checked {
+    opacity: 0.8;
+  }
+}
+
+/* Item 8: a run that made many files is one compact block: the two folders, then a count that opens the list. Same border, radius and hover wash as the
+   "Edited files" block it stands in for; the list scrolls inside the block so a long run never pushes the chat down. */
+.fsum {
+  margin: 10px 0;
+  border: 1px solid var(--st-line);
+  border-radius: var(--st-r-md);
+  background: var(--st-surface);
+  overflow: hidden;
+}
+.fsum__places {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.fsum__places li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px 10px 16px;
+  font-size: var(--st-fs-sm);
+}
+.fsum__places li + li {
+  border-top: 1px solid var(--st-line-soft);
+}
+.fsum__places .st-icon {
+  flex: none;
+  color: var(--st-icon);
+}
+.fsum__label {
+  flex: none;
+  color: var(--st-ink-muted);
+}
+.fsum__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--st-ink);
+}
+.fsum__open {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--st-line);
+  border-radius: 8px;
+  background: var(--st-surface);
+  color: var(--st-ink);
+  font: 600 var(--st-fs-sm) var(--st-font);
+  cursor: pointer;
+  transition: background-color var(--st-t-micro) var(--st-ease-standard);
+}
+.fsum__open:hover {
+  background: var(--st-fill-hover);
+}
+.fsum__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 16px;
+  border: 0;
+  border-top: 1px solid var(--st-line-soft);
+  background: transparent;
+  color: var(--st-ink-soft);
+  font: inherit;
+  font-size: var(--st-fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--st-t-micro) var(--st-ease-standard);
+}
+.fsum__toggle:first-child {
+  border-top: 0;
+}
+.fsum__toggle:hover {
+  background: var(--st-fill-hover);
+}
+.fsum__toggle > span:not(.pm) {
+  font-variant-numeric: tabular-nums;
+}
+.fsum__toggle .pm {
+  margin-left: auto;
+}
+.fsum__chev {
+  flex: none;
+  color: var(--st-icon);
+  transform: rotate(-90deg);
+  transition: transform var(--st-t-local) var(--st-ease-standard);
+}
+.fsum__toggle[aria-expanded='true'] .fsum__chev {
+  transform: none;
+}
+.fsum__open:focus-visible,
+.fsum__toggle:focus-visible,
+.fsum__file:focus-visible {
+  outline: 2px solid var(--st-accent);
+  outline-offset: -2px;
+}
+.fsum__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: min(320px, 50vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--st-line-soft);
+}
+.fsum__file {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--st-ink);
+  font: inherit;
+  font-size: var(--st-fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.fsum__file:hover {
+  background: var(--st-fill-hover);
+}
+.fsum__type {
+  flex: none;
+  min-width: 34px;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+  font-weight: 700;
+}
+.fsum__fname {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fsum__dir {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+}
+.fsum__size {
+  flex: none;
+  margin-left: auto;
+  color: var(--st-ink-muted);
+  font-size: var(--st-fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .fsum__chev,
+  .fsum__open,
+  .fsum__toggle {
+    transition: none;
+  }
+}

@@ -79,3 +79,24 @@ export const ANSWER_NOTICE: Record<string, string> = {
 /** Where the standard setup is itself not repeatable (RTX 3060 in low-RAM mode, Arc A750), an exact setting cannot promise identical answers. */
 export const answerNotice = (cls?: string, defaultRepeatable?: boolean) =>
   cls === 'exact' && defaultRepeatable === false ? 'Answers can differ from run to run on this PC even with the standard setup; this setting does not add to that.' : ANSWER_NOTICE[cls ?? ''] ?? '';
+
+/**
+ * Why Start tuning is greyed out (#4804). Every condition that disables it, in the order they are checked:
+ *  - 'other'      another operation (a download, a load, a first-run step) is running: tuning unloads the model, so it waits;
+ *  - 'loading'    the saved tunings of this model have not been read yet (the first read after a download can take a few seconds);
+ *  - 'unreadable' reading them failed, so there is nothing to tune from until the window is opened again;
+ *  - 'busy'       the last click is still being carried out: a moment, so it gets no sentence;
+ * and null when the button works. Only the first three are long enough for a person to wonder, so only they have words.
+ */
+export type TuneBlock = 'other' | 'loading' | 'unreadable' | 'busy' | null;
+export function tuneStartBlock(input: { busy: boolean; otherRunning: boolean; status: unknown; error: string }): TuneBlock {
+  if (input.otherRunning) return 'other';
+  if (!input.status) return input.error ? 'unreadable' : 'loading';
+  if (input.busy) return 'busy';
+  return null;
+}
+export const TUNE_BLOCK_TEXT: Record<'other' | 'loading' | 'unreadable', string> = {
+  other: 'Finish the current operation first.',
+  loading: 'Strata is still checking this model for saved tunings. Start tuning works as soon as that is done.',
+  unreadable: 'Strata could not read the tuning details for this model, so tuning cannot start. Close this window and open it again.',
+};

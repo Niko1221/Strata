@@ -44,7 +44,7 @@ TYPES = {0: ("F32", 1, 4), 1: ("F16", 1, 2), 8: ("Q8_0", 32, 34), 30: ("BF16", 1
          10: ("Q2_K", 256, 84), 11: ("Q3_K", 256, 110), 12: ("Q4_K", 256, 144), 13: ("Q5_K", 256, 176),
          14: ("Q6_K", 256, 210), 16: ("IQ2_XXS", 256, 66), 17: ("IQ2_XS", 256, 74), 18: ("IQ3_XXS", 256, 98),
          20: ("IQ4_NL", 32, 18), 21: ("IQ3_S", 256, 110), 22: ("IQ2_S", 256, 82), 23: ("IQ4_XS", 256, 136),
-         # the two 1.x-bit types the IST-DAS 2.00 set uses: device kernels since 2026-10-23 (ds4_iq.cu), so packs with
+         # the two 1.x-bit types the ISTA-DAS 2.00 set uses: device kernels since 2026-10-23 (ds4_iq.cu), so packs with
          # them load and run entirely on the card.  (The integer metadata tensors - engram_token_map and the like - stay
          # OUT of this table on purpose: the pack tool skips a tensor whose type it does not know, which is exactly right
          # for them, and adding them here made them "unmapped" instead.)
@@ -141,7 +141,7 @@ LAYER = {
     "engram_embd.weight": "engram.embed.weight",
     "engram_kv.weight": "engram.wkv.weight",
     "engram_gate.weight": "engram.gate.weight",          # q_weight * k_weight, folded by the converter
-    # the IST-DAS sets keep q and k apart (the engine multiplies them at load) and the projection as engram_wkv
+    # the ISTA-DAS sets keep q and k apart (the engine multiplies them at load) and the projection as engram_wkv
     "engram_wkv.weight": "engram.wkv.weight",
     "engram_q.weight": "engram.q_weight",
     "engram_k.weight": "engram.k_weight",
@@ -150,7 +150,7 @@ GLOBAL = {"token_embd.weight": "embed.weight", "output_norm.weight": "norm.weigh
 
 
 ALIASES = {
-    # the same quantity under another key: llama.cpp's / unsloth's spelling -> the alternative (the IST-DAS sets write
+    # the same quantity under another key: llama.cpp's / unsloth's spelling -> the alternative (the ISTA-DAS sets write
     # the engine's own names into the GGUF and keep deepseek41.engram_* instead of the dotted Engram keys)
     "attention.kv_source_layers": ("kv_source_layer_ids",),
     "attention.indexer.source_layers": ("index_source_layer_ids",),
@@ -280,7 +280,7 @@ def apply_source_config(kv: dict, config: dict):
 
 
 def int_tensors_to_engram(gs, kv: dict):
-    """The IST-DAS sets carry the Engram's hash parameters as integer tensors of the first shard (engram_token_map I32,
+    """The ISTA-DAS sets carry the Engram's hash parameters as integer tensors of the first shard (engram_token_map I32,
     engram_primes / engram_offsets / engram_multipliers I64, one row a layer) instead of metadata: read them into the
     engram.* keys this pack reads (when the metadata does not have them already)."""
     a = kv.get("general.architecture")
@@ -299,7 +299,7 @@ def int_tensors_to_engram(gs, kv: dict):
             with g.path.open("rb") as f:
                 f.seek(g.data_start + off)
                 kv["%s.engram.%s" % (a, key)] = list(struct.unpack("<%d%s" % (n, fmt), f.read(n * sz)))
-    # the IST-DAS spelling of the Engram's scalar keys -> the dotted ones this pack reads
+    # the ISTA-DAS spelling of the Engram's scalar keys -> the dotted ones this pack reads
     for dotted, theirs in (("engram.layers", "engram.layer_ids"), ("engram.max_ngram_size", "engram_max_ngram_size"),
                            ("engram.head_count", "engram_n_heads"), ("engram.head_dim", "engram_head_dim"),
                            ("engram.pad_token_id", "engram_pad_token_id"),
@@ -361,6 +361,24 @@ def is_engram_file(g) -> bool:
     """The Engram table's GGUF: general.architecture 'engram' (the first release) or 'deepseek41-engram' (ISTA-DASLab's final files)."""
     arch = str(g.kv.get("general.architecture") or "")
     return arch == "engram" or arch.endswith("-engram")
+
+
+def engram_is_last_shard(explicit: str | None, split: int, shards: list) -> int:
+    """1 when the model's split ends in the Engram table: ISTA-DASLab's six-shard sets (llama.cpp b11870 and newer) declare split.count 6 with five
+    model shards, and the sixth is the Engram file shared by all their sets, passed as --engram (a single file) instead of in --shards.  It counts only
+    when it is one file that is not already among the shards and is either the Engram of the pinned four-shard release (general.architecture
+    deepseek41-engram: the same tables, so it serves the six-shard shards too) or the converted one: no general.architecture, the same split as number
+    count-1, exactly one tensor, per_layer_token_embd.weight.  Else 0."""
+    if not explicit or len(shards) != split - 1:
+        return 0
+    path = pathlib.Path(explicit).expanduser().resolve()
+    if not path.is_file() or any(os.path.samefile(path, p) for p in shards):
+        return 0
+    g = Gguf(path)
+    if is_engram_file(g):
+        return 1
+    return int(int(g.kv.get("split.count", 0)) == split and int(g.kv.get("split.no", -1)) == split - 1
+               and [t[0] for t in g.tensors] == ["per_layer_token_embd.weight"])
 
 
 def model_kv(gs):
@@ -458,17 +476,18 @@ def main() -> int:
     ap.add_argument("--tq-layers", help="only these layers (comma list) of the --tq-experts folders")
     ap.add_argument("--drafter", help="the DSpark drafter's .json (drafter_pack.py's; default <model>/../dspark/dspark.json)")
     ap.add_argument("--dspark-noise-token", type=int, help="the drafter's noise token id (dspark_noise_token_id), for a quant "
-                                                          "whose GGUF does not state it (the IST-DAS sets): DeepSeek-V4.1-Flash's is 128799")
+                                                          "whose GGUF does not state it (the ISTA-DAS sets): DeepSeek-V4.1-Flash's is 128799")
     ap.add_argument("--dspark-markov-rank", type=int, help="the markov head's rank (dspark_markov_rank); default: the drafter's "
                                                           "markov tensor shape")
     ap.add_argument("--skip-tensors", help="a regex of the GGUF's tensor names to leave out (a --dense-override supplies them "
                                            "instead): e.g. attn_output_a, for a quant that stores the grouped wo_a as one "
                                            "interleaved 3-D tensor instead of o_groups matrices")
-    ap.add_argument("--engram", help="the folder of the Engram tables' GGUF set, for a quant that leaves them out "
+    ap.add_argument("--engram", help="the folder of the Engram tables' GGUF set, or the one Engram file (ISTA-DASLab's six-shard sets: it is their "
+                                     "sixth shard, so --shards names only the five others), for a quant that leaves them out "
                                      "(default: <model>/../Engram, when it is whole)")
     ap.add_argument("--engram-meta", help="a GGUF whose metadata carries the Engram's hash parameters (llama.cpp's ple.* / "
                                           "engram.*: layers, head offsets, vocab sizes, multipliers, token map), for a quant whose own "
-                                          "shards leave them out (the IST-DAS sets name the Engram only in deepseek41.engram_* keys and "
+                                          "shards leave them out (the ISTA-DAS sets name the Engram only in deepseek41.engram_* keys and "
                                           "carry no token map); the tables themselves still come from --engram")
     ap.add_argument("--shards", nargs="+", help="the GGUF's files in --model (default: every .gguf there - one "
                                                 "model's; the setup names them: a folder may hold an earlier layout)")
@@ -492,12 +511,13 @@ def main() -> int:
     if a.config_json:
         apply_source_config(kv, json.loads(pathlib.Path(a.config_json).expanduser().read_text()))
     split = int(kv.get("split.count", 1))
-    if split != len(shards):
+    here = len(shards) + engram_is_last_shard(a.engram, split, shards)
+    if split != here:
         counts = sorted({m.group(1) for m in (re.search(r"-of-(\d{5})\.gguf$", p.name) for p in shards) if m})
-        raise SystemExit("%s: %d of the %d shards are here" % (model, len(shards), split) if len(counts) < 2 else
+        raise SystemExit("%s: %d of the %d shards are here" % (model, here, split) if len(counts) < 2 else
                          "%s: the shards of more than one GGUF split (-of-%s): name the model's own with --shards" %
                          (model, ", -of-".join(counts)))
-    # a quant whose shards leave the Engram's metadata out (the IST-DAS sets: deepseek41.engram_* only, no token map):
+    # a quant whose shards leave the Engram's metadata out (the ISTA-DAS sets: deepseek41.engram_* only, no token map):
     # the hash parameters come from --engram-meta, a GGUF of the same model that still has llama.cpp's ple.* / engram.*
     if a.engram_meta:
         mg = Gguf(pathlib.Path(a.engram_meta).expanduser().resolve())
@@ -516,12 +536,12 @@ def main() -> int:
     arch = kv["general.architecture"]
     int_tensors_to_engram(gs, kv)
     layers = kv.get("%s.engram.layers" % arch, [])
-    # An official IST-DAS set (helcig/tmp-oct26-2) carries the Engram gate/kv as their own k, q, wkv tensors and a 3-D attn_output_a, and the
+    # An official ISTA-DAS set (helcig/tmp-oct26-2) carries the Engram gate/kv as their own k, q, wkv tensors and a 3-D attn_output_a, and the
     # plain recipe (--engram --engram-meta --dspark-gguf, no --skip-tensors, no --dense-override) packs them as they are.  Rebuilding them
     # (engram_fold.py + a wo_a override) gave a pack with garbage output on the final 2.00 set (P2003, 2026-10-23), and the pack still loads,
     # so it fails in the user's chat, not at install.  Say so before it is built.
     if any(n.endswith(".engram_wkv.weight") for n in have) and (a.skip_tensors or a.dense_override):
-        sys.stderr.write("pack_gguf: WARNING: this looks like an official IST-DAS set (it has engram_k/q/wkv tensors) and --skip-tensors / "
+        sys.stderr.write("pack_gguf: WARNING: this looks like an official ISTA-DAS set (it has engram_k/q/wkv tensors) and --skip-tensors / "
                          "--dense-override are used.  The official sets pack correctly WITHOUT them; a pack rebuilt with them produced "
                          "garbage text on the final 2.00 set.  Drop both unless you are testing exactly that.\n")
 
@@ -585,7 +605,7 @@ def main() -> int:
                 continue
             if typ not in TYPES:
                 if typ in (24, 25, 26, 27, 28):   # I8 / I16 / I32 / I64 / F64: metadata carried as tensors, not weights
-                    skipped.append("%s (type %d)" % (name, typ))   # (the IST-DAS sets' engram_token_map.weight)
+                    skipped.append("%s (type %d)" % (name, typ))   # (the ISTA-DAS sets' engram_token_map.weight)
                     continue
                 raise SystemExit("%s: %s has ggml type %d, which the engine does not read" % (g.path.name, name, typ))
             tname, per, bpb = TYPES[typ]
@@ -608,7 +628,7 @@ def main() -> int:
             if ck.endswith(".attn.wo_a.slice"):
                 # [o_groups * o_lora][in] -> o_groups entries of [o_lora][in] (group g: rows g * o_lora ..)
                 n = int(kv["%s.attention.output_group_count" % kv["general.architecture"]])
-                if len(shape) == 3 and shape[0] == n:   # (the IST-DAS sets: [groups][o_lora][in] in one tensor)
+                if len(shape) == 3 and shape[0] == n:   # (the ISTA-DAS sets: [groups][o_lora][in] in one tensor)
                     shape = [shape[0] * shape[1], shape[2]]
                 if len(shape) != 2 or shape[0] % n:
                     raise SystemExit("%s: %s %s does not split in %d groups" % (g.path.name, name, shape, n))
@@ -714,7 +734,7 @@ def main() -> int:
         dg = Gguf(ds_path)
         if dg.kv.get("general.architecture") != "dflash":
             raise SystemExit("%s: not a DSpark (dflash) GGUF" % ds_path)
-        # the engine's dspark.* geometry: a quant built by another tool (the IST-DAS sets) leaves it out, the drafter
+        # the engine's dspark.* geometry: a quant built by another tool (the ISTA-DAS sets) leaves it out, the drafter
         # carries all of it except the noise token (a model constant) and the markov head's rank (the tensor's shape)
         for k, dk in (("block_size", "block_size"), ("expert_count", "expert_count"),
                       ("expert_used_count", "expert_used_count"), ("target_layers", "target_layers")):

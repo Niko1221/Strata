@@ -1,0 +1,8 @@
+{
+ "r3_01": "Necesita actualizar el motor",
+ "r3_02": "puede ir más lento",
+ "r3_03": "Este contexto ocupa unos {0} GB de memoria gráfica y deja poco espacio para el modelo en esta tarjeta. Strata lo intentará; si no arranca, elige un contexto más corto.",
+ "r3_04": "Trabajando · {0}",
+ "r3_05": "{0} chats trabajando",
+ "r3_06": "{0} líneas"
+}

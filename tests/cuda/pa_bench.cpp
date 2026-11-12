@@ -103,6 +103,23 @@ int main(int argc, char** argv) {
     for (float x : out) ss += (double) x * x;
     std::printf("prompt attention: median %.3f ms (min %.3f) over %d; output hash %016llx, rms %.6g\n", ms[ms.size() / 2],
                 ms[0], reps, (unsigned long long) h, std::sqrt(ss / (double) out.size()));
+    if (const char* rf = std::getenv("PA_BENCH_REF")) {   // another variant's PA_BENCH_OUT: relative RMS and worst difference
+        std::vector<float> ref(out.size());
+        if (std::FILE* g = std::fopen(rf, "rb")) {
+            const size_t got = std::fread(ref.data(), 4, ref.size(), g);
+            std::fclose(g);
+            if (got == ref.size()) {
+                double e2 = 0, r2 = 0, worst = 0;
+                for (size_t i = 0; i < out.size(); ++i) {
+                    const double d = (double) out[i] - ref[i];
+                    e2 += d * d; r2 += (double) ref[i] * ref[i];
+                    worst = std::max(worst, std::fabs(d));
+                }
+                std::printf("against %s: relative RMS %.3e, worst |diff| %.3e (reference rms %.4g)\n", rf, std::sqrt(e2 / std::max(r2, 1e-30)),
+                            worst, std::sqrt(r2 / (double) out.size()));
+            } else std::printf("PA_BENCH_REF %s: short file\n", rf);
+        }
+    }
     if (const char* o = std::getenv("PA_BENCH_OUT")) {   // the output, for an accuracy comparison of two variants
         if (std::FILE* g = std::fopen(o, "wb")) { std::fwrite(out.data(), 4, out.size(), g); std::fclose(g); }
     }

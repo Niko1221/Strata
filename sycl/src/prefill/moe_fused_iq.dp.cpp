@@ -21,9 +21,11 @@
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/moe_fused_iq.hpp"
+#include "strata/core/geometry.hpp"
 
 #include "ggml.h"
 
@@ -1257,7 +1259,7 @@ void launch(int ww, unsigned grid, const Batch &b, const NativeGeom &g,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                s->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     auto iq2xxs_grid_ptr_ct1 = iq2xxs_grid.get_ptr();
                     auto iq2xs_grid_ptr_ct1 = iq2xs_grid.get_ptr();
                     auto iq2s_grid_ptr_ct1 = iq2s_grid.get_ptr();
@@ -1306,7 +1308,7 @@ void launch(int ww, unsigned grid, const Batch &b, const NativeGeom &g,
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                s->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     auto iq2xxs_grid_ptr_ct1 = iq2xxs_grid.get_ptr();
                     auto iq2xs_grid_ptr_ct1 = iq2xs_grid.get_ptr();
                     auto iq2s_grid_ptr_ct1 = iq2s_grid.get_ptr();
@@ -1363,6 +1365,8 @@ bool native_supported(int gu_type, int d_type) {
         const char* v = std::getenv("STRATA_PF_FUSED_NATIVE");
         return v != nullptr && v[0] == '0';
     }();
+    // GU_ROWS_K / D_ROWS_K, the 1280 / 2560 weight-row counts and the 2560-wide output rows are Flash-Next's: another compiled shape keeps MMQ
+    if (strata::core::kCompiledGeometry.n_embd != GU_ROWS_K || strata::core::kCompiledGeometry.n_ff != D_ROWS_K) return false;
     return !off && requested() && gu_covered(gu_type) && d_covered(d_type) && dev_info().ok;   // opt-in (=1)
 }
 
@@ -1373,8 +1377,8 @@ void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, v
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<
                     dpct_kernel_name<class quant_act_nat_kernel_7d58c5>>(
                     sycl::nd_range<3>(sycl::range(1, 1, blocks(nblk, 8)) *
                                           sycl::range(1, 1, 256),

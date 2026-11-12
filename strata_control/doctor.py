@@ -7,6 +7,7 @@ import io
 import json
 import os
 import platform
+from strata_control import sysinfo
 import re
 import shutil
 import subprocess
@@ -40,6 +41,16 @@ def _location(raw: str, cfg: dict, config_path: Path) -> Path:
         return value
     cwd = cfg.get("cwd")
     return (Path(cwd) if isinstance(cwd, str) and cwd else config_path.parent) / value
+
+
+def _drafter_is_dflash2(cfg: dict) -> bool:
+    """Does this run config's drafting choice mean DFlash2 on this computer (Auto included)? Never raises."""
+    try:
+        from strata_control import drafting
+        backend, archs = drafting.detect_hardware()
+        return cfg.get("mtp") is not False and drafting.choice_of(cfg.get("drafting"), model_name=cfg.get("model_name"), backend=backend, archs=archs) == "dflash2"
+    except Exception:                                    # noqa: BLE001 - unknown means the MTP, which stays required
+        return False
 
 
 def _item(name: str, path: Path, kind: str, *, required: bool = True) -> dict:
@@ -86,7 +97,7 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
     try:
         result = subprocess.run(
             [tool, "--query-gpu=index,name,uuid,memory.total,driver_version",
-             "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5, check=False,
+             "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5, check=False,
         )
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None, "nvidia-smi could not complete within five seconds"
@@ -100,7 +111,7 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
             if len(row) != 5 or len(cards) >= 64:
                 raise ValueError("invalid field count")
             index_raw, name, uuid, memory_raw, driver = [part.strip() for part in row]
-            unified = memory_raw == "[N/A]" and platform.machine().lower() in ("aarch64", "arm64")   # a DGX Spark's GB10: no separate graphics memory
+            unified = memory_raw == "[N/A]" and sysinfo.machine().lower() in ("aarch64", "arm64")   # a DGX Spark's GB10: no separate graphics memory
             if not (re.fullmatch(r"[0-9]{1,4}", index_raw)
                     and (unified or re.fullmatch(r"[0-9]{1,9}", memory_raw))
                     and 0 <= int(index_raw) <= 1023 and (unified or int(memory_raw) > 0)
@@ -205,7 +216,9 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
                 except ValueError:
                     pass
             kind = "file"
-        components.append(_item(arg.lstrip("-"), _location(raw, cfg, config_path), kind))
+        # The MTP layer is one of two drafters, never both: a model whose drafter is DFlash2 has no layer on disk, and the run config keeps `--mtp <folder>` for a
+        # later switch to the MTP. Its absence then does not make the model unusable (strata_control/drafting.py loads the drafter that is there).
+        components.append(_item(arg.lstrip("-"), _location(raw, cfg, config_path), kind, required=not (arg == "--mtp" and _drafter_is_dflash2(cfg))))
 
     vision = cfg.get("vision")
     if isinstance(vision, dict):

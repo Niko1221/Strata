@@ -11,6 +11,7 @@ using strata::ds4::copy_all_fits;
 using strata::ds4::attn_slab_rows;
 using strata::ds4::staging_ring_mb;
 using strata::ds4::store_gpu_shares_ram;
+using strata::ds4::profile_size_fits;
 
 static int fails = 0;
 #define CHECK_EQ(a, b)                                                                              \
@@ -44,6 +45,13 @@ int main() {
     CHECK_EQ(experts_per_word(-1, 3 * 32 * GiB, 6, false, true), 5);
     CHECK_EQ(experts_per_word(-1, 4 * 32 * GiB, 6, false, false), 6);   // the same cards when they hold under half (or are not RDNA4): the model's 6
     CHECK_EQ(experts_per_word(6, 4 * 32 * GiB, 6, false, true), 6);     // --experts 6 (the app's / Terminal's "Full quality") wins
+    // one RDNA4 card (1 x R9700, 32 GB): Faster by default, whatever the card's size; not on another make or on two NVIDIA cards
+    CHECK_EQ(experts_per_word(-1, 32 * GiB, 6, false, false, false, true), 5);
+    CHECK_EQ(experts_per_word(-1, 24 * GiB, 6, false, false, false, true), 5);
+    CHECK_EQ(experts_per_word(-1, 32 * GiB, 6, false, false, false, false), 6);     // the same card size when it is not a single RDNA4 card
+    CHECK_EQ(experts_per_word(6, 32 * GiB, 6, false, false, false, true), 6);       // --experts 6 still wins
+    CHECK_EQ(experts_per_word(4, 32 * GiB, 6, false, false, false, true), 4);       // and so does any other --experts N
+    CHECK_EQ(experts_per_word(-1, 32 * GiB, 6, false, false, true, true), 6);       // DS4_DEFAULTS=026: back to the model's 6
     CHECK_EQ(experts_per_word(4, 4 * 32 * GiB, 6, false, true), 4);     // so does any other --experts N
     CHECK_EQ(experts_per_word(5, 4 * 32 * GiB, 6, false, false), 5);
     CHECK_EQ(experts_per_word(-1, 4 * 32 * GiB, 1, false, true), 1);    // a model of one expert a word has nothing to drop
@@ -113,6 +121,19 @@ int main() {
         CHECK_EQ(attn_slab_rows(0, 1024, 256, 1e18, bpr, 0.77), 256);      // DS4_ATTN_SLAB=0: the 0.2.6 rule whatever the share
         CHECK_EQ(attn_slab_rows(512, 1024, 256, 1e18, bpr, 0.77), 512);    // DS4_ATTN_SLAB=N: that many rows whatever the share
         CHECK_EQ(attn_slab_rows(-1, 1024, 1024, -5.0e9, bpr, 0.77), 1024);   // a unified-memory base (32 MB of q = 1024 rows) is kept
+    }
+    // the expert profile's size gate: a bare array of rows of n_exp counts, 40 layers (+ the drafter's 3 blocks); another model's file is not read
+    {
+        CHECK_EQ(profile_size_fits(66048, 40, 384), 1);                  // the shipped 2.00 / 2.25 profiles (43 rows of 384) on a 384-expert set: as before
+        CHECK_EQ(profile_size_fits(40 * 384 * 4, 40, 384), 1);           // 40 rows (a run without the drafter)
+        CHECK_EQ(profile_size_fits(43 * 192 * 4, 40, 192), 1);           // the Coder's own file (43 rows of 192)
+        CHECK_EQ(profile_size_fits(40 * 192 * 4, 40, 192), 1);
+        CHECK_EQ(profile_size_fits(66048, 40, 192), 0);                  // a 384-expert profile on the 192-expert set: 86 rows of 192, not its file
+        CHECK_EQ(profile_size_fits(40 * 384 * 4, 40, 192), 0);
+        CHECK_EQ(profile_size_fits(43 * 192 * 4, 40, 384), 0);           // and the other way round (too short for 40 rows of 384)
+        CHECK_EQ(profile_size_fits(0, 40, 384), 0);
+        CHECK_EQ(profile_size_fits(66048, 0, 384), 0);
+        CHECK_EQ(profile_size_fits(66048, 40, 0), 0);
     }
     // the staging ring (MB): staging_ring_mb(share, room_bytes, n_dev, integrated, hip)
     {
@@ -271,12 +292,14 @@ int main() {
         CHECK_EQ(copy_hugetlb_default(-1, 90 * GB, 100 * GB, false), 0);
         CHECK_EQ(copy_hugetlb_default(1, 0.0, 100 * GB, true), 1);
         CHECK_EQ(copy_hugetlb_default(0, 120 * GB, 100 * GB, false), 0);              // the old DS4_COPY_HUGETLB=0
-        // the matrix-core attention: opt-in again
-        CHECK_EQ(fast_attn_default(-1, true, true), 0);
-        CHECK_EQ(fast_attn_default(-1, true, false), 1);
-        CHECK_EQ(fast_attn_default(-1, false, false), 0);
-        CHECK_EQ(fast_attn_default(1, false, true), 1);
-        CHECK_EQ(fast_attn_default(0, true, false), 0);                               // the old DS4_FAST_ATTN=0
+        // the matrix-core attention: opt-in again, except on gfx12 and (since 2026-10-28) on gfx1151 on Windows
+        CHECK_EQ(fast_attn_default(-1, true, false, true), 0);
+        CHECK_EQ(fast_attn_default(-1, true, false, false), 1);
+        CHECK_EQ(fast_attn_default(-1, false, false, false), 0);
+        CHECK_EQ(fast_attn_default(-1, false, true, false), 1);                       // gfx1151 on Windows
+        CHECK_EQ(fast_attn_default(-1, false, true, true), 0);                        // ... but never for 0.2.6's arithmetic
+        CHECK_EQ(fast_attn_default(1, false, false, true), 1);
+        CHECK_EQ(fast_attn_default(0, true, true, false), 0);                         // the old DS4_FAST_ATTN=0
         // the drafter's cumulative cut: 0 again; STRATA_DS4_DSPARK_CUM wins
         CHECK_EQ((int) (dspark_cum_value(false, 0.0f, true, true) * 100), 0);
         CHECK_EQ((int) (dspark_cum_value(false, 0.0f, true, false) * 100), 50);

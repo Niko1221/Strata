@@ -1779,7 +1779,7 @@
   "s1761": "Strata isn’t connected to its engine.",
   "s1762": "Strata optimized models",
   "s1763": "Strata prepares all shards, the draft layer and shared files. Completed downloads are reused.",
-  "s1764": "Strata sends no usage telemetry. Conversations stay in browser storage. When you choose an API model, that conversation and enabled skill instructions are sent to its provider. The UI request log keeps client, timing and token metadata in memory. Native API monitoring can retain request content in memory when enabled. Connected tools access the resources you configure.",
+  "s1764": "Strata sends no usage telemetry. Conversations stay on this computer, in Strata's data folder. When you choose an API model, that conversation and enabled skill instructions are sent to its provider. The UI request log keeps client, timing and token metadata in memory. Native API monitoring can retain request content in memory when enabled. Connected tools access the resources you configure.",
   "s1765": "Strata uses these files in place. You can load the model after adding it.",
   "s1766": "Strata — open chat",
   "s1767": "Strata’s budget",
@@ -3056,7 +3056,7 @@
   "s3042": "View logs",
   "s3043": "Engine logs",
   "s3044": "Strata sends no usage telemetry.",
-  "s3045": "Conversations stay in browser storage.",
+  "s3045": "Conversations stay on this computer, in Strata's data folder.",
   "s3046": "When you choose an API model, that conversation and enabled skill instructions are sent to its provider.",
   "s3047": "The UI request log keeps client, timing and token metadata in memory.",
   "s3048": "Native API monitoring can retain request content in memory when enabled.",
@@ -3526,5 +3526,6 @@
   "s9034": "Loading the model…",
   "s9035": "These model files are missing: {0}.",
   "s9036": "Press Download & load again to fetch them. Files that are already there are kept. If the same files are listed again, open Details and share them when you ask for help.",
-  "s9037": "This update was cut short when the app restarted. A later update finished, so nothing needs doing."
+  "s9037": "This update was cut short when the app restarted. A later update finished, so nothing needs doing.",
+  "s9038": "This system does not let Strata use port {0}. On Linux and macOS, ports below 1024 need administrator rights. Start Strata with another port (STRATA_PORT), for example 8801."
 }

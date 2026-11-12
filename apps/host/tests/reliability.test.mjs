@@ -14,17 +14,18 @@ const root = resolve(import.meta.dirname, '..');
 
 test('Markdown renders every incomplete stream prefix without looping', { timeout: 15000 }, async () => {
   const bundle = await build({
-    stdin: { contents: `import React from 'react'; import { renderToStaticMarkup } from 'react-dom/server'; import { Markdown } from './src/components/Markdown.tsx'; export {setTranslationLanguage as setLanguage} from './src/lib/i18n.ts'; export const render = text => renderToStaticMarkup(React.createElement(Markdown, { text }));`, resolveDir: root },
+    stdin: { contents: `import React from 'react'; import { renderToStaticMarkup } from 'react-dom/server'; import { Markdown } from './src/components/Markdown.tsx'; export {setTranslationLanguage as setLanguage, loadCatalog} from './src/lib/i18n.ts'; export const render = text => renderToStaticMarkup(React.createElement(Markdown, { text }));`, resolveDir: root },
     bundle: true, write: false, platform: 'node', format: 'cjs', jsx: 'automatic', external: ['katex', 'katex/dist/katex.min.css'],   // math loads on demand in the browser
     plugins: [{ name: 'copy-control-stub', setup(b) {
       b.onResolve({ filter: /^\.\/ui$/ }, () => ({ path: 'ui', namespace: 'test-stub' }));
-      b.onLoad({ filter: /.*/, namespace: 'test-stub' }, () => ({ contents: 'export const IconBtn = () => null; export const Btn = () => null;' }));
+      b.onLoad({ filter: /.*/, namespace: 'test-stub' }, () => ({ contents: 'export const IconBtn = () => null; export const Btn = () => null; export const Icon = () => null;' }));
     } }],
   });
   // SSR is a parser regression, not a substitute for browser appearance checks.
   const mod = { exports: {} };
   new Function('require', 'module', 'exports', bundle.outputFiles[0].text)(createRequire(import.meta.url), mod, mod.exports);
-  const { render, setLanguage } = mod.exports;
+  const { render, setLanguage, loadCatalog } = mod.exports;
+  for (const l of ['zh', 'ja', 'de', 'es', 'ru', 'pt', 'ko', 'fr']) await loadCatalog(l);  // the non-English catalogs load on first use (src/lib/i18n.ts loadCatalog); load them before the first tr()
   for(const language of ['zh','ja','de','es','ru','pt','ko','fr']) { setLanguage(language); const markup=render('Ready\n\n**Settings**\n\n*Download*\n\n[Cancel](https://example.com)\n\n| Name | Value |\n| --- | --- |\n| Close | Language |'); for(const word of ['Ready','Settings','Download','Cancel','Name','Value','Close','Language'])assert(markup.includes(word),language+': user text changed: '+word); }
   setLanguage('en');
   for (const marker of ['- ', '* ', '+ ', '1. ', '2) ', '  - ', '  12. ']) assert.ok(render(marker).includes(marker));

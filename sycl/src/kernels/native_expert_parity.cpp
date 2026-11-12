@@ -23,11 +23,47 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
 namespace cpu = strata::kernels::cpu;
+
+// Round 0214: --synthetic GU/DOWN ... : random weights quantized by ggml (ggml type names, e.g. iq2_xs/q5_0) in place of real
+// rows, as the CUDA/HIP tree's native_expert_parity does; the checks below are the same.
+static int type_of(std::string name) {
+    for (auto& c : name) c = (char) std::tolower((unsigned char) c);
+    for (int t = 0; t < GGML_TYPE_COUNT; ++t) {
+        const char* n = ggml_type_name((ggml_type) t);
+        if (n == nullptr) continue;
+        std::string m(n);
+        for (auto& c : m) c = (char) std::tolower((unsigned char) c);
+        if (m == name) return t;
+    }
+    return -1;
+}
+
+static std::vector<uint8_t> synthetic_blob(const cpu::NativeFmt& f, int seed, int64_t H, int64_t FF) {
+    std::vector<uint8_t> blob(f.bytes);
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    auto quant = [&](int type, int64_t rows, int64_t cols, uint8_t* dst) {
+        std::vector<float> w((size_t) (rows * cols));
+        for (int64_t r = 0; r < rows; ++r) {
+            const float scale = 0.02f * (0.5f + (float) (r % 7) / 7.0f);
+            for (int64_t c = 0; c < cols; ++c) w[(size_t) (r * cols + c)] = scale * nd(rng);
+        }
+        const std::vector<float> imatrix((size_t) cols, 1.0f);
+        ggml_quantize_chunk((ggml_type) type, w.data(), dst, 0, rows, cols,
+                            ggml_quantize_requires_imatrix((ggml_type) type) ? imatrix.data() : nullptr);
+    };
+    quant(f.gu_type, FF, H, blob.data());
+    quant(f.gu_type, FF, H, blob.data() + f.up_off);
+    quant(f.d_type, H, FF, blob.data() + f.down_off);
+    return blob;
+}
 
 static double rel(const std::vector<float>& a, const std::vector<float>& b) {
     double n = 0, d = 0;
@@ -37,32 +73,56 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
-    if (argc < 2) { std::fprintf(stderr, "usage: native_expert_parity <shard1.gguf> [layer ...]\n"); return 2; }
-    strata::GgufFile gguf(argv[1]);
+    if (argc < 2) { std::fprintf(stderr, "usage: native_expert_parity <shard1.gguf> [layer ...] | --synthetic GU/DOWN ...\n"); return 2; }
+    const bool synthetic = std::string(argv[1]) == "--synthetic";
+    std::unique_ptr<strata::GgufFile> gguf_p;
+    if (!synthetic) gguf_p.reset(new strata::GgufFile(argv[1]));
     std::vector<int> layers;
-    for (int i = 2; i < argc; ++i) layers.push_back(std::atoi(argv[i]));
-    if (layers.empty()) layers = {0, 1, 2, 3, 20, 47};
+    std::vector<std::string> pair_names;
+    for (int i = 2; i < argc; ++i) {
+        if (synthetic) { pair_names.push_back(argv[i]); layers.push_back((int) pair_names.size() - 1); }
+        else layers.push_back(std::atoi(argv[i]));
+    }
+    if (layers.empty() && !synthetic) layers = {0, 1, 2, 3, 20, 47};
     const int NT = 3, E = 7;
-    const int64_t H = 2560, FF = 640;
+    int64_t H = 2560, FF = 640;   // Q4KQ_PARITY_EMBD / Q4KQ_PARITY_FF override them (Q4-KQ, as the CUDA tree's test: expert widths 512 and 1024; Q4-SYCL: the q4_* builds)
+    if (const char* e = std::getenv("Q4KQ_PARITY_EMBD")) H = std::atoll(e);
+    if (const char* e = std::getenv("Q4KQ_PARITY_FF")) FF = std::atoll(e);
     int failures = 0;
     sycl::queue* s = &dpct::get_in_order_queue();
     for (int l : layers) {
-        const strata::TensorInfo* t[3] = {};
-        const char* roles[3] = {"gate", "up", "down"};
-        for (const auto& ti : gguf.tensors())
-            for (int r = 0; r < 3; ++r)
-                if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight") t[r] = &ti;
-        if (!t[0] || !t[1] || !t[2]) { std::printf("layer %d: no expert tensors\n", l); ++failures; continue; }
         cpu::NativeFmt f;
         std::string err;
-        if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err)) {
-            std::printf("layer %d: %s\n", l, err.c_str()); ++failures; continue;
+        std::vector<uint8_t> blob;
+        if (synthetic) {
+            const std::string arg = pair_names[(size_t) l];
+            const size_t slash = arg.find('/');
+            const int gu = slash == std::string::npos ? -1 : type_of(arg.substr(0, slash));
+            const int dn = slash == std::string::npos ? -1 : type_of(arg.substr(slash + 1));
+            if (gu < 0 || dn < 0 || !cpu::native_fmt(gu, dn, H, FF, f, err) ||
+                !strata::kernels::native_expert_supported(gu, dn, H, FF)) {
+                std::printf("%s: %s\n", arg.c_str(), err.empty() ? "not a pair the GPU expert kernels take" : err.c_str());
+                ++failures;
+                continue;
+            }
+            blob = synthetic_blob(f, l, H, FF);
+        } else {
+            strata::GgufFile& gguf = *gguf_p;
+            const strata::TensorInfo* t[3] = {};
+            const char* roles[3] = {"gate", "up", "down"};
+            for (const auto& ti : gguf.tensors())
+                for (int r = 0; r < 3; ++r)
+                    if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight") t[r] = &ti;
+            if (!t[0] || !t[1] || !t[2]) { std::printf("layer %d: no expert tensors\n", l); ++failures; continue; }
+            if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err)) {
+                std::printf("layer %d: %s\n", l, err.c_str()); ++failures; continue;
+            }
+            blob.resize(f.bytes);
+            std::memcpy(blob.data(), gguf.tensor_data(*t[0]) + (size_t) E * f.up_off, f.up_off);
+            std::memcpy(blob.data() + f.up_off, gguf.tensor_data(*t[1]) + (size_t) E * f.up_off, f.up_off);
+            std::memcpy(blob.data() + f.down_off, gguf.tensor_data(*t[2]) + (size_t) E * (f.bytes - f.down_off),
+                        f.bytes - f.down_off);
         }
-        std::vector<uint8_t> blob(f.bytes);
-        std::memcpy(blob.data(), gguf.tensor_data(*t[0]) + (size_t) E * f.up_off, f.up_off);
-        std::memcpy(blob.data() + f.up_off, gguf.tensor_data(*t[1]) + (size_t) E * f.up_off, f.up_off);
-        std::memcpy(blob.data() + f.down_off, gguf.tensor_data(*t[2]) + (size_t) E * (f.bytes - f.down_off),
-                    f.bytes - f.down_off);
         // (a) the float reference
         const auto* tg = ggml_get_type_traits((ggml_type) f.gu_type);
         const auto* td = ggml_get_type_traits((ggml_type) f.d_type);
@@ -289,8 +349,9 @@ int main(int argc, char** argv) {
             sycl::free(dstart, *s); sycl::free(dn, *s); sycl::free(ddst, *s); sycl::free(dtok, *s);
         }
         const double ec = rel(got_c, ref), eg = rel(got_g, ref), ecg = rel(got_c, got_g);
-        const bool ok = ec < 3e-2 && eg < 3e-2 && std::isfinite(ec) && std::isfinite(eg);
-        std::printf("layer %2d  %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", l,
+        const double gpu_limit = f.d_type == 6 ? 1.8e-2 : 3e-2;   // Q5_0 down: the quantized-sum offset (round 0214) makes it as accurate as the rest
+        const bool ok = ec < 3e-2 && eg < gpu_limit && std::isfinite(ec) && std::isfinite(eg);
+        std::printf("%s %2d  %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", synthetic ? "pair " : "layer", l,
                     ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), f.bytes, ec, eg, ecg,
                     ok ? "ok" : "FAIL");
         if (!ok) ++failures;
