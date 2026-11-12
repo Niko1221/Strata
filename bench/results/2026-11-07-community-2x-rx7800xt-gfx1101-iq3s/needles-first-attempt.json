@@ -1,0 +1,68 @@
+[
+ {
+  "length": "32k",
+  "depth": 10,
+  "prompt_tokens": 31412,
+  "cached_tokens": 31407,
+  "seconds": 8.4,
+  "found": true,
+  "word": "meadow-copper-504",
+  "answer": "meadow-copper-504",
+  "answer_with_reasoning": "meadow-copper-504 We need answer user's request. Need identify code word of form word-word-number buried in document. User says: \"Buried inside this document, for verification purposes only, is the co"
+ },
+ {
+  "length": "32k",
+  "depth": 50,
+  "prompt_tokens": 31412,
+  "cached_tokens": 0,
+  "seconds": 22.9,
+  "found": true,
+  "word": "falcon-quartz-940",
+  "answer": "falcon-quartz-940",
+  "answer_with_reasoning": "falcon-quartz-940 We need answer user's request. Need identify code word of form word-word-number buried in document. User says: \"Buried inside this document, for verification purposes only, is the co"
+ },
+ {
+  "length": "32k",
+  "depth": 90,
+  "prompt_tokens": 31411,
+  "cached_tokens": 16384,
+  "seconds": 14.6,
+  "found": true,
+  "word": "timber-jasper-117",
+  "answer": "timber-jasper-117",
+  "answer_with_reasoning": "timber-jasper-117 We need answer user's request. Need identify code word of form word-word-number buried in document. User says: \"Buried inside this document, for verification purposes only, is the co"
+ },
+ {
+  "length": "128k",
+  "depth": 10,
+  "prompt_tokens": 133046,
+  "cached_tokens": 0,
+  "seconds": 79.2,
+  "found": true,
+  "word": "harbor-onyx-628",
+  "answer": "harbor-onyx-628",
+  "answer_with_reasoning": "harbor-onyx-628 The user asks for the code word of the form word-word-number buried in the document. The document explicitly states: \"Buried inside this document, for verification purposes only, is th"
+ },
+ {
+  "length": "128k",
+  "depth": 50,
+  "prompt_tokens": 133047,
+  "cached_tokens": 133042,
+  "seconds": 3.1,
+  "found": true,
+  "word": "willow-cobalt-371",
+  "answer": "willow-cobalt-371",
+  "answer_with_reasoning": "willow-cobalt-371 We need answer user's question: \"what is the code word of the form word-word-number that was buried in the document above? Answer with that code word only.\"\n\nWe need find buried code"
+ },
+ {
+  "length": "128k",
+  "depth": 90,
+  "prompt_tokens": 133045,
+  "cached_tokens": 16384,
+  "seconds": 72.4,
+  "found": true,
+  "word": "summit-amber-852",
+  "answer": "summit-amber-852",
+  "answer_with_reasoning": "summit-amber-852 The user is asking for a specific code word buried in the document. Looking through the document, I can see it was explicitly stated: \"Buried inside this document, for verification pu"
+ }
+]

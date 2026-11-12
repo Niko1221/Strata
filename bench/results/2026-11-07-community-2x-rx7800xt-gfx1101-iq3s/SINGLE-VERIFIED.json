@@ -1,0 +1,171 @@
+{
+ "utc_start": "2026-11-07T14:03:31Z",
+ "posture": {
+  "profile": "/home/dom/strata-official/v0.2.12/profile-single-262k-int8-ring.json",
+  "profile_sha256": "f45665a8e3e2b9edaa81d7dba7c105b43d2b7012aa763b25033c610d1f5e3a7e",
+  "engine_sha256": "74f27a82451cb039e466a72869ae88255dbb225cbabbb7f7ee3357ccc704b0eb",
+  "engine_pids": [
+   "34450",
+   "35084"
+  ],
+  "health": {
+   "status": "ok",
+   "max_context": 262144,
+   "model": "qwen3.8-flash-next-iq3_s",
+   "images": true,
+   "api_key": true,
+   "image_generation": false,
+   "loaded": true,
+   "service": "strata"
+  },
+  "flags": {
+   "--max-context 262144": true,
+   "--kv int8": true,
+   "--kv-resident 0": true,
+   "--layer-split 24": true,
+   "--prefill 8192": true,
+   "--spec 2": true,
+   "--pipeline-windows 2": true,
+   "--draft-conf 0.7": false,
+   "--batch": false,
+   "--parallel": false
+  },
+  "engine_start": "Sat 2026-11-07 14:01:37 UTC",
+  "nrestarts": "0",
+  "memavail_mib": 19629,
+  "vram": "15207 15170 /16368 16368 MiB"
+ },
+ "kv_log_lines": "strata generate: token graph hit path: 9896 resident experts, decided on the device\n[strata] 2026-11-07 14:01:39 engine started: /home/dom/strata-official/v0.2.12/engine/strata --serve --pack /mnt/strata-data/Strata-data/brilliance-50x/pack --native /mnt/strata-data/Strata-data/brilliance-50x/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf --ple-gguf /mnt/strata-data/Strata-data/brilliance-50x/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf --expert-profile /home/dom/Strata/data/expert-profile.bin --expert-cache auto --prefill 8192 --max-context 262144 --kv int8 --vram-reserve-mib 1024 --resident-budget-gib 40 --conversation-cache-mib 8192 --mtp /mnt/strata-data/Strata-data/mtp/rt --spec 2 --spec-min-p 0.5 --pipeline-windows 2 --kv-resident 0 --vision --layer-split 24 --tail-role-token 8678\nstrata generate: R4 hit path ON - resident experts are computed on the GPU\nstrata generate: token graph hit path: 9895 resident experts, decided on the device\nFileExpertSource: mapped pinned cache complement ready: resident 35.47 GiB, pinned 35.47 GiB in 65 s; page-locked and mapped\nstrata generate: resident RAM mode: 35.47 GiB of experts in RAM (page-locked), 4977 in the GPU cache; adaptive swaps exchange them with the GPU cache (no file reads)\nstrata hc: CUDA1: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)\nstrata hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (STRATA_HC_SPLIT=1 or 0 for the earlier ones)",
+ "arms": [
+  {
+   "prompt_tokens": 76,
+   "completion_tokens": 64,
+   "cached_tokens": 0,
+   "wall_s": 16.71,
+   "engine_lines": [
+    "prompt 76 tokens = 0 reused + 76 read in 15503 ms (4.9 tok/s), 64 generated in 1006 ms (63.6 tok/s), drafts accepted 30 of 32"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689429,
+   "label": "arith_a",
+   "file": "<inline>",
+   "max_tokens": 64
+  },
+  {
+   "prompt_tokens": 75,
+   "completion_tokens": 64,
+   "cached_tokens": 0,
+   "wall_s": 2.08,
+   "engine_lines": [
+    "prompt 75 tokens = 0 reused + 75 read in 1174 ms (63.9 tok/s), 64 generated in 897 ms (71.3 tok/s), drafts accepted 28 of 33"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689473,
+   "label": "arith_b",
+   "file": "<inline>",
+   "max_tokens": 64
+  },
+  {
+   "prompt_tokens": 115188,
+   "completion_tokens": 64,
+   "cached_tokens": 0,
+   "wall_s": 70.99,
+   "engine_lines": [
+    "prompt 115188 tokens = 0 reused + 115188 read in 68779 ms (1674.8 tok/s), 64 generated in 1117 ms (57.3 tok/s), drafts accepted 24 of 35"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689485,
+   "label": "w96_64",
+   "file": "prompt96.txt",
+   "file_sha12": "731bc303da6b",
+   "max_tokens": 64,
+   "memavail_mib": 17658
+  },
+  {
+   "prompt_tokens": 192843,
+   "completion_tokens": 128,
+   "cached_tokens": 0,
+   "wall_s": 119.26,
+   "engine_lines": [
+    "prompt 192843 tokens = 0 reused + 192843 read in 116877 ms (1650.0 tok/s), 128 generated in 2151 ms (59.5 tok/s), drafts accepted 53 of 64"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689499,
+   "label": "w200_128",
+   "file": "prompt200.txt",
+   "file_sha12": "867a4f0e32c1",
+   "max_tokens": 128,
+   "memavail_mib": 15254
+  },
+  {
+   "prompt_tokens": 237839,
+   "completion_tokens": 128,
+   "cached_tokens": 0,
+   "wall_s": 152.0,
+   "engine_lines": [
+    "prompt 237839 tokens = 0 reused + 237839 read in 149773 ms (1588.0 tok/s), 128 generated in 1994 ms (64.2 tok/s), drafts accepted 52 of 63"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689512,
+   "label": "w250_128_cold",
+   "file": "prompt250.txt",
+   "file_sha12": "24e8c3556db4",
+   "max_tokens": 128,
+   "memavail_mib": 11550
+  },
+  {
+   "prompt_tokens": 237839,
+   "completion_tokens": 128,
+   "cached_tokens": 237834,
+   "wall_s": 6.71,
+   "engine_lines": [
+    "prompt 237839 tokens = 237834 reused + 5 read in 4590 ms (1.1 tok/s), 128 generated in 1993 ms (64.2 tok/s), drafts accepted 51 of 70"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689524,
+   "label": "w250_128_cached",
+   "file": "prompt250.txt",
+   "file_sha12": "24e8c3556db4",
+   "max_tokens": 128,
+   "memavail_mib": 10308
+  },
+  {
+   "prompt_tokens": 192843,
+   "completion_tokens": 512,
+   "cached_tokens": 192838,
+   "wall_s": 10.77,
+   "engine_lines": [
+    "prompt 192843 tokens = 192838 reused + 5 read in 1438 ms (3.5 tok/s), 512 generated in 9232 ms (55.5 tok/s), drafts accepted 172 of 217"
+   ],
+   "answer": "",
+   "answer_sha12": null,
+   "mark": 689537,
+   "label": "w200_512_cached",
+   "file": "prompt200.txt",
+   "file_sha12": "867a4f0e32c1",
+   "max_tokens": 512,
+   "memavail_mib": 10742
+  }
+ ],
+ "n267": "0",
+ "kills": "0",
+ "decode_timing_lines": "21",
+ "final_health": {
+  "status": "ok",
+  "max_context": 262144,
+  "model": "qwen3.8-flash-next-iq3_s",
+  "images": true,
+  "api_key": true,
+  "image_generation": false,
+  "loaded": true,
+  "service": "strata"
+ },
+ "final_memavail_mib": 10747,
+ "utc_end": "2026-11-07T14:09:51Z"
+}

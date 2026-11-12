@@ -1,0 +1,242 @@
+{
+  "applicable": true,
+  "body_sha256": "1044435fa0b67d257c173e2acbe8eaf313ebc76993d46e40fe8cdf4b83b09591",
+  "created_at": 1794072516.5003912,
+  "identity": {
+    "backend": "hip",
+    "engine_sha256": "74f27a82451cb039e466a72869ae88255dbb225cbabbb7f7ee3357ccc704b0eb",
+    "gpu": [
+      0,
+      1
+    ],
+    "hardware_key": "AMD Radeon RX 7800 XT / 7700 XT (gfx1101) + AMD Radeon RX 7800 XT / 7700 XT (gfx1101)|32GB|AMD Ryzen 7 3700X 8-Core Processor|61GB|qwen3.8-flash-next-iq3_s|262144|text",
+    "model_integrity": "metadata_only_unverified",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "profile_id": null,
+    "profile_revision": null,
+    "required_file_metadata": [
+      {
+        "modified_ns": 1791841619141587953,
+        "name": "tokenizer/vocab.json",
+        "path": "/mnt/strata-data/Strata-data/packs/iq3_s/tokenizer/vocab.json",
+        "size": 5737005
+      },
+      {
+        "modified_ns": 1791841619225589549,
+        "name": "tokenizer/merges.txt",
+        "path": "/mnt/strata-data/Strata-data/packs/iq3_s/tokenizer/merges.txt",
+        "size": 3353258
+      },
+      {
+        "modified_ns": 1791841619233067736,
+        "name": "tokenizer/token_type.json",
+        "path": "/mnt/strata-data/Strata-data/packs/iq3_s/tokenizer/token_type.json",
+        "size": 744960
+      },
+      {
+        "modified_ns": 1791841109481809400,
+        "name": "native",
+        "path": "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+        "size": 54817524224
+      },
+      {
+        "modified_ns": 1791841616763542778,
+        "name": "ple-gguf",
+        "path": "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+        "size": 28800138432
+      },
+      {
+        "modified_ns": 1791839934887746919,
+        "name": "expert-profile",
+        "path": "/home/dom/Strata/data/expert-profile.bin",
+        "size": 196632
+      },
+      {
+        "modified_ns": 0,
+        "name": "vision/exe",
+        "path": "/home/dom/strata-official/v0.2.12/engine/strata-vision",
+        "size": 7612760
+      },
+      {
+        "modified_ns": 1792649434074545271,
+        "name": "vision/mmproj",
+        "path": "/mnt/strata-data/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+        "size": 907543008
+      },
+      {
+        "modified_ns": 1791841109481809400,
+        "name": "vision/model",
+        "path": "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+        "size": 54817524224
+      }
+    ],
+    "source_sha256": "6b4c4586729d63324715175398e795db7a3772c70285fda1dea57905ab3b9b37",
+    "suite_sha256": "6b2ef58ed18f0b625256cd613058edebd375868cd05e7974b22838cf72edf40b"
+  },
+  "kind": "strata.engine.calibration",
+  "measurements": {
+    "adapt": {
+      "1/160/0.97": [
+        61.19786412729156,
+        62.311016440804536
+      ],
+      "1/80/0.97": [
+        59.43398416641515,
+        57.91950084386028
+      ],
+      "default": [
+        54.30580611906778,
+        62.54169446297532
+      ]
+    },
+    "confirm": {
+      "0.18/0.5": [
+        57.63688760806916,
+        59.857837635615404,
+        57.71225032688579
+      ],
+      "0.2/0.7": [
+        59.53488372093023,
+        60.21262583497976,
+        59.410536087259224
+      ]
+    },
+    "default": {
+      "pcie_frac": 0.18,
+      "pool_workers": 7,
+      "spec_min_p": 0.5
+    },
+    "min_p_sweep": {
+      "0.3": [
+        58.43681519357195,
+        59.073287797673984,
+        58.17917367392391
+      ],
+      "0.5": [
+        56.96484201157099,
+        59.984066732274236,
+        57.91069085644482
+      ],
+      "0.7": [
+        60.36312190521104,
+        59.144256538212744,
+        61.746261456825856
+      ]
+    },
+    "pcie_sweep": {
+      "0.0": [
+        59.44916631833171,
+        59.29494603233429,
+        57.91331101257805
+      ],
+      "0.18": [
+        60.02907658397035,
+        60.30340148874023,
+        59.177068885806754
+      ],
+      "0.2": [
+        60.25797947462575,
+        60.07979347570993,
+        59.432604355295545
+      ],
+      "0.35": [
+        58.16859804589866,
+        58.64565197470907,
+        59.09510618651893
+      ],
+      "0.55": [
+        53.29114451059578,
+        52.822713766919776,
+        53.8425945400244
+      ],
+      "0.75": [
+        50.40362276038591,
+        50.76142131979696,
+        52.00926415017675
+      ],
+      "0.9": [
+        49.63164017060876,
+        49.68944099378882,
+        50.150844336480816
+      ],
+      "1.0": [
+        42.40516812986583,
+        42.304260171200056,
+        43.24908771455602
+      ]
+    },
+    "pipe_confirm": {
+      "0": [
+        828.5424416638485,
+        830.1064859632139,
+        830.1600619594681
+      ],
+      "1": [
+        828.6491971202629,
+        828.3490174927349,
+        828.3356812235862
+      ]
+    },
+    "pipe_sweep": {
+      "0": [
+        826.2060214742895
+      ],
+      "1": [
+        829.9987091777462
+      ],
+      "1536": [
+        793.2922127987664
+      ],
+      "3072": [
+        792.7764123978211
+      ],
+      "6144": [
+        793.210304796263
+      ],
+      "768": [
+        667.1768200153045
+      ]
+    },
+    "seconds": 1953,
+    "sh_stream": {
+      "0": [
+        62.387288589949804,
+        60.51151136954568
+      ],
+      "1": [
+        50.31446540880503,
+        50.79163525256935
+      ]
+    },
+    "tok_s": 61.4,
+    "workers": {
+      "2": [
+        51.24099279423538,
+        51.669155935897955
+      ],
+      "4": [
+        57.24252045972899,
+        56.0077010588956
+      ],
+      "5": [
+        59.89424921622761,
+        61.87759837571304
+      ],
+      "7": [
+        61.19131848169041,
+        60.184314463043066
+      ]
+    }
+  },
+  "report_id": "d24ae1fa5a1c4d90b425255d98b7c216",
+  "schema_version": 1,
+  "settings": {
+    "--adapt-decay": "0.97",
+    "--adapt-every": "1",
+    "--adapt-swaps": "160",
+    "--pcie-frac": "0.20",
+    "--spec-min-p": "0.70"
+  },
+  "source_config": "/home/dom/strata-update-v0212-20261107/profile-base-stock-262k.json",
+  "suite": "legacy-decode-v1"
+}

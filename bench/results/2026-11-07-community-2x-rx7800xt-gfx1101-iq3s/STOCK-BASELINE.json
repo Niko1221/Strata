@@ -1,0 +1,210 @@
+{
+ "utc_start": "2026-11-07T14:41:21Z",
+ "resumed": true,
+ "posture": {
+  "profile": "/home/dom/strata-official/v0.2.12/profile-stock-262k-int8-ring.json",
+  "profile_sha256": "6b4c4586729d63324715175398e795db7a3772c70285fda1dea57905ab3b9b37",
+  "checks": {
+   "stock native in argv": true,
+   "abliterated gone": true,
+   "stock pack in argv": true,
+   "--kv-resident 0": true,
+   "--max-context 262144": true,
+   "--kv int8": true,
+   "--mtp rt": true,
+   "--layer-split 24": true,
+   "--expert-profile": true,
+   "--batch": false
+  },
+  "engine_start": "Sat 2026-11-07 14:29:45 UTC",
+  "nrestarts": "0",
+  "health": {
+   "status": "ok",
+   "max_context": 262144,
+   "model": "qwen3.8-flash-next-iq3_s",
+   "images": true,
+   "api_key": true,
+   "image_generation": false,
+   "loaded": true,
+   "service": "strata"
+  },
+  "memavail_mib": 18683,
+  "vram_used_mib": [
+   15228,
+   15191
+  ],
+  "engine_pids": [
+   "42937",
+   "44914"
+  ]
+ },
+ "model_files": {
+  "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf": 54817524224,
+  "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf": 28800138432
+ },
+ "qa": {
+  "rc": 0,
+  "out": "arith_4142         want=4142      got=4142           ok=True content_sha=1f7e13aed475 reason_sha=eeb78fdb41a3\ndays_365           want=365       got=365            ok=True content_sha=a0d04378f379 reason_sha=ef74295dbd99\ncapital_canberra   want=canberra  got=Canberra       ok=True content_sha=bd2af89bd428 reason_sha=300eece54437\nthird_word_brown   want=brown     got=brown          ok=True content_sha=9166eeff1e50 reason_sha=63c80f1bcb21\ncode_29            want=29        got=29             ok=True content_sha=7719a1c782a1 reason_sha=abbe9d7eecc8\nsum_100            want=210       got=210            ok=True content_sha=135debd48370 reason_sha=aa14645f886e\nQA stock-baseline -> /home/dom/strata-update-v0212-20261107/QA-stock-baseline.json 6/6 fingerprint=1f7e13aed475,a0d04378f379,bd2af89bd428,9166eeff1e50,7719a1c782a1,135de"
+ },
+ "rounds": [
+  {
+   "wall_s": 72.3,
+   "prompt_tokens": 115188,
+   "cached_tokens": 0,
+   "completion_tokens": 64,
+   "content_sha12": "da39a3ee5e6b",
+   "reasoning_sha12": "c15aa2fb6791",
+   "engine": {
+    "prompt_tokens": 115188,
+    "reused": 0,
+    "read": 115188,
+    "prefill_tps": 1644.3,
+    "generated": 64,
+    "decode_tps": 55.8,
+    "accepted": 27,
+    "drafts": 34,
+    "accept_pct": 79.4
+   },
+   "mark": 690196,
+   "label": "w96_64",
+   "file": "prompt96.txt",
+   "file_sha12": "731bc303da6b",
+   "max_tokens": 64,
+   "memavail_mib": 17422
+  },
+  {
+   "wall_s": 120.49,
+   "prompt_tokens": 192843,
+   "cached_tokens": 0,
+   "completion_tokens": 128,
+   "content_sha12": "da39a3ee5e6b",
+   "reasoning_sha12": "1060bbce63db",
+   "engine": {
+    "prompt_tokens": 192843,
+    "reused": 0,
+    "read": 192843,
+    "prefill_tps": 1639.3,
+    "generated": 128,
+    "decode_tps": 50.3,
+    "accepted": 45,
+    "drafts": 63,
+    "accept_pct": 71.4
+   },
+   "mark": 690210,
+   "label": "w200_128",
+   "file": "prompt200.txt",
+   "file_sha12": "867a4f0e32c1",
+   "max_tokens": 128,
+   "memavail_mib": 15131
+  },
+  {
+   "wall_s": 203.1,
+   "prompt_tokens": 237839,
+   "cached_tokens": 0,
+   "completion_tokens": 128,
+   "content_sha12": "da39a3ee5e6b",
+   "reasoning_sha12": "63d79b7efaee",
+   "engine": {
+    "prompt_tokens": 237839,
+    "reused": 0,
+    "read": 237839,
+    "prefill_tps": 1184.6,
+    "generated": 128,
+    "decode_tps": 62.8,
+    "accepted": 53,
+    "drafts": 67,
+    "accept_pct": 79.1
+   },
+   "mark": 690223,
+   "label": "w250_128_cold",
+   "file": "prompt250.txt",
+   "file_sha12": "24e8c3556db4",
+   "max_tokens": 128,
+   "memavail_mib": 11708
+  },
+  {
+   "wall_s": 7.52,
+   "prompt_tokens": 237839,
+   "cached_tokens": 237834,
+   "completion_tokens": 128,
+   "content_sha12": "da39a3ee5e6b",
+   "reasoning_sha12": "e0d09eb9d51e",
+   "engine": {
+    "prompt_tokens": 237839,
+    "reused": 237834,
+    "read": 5,
+    "prefill_tps": 0.9,
+    "generated": 128,
+    "decode_tps": 78.9,
+    "accepted": 59,
+    "drafts": 66,
+    "accept_pct": 89.4
+   },
+   "mark": 690236,
+   "label": "w250_128_cached",
+   "file": "prompt250.txt",
+   "file_sha12": "24e8c3556db4",
+   "max_tokens": 128,
+   "memavail_mib": 10438
+  },
+  {
+   "wall_s": 11.45,
+   "prompt_tokens": 192843,
+   "cached_tokens": 192838,
+   "completion_tokens": 512,
+   "content_sha12": "da39a3ee5e6b",
+   "reasoning_sha12": "44f61c8bac2f",
+   "engine": {
+    "prompt_tokens": 192843,
+    "reused": 192838,
+    "read": 5,
+    "prefill_tps": 3.3,
+    "generated": 512,
+    "decode_tps": 52.3,
+    "accepted": 168,
+    "drafts": 221,
+    "accept_pct": 76.0
+   },
+   "mark": 690249,
+   "label": "w200_512_cached",
+   "file": "prompt200.txt",
+   "file_sha12": "867a4f0e32c1",
+   "max_tokens": 512,
+   "memavail_mib": 10906
+  }
+ ],
+ "stock_decode_mean": 60.02,
+ "stock_cold_prefill_mean": 1489.4,
+ "acceptance_per_arm": [
+  [
+   79.4,
+   27,
+   34
+  ],
+  [
+   71.4,
+   45,
+   63
+  ],
+  [
+   79.1,
+   53,
+   67
+  ],
+  [
+   89.4,
+   59,
+   66
+  ],
+  [
+   76.0,
+   168,
+   221
+  ]
+ ],
+ "acceptance_overall_pct": 78.0,
+ "n267": "0",
+ "kills": "0",
+ "final_memavail_mib": 10921,
+ "utc_end": "2026-11-07T14:48:41Z"
+}

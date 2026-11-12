@@ -1,0 +1,41 @@
+{
+  "engine_options": {
+    "--pack": "iq3_s",
+    "--native": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--expert-profile": "expert-profile.bin",
+    "--expert-cache": "auto",
+    "--prefill": "8192",
+    "--max-context": "262144",
+    "--kv": "int8",
+    "--vram-reserve-mib": "1024",
+    "--resident-budget-gib": "40",
+    "--conversation-cache-mib": "8192",
+    "--vision": true,
+    "--mtp": "rt",
+    "--spec": "2",
+    "--spec-min-p": "0.5",
+    "--pipeline-windows": "2",
+    "--kv-resident": "0",
+    "--layer-split": "24"
+  },
+  "other_engine_options": {
+    "--pack": "iq3_s",
+    "--native": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    "--ple-gguf": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--max-context": "262144",
+    "--resident-budget-gib": "40",
+    "--conversation-cache-mib": "8192",
+    "--vision": true,
+    "--pipeline-windows": "2"
+  },
+  "server_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "n_predict": -1
+  },
+  "total_slots": 1,
+  "context": 262144,
+  "source": "effective engine arguments of the profile"
+}

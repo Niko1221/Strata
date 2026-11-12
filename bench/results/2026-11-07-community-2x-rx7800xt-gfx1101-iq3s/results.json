@@ -1,0 +1,314 @@
+{
+ "config": "promoted-final",
+ "protocol": "house protocol: 4096/32768/128000 target tokens x 3 runs, 256-token output, temperature 0, non-streaming, distinct revision marker per run",
+ "engine_version": "strata 0.2.12 (build 0.1.58; python 3.12.15 at /home/dom/strata-official/v0.2.12/control/python/bin/python3.12)",
+ "measured_utc": "2026-11-07T19:26:15Z",
+ "medians": {
+  "4096": {
+   "decode_tps": 76.8,
+   "total_s": 8.7,
+   "prompt_tps_spread": [
+    743.7,
+    777.6
+   ],
+   "accept_pct": 84.8,
+   "decode_tps_spread": [
+    72.0,
+    76.9
+   ],
+   "runs": 3,
+   "prompt_tps": 777.2
+  },
+  "32768": {
+   "decode_tps": 95.2,
+   "total_s": 24.6,
+   "prompt_tps_spread": [
+    1486.4,
+    1506.7
+   ],
+   "accept_pct": 92.9,
+   "decode_tps_spread": [
+    91.3,
+    96.1
+   ],
+   "runs": 3,
+   "prompt_tps": 1501.3
+  },
+  "128000": {
+   "decode_tps": 90.3,
+   "total_s": 78.3,
+   "prompt_tps_spread": [
+    1695.5,
+    1725.5
+   ],
+   "accept_pct": 92.3,
+   "decode_tps_spread": [
+    89.5,
+    91.9
+   ],
+   "runs": 3,
+   "prompt_tps": 1695.7
+  }
+ },
+ "ranges": {
+  "4096": {
+   "prompt_tps": [
+    743.7,
+    777.6
+   ],
+   "decode_tps": [
+    72.0,
+    76.9
+   ]
+  },
+  "32768": {
+   "prompt_tps": [
+    1486.4,
+    1506.7
+   ],
+   "decode_tps": [
+    91.3,
+    96.1
+   ]
+  },
+  "128000": {
+   "prompt_tps": [
+    1695.5,
+    1725.5
+   ],
+   "decode_tps": [
+    89.5,
+    91.9
+   ]
+  }
+ },
+ "runs": [
+  {
+   "prompt_n": 4188,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 72.0,
+   "prompt_tps": 743.7,
+   "prompt_ms": 5631,
+   "gen_ms": 3558,
+   "reused": 0,
+   "read": 4188,
+   "accept_pct": 84.8,
+   "accepted": 106,
+   "drafts": 125,
+   "total_s": 9.2,
+   "reasoning": true,
+   "expert_cache_hit_pct": 94.8,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 4096,
+   "run": 1,
+   "revision_marker": "rev-0-1-1794079239",
+   "vram_mib_total": 30897,
+   "mem_available_mib": 16117,
+   "engine_rss_mib": 51736
+  },
+  {
+   "prompt_n": 4188,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 76.8,
+   "prompt_tps": 777.6,
+   "prompt_ms": 5386,
+   "gen_ms": 3333,
+   "reused": 0,
+   "read": 4188,
+   "accept_pct": 85.5,
+   "accepted": 106,
+   "drafts": 124,
+   "total_s": 8.73,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.3,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 4096,
+   "run": 2,
+   "revision_marker": "rev-0-2-1794079248",
+   "vram_mib_total": 30897,
+   "mem_available_mib": 16181,
+   "engine_rss_mib": 51736
+  },
+  {
+   "prompt_n": 4188,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 76.9,
+   "prompt_tps": 777.2,
+   "prompt_ms": 5389,
+   "gen_ms": 3330,
+   "reused": 0,
+   "read": 4188,
+   "accept_pct": 82.7,
+   "accepted": 110,
+   "drafts": 133,
+   "total_s": 8.73,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.8,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 4096,
+   "run": 3,
+   "revision_marker": "rev-0-3-1794079257",
+   "vram_mib_total": 30897,
+   "mem_available_mib": 16190,
+   "engine_rss_mib": 51739
+  },
+  {
+   "prompt_n": 32821,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 91.3,
+   "prompt_tps": 1506.7,
+   "prompt_ms": 21783,
+   "gen_ms": 2803,
+   "reused": 0,
+   "read": 32821,
+   "accept_pct": 92.9,
+   "accepted": 145,
+   "drafts": 156,
+   "total_s": 24.61,
+   "reasoning": true,
+   "expert_cache_hit_pct": 94.9,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 32768,
+   "run": 1,
+   "revision_marker": "rev-1-1-1794079266",
+   "vram_mib_total": 30897,
+   "mem_available_mib": 15855,
+   "engine_rss_mib": 52078
+  },
+  {
+   "prompt_n": 32821,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 95.2,
+   "prompt_tps": 1501.3,
+   "prompt_ms": 21862,
+   "gen_ms": 2688,
+   "reused": 0,
+   "read": 32821,
+   "accept_pct": 94.6,
+   "accepted": 141,
+   "drafts": 149,
+   "total_s": 24.58,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.2,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 32768,
+   "run": 2,
+   "revision_marker": "rev-1-2-1794079291",
+   "vram_mib_total": 30897,
+   "mem_available_mib": 16034,
+   "engine_rss_mib": 51910
+  },
+  {
+   "prompt_n": 32821,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 96.1,
+   "prompt_tps": 1486.4,
+   "prompt_ms": 22082,
+   "gen_ms": 2664,
+   "reused": 0,
+   "read": 32821,
+   "accept_pct": 92.8,
+   "accepted": 142,
+   "drafts": 153,
+   "total_s": 24.77,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.3,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 32768,
+   "run": 3,
+   "revision_marker": "rev-1-3-1794079315",
+   "vram_mib_total": 30897,
+   "mem_available_mib": 15480,
+   "engine_rss_mib": 52467
+  },
+  {
+   "prompt_n": 127940,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 89.5,
+   "prompt_tps": 1725.5,
+   "prompt_ms": 74148,
+   "gen_ms": 2859,
+   "reused": 0,
+   "read": 127940,
+   "accept_pct": 92.3,
+   "accepted": 168,
+   "drafts": 182,
+   "total_s": 77.1,
+   "reasoning": true,
+   "expert_cache_hit_pct": 95.9,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 128000,
+   "run": 1,
+   "revision_marker": "rev-2-1-1794079340",
+   "vram_mib_total": 30898,
+   "mem_available_mib": 14375,
+   "engine_rss_mib": 53560
+  },
+  {
+   "prompt_n": 127940,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 91.9,
+   "prompt_tps": 1695.7,
+   "prompt_ms": 75448,
+   "gen_ms": 2787,
+   "reused": 0,
+   "read": 127940,
+   "accept_pct": 92.7,
+   "accepted": 166,
+   "drafts": 179,
+   "total_s": 78.33,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.4,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 128000,
+   "run": 2,
+   "revision_marker": "rev-2-2-1794079418",
+   "vram_mib_total": 30901,
+   "mem_available_mib": 12059,
+   "engine_rss_mib": 55825
+  },
+  {
+   "prompt_n": 127940,
+   "cache_n": 0,
+   "out_n": 256,
+   "decode_tps": 90.3,
+   "prompt_tps": 1695.5,
+   "prompt_ms": 75458,
+   "gen_ms": 2834,
+   "reused": 0,
+   "read": 127940,
+   "accept_pct": 92.0,
+   "accepted": 161,
+   "drafts": 175,
+   "total_s": 78.38,
+   "reasoning": true,
+   "expert_cache_hit_pct": 96.4,
+   "content_len": 0,
+   "config": "promoted-final",
+   "target_tokens": 128000,
+   "run": 3,
+   "revision_marker": "rev-2-3-1794079496",
+   "vram_mib_total": 30904,
+   "mem_available_mib": 10346,
+   "engine_rss_mib": 57367
+  }
+ ],
+ "failed": [],
+ "engine_sha256": "74f27a82451cb039e466a72869ae88255dbb225cbabbb7f7ee3357ccc704b0eb"
+}

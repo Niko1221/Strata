@@ -1,0 +1,64 @@
+{
+ "schema_version": 1,
+ "kind": "promotion-record",
+ "promoted_utc": "2026-11-07T19:30:22Z",
+ "profile_path_live": "/home/dom/strata-official/v0.2.12/profile-stock-262k-int8-ring.json",
+ "profile_sha256": "dc0be5946298855cc95366aca487bbe49397be7a14b390449961793c11c704b8",
+ "profile_source": "/home/dom/strata-update-v0212-20261107/profile-promoted-262k-vision.json",
+ "previous_profile_sha256": "6b4c4586729d63324715175398e795db7a3772c70285fda1dea57905ab3b9b37",
+ "change": "args += [--vision] only: the built file asserts that its args are the previous args plus that one flag, and every other key is copied verbatim from the verified base",
+ "unchanged": [
+  "stock IQ3_S weights",
+  "--kv int8",
+  "--kv-resident 0",
+  "--max-context 262144",
+  "--spec 2",
+  "--spec-min-p 0.5",
+  "--layer-split 24 and layer_split 24",
+  "--prefill 8192",
+  "STRATA_PREFILL_RING=512 and the rest of the env",
+  "aliases ['AMD']",
+  "drafting mtp",
+  "parallel 1"
+ ],
+ "health": "{\"status\": \"ok\", \"max_context\": 262144, \"model\": \"qwen3.8-flash-next-iq3_s\", \"images\": true, \"api_key\": true, \"image_generation\": false, \"loaded\": true, \"service\": \"strata\"}",
+ "unit_active": "active",
+ "unit_nrestarts": "0",
+ "engine_argv_flags_present": [
+  "--expert-cache",
+  "--kv",
+  "--kv-resident",
+  "--layer-split",
+  "--max-context",
+  "--mtp",
+  "--prefill",
+  "--spec",
+  "--spec-min-p",
+  "--vision"
+ ],
+ "engine_env_keys": [
+  "STRATA_DECODE_TIMING=1",
+  "STRATA_HIPBLASLT_TUNING=/home/dom/strata-pr-test-20261016/upstream-table.txt",
+  "STRATA_METRICS_HISTORY_S=240",
+  "STRATA_MTP_STAGE0=1",
+  "STRATA_PF_FUSED=1",
+  "STRATA_PREFILL_RING=512",
+  "STRATA_REPLICA_START=serial",
+  "STRATA_ROUTE_TAIL_SKIP=7",
+  "STRATA_STAGE_TRIM=1"
+ ],
+ "stock_shards_in_argv": true,
+ "gates": {
+  "qa": "6/6, content fingerprints 1f7e13aed475,a0d04378f379,bd2af89bd428,9166eeff1e50,7719a1c782a1,135debd48370 (identical to the pre-promotion stock baseline)",
+  "needles": "6/6 verbatim at 31,412 and 133,046 prompt tokens, needles at depth 10/50/90",
+  "vision_probe": "correct answer in 5.58 s: 'A red circle and a green square sit side by side on a blue background.'",
+  "standard_v1": "22/22 runs complete, suite quality gate 12/12, 0 failed requests",
+  "pipelined_verify_timeouts": "0 (#267) in every measured window",
+  "engine_kills": "0 during this work (4 historical in the 86 MB log, all reading-the-prompt watchdog kills)"
+ },
+ "incident": {
+  "what": "a profile builder that filtered keys dropped exe/backend/gpu/cwd/tokenizer/log/layer_split/aliases, and the service crash-looped on 'run config needs a nonempty exe path'; separately, an 'install -g strata-admin' (a group that does not exist on this host) failed silently in two measurement drivers",
+  "impact": "service unavailable ~16 minutes (18:41-18:57 UTC); the two comparison rounds that ran through the broken deploy were measuring one configuration, so their deltas are reported as variance, not as effects",
+  "fix": "profiles are copied whole, the live file's sha256 must equal the candidate's before restart, and the required launcher keys are asserted"
+ }
+}

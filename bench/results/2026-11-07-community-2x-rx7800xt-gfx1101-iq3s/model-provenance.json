@@ -1,0 +1,44 @@
+{
+ "schema_version": 1,
+ "kind": "model-provenance",
+ "model": "Qwen3.8-Flash-Next",
+ "quant": "IQ3_S (the recommended quality tier)",
+ "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+ "native_gguf": {
+  "path": "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+  "bytes": 54817524224,
+  "sha256": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3",
+  "sha256_recomputed_by_bench_suite": "4c1eb2ceb4915e1192f4f386021897bde56a97f40a0bb78bb86465e0f7d2aca3"
+ },
+ "ple_gguf": {
+  "path": "/mnt/strata-data/Strata-data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+  "bytes": 28800138432,
+  "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+  "sha256_recomputed_by_bench_suite": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+ },
+ "mmproj": {
+  "path": "/mnt/strata-data/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+  "bytes": 907543008,
+  "sha256": "b1a82259702816a5330d7bd7607cd9676b11780e79ff7348c21103ff3ce49bd0",
+  "note": "shipped with the stock IQ3_S download (2026-10-22); the v0.2.12 SHA256SUMS carries no mmproj line; matched to the stock weights, not to the abliterated copy"
+ },
+ "pack": {
+  "path": "/mnt/strata-data/Strata-data/packs/iq3_s",
+  "files": [
+   "conversions.json",
+   "dense.bin",
+   "index.txt",
+   "native_experts.txt",
+   "tokenizer"
+  ]
+ },
+ "mtp_draft": {
+  "path": "/mnt/strata-data/Strata-data/mtp/rt",
+  "bytes": 824314919
+ },
+ "expert_profile": {
+  "path": "/home/dom/Strata/data/expert-profile.bin",
+  "bytes": 196632
+ },
+ "weights_note": "stock recommended IQ3_S. The abliterated (uncensored) IQ3_S copy is also on this box and was measured earlier the same day; it is NOT the model this report is about."
+}

@@ -1,0 +1,68 @@
+{
+ "tag": "stock-baseline",
+ "utc": "2026-11-07T14:41:36Z",
+ "passed": "6/6",
+ "answers": [
+  {
+   "label": "arith_4142",
+   "wall_s": 3.3,
+   "content": "4142",
+   "content_sha12": "1f7e13aed475",
+   "reasoning_sha12": "eeb78fdb41a3",
+   "completion_tokens": 103,
+   "ok": true,
+   "want": "4142"
+  },
+  {
+   "label": "days_365",
+   "wall_s": 2.61,
+   "content": "365",
+   "content_sha12": "a0d04378f379",
+   "reasoning_sha12": "ef74295dbd99",
+   "completion_tokens": 99,
+   "ok": true,
+   "want": "365"
+  },
+  {
+   "label": "capital_canberra",
+   "wall_s": 1.35,
+   "content": "Canberra",
+   "content_sha12": "bd2af89bd428",
+   "reasoning_sha12": "300eece54437",
+   "completion_tokens": 39,
+   "ok": true,
+   "want": "canberra"
+  },
+  {
+   "label": "third_word_brown",
+   "wall_s": 2.97,
+   "content": "brown",
+   "content_sha12": "9166eeff1e50",
+   "reasoning_sha12": "63c80f1bcb21",
+   "completion_tokens": 70,
+   "ok": true,
+   "want": "brown"
+  },
+  {
+   "label": "code_29",
+   "wall_s": 1.98,
+   "content": "29",
+   "content_sha12": "7719a1c782a1",
+   "reasoning_sha12": "abbe9d7eecc8",
+   "completion_tokens": 44,
+   "ok": true,
+   "want": "29"
+  },
+  {
+   "label": "sum_100",
+   "wall_s": 1.89,
+   "content": "210",
+   "content_sha12": "135debd48370",
+   "reasoning_sha12": "aa14645f886e",
+   "completion_tokens": 55,
+   "ok": true,
+   "want": "210"
+  }
+ ],
+ "fingerprint": "1f7e13aed475,a0d04378f379,bd2af89bd428,9166eeff1e50,7719a1c782a1,135debd48370"
+}

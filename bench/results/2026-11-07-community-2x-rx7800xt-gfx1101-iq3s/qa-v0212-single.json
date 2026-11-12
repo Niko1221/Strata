@@ -1,0 +1,68 @@
+{
+ "tag": "base-0212-single",
+ "utc": "2026-11-07T14:17:33Z",
+ "passed": "6/6",
+ "answers": [
+  {
+   "label": "arith_4142",
+   "wall_s": 1.2,
+   "content": "4142",
+   "content_sha12": "1f7e13aed475",
+   "reasoning_sha12": "d9349467b939",
+   "completion_tokens": 97,
+   "ok": true,
+   "want": "4142"
+  },
+  {
+   "label": "days_365",
+   "wall_s": 2.98,
+   "content": "365",
+   "content_sha12": "a0d04378f379",
+   "reasoning_sha12": "76b84b02413f",
+   "completion_tokens": 121,
+   "ok": true,
+   "want": "365"
+  },
+  {
+   "label": "capital_canberra",
+   "wall_s": 1.42,
+   "content": "Canberra",
+   "content_sha12": "bd2af89bd428",
+   "reasoning_sha12": "e9ddfaa1a844",
+   "completion_tokens": 44,
+   "ok": true,
+   "want": "canberra"
+  },
+  {
+   "label": "third_word_brown",
+   "wall_s": 3.09,
+   "content": "brown",
+   "content_sha12": "9166eeff1e50",
+   "reasoning_sha12": "40c92c7194f3",
+   "completion_tokens": 67,
+   "ok": true,
+   "want": "brown"
+  },
+  {
+   "label": "code_29",
+   "wall_s": 1.92,
+   "content": "29",
+   "content_sha12": "7719a1c782a1",
+   "reasoning_sha12": "abbe9d7eecc8",
+   "completion_tokens": 44,
+   "ok": true,
+   "want": "29"
+  },
+  {
+   "label": "sum_100",
+   "wall_s": 1.81,
+   "content": "210",
+   "content_sha12": "135debd48370",
+   "reasoning_sha12": "aa14645f886e",
+   "completion_tokens": 55,
+   "ok": true,
+   "want": "210"
+  }
+ ],
+ "fingerprint": "1f7e13aed475,a0d04378f379,bd2af89bd428,9166eeff1e50,7719a1c782a1,135debd48370"
+}
