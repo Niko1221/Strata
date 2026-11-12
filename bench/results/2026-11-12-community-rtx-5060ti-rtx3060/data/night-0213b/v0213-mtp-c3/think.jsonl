@@ -1,0 +1,3 @@
+{"tag": "v0213-mtp-c3/think", "q": "узнать, какой выключатель к какой лампе?", "think": true, "decode": 75.8, "prompt": 75.8, "prompt_n": 88, "cache_n": 0, "completion": 362, "answer_chars": 368, "finish": "stop", "wall": 6.0}
+{"tag": "v0213-mtp-c3/think", "q": " + 12 делится на x - 2. Объясни решение.", "think": true, "decode": 88.1, "prompt": 71.8, "prompt_n": 86, "cache_n": 0, "completion": 968, "answer_chars": 863, "finish": "stop", "wall": 12.2}
+{"tag": "v0213-mtp-c3/think", "q": ", как он работает с одинаковыми суммами.", "think": true, "decode": 87.9, "prompt": 66.4, "prompt_n": 97, "cache_n": 0, "completion": 2716, "answer_chars": 3493, "finish": "stop", "wall": 32.4}

@@ -1,0 +1,6 @@
+{"tag": "env-STRATA_QSA_SPLIT_ATTN/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 76.7, "completion": 400, "reasoning_chars": 0, "answer_chars": 1803, "finish": "length", "wall": 5.4}
+{"tag": "env-STRATA_QSA_SPLIT_ATTN/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 78.3, "completion": 400, "reasoning_chars": 0, "answer_chars": 1384, "finish": "length", "wall": 5.4}
+{"tag": "env-STRATA_QSA_SPLIT_ATTN/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 70.3, "completion": 400, "reasoning_chars": 0, "answer_chars": 1501, "finish": "length", "wall": 6.0}
+{"tag": "env-STRATA_QSA_SPLIT_ATTN/quick", "q": "Объясни в пяти пунктах, чем отличается T", "think": false, "decode": 77.5, "completion": 400, "reasoning_chars": 0, "answer_chars": 1750, "finish": "length", "wall": 5.5}
+{"tag": "env-STRATA_QSA_SPLIT_ATTN/quick", "q": "Напиши на Python функцию бинарного поиск", "think": false, "decode": 82.6, "completion": 400, "reasoning_chars": 0, "answer_chars": 1367, "finish": "length", "wall": 5.1}
+{"tag": "env-STRATA_QSA_SPLIT_ATTN/quick", "q": "Explain how a B-tree index works in a da", "think": false, "decode": 68.2, "completion": 400, "reasoning_chars": 0, "answer_chars": 1496, "finish": "length", "wall": 6.1}
