@@ -102,6 +102,10 @@
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/program/stage_reserve.hpp"
+#include "strata/program/vram_calib.hpp"
+#if defined(__APPLE__)
+#include <crt_externs.h>   // _NSGetEnviron (STRATA_VRAM_CALIB)
+#endif
 #include "strata/program/split_walk.hpp"
 #include "strata/program/gpu_report.hpp"
 #include "strata/prefill/share_rules.hpp"
@@ -3273,6 +3277,188 @@ static bool prepare_gated_window(strata::core::gated::Packet& packet,
     std::fflush(stdout);
     std::_Exit(3);
 }
+// STRATA_VRAM_CALIB=1 (opt-in, #5571): size each card's reserve from what this binary and config were measured to
+// allocate after the expert cache, instead of --vram-reserve-mib / --vram-reserve-later-mib and the fixed late-allocation
+// terms (kLateAllocMib, kStageLateAllocMib).  Measured per card: `need` = the VRAM free when the card's cache was sized -
+// the VRAM free with everything loaded - the cache, and `grow` = the further drop to the lowest free figure after a request
+// (window graphs captured on first use).  Kept in a file keyed by the binary, every argument and every STRATA_* variable;
+// the next start keeps need + grow + a margin (STRATA_VRAM_CALIB_MARGIN_MIB, default 192) free.  No file for this key (a new
+// binary or config): the start sizes as before and writes one.  Unset: nothing here runs.
+namespace vcal {
+namespace vc = strata::program::vram_calib;
+struct Live { int dev = -1; long long seal_free = -1, low_free = -1; };
+struct State {
+    bool on = false, loaded = false, from_binary = false; std::string path, binary_path; long long margin_mib = vc::kDefaultMarginMib;
+    std::vector<vc::Card> prev, cur; std::vector<Live> live; std::vector<std::pair<int, long long>> marks;
+};
+inline State& st() { static State s; return s; }
+inline std::string exe_id(char** argv) {   // the binary's size and modification time, so a rebuilt engine measures again
+    std::error_code ec;
+#if defined(_WIN32)
+    wchar_t wp[4096];
+    const DWORD n = GetModuleFileNameW(nullptr, wp, 4096);
+    const std::filesystem::path exe = (n > 0 && n < 4096) ? std::filesystem::path(std::wstring(wp, n)) : std::filesystem::path(argv[0]);
+#elif defined(__linux__)
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+#else
+    const std::filesystem::path exe = argv[0];
+#endif
+    const auto sz = std::filesystem::file_size(exe, ec);
+    if (ec) return argv[0];
+    const auto mt = std::filesystem::last_write_time(exe, ec);
+    return std::to_string((unsigned long long) sz) + ":" + std::to_string((long long) mt.time_since_epoch().count());
+}
+inline void init(int argc, char** argv) {
+    const char* v = std::getenv("STRATA_VRAM_CALIB");
+    if (v == nullptr || v[0] != '1') return;
+    State& s = st();
+    s.on = true;
+    s.margin_mib = vc::margin_mib(std::getenv("STRATA_VRAM_CALIB_MARGIN_MIB"));   // MiB, or tight / normal / safe
+#if defined(_WIN32)
+    char** envp = _environ;
+    const char* base = std::getenv("LOCALAPPDATA");
+    const std::filesystem::path dir = std::filesystem::path(base != nullptr && *base ? base : ".") / "strata" / "vram-calib";
+#else
+#if defined(__APPLE__)
+    char** envp = *_NSGetEnviron();   // macOS declares no `environ` for C++ (crt_externs.h)
+#else
+    char** envp = environ;
+#endif
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    const char* home = std::getenv("HOME");
+    const std::filesystem::path dir = std::filesystem::path(xdg != nullptr && *xdg ? std::string(xdg) : std::string(home != nullptr ? home : "/tmp") + "/.cache") / "strata" / "vram-calib";
+#endif
+    const std::string id = exe_id(argv);
+    const std::string key = vc::file_key(id, std::vector<std::string>(argv + 1, argv + argc), vc::sizing_env(envp));
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    s.path = (dir / (key + ".txt")).string();
+    if (std::FILE* f = std::fopen(s.path.c_str(), "rb")) {
+        std::string text; char buf[512]; size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+        std::fclose(f);
+        s.prev = vc::parse(text);
+    }
+    const auto report_dropped = [](const std::vector<vc::Card>& dropped) {
+        for (const vc::Card& c : dropped)
+            std::fprintf(stderr, "strata vram: CUDA%d calibration: WARNING: the file says %lld MiB allocated after the cache - too "
+                                 "little to be real, not used; this card is sized with the fixed terms\n", c.dev, c.need >> 20);
+    };
+    report_dropped(vc::drop_implausible(s.prev));
+    s.loaded = !s.prev.empty();
+    // the file is held aside from here until this start writes it again once everything is loaded: a start that fails before
+    // that (a calibration that sized a cache too large can leave no room for the drafter, and every later start would fail
+    // the same way without ever measuring again) leaves no file, and the next start falls back to the binary's file below
+    // or to the fixed terms
+    if (s.loaded) {
+        std::error_code rc;
+        std::filesystem::rename(s.path, s.path + ".inuse", rc);
+    }
+    // no calibration for this configuration, one for this binary: start from it (a first start then sizes its caches as a
+    // calibrated start does, and writes this configuration's own measurement; a configuration that needs more is reported once
+    // everything is loaded, and the margin pays for it until the next start)
+    s.binary_path = (dir / (vc::binary_key(id) + ".txt")).string();
+    if (!s.loaded)
+        if (std::FILE* f = std::fopen(s.binary_path.c_str(), "rb")) {
+            std::string text; char buf[512]; size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
+            std::fclose(f);
+            s.prev = vc::parse(text);
+            report_dropped(vc::drop_implausible(s.prev));
+            s.loaded = s.from_binary = !s.prev.empty();
+        }
+    if (s.from_binary)
+        std::fprintf(stderr, "strata vram: STRATA_VRAM_CALIB=1: no calibration for this config yet: sized from this binary's last "
+                             "one (%s), measured once everything is loaded (%s)\n", s.binary_path.c_str(), s.path.c_str());
+    else
+        std::fprintf(stderr, "strata vram: STRATA_VRAM_CALIB=1: %s (%s)\n", s.loaded ? "calibration found, the caches keep what it measured free" :
+                     "no calibration for this binary and config yet: sized as before, measured once everything is loaded", s.path.c_str());
+}
+/// MiB to keep free on `dev` after its cache (need + grow + margin), or -1 without a calibration for it
+inline long long reserve_mib(int dev) {
+    const State& s = st();
+    return s.on && s.loaded ? vc::reserve_mib(s.prev, dev, s.margin_mib) : -1;
+}
+inline void save() {
+    const State& s = st();
+    if (!s.on || s.path.empty() || s.cur.empty()) return;
+    const std::string text = vc::format(s.cur);
+    bool grown = false;   // the binary's file too, once a request has shown the growth (a measurement without it would size short)
+    for (const vc::Card& c : s.cur) grown = grown || c.grow > 0;
+    for (const std::string& path : {s.path, grown ? s.binary_path : std::string()}) {
+        if (path.empty()) continue;
+        const std::string tmp = path + ".tmp";
+        if (std::FILE* f = std::fopen(tmp.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+            std::error_code ec;
+            std::filesystem::rename(tmp, path, ec);
+        }
+    }
+    std::error_code rc;
+    std::filesystem::remove(s.path + ".inuse", rc);   // written again: the held-aside copy goes
+}
+inline long long free_on(int dev) {
+    int cur = 0; size_t fr = 0, tot = 0;
+    if (cudaGetDevice(&cur) != cudaSuccess) return -1;
+    long long r = -1;
+    if (cudaSetDevice(dev) == cudaSuccess && cudaMemGetInfo(&fr, &tot) == cudaSuccess) r = (long long) fr;
+    (void) cudaSetDevice(cur);
+    return r;
+}
+/// the moment `dev`'s cache is sized: what is allocated on it from here on is what the reserve has to hold
+inline void mark(int dev) {
+    State& s = st();
+    if (!s.on) return;
+    const long long fr = free_on(dev);
+    for (auto& m : s.marks) if (m.first == dev) { m.second = fr; return; }
+    s.marks.emplace_back(dev, fr);
+}
+/// once everything is loaded: what `dev` allocated after its cache (`cache_bytes`) was sized
+inline void at_seal(int dev, long long cache_bytes) {
+    State& s = st();
+    if (!s.on) return;
+    long long fm = -1;
+    for (const auto& m : s.marks) if (m.first == dev) fm = m.second;
+    const long long fn = free_on(dev);
+    vc::Card c;
+    c.dev = dev; c.need = vc::need_bytes(fm, fn, cache_bytes);
+    if (c.need < 0) return;
+    long long prev_need = -1;
+    for (const vc::Card& p : s.prev) if (p.dev == dev) { c.grow = std::max(0ll, p.grow); prev_need = p.need; }   // grow kept until this run shows its own
+    // a reading far below the figure this start was sized from is not taken (another card's allocation landing on this one,
+    // or a reading during a free); a rise always is; with no earlier figure, too little to be real is not written
+    const long long raw = fm - fn - cache_bytes;
+    switch (vc::judge_need(raw, prev_need)) {
+    case vc::NeedVerdict::KeepPrev:
+        std::fprintf(stderr, "strata vram: CUDA%d calibration: WARNING: measured %lld MiB allocated after the cache, the calibration "
+                             "said %lld MiB - not taken; the earlier figure stays\n", dev, raw >> 20, prev_need >> 20);
+        c.need = prev_need;
+        break;
+    case vc::NeedVerdict::Skip:
+        std::fprintf(stderr, "strata vram: CUDA%d calibration: WARNING: measured %lld MiB allocated after the cache - too little to be "
+                             "real, not written; the next start sizes this card with the fixed terms\n", dev, raw >> 20);
+        return;
+    case vc::NeedVerdict::Take: break;
+    }
+    s.cur.push_back(c);
+    s.live.push_back({dev, fn, fn});
+    std::fprintf(stderr, "strata vram: CUDA%d calibration: %lld MiB allocated after the cache was sized (free %lld MiB then, "
+                         "%lld MiB now, cache %lld MiB); the next start keeps %lld MiB free after its cache%s\n", dev, c.need >> 20,
+                 fm >> 20, fn >> 20, cache_bytes >> 20, vc::reserve_mib({c}, dev, s.margin_mib),
+                 prev_need < 0 ? "" : c.need > prev_need + (16ll << 20) ? " - MORE than the calibration this start was sized from: the margin pays for it" : "");
+}
+/// after a request: the lowest free figure since everything was loaded (the windows' graphs, captured on first use)
+inline void after_request() {
+    State& s = st();
+    if (!s.on || s.cur.empty()) return;
+    bool changed = false;
+    for (size_t i = 0; i < s.cur.size() && i < s.live.size(); ++i)
+        changed |= vc::update_grow(s.cur[i].grow, s.live[i].seal_free, s.live[i].low_free, free_on(s.cur[i].dev));
+    if (changed) save();
+}
+}  // namespace vcal
+
 static void exit_if_gpu_fatal(const std::string& err) {
     static const long inject = [] { const char* v = std::getenv("STRATA_INJECT_FATAL"); return v != nullptr ? std::atol(v) : 0L; }();
     static long windows = 0;
@@ -3309,6 +3495,7 @@ int main(int argc, char** argv) {
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    vcal::init(argc, argv);   // STRATA_VRAM_CALIB (#5571)
     strata::platform::restore_normal_io_priority();   // #4733: not the low disk priority of the program that started this one
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
     {   // 0.2.1.2: hipblas / libhipblaslt / rocblas are delay-loaded (CMakeLists.txt) and live in <exe folder>\rocm\bin, which only the
@@ -6109,6 +6296,10 @@ int main(int argc, char** argv) {
         if (const cudaError_t e = cudaMemGetInfo(&fb, &tb); e != cudaSuccess)
             std::fprintf(stderr, "strata generate: layer split: CUDA%d free memory: %s\n", dev < 0 ? 0 : dev,
                          cudaGetErrorString(e));
+        if (later) {   // STRATA_VRAM_CALIB: a later stage keeps exactly what was measured free after its cache
+            int dd = dev; if (dd < 0) (void) cudaGetDevice(&dd);
+            if (const long long r = vcal::reserve_mib(dd); r >= 0) return std::max<int64_t>((int64_t) fb - ((int64_t) r << 20), 0);
+        }
         const int64_t pf = search && split_own_auto && !place_with_reserve ? 0 : split_pf_mib;
         // what a later stage allocates after its cache and nothing prices (cuBLAS, the modules and the MMQ pool the prompt path warms up, ~250 MiB measured): the single card prices
         // it (kLateAllocMib, #4474); a stage did not, and two 16 GB cards ended a start with 131 MiB free and ran out of memory in the first long prompt.  Not under STRATA_DEFAULTS=026.
@@ -8024,7 +8215,9 @@ int main(int argc, char** argv) {
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2 && native_head.loaded()) mtp_bind += df2_head_bytes() + (48 << 20) + (o.serve ? (112 << 20) : 0);   // DFlash2's own draft head and logits (serve: and the prompt staging), bound after this
 #endif
-        const int64_t reserve = (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
+        // STRATA_VRAM_CALIB: the measured need after the cache replaces the reserve and the late-allocation term
+        const long long vcal0 = vcal::reserve_mib(0);
+        const int64_t reserve = vcal0 >= 0 ? (int64_t) vcal0 << 20 : (((int64_t) o.vram_reserve_mib + prefill_mib) << 20) + mtp_bind + pipe_first;
         const int64_t blob = (int64_t) nibble_max_slot_bytes();   // max_blob (STRATA_EXPERT_NIBBLE: or a larger 4-bit slot)
         // #496: the least a working cache needs (the verify window cannot start without one, #174): a cache too small to lend the prompt path a
         // 256-token chunk's buffers (plus the 128 slots a loan leaves; one slot without --prefill) makes it allocate its own on top
@@ -8035,7 +8228,7 @@ int main(int argc, char** argv) {
         // keep (459 MiB free at --vram-reserve-mib 700: under the 512 MiB line the serve check warns about, #2065).  The cache now leaves it too.
         // Not on a card that could not keep min_slots after it, and not under STRATA_DEFAULTS=026 (the v0.2.6 sizing).
         strata::core::AutoCacheSlots auto_slots = strata::core::auto_cache_slots(
-            (int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
+            (int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() || vcal0 >= 0 ? 0 : strata::core::kLateAllocMib);
         int64_t slots = auto_slots.slots;
         if (!profile.empty()) slots = std::min<int64_t>(slots, (int64_t) profile.size());
 #if defined(STRATA_GPU_METAL)
@@ -8090,7 +8283,7 @@ int main(int argc, char** argv) {
                              o.expert_cache, (long long) min_slots, (long long) kTightKeep);
                 min_slots = tight_min;
                 g_lend_keep = kTightKeep;
-                auto_slots = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
+                auto_slots = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() || vcal0 >= 0 ? 0 : strata::core::kLateAllocMib);
                 int64_t s3 = auto_slots.slots;
                 if (!profile.empty()) s3 = std::min<int64_t>(s3, (int64_t) profile.size());
                 o.expert_cache = (int) std::max<int64_t>(s3, 0);
@@ -8161,7 +8354,7 @@ int main(int argc, char** argv) {
             std::string herr;
             if (native_head.to_host(herr)) {
                 free_b = strata::core::device_free_bytes();
-                strata::core::AutoCacheSlots a2 = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() ? 0 : strata::core::kLateAllocMib);
+                strata::core::AutoCacheSlots a2 = strata::core::auto_cache_slots((int64_t) free_b, reserve, blob, min_slots, strata::qwen_defaults_026() || vcal0 >= 0 ? 0 : strata::core::kLateAllocMib);
                 int64_t s4 = a2.slots;
                 if (!profile.empty()) s4 = std::min<int64_t>(s4, (int64_t) profile.size());
                 if (s4 < min_slots && o.vram_reserve_mib > kSmallReserveMib) {   // the reserve lowered for the smaller cache, as above
@@ -8255,6 +8448,7 @@ int main(int argc, char** argv) {
                          (double) ((uint64_t) q * per_layer_bytes) / 1073741824.0);
         }
     } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
+        vcal::mark(0);   // STRATA_VRAM_CALIB: what CUDA0 allocates from here on must fit the reserve
         size_t free_b = 0, total_b = 0;
         free_b = strata::core::device_free_bytes(); (void) total_b;
         const auto& lay = strata::kernels::cpu::expert_layout();
@@ -8263,7 +8457,8 @@ int main(int argc, char** argv) {
         // held one slot fewer than asked (--expert-cache 1: none)
         const uint64_t budget = (uint64_t) o.expert_cache * ((nibble_max_slot_bytes() + 255) / 256 * 256);
         uint64_t used = 0;
-        const size_t keep_free = ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
+        const long long vcal_k = vcal::reserve_mib(0);   // STRATA_VRAM_CALIB
+        const size_t keep_free = vcal_k >= 0 ? (size_t) vcal_k << 20 : ((size_t) o.vram_reserve_mib << 20) + (size_t) pipe_first;
         size_t free_room = free_b > keep_free ? free_b - keep_free : 0;
         const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
         for (const auto& pr : profile) {
@@ -8436,7 +8631,8 @@ int main(int argc, char** argv) {
             cudaDeviceSynchronize();
             size_t free_b = 0, total_b = 0;
             free_b = strata::core::device_free_bytes(); (void) total_b;
-            const int64_t want = ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
+            const long long vcal_w = vcal::reserve_mib(0);   // STRATA_VRAM_CALIB
+            const int64_t want = vcal_w >= 0 ? (int64_t) vcal_w << 20 : ((int64_t) o.vram_reserve_mib << 20) + pipe_first;
             if ((int64_t) free_b >= want - (64ll << 20)) break;
             // short by (want - free); a figure of 0 only says "at least": the first two such reads give back 1 GiB
             // each (under WDDM the free figure read before the allocation runs ~0.7 GiB high), later ones a quarter
@@ -8619,6 +8815,7 @@ int main(int argc, char** argv) {
         const auto& lay = strata::kernels::cpu::expert_layout();
         // the drafter and the head are already allocated by now (they load above, before this), so what is left
         // to hold back is the windows - and `free_b` has already lost the drafter.
+        vcal::mark(st.dev);   // STRATA_VRAM_CALIB: what this card allocates from here on must fit its reserve
         int64_t room = stage_room(st.dev, true, false);
         const strata::core::OnDevice on(st.dev);
 #if defined(STRATA_HAVE_DFLASH2)
@@ -13908,6 +14105,11 @@ int main(int argc, char** argv) {
             std::fflush(stderr);
         };
         {
+            if (vcal::st().on) {   // STRATA_VRAM_CALIB: what each card allocated after its cache
+                vcal::at_seal(0, (long long) xcache.bytes());
+                for (const auto& stp : stages) vcal::at_seal(stp->dev, (long long) stp->cache.bytes());
+                vcal::save();
+            }
             // what is left once everything is allocated: under WDDM a GPU filled to the brim does not fail, it pages -
             // and a page-in while the verify graph spins on a host flag stalls the request for good
             size_t free_b = 0, total_b = 0;
@@ -13917,7 +14119,15 @@ int main(int argc, char** argv) {
             // below ~256 MiB a later allocation (a first-used window's buffers, the desktop, another program) can make
             // the driver page GPU memory, and a verify graph spinning on a host flag then never finishes
             const int64_t free_mib = (int64_t) (free_b >> 20);
-            if (free_mib >= 256) {
+            // under a loaded STRATA_VRAM_CALIB the reserve is the measured need + growth + margin, so a figure under the
+            // fixed bars is the plan, not a shortage; warn only when the card is below the margin itself
+            const bool cal_ok0 = vcal::st().loaded && vcal::reserve_mib(0) >= 0 && free_mib >= vcal::st().margin_mib;
+            if (free_mib < 256 && cal_ok0) {
+                std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded (STRATA_VRAM_CALIB: the "
+                                     "measured need plus a %lld MiB margin; not LOW)\n", (long long) free_mib,
+                             vcal::st().margin_mib);
+                rss_probe("serving");
+            } else if (free_mib >= 256) {
                 std::fprintf(stderr, "strata serve: %lld MiB of VRAM free with everything loaded\n", (long long) free_mib);
 #ifdef _WIN32
                 if (free_mib < 512 && o.prefill_auto)   // #1275: said, never changed (the chunk is the operator's to cap)
@@ -13960,7 +14170,11 @@ int main(int argc, char** argv) {
                 if (cudaMemGetInfo(&sf, &stot) != cudaSuccess) { (void) cudaGetLastError(); continue; }
                 const int64_t sf_mib = (int64_t) (sf >> 20);
                 const int later_reserve = o.vram_reserve_later_mib >= 0 ? o.vram_reserve_later_mib : o.vram_reserve_mib;
-                if (sf_mib >= 512)
+                if (sf_mib < 512 && vcal::st().loaded && vcal::reserve_mib(stp->dev) >= 0 && sf_mib >= vcal::st().margin_mib)
+                    std::fprintf(stderr, "strata serve: CUDA%d: %lld MiB of VRAM free with everything loaded (STRATA_VRAM_CALIB: "
+                                         "the measured need plus a %lld MiB margin; not LOW)\n", stp->dev, (long long) sf_mib,
+                                 vcal::st().margin_mib);
+                else if (sf_mib >= 512)
                     std::fprintf(stderr, "strata serve: CUDA%d: %lld MiB of VRAM free with everything loaded\n", stp->dev,
                                  (long long) sf_mib);
                 else
@@ -19855,6 +20069,7 @@ int main(int argc, char** argv) {
                 std::snprintf(read_txt, sizeof(read_txt), "%lld of %lld", (long long) read_n, (long long) fresh);
             else
                 std::snprintf(read_txt, sizeof(read_txt), "%lld", (long long) fresh);
+            vcal::after_request();   // STRATA_VRAM_CALIB: the lowest free figure since everything was loaded
             std::fprintf(stderr, "strata serve: prompt %lld tokens = %lld reused + %s read in %.0f ms (%.1f tok/s), "
                                  "%lld generated in %.0f ms (%.1f tok/s), drafts accepted %lld of %lld, %zu checkpoints%s\n",
                          (long long) n, (long long) resume, read_txt, prompt_ms,

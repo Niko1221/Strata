@@ -41244,6 +41244,72 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_VRAM_CALIB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 3280,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "ee1d3aad8a",
+   "first_date": "2026-11-09",
+   "since": "",
+   "last_commit": "ee1d3aad8a",
+   "last_date": "2026-11-09",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "=1: size each card's reserve from the measured need after the cache + growth + margin (#5571); each binary/config writes ~/.cache/strata/vram-calib/<key>.txt, a new config of a measured binary starts from binary-<id>.txt, measurement-only switches (TRACE, TIMING, VERIFY_NODES, DUMMY_NODES, DISPATCH_REPORT) do not change the key",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_VRAM_CALIB_MARGIN_MIB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 3284,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "ee1d3aad8a",
+   "first_date": "2026-11-09",
+   "since": "",
+   "last_commit": "ee1d3aad8a",
+   "last_date": "2026-11-09",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "the margin STRATA_VRAM_CALIB keeps on top of the measured need: MiB, or tight (96) / normal (192, default) / safe (384)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_VRAM_FREE",
    "backends": [
     "cuda-hip"
