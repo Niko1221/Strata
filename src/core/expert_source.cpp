@@ -4731,7 +4731,7 @@ bool FileExpertSource::pcie_layer(int64_t layer) const {
 
 bool ExpertDispatch::fetch_can(int64_t layer) const {
     return fetch_admit > 0 && res_mut != nullptr && !usage.empty() && plan != nullptr && plan->pcie_mode == 2 &&
-           plan->dst2 != nullptr && peer == nullptr && remote_count == 0 && fs == nullptr && pcie_num > 0 &&
+           plan->dst2 != nullptr && peer == nullptr && fs == nullptr && pcie_num > 0 &&   // (helper GPUs too: the pick leaves out what they hold)
            src != nullptr && src->pcie_layer(layer);
 }
 
@@ -5019,8 +5019,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 pick[q] = false;
                 const int32_t e = ids[distinct[q]];   // a tail-skipped miss is not fetched
                 // (an unpinned blob cannot be fetched: under STRATA_PIN_BY_NEED a PCIe layer is pinned in part)
+                // (a miss a helper GPU or the peer tier holds is computed there, never fetched - as nmiss counts it;
+                // without this the share's picks went to the helper's experts and the share shrank)
                 if (!skip_d[q] && e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0 &&
-                    d.src->pinned(d.layers, e))
+                    !(d.peer != nullptr && d.peer->has(d.layers, e)) && !helper_holds(e) && d.src->pinned(d.layers, e))
                     mq[nm++] = q;
             }
             std::stable_sort(mq, mq + nm, [&](int a, int b) { return use[ids[distinct[a]]] > use[ids[distinct[b]]]; });
@@ -5103,7 +5105,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             int cq[64], nc = 0;
             for (int q = 0; q < fetches; ++q) {
                 const int32_t e = ids[pcie_i0[q]];
-                if (use[e] >= d.fetch_min && (d.in_flight.empty() || d.in_flight[lb + (size_t) e] == 0)) cq[nc++] = q;
+                if (use[e] >= d.fetch_min && (d.in_flight.empty() || d.in_flight[lb + (size_t) e] == 0) && !helper_holds(e))
+                    cq[nc++] = q;   // (never an expert a helper holds: STRATA_DISJOINT_ADAPT's rule)
             }
             std::stable_sort(cq, cq + nc, [&](int a, int b) { return use[ids[pcie_i0[a]]] > use[ids[pcie_i0[b]]]; });
             int32_t vic[64];
