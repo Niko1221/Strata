@@ -1,0 +1,11 @@
+STRONG: packing natural neg_a 1 neg_b 1 layout D[2i+l/16][l%16] -> 256/256
+STRONG: packing W11 neg_a 1 neg_b 1 layout D[2i+l/16][l%16] -> 256/256
+
+best: 256/128  packing natural neg_a 1 neg_b 1 layout D[2i+l/16][l%16]
+sample out[lane0] = 33 -14 -21 -30 -24 -35 6 7 
+CPU C[0][0..7] = 33 49 25 -12 -14 -6 3 -14 
+CPU C[1][0..7] = -22 33 31 -54 1 -29 -6 -16 
+PV: (true,true) u8P x s8V natural D[2i+l/16][l%16] -> 256/256
+ACC: c=0 -> 256/256
+ACC c=C1 (A,B real): 2xCPU 256/256
+ACC c=C1 (A=B=0): c 256/256
