@@ -1,0 +1,47 @@
+{
+ "exe": "<strata_worktree>/engine-dsv41/0.1.59-linux-x86_64-cuda-cuda13/strata-dsv41",
+ "args": [
+  "--pack",
+  "<model_dir>/app-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw",
+  "--max-context",
+  "131072",
+  "--eos",
+  "1",
+  "--vision",
+  "on",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--reserve-mib",
+  "900"
+ ],
+ "cwd": "<strata_worktree>",
+ "tokenizer": "<model_dir>/app-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw/tokenizer",
+ "model_name": "deepseek-v4.1-flash",
+ "arch": "deepseek41",
+ "log": "<strata_worktree>/strata-deepseek-v4.1-flash-ist-das-2.00bpw.log",
+ "lib_dirs": [
+  "<strata_worktree>/engine-dsv41/0.1.59-linux-x86_64-cuda-cuda13"
+ ],
+ "port": 8080,
+ "engine_ready_s": 3600,
+ "gpu": 0,
+ "gpus_asked": true,
+ "args_written": [
+  "--pack",
+  "<model_dir>/app-data/packs/deepseek-v4.1-flash-ist-das-2.00bpw",
+  "--max-context",
+  "131072",
+  "--eos",
+  "1",
+  "--vision",
+  "on",
+  "--dspark",
+  "auto",
+  "--dspark-conf",
+  "0.65",
+  "--reserve-mib",
+  "900"
+ ]
+}

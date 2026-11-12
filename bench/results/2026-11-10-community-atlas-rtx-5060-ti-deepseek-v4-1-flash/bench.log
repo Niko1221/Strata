@@ -1,0 +1,63 @@
+Using the Strata server already running at http://127.0.0.1:8080.
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.04 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 13.6 tok/s, first token 1.31 s, 100 tokens
+  run 1 q2: decode 14.2 tok/s, first token 1.225 s, 100 tokens
+  run 1 q3: decode 13.6 tok/s, first token 1.373 s, 100 tokens
+  run 2 q1: decode 14.7 tok/s, first token 1.549 s, 100 tokens
+  run 2 q2: decode 15.9 tok/s, first token 1.185 s, 100 tokens
+  run 2 q3: decode 14.8 tok/s, first token 1.352 s, 100 tokens
+  run 3 q1: decode 15.3 tok/s, first token 1.509 s, 100 tokens
+  run 3 q2: decode 16.9 tok/s, first token 1.166 s, 100 tokens
+  run 3 q3: decode 15.3 tok/s, first token 1.284 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4125 tokens, prompt 349.7 tok/s (0 reused), first token 11.801 s
+  run 2: 4125 tokens, prompt 370.2 tok/s (0 reused), first token 11.148 s
+  run 3: 4125 tokens, prompt 374.6 tok/s (0 reused), first token 11.019 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16562 tokens, prompt 458.5 tok/s (0 reused), first token 36.144 s
+  run 2: 16562 tokens, prompt 431.9 tok/s (0 reused), first token 38.37 s
+  run 3: 16562 tokens, prompt 438.7 tok/s (0 reused), first token 37.775 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 602, reused 0, read 602, first token 6.186 s
+  run 1 turn 1: prompt 3998, reused 636, read 3362, first token 12.454 s
+  run 1 turn 2: prompt 5516, reused 4061, read 1455, first token 8.672 s
+  run 1 turn 3: prompt 8615, reused 5565, read 3050, first token 11.762 s
+  run 1 turn 4: prompt 10851, reused 8670, read 2181, first token 9.781 s
+  run 1 turn 5: prompt 13493, reused 10906, read 2587, first token 10.684 s
+  run 2 turn 0: prompt 602, reused 0, read 602, first token 6.005 s
+  run 2 turn 1: prompt 3998, reused 636, read 3362, first token 11.74 s
+  run 2 turn 2: prompt 5512, reused 4058, read 1454, first token 8.323 s
+  run 2 turn 3: prompt 8623, reused 5573, read 3050, first token 11.254 s
+  run 2 turn 4: prompt 10861, reused 8680, read 2181, first token 9.398 s
+  run 2 turn 5: prompt 13510, reused 10923, read 2587, first token 10.296 s
+  run 3 turn 0: prompt 602, reused 0, read 602, first token 6.012 s
+  run 3 turn 1: prompt 3998, reused 636, read 3362, first token 11.66 s
+  run 3 turn 2: prompt 5511, reused 4057, read 1454, first token 8.178 s
+  run 3 turn 3: prompt 8625, reused 5574, read 3051, first token 11.171 s
+  run 3 turn 4: prompt 10870, reused 8688, read 2182, first token 9.364 s
+  run 3 turn 5: prompt 13510, reused 10923, read 2587, first token 10.286 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 33126 tokens, prompt 553.3 tok/s (0 reused), first token 59.907 s
+  run 2: 33126 tokens, prompt 728.0 tok/s (0 reused), first token 45.537 s
+  run 3: 33126 tokens, prompt 727.5 tok/s (0 reused), first token 45.565 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     14.80   (13.60 - 16.90, n=9)
+  chat first token (s)                   1.31   (1.17 - 1.55, n=9)
+  4K prompt tok/s                      370.20   (349.70 - 374.60, n=3)
+  4K first token (s)                    11.15   (11.02 - 11.80, n=3)
+  16K prompt tok/s                     438.70   (431.90 - 458.50, n=3)
+  16K first token (s)                   37.77   (36.14 - 38.37, n=3)
+  32K prompt tok/s                     727.50   (553.30 - 728.00, n=3)
+  32K first token (s)                   45.56   (45.54 - 59.91, n=3)
+  agent cache hit %                     70.28   (70.25 - 70.28, n=3)
+  agent re-read tokens/session           5.00   (5.00 - 5.00, n=3)
+  agent turn first token (s)            10.30   (8.18 - 12.45, n=15)
+  agent decode tok/s                    16.00   (14.70 - 16.80, n=15)
+
+Report: <model_dir>/bench-results/2026-11-10-community-rtx-5060-ti-deepseek-v4-1-flash/README.md
+Share it: open a pull request that adds the folder <model_dir>/bench-results/2026-11-10-community-rtx-5060-ti-deepseek-v4-1-flash (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).
