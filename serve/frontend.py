@@ -615,6 +615,18 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
             kwargs.update(effort_kwargs(v))
+    # continue_final_message (llama.cpp / HF transformers): the generation continues the final assistant
+    # message instead of starting a new one.  llama.cpp reads it from the request body, HF transformers
+    # takes it as an apply_chat_template keyword, so both spellings are read and the body's wins.  Read
+    # after the loop: `enable_thinking: false` replaces `kwargs` wholesale, so a value gathered inside it
+    # is dropped with the rest when the client's JSON lists continue_final_message first.  Booleans only:
+    # llama.cpp's string forms say which block of the message continues, and this renderer does not tell
+    # a reasoning block from the answer.
+    continue_final = req.get("continue_final_message")
+    if not isinstance(continue_final, bool):
+        continue_final = (req.get("chat_template_kwargs") or {}).get("continue_final_message")
+    if continue_final is True:
+        kwargs["continue_final_message"] = True
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 

@@ -5930,6 +5930,20 @@ class Service:
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
         empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
+        # continue_final_message (llama.cpp server / HF transformers semantics): the generation continues the final
+        # assistant message.  Rendered without the generation prompt - which also skips the template's forced
+        # <think> opener - and the rendered prompt loses its trailing <|im_end|> so the model picks the turn up
+        # where the client left it.  A prefilled reasoning_content renders as <think> ... </think> and the model
+        # answers; a prefill kept in the content goes on mid-think (a <think> in a message's text stays text, #537).
+        # The effort_end split is skipped: it assumes a user turn before the answer, and a continued turn is a
+        # fresh prompt for the conversation cache anyway, so the effort renders in the system block as usual.
+        if kwargs.get("continue_final_message") and messages and messages[-1].get("role") == "assistant":
+            kwargs = {k: v for k, v in kwargs.items() if k != "continue_final_message"}
+            prompt = self.template.render(messages, tools=tools, add_generation_prompt=False, **kwargs)
+            for suffix in ("<|im_end|>\n", "<|im_end|>"):
+                if prompt.endswith(suffix):
+                    return prompt[: len(prompt) - len(suffix)]
+            return prompt
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
