@@ -7841,6 +7841,7 @@ int main(int argc, char** argv) {
         if (!arena_src.ram_warning().empty())   // #633: said before the load's numbers, which it explains
             std::fprintf(stderr, "strata generate: WARNING: %s\n", arena_src.ram_warning().c_str());
         std::fprintf(stderr, "strata generate: expert arena: %s\n", arena_src.note().c_str());
+        if (!arena_src.numa_note().empty()) std::fprintf(stderr, "strata generate: %s\n", arena_src.numa_note().c_str());
         std::fprintf(stderr, "strata generate: loaded %.2f GiB at %.2f GiB/s\n",
                      (double) strata::kernels::cpu::expert_layout().total / (1024.0 * 1024 * 1024),
                      arena_src.load_gib_per_second());
@@ -7889,9 +7890,18 @@ int main(int argc, char** argv) {
     if (pool.plan_limit()[0] != '\0' && !pool.explicit_cores())   // the default count: what it was bounded by (a configured count is never changed; --pool-cores has its own line below)
         std::fprintf(stderr, "strata generate: CPU pool: %d workers by default (%d physical cores, %d logical processors; bounded by %s)\n",
                      pool.workers(), pool.plan_cores(), pool.plan_logical(), pool.plan_limit());
-    if (srcp == &arena_src && strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test)
-        std::fprintf(stderr, "strata generate: NUMA split on, but this model's experts come from the arena path: memory is "
-                             "not placed per node (known limitation)\n");
+    if (srcp == &arena_src && strata::kernels::cpu::active_numa_split().on && !strata::kernels::cpu::active_numa_split().test) {
+        const auto& np = strata::kernels::cpu::active_numa_split();
+        if (arena_src.numa_node(0) < 0)
+            std::fprintf(stderr, "strata generate: NUMA split on, but this model's experts come from the arena path: memory is "
+                                 "not placed per node (known limitation; STRATA_ARENA_NUMA=1 places it)\n");
+        else if (arena_src.numa_node(0) == np.nodes[0] && arena_src.numa_node(1) == np.nodes[1])
+            std::fprintf(stderr, "strata generate: NUMA split on: the arena's row halves are on the pool slices' nodes (%d, %d)\n",
+                         np.nodes[0], np.nodes[1]);
+        else
+            std::fprintf(stderr, "strata generate: WARNING: the arena was placed for nodes (%d, %d) but the pool split on (%d, %d): "
+                                 "the split reads remote rows\n", arena_src.numa_node(0), arena_src.numa_node(1), np.nodes[0], np.nodes[1]);
+    }
     if (pool.is_hybrid() && pool.affinity() != strata::kernels::cpu::PoolAffinity::All) {
         const char* aff_str = pool.affinity() == strata::kernels::cpu::PoolAffinity::PCores ? "p-cores" :
                               pool.affinity() == strata::kernels::cpu::PoolAffinity::All ? "all" : "auto";

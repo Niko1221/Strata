@@ -1331,6 +1331,10 @@ public:
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
     const std::string& note() const { return note_; }
+    /// STRATA_ARENA_NUMA: what the NUMA placement of the arena did ("" when not asked for), and the nodes of slice 0 and
+    /// 1 it placed on ({-1, -1} when it did not run).
+    const std::string& numa_note() const { return numa_note_; }
+    int numa_node(int slice) const { return numa_nodes_[slice & 1]; }
     /// #4846: called by `open` once, when the RAM still falls short of the arena after the wait and before anything is registered.
     /// The owner of a lock the engine took on its own (the PLE table's residency lock) gives it back here and returns the bytes
     /// it released (0: nothing to give); `open` then reads the available RAM again.  Unset: nothing is given back.
@@ -1372,6 +1376,8 @@ private:
     int64_t n_expert_ = 0;
     std::atomic<int64_t> reads_{0};   ///< (a counter only; two threads can read blobs at once)
     std::string note_;
+    std::string numa_note_;
+    int numa_nodes_[2] = {-1, -1};
     std::string ram_warning_;
     bool ram_short_ = false;
     double gib_per_s_ = 0.0;

@@ -1218,6 +1218,19 @@ on, at most 32). An explicit `--pool-workers N` is spread alternately across the
   the split on any machine; `=0` is off; `=test` builds the slices on any machine for scheduling tests, not for speed.
 - Only native expert layers are split. If a node lacks free memory for its half, the log warns `NUMA placement at risk` and
   after the load prints FAILED when a node holds under 95% of its slice.
+- The expert arena (the source when the RAM holds every expert) is not placed per node by default; the log then says
+  `memory is not placed per node (known limitation; STRATA_ARENA_NUMA=1 places it)`. `STRATA_ARENA_NUMA=1` (Linux, opt-in)
+  places each node's halves before the GPU registration, on 4 KiB pages, from threads bound to that node: each chunk is first
+  pinned long-term (io_uring fixed buffers, released at once), so the pin's own faults put its pages on that node outside
+  CMA-type memory. `cudaHostRegister`'s own long-term pin otherwise migrates pages that sit in CMA-type pageblocks, and the
+  migration takes the other node's free memory before it frees file cache on its own: 21-32% of one half moved to the other
+  node on a test box. A PLE table locked in RAM (Qwen3.8-Flash-Next) is read in half per node for the same reason: read by one
+  thread from a cold file, all of it landed on one node and left that node too little room for its half. It needs
+  `ulimit -l unlimited` (a systemd `LimitMEMLOCK=infinity`); without it the placement still runs, unprotected, and the log
+  says so. The log lines `STRATA_ARENA_NUMA: row halves placed ...` and `PLE table per NUMA node ...` report the share of
+  sampled pages on their node. Measured on 2x Xeon E5-2696 v3 (DDR3) with 2x Tesla P100, a 63.5 GiB arena: the CPU pool's
+  time per decode window 28.6 -> 14.0 ms, the same output (byte-identical teacher-forced log-probabilities),
+  about 2 s of placement at start.
 - Do not wrap the server in `numactl --cpunodebind` when testing workers across sockets: it pins them to one node.
 - Workers on both sockets paid off on one box and cost on another, so measure on yours: `--pool-workers N` with N above one
   socket's cores, a fresh server per value, the same prompt, decode tok/s from the log.

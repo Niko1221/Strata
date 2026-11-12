@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -71,8 +72,12 @@ struct PinnedArena {
     /// `shared_pack_hash` identifies the pack that is allowed to populate that backing.  The file carries a
     /// small header and is refused when its stored hash does not match.  Empty `shared_file` preserves the
     /// existing allocation path.  Population/coordination and backing-file lifetime remain the caller's job.
+    /// `pretouch` (optional, private normal-page arenas only): called with (base, bytes) after the reservation and
+    /// before the registration, so the caller may fault the pages in where it wants them (STRATA_ARENA_NUMA: each
+    /// NUMA slice of every expert on its node).  Unset: nothing changes.
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0,
-                const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
+                const std::string& shared_file = {}, uint64_t shared_pack_hash = 0,
+                const std::function<void(uint8_t*, uint64_t)>& pretouch = {});
     /// Pin by need (STRATA_PIN_BY_NEED=1): register only the given byte ranges (offset, length), in the given order
     /// (the caller's priority: the hottest experts the GPU does not hold first), each rounded out to 4 KiB pages and
     /// trimmed against the ranges already registered; stops at the first refusal of the driver (the WDDM budget is
