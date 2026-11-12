@@ -303,10 +303,10 @@ class ApiBase(unittest.TestCase):
     def setUpClass(cls):
         cls.tok = mini_tokenizer()
 
-    def start(self, script):
+    def start(self, script, template=TEMPLATE):
         tok = self.tok
         engine = DsEngine(tok, script)
-        svc = Service(engine, tok, ChatTemplate(TEMPLATE), model_name=default_model_name({"arch": "deepseek41"}))
+        svc = Service(engine, tok, ChatTemplate(template), model_name=default_model_name({"arch": "deepseek41"}))
         svc.model_arch = "deepseek41"
         svc.set_family("deepseek41")
         httpd = serve(svc, port=0)
@@ -440,6 +440,24 @@ class Api(ApiBase):
                                                "messages": [{"role": "user", "content": "hi"}]})
         self.assertEqual(status, 200, r)
         self.assertIn("Reasoning Effort: 50 ", self.prompt())
+
+    def test_medium_with_a_template_that_lacks_the_word(self):
+        # Unsloth's template (the fixture) maps medium to 62; ISTA's shard 1 of 2026-10-26 keeps DeepSeek's low, high and max
+        # only, and pick_template keeps it.  medium is the server's word, so it must reach such a template as its number
+        import tempfile
+        text = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('"medium": 62, ', text)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "chat_template.jinja"
+            path.write_text(text.replace('"medium": 62, ', ""), encoding="utf-8")
+            self.start("ok", template=path)
+            status, r = self.chat(reasoning_effort="medium")
+            self.assertEqual(status, 200, r)
+            self.assertIn("Reasoning Effort: 62 ", self.prompt())
+            status, r = self.post("/v1/messages", {"model": "x", "max_tokens": 300, "thinking": {"type": "enabled", "budget_tokens": 4000},
+                                                   "messages": [{"role": "user", "content": "hi"}]})
+            self.assertEqual(status, 200, r)
+            self.assertIn("Reasoning Effort: 62 ", self.prompt())
 
     # -- tool calls -------------------------------------------------------------------------------
     def test_openai_tool_call(self):
