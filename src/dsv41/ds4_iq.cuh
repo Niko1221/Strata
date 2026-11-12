@@ -96,6 +96,7 @@ struct SetArgs {
     int tg = 0, td = 0;
     int skip_le = 0;   // (the tiles) the experts of at most this many rows are left out: the light kernels took them
     int skip_ge = 0;   // (the tiles) > 0: the experts of at least this many rows are left out - the caller's GEMMs
+    const unsigned long long* wptr = nullptr;   // non-null: expert i's blob at wptr[i] (device addresses), not wbase + i stride
 #if defined(STRATA_METAL)   // (only on Metal: the CUDA and HIP kernels take this struct by value, so its size is part of their ABI)
     const int* hbounds = nullptr;   // the bounds on the host: [n_exp + 1], absolute rows
     int total_rows = 0;             // the set's rows in all
