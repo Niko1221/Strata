@@ -89,7 +89,7 @@ UTF-8). It contains every file hash, so one signature covers the whole package. 
     python packaging/package_engine.py --verify <package folder>       # full hash check
 
 Without `--include`/`--tree` it takes the entrypoint, the libraries beside it, `BUILD.json`, `LICENSE*`, the picture reader
-`strata-vision` when the build has one, and the DeepSeek engine `strata-dsv41[.exe]` when it sits beside `strata`.
+`strata-vision[.exe]` when the build has one, its optional `strata-vision-cpu[.exe]` companion when present, and the DeepSeek engine `strata-dsv41[.exe]` when it sits beside `strata`.
 `--require-dsv41` refuses a package without `strata-dsv41`. `--shape q4_lite` makes the package of a Qwen4 model shape (the engine compiled with `-DSTRATA_GEOMETRY=q4_lite`): the
 manifest's `id` and `name` are `strata-q4-lite` and it has `"shape": "q4_lite"`, so it is never read as the Strata engine (and an older Control refuses it); it installs in
 `<components>/shapes/q4_lite/engine/`, beside `<components>/engine/` (`strata_control/shape_engine.py`, packaging/UPDATES.md). `--verify` reads either kind. The build id
@@ -105,8 +105,8 @@ The separate DeepSeek package (feed member `dsv41`) for Linux AMD is made by `pa
 
 | Package | Built on | Contents | Notes |
 |---|---|---|---|
-| `windows-x86_64` cuda, variant `cuda13` | the owner PC, the same cmake line as the release zips (CUDA 13.0, `75;86;89;120` real + `120` PTX, `STRATA_PORTABLE=ON`) | `strata.exe`, `strata_kq.dll`, `strata-vision.exe` (built for this variant's archs by `packaging/build_vision_windows.bat cuda13 <stage>`, which writes `vision_archs` into BUILD.json), `BUILD.json` | `min_driver` nvidia 580.65 |
-| `windows-x86_64` cuda, variant `cuda12` | the owner PC (CUDA 12.9, `60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | the same four files, with its own `strata-vision.exe` (`packaging/build_vision_windows.bat cuda12 <stage>`: sm_60 .. sm_89; the CUDA 13 reader has no Pascal code) | experimental, `min_driver` nvidia 575.51; the CUDA 13 build wins when both fit |
+| `windows-x86_64` cuda, variant `cuda13` | the owner PC, the same cmake line as the release zips (CUDA 13.0, `75;86;89;120` real + `120` PTX, `STRATA_PORTABLE=ON`) | `strata.exe`, `strata_kq.dll`, `strata-vision.exe` (CUDA, built for this variant's archs) and `strata-vision-cpu.exe` (portable CPU-only companion), `BUILD.json` (`packaging/build_vision_windows.bat cuda13 <stage>` records the CUDA reader's `vision_archs`) | CPU mode uses the companion; the CUDA reader remains for GPU mode and falls back to the CPU reader if it fails; `min_driver` nvidia 580.65 |
+| `windows-x86_64` cuda, variant `cuda12` | the owner PC (CUDA 12.9, `60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | `strata.exe`, `strata_kq.dll`, its own CUDA `strata-vision.exe` (sm_60 .. sm_89; the CUDA 13 reader has no Pascal code), `strata-vision-cpu.exe`, `BUILD.json` | CPU mode uses the companion; the CUDA reader remains for GPU mode and falls back to the CPU reader if it fails; experimental, `min_driver` nvidia 575.51; the CUDA 13 build wins when both fit |
 | `windows-x86_64` hip | the owner PC, `tools/hip/build_windows.bat` (ROCm 10.2 nightly wheels) then `tools/hip/package_windows.py` | `strata.exe`, `strata-device.exe`, the ROCm DLLs and the rocBLAS/hipBLASLt kernels of the zip (`--tree`) | with `STRATA_NO_VISION` unset it also builds the two picture readers (`strata-vision.exe` on the CPU, `strata-vision-hip.exe` on the GPU) |
 | `linux-x86_64` cuda, variant `cuda13` | a Linux box with the CUDA 13 toolkit, `VARIANT=cuda13 packaging/build_cuda_linux.sh` | `strata`, `libstrata_kq.so`, `strata-vision` (built by the same script for the same archs, `BUILD_VISION=0` for a text-only package), `libcudart/libcublas/libcublasLt` (13.x) | the GPU driver's `libcuda` stays the PC's |
 | `linux-x86_64` cuda, variant `cuda12` | a Linux box with CUDA 12.9, `VARIANT=cuda12 packaging/build_cuda_linux.sh` (`60;61;70;75;80;86;89` real + `89` PTX, `STRATA_EXPERIMENTAL_SM60=ON`) | the same files with the 12.x libraries (the reader has sm_60 / 61 / 70 too) | experimental, `min_driver` nvidia 575.51; the Pascal and Volta package; `package_engine.py` refuses a cuda12 package without them |
@@ -140,6 +140,11 @@ with the package). `packaging/stage_tuning.py` does it for the Linux build scrip
 * a macOS package without `strata-vision` is refused (`--no-picture-reader` ships a text-only Mac package on purpose);
 * a CUDA package with no reader is allowed: it answers text only, the app says "the engine installed here does not include the picture reader
   yet" and keeps Read pictures off.
+
+A Windows CUDA component ships `strata-vision-cpu.exe` beside the CUDA reader. If a manifest-marked CUDA component lacks that companion,
+CPU-mode startup stops with an update/repair message rather than launching the CUDA-linked reader. Directly starting the CUDA reader
+without `--gpu` also returns a clear error before `llama_backend_init()` and directs callers to `strata-vision-cpu.exe`. The CUDA reader
+still links CUDA DLLs; only the companion avoids loading those runtime dependencies for CPU work.
 
 `python packaging/package_engine.py --stamp-vision <stage> --vision-archs "60;61;70;75;80;86;89"` writes the record for a reader built by hand.
 At run time a reader that still cannot start tells why (stderr tail, exit status, and for a kernel-image error the card hint).

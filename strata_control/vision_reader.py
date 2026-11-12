@@ -14,13 +14,20 @@ separate card, the reader's ~1.1 GB is the mmproj file itself on either side (me
 on the GPU), and the CPU reader takes ~50 s for a 260-token picture where the GPU one takes 0.45 s (ggml has no BF16 vector kernel on
 ARM).  So a Mac reads on the GPU unless the person asks for the CPU.
 
+A Windows CUDA engine package keeps `strata-vision.exe` as its CUDA reader for existing GPU configs and ships a CPU-only
+`strata-vision-cpu.exe` beside it. `Vision` selects that companion when `gpu` is false and uses it as a fallback if the CUDA reader
+fails, without rewriting saved configs. If a CUDA component lacks the companion, CPU mode stops with an update/repair message instead
+of launching the CUDA-linked reader.
+
 An Intel Arc engine folder (engine-sycl/) carries the CPU reader; `strata-vision-sycl` (llama.cpp's SYCL backend, tools/vision with
 STRATA_VISION_SYCL, built by `setup --backend sycl --vision gpu` on a PC that has the oneAPI compiler) is the GPU reader there.
 
-`choose` is the whole decision; setup.py calls it, and tools/test_vision_reader.py checks every branch.
+`choose` is the whole setup decision; setup.py calls it, and tools/test_vision_reader.py checks every branch. `executable_for` and
+`cpu_fallback` resolve the Windows CUDA package's paired readers at server startup.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -153,6 +160,40 @@ def vision_section(reader: Reader, base: dict) -> dict:
     return out
 
 
+class CpuReaderUnavailable(RuntimeError):
+    """A CUDA component cannot safely serve CPU-mode vision without its CPU-only reader."""
+
+
+def _windows_cuda_component(exe: Path) -> bool:
+    try:
+        manifest = json.loads((exe.parent / "engine-component.json").read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return isinstance(manifest, dict) and manifest.get("platform") == "windows-x86_64" and manifest.get("backend") == "cuda"
+
+
+def cpu_reader_companion(exe: Path | str) -> Path | None:
+    """A Windows CUDA package's CPU-only reader, if `exe` is its CUDA reader and the companion is installed."""
+    path = Path(exe)
+    if path.name.lower() not in ("strata-vision.exe", "strata-vision"):
+        return None
+    companion = path.with_name("strata-vision-cpu" + path.suffix)
+    return companion if companion.is_file() else None
+
+
+def executable_for(vision_cfg: dict) -> str:
+    """Use the CPU-only companion in CPU mode; fail clearly if a CUDA component is missing it."""
+    exe = Path(str(vision_cfg["exe"]))
+    if not vision_cfg.get("gpu"):
+        companion = cpu_reader_companion(exe)
+        if companion:
+            return str(companion)
+        if _windows_cuda_component(exe):
+            raise CpuReaderUnavailable("CPU-mode vision needs strata-vision-cpu.exe, but this CUDA engine package is missing it. "
+                                       "Update or repair the engine package to a build that includes the CPU-only reader.")
+    return str(exe)
+
+
 def shared_memory_nvidia_host() -> bool:
     """Linux on Arm: the DGX Spark class (GB10: the GPU shares the system RAM, 121 GB), where the NVIDIA picture reader stays loaded instead of starting with the first
     picture (owner 2026-11-11).  Measured on a Spark (IQ3_S, two starts per arm): the first picture after a start takes 0.84-0.89 s resident against 3.0-7.1 s on demand
@@ -196,7 +237,7 @@ def cpu_fallback(vision_cfg: dict, same_program: bool = False) -> dict | None:
     start, which must read the picture whatever the card has left)."""
     if not vision_cfg.get("gpu"):
         return None
-    cpu = vision_cfg.get("cpu_exe")
+    cpu = vision_cfg.get("cpu_exe") or cpu_reader_companion(vision_cfg.get("exe", ""))
     if not cpu and same_program:
         # the NVIDIA reader and the Mac's are one program: without --gpu it reads on the CPU (same picture tokens, so the same answers)
         exe = str(vision_cfg.get("exe") or "")

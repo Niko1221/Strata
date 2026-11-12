@@ -127,6 +127,13 @@ int main(int argc, char** argv) {
                              "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
         return 2;
     }
+#if defined(_WIN32) && defined(STRATA_VISION_CUDA)
+    if (!gpu) {
+        std::printf("ERR this Windows CUDA picture reader is GPU-only; use strata-vision-cpu.exe for CPU mode\n");
+        std::fflush(stdout);
+        return 3;
+    }
+#endif
     // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
     // 150-260 expert slots less for the engine beside it).  Before anything reaches the CUDA runtime.
     if (!gpu) {

@@ -1,5 +1,5 @@
-"""The picture reader choice for an AMD engine folder (strata_control/vision_reader.py) and the server's fallback from the GPU
-reader to the CPU reader (serve/server.py, Vision._start): hip present, hip missing, hip start failure, then cpu.
+"""The picture reader choice for AMD and Windows CUDA engine folders (strata_control/vision_reader.py) and the server's CPU selection and
+fallback (serve/server.py, Vision): HIP present/missing/failing and the paired Windows CUDA CPU reader.
 
     python -m unittest tools.test_vision_reader
 """
@@ -123,6 +123,29 @@ class Choose(unittest.TestCase):
         self.assertNotIn("cpu_exe", cpu_only)
         self.assertIsNone(VR.cpu_fallback(cpu_only))
         self.assertIsNone(VR.cpu_fallback({**sec, "cpu_exe": ""}))
+
+    def test_windows_cuda_cpu_mode_uses_the_cpu_only_companion(self):
+        d = folder("strata-vision.exe", "strata-vision-cpu.exe")
+        cfg = {"exe": str(d / "strata-vision.exe"), "gpu": False}
+        self.assertEqual(Path(VR.executable_for(cfg)).name, "strata-vision-cpu.exe")
+        self.assertEqual(Path(VR.executable_for({**cfg, "gpu": True})).name, "strata-vision.exe")
+        legacy = folder("strata-vision.exe")
+        self.assertEqual(Path(VR.executable_for({"exe": str(legacy / "strata-vision.exe"), "gpu": False})).name, "strata-vision.exe")
+        cuda_package = folder("strata-vision.exe")
+        (cuda_package / "engine-component.json").write_text('{"backend":"cuda","platform":"windows-x86_64"}', encoding="utf-8")
+        with self.assertRaisesRegex(VR.CpuReaderUnavailable, "strata-vision-cpu.exe"):
+            VR.executable_for({"exe": str(cuda_package / "strata-vision.exe"), "gpu": False})
+        cpu_package = folder("strata-vision.exe")
+        (cpu_package / "engine-component.json").write_text('{"backend":"cpu","platform":"windows-x86_64"}', encoding="utf-8")
+        self.assertEqual(Path(VR.executable_for({"exe": str(cpu_package / "strata-vision.exe"), "gpu": False})).name, "strata-vision.exe")
+
+    def test_windows_cuda_gpu_config_gets_cpu_only_fallback(self):
+        d = folder("strata-vision.exe", "strata-vision-cpu.exe")
+        cfg = {"exe": str(d / "strata-vision.exe"), "gpu": True, "mmproj": "m.gguf"}
+        fallback = VR.cpu_fallback(cfg)
+        self.assertFalse(fallback["gpu"])
+        self.assertEqual(Path(fallback["exe"]).name, "strata-vision-cpu.exe")
+        self.assertNotIn("cpu_exe", fallback)
         self.assertIsNone(VR.cpu_fallback({"exe": "strata-vision", "gpu": True}))   # an NVIDIA config has no fallback
         # an on-demand reader (vision.elastic) always has one: the NVIDIA program without --gpu, with the same picture tokens
         nv = VR.cpu_fallback({"exe": "/e/strata-vision", "gpu": True, "max_tokens": 1024, "elastic": True}, same_program=True)
@@ -219,6 +242,27 @@ class Fallback(unittest.TestCase):
             except RuntimeError as e:
                 err = e
         return v, started, out.getvalue(), err
+
+    def test_windows_cuda_cpu_mode_starts_the_cpu_only_companion(self):
+        d = folder("strata-vision.exe", "strata-vision-cpu.exe")
+        cfg = {"exe": str(d / "strata-vision.exe"), "gpu": False, "mmproj": "/m/mm.gguf", "model": "/m/t.gguf"}
+        v, started, log, err = self.run_start({"strata-vision-cpu.exe": "READY 2048\n"}, cfg)
+        self.assertIsNone(err)
+        self.assertEqual([Path(a[0]).name for a in started], ["strata-vision-cpu.exe"])
+        self.assertNotIn("--gpu", started[0])
+
+    def test_windows_cuda_gpu_failure_falls_back_to_cpu_only_companion(self):
+        d = folder("strata-vision.exe", "strata-vision-cpu.exe")
+        cfg = {"exe": str(d / "strata-vision.exe"), "gpu": True, "mmproj": "/m/mm.gguf", "model": "/m/t.gguf"}
+        v, started, log, err = self.run_start({"strata-vision.exe": RuntimeError("CUDA reader exited"),
+                                               "strata-vision-cpu.exe": "READY 2048\n"}, cfg)
+        self.assertIsNone(err)
+        self.assertEqual([Path(a[0]).name for a in started], ["strata-vision.exe", "strata-vision-cpu.exe"])
+        self.assertIn("--gpu", started[0])
+        self.assertNotIn("--gpu", started[1])
+        self.assertEqual(log.count("\n"), 1)
+        self.assertIn("CPU", log)
+        self.assertFalse(v.stopped)
 
     def test_hip_present_and_starts(self):
         v, started, log, err = self.run_start({"strata-vision-hip": "READY 2048\n"})

@@ -100,6 +100,10 @@ endif()
 target_link_libraries(strata-vision PRIVATE mtmd llama)
 target_compile_features(strata-vision PRIVATE cxx_std_17)
 set_target_properties(strata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+if(WIN32 AND STRATA_VISION_CUDA)
+  # Windows CUDA CPU mode uses the separate no-CUDA companion, never this reader.
+  target_compile_definitions(strata-vision PRIVATE STRATA_VISION_CUDA)
+endif()
 if(STRATA_VISION_HIP)
   # beside strata (and, in a component, the CPU reader "strata-vision"): the GPU reader is its own program, so a PC where
   # the HIP runtime does not load still has the CPU one to fall back on
