@@ -2293,6 +2293,14 @@ void launch_il_rows(int r, const void* weights, const void* x_il, float* y, int 
     }
 }
 
+// Where column c's int of the position-major copy's entry p * nb + b goes (native_mmvq.hpp): CP-wide entries, or with
+// kQ81IlPmPlanes (sm_75 code) and CP 8 two planes of 4-wide entries, columns 4-7 nb * 32 ints after columns 0-3
+__device__ __forceinline__ std::size_t il_pm_at(int p, int b, int c, int cp, int nb) {
+    const std::size_t e = std::size_t(p) * nb + b;
+    if (!kQ81IlPmPlanes || cp < 8) return e * cp + c;
+    return std::size_t(c >> 2) * (std::size_t(nb) * 32) + e * 4 + (c & 3);
+}
+
 // The interleaved copy (native_mmvq.hpp) of columns already quantized into plain q8_1 blocks, whoever wrote them (the
 // quantizer, a fused norm): the same bytes, one int of a block a thread.
 __global__ void native_q8_1_interleave_kernel(const Q81Block* __restrict__ y, int* __restrict__ bm, int* __restrict__ pm,
@@ -2303,7 +2311,7 @@ __global__ void native_q8_1_interleave_kernel(const Q81Block* __restrict__ y, in
     const Q81Block& blk = y[std::size_t(c) * nb + b];
     const int q = reinterpret_cast<const int*>(blk.qs)[p];
     bm[(std::size_t(b) * 8 + p) * cp + c] = q;
-    pm[(std::size_t(p) * nb + b) * cp + c] = q;
+    pm[il_pm_at(p, b, c, cp, nb)] = q;
     if (p == 0) dl[std::size_t(b) * cp + c] = __low2float(blk.ds);
 }
 
@@ -2329,7 +2337,7 @@ __global__ void native_quantize_q8_1_il_kernel(const float* __restrict__ x, Q81B
     const int nb = n_in / Q8K, c = i / n_in, b = (i - c * n_in) / Q8K, pp = lane >> 2;
     if ((lane & 3) == 0) {
         bm[(std::size_t(b) * 8 + pp) * cp + c] = int(v);
-        pm[(std::size_t(pp) * nb + b) * cp + c] = int(v);
+        pm[il_pm_at(pp, b, c, cp, nb)] = int(v);
     }
     if (lane == 0) dl[std::size_t(b) * cp + c] = __low2float(ds);
 }
@@ -3757,8 +3765,20 @@ constexpr IlRows58 kIlRows58_80[] = {   // CMP 170HX, as kIlRows_80
     {14, {{0, 0, 4, 2, 4}, {0, 0, 2, 2, 2}, {0, 2, 2, 2, 2}, {0, 0, 4, 2, 4}}},   // Q6_K
     {11, {{0, 0, 4, 2, 4}, {0, 0, 4, 1, 4}, {0, 0, 1, 1, 1}, {1, 1, 1, 1, 1}}},   // Q3_K
 };
+// Turing (sm_75; it takes the interleaved path only with STRATA_SM75_IL=1 or STRATA_SM75_PERF=1): a CMP 50HX (56 SMs),
+// mmvq_il_parity --bench --emit-table 3 times with MMVQ_IL_TMIN=5, the position-major copy in planes; the three agreed
+// except Q4_K at 5 columns below 2048 rows (2, 0, 2), which is 0 here.  Without it 5-8 columns kept native_mmvq's
+// kernels on Turing (e.g. IQ4_XS 2560x10240 at 5 columns: 113 us plain, 49 us here at 2 rows).
+constexpr IlRows58 kIlRows58_75[] = {
+    {23, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // IQ4_XS
+    {12, {{0, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q4_K
+    {13, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q5_K
+    {14, {{0, 2, 2, 2, 2}, {1, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {1, 2, 2, 2, 2}}},   // Q6_K
+    {11, {{2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}, {2, 2, 2, 2, 2}}},   // Q3_K
+};
 struct Il58Arch { int cc; const IlRows58* t; size_t n; };
 constexpr Il58Arch kIl58Arch[] = {
+    {75, kIlRows58_75, sizeof(kIlRows58_75) / sizeof(IlRows58)},
     {80, kIlRows58_80, sizeof(kIlRows58_80) / sizeof(IlRows58)},
     {120, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},
     {1201, kIlRows58_120, sizeof(kIlRows58_120) / sizeof(IlRows58)},   // a 12.0 card with 80+ SMs (il_cc)
