@@ -284,6 +284,15 @@ size_t ckpt_pool_ready_env() {
 }
 // how many dropped checkpoints the pool keeps (a batch admission drops and takes about two): 2, or more when STRATA_CKPT_POOL_READY asks
 size_t ckpt_pool_cap_env() { return std::max<size_t>(2, ckpt_pool_ready_env()); }
+// STRATA_PCE_ALIGN=1 (read once; off by default): periodic prompt checkpoints on absolute multiples of
+// --prompt-cache-every (the read is split once at the first mark), see the read's `run`
+bool pce_align_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PCE_ALIGN");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
 // STRATA_CKPT_THREADS=1 (read once; off by default): a layer split's checkpoint saves every stage's part at once, the
 // first on the calling thread and each later stage's on a thread of its own device (kept for the process: the copies'
 // private streams are per thread), instead of one stage after the other.  Each part is the same copy of the same state
@@ -14600,6 +14609,8 @@ int main(int argc, char** argv) {
             pp_exact = true;   // a restore, a checkpoint mount or a zeroed session: the state is exactly at read_from
             pp_t0 = r0;
             pp_next_check = reread_to > 0 || !req_ckpt ? INT64_MAX : resume + o.prompt_cache_every;   // ckpt=0: none
+            if (pp_next_check != INT64_MAX && pce_align_on() && o.prompt_cache_every > 0)   // STRATA_PCE_ALIGN: the absolute grid
+                pp_next_check = (resume / o.prompt_cache_every + 1) * o.prompt_cache_every;
             pp_tail_saved = reread_to > 0 || !req_ckpt;   // ckpt=0 (#861): no tail checkpoint either
             {
                 std::lock_guard<std::mutex> lk(part_mu);
@@ -15032,7 +15043,7 @@ int main(int argc, char** argv) {
                     ConvCheckpoint::PromptPlan& p;
                     ~SegPlanScope() { p = {}; }
                 } seg_plan_scope{seg_plan};
-                auto run = [&](int64_t q, int64_t r) -> bool {
+                auto run1 = [&](int64_t q, int64_t r) -> bool {
                     if (planned) sp.force_chunk(plan.chunk, plan_single, plan.chunked);
                     const bool run_ok = sp.run(ids.data() + q, r - q, q, e);
                     if (run_ok && q == 0 && sp.kva_floor() > 0) {   // KVA approximated the start of this prompt: remember which tokens
@@ -15040,6 +15051,21 @@ int main(int argc, char** argv) {
                         if (use_mtp && mtp.cell_floor_enabled()) mtp.set_cell_floor(sp.kva_floor());
                     }
                     return run_ok;
+                };
+                // STRATA_PCE_ALIGN=1 (tuning): a read that starts off the --prompt-cache-every grid first reads up to the
+                // grid's next absolute mark, so its chunks (and the periodic checkpoints at their ends) fall on absolute
+                // multiples: a later prompt that shares a document prefix and leaves it anywhere resumes less than one
+                // grid step before that point, not at the system prompt (chunk geometry changes: quality guard)
+                auto run = [&](int64_t q, int64_t r) -> bool {
+                    if (pce_align_on() && !planned && o.prompt_cache_every > 0 && pp_next_check != INT64_MAX &&
+                        q % o.prompt_cache_every != 0) {
+                        const int64_t mark = (q / o.prompt_cache_every + 1) * o.prompt_cache_every;
+                        if (mark < r) {
+                            if (!run1(q, mark)) return false;
+                            q = mark;
+                        }
+                    }
+                    return run1(q, r);
                 };
                 // (a layer split reads its stages as a pipeline over one run's chunks: beside slots a chunk at a time, with
                 // none decoding in pieces of STRATA_BATCH_YIELD_CHUNKS chunks (default 8; 0 = one run) so a BYIELD is taken)
