@@ -141,6 +141,9 @@ with the package). `packaging/stage_tuning.py` does it for the Linux build scrip
 * a CUDA package with no reader is allowed: it answers text only, the app says "the engine installed here does not include the picture reader
   yet" and keeps Read pictures off.
 
+A Windows CUDA component ships `strata-vision-cpu.exe` beside the CUDA reader. If a manifest-marked CUDA component lacks that companion,
+CPU-mode startup stops with an update/repair message rather than launching the CUDA-linked reader.
+
 `python packaging/package_engine.py --stamp-vision <stage> --vision-archs "60;61;70;75;80;86;89"` writes the record for a reader built by hand.
 At run time a reader that still cannot start tells why (stderr tail, exit status, and for a kernel-image error the card hint).
 

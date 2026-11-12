@@ -131,6 +131,13 @@ class Choose(unittest.TestCase):
         self.assertEqual(Path(VR.executable_for({**cfg, "gpu": True})).name, "strata-vision.exe")
         legacy = folder("strata-vision.exe")
         self.assertEqual(Path(VR.executable_for({"exe": str(legacy / "strata-vision.exe"), "gpu": False})).name, "strata-vision.exe")
+        cuda_package = folder("strata-vision.exe")
+        (cuda_package / "engine-component.json").write_text('{"backend":"cuda","platform":"windows-x86_64"}', encoding="utf-8")
+        with self.assertRaisesRegex(VR.CpuReaderUnavailable, "strata-vision-cpu.exe"):
+            VR.executable_for({"exe": str(cuda_package / "strata-vision.exe"), "gpu": False})
+        cpu_package = folder("strata-vision.exe")
+        (cpu_package / "engine-component.json").write_text('{"backend":"cpu","platform":"windows-x86_64"}', encoding="utf-8")
+        self.assertEqual(Path(VR.executable_for({"exe": str(cpu_package / "strata-vision.exe"), "gpu": False})).name, "strata-vision.exe")
 
     def test_windows_cuda_gpu_config_gets_cpu_only_fallback(self):
         d = folder("strata-vision.exe", "strata-vision-cpu.exe")
