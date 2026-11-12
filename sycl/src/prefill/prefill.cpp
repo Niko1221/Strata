@@ -1133,8 +1133,12 @@ void Prefill::release() {
             sycl::free(impl_->ple_emb_host[b], dpct::get_in_order_queue());
     }
     if (impl_->copy) dpct::get_current_device().destroy_queue(impl_->copy);
-    if (impl_->kv_copy) dpct::get_current_device().destroy_queue(
-        impl_->kv_copy);
+    // kv_copy starts as the default in-order queue and only gets its own one with STRATA_KV_PREFETCH=1: destroying the
+    // default queue frees dpct's _q_in_order, and every later get_in_order_queue() (the frees at shutdown, or a wait on
+    // it) works on a freed queue
+    if (impl_->kv_copy && impl_->kv_copy != &dpct::get_in_order_queue())
+        dpct::get_current_device().destroy_queue(impl_->kv_copy);
+    impl_->kv_copy = nullptr;
     if (impl_->kv_released) dpct::destroy_event(impl_->kv_released);
     if (impl_->kv_ready) dpct::destroy_event(impl_->kv_ready);
     if (impl_->grp_host)
