@@ -6565,6 +6565,92 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DS4_LEARN_BACK",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/dsv41/ds4_main.cpp",
+     "line": 888,
+     "backend": "cuda-hip",
+     "fn": "env_num"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "8",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "dsv41",
+   "note": "tuning knob of the opt-in learned starts (STRATA_DS4_LEARN_STARTS, default off): how many tokens short of the place a prompt parts the start is kept; built-in default 8 (src/dsv41/ds4_main.cpp:888)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_DS4_LEARN_MIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/dsv41/ds4_main.cpp",
+     "line": 887,
+     "backend": "cuda-hip",
+     "fn": "env_num"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "2048",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "status": "research",
+   "owner": "dsv41",
+   "note": "tuning knob of the opt-in learned starts (STRATA_DS4_LEARN_STARTS, default off): the fewest tokens a read must save before a start is kept; built-in default 2048 (src/dsv41/ds4_main.cpp:887)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_DS4_LEARN_STARTS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/dsv41/ds4_main.cpp",
+     "line": 884,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/DEEPSEEK41.md:136"
+   ],
+   "status": "opt-in",
+   "owner": "dsv41",
+   "note": "off unless set to 1; documented for users (docs/DEEPSEEK41.md:136)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_DS4_MARKS_INSIDE",
    "backends": [
     "cuda-hip"
