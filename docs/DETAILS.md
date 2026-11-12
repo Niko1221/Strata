@@ -653,6 +653,19 @@ tables per token). The scaling is fixed for the whole run, because the KV cache 
   Several keys (one per client, so one can be withdrawn): `--api-key key1,key2`, `"api_key": "key1,key2"` or
   `"api_key": ["key1", "key2"]`. `STRATA_API_KEY` sets one too. Streamed answers carry `X-Accel-Buffering: no`. When you
   open the web page through a proxy or tunnel whose address differs, add it: `"trusted_origins": ["https://strata.example.com"]`.
+- **Per-key limits:** `"api_keys": {"key": {"name": "...", "max_concurrent": N, "reserved_capacity": R}}` gives each
+  key its own admission limits (see #5004): `max_concurrent` is how many requests of that key may be inside at once,
+  and `reserved_capacity` keeps that many of a `"parallel"` server's slots for the key alone - the other keys, listed
+  or not, may hold at most `parallel - reserved` at once, whether the reserved key is using its slots or not.
+  A refused start names the entry (`api_keys entry 2`), never the key. What the gate does not do: it never cuts off
+  a request already decoding - a reservation protects the next request, not the one in flight. A request waiting at
+  its key's limit waits inside the request: a stream that was already acknowledged with its headers stays silent
+  until the gate opens or the wait expires with the queue's own 429 (`queue_wait_timeout`), and the wait counts
+  `queue_timeout` per wait - a request that waits at its key and then in the engine queue can spend up to twice
+  `queue_timeout` before that 429. `GET /status` counts a key's requests once they are admitted, not while they
+  wait, and the gate's own expiries are not in the `queue_timeouts` metric. The reservation is checked against the
+  `"parallel"` the server starts with; if the engine's slots shrink below the reservations later (VRAM fit), keys
+  without a reservation can lose their reach and their requests queue-time out until the next start.
 - **Browser pages (CORS):** off by default. `"cors_origins": ["https://chat.example.com"]` lets those origins call `/v1/*`;
   `["*"]` lets any page and is only sensible with an API key. It never opens `/settings`, `/unload` or the MCP tools. It
   belongs to the engine's own server; the desktop app answers browser pages on its own API address and already allows
