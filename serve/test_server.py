@@ -5432,7 +5432,8 @@ class SilentEngine(unittest.TestCase):
         fake.RLIMIT_RTTIME = 15
         fake.RLIM_INFINITY = -1
         fake.getrlimit.return_value = (0, 0)
-        with tempfile.TemporaryDirectory() as d, mock.patch.dict(sys.modules, {"resource": fake}):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(sys.modules, {"resource": fake}), \
+                mock.patch("serve.server.oomd_running", return_value=False):
             engine.log_path = os.path.join(d, "e.log")
             open(engine.log_path, "w").close()
             engine.proc.poll.return_value = -9
@@ -5444,6 +5445,42 @@ class SilentEngine(unittest.TestCase):
             fake.getrlimit.return_value = (0, 0)
             engine.proc.poll.return_value = -11                  # another signal: not this cause
             self.assertIn("running out of RAM", engine.death_note())
+
+    def test_death_note_names_systemd_oomd_on_signal_9(self):
+        # systemd-oomd ends the engine with -9 and leaves no dmesg line: name it and its journal, not dmesg
+        import tempfile
+        engine = self.bare(0.3)
+        with tempfile.TemporaryDirectory() as d, mock.patch("serve.server.rttime_limit_note", return_value=""), \
+                mock.patch("serve.server.sys.platform", "linux"), \
+                mock.patch("serve.server.oomd_running", return_value=True) as running:
+            engine.log_path = os.path.join(d, "e.log")
+            open(engine.log_path, "w").close()
+            engine.proc.poll.return_value = -9
+            note = engine.death_note()
+            self.assertIn("systemd-oomd", note)
+            self.assertIn("journalctl -u systemd-oomd", note)
+            running.return_value = False                         # not running: the old RAM hint stays
+            self.assertIn("running out of RAM", engine.death_note())
+            running.return_value = True
+            engine.proc.poll.return_value = -11                  # another signal: not this cause
+            self.assertIn("running out of RAM", engine.death_note())
+
+    def test_oomd_running_reads_proc(self):
+        import tempfile
+        from serve.server import oomd_running
+        with tempfile.TemporaryDirectory() as d:
+            for pid, comm in (("1", "systemd"), ("42", "bash"), ("self", "x")):
+                os.makedirs(os.path.join(d, pid))
+                with open(os.path.join(d, pid, "comm"), "w") as f:
+                    f.write(comm + "\n")
+            self.assertFalse(oomd_running(d))
+            os.makedirs(os.path.join(d, "77"))
+            with open(os.path.join(d, "77", "comm"), "w") as f:
+                f.write("systemd-oomd\n")
+            self.assertTrue(oomd_running(d))
+            os.makedirs(os.path.join(d, "88"))                     # a process that ended meanwhile: no comm
+            self.assertTrue(oomd_running(d))
+        self.assertFalse(oomd_running(os.path.join(tempfile.gettempdir(), "no-such-proc-root")))
 
     def test_prompt_chunks_set_the_wait(self):
         # a PP line every second, at 100 tok/s: far over a 0.3 s silence, but each chunk is on time for its size
