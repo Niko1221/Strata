@@ -55,6 +55,9 @@ public:
     /// event wait on an outside event is illegal). The scratches are allocated by `load`, never on first use.
     static const uint16_t* hc_bf16_view(const WeightRef& w, void* stream, int slot, int cls);
     static void hc_bf16_release(void* stream, int slot, int cls);
+    /// STRATA_HC_I8ONLY: the current device's hc_bf16_view scratches (two classes x two slots of `elems` bf16 values)
+    /// and events, allocated once at start-up (never on first use: a graph capture must not meet the allocation).
+    static bool hc_scratch_reserve(int64_t elems, std::string& err);
     uint64_t weight_bytes() const { return bytes_; }
     /// What the device lost to `load`: each matrix rounded up to the granule `cudaMalloc` backs it with.
     uint64_t allocated_bytes() const { return allocated_; }

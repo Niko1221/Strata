@@ -4150,7 +4150,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (!wn || !wd || !wu || !wi) return false;
                 // STRATA_HC_Q8 without a bf16 copy: this path's GEMMs read bf16, so the matrices are dequantized per half
                 core::WeightRef wd_q8, wu_q8;
-                if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
+                if (!wd->data && (wd->hc_q8 || wd->hc_i8) && !wu->data && (wu->hc_q8 || wu->hc_i8)) {   // + STRATA_HC_I8ONLY
                     wd_q8 = *wd; wu_q8 = *wu;
                     wd_q8.data = core::NativeDense::hc_bf16_view(*wd, m.cs, 0, 0);
                     wu_q8.data = core::NativeDense::hc_bf16_view(*wu, m.cs, 1, 0);
@@ -7602,7 +7602,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     // STRATA_HC_Q8 without a bf16 copy (0.2.2's run_impl): this path's GEMMs read bf16, so the matrices
                     // are dequantized per half
                     core::WeightRef wd_q8, wu_q8;
-                    if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
+                    if (!wd->data && (wd->hc_q8 || wd->hc_i8) && !wu->data && (wu->hc_q8 || wu->hc_i8)) {   // + STRATA_HC_I8ONLY
                         wd_q8 = *wd; wu_q8 = *wu;
                         wd_q8.data = core::NativeDense::hc_bf16_view(*wd, cs, 0, 0);
                         wu_q8.data = core::NativeDense::hc_bf16_view(*wu, cs, 1, 0);

@@ -22,6 +22,7 @@
 #include "strata/core/gfx12_chunk.hpp"
 #include "strata/core/nv_chunk.hpp"
 #include "strata/core/nv_defaults.hpp"
+#include "strata/kernels/fused_gr.hpp"   // STRATA_HC_I8ONLY
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/core/batch_telemetry.hpp"
 #include "strata/core/dma_batch.hpp"
@@ -5213,6 +5214,74 @@ int main(int argc, char** argv) {
                              "projections are used\n");
     const bool hc_q8 = hc_req8_env && !multi_gpu;
     if (hc_q8) strata::core::WeightTable::hc_q8_names(g.n_layers, skip);
+    // STRATA_HC_I8ONLY=1 (opt-in): the hyper-connection down/up projections are not loaded as BF16 on any card.  Each
+    // card makes the STRATA_HC_PERSIST_Q8=1 int8 copies of its layers from the pack at load (the same kernel and rounding as
+    // from a resident BF16 copy, so decode is unchanged) and keeps only those: the verifier's persistent read reads them,
+    // and the prompt path and the single-token read expand them to bf16 per use (NativeDense::hc_bf16_view).
+    // 2 x RX 6900 XT, layer split 27: 675 + 525 MiB of BF16 go to the expert caches.
+    static const bool hc_i8_env = [] { const char* v = std::getenv("STRATA_HC_I8ONLY"); return v != nullptr && v[0] == '1'; }();
+    bool hc_i8 = false;
+    std::set<std::string> hc_i8_names;
+    if (hc_i8_env) {
+        const char* p = std::getenv("STRATA_HC_PERSIST");
+        const char* q = std::getenv("STRATA_HC_PERSIST_Q8");
+        const char* why = hc_q8 ? "it cannot be combined with STRATA_HC_REQ8"
+                        : !(p != nullptr && p[0] == '1') ? "it needs STRATA_HC_PERSIST=1"
+                        : !(q != nullptr && q[0] == '1') ? "it needs STRATA_HC_PERSIST_Q8=1" : nullptr;
+#if !defined(STRATA_USE_HIP)
+        why = "the int8 persistent read is HIP-only";
+#endif
+        if (why != nullptr) {
+            std::fprintf(stderr, "strata generate: STRATA_HC_I8ONLY=1: %s; unset it\n", why);
+            return 1;
+        }
+        hc_i8 = true;
+        strata::core::WeightTable::hc_q8_names(g.n_layers, hc_i8_names);
+        skip.insert(hc_i8_names.begin(), hc_i8_names.end());
+    }
+    // the int8 copies of one card's layers [lb, le), on the current device, from the pack's BF16 (read on the host)
+    auto make_hc_i8 = [&](strata::core::WeightTable& t, int64_t lb, int64_t le, int dev) -> bool {
+        const auto t0 = std::chrono::steady_clock::now();
+        uint16_t* tmp = nullptr;   // one read's down + up, the temporary BF16 source
+        const size_t n = (size_t) g.hc_dim() * (size_t) g.hc_lr;
+        if (cudaMalloc((void**) &tmp, 2 * n * sizeof(uint16_t)) != cudaSuccess) { err = "STRATA_HC_I8ONLY: staging"; return false; }
+        size_t bytes = 0;
+        int made = 0;
+        std::vector<uint16_t> hd, hu;
+        for (int64_t l = lb; l < le; ++l)
+            for (const char* pfx : {"hc_attn_", "hc_ffn_"}) {
+                const std::string b = "blk." + std::to_string(l) + "." + pfx;
+                const strata::core::WeightRef* wd = t.find(b + "down.weight");
+                const strata::core::WeightRef* wu = t.find(b + "up.weight");
+                const strata::core::WeightRef* wi = t.find(b + "inject.weight");
+                if (wd == nullptr || wu == nullptr || wd->data != nullptr || wu->data != nullptr ||
+                    (size_t) wd->elements != n || (size_t) wu->elements != n) {
+                    err = "STRATA_HC_I8ONLY: " + b + "down/up is not a skipped BF16 [hc_dim x hc_lr] row";
+                    cudaFree(tmp);
+                    return false;
+                }
+                if (!t.read_bf16_host(b + "down.weight", hd, err) || !t.read_bf16_host(b + "up.weight", hu, err) ||
+                    hd.size() != n || hu.size() != n ||
+                    cudaMemcpy(tmp, hd.data(), n * 2, cudaMemcpyHostToDevice) != cudaSuccess ||
+                    cudaMemcpy(tmp + n, hu.data(), n * 2, cudaMemcpyHostToDevice) != cudaSuccess ||
+                    !strata::kernels::fused_gr_hc_i8_make(wd, tmp, tmp + n,
+                                                          wi != nullptr ? (const uint16_t*) wi->data : nullptr, bytes)) {
+                    if (err.empty()) err = "STRATA_HC_I8ONLY: making the int8 copies of " + b + "down/up failed";
+                    cudaFree(tmp);
+                    return false;
+                }
+                t.set_hc_i8(b + "down.weight", wd);
+                t.set_hc_i8(b + "up.weight", wd);
+                ++made;
+            }
+        cudaFree(tmp);
+        if (!strata::core::NativeDense::hc_scratch_reserve((int64_t) n, err)) return false;
+        std::fprintf(stderr, "strata generate: STRATA_HC_I8ONLY=1: CUDA%d holds %d hyper-connection reads of layers %lld-%lld as "
+                             "int8 copies only (%zu MiB; no BF16 copy, %.0f MiB not loaded), made in %.1f s\n", dev, made,
+                     (long long) lb, (long long) le - 1, bytes >> 20, (double) made * 2.0 * (double) n * 2.0 / 1048576.0,
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        return true;
+    };
     uint64_t pool_bytes = 0;
     if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -5266,6 +5335,10 @@ int main(int argc, char** argv) {
     };
     strata::core::WeightTable wt;
     if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+        return 1;
+    }
+    if (hc_i8 && !make_hc_i8(wt, 0, multi_gpu ? split_at[0] : g.n_layers, 0)) {   // STRATA_HC_I8ONLY
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -5841,6 +5914,7 @@ int main(int argc, char** argv) {
         uint64_t pool_s = pool_bytes;
         if (trim) {
             add_foreign(lb, le, skip_s, false);
+            skip_s.insert(hc_i8_names.begin(), hc_i8_names.end());   // STRATA_HC_I8ONLY (empty otherwise)
             strata::core::NativeDense::set_layer_range((int) lb, (int) le);
             if (!strata::core::WeightTable::pool_bytes(o.pack, pool_s, err, &skip_s)) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -5874,6 +5948,10 @@ int main(int argc, char** argv) {
         if (!o.native_dense_gguf.empty() && !st.dense.load(o.native_dense_gguf, st.wt, err, o.native_ple_key)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d native dense projections: %s\n", st.dev,
                          err.c_str());
+            return false;
+        }
+        if (hc_i8 && !make_hc_i8(st.wt, lb, le, st.dev)) {   // STRATA_HC_I8ONLY
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
             return false;
         }
         return true;
