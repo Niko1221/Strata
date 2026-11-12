@@ -1,0 +1,12 @@
+{
+ "dmg01": "Conversations illisibles",
+ "dmg02": "Strata n’a pas pu lire ces fichiers de conversation. Supprimez-en un pour retirer le fichier.",
+ "dmg03": "Strata n’a pas pu lire ce fichier de conversation ; ses messages ne sont donc pas affichés.",
+ "dmg04": "Supprimer le fichier de conversation",
+ "dmg05": "Supprimer {0}.json",
+ "dmg06": "Supprimer ce fichier de conversation ?",
+ "dmg07": "Garder le fichier",
+ "dmg08": "Supprimer le fichier",
+ "dmg09": "Le fichier {0} est supprimé. Rien d’autre ne change et la conversation ne reviendra pas.",
+ "dmg10": "Le fichier de conversation n’a pas pu être supprimé"
+}

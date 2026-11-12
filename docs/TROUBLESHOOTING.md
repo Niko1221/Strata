@@ -85,6 +85,12 @@ It is a read-only check of the installed engine parts (it changes nothing): whic
 needs, and whether they are there. `strata doctor --live` also asks the computer which graphics cards it sees and compares
 them with the cards the model is set to use; `--output json` prints the same as data. Put its output into a bug report.
 
+**A chat is listed as unreadable (#5421).**
+Strata keeps each chat as one file in its data folder (`data/chats/<id>.json`). A file it cannot read — a hand-edited file,
+a truncated one, a chat written by a later release — is named under the chats as "Unreadable chats", with its file name.
+Press the trash button beside it and confirm: the file is deleted, the other chats are untouched. The list is built when
+Strata starts, so a row you deleted stays deleted.
+
 ## While installing or starting
 
 **My PC froze, or got very slow, the first time Strata started.**
