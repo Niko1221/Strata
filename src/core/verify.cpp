@@ -4277,48 +4277,6 @@ bool Verifier::instantiate_evicting(cudaGraphExec_t& ex, cudaGraph_t graph, cons
     // (into a local: what a failed instantiate leaves in the output is not specified, and `ex` is a member that
     // capture() reads as "captured" when it is not null)
     cudaGraphExec_t got = nullptr;
-#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
-    // STRATA_GRAPH_COND=1 (tuning, bit-exact): the captured window graph becomes the body of an always-true IF node
-    // (a child graph node).  The body is scheduled on the device: the host's cudaGraphLaunch returns in ~10 us instead
-    // of submitting every node (2-3.3 ms a window under WDDM, during which the GPU sat idle before or inside layer 0).
-    // A graph the driver will not take as a conditional body falls back to the plain graph (logged once).
-    static const bool graph_cond = [] {
-        const char* v = std::getenv("STRATA_GRAPH_COND");
-        return v != nullptr && v[0] == '1';
-    }();
-    cudaGraph_t wrapped = nullptr;
-    if (graph_cond) {
-        static bool cond_failed_logged = false;
-        cudaGraphConditionalHandle h = 0;
-        cudaGraphNodeParams cp = {};
-        cudaGraphNode_t cn = nullptr, child = nullptr;
-        bool ok = cudaGraphCreate(&wrapped, 0) == cudaSuccess &&
-                  cudaGraphConditionalHandleCreate(&h, wrapped, 1, cudaGraphCondAssignDefault) == cudaSuccess;
-        if (ok) {
-            cp.type = cudaGraphNodeTypeConditional;
-            cp.conditional.handle = h;
-            cp.conditional.type = cudaGraphCondTypeIf;
-            cp.conditional.size = 1;
-            ok = cudaGraphAddNode(&cn, wrapped, nullptr, nullptr, 0, &cp) == cudaSuccess &&
-                 cudaGraphAddChildGraphNode(&child, cp.conditional.phGraph_out[0], nullptr, 0, graph) == cudaSuccess;
-        }
-        cudaError_t we = ok ? cudaGraphInstantiate(&got, wrapped, flags) : cudaErrorNotSupported;
-        if (we == cudaSuccess) {
-            cudaGraphDestroy(wrapped);
-            ex = got;
-            return true;
-        }
-        if (!cond_failed_logged) {
-            cond_failed_logged = true;
-            std::fprintf(stderr, "strata verify: STRATA_GRAPH_COND: %s%s: the plain graph is used\n", what,
-                         cudaGetErrorString(we == cudaSuccess ? cudaGetLastError() : we));
-        }
-        (void) cudaGetLastError();
-        got = nullptr;
-        if (wrapped) cudaGraphDestroy(wrapped);
-        wrapped = nullptr;
-    }
-#endif
     cudaError_t ie = cudaGraphInstantiate(&got, graph, flags);
     int freed = 0;
     for (bool evicted = true; ie == cudaErrorMemoryAllocation && evicted;) {
