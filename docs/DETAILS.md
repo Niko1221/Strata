@@ -496,7 +496,7 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `undeclared_tool_calls` | `"text"` | A well-formed call of a tool the request did not declare stays the text the model wrote, with `strata_rejected_tool_calls` beside it (the default, as since 0.2.2). `"call"` returns it as a tool call instead, for a client with its own policy for unknown names: it can answer the model with the tool names it has and ask again, which a call kept as text never lets it do. The environment variable `STRATA_UNDECLARED_TOOL_CALLS` sets the same; the config wins. Only a call the parser reads as a whole call is returned; prose and quoted examples stay text (#4622). |
 | `env_to_user` | off | Moves opencode's `<env>` block (working directory, date) to the first user message so the system turn is the same for every session and the disk prefix cache restores it. |
 | `return_progress` | off | Per request `"return_progress": true` adds llama.cpp's `prompt_progress` (`total`, `cache`, `processed`, `time_ms`) to the stream, one update per `--prefill` chunk. A prompt shorter than one chunk sends nothing. |
-| `prevent_sleep` | off | Windows only: keeps the PC awake while a request runs or waits (`SetThreadExecutionState`). On Linux and macOS one startup line says it does nothing. |
+| `prevent_sleep` | off | Keeps the PC awake while a request runs or waits: Windows uses `SetThreadExecutionState`; Linux prefers the XDG Desktop Portal, then systemd logind. The display can still blank and lock. See below for requirements. |
 | `sampling` | the model card | Defaults for requests that leave sampling fields out, for example `{"temperature": 1.0, "top_p": 0.95, "top_k": 20}`. |
 | `aliases` | none | Extra model names listed in `/v1/models`, like llama-server's `--alias`. Any other name is still served. |
 | `fit_max_tokens` | `true` | A request whose `max_tokens` runs past the context gets it shortened to the room left. `false` (or `--no-fit-max-tokens`) returns 400 instead. A prompt that leaves no room is always refused. |
@@ -508,6 +508,29 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `host`, `api_key`, `cors_origins`, `trusted_origins`, `allowed_hosts` | local only | See [Network access](#network-access). |
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
+
+With `"prevent_sleep": true`, Linux first checks whether `org.freedesktop.portal.Desktop` owns a name or is
+D-Bus-activatable on the user's session bus. If so, Strata asks the XDG Desktop Portal to inhibit suspend (flag `4`)
+and keeps the returned request open while work runs. If the portal service is unavailable, Strata checks for
+`org.freedesktop.login1` on the system bus and calls `Inhibit("idle", "Strata", reason, "block")`, where the reason
+includes Strata's process ID. It keeps the returned file descriptor open until work ends. The portal request and
+logind descriptor are closed on idle and shutdown; process exit also releases them.
+
+Portal acceptance means the portal accepted the request; it does not confirm that every desktop backend applies it.
+The logind fallback blocks logind's configured idle action. Neither backend simulates user activity or guarantees that
+a desktop's separate suspend or lock policy is blocked. The display can still blank and lock. Strata uses the first
+available backend for the server process's lifetime. A failure retries that backend every five seconds; it does not
+switch backends. Backend discovery runs once at startup, so restart the server after changing the session or bus
+services. Jeepney, the D-Bus client, is included in Linux runtime packages. No GNOME or systemd helper executable is
+needed. Missing sleep protection never fails an inference request. macOS is not supported.
+
+When the server has no `DBUS_SESSION_BUS_ADDRESS`, Strata uses `XDG_RUNTIME_DIR/bus` if `XDG_RUNTIME_DIR` is set;
+otherwise it uses `/run/user/<uid>/bus`. This lets a system service running as the desktop user reach the portal
+without changing its environment. A root service with neither variable skips portal discovery instead of guessing
+which logged-in user's session bus to use, then tries the logind fallback.
+
+Requests wait for each D-Bus acquisition attempt before work starts. Method calls and portal responses have finite
+timeouts; if acquisition fails, Strata continues without sleep protection and retries while requests remain active.
 
 ### Streaming and tool calls
 
