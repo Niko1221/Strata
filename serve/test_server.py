@@ -670,6 +670,110 @@ class ListenProblem(unittest.TestCase):
             self.assertNotIn("netsh", other)
 
 
+class TokenizeEndpoint(unittest.TestCase):
+    """POST /tokenize: vLLM's shape - a 'prompt' or a chat 'messages' conversation, the ids and their count.
+    A chat request is read as /v1/chat/completions would read it, so the count a client plans from here is the
+    count its request would take (the same template, the same tools, the same image tokens)."""
+
+    class FakeVision:
+        def __init__(self, d):
+            self.dir = Path(d)
+            self.rows = self.dir / "img.sve"
+            self.rows.write_bytes(b"rows")
+
+        def encode(self, source):
+            return self.rows, 3
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        cls.tok = ByteTokenizer()
+        cls.engine = MockEngine(cls.tok, "ok", max_context=CTX)
+        cls.vision_dir = tempfile.mkdtemp(prefix="strata-tokenize-test-")
+        cls.svc = Service(cls.engine, cls.tok, ChatTemplate(ROOT / "serve/chat_template.jinja"),
+                          vision=cls.FakeVision(cls.vision_dir))
+        cls.httpd = serve(cls.svc, port=0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil_rmtree(cls.vision_dir)
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read())
+
+    def test_prompt_form_counts_the_plain_text(self):
+        s, b = self.post("/tokenize", {"model": "m", "prompt": "hello world"})
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["count"], len(b["tokens"]))
+        self.assertEqual(b["count"], len("hello world"))   # the byte tokenizer: one token a byte
+        self.assertEqual(b["max_model_len"], CTX)
+        self.assertIsNone(b["token_strs"])
+
+    def test_chat_form_counts_the_rendered_prompt(self):
+        s, b = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(s, 200, b)
+        # the rendered template, not the bare text
+        self.assertGreater(b["count"], len("hi"))
+        self.assertEqual(b["count"], len(self.svc.encode_prompt(
+            [{"role": "user", "content": "hi"}], None, {"add_generation_prompt": True}, store=False)))
+
+    def test_chat_form_counts_the_image_tokens(self):
+        # the OpenAI shape (a data: image), as an adapter or a client sends it
+        from serve.server import IMAGE_PAD
+        pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "look"},
+                                             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
+        s, b = self.post("/tokenize", {"model": "m", "messages": msgs})
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["tokens"].count(pad), 3)        # the picture's three rows
+        self.assertEqual(b["count"], len(b["tokens"]))
+        # and the same count a real request would take
+        s2, b2 = self.post("/v1/chat/completions", {"model": "m", "max_tokens": 2, "messages": msgs})
+        self.assertEqual(s2, 200, b2)
+        self.assertEqual(b["count"], b2["usage"]["prompt_tokens"])
+
+    def test_tools_are_counted(self):
+        s, b = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        tool = {"type": "function", "function": {"name": "weather", "description": "the weather",
+                                                 "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}
+        s2, b2 = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}], "tools": [tool]})
+        self.assertEqual(s2, 200, b2)
+        self.assertGreater(b2["count"], b["count"])        # the tool's schema is part of the prompt
+
+    def test_extraneous_fields_are_ignored(self):
+        # the adapter sends the whole chat completion request: the sampling fields are ignored, not a 400
+        s, b = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                                       "stream": True, "max_tokens": 100, "temperature": 0.5,
+                                       "stream_options": {"include_usage": True}})
+        self.assertEqual(s, 200, b)
+
+    def test_the_clients_model_name_is_accepted(self):
+        # as the other routes, this server has one model and every name reaches it (the client's deployment id)
+        s, b = self.post("/tokenize", {"model": "some-dial-deployment-id", "prompt": "hi"})
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["count"], 2)
+
+    def test_shape_errors_are_400(self):
+        s, b = self.post("/tokenize", {"model": "m"})
+        self.assertEqual(s, 400, b)
+        s, b = self.post("/tokenize", {"model": "m", "prompt": "a", "messages": [{"role": "user", "content": "b"}]})
+        self.assertEqual(s, 400, b)
+        s, b = self.post("/tokenize", {"model": "m", "prompt": 5})
+        self.assertEqual(s, 400, b)
+        s, b = self.post("/tokenize", {"model": "m", "messages": [], "continue_final_message": True})
+        self.assertEqual(s, 400, b)
+
+
 def shutil_rmtree(path):
     import shutil
     shutil.rmtree(path, ignore_errors=True)
