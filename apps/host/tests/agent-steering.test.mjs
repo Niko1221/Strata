@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAgentBridge } from '../server/agent/agent-bridge.mjs';
+import { GatewayClient } from '../server/agent/gateway-client.mjs';
 import { SOFT_CUT_PATCH, SteeringStore, ParentSteering, isSteeringDelivery } from '../server/agent/steering.mjs';
 import { startScriptedWorker } from './helpers/scripted-worker.mjs';
 
@@ -14,10 +15,46 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
 const harness = process.env.STRATA_HARNESS_DIR;
 const supported = (() => { try { return JSON.parse(readFileSync(join(harness, 'BUNDLE.json'), 'utf8')).patches?.some(p => p.id === SOFT_CUT_PATCH); } catch { return false; } })();
 const skip = !supported && 'STRATA_HARNESS_DIR must point to a source-built soft-cut Harness';
-const waitFor = async predicate => {
+const waitFor = async (predicate, timeoutMessage = 'Expected lifecycle transition did not arrive') => {
   const until = Date.now() + 15000;
-  while (!predicate()) { if (Date.now() > until) throw new Error('Expected lifecycle transition did not arrive'); await new Promise(r => setTimeout(r, 10)); }
+  while (!predicate()) { if (Date.now() > until) throw new Error(typeof timeoutMessage === 'function' ? timeoutMessage() : timeoutMessage); await new Promise(r => setTimeout(r, 10)); }
 };
+const trace = (items, source, details) => items.push({ order: items.length + 1, source, ...details });
+
+function gatewayTrace(item, items) {
+  if (item.type === 'snapshot') {
+    const events = (item.records ?? []).filter(record => record.type === 'event').map(record => record.event).filter(event => {
+      return event.type === 'assistant/attempt' || event.type === 'assistant/message' && event.data?.interrupted
+        || event.type === 'user/message' && event.data?.source?.rpcId
+        || event.type === 'turn/start' || event.type === 'turn/end';
+    }).map(event => ({ seq: event.seq, type: event.type, interrupted: event.data?.interrupted, rpcId: event.data?.source?.rpcId, steeringTurn: event.data?.source?.steeringTurn }));
+    trace(items, 'gateway', { type: 'snapshot', cursor: item.cursor, events });
+  } else if (item.type === 'event') {
+    const event = item.event;
+    if (event.type === 'assistant/attempt' || event.type === 'assistant/message' && event.data?.interrupted
+        || event.type === 'user/message' && event.data?.source?.rpcId
+        || event.type === 'turn/start' || event.type === 'turn/end') {
+      trace(items, 'gateway', { seq: event.seq, type: event.type, interrupted: event.data?.interrupted, rpcId: event.data?.source?.rpcId, steeringTurn: event.data?.source?.steeringTurn });
+    }
+  } else if (item.type === 'assistant-stream') {
+    const frame = item.frame, chunk = frame?.chunk;
+    if (chunk?.type === 'tool-call-delta' || chunk?.type === 'text-delta' && chunk.text?.includes('Preserved visible prefix')) {
+      trace(items, 'gateway', { type: 'assistant-stream', chunk: chunk.type, attemptId: frame.attemptId, callId: chunk.id, name: chunk.name, argumentsLength: chunk.argumentsDelta?.length, visiblePrefix: chunk.text?.includes('Preserved visible prefix') ?? false });
+    }
+  }
+}
+
+function hostTrace(frame, items) {
+  if (frame.type === 'agent-tool-draft') {
+    trace(items, 'host', { type: frame.type, id: frame.draft?.id, done: frame.draft?.done, lost: frame.draft?.lost, bytes: frame.draft?.bytes });
+  } else if (frame.type === 'steering') {
+    trace(items, 'host', { type: frame.type, id: frame.message?.id, state: frame.message?.state });
+  } else if (frame.type === 'steering-cut' || frame.type === 'steering-availability') {
+    trace(items, 'host', { type: frame.type, available: frame.available });
+  } else if (frame.type === 'delta' && (frame.text?.includes('Preserved visible prefix') || frame.text?.includes('Corrected answer'))) {
+    trace(items, 'host', { type: frame.type, visiblePrefix: frame.text.includes('Preserved visible prefix'), correctedAnswer: frame.text.includes('Corrected answer') });
+  }
+}
 
 test('parent lifecycle recovers late attachment and rejects stale steps and non-lifecycle activity', () => {
   const parent = new ParentSteering();
@@ -91,7 +128,7 @@ test('steering receipts survive restart, reject ID reuse, and cannot downgrade d
   assert.deepEqual(missing.list('chat'), [], 'a failed write publishes no accepted receipt');
 });
 
-async function rig(t, { tool = false, manual = false, holdFuture = false } = {}) {
+async function rig(t, { tool = false, manual = false, holdFuture = false, traceItems = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-steer-agent-')), workspace = join(root, 'work'); mkdirSync(workspace);
   const frames = [], requests = [], held = [], prefix = deferred(), proposed = deferred(), delivered = deferred(); let released = false;
   let requestArrived = deferred();
@@ -129,6 +166,7 @@ async function rig(t, { tool = false, manual = false, holdFuture = false } = {})
   t.after(async () => { await bridge.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); rmSync(root, { recursive: true, force: true }); });
   const done = bridge.runTurn({ chatId: 'chat-a', workspacePath: workspace, message: tool ? 'Run the requested operation once.' : 'Start the task.', mode: manual ? 'manual' : 'bypass', onFrame(frame) {
     frames.push(frame);
+    if (traceItems) hostTrace(frame, traceItems);
     if (frame.type === 'delta' && frame.text.includes('Preserved visible prefix')) prefix.resolve();
     if (frame.type === 'agent-tool' && frame.tool.state === 'proposed') proposed.resolve(frame.tool);
     if (frame.type === 'steering' && frame.message.state === 'delivered') delivered.resolve();
@@ -154,14 +192,32 @@ test('generation is soft-cut in the same turn; ordered duplicate-safe input surv
   const NativeWebSocket = globalThis.WebSocket, sockets = []; let nextSocket = deferred();
   globalThis.WebSocket = class extends NativeWebSocket { constructor(...args) { super(...args); sockets.push(this); this.addEventListener('open', () => nextSocket.resolve(this), { once: true }); } };
   t.after(() => { globalThis.WebSocket = NativeWebSocket; });
-  const r = await rig(t); await r.prefix;
+  const traceItems = [], originalOpenStream = GatewayClient.prototype.openStream;
+  GatewayClient.prototype.openStream = function(endpoint, args, handlers) {
+    if (endpoint !== 'session/follow') return originalOpenStream.call(this, endpoint, args, handlers);
+    trace(traceItems, 'gateway', { type: 'stream-open' });
+    return originalOpenStream.call(this, endpoint, args, {
+      ...handlers,
+      onItem(item) { gatewayTrace(item, traceItems); return handlers.onItem?.(item); },
+      onDisconnect() { trace(traceItems, 'gateway', { type: 'socket-disconnect' }); return handlers.onDisconnect?.(); },
+    });
+  };
+  t.after(() => { GatewayClient.prototype.openStream = originalOpenStream; });
+  const r = await rig(t, { traceItems }); await r.prefix;
   const sessionId = r.bridge.sessionOf('chat-a');
+  await waitFor(() => r.frames.some(f => f.type === 'agent-tool-draft' && f.draft.id === 'incomplete-call' && !f.draft.done),
+    () => `The incomplete-call draft was not observed by Host before Gateway reconnect; ordered trace: ${JSON.stringify(traceItems)}`);
+  const draftOpenBeforeReconnect = r.frames.some(f => f.type === 'agent-tool-draft' && f.draft.id === 'incomplete-call' && !f.draft.done);
+  trace(traceItems, 'test', { type: 'gateway-close-requested', draftOpenBeforeReconnect });
   nextSocket = deferred(); sockets.at(-1).close(); await nextSocket.promise;
+  trace(traceItems, 'test', { type: 'gateway-reconnected' });
   await waitFor(() => r.frames.filter(f => f.type === 'steering-availability').length >= 4 && r.frames.filter(f => f.type === 'steering-availability').at(-1).available);
   const first = { chatId: 'chat-a', id: 'first', text: 'STEER: use another folder' }, second = { chatId: 'chat-a', id: 'second', text: 'STEER: preserve file names' };
   await Promise.all([r.bridge.steer(first), r.bridge.steer(first), r.bridge.steer(second)]);
   await r.delivered;
-  assert.ok(r.frames.some(f => f.type === 'agent-tool-draft' && f.draft.id === 'incomplete-call' && f.draft.done), 'upstream draft tracking closes the discarded call before continued generation');
+  const draftClosed = r.frames.some(f => f.type === 'agent-tool-draft' && f.draft.id === 'incomplete-call' && f.draft.done);
+  if (process.env.STRATA_STEERING_TRACE === '1') console.error(`soft-cut ordering: ${JSON.stringify(traceItems)}`);
+  if (!draftClosed) assert.fail(`upstream draft tracking closes the discarded call before continued generation; ordered trace: ${JSON.stringify(traceItems)}`);
   await assert.rejects(r.bridge.steer({ ...first, chatId: 'chat-b' }), /no active agent run/);
   r.releaseModel(); await r.done;
   assert.equal(r.bridge.sessionOf('chat-a'), sessionId);
