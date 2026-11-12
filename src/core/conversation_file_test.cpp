@@ -16,6 +16,15 @@
 #include <new>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -766,6 +775,51 @@ int main() {
         check(slurp(target) == std::vector<char>(7, 't'), "the link's target is untouched");
         struct stat st {};
         check(::stat(link.c_str(), &st) == 0 && (st.st_mode & 0777) == 0600, "the session file is mode 0600");
+    }
+#endif
+
+#ifdef _WIN32
+    // STRATA_PARK_RAMLIKE: a mem: session is a named section - the file's exact bytes, nothing on disk,
+    // held by this process after the write, refused when the name exists, readable by name, gone with its holders
+    {
+        const std::string name = "mem:Local\\strata-session-test-" + std::to_string(GetCurrentProcessId()) + "-" +
+                                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        check(session_is_section(name) && !session_is_section(good.string()), "mem: names a section");
+        check(!session_section_exists(name), "no section before the write");
+        size_t n = 0;
+        SessionWriteOptions wo;
+        wo.durable = false;
+        bool flushed = false;
+        wo.phase = [&](const char* phase, uint64_t) { if (std::strcmp(phase, "flush") == 0) flushed = true; };
+        check(session_file_write(name, original, id, n, error, wo), "section write succeeds");
+        const size_t file_bytes = (size_t) fs::file_size(good);
+        check(n == file_bytes && !flushed, "section write: the file's size, no flush phase");
+        check(session_section_exists(name), "the section is held after the write");
+        check(no_temp(dir), "a section write leaves no file");
+        SavedConversation back;
+        size_t r = 0;
+        check(session_file_read(name, id, back, r, error) && r == file_bytes && same(original, back),
+              "section read: the same image");
+        // byte for byte the file's bytes
+        HANDLE m = OpenFileMappingW(FILE_MAP_READ, FALSE, std::wstring(name.begin() + 4, name.end()).c_str());
+        check(m != nullptr, "the section opens by name");
+        const uint8_t* v = static_cast<const uint8_t*>(MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0));
+        uint64_t len = 0;
+        std::memcpy(&len, v, 8);
+        const std::vector<char> g = slurp(good);
+        check(len == g.size() && std::memcmp(v + 64, g.data(), g.size()) == 0, "section bytes = file bytes");
+        UnmapViewOfFile(v);
+        CloseHandle(m);
+        size_t n2 = 0;
+        SessionStatus st;
+        check(!session_file_write(name, original, id, n2, error, wo, &st) && st.error == SessionError::invalid,
+              "an existing section name is refused");
+        SessionWriteOptions huge = wo;
+        huge.min_free_bytes = ~0ull >> 2;
+        const std::string other = name + "-b";
+        check(!session_file_write(other, original, id, n2, error, huge, &st) && st.error == SessionError::memory &&
+              !session_section_exists(other), "not enough free commit: refused, no section");
+        check(!session_file_read(name + "-absent", id, back, r, error, {}, &st), "an absent section does not read");
     }
 #endif
 
