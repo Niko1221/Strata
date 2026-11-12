@@ -74,3 +74,20 @@ restrictive list may reduce draft acceptance. Ordinary MTP was tested. The
 experimental coupled/rejection-sampling combinations and multi-GPU execution
 were not validated in this campaign. There is no startup bias-file option in
 this change: send the field with each request.
+
+## DeepSeek-V4.1 engine
+
+The DeepSeek engine (`strata-dsv41`) takes the same field and advertises `logit_bias=1` on CUDA builds. The HIP
+build compiles the same code but does not advertise it until it has run on an AMD card, and the Metal engine does not
+either, so the server still answers 400 there. Every pick of the request adds the bias: plain
+sampling and DSpark verification, greedy and sampled. The DSpark drafter's own picks add it too when the head sits
+on one GPU, so a banned token is not drafted; with the head split over a GPU group the drafts are picked without it,
+and with `--parallel` the one drafter pass shared by several conversations is not biased either. Verification
+rejects a banned draft in both cases, at the cost of that round's later drafts. With `--parallel`, each
+conversation keeps its own list.
+
+The engine keeps the last 16 distinct lists on the head GPU, so a list sent with every request is copied to the
+GPU once. The list still travels with each request: on two RTX PRO 6000 cards a 36,088-token list added 50 to
+170 ms before the first token. [tools/logit_bias_dsv41_probe.py](../tools/logit_bias_dsv41_probe.py) compares this
+engine with and without the change on one run config, with and without biases, DSpark on and off, and two
+conversations at once.
