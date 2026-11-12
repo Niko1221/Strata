@@ -175,7 +175,7 @@ What it does:
 - Answers are the same as when each runs alone: 12 combinations of 2 to 4 conversations, with and without the drafter, were identical to the last bit of the model's
   output on a DGX Spark and on 2 RTX A6000, and 6 prompts at once through the server had the same text as alone (greedy), also when a client dropped its connection.
 
-Where it was run: Linux, with 4 Radeon AI PRO R9700 (gfx1201), 1 R9700, 4 Radeon W7900D (gfx1100), 2 RTX A6000 (sm_86) and a DGX Spark (sm_121). Not run: Windows (the engine builds with it, a
+Where it was run: Linux, with 4 Radeon AI PRO R9700 (gfx1201), 1 R9700, 2 RTX A6000 (sm_86) and a DGX Spark (sm_121). Not run: Windows (the engine builds with it, a
 Windows run has not been done), a Mac (Metal; the code adds no Metal kernel of its own, nothing has started it there), Ryzen AI Max, cards under 24 GB, other AMD
 families. `strata launch` warns for these and still starts. If the engine stops at the start or an answer looks wrong, start without `--parallel`.
 
