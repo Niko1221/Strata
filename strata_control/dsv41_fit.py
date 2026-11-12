@@ -315,7 +315,7 @@ def tp_for(n_cards: int, cards: list[dict] | None = None) -> int:
     measured 2x faster for prompts than a plain layer split on the first rig; on four AMD Radeon AI PRO R9700 cards the plain layer split
     (--tp 1) is faster for both: 8K prompt 370 against 196 tokens a second and 32 against 29 for answers (2026-10-23, r9700), so the ISTA-DAS plans give four
     or more AMD cards 1 (cards passed); the Unsloth plan is unmeasured and keeps 2.  Two and three cards keep 2 (two R9700: prompts 220 against 140, answers slower; not changed).
-    (The engine's own check refuses 4 - 576 is not a multiple of 128 - and drops to 2.)"""
+    GGUF TP4 is opt-in: strata launch --gpu 0,1,2,3 --set tp=4, or --tp 4 in the run config's args/user_args; these defaults stay unchanged."""
     if n_cards >= 4 and cards and all(str(c.get("vendor") or "").lower() == "amd" for c in cards):
         return 1
     return 2 if n_cards >= 2 else 1
