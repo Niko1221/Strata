@@ -45,6 +45,7 @@ bool fail(std::string& err, const LayerView& v, const char* suffix, const char* 
 bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std::string& err) {
     const LayerView v(t, layer);
     const bool qsa = is_qsa_layer(g, layer);
+    const bool fused_in = g.family == ModelFamily::Qwen3Next;
 
     // ---- the 2-D tensor set, per layer family
     const Want2 want2[] = {
@@ -61,13 +62,17 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
         {"ffn_gate_shexp.weight", g.n_embd, g.n_ff, false, false},
         {"ffn_up_shexp.weight", g.n_embd, g.n_ff, false, false},
         {"ffn_down_shexp.weight", g.n_ff, g.n_embd, false, false},
-        // GDN only
-        {"attn_qkv.weight", g.n_embd, g.ssm_conv_channels, false, true},
-        {"attn_gate.weight", g.n_embd, g.ssm_value_dim, false, true},
+        // GDN only. qwen3next ships the same roles fused - `ssm_in` is qkv|z in one matrix, `ssm_ba` is
+        // beta|alpha - and the widths are the same sums the layout table asks for, from the same geometry.
+        // A null name means the row belongs to the other form; the loop skips it.
+        {fused_in ? "ssm_in.weight" : "attn_qkv.weight", g.n_embd,
+         fused_in ? g.ssm_conv_channels + g.ssm_value_dim : g.ssm_conv_channels, false, true},
+        {fused_in ? nullptr : "attn_gate.weight", g.n_embd, g.ssm_value_dim, false, true},
+        {fused_in ? "ssm_ba.weight" : "ssm_alpha.weight", g.n_embd,
+         fused_in ? 2 * g.ssm_v_heads : g.ssm_v_heads, false, true},
+        {fused_in ? nullptr : "ssm_beta.weight", g.n_embd, g.ssm_v_heads, false, true},
         {"ssm_out.weight", g.ssm_value_dim, g.n_embd, false, true},
         {"ssm_conv1d.weight", g.ssm_d_conv, g.ssm_conv_channels, false, true},
-        {"ssm_alpha.weight", g.n_embd, g.ssm_v_heads, false, true},
-        {"ssm_beta.weight", g.n_embd, g.ssm_v_heads, false, true},
         // QSA only
         {"attn_q.weight", g.n_embd, 2 * g.n_head * g.head_dim, true, false},
         {"attn_k.weight", g.n_embd, g.n_head_kv * g.head_dim, true, false},
@@ -75,10 +80,12 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
         {"attn_output.weight", g.n_head * g.head_dim, g.n_embd, true, false},
         // THE INDEXER.  `q_proj` is the QUERY count and `k_proj` is the KEY width, and they are different
         // numbers - conflating them is what made the planner's indexer term 4x too big in round 194.
-        {"indexer.q_proj.weight", g.n_embd, g.idx_q_heads * g.idx_key_dim, true, false},
-        {"indexer.k_proj.weight", g.n_embd, g.idx_key_dim, true, false},
+        // The rows belong to the families that HAVE an indexer; qwen3next's attention does not.
+        {g.has_indexer() ? "indexer.q_proj.weight" : nullptr, g.n_embd, g.idx_q_heads * g.idx_key_dim, true, false},
+        {g.has_indexer() ? "indexer.k_proj.weight" : nullptr, g.n_embd, g.idx_key_dim, true, false},
     };
     for (const Want2& w : want2) {
+        if (!w.suffix) continue;
         if (w.qsa_only && !qsa) continue;
         if (w.gdn_only && qsa) continue;
         const WeightRef* r = v.get(w.suffix);
@@ -102,8 +109,8 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
         {"ssm_norm.weight", g.ssm_state_size, WeightKind::F32, false, true},
         {"attn_q_norm.weight", g.head_dim, WeightKind::F32, true, false},
         {"attn_k_norm.weight", g.head_dim, WeightKind::F32, true, false},
-        {"indexer.q_norm.weight", g.idx_key_dim, WeightKind::F32, true, false},
-        {"indexer.k_norm.weight", g.idx_key_dim, WeightKind::F32, true, false},
+        {"indexer.q_norm.weight", g.idx_key_dim, WeightKind::F32, g.has_indexer(), false},
+        {"indexer.k_norm.weight", g.idx_key_dim, WeightKind::F32, g.has_indexer(), false},
     };
     for (const Want1& w : want1) {
         if (w.qsa_only && !qsa) continue;

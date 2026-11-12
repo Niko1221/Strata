@@ -1,6 +1,7 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/prefill/prefill.hpp"
+#include "strata/artifact/model_family.hpp"
 #include "strata/prefill/copy_events.hpp"
 #include "strata/prefill/timer_marks.hpp"
 #include "strata/prefill/mmq_ids_margin.hpp"
@@ -213,9 +214,23 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr float EPS = 1e-6f;
-// the shape the engine is compiled for (include/strata/core/geometry.hpp; -DSTRATA_GEOMETRY picks it)
-constexpr int64_t N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr, K = strata::core::kCompiledGeometry.n_expert_used, NE = strata::core::kCompiledGeometry.n_expert;
-constexpr int64_t C = strata::core::kCompiledGeometry.ssm_conv_channels, ZV = strata::core::kCompiledGeometry.ssm_value_dim, HV = strata::core::kCompiledGeometry.ssm_v_heads;
+// Every shape below is DERIVED from the compiled geometry (one build, one shape - see core/geometry.hpp;
+// -DSTRATA_GEOMETRY picks it): the literals these used to be were qwen4exp's numbers, and the gate in
+// init() compares against them, so a second family compiled with its own geometry header gets the whole
+// file's buffers and strides for free. A plain-residual family (qwen3next) keeps ONE residual stream.
+constexpr int64_t N = strata::core::kCompiledGeometry.n_embd,
+                  HC_RAW = strata::core::kCompiledGeometry.hc,
+                  HC = HC_RAW > 0 ? HC_RAW : 1,   // a plain-residual family keeps ONE residual stream
+                  D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr,
+                  K = strata::core::kCompiledGeometry.n_expert_used, NE = strata::core::kCompiledGeometry.n_expert,
+                  NFF = strata::core::kCompiledGeometry.n_ff;
+constexpr bool plain_family = !strata::core::kCompiledGeometry.has_hyper_connections();
+constexpr int64_t C = strata::core::kCompiledGeometry.ssm_conv_channels,
+                  ZV = strata::core::kCompiledGeometry.ssm_value_dim,
+                  HV = strata::core::kCompiledGeometry.ssm_v_heads;
+constexpr int64_t NH = strata::core::kCompiledGeometry.n_head, HD = strata::core::kCompiledGeometry.head_dim,
+                  NKV = strata::core::kCompiledGeometry.n_head_kv, IQ = strata::core::kCompiledGeometry.idx_q_heads,
+                  ID = strata::core::kCompiledGeometry.idx_key_dim;
 // widths the buffers and kernel arguments below are written in (int, as the literals they replace were)
 constexpr int kEmbd = (int) strata::core::kCompiledGeometry.n_embd, kFF = (int) strata::core::kCompiledGeometry.n_ff, kFF2 = 2 * kFF;
 constexpr int kNHead = (int) strata::core::kCompiledGeometry.n_head, kNKv = (int) strata::core::kCompiledGeometry.n_head_kv, kHeadDim = (int) strata::core::kCompiledGeometry.head_dim;
@@ -1148,6 +1163,7 @@ struct Prefill::Impl {
     float* bo = nullptr;
     // GDN
     float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
+    float *qkvz = nullptr, *ba_scr = nullptr;   // fused GDN inputs (qwen3next): projected whole, then split
     uint16_t* y_h = nullptr;
     // QSA
     float *Kc = nullptr, *Vc = nullptr, *Qf = nullptr, *q = nullptr, *idx_raw = nullptr, *q_idx = nullptr, *attn = nullptr;
@@ -1450,10 +1466,11 @@ constexpr size_t GEMM_WS = 32u << 20;               // cuBLAS workspace
 // of the largest holds them all.  That is ~260 KB of the ~680 KB a prompt token cost - which is what lets a chunk
 // grow (every expert is streamed once per chunk, so a bigger chunk streams fewer bytes per token).  The sizes are
 // counted with the same `take` sequence `init` uses; a mismatch makes `init` fail with "do not fit", never overlap.
-uint64_t gdn_set_bytes(size_t T) {
+uint64_t gdn_set_bytes(size_t T, bool fused) {
     Alloc a; a.count_only = true; bool ok = true;
     a.take<float>(T * C, ok); a.take<float>(T * ZV, ok); a.take<float>(T * 2 * HV, ok); a.take<float>(T * HV, ok);
     a.take<float>(T * HV, ok); a.take<float>(T * C, ok); a.take<float>(T * ZV, ok);
+    if (fused) { a.take<float>(T * (C + ZV), ok); a.take<float>(T * 2 * HV, ok); }
     a.take<uint16_t>(T * (ZV + (pf_pad() ? ZV_PAD : 0)), ok);
     return a.used;
 }
@@ -1818,7 +1835,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
 #endif
     m.wt = &wt; m.g = &g; m.ss = &ss; m.src = src; m.cache = cache; m.host_res = host_res;
     m.T = chunk; m.cs = (cudaStream_t) stream; m.stats = &stats_;
-    if (g.n_embd != N || g.hc != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
+    if (g.n_embd != N || g.residual_streams() != HC || g.hc_lr != LR || g.n_expert < 1 || ss.k != K) {
         err = "prefill: geometry differs from the artifact's"; return false;
     }
     {   // a native pack's experts: this path's expert buffers and products (and so their Hadamard rotations) are
@@ -1827,7 +1844,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         for (size_t l = 0; lay.native && l < lay.fmt.size(); ++l)
             if (lay.fmt[l].n_embd != N || lay.fmt[l].n_ff != kFF) {
                 err = "prefill: layer " + std::to_string(l) + "'s experts are " + std::to_string(lay.fmt[l].n_embd) +
-                      " x " + std::to_string(lay.fmt[l].n_ff) + ", not the artifact's 2560 x 640";
+                      " x " + std::to_string(lay.fmt[l].n_ff) + ", not the artifact's " + std::to_string(N) + " x " + std::to_string(NFF);
                 return false;
             }
         // APR: the sign vectors on this device, once (hadamard_device_signs takes a mutex and, the first time per
@@ -2051,7 +2068,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     core::SessionState& ss = *m.ss;
     bool ok = true;
     m.emb = o.take<float>(T * N, ok); m.R = o.take<float>(T * D, ok);
-    m.xn = gr_unfused() ? o.take<float>(T * D, ok) : nullptr;   // F-1: not needed (gr_mix_r reads R)
+    m.xn = (gr_unfused() || plain_family) ? o.take<float>(T * D, ok) : nullptr;   // F-1: not needed (gr_mix_r reads R); the plain family's read IS the norm, so it is always needed
     m.grs = o.take<float>(T * HC, ok);
     const bool hcr = pf_hc_region();   // STRATA_PF_HC_REGION: xn16 / lo / lo16 / gated (and their _lo) are taken in the region
     if (!hcr) {
@@ -2061,6 +2078,14 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok); m.mixed_bf = o.take<uint16_t>(T * N, ok);
     m.mixed_h = o.take<uint16_t>(T * N, ok);
+    if (plain_family) {
+        // The plain family's mixer input IS the pre-norm output: alias, don't copy. Exact because the
+        // plain path never runs gr_mix and forces ldx = D = N below, so xn/xn16 have exactly the layout
+        // mixed/mixed_bf promise. The injection buffers are never written by the plain path, so they are
+        // zeroed ONCE here and every `gr_write` over them is a plain residual add.
+        m.mixed = m.xn; m.mixed_bf = m.xn16;
+        cudaMemset(m.inj, 0, (size_t) T * HC * 4);
+    }
     // Embedding rows are dead after gr_broadcast on m.cs; subsequent half outputs use the same stream.
     m.bo = m.emb;
     if (!hcr && bf16x2_hc(m.f16_io)) { m.xn16_lo = o.take<uint16_t>(T * D, ok); m.lo16_lo = o.take<uint16_t>(T * LR, ok); }
@@ -2068,13 +2093,13 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.steps_dev = o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     m.cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    m.max_blocks = s.idx_block == 0 ? 0 : ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;   // dense family: no blocks
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
         m.fused_bufs = fz;
         const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
-        const uint64_t region = std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch,
+        const uint64_t region = std::max({gdn_set_bytes(T, m.g && m.g->family == ModelFamily::Qwen3Next), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch,
                                                                            m.attn_batch, s), moe_set_bytes(T, m.g->n_expert, fz),
                                            hcr ? hc_set_bytes(T, m.f16_io) : (uint64_t) 0});
         uint8_t* base = o.take<uint8_t>((size_t) region, ok);
@@ -2086,6 +2111,10 @@ bool Prefill::carve(size_t T, void* alloc) {
         Alloc a;
         a.base = base; a.cap = region; a.owned = &m.owned;
         m.qkv = a.take<float>(T * C, ok); m.z = a.take<float>(T * ZV, ok); m.ab = a.take<float>(T * 2 * HV, ok);
+        if (m.g && m.g->family == ModelFamily::Qwen3Next) {   // fused ssm_in / ssm_ba: project whole, then split
+            m.qkvz = a.take<float>(T * (C + ZV), ok);
+            m.ba_scr = a.take<float>(T * 2 * HV, ok);
+        }
         m.gate = a.take<float>(T * HV, ok); m.beta = a.take<float>(T * HV, ok); m.hbuf = a.take<float>(T * C, ok);
         m.y = a.take<float>(T * ZV, ok); m.y_h = a.take<uint16_t>(T * (ZV + (pf_pad() ? ZV_PAD : 0)), ok);
         Alloc b;
@@ -2922,8 +2951,8 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     o.take<int32_t>(T * strata::kernels::kStepCount, ok);
     strata::kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
-    const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
-    o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
+    const int64_t max_blocks = s.idx_block == 0 ? 0 : ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;   // dense family: no blocks
+    o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T, g.family == ModelFamily::Qwen3Next), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, src)),
                                        hcr ? hc_set_bytes(T, f16_io) : (uint64_t) 0}), ok);
     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(kFF2 * kEmbd, ok); o.take<uint16_t>(kEmbd * kFF, ok); }
@@ -4142,15 +4171,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     break;
                 }
                 // ---- the hyper-connection read of this half
-                const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
-                const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
-                                  su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
-                const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
-                                      *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
-                if (!wn || !wd || !wu || !wi) return false;
+                const std::string hcp = half == 0 ? "hc_attn_" : "hc_ffn_";
+                const std::string sn = plain_family ? std::string(half == 0 ? "attn_norm.weight" : "post_attention_norm.weight")
+                                                   : hcp + "norm.weight";
+                const std::string sd = hcp + "down.weight", su = hcp + "up.weight", si = hcp + "inject.weight";
+                const core::WeightRef *wn = need(v, sn.c_str(), err),
+                                      *wd = plain_family ? nullptr : need(v, sd.c_str(), err),
+                                      *wu = plain_family ? nullptr : need(v, su.c_str(), err),
+                                      *wi = plain_family ? nullptr : need(v, si.c_str(), err);
+                if (!wn || (!plain_family && (!wd || !wu || !wi))) return false;
                 // STRATA_HC_Q8 without a bf16 copy: this path's GEMMs read bf16, so the matrices are dequantized per half
                 core::WeightRef wd_q8, wu_q8;
-                if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
+                if (!plain_family && !wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
                     wd_q8 = *wd; wu_q8 = *wu;
                     wd_q8.data = core::NativeDense::hc_bf16_view(*wd, m.cs, 0, 0);
                     wu_q8.data = core::NativeDense::hc_bf16_view(*wu, m.cs, 1, 0);
@@ -4160,11 +4192,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 pt.mark(kPfHc, cs);
                 // the xn16 token stride of this chunk (the writers of both halves and of the fused write-backs use it)
                 const int64_t ldx = hc_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) && !gr_unfused() &&
-                                            !m.xn16_lo ? D + XN_PAD : D;
+                                            !m.xn16_lo && !plain_family ? D + XN_PAD : D;
                 const bool xf16 = m.xn_f16 && !m.xn16_lo && ldx == D;   // xn16 holds FP16 (its writers and readers below)
-                if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo, xf16);
+                if (plain_family || gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo, xf16);
                 else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo, ldx, xf16);
                 normed = false;
+                if (plain_family) { plain_mix_h(m.xn, m.mixed_h, T, m.cs); goto plain_read_done; }   // mixer input = the aliased norm output; no gate, no mixing
+                {
                 pt.mark(kPfHcDown, cs);   // STRATA_PREFILL_TIMING: the hyper-connection read's parts on their own lines (norm stays on "hc read")
                 bool hcd = false;
                 bool hdown = false;
@@ -4223,32 +4257,50 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                              m.mixed_bf_lo);
                 }
 
+                }   // HC gate block
+                plain_read_done:
                 if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
                     core::NativeDense::hc_bf16_release(m.cs, 0, 0);
                     core::NativeDense::hc_bf16_release(m.cs, 1, 0);
                 }
                 if (half == 0 && !core::is_qsa_layer(g, l)) {
                     // ======================= GDN =======================
-                    const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
-                                          *wo = need(v, "ssm_out.weight", err), *wa = need(v, "ssm_alpha.weight", err),
-                                          *wb = need(v, "ssm_beta.weight", err), *wc = need(v, "ssm_conv1d.weight", err),
+                    // qwen3next fuses the GDN inputs: ssm_in is qkv|z as one matrix and ssm_ba is beta|alpha.
+                    const bool fused_in = g.family == ModelFamily::Qwen3Next;
+                    const core::WeightRef *wqkv = need(v, fused_in ? "ssm_in.weight" : "attn_qkv.weight", err),
+                                          *wg = fused_in ? nullptr : need(v, "attn_gate.weight", err),
+                                          *wo = need(v, "ssm_out.weight", err),
+                                          *wa = fused_in ? nullptr : need(v, "ssm_alpha.weight", err),
+                                          *wb = fused_in ? nullptr : need(v, "ssm_beta.weight", err),
+                                          *wc = need(v, "ssm_conv1d.weight", err),
                                           *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
-                                          *wsa = need(v, "ssm_a", err);
-                    if (!wqkv || !wg || !wo || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
+                                          *wsa = need(v, "ssm_a", err),
+                                          *wba = fused_in ? need(v, "ssm_ba.weight", err) : nullptr;
+                    if (!wqkv || (!fused_in && (!wg || !wa || !wb)) || (fused_in && !wba) || !wo || !wc || !wnm || !wdt || !wsa) return false;
                     pt.mark(kPfGdn, cs);
                     float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
-                    if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
                     // KVA: the gate projection feeds only the output normalization, which a state-only layer skips
                     // (STRATA_KVA_GDN_NORM=1 keeps the full recurrence as the A/B control for the state-only one)
                     static const bool kva_gdn_norm = [] {
-                        const char* v = std::getenv("STRATA_KVA_GDN_NORM");
-                        return v != nullptr && std::atoi(v) != 0;
+                        const char* env = std::getenv("STRATA_KVA_GDN_NORM");
+                        return env != nullptr && std::atoi(env) != 0;
                     }();
+                    if (fused_in) {
+                        if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkvz, T, v.name("ssm_in.weight"), err)) return false;
+                        split_qkvz(m.qkvz, m.qkv, m.z, T, m.cs);
+                    } else {
+                    if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
                     if ((!kva_state_only || kva_gdn_norm) &&
                         !native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
+                    }
+                    if (fused_in) {
+                        if (!native_proj(m.gemm, wba, m.mixed_bf, m.ba_scr, T, v.name("ssm_ba.weight"), err, 2 * HV)) return false;
+                        split_ba(m.ba_scr, m.ab, T, m.cs);
+                    } else {
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                     if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
+                    }
                     pt.mark(kPfGdnConv, cs);   // "gdn" is the projections in; the rest on their own lines
                     gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, m.cs);
                     const int64_t ld_y = pf_pad() && T >= std::max<int64_t>(pf_switch_min_t(), 64) ? ZV + ZV_PAD : 0;
@@ -4281,24 +4333,25 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 } else if (half == 0) {
                     // ======================= QSA =======================
                     const core::QsaState& st = ss.qsa_states[qsa_index];
+                    const bool dense = !g.has_indexer();   // qwen3next: no indexer tensors, selection is the identity
                     const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
                                           *wv = need(v, "attn_v.weight", err), *wo = need(v, "attn_output.weight", err),
-                                          *wik = need(v, "indexer.k_proj.weight", err),
-                                          *wiq = need(v, "indexer.q_proj.weight", err),
+                                          *wik = dense ? nullptr : need(v, "indexer.k_proj.weight", err),
+                                          *wiq = dense ? nullptr : need(v, "indexer.q_proj.weight", err),
                                           *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                          *wiqn = need(v, "indexer.q_norm.weight", err),
-                                          *wikn = need(v, "indexer.k_norm.weight", err);
-                    if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                                          *wiqn = dense ? nullptr : need(v, "indexer.q_norm.weight", err),
+                                          *wikn = dense ? nullptr : need(v, "indexer.k_norm.weight", err);
+                    if (!wq || !wk || !wv || !wo || !wqn || !wkn || (!dense && (!wik || !wiq || !wiqn || !wikn))) return false;
                     pt.mark(kPfQsa, cs);
                     if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err)) return false;
                     if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
                     // KVA: the query projections have no consumer when only the KV/indexer state advances
                     if (!kva_state_only && !native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
                     pt.mark(kPfQsaIdxG, cs);   // STRATA_PREFILL_TIMING: "qsa proj" is the k, v and q projections
-                    if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
-                    if (!kva_state_only && !bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
+                    if (!dense && !bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
+                    if (!dense && !kva_state_only && !bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
                     pt.mark(kPfQsaPrep, cs);
-                    if (qsa_fuse_nr()) {
+                    if (!dense && qsa_fuse_nr()) {
                         rms_rope_rows(m.Kc, kKvW, kHeadDim, m.Kc, kKvW, (const float*) wkn->data, T, kNKv, kHeadDim, EPS, p0, strata::kernels::rope_scaling(), m.cs);
                     } else {
                         rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, m.cs);
@@ -4335,7 +4388,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const strata::kernels::KvHostPools* host_w = host_by_dma ? nullptr : &st.host;
                     if (st.kv_hybrid) {   // K8V4: K INT8 unrotated, V rotated Q4_0 (only V and the output rotate)
                         // streamed: each half writes its part of the host copy and of the staging pool
-                        strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                        strata::kernels::fwht256_inplace_cuda(m.Vc, T * NKV, m.cs);
                         const strata::kernels::KvHostPools hk = strata::kernels::kv_hybrid_k_half(st.host),
                                                            hv = strata::kernels::kv_hybrid_v_half(st.host),
                                                            sk = strata::kernels::kv_hybrid_k_half(m.stage),
@@ -4348,8 +4401,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                       mirror ? &hv : nullptr, staged ? &sv : nullptr);
                     } else {
                         if (st.kv_rot) {   // rotated K and V (kv_q4.hpp), the queries below too, the output back
-                            strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, m.cs);
-                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
+                            strata::kernels::fwht256_inplace_cuda(m.Kc, T * NKV, m.cs);
+                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * NKV, m.cs);
                         }
                         if (st.kv_q4)
                             strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, m.cs,
@@ -4364,7 +4417,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
                     }
                     if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
-                    if (qsa_fuse_nr()) {
+                    if (!dense && qsa_fuse_nr()) {
                         rms_rope_rows(m.Qf, kNHead * 2 * kHeadDim, 2 * kHeadDim, m.q, kQW, (const float*) wqn->data, T, kNHead, kHeadDim, EPS, p0, strata::kernels::rope_scaling(), m.cs);
                     } else {
                         split_q(m.Qf, m.q, T, m.cs);
@@ -4372,11 +4425,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         rope(m.q, T, kNHead, kHeadDim, kQW, p0, strata::kernels::rope_scaling(), m.cs);
                     }
                     if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * kNHead, m.cs);
-                    if (qsa_fuse_nr()) {
-                        rms_rope_rows(m.q_idx, kIdxQW, kIdxK, m.q_idx, kIdxQW, (const float*) wiqn->data, T, kIdxQHeads, kIdxK, EPS, p0, strata::kernels::rope_scaling(), m.cs);
-                    } else {
-                        rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
-                        rope(m.q_idx, T, kIdxQHeads, kIdxK, kIdxQW, p0, strata::kernels::rope_scaling(), m.cs);
+                    if (!dense) {
+                        if (qsa_fuse_nr()) {
+                            rms_rope_rows(m.q_idx, kIdxQW, kIdxK, m.q_idx, kIdxQW, (const float*) wiqn->data, T, kIdxQHeads, kIdxK, EPS, p0, strata::kernels::rope_scaling(), m.cs);
+                        } else {
+                            rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, m.cs);
+                            rope(m.q_idx, T, kIdxQHeads, kIdxK, kIdxQW, p0, strata::kernels::rope_scaling(), m.cs);
+                        }
                     }
                     // the indexer appends, token by token; then scores + selection for many queries at once:
                     // a query reads completed blocks (final once completed) and `dead` for its own tail block
@@ -4384,7 +4439,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfQsaIdx, cs);
                     // C-2: the chunk's appends in three launches instead of one per token (the same end state:
                     // the queries below read it only after the whole chunk is appended). STRATA_INDEXER_PER_TOKEN=1: the old
-                    try {
+                    if (!dense) try {
                         static const bool per_token = std::getenv("STRATA_INDEXER_PER_TOKEN") != nullptr;
                         if (!per_token) {
                             strata::kernels::native_qsa_indexer_append_batch(m.idx_raw, T, p0, 0, (const float*) wikn->data,
@@ -4393,7 +4448,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                         for (int64_t t = 0; per_token && t < T; ++t) {
                             const int32_t* step_t = m.steps_dev + t * strata::kernels::kStepCount;
-                            strata::kernels::native_qsa_indexer_append(m.idx_raw + t * 128, step_t + strata::kernels::kStepPos, 0,
+                            strata::kernels::native_qsa_indexer_append(m.idx_raw + t * ID, step_t + strata::kernels::kStepPos, 0,
                                                                        (const float*) wikn->data, EPS, ib, s, st.max_cells,
                                                                        strata::kernels::rope_scaling(), m.cs);
                         }
@@ -4434,6 +4489,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                                                 strata::kernels::kStepNBid)] + 1;
                         // the scores on tensor cores (3xTF32: FP32-level, not bitwise), below sm_80 the FP32 tiled kernel with STRATA_SELECT_SIMT=1;
                         // STRATA_SELECT_OLD=1: the warp kernel
+                        if (dense) { strata::kernels::qsa_dense_ids(m.sel_ids + t0 * m.cap, steps0, nb, m.cap, m.cs); continue; }
                         static const bool old_sel = std::getenv("STRATA_SELECT_OLD") != nullptr;
                         bool tp_call = false;
 #if !defined(STRATA_GPU_METAL)
@@ -6189,7 +6245,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const bool cv_fused = steered && cvec_fuse() && !gr_unfused() && nl < LE && !(nl == 1 && ple_on) &&
                                       strata::kernels::cvec().n_embd == N && strata::kernels::cvec().hc == HC &&
                                       strata::kernels::cvec_tables(&cv_dir, &cv_s, &cv_on);
-                const bool fuse = !gr_unfused() && nl < LE && !(half == 1 && nl == 1 && ple_on) && (!steered || cv_fused);
+                const bool fuse = !plain_family && !gr_unfused() && nl < LE && !(half == 1 && nl == 1 && ple_on) && (!steered || cv_fused);
                 const core::WeightRef* wnn = nullptr;
                 if (fuse) {
                     const core::LayerView vn(*m.wt, nl);
@@ -7593,16 +7649,19 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                 bool normed = false;
                 for (int half = 0; half < 2; ++half) {
                     // ---- the hyper-connection read of this half (run_impl's)
-                    const char* pre = half == 0 ? "hc_attn_" : "hc_ffn_";
-                    const std::string sn = std::string(pre) + "norm.weight", sd = std::string(pre) + "down.weight",
-                                      su = std::string(pre) + "up.weight", si = std::string(pre) + "inject.weight";
-                    const core::WeightRef *wn = need(v, sn.c_str(), err), *wd = need(v, sd.c_str(), err),
-                                          *wu = need(v, su.c_str(), err), *wi = need(v, si.c_str(), err);
-                    if (!wn || !wd || !wu || !wi) return false;
+                    const std::string hcp = half == 0 ? "hc_attn_" : "hc_ffn_";
+                    const std::string sn = plain_family ? std::string(half == 0 ? "attn_norm.weight" : "post_attention_norm.weight")
+                                                       : hcp + "norm.weight";
+                    const std::string sd = hcp + "down.weight", su = hcp + "up.weight", si = hcp + "inject.weight";
+                    const core::WeightRef *wn = need(v, sn.c_str(), err),
+                                          *wd = plain_family ? nullptr : need(v, sd.c_str(), err),
+                                          *wu = plain_family ? nullptr : need(v, su.c_str(), err),
+                                          *wi = plain_family ? nullptr : need(v, si.c_str(), err);
+                    if (!wn || (!plain_family && (!wd || !wu || !wi))) return false;
                     // STRATA_HC_Q8 without a bf16 copy (0.2.2's run_impl): this path's GEMMs read bf16, so the matrices
                     // are dequantized per half
                     core::WeightRef wd_q8, wu_q8;
-                    if (!wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
+                    if (!plain_family && !wd->data && wd->hc_q8 && !wu->data && wu->hc_q8) {
                         wd_q8 = *wd; wu_q8 = *wu;
                         wd_q8.data = core::NativeDense::hc_bf16_view(*wd, cs, 0, 0);
                         wu_q8.data = core::NativeDense::hc_bf16_view(*wu, cs, 1, 0);
@@ -7612,9 +7671,11 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     // the stream is not optional: under STRATA_HC_REQ8 bf16_proj expands the int8 codes into one static
                     // scratch per call site, on the stream it is given.  Omitted, the GEMMs below read it out of order.
                     pt.mark(kPfHc, cs);
-                    if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, cs, m.xn16_lo);
+                    if (plain_family || gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, cs, m.xn16_lo);
                     else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, cs, m.xn16_lo);
                     normed = false;
+                    if (plain_family) { plain_mix_h(m.xn, m.mixed_h, T, cs); goto plain_read_done2; }
+                    {
                     if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, 0, cs)) return false;
                     gr_silu(m.lo, m.lo16, T, cs, m.lo16_lo);
                     if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, 0, cs)) return false;
@@ -7622,25 +7683,42 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     if (gr_unfused()) gr_mix(m.xn, m.gated, m.mixed, m.mixed_bf, T, cs, m.mixed_h, m.mixed_bf_lo);
                     else gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, cs, m.mixed_h,
                                   m.mixed_bf_lo);
+                    }   // HC gate block
+                    plain_read_done2:
                     if (wd_q8.data) {   // the HC GEMMs that read the scratch are enqueued: the next user waits for them
                         core::NativeDense::hc_bf16_release(cs, 0, 0);
                         core::NativeDense::hc_bf16_release(cs, 1, 0);
                     }
                     if (half == 0 && !core::is_qsa_layer(g, l)) {
                         // ======================= GDN (run_impl's) =======================
-                        const core::WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
-                                              *wo = need(v, "ssm_out.weight", err), *wa = need(v, "ssm_alpha.weight", err),
-                                              *wb = need(v, "ssm_beta.weight", err), *wc = need(v, "ssm_conv1d.weight", err),
+                        const bool fused_in = g.family == ModelFamily::Qwen3Next;   // ssm_in = qkv|z, ssm_ba = beta|alpha
+                        const core::WeightRef *wqkv = need(v, fused_in ? "ssm_in.weight" : "attn_qkv.weight", err),
+                                              *wg = fused_in ? nullptr : need(v, "attn_gate.weight", err),
+                                              *wo = need(v, "ssm_out.weight", err),
+                                              *wa = fused_in ? nullptr : need(v, "ssm_alpha.weight", err),
+                                              *wb = fused_in ? nullptr : need(v, "ssm_beta.weight", err),
+                                              *wc = need(v, "ssm_conv1d.weight", err),
                                               *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
-                                              *wsa = need(v, "ssm_a", err);
-                        if (!wqkv || !wg || !wo || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
+                                              *wsa = need(v, "ssm_a", err),
+                                              *wba = fused_in ? need(v, "ssm_ba.weight", err) : nullptr;
+                        if (!wqkv || (!fused_in && (!wg || !wa || !wb)) || (fused_in && !wba) || !wo || !wc || !wnm || !wdt || !wsa) return false;
                         pt.mark(kPfGdn, cs);
                         float* state = ssp->gdn_state + (size_t) (gdn_index - ssp->gdn_ord0) * gdn_floats;
                         float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        if (fused_in) {
+                            if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkvz, T, v.name("ssm_in.weight"), err)) return false;
+                            split_qkvz(m.qkvz, m.qkv, m.z, T, cs);
+                        } else {
                         if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err)) return false;
                         if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err)) return false;
+                        }
+                        if (fused_in) {
+                            if (!native_proj(m.gemm, wba, m.mixed_bf, m.ba_scr, T, v.name("ssm_ba.weight"), err, 2 * HV)) return false;
+                            split_ba(m.ba_scr, m.ab, T, cs);
+                        } else {
                         if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
                         if (!bf16_proj(m.gemm, wb, m.mixed_bf, m.ab + HV, T, v.name("ssm_beta.weight"), err, 2 * HV, m.mixed_bf_lo)) return false;
+                        }
                         pt.mark(kPfGdnConv, cs);
                         gdn_gates(m.ab, (const float*) wdt->data, (const float*) wsa->data, m.gate, m.beta, T, cs);
                         bool fused_gdn = false;
@@ -7658,25 +7736,26 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     } else if (half == 0) {
                         // ======================= QSA (run_impl's, without its debug dumps) =======================
                         const core::QsaState& st = ssp->qsa_states[qsa_index];
+                        const bool dense = !g.has_indexer();
                         const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
                                               *wv = need(v, "attn_v.weight", err), *wo = need(v, "attn_output.weight", err),
-                                              *wik = need(v, "indexer.k_proj.weight", err),
-                                              *wiq = need(v, "indexer.q_proj.weight", err),
+                                              *wik = dense ? nullptr : need(v, "indexer.k_proj.weight", err),
+                                              *wiq = dense ? nullptr : need(v, "indexer.q_proj.weight", err),
                                               *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                              *wiqn = need(v, "indexer.q_norm.weight", err),
-                                              *wikn = need(v, "indexer.k_norm.weight", err);
-                        if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                                              *wiqn = dense ? nullptr : need(v, "indexer.q_norm.weight", err),
+                                              *wikn = dense ? nullptr : need(v, "indexer.k_norm.weight", err);
+                        if (!wq || !wk || !wv || !wo || !wqn || !wkn || (!dense && (!wik || !wiq || !wiqn || !wikn))) return false;
                         pt.mark(kPfQsa, cs);
                         if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err)) return false;
                         if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err)) return false;
                         if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err)) return false;
-                        if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
-                        if (!bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
-                        if (qsa_fuse_nr()) {
-                            rms_rope_rows(m.Kc, 512, 256, m.Kc, 512, (const float*) wkn->data, T, 2, 256, EPS, p0, strata::kernels::rope_scaling(), cs);
+                        if (!dense && !bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
+                        if (!dense && !bf16_proj(m.gemm, wiq, m.mixed_bf, m.q_idx, T, v.name("indexer.q_proj.weight"), err, 0, m.mixed_bf_lo)) return false;
+                        if (!dense && qsa_fuse_nr()) {
+                            rms_rope_rows(m.Kc, NKV * HD, HD, m.Kc, NKV * HD, (const float*) wkn->data, T, NKV, HD, EPS, p0, strata::kernels::rope_scaling(), cs);
                         } else {
-                            rms_rows(m.Kc, (const float*) wkn->data, T * 2, 256, 256, EPS, cs);
-                            rope(m.Kc, T, 2, 256, 512, p0, strata::kernels::rope_scaling(), cs);
+                            rms_rows(m.Kc, (const float*) wkn->data, T * NKV, HD, HD, EPS, cs);
+                            rope(m.Kc, T, NKV, HD, NKV * HD, p0, strata::kernels::rope_scaling(), cs);
                         }
                         const bool staged = st.kv_mode == 1;
                         if (staged) {
@@ -7695,7 +7774,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                         const strata::kernels::KvHostPools* host_w = host_by_dma ? nullptr : &st.host;
                         if (st.kv_hybrid) {
                             // streamed: each half writes its part of the host copy and of the staging pool
-                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, cs);
+                            strata::kernels::fwht256_inplace_cuda(m.Vc, T * NKV, cs);
                             const strata::kernels::KvHostPools hk = strata::kernels::kv_hybrid_k_half(st.host),
                                                                hv = strata::kernels::kv_hybrid_v_half(st.host),
                                                                sk = strata::kernels::kv_hybrid_k_half(m.stage),
@@ -7708,8 +7787,8 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                           mirror ? &hv : nullptr, staged ? &sv : nullptr);
                         } else {
                             if (st.kv_rot) {
-                                strata::kernels::fwht256_inplace_cuda(m.Kc, T * 2, cs);
-                                strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, cs);
+                                strata::kernels::fwht256_inplace_cuda(m.Kc, T * NKV, cs);
+                                strata::kernels::fwht256_inplace_cuda(m.Vc, T * NKV, cs);
                             }
                             if (st.kv_q4)
                                 strata::kernels::kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.Kc, m.Vc, s, cs,
@@ -7723,7 +7802,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                                                                     core::qsa_kv_format(st), p0 / s.page_size,
                                                                     (p0 + T + s.page_size - 1) / s.page_size, s, cs);
                         }
-                        if (qsa_fuse_nr()) {
+                        if (!dense && qsa_fuse_nr()) {
                             rms_rope_rows(m.Qf, kQFull, 2 * kHeadDim, m.q, kQW, (const float*) wqn->data, T, kNHead, kHeadDim, EPS, p0, strata::kernels::rope_scaling(), cs);
                         } else {
                             split_q(m.Qf, m.q, T, cs);
@@ -7731,15 +7810,17 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                             rope(m.q, T, kNHead, kHeadDim, kQW, p0, strata::kernels::rope_scaling(), cs);
                         }
                         if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(m.q, T * kNHead, cs);
+                        if (!dense) {
                         if (qsa_fuse_nr()) {
-                            rms_rope_rows(m.q_idx, 512, 128, m.q_idx, 512, (const float*) wiqn->data, T, 4, 128, EPS, p0, strata::kernels::rope_scaling(), cs);
+                            rms_rope_rows(m.q_idx, IQ * ID, ID, m.q_idx, IQ * ID, (const float*) wiqn->data, T, IQ, ID, EPS, p0, strata::kernels::rope_scaling(), cs);
                         } else {
-                            rms_rows(m.q_idx, (const float*) wiqn->data, T * 4, 128, 128, EPS, cs);
-                            rope(m.q_idx, T, 4, 128, 512, p0, strata::kernels::rope_scaling(), cs);
+                            rms_rows(m.q_idx, (const float*) wiqn->data, T * IQ, ID, ID, EPS, cs);
+                            rope(m.q_idx, T, IQ, ID, IQ * ID, p0, strata::kernels::rope_scaling(), cs);
+                        }
                         }
                         const strata::kernels::QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                         pt.mark(kPfQsaIdx, cs);
-                        try {
+                        if (!dense) try {
                             static const bool per_token = std::getenv("STRATA_INDEXER_PER_TOKEN") != nullptr;
                             if (!per_token) {
                                 strata::kernels::native_qsa_indexer_append_batch(m.idx_raw, T, p0, 0, (const float*) wikn->data,
@@ -7748,7 +7829,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                             }
                             for (int64_t t = 0; per_token && t < T; ++t) {
                                 const int32_t* step_t = m.steps_dev + t * strata::kernels::kStepCount;
-                                strata::kernels::native_qsa_indexer_append(m.idx_raw + t * 128, step_t + strata::kernels::kStepPos, 0,
+                                strata::kernels::native_qsa_indexer_append(m.idx_raw + t * ID, step_t + strata::kernels::kStepPos, 0,
                                                                            (const float*) wikn->data, EPS, ib, s, st.max_cells,
                                                                            strata::kernels::rope_scaling(), cs);
                             }
@@ -7759,11 +7840,12 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                             const int32_t* steps0 = m.steps_dev + q0 * strata::kernels::kStepCount;
                             const int64_t active = (int64_t) m.steps_host[(size_t) ((q0 + nb - 1) * strata::kernels::kStepCount +
                                                                                     strata::kernels::kStepNBid)] + 1;
+                            if (dense) { strata::kernels::qsa_dense_ids(m.sel_ids + q0 * m.cap, steps0, nb, m.cap, cs); continue; }
                             static const bool old_sel = std::getenv("STRATA_SELECT_OLD") != nullptr;
-                            if (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + q0 * 512,
+                            if (old_sel || !strata::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + q0 * IQ * ID,
                                                                                  steps0, nb, m.max_blocks, s, m.sel_scores,
                                                                                  cs, active))
-                                strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + q0 * 512, steps0, nb,
+                                strata::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + q0 * IQ * ID, steps0, nb,
                                                                   m.max_blocks, s, m.sel_scores, cs, active);
                             strata::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                             m.sel_ids + q0 * m.cap, cs, active);
@@ -7811,7 +7893,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     }
                     // ---- the attention half's write, fused with the FFN half's norm (run_impl's F-2)
                     const core::WeightRef* wnn = nullptr;
-                    if (!gr_unfused()) {
+                    if (!plain_family && !gr_unfused()) {
                         wnn = need(v, "hc_ffn_norm.weight", err);
                         if (!wnn) return false;
                     }

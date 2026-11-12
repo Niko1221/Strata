@@ -54,6 +54,8 @@ void gr_mix(const float* xn, const float* gated, float* mixed, uint16_t* mixed16
 void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64_t T, void* stream);
 /// R[t, c, :] = e[t, :] for all four streams (the embedding broadcast).
 void gr_broadcast(const float* e, float* R, int64_t T, void* stream);
+/// The plain family's FP16 mixer image: `mixed_h = fp16(xn)`. `mixed`/`mixed_bf` alias `xn`/`xn16`.
+void plain_mix_h(const float* xn, uint16_t* mixed_h, int64_t T, void* stream);
 
 // ---- GDN (state 128, 16 k heads, 48 v heads, 10240 conv channels, 4 taps)
 /// gate[t,h] = softplus(ab[t,h] + dt[h]) * ssm_a[h];  beta[t,h] = sigmoid(ab[t, 48 + h])  (ab: [T, 96])
@@ -158,6 +160,15 @@ void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, in
                    void* stream);
 /// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
 void split_q(const float* q_full, float* q, int64_t T, void* stream);
+// Fused GDN inputs (qwen3next): split a projected ssm_in (qkv|z) / ssm_ba (beta|alpha) into the strided
+// buffers the GDN kernels read (qkv / z / ab-as-alpha|beta).
+void split_qkvz(const float* qkvz, float* qkv, float* z, int64_t T, void* stream);
+// grouped -> tiled gather for the per-value-head GDN roles (see kernels.cu); qwen3next only.
+// v is read at row stride `v_row_stride` (the conv buffer's full channel count); outputs are packed.
+void gdn_tile_heads(const float* v, const float* gate, const float* beta, float* v_t, float* gate_t, float* beta_t,
+                    int64_t T, int64_t v_row_stride, void* stream);
+void split_ba(const float* ba, float* ab, int64_t T, void* stream);
+void split_ba2(const float* ba, float* alpha, float* beta, int64_t T, void* stream);
 /// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)
 void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16 = 0);
 

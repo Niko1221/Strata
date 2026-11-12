@@ -33,8 +33,13 @@
 
 namespace strata::kernels {
 namespace {
-constexpr int N = strata::core::kCompiledGeometry.n_embd, H = strata::core::kCompiledGeometry.hc, D = N * H, HISTORY = 9;
-static_assert(N == strata::core::kCompiledGeometry.n_embd && H == strata::core::kCompiledGeometry.hc, "native_ple_postops is compiled for core/geometry.hpp");
+// A family without hyper-connections (qwen3next) must not call this kernel; the shape falls back to
+// Flash-Next's so the TU compiles there (the PLE post-ops read the HC residual streams).
+constexpr int N = strata::core::kCompiledGeometry.n_embd,
+              H = strata::core::kCompiledGeometry.hc > 0 ? (int) strata::core::kCompiledGeometry.hc : 4,
+              D = N * H, HISTORY = 9;
+static_assert(!strata::core::kCompiledGeometry.has_hyper_connections() ||
+              (N == strata::core::kCompiledGeometry.n_embd && H == strata::core::kCompiledGeometry.hc), "native_ple_postops is compiled for a hyper-connection geometry; a family without them must not call it");
 __device__ float warp_sum(float x) {
     for (int offset = 16; offset; offset >>= 1) x += __shfl_xor_sync(0xffffffffu, x, offset);
     return x;

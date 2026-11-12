@@ -6,6 +6,7 @@
 #include "strata/kernels/gfx_arch.hpp"
 #include "strata/kernels/router_top10.hpp"
 #include "strata/core/emulate.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -23,10 +24,20 @@
 namespace strata::prefill {
 namespace {
 
-constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
+// Derived from the compiled geometry (one build, one shape): these were qwen4exp's numbers; a family
+// compiled with its own geometry header gets the right shapes here too. A plain-residual family
+// (qwen3next) keeps ONE residual stream: HC falls back to 1, its GR kernels are never launched.
+constexpr int N = (int) strata::core::kCompiledGeometry.n_embd,
+              HC_RAW = (int) strata::core::kCompiledGeometry.hc,
+              HC = HC_RAW > 0 ? HC_RAW : 1,
+              D = N * HC, LR = (int) strata::core::kCompiledGeometry.hc_lr;
 constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
-constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
+constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width
 constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
+constexpr int NH = (int) strata::core::kCompiledGeometry.n_head, HD = (int) strata::core::kCompiledGeometry.head_dim,
+              NKV = (int) strata::core::kCompiledGeometry.n_head_kv;
+constexpr int64_t ZV = strata::core::kCompiledGeometry.ssm_value_dim;
+constexpr int HCX = HC > 0 ? HC : 1;
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -47,6 +58,10 @@ __device__ __forceinline__ uint16_t bf(float f) {
 // W.hi + W.lo carries ~16 mantissa bits of the activation - the decode path's FP32 x to within ~1e-5.
 __device__ __forceinline__ uint16_t bf_lo(float f, uint16_t hi) { return bf(f - __uint_as_float((uint32_t) hi << 16)); }
 __device__ __forceinline__ float sigm(float x) { return 1.0f / (1.0f + __expf(-x)); }
+__device__ __forceinline__ float gdn_gate(float x) {   // the GDN output gate is a family property (gdn_silu_gate)
+    if constexpr (strata::core::kGdnSiluGate) return x * sigm(x);
+    else return sigm(x);
+}
 __device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__float2half_rn(f)); }
 // A SwiGLU product for an FP16 GEMM: saturated, so a token with a massive activation cannot turn into inf and then
 // NaN in the down projection (decode's q8_1 has room to ~8e6; FP16 ends at 65504).  A NaN stays NaN (fminf/fmaxf
@@ -322,9 +337,12 @@ __global__ void gdn_gates_kernel(const float* __restrict__ ab, const float* __re
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= T * HV) return;
     const int64_t t = i / HV, h = i % HV;
-    const float v = ab[t * 2 * HV + h] + dt[h];
-    gate[i] = (v > 20.0f ? v : log1pf(__expf(v))) * ssm_a[h];
-    beta[i] = sigm(ab[t * 2 * HV + HV + h]);
+    // qwen3next ships the per-value-head roles grouped by key head; the recurrence reads tiled head order, so
+    // the epilogue gathers from the grouped index (a family property, `if constexpr` keeps Groot's bits).
+    const int64_t s = strata::core::kGdnGroupedHeads ? (h % HK) * (HV / HK) + h / HK : h;
+    const float v = ab[t * 2 * HV + s] + dt[s];
+    gate[i] = (v > 20.0f ? v : log1pf(__expf(v))) * ssm_a[s];
+    beta[i] = sigm(ab[t * 2 * HV + HV + s]);
 }
 // one thread per channel, walks the chunk; then a second kernel normalises
 __global__ void gdn_conv_kernel(float* __restrict__ hist, const float* __restrict__ qkv, const float* __restrict__ w,
@@ -333,10 +351,17 @@ __global__ void gdn_conv_kernel(float* __restrict__ hist, const float* __restric
     if (c >= C) return;
     float v0 = hist[c * 3], v1 = hist[c * 3 + 1], v2 = hist[c * 3 + 2];
     const float w0 = w[c * 4], w1 = w[c * 4 + 1], w2 = w[c * 4 + 2], w3 = w[c * 4 + 3];
+    // qwen3next: the conv runs in the GGUF's grouped channel order (its weights match), but the recurrence
+    // reads the v region in tiled head order - write the v region straight to its tiled column.
+    int64_t dst = c;
+    if constexpr (strata::core::kGdnGroupedHeads) {
+        if (c >= 2 * HK * S) { const int64_t g = (c - 2 * HK * S) / S, d = (c - 2 * HK * S) % S;
+            dst = 2 * HK * S + ((g % (HV / HK)) * HK + g / (HV / HK)) * S + d; }
+    }
     for (int64_t t = 0; t < T; ++t) {
         const float x = qkv[t * C + c];
         const float s = v0 * w0 + v1 * w1 + v2 * w2 + x * w3;
-        h[t * C + c] = s / (1.0f + __expf(-s));
+        h[t * C + dst] = s / (1.0f + __expf(-s));
         v0 = v1; v1 = v2; v2 = x;
     }
     hist[c * 3] = v0; hist[c * 3 + 1] = v1; hist[c * 3 + 2] = v2;
@@ -355,10 +380,15 @@ __global__ void gdn_conv_tiled_kernel(const float* __restrict__ hist, const floa
     auto input = [&](int64_t t) -> float { return t >= 0 ? qkv[t * C + c] : hist[c * 3 + (int) (t + 3)]; };
     float v0 = input(t0 - 3), v1 = input(t0 - 2), v2 = input(t0 - 1);
     const float w0 = w[c * 4], w1 = w[c * 4 + 1], w2 = w[c * 4 + 2], w3 = w[c * 4 + 3];
+    int64_t dst = c;   // qwen3next: write the v region straight to its tiled column (see gdn_conv_kernel)
+    if constexpr (strata::core::kGdnGroupedHeads) {
+        if (c >= 2 * HK * S) { const int64_t g = (c - 2 * HK * S) / S, d = (c - 2 * HK * S) % S;
+            dst = 2 * HK * S + ((g % (HV / HK)) * HK + g / (HV / HK)) * S + d; }
+    }
     for (int64_t t = t0; t < t1; ++t) {
         const float x = qkv[t * C + c];
         const float s = v0 * w0 + v1 * w1 + v2 * w2 + x * w3;
-        h[t * C + c] = s / (1.0f + __expf(-s));
+        h[t * C + dst] = s / (1.0f + __expf(-s));
         v0 = v1; v1 = v2; v2 = x;
     }
 }
@@ -375,10 +405,15 @@ __global__ void gdn_conv_l2_kernel(const float* __restrict__ hist, const float* 
     auto input = [&](int64_t t) -> float { return t >= 0 ? qkv[t * C + c] : hist[c * 3 + (int) (t + 3)]; };
     float v0 = input(t0 - 3), v1 = input(t0 - 2), v2 = input(t0 - 1);
     const float w0 = w[c * 4], w1 = w[c * 4 + 1], w2 = w[c * 4 + 2], w3 = w[c * 4 + 3];
+    int64_t dst = c;   // qwen3next: write the v region straight to its tiled column (see gdn_conv_kernel)
+    if constexpr (strata::core::kGdnGroupedHeads) {
+        if (c >= 2 * HK * S) { const int64_t g = (c - 2 * HK * S) / S, d = (c - 2 * HK * S) % S;
+            dst = 2 * HK * S + ((g % (HV / HK)) * HK + g / (HV / HK)) * S + d; }
+    }
     for (int64_t t = t0; t < t1; ++t) {   // gdn_conv_tiled_kernel's loop, verbatim
         const float x = qkv[t * C + c];
         const float s = v0 * w0 + v1 * w1 + v2 * w2 + x * w3;
-        h[t * C + c] = s / (1.0f + __expf(-s));
+        h[t * C + dst] = s / (1.0f + __expf(-s));
         v0 = v1; v1 = v2; v2 = x;
     }
     if (blockIdx.x >= 2 * HK) return;   // v channels: no norm
@@ -582,9 +617,10 @@ __global__ void __launch_bounds__(S * RG) gdn_rec_kernel(float* __restrict__ sta
         __syncthreads();
         if (rg == 0) {
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-            const float v = oc * rsqrtf(ss / (float) S + eps) * g_col * sigm(z[t * HV * S + head * S + col]);
-            y[t * HV * S + head * S + col] = v;
-            y16[t * ld16 + head * S + col] = hf(v);
+            const float v = oc * rsqrtf(ss / (float) S + eps) * g_col * gdn_gate(z[t * HV * S + head * S + col]);
+            const int yh = strata::core::kGdnGroupedHeads ? (head % HK) * (HV / HK) + head / HK : head;   // grouped columns for ssm_out (qwen3next; Groot is natively tiled)
+            y[t * HV * S + yh * S + col] = v;
+            y16[t * ld16 + yh * S + col] = hf(v);
         }
     }
 #pragma unroll
@@ -1789,8 +1825,10 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
         if ((col & 31) == 0) wsum[col >> 5] = sp;
         __syncthreads();
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-        const float bp = oc * rsqrtf(ss / (float) S + eps) * gamma[col], sg = sigm(z[at]);
-        const size_t o16 = (size_t) (row / HV) * ld16 + (size_t) (row % HV) * S + col;
+        const float bp = oc * rsqrtf(ss / (float) S + eps) * gamma[col], sg = gdn_gate(z[at]);
+        const int head = (int)(row % HV);
+        const int yh = strata::core::kGdnGroupedHeads ? (head % HK) * (HV / HK) + head / HK : head;   // grouped columns for ssm_out (qwen3next)
+        const size_t o16 = (size_t) (row / HV) * ld16 + (size_t) yh * S + col;
         if constexpr (WY) {
             const float v = bp * sg;
             y[at] = v;
@@ -2038,7 +2076,7 @@ __global__ void __launch_bounds__(GW_NW * 32) gdn_wmma_scan_kernel(float* __rest
         const float* o = &so[st * S + sr];
         gw_h8 r;
 #pragma unroll
-        for (int i = 0; i < 8; ++i) r[i] = (_Float16) (o[i] * sigm(i < 4 ? z0[i] : z1[i - 4]));
+        for (int i = 0; i < 8; ++i) r[i] = (_Float16) (o[i] * gdn_gate(i < 4 ? z0[i] : z1[i - 4]));
         *reinterpret_cast<uint4*>(y16 + (c0 + st) * ld16 + vh * S + sr) = __builtin_bit_cast(uint4, r);
     };
     for (int64_t t0 = 0; t0 < T; t0 += GW_CK) {
@@ -2226,8 +2264,10 @@ __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict
     if ((col & 31) == 0) wsum[col >> 5] = sp;
     __syncthreads();
     const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
-    const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * sigm(z[t * HV * S + head * S + col]);
-    y16[(size_t) t * ld16 + (size_t) head * S + col] = hf(v);   // (the FP32 normalized value is not stored: nothing reads it)
+    const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * gdn_gate(z[t * HV * S + head * S + col]);
+    // qwen3next: ssm_out's columns are HF grouped; the recurrence ran tiled — write grouped (Groot is natively tiled)
+    const int yh = strata::core::kGdnGroupedHeads ? (head % HK) * (HV / HK) + head / HK : head;
+    y16[(size_t) t * ld16 + (size_t) yh * S + col] = hf(v);   // (the FP32 normalized value is not stored: nothing reads it)
 }
 
 // ---------------------------------------------------------------- MoE
@@ -2515,16 +2555,16 @@ __global__ void __launch_bounds__(256) rms_rope_rows_kernel(const float* in, int
 }
 __global__ void split_q_kernel(const float* __restrict__ qf, float* __restrict__ q, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    q[i] = qf[t * 24 * 512 + h * 512 + d];
+    if (i >= T * NH * HD) return;
+    const int64_t t = i / ((int64_t) NH * HD), h = (i / HD) % NH, d = i % HD;
+    q[i] = qf[t * (int64_t) NH * 2 * HD + h * 2 * HD + d];
 }
 __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __restrict__ qf, uint16_t* __restrict__ o16,
                                  int64_t T, int64_t ld16) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= T * 24 * 256) return;
-    const int64_t t = i / (24 * 256), h = (i / 256) % 24, d = i % 256;
-    o16[t * ld16 + h * 256 + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * 24 * 512 + h * 512 + 256 + d]))));
+    if (i >= T * NH * HD) return;
+    const int64_t t = i / ((int64_t) NH * HD), h = (i / HD) % NH, d = i % HD;
+    o16[t * ld16 + h * HD + d] = hf(a[i] * (1.0f / (1.0f + expf(-qf[t * (int64_t) NH * 2 * HD + h * 2 * HD + HD + d]))));
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
@@ -2537,7 +2577,7 @@ __global__ void kv_append_kernel(const float* __restrict__ K, const float* __res
     const int kvh = blockIdx.y, g = blockIdx.z >> 1;
     const bool is_v = (blockIdx.z & 1) != 0;
     const int d = g * 64 + threadIdx.x;
-    const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
+    const float x = (is_v ? V : K)[t * (int64_t) NKV * HD + kvh * HD + d];
     const int64_t pos = pos0 + t;
     const int64_t page = table[pos / page_size];
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
@@ -2703,7 +2743,7 @@ __global__ void __launch_bounds__(256, 2) gr_upmix_cuda_kernel(const uint16_t* _
                                                               int64_t T) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     __shared__ __align__(16) uint16_t sA[2][UC_BM][UC_LD];
-    __shared__ __align__(16) uint16_t sB[2][HC * UC_BD][UC_LD];
+    __shared__ __align__(16) uint16_t sB[2][HCX * UC_BD][UC_LD];
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5, wm = warp >> 1, wn = warp & 1;
     // blocks column-tile fastest: the blocks in flight share a token tile (its lo16 rows stay in L2, the epilogue's R
     // reads run along rows)
@@ -2726,7 +2766,7 @@ __global__ void __launch_bounds__(256, 2) gr_upmix_cuda_kernel(const uint16_t* _
         }
         asm volatile("cp.async.commit_group;\n" ::);
     };
-    float acc[2][HC][2][4];
+    float acc[2][HCX][2][4];
 #pragma unroll
     for (int mt = 0; mt < 2; ++mt)
 #pragma unroll
@@ -2802,7 +2842,7 @@ void kv_append(const float* K, const float* V, int64_t T, int64_t pos0, const in
                uint16_t* k_pool, uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
                void* stream, const strata::kernels::KvHostPools* host, const strata::kernels::KvHostPools* stage) {
     if (T <= 0) return;
-    kv_append_kernel<<<dim3((unsigned) T, 2, 8), 64, 0, (cudaStream_t) stream>>>(
+    kv_append_kernel<<<dim3((unsigned) T, (unsigned) NKV, (unsigned) (2 * (HD / 64))), 64, 0, (cudaStream_t) stream>>>(
         K, V, pos0, page_table, page_size, k_pool, v_pool, k_q, v_q, k_scale, v_scale,
         host ? *host : strata::kernels::KvHostPools{}, stage ? *stage : strata::kernels::KvHostPools{});
     check("kv_append");
@@ -2940,6 +2980,17 @@ void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64
 void gr_broadcast(const float* e, float* R, int64_t T, void* stream) {
     gr_broadcast_kernel<<<blocks_for(T * D), 256, 0, (cudaStream_t) stream>>>(e, R, T);
     check("gr_broadcast");
+}
+/// The plain family's mixer input is the pre-norm output itself: `mixed`/`mixed_bf` alias `xn`/`xn16`
+/// (same layout, forced by ldx = D = N), and only the FP16 image `mixed_h` - what the native GEMMs read -
+/// has to be produced.  This is that image.  No gate, no mixing: the plain family has neither.
+__global__ void plain_mix_h_kernel(const float* __restrict__ xn, uint16_t* __restrict__ mixed_h, int64_t total) {
+    int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < total) mixed_h[i] = hf(xn[i]);
+}
+void plain_mix_h(const float* xn, uint16_t* mixed_h, int64_t T, void* stream) {
+    plain_mix_h_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(xn, mixed_h, T * N);
+    check("plain_mix_h");
 }
 void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream) {
     gdn_gates_kernel<<<blocks_for(T * HV), 256, 0, (cudaStream_t) stream>>>(ab, dt, ssm_a, gate, beta, T);
@@ -3454,12 +3505,91 @@ void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, in
     check("rms_rope_rows");
 }
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {
-    split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
+    split_q_kernel<<<blocks_for(T * (int64_t) NH * HD), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);
     check("split_q");
 }
+// Fused GDN inputs (qwen3next): ssm_in is qkv|z as ONE matrix and ssm_ba is beta|alpha. The projection writes
+// the fused rows; these split them into the strided buffers every GDN kernel already reads. A copy of a few
+// MB per layer-chunk against a GEMM of the same rows - the zero-copy alternative threads a stride through
+// every GDN kernel, which is the shape change the upstream review should decide.
+// The fused `ssm_in` is NOT [qkv | z]: it is GROUPED BY KEY HEAD - [q_g | k_g | v_g | z_g] x HK, the head
+// layout of the HF `in_proj_qkvz` it ships from (llama.cpp's qwen3next graph splits it the same way). The GDN
+// kernels read the flat [q | k | v] + z the separate qwen4exp weights produce, so this is a group -> flat
+// scatter, not a midpoint split.
+__global__ void split_qkvz_kernel(const float* __restrict__ qkvz, float* __restrict__ qkv, float* __restrict__ z, int64_t T) {
+    constexpr int VW = ZV / HK, GW = 2 * S + 2 * VW;   // a group: q(S) | k(S) | v(VW) | z(VW)
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * (int64_t) (C + ZV)) return;
+    const int64_t t = i / (C + ZV), c = i % (C + ZV);
+    const int64_t g = c / GW, r = c % GW;
+    // q/k/v keep the GGUF's grouped-by-key-head order here: the conv1d weights are in that order and the
+    // conv runs on this buffer.  z is per value head and skips the conv, so it goes straight to the TILED
+    // head order every GDN kernel assumes (head h pairs with key head h % HK): value head (g, w) -> w*HK+g.
+    if (r < S) qkv[t * C + g * S + r] = qkvz[i];
+    else if (r < 2 * S) qkv[t * C + (int64_t) HK * S + g * S + (r - S)] = qkvz[i];
+    else if (r < 2 * S + VW) qkv[t * C + 2 * (int64_t) HK * S + g * VW + (r - 2 * S)] = qkvz[i];
+    else { const int64_t w = (r - 2 * S - VW) / S; z[t * ZV + (w * HK + g) * S + (r - 2 * S - VW) % S] = qkvz[i]; }
+}
+// `ssm_ba` is grouped the same way: [beta | alpha] x (HV/HK) per key head. `ab` is the flat [alpha | beta]
+// the gate kernels read.
+__global__ void split_ba_kernel(const float* __restrict__ ba, float* __restrict__ ab, int64_t T) {
+    constexpr int VPV = HV / HK, GW = 2 * VPV;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * 2 * HV) return;
+    const int64_t t = i / (2 * HV), c = i % (2 * HV);
+    const bool alpha = c < HV;
+    const int64_t h = alpha ? c : c - HV, g = h / VPV, w = h % VPV;   // GROUPED order: matches ssm_a/ssm_dt
+    ab[t * 2 * HV + c] = ba[t * 2 * HV + g * GW + (alpha ? VPV + w : w)];
+}
+// The decode form: alpha and beta are SEPARATE role buffers there.
+__global__ void split_ba2_kernel(const float* __restrict__ ba, float* __restrict__ alpha, float* __restrict__ beta, int64_t T) {
+    constexpr int VPV = HV / HK, GW = 2 * VPV;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * (int64_t) HV) return;
+    const int64_t t = i / HV, h = i % HV, g = h / VPV, w = h % VPV;   // GROUPED order: matches ssm_a/ssm_dt
+    alpha[t * HV + h] = ba[t * 2 * HV + g * GW + VPV + w];
+    beta[t * HV + h] = ba[t * 2 * HV + g * GW + w];
+}
+// The qwen3next GGUF groups the per-value-head GDN roles by KEY head (HF order), but every GDN kernel pairs
+// v head h with key head h % HK (tiled order, as Groot's GGUF ships).  After the conv has run on the grouped
+// buffer (its weights are grouped too) and the gate/beta epilogues have run on the grouped scalars (ssm_a and
+// ssm_dt are grouped too), this gathers the three into the tiled order the recurrence reads.  Gather into
+// scratch: no in-place cycles.
+__global__ void gdn_tile_heads_kernel(const float* __restrict__ v, const float* __restrict__ gate,
+                                      const float* __restrict__ beta, float* __restrict__ v_t,
+                                      float* __restrict__ gate_t, float* __restrict__ beta_t, int64_t T, int64_t VS) {
+    constexpr int64_t ROW = (int64_t) HV * S + 2 * HV;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= T * ROW) return;
+    const int64_t t = i / ROW, r = i % ROW;
+    if (r < (int64_t) HV * S) { const int64_t h = r / S, d = r % S;
+        v_t[t * (int64_t) HV * S + r] = v[t * VS + ((h % HK) * (HV / HK) + h / HK) * S + d]; }
+    else if (r < (int64_t) HV * S + HV) { const int64_t j = r - (int64_t) HV * S;
+        gate_t[t * HV + j] = gate[t * HV + (j % HK) * (HV / HK) + j / HK]; }
+    else { const int64_t j = r - (int64_t) HV * S - HV;
+        beta_t[t * HV + j] = beta[t * HV + (j % HK) * (HV / HK) + j / HK]; }
+}
+void gdn_tile_heads(const float* v, const float* gate, const float* beta, float* v_t, float* gate_t, float* beta_t,
+                    int64_t T, int64_t v_row_stride, void* stream) {
+    gdn_tile_heads_kernel<<<blocks_for(T * ((int64_t) HV * S + 2 * HV)), 256, 0, (cudaStream_t) stream>>>(
+        v, gate, beta, v_t, gate_t, beta_t, T, v_row_stride);
+    check("gdn_tile_heads");
+}
+void split_qkvz(const float* qkvz, float* qkv, float* z, int64_t T, void* stream) {
+    split_qkvz_kernel<<<blocks_for(T * (int64_t) (C + ZV)), 256, 0, (cudaStream_t) stream>>>(qkvz, qkv, z, T);
+    check("split_qkvz");
+}
+void split_ba(const float* ba, float* ab, int64_t T, void* stream) {
+    split_ba_kernel<<<blocks_for(T * 2 * (int64_t) HV), 256, 0, (cudaStream_t) stream>>>(ba, ab, T);
+    check("split_ba");
+}
+void split_ba2(const float* ba, float* alpha, float* beta, int64_t T, void* stream) {
+    split_ba2_kernel<<<blocks_for(T * (int64_t) HV), 256, 0, (cudaStream_t) stream>>>(ba, alpha, beta, T);
+    check("split_ba2");
+}
 void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream, int64_t ld16) {
-    gate_attn_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
-                                                                                ld16 > 0 ? ld16 : 24 * 256);
+    gate_attn_kernel<<<blocks_for(T * (int64_t) NH * HD), 256, 0, (cudaStream_t) stream>>>(attn, q_full, out16, T,
+                                                                                ld16 > 0 ? ld16 : (int64_t) NH * HD);
     check("gate_attn");
 }
 

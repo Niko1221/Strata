@@ -135,6 +135,7 @@ inline double qsa_freq_base() { return 1e7; }
 /// own bound is 2,051, and `ref/qsa.py` L292-294 records the disagreement.  Below the bound the selection is
 /// the IDENTITY, which `topk_512` is required to reproduce exactly rather than approximately.
 inline int64_t qsa_selection_width(int64_t n_kv, const QsaShapes& s) {
+    if (s.idx_block == 0) return n_kv;   // dense family (no indexer): every cell is selected
     const int64_t w = s.idx_top_k + s.idx_block - 1;
     return n_kv < w ? n_kv : w;
 }
@@ -175,6 +176,10 @@ inline uint64_t qsa_step_bytes() { return sizeof(int32_t) * (uint64_t) kStepCoun
 /// arithmetic here rather than at the call site is the point of the buffer: `n_kv` and `width` are derived,
 /// and a caller computing them by hand is a caller who can compute them differently.
 void qsa_step_fill(int32_t* host_step, int64_t pos, const QsaShapes& s);
+
+/// Dense family (no indexer): fill each token's selection row with the identity `0..width_t-1`, the width
+/// read from that token's step.  `sel` is (n_tokens, cap) int32, the same layout the top-k kernels write.
+void qsa_dense_ids(int32_t* sel, const int32_t* step, int64_t n_tokens, int64_t cap, void* stream);
 
 
 /// One token's K and V into the paged FP16 cache, at logical cell `pos`.

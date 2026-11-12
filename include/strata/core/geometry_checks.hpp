@@ -20,10 +20,13 @@ static_assert(g.ssm_d_conv == 4, "geometry: ssm.conv_kernel must be 4 (3 history
 static_assert(g.head_dim == 256, "geometry: attention.key_length must be 256 (attention kernels: thread per dim, 4 warps x 64)");
 static_assert(g.n_rot == 64, "geometry: rope.dimension_count must be 64");
 static_assert(g.qsa_interval == 4, "geometry: full_attention_interval must be 4");
-static_assert(g.hc == 4, "geometry: hyper_connection.count must be 4 (register and shared arrays hold 4 streams)");
-static_assert(g.idx_q_heads == 4 && g.idx_key_dim == 128,
-              "geometry: the indexer must be 4 heads x 128 (one float4 per lane, one warp per head)");
-static_assert(g.idx_block == 4, "geometry: the indexer pooling block must be 4 cells");
+// hc and the indexer are family features, not fixed numbers: qwen3next (Qwen3-Next-80B-A3B) has neither -
+// plain pre-norm residual and dense attention on its full-attention layers. Where a family HAS them, the
+// kernels still pin their shape.
+static_assert(g.hc == 4 || g.hc == 0, "geometry: hyper_connection.count must be 4 (register and shared arrays hold 4 streams) or 0 (plain pre-norm residual: qwen3next)");
+static_assert(g.idx_q_heads == 0 || (g.idx_q_heads == 4 && g.idx_key_dim == 128),
+              "geometry: the indexer is either absent (qwen3next: dense attention) or 4 heads x 128 (one float4 per lane, one warp per head)");
+static_assert(g.idx_q_heads == 0 || g.idx_block == 4, "geometry: with an indexer, the pooling block must be 4 cells");
 
 // ---- ranges and divisibility the tiles were written for
 static_assert(g.n_embd % 256 == 0 && g.n_embd >= 1024 && g.n_embd <= 4096,
@@ -31,8 +34,8 @@ static_assert(g.n_embd % 256 == 0 && g.n_embd >= 1024 && g.n_embd <= 4096,
 static_assert(g.n_ff % 64 == 0 && g.n_ff >= 256 && g.n_ff <= 1100,
               "geometry: expert_feed_forward_length must be a multiple of 64 within 256..1100 (Q2 blobs, 64-wide act groups, 1024-byte act buffer)");
 static_assert(g.n_ff_shexp == g.n_ff, "geometry: the shared expert must be as wide as the routed experts");
-static_assert(g.hc_lr % 64 == 0 && g.hc_lr / 8 >= 32 && g.hc_lr / 8 <= 64 && g.hc_lr % 8 == 0,
-              "geometry: hyper_connection.low_rank must be a multiple of 64 with 32 <= low_rank/8 <= 64 (fused_gr lane rule)");
+static_assert(g.hc == 0 || (g.hc_lr % 64 == 0 && g.hc_lr / 8 >= 32 && g.hc_lr / 8 <= 64 && g.hc_lr % 8 == 0),
+              "geometry: with hyper-connections, hyper_connection.low_rank must be a multiple of 64 with 32 <= low_rank/8 <= 64 (fused_gr lane rule); without them (qwen3next) it is 0");
 static_assert(g.n_head_kv >= 1 && g.n_head % g.n_head_kv == 0 && g.n_head / g.n_head_kv <= 16,
               "geometry: attention.head_count / head_count_kv must be a whole number <= 16 (one M16 tile of query heads)");
 static_assert(g.ssm_v_heads % g.ssm_k_heads == 0 && g.ssm_v_heads / g.ssm_k_heads >= 1 && g.ssm_v_heads / g.ssm_k_heads <= 4,

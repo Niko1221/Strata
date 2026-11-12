@@ -34,8 +34,9 @@ namespace strata::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int D = 128, R = 4, ROT = 64, THREADS = 256;
-static_assert(D == strata::core::kCompiledGeometry.idx_key_dim && R == strata::core::kCompiledGeometry.idx_block && ROT == strata::core::kCompiledGeometry.n_rot,
-              "native_qsa_indexer is compiled for core/geometry.hpp");
+static_assert(!strata::core::kCompiledGeometry.has_indexer() ||
+              (D == strata::core::kCompiledGeometry.idx_key_dim && R == strata::core::kCompiledGeometry.idx_block && ROT == strata::core::kCompiledGeometry.n_rot),
+              "native_qsa_indexer is compiled for an indexer geometry; a family without an indexer must not call it");
 __device__ float warp_sum(float x) {
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1)

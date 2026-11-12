@@ -675,11 +675,16 @@ inline std::string check_architecture_qwen35moe(const GgufFile& g) {
 /// keeps the compiled value.  The keys that describe one thing twice (the interval and `compress_ratios`, the key
 /// and value head widths, the routed and shared expert widths) must agree.
 inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
-    g = core::kCompiledGeometry;
     const MetaValue* arch = f.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
-    const std::string p = "qwen4exp.";
+    if (arch->s == "qwen3next") {
+        g = core::ModelGeometry::qwen3next();
+    } else if (arch->s == "qwen4exp") {
+        g = core::kCompiledGeometry;
+    } else {
+        return "architecture is '" + arch->s + "', this engine requires 'qwen4exp' or 'qwen3next'";
+    }
+    const std::string p = arch->s + ".";
     std::string err;
     // an integer key into `out`: present and positive, or absent and not `required`
     auto read_int = [&](const char* key, int64_t& out, bool required) {
@@ -760,7 +765,7 @@ inline std::string read_geometry(const GgufFile& f, core::ModelGeometry& g) {
     if (g.n_expert_used > g.n_expert || g.n_expert_used > 64)
         return p + "expert_used_count = " + std::to_string(g.n_expert_used) + ", the router takes 1.." +
                std::to_string(std::min<int64_t>(g.n_expert, 64)) + " of " + std::to_string(g.n_expert) + " experts";
-    if (g.n_rot > g.head_dim || g.n_rot > g.idx_key_dim || g.n_rot % 2)
+    if (g.n_rot > g.head_dim || (g.has_indexer() && g.n_rot > g.idx_key_dim) || g.n_rot % 2)
         return p + "rope.dimension_count = " + std::to_string(g.n_rot) + " is not an even slice of the head widths";
 
     // The layer split, twice over: the interval, and a ratio per layer that is non-zero (the indexer's pooling

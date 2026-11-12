@@ -33,7 +33,10 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
     if (!err.empty()) return false;
     const strata::ModelFamily family = strata::model_family(meta);
     const std::string p = std::string(strata::model_family_arch(family)) + ".";
-    g = ModelGeometry{};
+    // qwen4exp: absent keys keep Flash-Next's values (the struct defaults, which every published qwen4exp file
+    // matches).  qwen3next: absent keys keep the FACTORY's - a family that has no indexer and no hyper-connections
+    // must not inherit Flash-Next's 4 and 4 from the struct defaults.
+    g = family == ModelFamily::Qwen3Next ? ModelGeometry::qwen3next() : ModelGeometry{};
     g.family = family;
     // a key the file carries replaces the default; `required` keys were checked present by the guard
     auto num = [&](const char* key, int64_t& dst) {
@@ -93,8 +96,9 @@ inline bool geometry_from_gguf(const strata::GgufFile& meta, ModelGeometry& g, i
     return true;
 }
 
-/// The first geometry field that differs from the shapes this engine's kernels are built for (ModelGeometry's
-/// defaults, Flash-Next's), as "<what> is <got>, this engine's kernels are built for <want>"; empty when none.
+/// The first geometry field that differs from the shapes this engine's kernels are built for
+/// (`kCompiledGeometry` - the one shape one build compiles), as "<what> is <got>, this engine's kernels
+/// are built for <want>"; empty when none.
 /// n_expert and top-k are run-time sizes (the Coder ships 256 experts) and n_vocab is the embedding's business.
 inline std::string compiled_geometry_mismatch(const ModelGeometry& g) {
     const ModelGeometry& c = kCompiledGeometry;
@@ -177,17 +181,26 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
         add("hc_ffn_inject.weight", {H, g.hc});
         add("hc_ffn_norm.weight", {H});
     } else {
-        // plain pre-norm residual (qwen35moe): x += mixer(rms(x)); x += moe(rms(x))
+        // plain pre-norm residual (qwen35moe, qwen3next): x += mixer(rms(x)); x += moe(rms(x)).
+        // The two families name the second norm differently; the widths are the same.
         add("attn_norm.weight", {N});
         add("post_attention_norm.weight", {N});
     }
     if (kind == LayerKind::Gdn) {
-        add("attn_qkv.weight", {N, g.ssm_conv_channels});
-        add("attn_gate.weight", {N, g.ssm_value_dim});
+        if (g.family == ModelFamily::Qwen3Next) {
+            // qwen3next ships the same GDN roles fused: ssm_in is qkv+gate in one matrix (one matmul IS the
+            // right shape - the fusion is on the output side, the GDN code reads the result's slices), and
+            // ssm_ba is beta+alpha.  Widths derived from the geometry, never stored.
+            add("ssm_in.weight", {N, g.ssm_conv_channels + g.ssm_value_dim});
+            add("ssm_ba.weight", {N, 2 * g.ssm_v_heads});
+        } else {
+            add("attn_qkv.weight", {N, g.ssm_conv_channels});
+            add("attn_gate.weight", {N, g.ssm_value_dim});
+            add("ssm_alpha.weight", {N, g.ssm_v_heads});
+            add("ssm_beta.weight", {N, g.ssm_v_heads});
+        }
         add("ssm_out.weight", {g.ssm_value_dim, N});
         add("ssm_conv1d.weight", {g.ssm_d_conv, g.ssm_conv_channels});
-        add("ssm_alpha.weight", {N, g.ssm_v_heads});
-        add("ssm_beta.weight", {N, g.ssm_v_heads});
         add("ssm_a", {g.ssm_v_heads});
         add("ssm_dt.bias", {g.ssm_v_heads});
         add("ssm_norm.weight", {g.ssm_state_size});

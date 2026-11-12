@@ -126,6 +126,13 @@ void gr_read_multi(const float* R, const float* w_norm, const uint16_t* w_down, 
 void gr_write(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
               void* stream);
 
+/// Plain pre-norm residual READ for families WITHOUT hyper-connections (qwen3next):
+/// `mixed = rms_norm(R) * gamma`, the model's own norm, no gate and no stream mixing.  The `gr_read`
+/// mean CANNOT emulate this: `mixed = xn * sigmoid(...)` has no finite weights that make the sigmoid 1,
+/// so the plain family gets its own read.  The WRITE side needs no new kernel: `gr_write` with a zero
+/// injection is exactly `R_out = R + block_out` (2*sigmoid(0) = 1), which its own test already asserts.
+void gr_plain_read(const float* R, const float* gamma, float eps, int64_t n_embd, float* mixed, void* stream);
+
 void gr_write_multi(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
                     int n_tok, void* stream);
 

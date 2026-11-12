@@ -166,6 +166,7 @@ bool eligible(const strata::TensorInfo& tensor, bool include_ple_key) {
         return include_ple_key && (tensor.type == 42 || tensor.type == 18 || tensor.type == 23 || tensor.type == 8);
     static const char* suffixes[] = {".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight",
         ".attn_q.weight", ".attn_k.weight", ".attn_v.weight", ".attn_output.weight",
+        ".ssm_in.weight", ".ssm_ba.weight",   // qwen3next's fused GDN projections (qkv+gate, beta+alpha)
         ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight", ".ffn_down_shexp.weight"};
     for (const char* suffix : suffixes) if (name.ends_with(suffix)) return true;
     return false;

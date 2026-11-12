@@ -709,8 +709,26 @@ void qsa_step_fill(int32_t* host_step, int64_t pos, const QsaShapes& s) {
     const int64_t n_kv = pos + 1;
     host_step[kStepPos] = (int32_t) pos;
     host_step[kStepNKv] = (int32_t) n_kv;
-    host_step[kStepNBid] = (int32_t) (n_kv / s.idx_block);
+    host_step[kStepNBid] = s.idx_block == 0 ? 0 : (int32_t) (n_kv / s.idx_block);   // dense family: no pooled blocks
     host_step[kStepWidth] = (int32_t) qsa_selection_width(n_kv, s);
+}
+
+namespace {
+__global__ void dense_ids_kernel(int32_t* __restrict__ sel, const int32_t* __restrict__ step, int64_t cap) {
+    const int64_t t = blockIdx.y;
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= cap) return;
+    if (i < (int64_t) step[t * kStepCount + kStepWidth]) sel[t * cap + i] = (int32_t) i;
+}
+}  // namespace
+
+/// Dense family (no indexer): the selection IS the identity - the same ids the top-k kernels are required to
+/// reproduce below their bound, written directly with no scores to read.  Row `t` of `sel` (stride `cap`) gets
+/// `0..width_t-1` from its own step; the untouched tail is never read, the width being the kernel's bound.
+void qsa_dense_ids(int32_t* sel, const int32_t* step, int64_t n_tokens, int64_t cap, void* stream) {
+    if (n_tokens <= 0 || cap <= 0) return;
+    dense_ids_kernel<<<dim3((unsigned) ((cap + 255) / 256), (unsigned) n_tokens), 256, 0,
+                       (cudaStream_t) stream>>>(sel, step, cap);
 }
 
 void kv_append(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_table, int64_t pos,

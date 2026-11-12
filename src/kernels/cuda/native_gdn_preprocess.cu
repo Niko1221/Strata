@@ -23,6 +23,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 #include "strata/kernels/native_gdn_preprocess.hpp"
+#include "strata/core/geometry.hpp"
 #include <cuda_runtime.h>
 #include <cmath>
 #include <cstddef>
@@ -107,9 +108,13 @@ __global__ void out_norm(const float* __restrict__ input, const float* __restric
     partial = norm_sum(partial, sums);
     const float scale = rsqrtf(partial / S + epsilon);
     if (col < S) {
-        // RMSNorm+gamma is one pinned fused operator, followed by sigmoid*mul.
+        // RMSNorm+gamma is one pinned fused operator, followed by the family's gate*mul: sigmoid for
+        // Flash-Next, SiLU for Qwen3-Next (ModelGeometry::gdn_silu_gate; `if constexpr` keeps the
+        // sigmoid instantiation bit-identical).
         const float weighted = __fmul_rn(__fmul_rn(scale, value), gamma[col]);
-        output[offset + col] = weighted * sigmoid(z[offset + col]);
+        const float gz = z[offset + col];
+        if constexpr (strata::core::kGdnSiluGate) output[offset + col] = weighted * (gz / (1.0f + expf(-gz)));
+        else output[offset + col] = weighted * sigmoid(gz);
     }
 }
 

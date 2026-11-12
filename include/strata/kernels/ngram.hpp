@@ -38,7 +38,9 @@ inline constexpr int PLE_N_HEADS = (NGRAM_SIZE - 1) * HEADS_PER_NGRAM;   // 16
 inline constexpr int PLE_HEAD_DIM = NG_N_EMBD / PLE_N_HEADS;   // 160: qwen4exp.embedding_length_per_layer_input (16 heads make one hidden row)
 inline constexpr int PLE_CONV_KERNEL = 4;       // qwen4exp.ple.conv_kernel
 inline constexpr int32_t PLE_EOS_TOKEN_ID = 248044;
-inline constexpr int NG_HC = strata::core::kCompiledGeometry.hc;                 // hyper_connection.count
+// families without hyper-connections (qwen3next) carry one residual stream; the PLE post-ops that read
+// NG_HC_DIM are never reached there (the ngram path is family-gated at its call sites).
+inline constexpr int NG_HC = strata::core::kCompiledGeometry.hc > 0 ? (int) strata::core::kCompiledGeometry.hc : 1;
 inline constexpr int NG_HC_DIM = NG_HC * NG_N_EMBD;                      // 10240
 inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL

@@ -71,8 +71,10 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = rsqrtf(ss / (float) S + eps);
         const float zz = z[head * S + col];
-        if constexpr (SILU) y[head * S + col] = oc * scale * gamma[col] * (zz / (1.0f + __expf(-zz)));
-        else y[head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+        // qwen3next: ssm_out's columns are HF grouped; the recurrence runs tiled — write grouped (Groot is natively tiled).
+        const int yh = strata::core::kGdnGroupedHeads ? (head % h_k) * (h_v / h_k) + head / h_k : head;
+        if constexpr (SILU) y[yh * S + col] = oc * scale * gamma[col] * (zz / (1.0f + __expf(-zz)));
+        else y[yh * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
     }
 }
 
@@ -174,7 +176,8 @@ void step_norm(float* state, const float* q, const float* k, const float* v, con
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
                          const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
                          void* stream) {
-    step_norm<false>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
+    // the family's gate: SiLU for Qwen3-Next/qwen35moe, sigmoid for Flash-Next (ModelGeometry::gdn_silu_gate)
+    step_norm<strata::core::kGdnSiluGate>(state, q, k, v, gate, beta, z, gamma, eps, y, h_k, h_v, stream);
 }
 
 void fused_gdn_step_norm_silu(float* state, const float* q, const float* k, const float* v, const float* gate,
