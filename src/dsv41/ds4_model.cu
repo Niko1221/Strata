@@ -1780,7 +1780,9 @@ struct Model::Impl {
         std::lock_guard<std::mutex> lk(prof_mu);
         const bool chunk_sample = prof_chunk;
         bool sample_ok = !prof_failed;
-        double sample_ms[6] = {};
+        // a chunk's marks name its stages 0..10 (cprof_ms, the finer table), a decoded token's 0..5 (st.prof_ms)
+        constexpr int kSampleStages = (int) (sizeof cprof_ms / sizeof cprof_ms[0]);
+        double sample_ms[kSampleStages] = {};
         std::vector<std::pair<int, cudaEvent_t>> last;
         int current_dev = -1;
         if (sample_ok) {
@@ -1810,7 +1812,7 @@ struct Model::Impl {
                         sample_ok = false;
                         break;
                     }
-                    sample_ms[m.stage] += ms;
+                    if (m.stage >= 0 && m.stage < kSampleStages) sample_ms[m.stage] += ms;
                     it->second = m.ev;
                 } else {
                     last.push_back({m.dev, m.ev});
@@ -1819,7 +1821,7 @@ struct Model::Impl {
         }
         if (sample_ok) {
             double* total = chunk_sample ? cprof_ms : st.prof_ms;
-            const int stages = chunk_sample ? 4 : 6;
+            const int stages = chunk_sample ? kSampleStages : (int) (sizeof st.prof_ms / sizeof st.prof_ms[0]);
             for (int i = 0; i < stages; ++i) total[i] += sample_ms[i];
             for (const ProfMark& m : prof_marks) prof_pool[(size_t) m.dev].push_back(m.ev);
             prof_marks.clear();
