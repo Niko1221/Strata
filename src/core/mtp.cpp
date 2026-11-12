@@ -1281,7 +1281,45 @@ bool finish_capture(cudaStream_t cs, bool ok, cudaGraphExec_t& exec, const char*
         return false;
     }
     cudaGraphExec_t got = nullptr;   // (a failed instantiate leaves nothing in the member)
-    const cudaError_t ie = ce != cudaSuccess ? ce : cudaGraphInstantiate(&got, graph, 0);
+    cudaError_t ie = ce;
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+    // STRATA_GRAPH_COND=2 (tuning, bit-exact): as the verify windows (verify.cpp), the draft graphs become the body of an
+    // always-true IF node, so their host launch does not submit every node; a refused body falls back to the plain graph
+    static const bool graph_cond = [] {
+        const char* v = std::getenv("STRATA_GRAPH_COND");
+        return v != nullptr && v[0] == '2';
+    }();
+    if (ie == cudaSuccess && graph_cond) {
+        cudaGraph_t wrapped = nullptr;
+        cudaGraphConditionalHandle h = 0;
+        cudaGraphNodeParams cp = {};
+        cudaGraphNode_t cn = nullptr, child = nullptr;
+        bool ok = cudaGraphCreate(&wrapped, 0) == cudaSuccess &&
+                  cudaGraphConditionalHandleCreate(&h, wrapped, 1, cudaGraphCondAssignDefault) == cudaSuccess;
+        if (ok) {
+            cp.type = cudaGraphNodeTypeConditional;
+            cp.conditional.handle = h;
+            cp.conditional.type = cudaGraphCondTypeIf;
+            cp.conditional.size = 1;
+            ok = cudaGraphAddNode(&cn, wrapped, nullptr, nullptr, 0, &cp) == cudaSuccess &&
+                 cudaGraphAddChildGraphNode(&child, cp.conditional.phGraph_out[0], nullptr, 0, graph) == cudaSuccess;
+        }
+        if (!ok || cudaGraphInstantiate(&got, wrapped, 0) != cudaSuccess) {
+            static bool logged = false;
+            if (!logged) {
+                logged = true;
+                std::fprintf(stderr, "strata mtp: STRATA_GRAPH_COND: the %s graph is not taken as a conditional body: "
+                                     "the plain graph is used\n", what);
+            }
+            (void) cudaGetLastError();
+            got = nullptr;
+        }
+        if (wrapped) cudaGraphDestroy(wrapped);
+    }
+    if (ie == cudaSuccess && got == nullptr) ie = cudaGraphInstantiate(&got, graph, 0);
+#else
+    if (ie == cudaSuccess) ie = cudaGraphInstantiate(&got, graph, 0);
+#endif
     if (ie != cudaSuccess) {
         if (graph) cudaGraphDestroy(graph);
         err = std::string("mtp: ") + what + " capture: " + cudaGetErrorString(ie);   // the status that failed
