@@ -318,6 +318,36 @@ at its first chunk (`YIELDED 2 2048`), E admitted meanwhile, D going on and A go
 which main does not do on this path (D never gives way there); the third run had B off at token 74, a near tie that
 flips on main as well. Greedy only; other GPU pairs, three or more stages and sampled decoding not measured.
 
+## An admission read beside decoding groups (opt-in)
+
+On a layer split with `--batch-groups` above 1, an admission normally stops the other slots while its prompt is read.
+`STRATA_ADMIT_OVERLAP=1` uses the existing concurrent reader and doorbell threads to keep those groups decoding.
+It runs the prompt once with the serial path's chunk plan. `BYIELD` waits until the read ends; another admission
+can still queue behind a long read. Both switches below are off by default.
+
+- `STRATA_ADMIT_OVERLAP_MIN=N` (default 64): shorter reads stay serial.
+- Normally a read that borrows expert-cache slots stays serial. `STRATA_ADMIT_OVERLAP_LONG=1` allows such a read
+  from `STRATA_ADMIT_OVERLAP_LONG_MIN` tokens (default 8192), only when every expert outside VRAM, including every
+  lent expert, has a resident RAM copy. Windows run the lent experts on the CPU; their rounding and replies can
+  differ from the serial schedule, which refills those experts before decoding. The prompt keeps its original loan.
+- Groups must have one slot each or use the existing `STRATA_PIPED_MTP` packed rows. Other groups' padding could
+  overwrite an idle slot while the admission still needs its conversation, so they stay serial.
+- Pictures, co-reads, DFlash2, elastic K/V, CPU prompt shares, pending adaptive swaps, prompt helpers, helper caches,
+  `STRATA_FS_SLOTS`, `--pcie-mode dma` and unsupported expert sources stay serial. `STRATA_PIPED_CONCURRENT` takes
+  precedence when enabled. A staged GGUF source is allowed only where its required expert blobs already have RAM copies. Stable nonstaging
+  mappings remain eligible; page faults can still affect their latency.
+- With `STRATA_SPLIT_MTP_BATCH=1`, the overlapped read uses the drafter's pre-reserved pass instead of growing the
+  batched draft K/V buffers on the reader thread. This can change draft proposals.
+
+The verifier streams keep their normal priorities. `STRATA_ADMIT_OVERLAP_PRIO=1` is an opt-in comparison setting;
+it raises priorities for the streams' whole lifetime, including solo requests. Threads temporarily moved off the
+host core return after each overlapped read. The adaptive tier cannot swap lent experts before their slots return.
+
+The log counts serial fallback reasons and reports rows decoded during each overlapped read. If a blob nevertheless
+comes from the file while a read overlaps, a warning disables overlap for subsequent reads in that process. This is
+an experimental path: CPU policy tests do not establish GPU correctness or a TTFT improvement. Validate numerical
+behavior, RAM headroom and latency on the chosen model and hardware before enabling it.
+
 ## A prompt read beside pipelined groups (opt-in)
 
 With a layer split and `--batch-groups` above 1 a prompt is read in one run: every decoding slot stops until it is read,

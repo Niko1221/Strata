@@ -98,6 +98,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/adapt_decay.hpp"
 #include "strata/program/batch_read.hpp"
+#include "strata/program/admit_overlap.hpp"
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
@@ -12655,6 +12656,11 @@ int main(int argc, char** argv) {
         // runs there, on the Prefill that ran the chunk, instead of the drafter's own per-8-row pass.  The drafts' K/V
         // come from Q8_1 x Q8_0 MMQ rather than mmvq: drafts may differ, the target's tokens never.
         static const bool split_mtp_batch = strata::program::draft_kv::split_env_on(std::getenv("STRATA_SPLIT_MTP_BATCH"));
+        // STRATA_ADMIT_OVERLAP (91073726's rule for STRATA_PIPED_CONCURRENT): a read beside the decoding slots, on a thread
+        // of its own, feeds the drafter with the drafter's own pass (its buffers reserved before the read,
+        // mtp.reserve_prefill) instead of E-9's batched pass, whose buffers grow and free on the thread that runs it; every
+        // other read keeps E-9.  Drafts may differ, the target's tokens never.  Set only while such a read runs.
+        bool admit_ov_reading = false;
         sp.on_chunk = [&](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
             // KVA: a chunk the late layers did not compute has no real final rows: its draft cells are neither built
             // nor read (the floor rises before the cells are built, so they are skipped)
@@ -12664,7 +12670,7 @@ int main(int argc, char** argv) {
             // E-9: batched through the prompt path when it can (a layer split: only with STRATA_SPLIT_MTP_BATCH=1)
             bool batched = false;
             const strata::program::draft_kv::Plan dkv = strata::program::draft_kv::plan(
-                use_mtp, multi_gpu, split_mtp_batch && !mtp_first, strata::core::native_embed() != nullptr);
+                use_mtp, multi_gpu, split_mtp_batch && !mtp_first && !admit_ov_reading, strata::core::native_embed() != nullptr);
             if (dkv.try_batched || dkv.why != nullptr) {
                 strata::prefill::Prefill& dsp = multi_gpu ? stages.back()->sp : sp;   // the drafter's stage
                 const char* why = dkv.why;
@@ -13186,6 +13192,16 @@ int main(int argc, char** argv) {
         // the VRAM tier follows the conversation (the same rule as the speculative loop below)
         auto adapt = [&]() -> bool {
             if (!pending.empty()) return true;   // the previous swaps are still in flight
+            // An overlapped long read can leave a loan out: a swap could put a lent expert in another slot,
+            // then the refill would restore its old slot and orphan the new one. All serving adapt callers pass here.
+            if (admit_ov_reading) for (const PfPart& lp : pf_parts)
+                if (!lp.lent.empty()) {
+                    static std::atomic<long long> skipped{0};
+                    const long long n = ++skipped;
+                    if (n == 1 || (n & (n - 1)) == 0)
+                        std::fprintf(stderr, "strata batch: adaptive round skipped while a prompt loan is out (%lld so far)\n", n);
+                    return true;
+                }
             if (remote_opt && !remote_opt->adapt(drive.d.usage, host_res, pending, o.adapt_swaps, *srcp)) return false;
             struct Swap { float gain; int32_t layer, in, out; };
             std::vector<Swap> swaps;
@@ -15022,6 +15038,10 @@ int main(int argc, char** argv) {
         // served on another (conc_serving); between windows that thread waits on bell_cv and a launch wakes it (a
         // timed sleep is a whole timer tick on Windows, up to 15.6 ms, and the window's first layer would wait for it)
         bool conc_serving = false;
+        // STRATA_ADMIT_OVERLAP (read_part): an overlapped read met a blob from the file (no more overlap); what it did
+        bool admit_ov_runtime_off = false;
+        strata::program::admit_overlap::Stats admit_ov_stats;
+        int64_t admit_ov_looked = 0;
         std::mutex bell_mu;
         std::condition_variable bell_cv;
         std::atomic<bool> bell_waiting{false};
@@ -17552,7 +17572,121 @@ int main(int argc, char** argv) {
                     const char* v = std::getenv("STRATA_PIPED_CONCURRENT_MIN");
                     return v != nullptr ? (int64_t) std::max(0LL, std::atoll(v)) : (int64_t) 0;
                 }();
-                if (piped && pr_conc && req_imgs.empty() && (b0 - a0) >= pr_conc_min) {   // (with no slot decoding it only watches for a BYIELD)
+                // STRATA_ADMIT_OVERLAP=1 (opt-in; unset or 0: off - nothing below runs and the read is the serial one, as
+                // before): a batch admission's read goes on a thread of its own while the slot groups keep decoding through
+                // the pipeline (the existing concurrent reader and doorbell thread). One run in the serial chunks,
+                // no give-way, no CPU prompt share, every expert outside VRAM in RAM. The LONG opt-in also allows a loan:
+                // neighbours then compute lent experts on the CPU, so their rounding can differ. Other reads stay serial.
+                static const bool admit_ov_env = strata::program::admit_overlap::env_on(std::getenv("STRATA_ADMIT_OVERLAP"));
+                const bool legacy_conc = piped && pr_conc && req_imgs.empty() && (b0 - a0) >= pr_conc_min;
+                auto admit_ov_take = [&]() -> bool {
+                    namespace ao = strata::program::admit_overlap;
+                    if (!admit_ov_env) return false;
+                    static const int64_t ov_min = ao::env_min_tokens(std::getenv("STRATA_ADMIT_OVERLAP_MIN"));
+                    // what keeps any concurrent read off (concurrent_read_off) but the GGUF source in place (checked per read
+                    // below, against the RAM copy) and the batched draft K/V (the drafter's own pass on the read's thread)
+                    static const char* ov_setup = [&]() -> const char* {
+                        auto env_on = [](const char* k) {
+                            const char* x = std::getenv(k);
+                            return x != nullptr && std::atoi(x) != 0;
+                        };
+                        strata::program::ConcurrentReadSetup s;
+                        s.prefill_help = env_on("STRATA_PREFILL_HELP");
+                        s.fs_slots = env_on("STRATA_FS_SLOTS");
+                        s.pcie_dma = o.pcie_mode == "dma";
+                        s.helper_caches = prefill_src != srcp;
+                        for (int r = 0; r < 3; ++r) s.helper_caches |= o.expert_cache_remote[(size_t) r] > 0;
+                        s.other_source = srcp != &src && srcp != &arena_src;
+                        const char* why = use_df2 ? "DFlash2" : strata::program::concurrent_read_off(s);
+                        if (why != nullptr)
+                            std::fprintf(stderr, "strata batch: STRATA_ADMIT_OVERLAP is off beside %s\n", why);
+                        else
+                            std::fprintf(stderr, "strata batch: STRATA_ADMIT_OVERLAP=1: a batch admission that lends no cache "
+                                                 "slot reads its prompt beside the decoding groups (reads of at least %lld "
+                                                 "tokens; %s)%s\n",
+                                         (long long) ov_min,
+                                         strata::program::admit_overlap::windows_top_priority(
+                                             nullptr, std::getenv("STRATA_PIPED_CONCURRENT_PRIO"), "1",
+                                             std::getenv("STRATA_ADMIT_OVERLAP_PRIO"))
+                                             ? "STRATA_ADMIT_OVERLAP_PRIO=1: the verifiers' streams at the device's highest "
+                                               "priority, for the solo path too"
+                                             : "the streams' priorities as with the mode off",
+                                         split_mtp_batch ? "; such a read feeds the drafter with its own "
+                                         "pass instead of E-9 (STRATA_SPLIT_MTP_BATCH: drafts may differ, tokens never)" : "");
+                        return why;
+                    }();
+                    ao::Read r;
+                    r.on = true;
+                    r.piped = piped;
+                    r.admission = admit_slot >= 0;
+                    r.legacy = pr_conc;
+                    r.setup_off = ov_setup != nullptr;
+                    r.pad_rows = !pmtp && GS > 1;   // one-slot groups have no idle padding
+                    r.runtime_off = admit_ov_runtime_off;
+                    r.slots_decoding = batch_on();
+                    r.tokens = b0 - a0;
+                    r.min_tokens = ov_min;
+                    r.pictures = !req_imgs.empty();
+                    r.co_read = !co_set.empty();
+                    r.elastic_kv = kvg.on;
+                    r.cpu_share = share_pool;
+                    r.swaps_pending = !pending.empty();
+                    for (const PfPart& p : pf_parts) r.loan_out |= !p.lent.empty();
+                    // STRATA_ADMIT_OVERLAP_LONG (opt-in): a long read goes beside the slots with its loan out when every
+                    // lent expert - and every other one outside VRAM - has its RAM copy (the windows run the lent ones on
+                    // the CPU from it, as between prompt pieces); the read itself is the serial run with the same loan
+                    static const bool ov_long = ao::env_on(std::getenv("STRATA_ADMIT_OVERLAP_LONG"));
+                    static const int64_t ov_long_min = ao::env_long_min_tokens(std::getenv("STRATA_ADMIT_OVERLAP_LONG_MIN"));
+                    r.long_on = ov_long;
+                    r.long_min = ov_long_min;
+                    ao::Coverage loan_cov;
+                    if (r.loan_out && ao::long_loan_allowed(r)) {
+                        if (srcp == &arena_src) {
+                            loan_cov.covers = true;   // (the RAM arena: every expert is in RAM)
+                        } else if (srcp != &src || !src.complement_ready() ||
+                                   host_res.size() != (size_t) (g.n_layers * g.n_expert)) {
+                            loan_cov.covers = false;
+                        } else {
+                            std::vector<ao::LoanPart> lp;
+                            for (const PfPart& p : pf_parts)
+                                if (!p.lent.empty()) lp.push_back({p.lb, p.le, p.first_now});
+                            const std::vector<int32_t> fl = ao::loan_floor(g.n_layers, lp);
+                            loan_cov = ao::covered(host_res.data(), g.n_layers, g.n_expert, fl.data(),
+                                                   [&](int64_t l, int64_t x) { return src.resident_blob(l, x) != nullptr; });
+                        }
+                        r.loan_ok = loan_cov.covers;
+                    }
+                    ao::Why w = ao::decide(r);
+                    ao::Coverage cov;
+                    if (w == ao::Why::loan_uncovered) cov = loan_cov;
+                    if (w == ao::Why::none && srcp == &src && src.stages_blobs()) {
+                        // The lent entries have already been marked non-resident; the adaptive tier stands still
+                        // during the read. Recheck all missing expert blobs before either thread can ask for one.
+                        if (!src.complement_ready() || host_res.size() != (size_t) (g.n_layers * g.n_expert)) {
+                            cov.covers = false;
+                        } else {
+                            cov = ao::covered(host_res.data(), g.n_layers, g.n_expert, nullptr,
+                                              [&](int64_t l, int64_t x) { return src.resident_blob(l, x) != nullptr; });
+                        }
+                        if (!cov.covers) w = ao::Why::source;
+                    }
+                    ++admit_ov_looked;
+                    admit_ov_stats.note_serial(w);
+                    static bool said[(int) ao::Why::kCount] = {};
+                    if (w != ao::Why::none && !said[(int) w]) {   // each reason once, when it first sends a read the serial way
+                        said[(int) w] = true;
+                        std::fprintf(stderr, "strata batch: STRATA_ADMIT_OVERLAP: a read of %lld tokens goes the serial way: "
+                                             "%s%s\n", (long long) (b0 - a0), ao::why_text(w),
+                                     (w == ao::Why::source || w == ao::Why::loan_uncovered) && cov.at_l >= 0
+                                         ? (" (first: layer " + std::to_string(cov.at_l) + " expert " + std::to_string(cov.at_e) + ")").c_str()
+                                         : "");
+                    }
+                    if (ao::say_now(admit_ov_looked))
+                        std::fprintf(stderr, "strata batch: STRATA_ADMIT_OVERLAP: %s\n", admit_ov_stats.text().c_str());
+                    return w == ao::Why::none;
+                };
+                const bool admit_ov = !legacy_conc && admit_ov_take();
+                if (legacy_conc || admit_ov) {   // (legacy: with no slot decoding it only watches for a BYIELD)
                     // the drafter's prompt pass captures its graphs and grows its records at first use, and the
                     // prompt path's pinned upload slots grow at their first larger upload: done here, with nothing in
                     // flight (on the reader's thread a capture, an allocation or a free takes the driver's lock and
@@ -17596,10 +17730,26 @@ int main(int argc, char** argv) {
 #endif
                     // the threads that already inherited the host's core (the prompt path's copy threads, started by
                     // the first prompt on the host thread) work during the read too: off that core as well (Linux)
+                    // STRATA_ADMIT_OVERLAP: for this read only - they go back after it (destroyed after `bells` and the
+                    // reader), so the solo path and the serial reads keep their placement as with the mode off
+                    struct InheritorsBack {
+                        bool on = false;
+                        strata::aux_cpus::Inheritors m;
+                        ~InheritorsBack() {
+                            if (on) (void) strata::aux_cpus::restore_host_inheritors(m);
+                        }
+                    } inheritors_back;
+                    inheritors_back.on = admit_ov;
                     if (conc_unpin && !strata::aux_cpus::enabled())
-                        if (const int moved = strata::aux_cpus::release_host_inheritors(); moved > 0)
-                            std::fprintf(stderr, "strata batch: %d threads that ran on the host thread's core moved off "
-                                                 "it, for reads beside the slots\n", moved);
+                        if (const int moved = strata::aux_cpus::release_host_inheritors(admit_ov ? &inheritors_back.m : nullptr);
+                            moved > 0) {
+                            static bool said_back = false;
+                            if (!admit_ov || !said_back)
+                                std::fprintf(stderr, "strata batch: %d threads that ran on the host thread's core moved off "
+                                                     "it, for reads beside the slots%s\n", moved,
+                                             admit_ov ? " (STRATA_ADMIT_OVERLAP: back after each such read)" : "");
+                            said_back |= admit_ov;
+                        }
                     auto conc_thread_cpus = [&] {
                         strata::aux_cpus::pin_current_thread();
 #if defined(_WIN32)
@@ -17687,8 +17837,15 @@ int main(int argc, char** argv) {
                         bool read_ok = true;
                         std::string read_err;
                         in_prompt_read = true;
-                        sp.stop_at_chunk = [&] { return want_yield.load(std::memory_order_acquire) >= 0; };
+                        if (!admit_ov) sp.stop_at_chunk = [&] { return want_yield.load(std::memory_order_acquire) >= 0; };
                         share_gate();   // on this thread, before the reader starts
+                        const int64_t ov_file_reads0 = admit_ov && srcp == &src ? src.file_reads() : 0;
+                        struct OvFlag {
+                            bool on;
+                            bool& reading;
+                            OvFlag(bool o, bool& r) : on(o), reading(r) { if (on) reading = true; }
+                            ~OvFlag() { if (on) reading = false; }   // after the reader is joined
+                        } ov_flag{admit_ov, admit_ov_reading};
                         std::thread reader([&] {
                             conc_thread_cpus();
                             try {   // (an exception leaving a std::thread ends the process: a failed read instead)
@@ -17732,7 +17889,7 @@ int main(int argc, char** argv) {
                                     const int b = std::atoi(it->c_str() + 6);
                                     if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
                                     it = in_lines.erase(it);
-                                } else if (it->rfind("BYIELD ", 0) == 0 && want_yield.load() < 0) {
+                                } else if (!admit_ov && it->rfind("BYIELD ", 0) == 0 && want_yield.load() < 0) {
                                     want_yield.store(std::atoi(it->c_str() + 7), std::memory_order_release);
                                     it = in_lines.erase(it);
                                 } else {
@@ -17749,8 +17906,22 @@ int main(int argc, char** argv) {
                             e = "a pipelined batch window failed";
                             return false;
                         }
-                        const int64_t q = read_ok && sp.stopped_at() >= 0 ? q0 + sp.stopped_at() : b0;
+                        const int64_t q = !admit_ov && read_ok && sp.stopped_at() >= 0 ? q0 + sp.stopped_at() : b0;
                         const double read_ms = std::chrono::duration<double, std::milli>(Clock::now() - tc).count();
+                        if (admit_ov && srcp == &src && src.file_reads() > ov_file_reads0 && !admit_ov_runtime_off) {
+                            admit_ov_runtime_off = true;   // (the RAM copy did not hold what was asked for: staged meanwhile)
+                            std::fprintf(stderr, "strata batch: WARNING %lld expert blobs came from the file during a read "
+                                                 "beside the slots (the resident RAM copy did not hold them): "
+                                                 "STRATA_ADMIT_OVERLAP is off for the next reads\n",
+                                         (long long) (src.file_reads() - ov_file_reads0));
+                        }
+                        if (admit_ov) {
+                            admit_ov_stats.note_beside(b0 - q0, read_ms, pipe_rows - rows0);
+                            if (read_ok && q0 == 0 && sp.kva_floor() > 0) {   // (run's note, as after the serial read)
+                                kva_floors.note(ids.data(), sp.kva_floor());
+                                if (use_mtp && mtp.cell_floor_enabled()) mtp.set_cell_floor(sp.kva_floor());
+                            }
+                        }
                         std::string per;
                         for (int k = 0; k < n_pipe; ++k) {
                             const auto& v = stage_verifier(k);
@@ -17761,9 +17932,9 @@ int main(int argc, char** argv) {
                                           k + 1, (long long) w, host);
                             per += b;
                         }
-                        std::fprintf(stderr, "strata batch: read %lld tokens on a thread of its own in %.0f ms "
+                        std::fprintf(stderr, "strata batch: %sread %lld tokens on a thread of its own in %.0f ms "
                                              "(concurrent, to %lld of %lld); the slots decoded %lld rows meanwhile "
-                                             "(%.1f rows/s; %s)\n",
+                                             "(%.1f rows/s; %s)\n", admit_ov ? "STRATA_ADMIT_OVERLAP: " : "",
                                      (long long) (q - q0), read_ms, (long long) q, (long long) n,
                                      (long long) (pipe_rows - rows0),
                                      read_ms > 0.0 ? 1000.0 * (double) (pipe_rows - rows0) / read_ms : 0.0,

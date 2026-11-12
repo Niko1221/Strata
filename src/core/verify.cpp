@@ -20,6 +20,7 @@
 #include "strata/core/dma_batch.hpp"
 #include "strata/core/spec_prob.hpp"
 #include "strata/core/spec_proposal.hpp"
+#include "strata/program/admit_overlap.hpp"
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1188,14 +1189,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     if (gprio) std::fprintf(stderr, "strata verify: STRATA_GRAPH_PRIO: stream priorities side %d, cs / side2 %d, shared expert %d\n",
                             gp_hi, gp_mid, gp_lo);
     // STRATA_PIPED_CONCURRENT=1 (opt-in): a prompt can run on the same GPU while the batch windows run, so the windows'
-    // streams get the device's highest priority (HIP: the default priority, as the drafter's)
+    // streams get the device's highest priority (HIP: the default priority, as the drafter's).  STRATA_ADMIT_OVERLAP=1
+    // alone keeps the default: a priority holds for the stream's life, the solo path's windows included, whose MTP chain
+    // then loses its place at the top (admit_overlap::windows_top_priority; STRATA_ADMIT_OVERLAP_PRIO=1: raised, an A/B)
     auto make_stream = [&](cudaStream_t* s, int gp = 0) -> cudaError_t {
 #if !defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
-        static const bool hi = [] {   // (STRATA_PIPED_CONCURRENT_PRIO=0: the default priority)
-            const char* v = std::getenv("STRATA_PIPED_CONCURRENT");
-            const char* p = std::getenv("STRATA_PIPED_CONCURRENT_PRIO");
-            return v != nullptr && std::atoi(v) != 0 && (p == nullptr || std::atoi(p) != 0);
-        }();
+        static const bool hi = strata::program::admit_overlap::windows_top_priority(   // (PRIO=0: the default priority)
+            std::getenv("STRATA_PIPED_CONCURRENT"), std::getenv("STRATA_PIPED_CONCURRENT_PRIO"),
+            std::getenv("STRATA_ADMIT_OVERLAP"), std::getenv("STRATA_ADMIT_OVERLAP_PRIO"));
         int lo = 0, top = 0;
         if (hi) {
             if (cudaDeviceGetStreamPriorityRange(&lo, &top) == cudaSuccess &&
