@@ -127,7 +127,27 @@ Every chosen card must be one of the supported architectures. Cards of two famil
 a system ROCm 7, because AMD's wheels hold one family. A split pays only when no single card holds the model's experts.
 
 Setup does not offer tuning (calibration) on AMD. A tuning run by hand (`./setup.sh --calibrate`) is saved for that AMD card and
-reused. The Monitor shows the card's load, VRAM, temperature and power from Linux sysfs.
+reused. The Monitor shows the card's load, VRAM, temperature and power from Linux sysfs, and the link's generation and width.
+The traffic figure is different: the amdgpu driver counts no PCIe traffic for these cards. On our RX 7900 GRE (gfx1100, Arch,
+kernel 7.2.11-arch1-1, rocm-smi-lib 7.2.0-2) the driver's `gpu_metrics` table is 120 bytes and
+`rocm-smi --showmetrics` answers `pcie_bandwidth_acc` and `pcie_bandwidth_inst` with N/A. So the Monitor shows what Strata
+put on the link itself and says "staged to GPU", not "to GPU": the expert blocks the prompt copied from system RAM into
+VRAM, and the ones the answer read back over the link. The engine says both totals about once a second while a request
+runs (`STRATA_LINK_STATS=1`, which the server asks for), so the graph moves while a long prompt is still being staged and
+sits at 0 between requests. The streamed K/V and other programs' traffic are not in that number.
+
+This count is turned on for gfx1100 only - the RX 7900 XTX / XT / GRE and the W7900 / W7800 - because that is the card it
+was measured on, and because on an integrated Radeon (gfx1151 "Strix Halo", gfx1150, gfx1103) those blocks never cross a
+link: they stay in the host's memory. `STRATA_LINK_CHIPS=all` turns it on for any AMD card, knowing that caveat;
+`STRATA_LINK_STATS=0` turns the once-a-second line off. Every other build - CUDA, SYCL, a HIP build on another gfx -
+prints exactly what the last release printed. A card whose driver does count the link (NVIDIA) keeps its own figure, and
+an engine too old to report the count leaves the figure empty rather than guessing 0. Measured on the RX 7900 GRE above
+(Gen4 x16) with the IQ3_S pack of Qwen3.8-Flash-Next, and as the engine counts it: the figure reads 0 between requests,
+a 53,680-token prompt staged 267 GB into VRAM in 56 s (4.8 GB/s), a 139,816-token prompt staged 676 GB in 152 s
+(4.5 GB/s) with its answer reading nothing back because every routed expert was already in VRAM, and the highest sample
+of that run was 9.2 GB/s. Its totals were 1,102 GB staged for the prompts against 184 GB read back by the answers: the
+prompt is the bigger half of the link's work. The answer alone measured 1.2-2.8 GB/s while answering at 44-102 tok/s on
+an earlier Qwen IQ3_S run (both from `/metrics` of the same server).
 
 ## Windows
 

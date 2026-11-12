@@ -123,6 +123,23 @@ const amd=(id,index)=>({id,index,unified:false,vramGb:16,name:'AMD Radeon RX 907
 const ownReading=(id,extra={})=>({id,source:'sensor',sampledAt:'t0',temperatureC:null,utilizationPct:37,memoryUsedGb:5.5,powerW:null,powerLimitW:null,pcieGen:null,pcieGenMax:null,pcieWidth:null,pcieRxMbs:null,...extra});
 const shell=(own)=>({context:{maxTokens:32768},hardware:{gpus:own,gpuLoad:null},history:[],totals:{},telemetry:{}});
 const rawNoGpu={engine:{max_context:32768},live:{state:'generating'},hardware:{cpu:12},history:{}};
+test('Linux AMD, one card: the driver has no PCIe traffic counter, so the tile shows what the engine staged',()=>{
+  const raw={...rawNoGpu,hardware:{...rawNoGpu.hardware,gpu_pcie_gen:4,gpu_pcie_gen_max:4,gpu_pcie_width:16,pcie_engine_mb:412.5,pcie_engine_total_mb:8123.4},history:{pcie_engine_mb:[300,412.5]}};
+  const mapped=originalDashboard(raw,{gpus:[amd('a',0)]},shell([ownReading('a')]));
+  assert.equal(mapped.hardware.pcieRxMbs,412.5);assert.equal(mapped.hardware.pcieEngineFigure,true,'the figure is the engine count, not a driver counter');
+  assert.equal(mapped.hardware.gpus[0].pcieRxMbs,412.5);assert.deepEqual(mapped.history.map(s=>s.pcieRxMbs),[300,412.5]);
+  assert.equal(mapped.hardware.gpus[0].pcieGenMax,4,'the link speed and width still come from the driver');
+});
+test('a card whose driver counts the link (NVML) keeps its own figure, never the engine total',()=>{
+  const raw={...rawNoGpu,hardware:{...rawNoGpu.hardware,gpu_pcie_rx_mb:1200,pcie_engine_mb:400},history:{gpu_pcie_rx_mb:[1100,1200],pcie_engine_mb:[300,400]}};
+  const mapped=originalDashboard(raw,{gpus:[amd('a',0)]},shell([ownReading('a')]));
+  assert.equal(mapped.hardware.pcieRxMbs,1200);assert.equal(mapped.hardware.pcieEngineFigure,undefined);
+  assert.equal(mapped.hardware.gpus[0].pcieRxMbs,1200);assert.deepEqual(mapped.history.map(s=>s.pcieRxMbs),[1100,1200]);
+});
+test('an engine that does not report its link bytes leaves the PCIe figure missing, not zero',()=>{
+  const mapped=originalDashboard(rawNoGpu,{gpus:[amd('a',0)]},shell([ownReading('a')]));
+  assert.equal(mapped.hardware.pcieRxMbs,null);assert.equal(mapped.hardware.pcieEngineFigure,undefined);
+});
 
 test('Windows AMD, one card, engine running: the engine has no GPU reader, the host load and memory stay (#3727)',()=>{
   const mapped=originalDashboard(rawNoGpu,{gpus:[amd('dx:1',0)]},shell([ownReading('dx:1')]));
