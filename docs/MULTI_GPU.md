@@ -185,7 +185,28 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
   or more): on 2x Arc Pro B65 decode is 17% to 23% faster, and setup writes `--spec 2` for those cards ([INTEL_ARC.md](INTEL_ARC.md)).
   It runs exactly two cards, so one card, Arc A-series cards and three or more cards stay serial.
 - **Draft layer placement:** with the pipeline on, the draft layer loads on the first card, whose window has finished when the
-  chain starts. `STRATA_MTP_STAGE0=0` keeps the old place.
+  chain starts. `STRATA_MTP_STAGE0=0` keeps the old place. NVIDIA builds keep the draft layer on the last card. On two
+  RTX 3090 with a split at layer 27 the first card's stage is the longer one, and the chain beside it cost 11% to 17% of decode;
+  on the last card the pipeline gains (below).
+- **Which windows are guessed:** a guess is launched only when windows with a like estimate were on the path often enough. The
+  engine keeps that share per decile of the draft chain's own estimate (and for lookup windows), counted over the process from
+  every window it could have launched, and launches from `STRATA_PIPELINE_HIT_MIN` up (default 0.35; 0.2 to 0.4 measured within
+  one point of each other). The chain's estimate alone runs high: at 0.5 to 0.6 four windows in ten were on the path.
+- **The draft chain:** it runs the steps the window in front of it needs and one more step at a time while the next window can
+  still be launched, not all seven. `STRATA_PIPELINE_LAZY_CHAIN=0` runs them all.
+- **Copied text:** behind a prompt-lookup window that was accepted whole the next window comes from the same lookup, without
+  waiting for a chain, so a copied stretch runs window behind window. `STRATA_PIPELINE_LOOKUP_RUN=0` takes the chain's window.
+- **Measured on:** two RTX 3090 at a 250 W limit each, Swift-Qwen3.8-Flash-Next IQ3_S, 1M context, split at layer 27, against
+  the serial loop. A 32K prompt, sampled answers (five tasks, three seeds, 42.7K tokens an arm, two paired runs): code +12%,
+  prose +7%, an agent turn +12%, text with copied stretches +26%, a 2400-token rewrite +18%; 162.7 against 142.3 tokens/s,
+  +14%. The same 23.9K sampled tokens replayed through both loops: +11% (code +7%, prose +1%, agent +5%, copied stretches
+  +16%, rewrite +22%); a replay rejects a draft wherever the run's own pick is not the recorded token, and that costs the
+  pipeline more than the serial loop. A 460K prompt of mixed documents, where the draft layer is unsure far more often (305
+  of 489 windows below the gate): +1%. Switched per request on one engine, the loop without the three changes above (the gate
+  at the chain's estimate of 0.2, every chain to its last step) gave +9% on the replays where this one gave +14%. At 250 W
+  both cards are at their power limit while they take turns (about 1,790 of 2,100 MHz, 1,630 to 1,690 MHz with the pipeline
+  on), so a window that is thrown away costs clock for the windows after it, and so did a chain that always ran to its last
+  step.
 - **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-device1..3`, which
   `--remote-expert-opt` builds on), a split onto one GPU, no draft layer, and on three or more stages `--pipeline-windows 1` and
   `--adapt-async 1`. A request with repetition penalties or coupled draft sampling decodes serially.
@@ -194,7 +215,7 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
 - **Config:** `"args": [ ..., "--pipeline-windows", "2" ]` with `"layer_split": "20"`.
 
 `--remote-expert-opt` does something only with a helper cache; on a plain layer split it is inert.
-The `STRATA_PIPELINE_*` tuning and test variables are read only with `STRATA_PIPELINE_DEBUG=1`.
+The other `STRATA_PIPELINE_*` tuning and test variables are read only with `STRATA_PIPELINE_DEBUG=1`.
 
 ## Two models on two cards
 
