@@ -89,8 +89,8 @@ class Recommendation(unittest.TestCase):
         self.assertEqual(M.model_note("IQ3_S", 128), [])
 
     def test_context(self):
-        self.assertEqual(M.recommend_context(64), 32768)
-        self.assertEqual(M.recommend_context(128), 65536)
+        self.assertEqual(M.recommend_context(64), 65536)   # the plan arbitrates experts: 88% kept, -21% decode (#5176)
+        self.assertEqual(M.recommend_context(128), 131072)
 
 
 class Config(unittest.TestCase):
@@ -420,7 +420,7 @@ class ControlMode(unittest.TestCase):
         cfg = self.config("iq3_xxs")
         self.assertIn("--mtp", cfg["args"])
         self.assertEqual(cfg["env"], {"STRATA_METAL_STREAM": "0"})
-        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "65536")      # the default context by memory
+        self.assertEqual(cfg["args"][cfg["args"].index("--max-context") + 1], "131072")     # the default context by memory
 
     def test_no_command_line_tools_needed_and_ud_iq1_s_is_not_offered(self):
         rc, _ = self.run_setup(clt_rc=2)
