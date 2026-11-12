@@ -30,6 +30,7 @@
 #include "strata/qwen35/engine.hpp"
 #include "strata/qwen35/sampling.hpp"
 #include "q36_kernels.cuh"
+#include "q36_fa.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -1155,6 +1156,15 @@ struct Engine {
         *sg, *su, *shh, *sy, *sgate, *ewts, *logits;
     float* hmain = nullptr;   // [tmax][N] the main model's final normed hidden of each row (the MTP seeds)
     float* hlast = nullptr;   // [N] that of the last processed position (zeros before the first): the current session's
+    // STRATA_Q36_FA_LAYER: -1 = the cuBLAS attention branch (default), >= 0 = that layer only, -2 = every layer
+    int fa_layer = -1;
+    // STRATA_Q36_FA_TILE: 0 = 4x32, 1 = 8x32, 2 = 4x64, 3 = 8x64 (see q36fa::Variant)
+    int fa_tile = 0;
+    // STRATA_Q36_FA_CHECK: rerun the cuBLAS branch on the FA layer and print per-head max abs / cos
+    bool fa_check = false;
+    // STRATA_Q36_FA_LOG: print one launch line per selected layer (read once, not per layer)
+    bool fa_log = false;
+    float* att_fa = nullptr;
     void *q8, *xq, *escr;
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
     int32_t* hpin = nullptr;   // pinned staging: [0] decode token, [1] position, [2..9] picks, [10] max rows, [16..] tokens
@@ -1350,11 +1360,18 @@ struct Engine {
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
         x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N);
+        if (const char* v = std::getenv("STRATA_Q36_FA_LAYER"))
+            fa_layer = std::strcmp(v, "all") == 0 ? -2 : std::atoi(v);
+        if (const char* v = std::getenv("STRATA_Q36_FA_TILE"))
+            fa_tile = std::max(0, std::min(3, std::atoi(v)));
+        fa_check = std::getenv("STRATA_Q36_FA_CHECK") != nullptr;
+        fa_log   = std::getenv("STRATA_Q36_FA_LOG") != nullptr;
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
         qg = dalloc(T * 2 * g.n_head * g.head_dim); kx = dalloc(T * g.n_head_kv * g.head_dim);
         vx = dalloc(T * g.n_head_kv * g.head_dim); q = dalloc(T * g.n_head * g.head_dim);
         gate = dalloc(T * g.n_head * g.head_dim); att = dalloc(T * g.n_head * g.head_dim);
+        if (fa_check) att_fa = dalloc(T * g.n_head * g.head_dim);
         logits_r = dalloc(T * (g.n_expert + 1));
         eparts = dalloc(T * Kp * N); moe_out = dalloc(T * N);
         sg = dalloc(T * g.n_ff_shexp); su = dalloc(T * g.n_ff_shexp); shh = dalloc(T * g.n_ff_shexp); sy = dalloc(T * N);
@@ -1983,6 +2000,21 @@ struct Engine {
                 const float one = 1.0f, zero = 0.0f;
                 k_kv_f16<<<grid1((int64_t) HKV * P * HD), kThreads, 0, st>>>(kc[li], vc[li], k16, v16, ctx, P, HD, HKV);
                 k_to_f16<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(q, q16, (int64_t) T * H * HD);
+                const bool fa_want = fa_layer == -2 || fa_layer == (int) li;
+                q36fa::Shape fa_shape;
+                const q36fa::Variant fa_var = (q36fa::Variant) fa_tile;
+                const bool fa_ok = fa_want && q36fa::q36_fa_shape(fa_var, T, HKV, &fa_shape) &&
+                                   q36fa::q36_fa_launch(fa_shape.grid, fa_shape.block, st, q16, k16, v16, att, T, P,
+                                                        (int) p0, H, HKV, HD, ctx, 1.0f / sqrtf((float) HD), fa_var);
+                if (fa_ok && fa_log)
+                    std::fprintf(stderr, "fa: layer %zu T=%d P=%d p0=%d tile=%d\n", li, T, P, (int) p0, fa_tile);
+                if (fa_ok && fa_check) {
+                    CK(cudaStreamSynchronize(st));
+                    CK(cudaGetLastError());
+                    std::fprintf(stderr, "fa-check layer %zu: launch synced, no error\n", li);
+                    CK(cudaMemcpyAsync(att_fa, att, (size_t) T * H * HD * sizeof(float), cudaMemcpyDeviceToDevice, st));
+                }
+                if (!fa_ok || fa_check)
                 for (int t0 = 0; t0 < T; t0 += tq) {
                     const int nt = std::min(tq, T - t0);
                     for (int kvh = 0; kvh < HKV; ++kvh) {
@@ -2011,6 +2043,52 @@ struct Engine {
                             std::exit(1);
                         }
                     }
+                }
+                if (fa_ok && fa_check) {
+                    std::vector<float> a((size_t) T * H * HD), b((size_t) T * H * HD);
+                    // st is non-blocking, so a plain cudaMemcpy (the null stream) is ordered neither with the FA
+                    // launch nor with the cuBLAS branch; copy on st and join the stream before reading the host
+                    // buffers, or the comparison may read a snapshot from a previous call.
+                    CK(cudaMemcpyAsync(a.data(), att_fa, a.size() * sizeof(float), cudaMemcpyDeviceToHost, st));
+                    CK(cudaMemcpyAsync(b.data(), att, b.size() * sizeof(float), cudaMemcpyDeviceToHost, st));
+                    CK(cudaStreamSynchronize(st));
+                    double worst_abs = 0.0, worst_cos = 1.0;
+                    int worst_h = -1;
+                    for (int h = 0; h < H; ++h) {
+                        double mx = 0.0, dot = 0.0, na = 0.0, nb = 0.0;
+                        for (int t = 0; t < T; ++t) {
+                            const size_t o = ((size_t) t * H + h) * HD;
+                            for (int d = 0; d < HD; ++d) {
+                                const double x = a[o + d], y = b[o + d];
+                                mx = std::max(mx, std::fabs(x - y));
+                                dot += x * y; na += x * x; nb += y * y;
+                            }
+                        }
+                        const double cs = dot / (std::sqrt(na) * std::sqrt(nb) + 1e-30);
+                        if (mx > worst_abs) worst_abs = mx;
+                        if (cs < worst_cos) { worst_cos = cs; worst_h = h; }
+                        if (h < 4)
+                            std::fprintf(stderr, "fa-check layer %zu head %d: max_abs %.3e cos %.6f\n", li, h, mx, cs);
+                    }
+                    std::fprintf(stderr, "fa-check layer %zu: worst max_abs %.3e, worst cos %.6f (head %d)\n",
+                                 li, worst_abs, worst_cos, worst_h);
+                    std::vector<std::pair<double, int>> rr(T);
+                    for (int t = 0; t < T; ++t) {
+                        double mx = 0.0;
+                        const size_t o = ((size_t) t * H + 0) * HD;
+                        for (int d = 0; d < HD; ++d) mx = std::max(mx, std::fabs((double) a[o + d] - b[o + d]));
+                        rr[t] = {mx, t};
+                    }
+                    std::sort(rr.begin(), rr.end(), std::greater<std::pair<double, int>>());
+                    for (int k = 0; k < std::min(5, T); ++k)
+                        std::fprintf(stderr, "fa-check layer %zu row %d (head 0): max_abs %.3e\n",
+                                     li, rr[k].second, rr[k].first);
+                    if (T <= 16)
+                        for (int t = 0; t < std::min(4, T); ++t) {
+                            const size_t o = (size_t) t * H * HD;
+                            std::fprintf(stderr, "fa-dump layer %zu row %d: fa %.4f %.4f %.4f | cb %.4f %.4f %.4f\n",
+                                         li, t, a[o], a[o + 1], a[o + 2], b[o], b[o + 1], b[o + 2]);
+                        }
                 }
                 k_gate_mul<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(att, gate, (int64_t) T * H * HD);
             } else {
