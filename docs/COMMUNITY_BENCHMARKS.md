@@ -115,7 +115,9 @@ sends a fixed suite through the HTTP API, three runs each, and reports medians w
 
 Speeds are the engine's own timings (`prompt_per_second`, `predicted_per_second` in the answer); first-token time and
 latency are measured by the client. Thinking is off for the suite so the answers are short and the runs comparable
-(`--think` leaves it on). Every prompt carries a unique tag, so the fresh-prompt tests never get help from the cache.
+(`--think` leaves it on). Every prompt carries a unique tag to avoid prefix reuse. Fresh-prompt summaries include only
+requests that report zero reused tokens in usage or engine timings. Requests with reused tokens or unavailable cache
+counts remain in `results.json` and are listed as excluded in the report; an unknown count is not treated as zero.
 Close other programs first: a browser or a game changes the numbers.
 
 The result goes to `bench/results/<date>-community-<gpu>-<model>/` (or `--out DIR`):
