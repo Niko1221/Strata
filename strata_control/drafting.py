@@ -152,21 +152,24 @@ def sycl_archs_present() -> list[str]:
 
 
 def detect_hardware() -> tuple[str | None, list[str]]:
-    """(engine family, card architectures) of this computer, looked up once: ``("cuda", ["sm_120"])``, ``("hip", ["gfx1151"])``, ``("metal", [])``;
-    ``(None, [])`` when nothing answers. Read-only probes of tools that are already installed; never raises, never downloads."""
-    if not _HARDWARE:
-        backend: str | None = None
-        archs: list[str] = []
-        try:
-            from strata_control import engine_component
-            backend = engine_component.detect_backend()[0]
-            archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
-            if backend == "sycl" and not archs:
-                archs = sycl_archs_present()
-        except Exception:                                    # noqa: BLE001 - an unknown computer is "no DFlash2", never an error
-            pass
+    """(engine family, card architectures) of this computer: ``("cuda", ["sm_120"])``, ``("hip", ["gfx1151"])``, ``("metal", [])``; ``(None, [])`` when
+    nothing answers. A card that was found is looked up once. ``(None, [])`` is asked again at the next call: a service started at boot can look before
+    the graphics driver answers. Read-only probes of tools that are already installed; never raises, never downloads."""
+    if _HARDWARE:
+        return _HARDWARE[0]
+    backend: str | None = None
+    archs: list[str] = []
+    try:
+        from strata_control import engine_component
+        backend = engine_component.detect_backend()[0]
+        archs = list(engine_component.cuda_archs_present()) + list(engine_component.hip_archs_present())
+        if backend == "sycl" and not archs:
+            archs = sycl_archs_present()
+    except Exception:                                    # noqa: BLE001 - an unknown computer is "no DFlash2", never an error
+        pass
+    if backend is not None:
         _HARDWARE.append((backend, archs))
-    return _HARDWARE[0]
+    return backend, archs
 
 
 def hardware_support(backend: str | None, archs: Any = None, model_name: str | None = None) -> Support:
