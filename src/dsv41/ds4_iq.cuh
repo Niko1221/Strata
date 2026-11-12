@@ -34,10 +34,14 @@ constexpr bool is_tq(int type) { return tq_kbits(type) > 0; }
 
 /// Whether the device kernels take this ggml type.
 bool supported(int type);
+/// Whether they take it as the down matrix of a layer whose gate / up are a low-bit type: supported(), and MXFP4 -
+/// DeepSeek's own expert format, which Unsloth's dynamic quants keep for the down of some layers (UD-Q2_K_XL: layers 0,
+/// 1 and 15-19 beside IQ2_XS / IQ2_S gate and up).  Not on Metal: its sets have no MXFP4 down.
+bool supported_down(int type);
 /// Whether the type's block layout is known (its row bytes can be computed).  It covered more than supported() while
 /// IQ1_S, IQ1_M and IQ4_NL had no device kernel; they have one now, so both take the same types.
 bool known(int type);
-/// Values a block of the type holds (256; the trellis types 128; 0: not one of these).
+/// Values a block of the type holds (256; IQ4_NL and MXFP4 32; the trellis types 128; 0: not one of these).
 int block_values(int type);
 /// Bytes of a block of the type (0: not one of these).
 int block_bytes(int type);

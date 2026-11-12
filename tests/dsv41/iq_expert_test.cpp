@@ -2,8 +2,9 @@
 // against ggml's own decode of the same bytes plus a double reference: the token path (gate/up, down), the window path
 // (grouped entries), the prompt sets (gate/up and down), and the CPU lane on the same experts.  Random legal blocks: any
 // bit pattern with a sane F16 scale is one.  This is the H2 gate for a new type (IQ2_XS first): the kernel's integer sums
-// must equal ggml's weights times the same activations.
-//   iq_expert_test [--type 16,17,18,21,22,23,29] [--bench] [--iq256 0|1]
+// must equal ggml's weights times the same activations.  --down T gives the down matrices type T instead of the gate's
+// (39: MXFP4, the down that Unsloth's UD-Q2_K_XL keeps beside IQ2_XS / IQ2_S gate and up in some layers).
+//   iq_expert_test [--type 16,17,18,21,22,23,29] [--down 39] [--bench] [--iq256 0|1]
 #include "../../src/dsv41/ds4_gguf_cpu.hpp"
 #include "../../src/dsv41/ds4_iq.cuh"
 
@@ -83,6 +84,23 @@ static std::vector<float> act_values(int type, const void* act, int k) {
 }
 
 struct Mat { std::vector<uint8_t> bytes; std::vector<float> w; int rows = 0, k = 0; };
+// a sane scale for block p of `type`: an F16 d at offset 0 (every type here but IQ1_M and MXFP4 has it there), IQ1_M's
+// in the top nibbles of its four u16 scales, MXFP4's E8M0 exponent byte (2^-9 .. 2^-4 times values up to 6)
+static void sane_scale(std::mt19937_64& rng, int type, uint8_t* p) {
+    if (type == 39) {
+        p[0] = (uint8_t) (119 + rng() % 6);
+        return;
+    }
+    const uint16_t d = f2h(0.02f + 0.0002f * (float) (rng() % 600));
+    if (type == 29) {
+        p[49] = (uint8_t) ((p[49] & 0x0f) | ((d & 0x000f) << 4));
+        p[51] = (uint8_t) ((p[51] & 0x0f) | (d & 0x00f0));
+        p[53] = (uint8_t) ((p[53] & 0x0f) | ((d & 0x0f00) >> 4));
+        p[55] = (uint8_t) ((p[55] & 0x0f) | ((d & 0xf000) >> 8));
+    } else {
+        std::memcpy(p, &d, 2);
+    }
+}
 // random legal blocks of `type` for a rows x k matrix, decoded by ggml itself
 static Mat make_mat(std::mt19937_64& rng, int type, int rows, int k) {
     Mat m; m.rows = rows; m.k = k;
@@ -90,18 +108,7 @@ static Mat make_mat(std::mt19937_64& rng, int type, int rows, int k) {
     const size_t nblk = (size_t) rows * (k / bv);
     m.bytes.resize(nblk * (size_t) bb);
     for (auto& b : m.bytes) b = (uint8_t) rng();
-    for (size_t b = 0; b < nblk; ++b) {   // a sane F16 scale: at offset 0 (every type here but IQ1_M has d there)
-        const uint16_t d = f2h(0.02f + 0.0002f * (float) (rng() % 600));
-        uint8_t* p = &m.bytes[b * (size_t) bb];
-        if (type == 29) {   // block_iq1_m has no d field: its F16 scale is the top nibbles of its four u16 scales
-            p[49] = (uint8_t) ((p[49] & 0x0f) | ((d & 0x000f) << 4));
-            p[51] = (uint8_t) ((p[51] & 0x0f) | (d & 0x00f0));
-            p[53] = (uint8_t) ((p[53] & 0x0f) | ((d & 0x0f00) >> 4));
-            p[55] = (uint8_t) ((p[55] & 0x0f) | ((d & 0xf000) >> 8));
-        } else {
-            std::memcpy(p, &d, 2);
-        }
-    }
+    for (size_t b = 0; b < nblk; ++b) sane_scale(rng, type, &m.bytes[b * (size_t) bb]);
     m.w.resize((size_t) rows * k);
     const ggml_type_traits* tr = ggml_get_type_traits((ggml_type) type);
     if (tr == nullptr || tr->to_float == nullptr) { std::printf("ggml has no to_float for type %d\n", type); std::exit(2); }
@@ -161,19 +168,25 @@ static void bits(const char* what, int type, const void* p, size_t bytes) {
     }
 }
 // the real shapes (n_embd 5120, n_ff 2304): the plan path (6 groups of one entry) and the grouped path (windows of 3 and 2)
-static void real_shape_bits(int type) {
+static void real_shape_bits(int type, int dtype) {
     std::mt19937_64 rng(1000 + type);   // (its own stream: the main loop's random experts are the same with or without this)
     const int E = 5120, FF = 2304, NG = 2, NEnt = 12;
-    const size_t rb_g = iq::row_bytes(type, E), rb_d = iq::row_bytes(type, FF);
+    const size_t rb_g = iq::row_bytes(type, E), rb_d = iq::row_bytes(dtype, FF);
     auto al = [](size_t n) { return (n + 255) / 256 * 256; };
     const size_t off[3] = {0, al(FF * rb_g), al(FF * rb_g) * 2}, blob = off[2] + al((size_t) E * rb_d);
     std::vector<uint8_t> hb((size_t) NG * blob);
     for (auto& b : hb) b = (uint8_t) rng();
-    for (size_t b = 0; b < hb.size() / (size_t) iq::block_bytes(type); ++b) {   // sane F16 scales (the same placement as make_mat)
-        const uint16_t d = f2h(0.02f + 0.0002f * (float) (rng() % 600));
-        uint8_t* p = &hb[b * (size_t) iq::block_bytes(type)];
-        if (type == 29) { p[49] = (uint8_t) ((p[49] & 0x0f) | ((d & 0x000f) << 4)); p[51] = (uint8_t) ((p[51] & 0x0f) | (d & 0x00f0)); p[53] = (uint8_t) ((p[53] & 0x0f) | ((d & 0x0f00) >> 4)); p[55] = (uint8_t) ((p[55] & 0x0f) | ((d & 0xf000) >> 8)); }
-        else std::memcpy(p, &d, 2);
+    if (dtype == type) {   // sane scales (the same placement as make_mat), the blob as one run of blocks as before
+        for (size_t b = 0; b < hb.size() / (size_t) iq::block_bytes(type); ++b)
+            sane_scale(rng, type, &hb[b * (size_t) iq::block_bytes(type)]);
+    } else {   // each matrix's blocks of its own type
+        for (int g = 0; g < NG; ++g)
+            for (int r = 0; r < 3; ++r) {
+                const int ty = r < 2 ? type : dtype;
+                const size_t n = r < 2 ? (size_t) FF * rb_g : (size_t) E * rb_d;
+                for (size_t b = 0; b < n / (size_t) iq::block_bytes(ty); ++b)
+                    sane_scale(rng, ty, &hb[(size_t) g * blob + off[r] + b * (size_t) iq::block_bytes(ty)]);
+            }
     }
     uint8_t* dblob = up(hb);
     std::vector<int8_t> xq(2 * E), hq((size_t) NEnt * FF); std::vector<float> xd(2 * E / 32), hd((size_t) NEnt * FF / 32);
@@ -182,7 +195,7 @@ static void real_shape_bits(int type) {
     for (auto& v : xd) v = 0.002f + 0.0001f * (float) (rng() % 100);
     for (auto& v : hd) v = 0.002f + 0.0001f * (float) (rng() % 100);
     iq::Args a{};
-    a.n_embd = E; a.n_ff = FF; a.limit = 10.0f; a.xq = up(xq); a.xd = up(xd); a.hq = up(hq); a.hd = up(hd); a.tg = a.td = type;
+    a.n_embd = E; a.n_ff = FF; a.limit = 10.0f; a.xq = up(xq); a.xd = up(xd); a.hq = up(hq); a.hd = up(hd); a.tg = type; a.td = dtype;
     for (int r = 0; r < 3; ++r) a.tr[r] = off[r];
     float *dh, *dp; CK(hipMalloc(&dh, (size_t) NEnt * FF * 4)); CK(hipMalloc(&dp, (size_t) NEnt * E * 4)); a.h = dh; a.part = dp;
     std::vector<unsigned long long> plan = {(unsigned long long) dblob, (unsigned long long) (dblob + blob), 0ull, (unsigned long long) dblob};
@@ -329,6 +342,7 @@ static void bench_light(int type, int nexp, int rows, bool tiles = false) {
 
 int main(int argc, char** argv) {
     std::vector<int> types = {16, 17, 22, 18, 21, 23, 29};
+    int down_type = 0;   // 0: each type's own
     std::vector<int> devs;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--bench-tiles") {   // [types] [n_exp] [rows list]: the prompt sets' tensor-core tiles
@@ -372,6 +386,8 @@ int main(int argc, char** argv) {
             types.clear(); for (const char* p = argv[++i]; *p;) { types.push_back(std::atoi(p)); while (*p && *p != ',') ++p; if (*p) ++p; }
         } else if (std::string(argv[i]) == "--iq256" && i + 1 < argc) {
             gg::gg_cpu_set_iq256(std::atoi(argv[++i]));
+        } else if (std::string(argv[i]) == "--down" && i + 1 < argc) {
+            down_type = std::atoi(argv[++i]);
         }
     }
     int fails = 0;
@@ -396,10 +412,12 @@ int main(int argc, char** argv) {
     };
     for (int type : types) {
         if (!iq::supported(type) && !iq::known(type)) { std::printf("%-7s not a type this engine knows\n", iq::name(type)); ++fails; continue; }
-        const bool dev = iq::supported(type);   // (IQ1_S / IQ1_M / IQ4_NL: a known layout, no device kernel - CPU lane only)
+        const int dtype = down_type ? down_type : type;
+        if (dtype != type) std::printf("%-7s with %s down\n", iq::name(type), iq::name(dtype));
+        const bool dev = iq::supported(type) && iq::supported_down(dtype);   // (else a known layout, no device kernel: CPU lane only)
         const int E = 512, FF = 256, NEXP = 3, T = 4;
         const float lim = 7.0f;
-        const size_t rb_g = iq::row_bytes(type, E), rb_d = iq::row_bytes(type, FF);
+        const size_t rb_g = iq::row_bytes(type, E), rb_d = iq::row_bytes(dtype, FF);
         auto al = [](size_t n) { return (n + 255) / 256 * 256; };
         const size_t off[3] = {0, al(FF * rb_g), al(FF * rb_g) * 2}, blob = off[2] + al((size_t) E * rb_d);
         std::vector<Mat> G(NEXP), U(NEXP), D(NEXP);
@@ -410,8 +428,12 @@ int main(int argc, char** argv) {
             return swiglu(g, u, lim);
         };
         std::vector<uint8_t> blobs((size_t) NEXP * blob, 0);
+        // (--down: the type's own down matrices are still drawn, so the gate / up data and the inputs are the run without
+        //  it's - its gate / up checks give the same numbers - and the down of the other type comes from a stream of its own)
+        std::mt19937_64 rng_down(7000 + type);
         for (int e = 0; e < NEXP; ++e) {
             G[e] = make_mat(rng, type, FF, E); U[e] = make_mat(rng, type, FF, E); D[e] = make_mat(rng, type, E, FF);
+            if (dtype != type) D[e] = make_mat(rng_down, dtype, E, FF);
             std::memcpy(&blobs[e * blob + off[0]], G[e].bytes.data(), G[e].bytes.size());
             std::memcpy(&blobs[e * blob + off[1]], U[e].bytes.data(), U[e].bytes.size());
             std::memcpy(&blobs[e * blob + off[2]], D[e].bytes.data(), D[e].bytes.size());
@@ -439,7 +461,7 @@ int main(int argc, char** argv) {
             std::vector<unsigned long long> plan(NEXP);
             for (int e = 0; e < NEXP; ++e) plan[e] = (unsigned long long) (dblob + e * blob);
             iq::Args a{};
-            a.plan_ptr = up(plan); a.n_embd = E; a.n_ff = FF; a.limit = lim; a.xq = dxq; a.xd = dxd; a.tg = a.td = type;
+            a.plan_ptr = up(plan); a.n_embd = E; a.n_ff = FF; a.limit = lim; a.xq = dxq; a.xd = dxd; a.tg = type; a.td = dtype;
             for (int r = 0; r < 3; ++r) a.tr[r] = off[r];
             float* dh; CK(hipMalloc(&dh, (size_t) NEXP * FF * 4)); a.h = dh;
             if (!iq::gate_up(a, NEXP, 1, 0)) { std::printf("gate_up refused\n"); return 1; }
@@ -477,7 +499,7 @@ int main(int argc, char** argv) {
             iq::SetArgs q{};
             q.wbase = dblob; q.stride = blob; for (int r = 0; r < 3; ++r) q.tr[r] = off[r];
             q.bounds = up(bounds); q.row0 = 0; q.max_rows = 37; q.n_exp = 3; q.n_embd = E; q.n_ff = FF; q.limit = lim;
-            q.tg = q.td = type; q.xf = up(x); q.idx = up(idx); q.ldx = E;
+            q.tg = type; q.td = dtype; q.xf = up(x); q.idx = up(idx); q.ldx = E;
             uint16_t* dh16; CK(hipMalloc(&dh16, (size_t) NR * FF * 2)); q.h = dh16; q.ldo = FF;
             if (!iq::set_gate_up(q, 0)) { std::printf("set_gate_up refused\n"); return 1; }
             CK(hipDeviceSynchronize());
@@ -500,7 +522,7 @@ int main(int argc, char** argv) {
             CK(hipDeviceSynchronize());
             const auto y = down_(dy, (size_t) NR * E);
             bits("set y", type, y.data(), y.size() * 4);
-            real_shape_bits(type);
+            real_shape_bits(type, dtype);
             w2 = 0;
             for (int e = 0; e < 3; ++e)
                 for (int lr = bounds[e]; lr < bounds[e + 1]; ++lr) {
@@ -569,7 +591,7 @@ int main(int argc, char** argv) {
         // ---- the CPU lane on the same experts and inputs (ggml-cpu's rows, or Strata's AVX2 ones with DS4_GG_IQ256=1)
         {
             gg::IqCpu fm; std::string err;
-            if (!gg::iq_cpu_fmt(type, type, E, FF, fm, err)) { std::printf("%-7s cpu lane: %s\n", iq::name(type), err.c_str()); ++fails; }
+            if (!gg::iq_cpu_fmt(type, dtype, E, FF, fm, err)) { std::printf("%-7s cpu lane: %s\n", iq::name(type), err.c_str()); ++fails; }
             else {
                 std::vector<uint8_t> act(fm.act_bytes), hact(fm.h_bytes);
                 gg::iq_cpu_quant(fm.gu_act, x.data(), E, act.data());
