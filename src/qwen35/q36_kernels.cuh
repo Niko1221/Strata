@@ -5,16 +5,119 @@
 #pragma once
 
 #include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#if defined(__CUDACC__) && !defined(__HIPCC__)
+#include <cuda_fp8.h>   // the E4M3 conversion instruction on sm_89+ (the software path below stays the reference / HIP path)
+#endif
 
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace q36k {
+
+// ---- the KV cache's quantization arithmetic (--kv int8 / fp8).  int8 follows strata::kernels::kv_q8 (kv_q8.hpp): the
+// scale is fp16(max|x| / 127) and the codes are rounded against the STORED f16 scale.  fp8 is E4M3 (OCP, finite, the
+// largest value 448, 0x7F never emitted); its encode / decode are written out so the CUDA and the HIP builds share one
+// definition and neither depends on cuda_fp8.h.
+inline constexpr float kE4M3Max = 448.0f;
+
+#if defined(__CUDA_ARCH__)
+#define Q36_DIV_RN(a, b) __fdiv_rn((a), (b))
+#else
+#define Q36_DIV_RN(a, b) ((a) / (b))
+#endif
+
+STRATA_HD inline float f32_of_bits(uint32_t b) {
+    float f;
+    std::memcpy(&f, &b, 4);
+    return f;
+}
+
+/// fp16(max|x| / 127) as bits: the int8 scale (the value the codes are quantized against, not the unrounded one).
+STRATA_HD inline uint16_t q8_scale_bits(float amax) { return strata::kernels::f16_from_f32(Q36_DIV_RN(amax, 127.0f)); }
+
+/// clamp(rint(x / sf), -127, 127); 0 when the scale is 0 (a zero row never divides by zero).
+STRATA_HD inline int8_t q8_code(float x, float sf) {
+    if (!(sf > 0.0f)) return 0;
+    const float qf = rintf(Q36_DIV_RN(x, sf));
+    return (int8_t) (qf > 127.0f ? 127 : qf < -127.0f ? -127 : (int) qf);
+}
+
+/// rk4v4-e8's 4-bit scale fp16(max|x| / 7) and code clamp(rint(x / sf), -7, 7).  Codes are stored as two's complement
+/// nibbles, so -7 is 0x9 and the reader's `(nibble ^ 8) - 8` recovers the sign; -8 is never emitted (symmetric range).
+STRATA_HD inline uint16_t q4_scale_bits(float amax) { return strata::kernels::f16_from_f32(Q36_DIV_RN(amax, 7.0f)); }
+
+STRATA_HD inline int8_t q4_code(float x, float sf) {
+    if (!(sf > 0.0f)) return 0;
+    const float qf = rintf(Q36_DIV_RN(x, sf));
+    return (int8_t) (qf > 7.0f ? 7 : qf < -7.0f ? -7 : (int) qf);
+}
+
+/// Two 4-bit codes (two's complement) in one byte, low nibble first.
+STRATA_HD inline uint8_t q4_pack(int8_t lo, int8_t hi) {
+    return (uint8_t) (((uint8_t) lo & 0x0Fu) | (uint8_t) (((uint8_t) hi & 0x0Fu) << 4));
+}
+
+/// The signed 4-bit code in nibble `high` of a packed byte.
+STRATA_HD inline int8_t q4_unpack(uint8_t b, int high) {
+    const int n = high ? (b >> 4) : (b & 0x0Fu);
+    return (int8_t) ((n ^ 8) - 8);
+}
+
+/// E4M3 encode: round-to-nearest-even, saturating at +-448 (codes 0x7E / 0xFE), 0 for a NaN (never stored).
+STRATA_HD inline uint8_t e4m3_encode(float x) {
+    const uint8_t s = x < 0.0f ? 0x80u : 0u;
+    float a = fabsf(x);
+    if (!(a <= kE4M3Max)) a = (a == a) ? kE4M3Max : 0.0f;   // saturate a finite overflow; NaN -> 0
+    if (a < 0.015625f) {                                    // subnormal region: steps of 2^-9, 0 .. 8
+        const int m = (int) rintf(a * 512.0f);              // 8 is the smallest normal (2^-6), the same value
+        return (uint8_t) (s | (uint8_t) m);
+    }
+    int e = 0;
+    const float f = frexpf(a, &e);   // a = f * 2^e with f in [0.5, 1): a = (2 f) * 2^(e - 1)
+    int ex = e - 1;
+    int m = (int) rintf((2.0f * f - 1.0f) * 8.0f);
+    if (m == 8) { m = 0; ++ex; }      // the mantissa carried into the exponent
+    if (ex > 8) return (uint8_t) (s | 0x7Eu);
+    return (uint8_t) (s | (uint8_t) ((ex + 7) << 3) | (uint8_t) m);
+}
+
+/// E4M3 -> float, exactly (subnormals included).  Code 0x7F / 0xFF (E4M3's NaN) decodes as +-448: never stored.
+STRATA_HD inline float e4m3_decode(uint8_t c) {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 890)
+    // sm_89 has the conversion in hardware (cvt.e4m3); checked bit-exact against the software path below for every
+    // non-NaN code (build/fp8test).  0x7F is never stored (the encoder saturates at 0x7E).
+    return __half2float(__nv_cvt_fp8_to_halfraw((__nv_fp8_storage_t) c, __NV_E4M3));
+#else
+    const uint32_t sign = ((uint32_t) c & 0x80u) << 24;
+    const uint32_t e = ((uint32_t) c >> 3) & 0xFu, m = (uint32_t) c & 7u;
+    uint32_t bits;
+    if (e == 0) {
+        if (m == 0) return f32_of_bits(sign);   // +-0
+        const int k = m >= 4 ? 2 : (m >= 2 ? 1 : 0);   // floor(log2(m)): m * 2^-9 = (1.xxx) * 2^(k - 9)
+        bits = sign | ((uint32_t) (127 - 9 + k) << 23) | ((m << (23 - k)) & 0x7FFFFFu);
+    } else if (e == 15 && m == 7) {
+        bits = sign | ((uint32_t) (127 + 8) << 23) | (6u << 20);   // 1.75 * 2^8 = 448
+    } else {
+        bits = sign | ((uint32_t) (e + 120) << 23) | (m << 20);   // (1 + m/8) * 2^(e - 7)
+    }
+    return f32_of_bits(bits);
+#endif
+}
+
+/// fp8 code of x against the stored scale sf (0 for a zero scale).
+STRATA_HD inline uint8_t fp8_code(float x, float sf) { return sf > 0.0f ? e4m3_encode(Q36_DIV_RN(x, sf)) : 0; }
+
+/// fp16(max|x| / 448) as bits: the E4M3 scale of a cell and head, quantized against the stored value.
+STRATA_HD inline uint16_t fp8_scale_bits(float amax) {
+    return strata::kernels::f16_from_f32(Q36_DIV_RN(amax, kE4M3Max));
+}
 
 struct QB {   // a q8_1 activation block (what native_quantize_q8_1 writes)
     half2 ds;
