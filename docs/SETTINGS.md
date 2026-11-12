@@ -10,7 +10,7 @@ debugging and are kept in `data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (280)
+## Switches you can turn on (282)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -173,6 +173,8 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PARK_VRAM_MIB` | number | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PARTIAL_PIN` | number | NVIDIA and AMD, Intel Arc | [UNSLOTH_Q4.md](UNSLOTH_Q4.md) |
 | `STRATA_PARTIAL_PIN_GIB` | number | NVIDIA and AMD, Intel Arc | [UNSLOTH_Q4.md](UNSLOTH_Q4.md) |
+| `STRATA_PARTIAL_PIN_SLICED` | number | NVIDIA and AMD | [UNSLOTH_Q4.md](UNSLOTH_Q4.md) |
+| `STRATA_PARTIAL_PIN_SLICE_MIB` | number | NVIDIA and AMD | [UNSLOTH_Q4.md](UNSLOTH_Q4.md) |
 | `STRATA_PATTN_SM60` | number | NVIDIA and AMD | [OLDER_GPUS.md](OLDER_GPUS.md), [release-notes-0.2.7.md](release-notes-0.2.7.md) |
 | `STRATA_PA_V2T` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md) |
 | `STRATA_PCIE_AUTO_CANON` | on / off | NVIDIA and AMD | - |

@@ -24285,6 +24285,76 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PARTIAL_PIN_SLICED",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/expert_source.cpp",
+     "line": 3937,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/UNSLOTH_Q4.md:205"
+   ],
+   "first_commit": "62f226c9b0",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "62f226c9b0",
+   "last_date": "2026-11-12",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "With STRATA_PARTIAL_PIN=1: register the prefix in slices instead of one block (WDDM refuses one registration past ~20 GiB)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PARTIAL_PIN_SLICE_MIB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/expert_source.cpp",
+     "line": 4012,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "1024.0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/UNSLOTH_Q4.md:205"
+   ],
+   "first_commit": "62f226c9b0",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "62f226c9b0",
+   "last_date": "2026-11-12",
+   "status": "opt-in",
+   "owner": "core",
+   "note": "Slice size for STRATA_PARTIAL_PIN_SLICED (minimum 64)",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PAR_COUNTERS",
    "backends": [
     "cuda-hip"
