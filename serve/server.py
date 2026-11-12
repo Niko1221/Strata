@@ -3340,6 +3340,10 @@ class Vision:
             args += ["--max-tokens", str(limit)]
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
+        # opt-in ("elastic_no_warmup": true): an on-demand GPU reader starts into the elastic_mib the expert cache gave up, so
+        # the warm-up encode only delays the first picture; the buffers come with it (the token-limit check still runs)
+        if cfg.get("gpu") and cfg.get("elastic") is True and cfg.get("elastic_no_warmup") is True:
+            args.append("--no-warmup")
         return args
 
     def _ensure_dir(self):
