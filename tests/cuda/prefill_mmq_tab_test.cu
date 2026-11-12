@@ -2,8 +2,9 @@
 // bit against the gathered MMQ the prompt path runs today (experts copied `expert_bytes` apart, a zeroed 4096-byte
 // tail after the last one).
 //
-// Part 1, per product type (IQ3_S gate/up [1280, 2560], IQ4_NL and Q8_0 down [2560, 640], and every other type with a
-// pointer-table instance, at its pack shape): random valid expert matrices at scattered 256-aligned addresses, each
+// Part 1, per product type (IQ3_S gate/up [1280, 2560], IQ4_NL and Q8_0 down [2560, 640], Q6_K gate/up [1280, 2560] when
+// the build and STRATA_MMQ_KQ=1 give it a table (UD-Q6_K_XL; also in Parts 3 and 4, with Q8_0 down), and every other
+// type with a pointer-table instance, at its pack shape): random valid expert matrices at scattered 256-aligned addresses, each
 // followed by a guard filled with an fp16 NaN pattern (0xFF 0x7C); prep_group zeroes the over-read bytes, then the
 // table launch; memcmp of the whole output (pre-filled with a NaN pattern in both runs) against the gathered launch.
 // Sweep: 1..16 experts with mixed row counts {0,1,7,8,9,31,64,100,512,1000}; max_rows from 1 to 1000 so that every
@@ -61,7 +62,8 @@ struct Dev {
     uint8_t* b() const { return (uint8_t*) p; }
 };
 
-// random blocks with a sane fp16 scale at each block's start (every format here begins with it)
+// random blocks with a sane fp16 scale at each block's start (every format here begins with it, except Q6_K: its d
+// is the block's last two bytes, after ql / qh / the int8 scales)
 void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt19937& rng) {
     const size_t bs = ggml_type_size(t), nb = (size_t) rows * (size_t) (cols / ggml_blck_size(t));
     std::uniform_int_distribution<int> byte(0, 255);
@@ -69,9 +71,10 @@ void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt199
                    : t == GGML_TYPE_IQ4_NL ? 0.0002f : t == GGML_TYPE_Q2_0 ? 0.004f : 0.0008f;
     std::uniform_real_distribution<float> sc(lo, 6.0f * lo);
     for (size_t i = 0; i < nb * bs; ++i) m[i] = (uint8_t) byte(rng);
+    const size_t d_at = t == GGML_TYPE_Q6_K ? bs - 2 : 0;
     for (size_t b = 0; b < nb; ++b) {
         const ggml_fp16_t h = ggml_fp32_to_fp16(sc(rng));
-        std::memcpy(m + b * bs, &h, 2);
+        std::memcpy(m + b * bs + d_at, &h, 2);
     }
 }
 
@@ -533,12 +536,27 @@ int main() {
         const Shape main_shapes[] = {{GGML_TYPE_IQ3_S, 1280, 2560, "gate/up"},
                                      {GGML_TYPE_IQ4_NL, 2560, 640, "down"},
                                      {GGML_TYPE_Q8_0, 2560, 640, "down"}};
-        // the types without a pointer table (the optional Q5_0 / K-quant instances) must keep the gather
-        for (const ggml_type t : {GGML_TYPE_Q5_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q5_1, GGML_TYPE_Q6_K}) {
+        // the types without a pointer table (the optional Q5_0 / K-quant instances) must keep the gather; Q6_K has one in
+        // a STRATA_MMQ_KQUANTS build, usable when the K-quant MMQ is on (STRATA_MMQ_KQ=1, the ctest's environment)
+        for (const ggml_type t : {GGML_TYPE_Q5_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q5_1}) {
             if (mmq::tab_fits((int) t, 1280) || mmq::tab_fits((int) t, 2560)) {
-                std::printf("FAIL: %s reports a pointer table (only the nine tested types have one)\n", ggml_type_name(t));
+                std::printf("FAIL: %s reports a pointer table (only the tested types have one)\n", ggml_type_name(t));
                 return 1;
             }
+        }
+        const bool q6k = mmq::tab_fits((int) GGML_TYPE_Q6_K, 1280);
+#if defined(STRATA_MMQ_TAB_Q6K)
+        if (!q6k) {
+            std::printf("FAIL: no Q6_K pointer table (this build requires it; run with STRATA_MMQ_KQ=1)\n");
+            return 1;
+        }
+#endif
+        std::printf("Q6_K pointer table: %s\n", q6k ? "yes (checked below)"
+                                                    : "no (a build without STRATA_MMQ_KQUANTS, or STRATA_MMQ_KQ unset): not checked");
+        if (q6k && mmq::overread_bytes((int) GGML_TYPE_Q6_K, 2560) != 0) {
+            // prefill.cpp reads a gate/up matrix in place only when it reads nothing past it
+            std::printf("FAIL: Q6_K gate/up over-read %zu B (want 0)\n", mmq::overread_bytes((int) GGML_TYPE_Q6_K, 2560));
+            return 1;
         }
         // the over-read each guard must cover: within kSlotGuard, and on sm_86 the values the guards were sized for
         // (256-value K tiles: 640 columns are 20 blocks of 32, so the last tile reads 4 blocks more - 4 x 18 B of
@@ -573,9 +591,17 @@ int main() {
             }
             sweep(ctx, sh, false, rng, s);
         }
+        if (q6k) {   // UD-Q6_K_XL's gate/up, the full sweep (as the pack's main formats)
+            const Shape q6{GGML_TYPE_Q6_K, 1280, 2560, "gate/up"};
+            std::printf("%-8s %-7s over-read past the matrix: %zu B\n", ggml_type_name(q6.t), q6.role,
+                        mmq::overread_bytes((int) q6.t, q6.cols));
+            sweep(ctx, q6, true, rng, s);
+        }
         // Part 3
         const int f0 = g_fail, c0 = g_cases;
-        for (const Pair pr : {Pair{GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL}, Pair{GGML_TYPE_IQ3_S, GGML_TYPE_Q8_0}}) {
+        std::vector<Pair> pairs = {Pair{GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL}, Pair{GGML_TYPE_IQ3_S, GGML_TYPE_Q8_0}};
+        if (q6k) pairs.push_back(Pair{GGML_TYPE_Q6_K, GGML_TYPE_Q8_0});   // UD-Q6_K_XL's 47 layers
+        for (const Pair pr : pairs) {
             for (int gg = 0; gg < 2; ++gg) {
                 const bool group_gather = gg == 1;
                 // alternating direct / gathered, last entry direct
@@ -604,8 +630,9 @@ int main() {
         std::printf("mixed groups: %d comparisons, %s\n", g_cases - c0, g_fail == f0 ? "all bitwise identical" : "FAILURES");
         // Part 4
         const int f4 = g_fail, c4 = g_cases;
-        const Shape order_shapes[] = {{GGML_TYPE_IQ3_S, 1280, 2560, "gate/up"}, {GGML_TYPE_IQ4_XS, 1280, 2560, "gate/up"},
-                                      {GGML_TYPE_IQ4_NL, 2560, 640, "down"},   {GGML_TYPE_Q8_0, 2560, 640, "down"}};
+        std::vector<Shape> order_shapes = {{GGML_TYPE_IQ3_S, 1280, 2560, "gate/up"}, {GGML_TYPE_IQ4_XS, 1280, 2560, "gate/up"},
+                                           {GGML_TYPE_IQ4_NL, 2560, 640, "down"},   {GGML_TYPE_Q8_0, 2560, 640, "down"}};
+        if (q6k) order_shapes.push_back(Shape{GGML_TYPE_Q6_K, 1280, 2560, "gate/up"});
         for (const Shape& sh : order_shapes) {
             const bool whole = mmq::whole_tiles((int) sh.t, sh.rows, G);
             std::printf("%-8s %-7s whole_tiles(%d experts): %s\n", ggml_type_name(sh.t), sh.role, G, whole ? "yes" : "no");
