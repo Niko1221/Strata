@@ -1,7 +1,8 @@
 # NVFP4 routed experts
 
-This page is for people who run, convert or test Qwen3.8-Flash-Next packs whose routed experts are NVFP4. They need an
-NVIDIA card. For the choice between the three versions, see [MODELS.md](MODELS.md#nvfp4).
+This page is for people who run, convert or test Qwen3.8-Flash-Next packs whose routed experts are NVFP4. Setup offers
+these packs on NVIDIA. HIP source builds can run an existing pack manually (see [Other GPUs](#other-gpus)).
+For the choice between the three versions, see [MODELS.md](MODELS.md#nvfp4).
 
 The engine can serve a Qwen3.8-Flash-Next whose routed experts are NVFP4, as NVIDIA's ModelOpt stores them: 64-value
 blocks of E2M1 codes with four UE4M3 sub-block scales, plus one FP32 `weight_scale_2` per expert and projection.
@@ -88,7 +89,7 @@ range.
 | `w4a8` (default) | llama.cpp MMQ, int8 tensor cores | q8_1, float block scales | 0.53% |
 | `w4a4` | llama.cpp MMQ, Blackwell FP4 MMA (sm_120a only) | NVFP4 | 8.6% |
 | `w4a4x2` | Blackwell FP4 MMA | NVFP4 | not in this table; first-token KL in [History](#history--older-measurements) |
-| `fp16` | dequantize + cuBLAS FP16 GEMM | FP16 | reference |
+| `fp16` | dequantize + BLAS FP16 GEMM | FP16 | reference |
 
 `src/prefill/mmq_nvfp4_w4a8.cu` compiles mmq.cuh's int8 NVFP4 path with Blackwell's FP4 MMA hidden from both the device
 code and the host's tile config, so it is the same on every architecture. Decode already multiplies at this precision.
@@ -175,8 +176,24 @@ engine's own q8_1 kernels, which decode UE4M3/E2M1 in software. The engine was b
 RTX 5090 with the host answering as that generation. On those builds `mmq_nvfp4_parity` and `nvfp4_expert_gpu_parity` gave
 results identical to sm_120.
 
-HIP: the decode kernels use no CUDA-only intrinsics. The NVFP4 MMQ instance and the W4A8 unit are CUDA-only and guarded
-(`GGML_USE_HIP`). Neither was built for HIP. Setup does not offer the NVFP4 packs on AMD and Intel.
+HIP source builds include the existing NVFP4 decode kernels and the generic W4A8 prompt instance. W4A4 remains
+CUDA-only. Enable `STRATA_ENABLE_HIP` and `STRATA_PREFILL_MMQ` with the appropriate `CMAKE_HIP_ARCHITECTURES`, as in
+[AMD_HIP.md](AMD_HIP.md), then set `STRATA_PREFILL_NVFP4=w4a8` to opt in. Without that setting, HIP keeps its existing
+dequantize + FP16 GEMM prompt path (`STRATA_PREFILL_NVFP4=fp16` also selects it explicitly).
+Setup still does not offer NVFP4 packs on AMD or Intel; this is a manual source-build path, not a new installer option.
+
+Validated on gfx1151 (Strix Halo), ROCm 7.14.1, with the OrcaRouter NVFP4 GPTQ pack: `nvfp4_expert_gpu_parity`'s six
+experts had at most 1.165% relative output error against its FP64 reference. `mmq_nvfp4_parity`'s W4A8 gate/up and down
+products (1, 7, 37, 128 and 300 rows) had 0.5243-0.5569% error; its grouped products had 0.5361-0.5374% error.
+These are numerical checks, not model-quality comparisons. Other HIP architectures were not tested here.
+
+Both GPU parity executables now build on HIP as well as CUDA. Run them with the same pack used by the engine:
+
+```sh
+build/nvfp4_expert_gpu_parity pack/experts.bin
+STRATA_PREFILL_NVFP4=w4a8 build/mmq_nvfp4_parity pack/experts.bin
+STRATA_PREFILL_NVFP4=w4a8 build/mmq_nvfp4_parity pack/experts.bin --group
+```
 
 ## Tests
 
