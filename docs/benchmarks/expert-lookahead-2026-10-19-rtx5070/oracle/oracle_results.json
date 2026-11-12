@@ -1,0 +1,134 @@
+[
+ {
+  "prompt": "prose",
+  "mode": "normal",
+  "rc": 0,
+  "tokens": 32,
+  "ms_per_tok": 78.84,
+  "tok_s": 12.68,
+  "pool_ms": 66.269,
+  "hit": 0.5843,
+  "same_ids": true
+ },
+ {
+  "prompt": "prose",
+  "mode": "control",
+  "rc": 0,
+  "tokens": 32,
+  "ms_per_tok": 78.57,
+  "tok_s": 12.73,
+  "pool_ms": 65.976,
+  "hit": 0.5843,
+  "same_ids": true
+ },
+ {
+  "prompt": "prose",
+  "mode": "oracle",
+  "rc": 0,
+  "tokens": 32,
+  "ms_per_tok": 26.17,
+  "tok_s": 38.21,
+  "pool_ms": 13.96,
+  "hit": 0.885,
+  "same_ids": true
+ },
+ {
+  "prompt": "code",
+  "mode": "normal",
+  "rc": 0,
+  "tokens": 24,
+  "ms_per_tok": 96.67,
+  "tok_s": 10.34,
+  "pool_ms": 83.471,
+  "hit": 0.4676,
+  "same_ids": true
+ },
+ {
+  "prompt": "code",
+  "mode": "control",
+  "rc": 0,
+  "tokens": 24,
+  "ms_per_tok": 95.6,
+  "tok_s": 10.46,
+  "pool_ms": 82.335,
+  "hit": 0.4676,
+  "same_ids": true
+ },
+ {
+  "prompt": "code",
+  "mode": "oracle",
+  "rc": 0,
+  "tokens": 24,
+  "ms_per_tok": 24.0,
+  "tok_s": 41.67,
+  "pool_ms": 11.752,
+  "hit": 0.8841,
+  "same_ids": true
+ },
+ {
+  "prompt": "prose",
+  "mode": "oracle",
+  "rc": 0,
+  "tokens": 32,
+  "ms_per_tok": 26.4,
+  "tok_s": 37.88,
+  "pool_ms": 14.201,
+  "hit": 0.885,
+  "same_ids": true
+ },
+ {
+  "prompt": "prose",
+  "mode": "control",
+  "rc": 0,
+  "tokens": 32,
+  "ms_per_tok": 79.55,
+  "tok_s": 12.57,
+  "pool_ms": 66.955,
+  "hit": 0.5843,
+  "same_ids": true
+ },
+ {
+  "prompt": "prose",
+  "mode": "normal",
+  "rc": 0,
+  "tokens": 32,
+  "ms_per_tok": 78.78,
+  "tok_s": 12.69,
+  "pool_ms": 66.215,
+  "hit": 0.5843,
+  "same_ids": true
+ },
+ {
+  "prompt": "code",
+  "mode": "oracle",
+  "rc": 0,
+  "tokens": 24,
+  "ms_per_tok": 23.25,
+  "tok_s": 43.02,
+  "pool_ms": 11.089,
+  "hit": 0.8841,
+  "same_ids": true
+ },
+ {
+  "prompt": "code",
+  "mode": "control",
+  "rc": 0,
+  "tokens": 24,
+  "ms_per_tok": 96.41,
+  "tok_s": 10.37,
+  "pool_ms": 83.227,
+  "hit": 0.4676,
+  "same_ids": true
+ },
+ {
+  "prompt": "code",
+  "mode": "normal",
+  "rc": 0,
+  "tokens": 24,
+  "ms_per_tok": 95.42,
+  "tok_s": 10.48,
+  "pool_ms": 82.274,
+  "hit": 0.4676,
+  "same_ids": true
+ }
+]
