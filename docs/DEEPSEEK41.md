@@ -185,6 +185,17 @@ DeepSeek picks 6 experts for every word it writes. **Faster** uses 5 of them (en
 
 The choice needs the DeepSeek engine 0.1.50 or newer (0.1.49.2 does not take `--experts`); with an older engine the step and the plan line are left out and nothing is passed. In `strata launch` the guided screens have a Speed step for DeepSeek; with flags use `--speed faster|full`, or `--full-quality` in scripts. `strata launch --plan` shows which one this PC gets.
 
+**Prefer the experts already in memory** (opt-in, changes the answers a little). When the model does not fit in VRAM and RAM, many of the experts a word needs are read from the SSD, and the engine waits for them. With `STRATA_DS4_CACHE_ROUTE=<ram>,<vram>` in the engine's environment, an expert the RAM store holds gets `<ram>` added to its selection score and one in VRAM gets `<vram>` (one number sets both), so a near tie goes to an expert that needs no SSD read. How much each chosen expert counts stays the router's own. Unset, nothing changes. Measured on a laptop with an RTX 5070 Ti 12 GB and 64 GB of RAM (ISTA-DAS 2.00 bpw, Faster, 128K context):
+
+| Setting | Writing (4K prompt, 256 tokens) | Seven agent turns read | Top word as unchanged | Perplexity |
+|---|---:|---:|---:|---:|
+| unset | 7.0 tok/s | 109 s | 100% | 3.173 |
+| `0.2` | 10.2 tok/s | 60 s | 94.4% | 3.177 |
+| `0.2,0.3` | 10.9 tok/s | 55 s | 93.2% | 3.189 |
+| `0.4` | | | 92.1% | 3.259 |
+
+A larger bonus reads less from the SSD and changes more words. The answers also depend on which experts happen to be held, so two runs of the same prompt can differ. To check a value on your own text, score it against the unset engine with `--score` and `tools/quant_quality.py compare`.
+
 ## Tuning
 
 `strata launch --tune quick` (or `thorough`, or the Tuning screen) works for DeepSeek with its own short tuner, `tools/dsv41/tune.py`. It starts
