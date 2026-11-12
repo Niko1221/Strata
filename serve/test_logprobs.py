@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 from serve.frontend import ChatTemplate
 from serve.server import (ByteTokenizer, LogprobEntries, LPLines, MockEngine, Service, StrataEngine, batch_slots_on,
-                          logprob_span, serve, top_logprobs, allowed_ids)
+                          logprob_span, serve, top_logprobs, allowed_ids, canonical_read)
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ChatTemplate(ROOT / "serve" / "chat_template.jinja")
@@ -520,6 +520,35 @@ class Replicas(unittest.TestCase):
         self.assertTrue(batch_slots_on(self.replica(2, 3)))             # every one of them
         self.assertTrue(batch_slots_on(self.replica(0, 2)))             # one is enough
         self.assertTrue(batch_slots_on(SimpleNamespace(batch=4)))
+
+
+class Canonical(unittest.TestCase):
+    """#4059: a typed decision (one token's logprobs) is a canonical read - the engine gets canon=1 and computes every
+    expert of it on the GPU, so the same prompt gives the same logprobs.  "strata_deterministic" decides when sent."""
+
+    def keys(self, req):
+        return StrataEngine.sampling_keys(req).split()
+
+    def test_a_one_token_logprobs_request_is_canonical(self):
+        for req in ({"logprobs": True, "max_tokens": 1}, {"logprobs": 0, "max_tokens": 1},
+                    {"logprobs": True, "top_logprobs": 5, "max_completion_tokens": 1},
+                    {"logprobs": 1, "max_tokens": 1, "allowed_token_ids": [65, 66]}):
+            self.assertIn("canon=1", self.keys(req), req)
+
+    def test_other_requests_are_not(self):
+        for req in ({}, {"max_tokens": 1}, {"logprobs": True, "max_tokens": 2}, {"logprobs": True},
+                    {"logprobs": True, "max_tokens": True}, {"logprobs": False, "max_tokens": 1}):
+            self.assertNotIn("canon=1", self.keys(req), req)
+
+    def test_the_field_decides_when_sent(self):
+        self.assertIn("canon=1", self.keys({"strata_deterministic": True, "max_tokens": 200}))
+        self.assertIn("canon=1", self.keys({"strata_deterministic": True}))
+        self.assertNotIn("canon=1", self.keys({"strata_deterministic": False, "logprobs": True, "max_tokens": 1}))
+        self.assertIn("canon=1", self.keys({"strata_deterministic": "yes", "logprobs": True, "max_tokens": 1}))   # not a bool: auto
+
+    def test_canonical_read(self):
+        self.assertTrue(canonical_read({"logprobs": 3, "max_tokens": 1}))
+        self.assertFalse(canonical_read({"logprobs": 3, "max_tokens": 0}))
 
 
 class Span(unittest.TestCase):
