@@ -1,0 +1,62 @@
+{
+ "exe": "<run dir>/bin/strata-212-stocktab-f83fd81691a5b053",
+ "args": [
+  "--pack",
+  "<packs>/unsloth-ud-iq4_xs",
+  "--native",
+  "<private path>",
+  "--expert-profile",
+  "<strata>/data/expert-profile.bin",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--spec",
+  "4",
+  "--spec-min-p",
+  "0.5",
+  "--mtp",
+  "<data>/mtp/rt",
+  "--max-context",
+  "131072",
+  "--kv",
+  "int8",
+  "--ple-io",
+  "ram",
+  "--kv-resident",
+  "32768"
+ ],
+ "cwd": "<strata>",
+ "tokenizer": "<packs>/unsloth-ud-iq4_xs/tokenizer",
+ "model_name": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+ "log": "<run dir>/engine-S-r2.log",
+ "lib_dirs": [
+  "/usr/local/cuda-13.0/bin",
+  "/usr/local/cuda-13.0/lib64"
+ ],
+ "port": 8091,
+ "env": {
+  "STRATA_HC_Q8": "1",
+  "STRATA_ROUTE_TAIL_SKIP": "0"
+ },
+ "gpu": [
+  0,
+  1,
+  2,
+  3
+ ],
+ "gpus_asked": true,
+ "layer_split": "auto",
+ "gpu_order": "as_given",
+ "gpu_roles": {
+  "0": "helper",
+  "1": "helper",
+  "2": "helper",
+  "3": "main"
+ },
+ "open_browser": false,
+ "parallel": 3,
+ "sampling": {
+  "presence_penalty": 0
+ }
+}

@@ -1,0 +1,43 @@
+{
+ "cold32k": {
+  "joiner_ttft_s": [
+   5.796
+  ],
+  "joiner_prompt_tokens": [
+   32908
+  ],
+  "joiner_cached_tokens": [
+   0
+  ],
+  "worst_max_gap_s": 5.805,
+  "mean_stalled_s": 5.796,
+  "stream_tokens_during_join": 238,
+  "aggregate_tok_s": 209.5,
+  "streams": [
+   {
+    "tokens": 60,
+    "max_gap_s": 5.789,
+    "p99_gap_s": 0.032,
+    "stalled_s": 5.789
+   },
+   {
+    "tokens": 57,
+    "max_gap_s": 5.805,
+    "p99_gap_s": 0.032,
+    "stalled_s": 5.805
+   },
+   {
+    "tokens": 60,
+    "max_gap_s": 5.789,
+    "p99_gap_s": 0.034,
+    "stalled_s": 5.789
+   },
+   {
+    "tokens": 61,
+    "max_gap_s": 5.801,
+    "p99_gap_s": 0.032,
+    "stalled_s": 5.801
+   }
+  ]
+ }
+}
