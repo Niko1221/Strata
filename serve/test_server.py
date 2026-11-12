@@ -6638,3 +6638,79 @@ class PrepareCancelled(unittest.TestCase):
             self.assertEqual(ids.count(ByteTokenizer().encode("<|image_pad|>", parse_special=True)[0]), 6)
             svc.embeddings.path.unlink(missing_ok=True)
 
+
+
+class ToolCallParameterCoercionAndDedup(unittest.TestCase):
+    """Repeated non-string parameters (the model rewrites an array/object parameter in the same call), Python booleans
+    (`True`/`False`), and empty/`null`/`None` non-string parameters produce identical valid JSON in both whole and
+    streamed (`stream_tools=True`) parsing."""
+
+    SCHEMA = [
+        {
+            "name": "fit",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "free": {"type": "array"},
+                    "bounds": {"type": "array"},
+                    "dry_run": {"type": "boolean"},
+                    "timeout": {"type": "integer"},
+                },
+            },
+        }
+    ]
+
+    def parse(self, body: str, stream_tools: bool, step: int):
+        from serve.frontend import OutputParser
+        text = "</think>\n\n" + body
+        p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools, recover=True)
+        evs = []
+        for i in range(0, len(text), step):
+            evs += p.feed(text[i:i + step])
+        evs += p.finish()
+        calls = [(e.call.name, e.call.arguments) for e in evs if e.kind == "tool_call"]
+        if stream_tools:
+            for c in [e for e in evs if e.kind == "tool_call"]:
+                streamed = "".join(
+                    e.text for e in evs if e.kind == "tool_args" and e.call is not None and e.call.id == c.call.id
+                )
+                self.assertEqual(json.loads(streamed), c.call.arguments)
+        return calls
+
+    def check(self, body: str, expected_args: dict):
+        for stream_tools in (False, True):
+            for step in (1, 5, 19, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    self.assertEqual(self.parse(body, stream_tools, step), [("fit", expected_args)])
+
+    def test_duplicate_array_parameter_uses_last_occurrence(self):
+        body = (
+            "<tool_call>\n<function=fit>\n"
+            "<parameter=path>\ncurve.dat\n</parameter>\n"
+            "<parameter=bounds>\n[{\"min\": 1, \"max\": 2}]\n</parameter>\n"
+            "<parameter=bounds>\n[{\"min\": 10, \"max\": 20}]\n</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+        self.check(body, {"path": "curve.dat", "bounds": [{"min": 10, "max": 20}]})
+
+    def test_python_booleans_and_empty_or_null_non_strings(self):
+        body = (
+            "<tool_call>\n<function=fit>\n"
+            "<parameter=path>\ncurve.dat\n</parameter>\n"
+            "<parameter=dry_run>\nTrue\n</parameter>\n"
+            "<parameter=free>\nnull\n</parameter>\n"
+            "<parameter=bounds>\nNone\n</parameter>\n"
+            "<parameter=timeout>\n\n</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+        self.check(body, {"path": "curve.dat", "dry_run": True})
+
+    def test_only_skipped_non_string_parameters_yield_empty_object(self):
+        body = (
+            "<tool_call>\n<function=fit>\n"
+            "<parameter=free>\nnull\n</parameter>\n"
+            "<parameter=timeout>\nNone\n</parameter>\n"
+            "</function>\n</tool_call>"
+        )
+        self.check(body, {})
