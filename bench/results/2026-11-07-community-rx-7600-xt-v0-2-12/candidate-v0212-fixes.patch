@@ -1,0 +1,1080 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d5492c1e..34f98f52 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-﻿# Strata Engine - top-level build (P1.S1).
++# Strata Engine - top-level build (P1.S1).
+ #
+ # Targets (phase-1 Ă‚Â§P1.S1): `strata_artifact` (no CUDA dependency), `tests`.  `strata_plan` and the C++
+ # `strata-pack` are added when their sources exist - a target with no sources would make the build graph
+@@ -1231,6 +1231,16 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
+   add_executable(batch_groups_test src/program/batch_groups_test.cpp)
+   target_include_directories(batch_groups_test PRIVATE include)
+   add_test(NAME batch_groups_test COMMAND batch_groups_test)
++
++  # PR #5108: the MMQ row table's over-read margin follows the backend tile bound; every fixup read stays inside (header-only, no GPU)
++  add_executable(mmq_ids_margin_test tests/prefill/mmq_ids_margin_test.cpp)
++  target_include_directories(mmq_ids_margin_test PRIVATE include)
++  add_test(NAME mmq_ids_margin_test COMMAND mmq_ids_margin_test)
++
++  # PR #4844: the adaptive tier's copy-in range across serial, pipelined and drained rounds (header-only, no GPU)
++  add_executable(adaptive_range_test tests/program/adaptive_range_test.cpp)
++  target_include_directories(adaptive_range_test PRIVATE include)
++  add_test(NAME adaptive_range_test COMMAND adaptive_range_test)
+ endif()
+ 
+ add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
+diff --git a/include/strata/core/flag_order.hpp b/include/strata/core/flag_order.hpp
+new file mode 100644
+index 00000000..93c28f12
+--- /dev/null
++++ b/include/strata/core/flag_order.hpp
+@@ -0,0 +1,59 @@
++// include/strata/core/flag_order.hpp - flag B is raised behind the copies queued before it (PR #5096, @AlanJager).
++//
++// Flag B tells the graph that a layer's PCIe experts have landed in staging.  It is one counter that only rises, and the
++// graph waits for "flag B >= layer + 1".  A non-empty plan raises it from a host function on the copy stream, so it
++// rises after that plan's copies.  An empty plan used to raise it on the spot, even when the copy stream still held an
++// earlier layer's (or the other token group's) uploads: the counter jumped past a layer whose bytes had not landed, and
++// the graph read a half-written staging slot.  raise_flag_b_ordered() keeps the counter behind every copy queued on the
++// stream, and raises it directly only when nothing was queued in this window.  The plain raise is shared with Verifier.
++#pragma once
++
++#include <cuda_runtime.h>
++
++#include <cstdint>
++#if defined(_WIN32)
++#include <intrin.h>
++#endif
++
++namespace strata::core {
++
++/// Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.
++inline void flag_raise_max(uint32_t* flag, uint32_t value) {
++#if defined(_WIN32)
++    volatile long* f = (volatile long*) flag;
++    long cur = *f;
++    while ((uint32_t) cur < value) {
++        const long prev = _InterlockedCompareExchange(f, (long) value, cur);
++        if (prev == cur) break;
++        cur = prev;
++    }
++#else
++    uint32_t cur = __atomic_load_n(flag, __ATOMIC_SEQ_CST);
++    while (cur < value && !__atomic_compare_exchange_n(flag, &cur, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
++#endif
++}
++
++/// The argument of the host function (it must outlive the call: it lives in the Verifier's table).
++struct FlagRaise {
++    uint32_t* flag;
++    uint32_t value;
++};
++
++/// Raise `flag` to `value` once every copy queued so far on `copy` has landed.  `copies_queued` is false when nothing was
++/// queued on the stream since it was last drained: then there is nothing to wait for and the flag rises at once.
++/// Returns the launch status (cudaSuccess when the flag was raised directly).  On a failure the flag has NOT been raised:
++/// the caller must not release the consumers (Verifier::fetch_dma stops the engine).
++inline cudaError_t raise_flag_b_ordered(bool copies_queued, cudaStream_t copy, FlagRaise* slot, uint32_t* flag, uint32_t value) {
++    if (!copies_queued || copy == nullptr) {
++        flag_raise_max(flag, value);
++        return cudaSuccess;
++    }
++    slot->flag = flag;
++    slot->value = value;
++    return cudaLaunchHostFunc(copy, [](void* p) {
++        FlagRaise* s = (FlagRaise*) p;
++        flag_raise_max(s->flag, s->value);
++    }, slot);
++}
++
++}  // namespace strata::core
+diff --git a/include/strata/core/verify.hpp b/include/strata/core/verify.hpp
+index 70befc23..f84a8b2a 100644
+--- a/include/strata/core/verify.hpp
++++ b/include/strata/core/verify.hpp
+@@ -24,6 +24,7 @@
+ #include <cstdio>
+ 
+ #include "strata/core/expert_source.hpp"
++#include "strata/core/flag_order.hpp"
+ #include "strata/core/layer.hpp"
+ #include "strata/core/session.hpp"
+ #include "strata/kernels/sampler.hpp"
+@@ -484,10 +485,12 @@ private:
+     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
+     bool commit_pending_ = false;
+     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
+-    struct FlagSet { uint32_t* flag; uint32_t value; };
++    using FlagSet = strata::core::FlagRaise;
+     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
+     static void fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes);
+     static void raise_flag(uint32_t* flag, uint32_t value);
++    /// Flag B for `want`, behind every copy queued on copy_ (an empty plan must not overtake an earlier layer's DMA).
++    void raise_flag_b_ordered(uint32_t want);
+     int32_t* h_plan_ = nullptr;  int32_t* m_plan_ = nullptr;     // counts | start | dst | tok | ptr (as int32 pairs)
+     int64_t plan_i32_ = 0;                                        // int32 words in the plan block
+     GpuPlanSink sink_;
+diff --git a/include/strata/prefill/mmq_ids_margin.hpp b/include/strata/prefill/mmq_ids_margin.hpp
+new file mode 100644
+index 00000000..2a8a3580
+--- /dev/null
++++ b/include/strata/prefill/mmq_ids_margin.hpp
+@@ -0,0 +1,47 @@
++// include/strata/prefill/mmq_ids_margin.hpp - the room an MMQ row table (`ids`) needs past its last row (PR #5108, @quantforge-br).
++//
++// llama.cpp's mul_mat_q_stream_k_fixup loads ids_dst[col_low + jt*J + j] for a whole J-column tile before it compares the
++// tile with the expert's rows (the main kernel skips an empty tile first; the fixup only skips its writes).  Its tiles
++// run to ceil(max_rows / J) * J for every expert of the launch, and col_low is the expert's first row, which can be the
++// table's last.  A table of exactly `rows` entries is therefore read up to roundup(max_rows, J) entries past its end, and
++// the main kernel reads up to J - 1 past the last row of its last expert.  Strata's tables were exact-sized cudaMallocs:
++// one that ended a 2 MiB page faulted on the next (Xid 31, "prefill copy_i32: an illegal memory access" on a long prompt).
++//
++// J is bounded by the backend: mul_mat_q_switch_J tries J = 8, 16, ... kMmqTileColsMax and launches one of those.  The
++// MMQ planner in moe_mmq.cu iterates the same range (it uses kMmqTileColsMax), so the margin follows the tile bound in
++// one place.  An expert takes at most one row per token, so max_rows <= the chunk's tokens.  One extra tile on top of the
++// rounded read keeps the last row's neighbour in the allocation too.  Checked arithmetic: a request that does not fit in
++// 64 bits is refused (the callers fail the carve) instead of wrapping to a small table.
++#pragma once
++
++#include <cstdint>
++
++namespace strata::prefill::mmq {
++
++/// The widest MMQ column tile: ggml-cuda's mul_mat_q_switch_J tries J = 8 .. 128 in steps of 8.
++constexpr int kMmqTileColsMax = 128;
++constexpr int kMmqTileColsStep = 8;
++
++/// Entries to add after a row table whose launch has at most `max_rows` rows for one expert: roundup(max_rows, J) + J.
++/// Returns false (and leaves *out alone) when `max_rows` is negative or the sum overflows.
++inline bool mmq_ids_margin_rows(int64_t max_rows, int tile_cols_max, int64_t* out) {
++    if (max_rows < 0 || tile_cols_max <= 0) return false;
++    const int64_t J = tile_cols_max;
++    const int64_t tiles = max_rows / J + (max_rows % J != 0 ? 1 : 0);
++    if (tiles > INT64_MAX / J) return false;
++    const int64_t rounded = tiles * J;
++    if (rounded > INT64_MAX - J) return false;
++    *out = rounded + J;
++    return true;
++}
++
++/// A table of `rows` MMQ rows (one launch, at most `max_rows` per expert): the entries to allocate and write.  0 on overflow
++/// (callers treat it as "does not fit": an empty take fails the carve).
++inline uint64_t mmq_ids_table_rows(uint64_t rows, uint64_t max_rows, int tile_cols_max = kMmqTileColsMax) {
++    int64_t margin = 0;
++    if (max_rows > (uint64_t) INT64_MAX || !mmq_ids_margin_rows((int64_t) max_rows, tile_cols_max, &margin)) return 0;
++    if (rows > UINT64_MAX - (uint64_t) margin) return 0;
++    return rows + (uint64_t) margin;
++}
++
++}  // namespace strata::prefill::mmq
+diff --git a/include/strata/prefill/moe_mmq.hpp b/include/strata/prefill/moe_mmq.hpp
+index 7c37fb41..2f2aba9b 100644
+--- a/include/strata/prefill/moe_mmq.hpp
++++ b/include/strata/prefill/moe_mmq.hpp
+@@ -8,6 +8,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
++#include "strata/prefill/mmq_ids_margin.hpp"
++
+ namespace strata::prefill::mmq {
+ 
+ /// This build has the MMQ path (the ggml sources were available to the build).
+@@ -46,6 +48,20 @@ void scale_gu_rows(float* gu, int64_t ld, int64_t n_ff, const int32_t* bounds, i
+ /// The down product's rows [0, nrows) (`ld` floats each, relative `bounds`) times their expert's s_down - on the FP32
+ /// output, not folded into up, where the hidden would sit near 1e-5 (FP16-subnormal block scales in q8 formats).
+ void scale_down_rows(float* d, int64_t ld, const int32_t* bounds, int n, const float* tails, int64_t nrows, void* stream);
++/// The rows quantize(x, src, ...) writes for tokens x k_used rows in expert order, written token by token: token t's
++/// row of x is quantized once and stored at rows slot[t * k_used + k] (`slot` the inverse of `src`) - the same bytes,
++/// a k_used-th of the quantizations (llama.cpp's quantize_scatter_mmq_q8_1_cuda).  STRATA_QUANT_GATHER=1: quantize()
++/// over `src`, as before.
++void quantize_scatter(const float* x, const int32_t* slot, const int32_t* src, void* xq, int ggml_type, int64_t cols,
++                      int64_t ld, int64_t tokens, int k_used, void* stream);
++
++constexpr int kGatherGroupMax = 16;
++/// STRATA_MMQ_DIRECT: each expert's own weight address (gate|up or down), in place of `w + z * expert_bytes` -
++/// expert z < n <= kGatherGroupMax starts at p[z].  The launch (tiles, stream-k split, fixup) is the same as
++/// with `w`: only the base address of each expert's matrix changes.
++struct WeightTab {
++    const void* p[kGatherGroupMax] = {};
++};
+ 
+ /// One launch over n experts whose weights lie `expert_bytes` apart from `w`: for expert e, the activation rows
+ /// [bounds[e], bounds[e+1]) of `xq` (bounds on the device, n+1 entries) times its [w_rows, w_cols] matrix into
+@@ -64,6 +80,9 @@ struct Product {
+     float* dst = nullptr;
+     int64_t ld_dst = 0;
+     const float* y_scale = nullptr;     ///< NVFP4 w4a4: the per-row activation scales (fp4_activations)
++    /// set: expert z's matrix starts at tab->p[z] (w and expert_bytes are not used for addressing).  CUDA only,
++    /// and only where `tab_fits` said so.
++    const WeightTab* tab = nullptr;
+ };
+ 
+ /// The launch context (llama.cpp's MMQ keeps a small scratch pool for its stream-k fixup).  One per prompt path.
+@@ -91,7 +110,6 @@ void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const
+ /// each.  Every pointer, offset and size 16-byte aligned (false otherwise: nothing launched, gather one at a time).
+ /// NVFP4: `tail_off` (0 = none) is each blob's 16-byte tail, copied to tail_dst + 16 q; `zero_bytes` are zeroed after
+ /// the last expert's gu and d slots (the MMQ tail).
+-constexpr int kGatherGroupMax = 16;
+ struct GatherGroup {
+     const uint8_t* blob[kGatherGroupMax] = {};
+     int first = 0, n = 0;
+@@ -106,6 +124,11 @@ void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stre
+ /// h[r, k] = silu(gate) * up of GU rows [2 n_ff wide]: interleaved (gate 2k, up 2k+1: the Strata pack) or split
+ /// (gate k, up n_ff + k: GGUF).  FP32 out (the down product's quantizer reads floats).
+ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interleaved, void* stream);
++/// swiglu (n_ff 640), then quantize() of its rows for a down product of `ggml_type`, in one pass: H never stored,
++/// the same bytes in hq.  Only where swiglu_quant_ok (a q8_1 D4 down type; gu 16-byte aligned): CUDA, the
++/// STRATA_EXPERIMENTAL_SM60 build.
++bool swiglu_quant_ok(int ggml_type);
++void swiglu_quant(const float* gu, void* hq, int64_t rows, bool interleaved, void* stream);
+ /// swiglu of an NVFP4 group's gate/up rows (split halves) with scale_gu_rows' scales applied as they are read.
+ void swiglu_scaled(const float* gu, float* h, int64_t rows, int64_t n_ff, const int32_t* bounds, int n,
+                    const float* tails, int64_t row0, void* stream);
+@@ -120,4 +143,40 @@ void f16_to_f32(const uint16_t* x, float* y, int64_t n, void* stream);
+ /// dst = {0, rows} (the bounds of one matrix; dst on the device).
+ void set_bounds(int32_t* dst, int32_t rows, void* stream);
+ 
++// ---- STRATA_MMQ_DIRECT: the prompt MMQ reads resident experts in place (docs/DETAILS.md, "STRATA_MMQ_DIRECT") ----
++/// This build has the pointer-table MMQ (CUDA, the build option STRATA_MMQ_TAB on - off by default - and the
++/// llama.cpp tree matched the mirrored scheduler's fingerprint).  false under HIP, gfx906, SYCL and builds without MMQ.
++bool tab_built();
++/// `tab_built`, `fits`, rows a multiple of 128 (no fallback tiles) and a pointer-table instance for the type (the
++/// native packs' nine: Q2_0 IQ2_XXS IQ2_XS IQ2_S IQ3_XXS IQ3_S IQ4_NL IQ4_XS Q8_0; not Q5_0 or the K-quants).
++bool tab_fits(int ggml_type, int64_t w_rows);
++/// The bytes past a [rows, cols] matrix that its last row's final K tile reads (the largest over-read of any
++/// config on any visible GPU): 72 for IQ4_NL and 136 for Q8_0 at 640 columns, 0 for IQ3_S at 2560 (sm_86).  0 without MMQ.
++size_t overread_bytes(int ggml_type, int64_t cols);
++/// The room kept after each sized expert slot's blob for that over-read (the guard).
++constexpr size_t kSlotGuard = 256;
++/// Every launch of `n_experts` experts of [w_rows, *] `ggml_type` weights computes each output tile in one block
++/// with no stream-k K split, and every tile width has the same I/K tiles and SRAM layout, on every visible GPU - so an
++/// expert's rows get the same bits in any such launch, whatever its group-mates and max_rows (STRATA_MMQ_GROUP_SORT).
++/// 160 or 320 tiles per column tile on 82 SMs: yes; 108 or 128 SMs: no (stream-k splits the few-tile launches).
++bool whole_tiles(int ggml_type, int64_t w_rows, int n_experts);
++/// Whether `Context::run` on the current device would split a product's K across blocks with llama.cpp's stream-k
++/// decomposition (its fixup adds the partial sums in another order), for `n_experts` experts of [w_rows, *] weights of
++/// `ggml_type` and at most `max_rows` rows an expert: the tile width mul_mat_q_switch_J picks, the config's stream_k
++/// flag, and launch_mul_mat_q's tile-efficiency test.  False for a type MMQ does not cover.  (STRATA_IQ4_W4A8.)
++bool launch_splits_k(int ggml_type, int64_t w_rows, int64_t max_rows, int n_experts);
++/// STRATA_MMQ_DIRECT, read once: 0 (default) today's gather; 1 the guard layout and resident experts read in
++/// place; 2 the guard layout with today's gather (the bitwise A/B reference).  0 whenever !tab_built().
++int direct_mode();
++/// kSlotGuard when direct_mode() != 0, else 0 (no CUDA call).
++size_t direct_slot_guard();
++/// The guards a group's direct experts' down over-reads land in (each `guard_bytes` long).
++struct GuardTab {
++    uint8_t* p[kGatherGroupMax] = {};
++    int n = 0;
++};
++/// One launch: zeroes `guard_bytes` at each g.p[i] and `tail_bytes` at tail_gu and tail_d (null: skipped).  It
++/// replaces the two tail memsets of a group in direct mode.  Nothing is launched when there is nothing to zero.
++void prep_group(const GuardTab& g, size_t guard_bytes, void* tail_gu, void* tail_d, size_t tail_bytes, void* stream);
++
+ }  // namespace strata::prefill::mmq
+diff --git a/include/strata/program/adaptive_range.hpp b/include/strata/program/adaptive_range.hpp
+new file mode 100644
+index 00000000..1bc0b4b2
+--- /dev/null
++++ b/include/strata/program/adaptive_range.hpp
+@@ -0,0 +1,47 @@
++// include/strata/program/adaptive_range.hpp - which swaps of an adaptive-tier round have had their copy in (PR #4844, @uvlad23).
++//
++// A round of the adaptive tier moves a list of swaps (aswaps) into the GPU expert caches.  Step 2 copies them in, step 3
++// marks the ones that landed as resident.  On the serial loop the copies go in batches (the arena may cap one), and step 3
++// marks the batch that just landed, [lo, hi).  On the pipelined loop every swap is copied at its card's next gap and
++// step 3 marks the whole list.  Which loop runs is decided per tick: the pipelined loop can drain after step 2 has been
++// planned, and the next tick then takes step 3 on the serial rule.  lo/hi/bi then still named the last batch of an earlier
++// round, so step 3 marked only that range and every other swap of the round was lost (its slot held the new expert, the
++// table still said the old one).  The pipelined plan therefore sets the range to the whole round.  Plain arithmetic, so a
++// host test can walk the rounds without a GPU.
++#pragma once
++
++#include <algorithm>
++#include <cstddef>
++
++namespace strata::program {
++
++struct AdaptiveCopyRange {
++    size_t lo = 0, hi = 0;   ///< the batch being copied in / just landed
++    size_t bi = 0;           ///< where the next batch starts
++
++    void clear() { lo = hi = bi = 0; }
++
++    /// Serial loop, step 2: the next batch is [bi, bi + batch) of `total` swaps (all the rest when batch == 0, the arena's
++    /// cap otherwise).  Never past `total`, and an overflowing sum is the end.
++    void next_batch(size_t total, size_t batch) {
++        lo = std::min(bi, total);
++        hi = total;
++        if (batch > 0 && batch < total - lo) hi = lo + batch;
++        bi = hi;
++    }
++
++    /// Pipelined loop, step 2: the whole round is one batch, whatever an earlier round left here.
++    void whole_round(size_t total) {
++        lo = 0;
++        hi = bi = total;
++    }
++
++    /// Step 3 on the serial rule: more batches of the round still to copy in.
++    bool more(size_t total) const { return bi < total; }
++
++    /// Step 3: the swaps that landed.  `pipelined` is this tick's rule; the range is the whole round on that one.
++    size_t landed_begin(bool pipelined) const { return pipelined ? 0 : lo; }
++    size_t landed_end(bool pipelined, size_t total) const { return pipelined ? total : hi; }
++};
++
++}  // namespace strata::program
+diff --git a/serve/frontend.py b/serve/frontend.py
+index b785ed90..77ac3f00 100644
+--- a/serve/frontend.py
++++ b/serve/frontend.py
+@@ -627,12 +627,14 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
+             elif kind == "thinking":
+                 reasoning.append(block.get("thinking", ""))
+             elif kind == "tool_use":
+-                calls.append({"function": {"name": block.get("name"), "arguments": tool_arguments(block.get("input"))}})
++                calls.append({"function": {"name": block.get("name"), "arguments": tool_arguments(block.get("input"))},
++                              "_call_id": block.get("id")})
+             elif kind == "tool_result":
+                 # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
+                 # path's tool messages already do; a text-only result is one string, as before.
+                 messages.append({"role": "tool", "content": _parts_of(_check_parts(
+-                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
++                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS)),
++                                 "_call_id": block.get("tool_use_id")})
+         if text or calls or reasoning or parts:
+             # an image sent beside tool results stays in this turn instead of being dropped
+             out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
+@@ -641,6 +643,8 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
+             if calls:
+                 out["tool_calls"] = calls
+             messages.append(out)
++    # A client may send results in the order its tools finished (Claude Code does for parallel calls)
++    _order_chat_tool_results(messages)
+     tools = [{"name": t["name"], "description": t.get("description", ""), "parameters": t.get("input_schema", {})}
+              for t in _tool_list(req.get("tools"), None)] or None
+     kwargs = {}
+@@ -670,6 +674,34 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
+     return _env_to_user(messages), tools, kwargs
+ 
+ 
++def _order_chat_tool_results(messages: list[dict]) -> None:
++    """The template pairs results by position, so restore call order while IDs are still available.
++
++    Only a complete, unambiguous run of results is reordered. Legacy or incomplete histories keep their
++    received order. IDs are private to this conversion and never reach the template.
++    """
++    i = 0
++    while i < len(messages):
++        if messages[i]["role"] != "tool":
++            i += 1
++            continue
++        j = i + 1
++        while j < len(messages) and messages[j]["role"] == "tool":
++            j += 1
++        prev = messages[i - 1] if i else {}
++        calls = [c.get("_call_id") for c in prev.get("tool_calls") or []] if prev.get("role") == "assistant" else []
++        results = [m.get("_call_id") for m in messages[i:j]]
++        if len(calls) == len(results) and all(isinstance(cid, str) and cid for cid in calls + results):
++            if len(set(calls)) == len(calls) and len(set(results)) == len(results) and set(calls) == set(results):
++                rank = {cid: n for n, cid in enumerate(calls)}
++                messages[i:j] = sorted(messages[i:j], key=lambda m: rank[m["_call_id"]])
++        i = j
++    for message in messages:
++        message.pop("_call_id", None)
++        for call in message.get("tool_calls") or []:
++            call.pop("_call_id", None)
++
++
+ # ------------------------------------------------------------------------------------------------ output parser
+ @dataclass
+ class ToolCall:
+@@ -696,6 +728,15 @@ FUNC_END = "</function>"
+ # #3441: the opener a model writes when it drifts by a token inside the envelope the template documents:
+ # `<=NAME>` (the word `function` dropped), `<function:NAME>`, `<function =NAME>`, or the bare `<NAME>`
+ _LOOSE_OPEN = re.compile(r"<\s*(?:function\s*[=:]\s*|=\s*)?([A-Za-z0-9_.\-]+)\s*>")
++_PREFIX_LOOKBACK = 256     # how far before a new delta a prefixed name or a misspelt opener can start (see OutputParser._prefixed)
++# #5409: `<function=tools actio>` / `<function=tools>`; the prefixes are the ones of #4751
++_PREFIX_SPACED = re.compile(r"(<function=\s*(?:tools|functions|default_api)[ \t]+)([^<>\s]+)\s*>")
++_PREFIX_PART = re.compile(r"<function=\s*(?:tools|functions|default_api)[ \t]+[^<>\s]{0,80}\s*$")
++_PREFIX_BARE = re.compile(r"(<tool_call>\s*)<function=\s*(tools|functions|default_api)\s*>(.*?)</function>", re.S)
++_PREFIX_BARE_OPEN = re.compile(r"<tool_call>\s*<function=\s*(tools|functions|default_api)\s*>(?!.*</function>)", re.S)
++# #5276: `<toolcall>` / `<tool-call>` as the opener (then whitespace, `<function=NAME>`), and such an opener still arriving
++_MISSPELT_OPEN = re.compile(r"<tool-?call>(\s*)<function=(\s*[^<>\s]+\s*)>")
++_MISSPELT_PART = re.compile(r"<tool-?call>\s*<function=[^<>]{0,80}$|<tool-?call>\s*(?:<(?:f(?:u(?:n(?:c(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?)?)?$")
+ _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
+ 
+ 
+@@ -835,8 +876,8 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
+         return None
+     if kind == "required" and len(names) == 1:     # one tool to call: name it, the model cannot invent another
+         kind, name = "named", next(iter(names))
+-    if kind == "required" and names:
+-        return CALL_START + "\n<function="
++    if kind == "required" and names:               # the model writes "<function=NAME>": from a written "<function=", Qwen3.8 went on with names no tool has
++        return CALL_START + "\n"
+     if kind == "named" and name in names:
+         return CALL_START + f"\n<function={name}>\n"
+     print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
+@@ -1082,23 +1123,50 @@ class OutputParser:
+     until it is complete, so clients never see `<tool_` or `</thi`."""
+ 
+     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
+-                 recover: bool = False, declared_only: bool = False):
++                 recover: bool = False, declared_only: bool = False, deferred: bool = False):
+         self.state = "reasoning" if thinking else "content"
+         self.buf = ""
+         self.lead = False
+-        self.schemas = {t.get("name"): t for t in tools or []}
+-        # Accept the native namespace__member spelling without advertising duplicate tools.
++        self.schemas = {}
++        for t in tools or []:
++            if isinstance(t, dict):
++                name = t.get("name")
++                if name:
++                    self.schemas[name] = t
++                elif isinstance(t.get("function"), dict) and t["function"].get("name"):
++                    self.schemas[t["function"]["name"]] = t["function"]
++        # #4663: the request defers tools (Anthropic's tool search, see anthropic_tools): the client holds back more tools
++        # than it declares, so a call for an undeclared name is a call too - Claude Code runs it, where text ended the turn.
++        self.deferred = deferred
++        # #804/#3075: in the answer too, a call counts only for a tool the request declared.  With tools declared a
++        # call for another name stays text (the Responses spelling `namespace__tool` of a `namespace.tool` counts as
++        # that tool); `declared_only` extends the rule to a request that declared none (Chat Completions, Anthropic:
++        # the client has no tool to run).  The Responses route leaves it off: a Codex compaction request keeps its
++        # conversation's tools in the prompt only, and its calls come back as before.
++        self.declared_only = declared_only
++        # A declared namespace.member tool is also accepted as namespace__member (PR #3556),
++        # namespace=member (Qwen writes the <function= tag's equals sign into the name),
++        # namespace_member (one underscore dropped), and the bare member when exactly one
++        # declared tool has it. Only an unambiguous alias counts, and an exactly declared
++        # name always wins over an alias.
+         aliases = {}
+         for name in self.schemas:
+             if isinstance(name, str) and "." in name:
+                 namespace, member = name.rsplit(".", 1)
+-                aliases.setdefault(f"{namespace}__{member}", set()).add(name)
++                for alias in (f"{namespace}__{member}", f"{namespace}={member}",
++                              f"{namespace}_{member}", member):
++                    aliases.setdefault(alias, set()).add(name)
+         # #3796: the same tool written with every `__` collapsed to `_` (`mcp__playwright__browser_navigate` as
+         # `mcp_playwright_browser_navigate`, the way Qwen often flattens a name) is that tool.  Only a spelling of a declared
+         # name: a reordered or renamed tool (`server1_label_values` for `label_values_mcp_server1`) is not guessed.
+         for name in self.schemas:
+             if isinstance(name, str) and "__" in name:
+                 aliases.setdefault(name.replace("__", "_"), set()).add(name)
++                # #5281: a namespaced MCP tool (`mcp__assets__get_asset_info`) written with its last segment only (`get_asset_info`),
++                # as the bare member of a dotted name is accepted above; only when exactly one declared tool ends that way
++                last = name.rsplit("__", 1)[1]
++                if last:
++                    aliases.setdefault(last, set()).add(name)
+         # #4751: a programmatic-tool-calling harness (the DeepSeek Harness's PTC mode) shows the model its tools as `tools.write(...)`
+         # inside code, and the model then writes the native call with that spelling (`tools.write`, also `functions.write`).  The
+         # prefix is not part of the declared name; the same unambiguous-alias rule applies, an exactly declared name always wins.
+@@ -1108,14 +1176,6 @@ class OutputParser:
+                     aliases.setdefault(prefix + name, set()).add(name)
+         self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
+                         if len(names) == 1 and alias not in self.schemas}
+-        # #804/#3075: in the answer too, a call counts only for a tool the request declared.  With tools declared a
+-        # call for another name stays text (the Responses spelling `namespace__tool` of a `namespace.tool` counts as
+-        # that tool); `declared_only` extends the rule to a request that declared none (Chat Completions, Anthropic:
+-        # the client has no tool to run).  The Responses route leaves it off: a Codex compaction request keeps its
+-        # conversation's tools in the prompt only, and its calls come back as before.
+-        self.declared_only = declared_only
+-        # every namespace__member spelling of a declared namespace.tool, ambiguous ones too (#2284 passes those through)
+-        self._alias = set(aliases) | {k.replace(".", "__", 1) for k in self.schemas if isinstance(k, str) and "." in k}
+         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
+         self.unread_names: list[str] = []   # the names (first few) of those that named a tool the request did not declare
+         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
+@@ -1140,9 +1200,14 @@ class OutputParser:
+         self.recover = recover
+         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
+         self.batch = False           # the call being finished is followed by another in the same wrapper
++        self._held = ""              # #5276/#5409: the end of a misspelt opener or a prefixed name still arriving (see _prefixed)
+         self._final = False          # #4701: the turn has ended: a call held for what might follow it is decided now
+         self._reset_scan()
+ 
++    @property
++    def empty(self) -> bool:
++        return not self.buf and not self._held
++
+     def _ok_at(self, p: int) -> bool:
+         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
+         snap = self._snap()
+@@ -1151,14 +1216,23 @@ class OutputParser:
+         self._restore(snap)
+         return ok
+ 
++    def _opens_at(self, p: int) -> bool:
++        """self.buf[p] would open a call as `<tool_call>` does: in the reasoning at the start of a line outside code, in the answer
++        anywhere outside code (a fence, inline code, an indented block)."""
++        if self.state == "reasoning":
++            return self._ok_at(p)
++        snap = self._snap()
++        self._track(self.buf[:p])
++        ok = not self._in_code()
++        self._restore(snap)
++        return ok
++
+     def _callable(self, name: str) -> bool:
+-        """#3441: may a drifted opener (`<=NAME>`, `<function:NAME>`, `<NAME>`) be a call?  Only for a tool the request
+-        declared (or its namespace__member spelling).  Local change: a well-formed `<function=NAME>` of an undeclared
+-        name stays a call when the request declared tools (#2284 tests, and D.L. CLI corrects typos and answers a
+-        made-up name with its tool list); upstream's #3075 text rule applies only to a request that declared none."""
++        """#3075: may a call for `name` be a call?  A tool the request declared (or its Responses spelling); with
++        none declared, only where `declared_only` is off."""
+         if not self.schemas:
+             return not self.declared_only
+-        return name in self.schemas or name in self._alias
++        return name in self.schemas or name in self.aliases or self.deferred
+ 
+     def _loose_open(self, after: str):
+         """#3441: `after` (text after a `<tool_call>`, whitespace dropped) opens a call in a drifted form that names a
+@@ -1173,7 +1247,7 @@ class OutputParser:
+             bare = after[1:].strip().lstrip("=").strip()
+             if after[1:].lstrip().startswith(("=", "function")):
+                 return "wait"
+-            if any(k.startswith(bare) for k in list(self.schemas) + list(self._alias) if isinstance(k, str)):
++            if any(k.startswith(bare) for k in list(self.schemas) + list(self.aliases) if isinstance(k, str)):
+                 return "wait"
+         return None
+ 
+@@ -1476,8 +1550,87 @@ class OutputParser:
+                     best = max(best, n)
+         return best
+ 
++    def _prefixed(self, fresh: int) -> str:
++        """#5409: a call written `<function=tools NAME>` (a space for the dot of `tools.NAME`) is the call NAME, and one written
++        `<function=tools>` (the bare prefix) is the one declared tool that takes the call's parameters.  Rewrites the complete
++        ones in self.buf to `<function=NAME>` and returns the tail of a call still arriving, which feed() holds back until the next
++        delta.  Only a declared name is ever the result; with none, or with two that fit, the text is left as it was.
++        `fresh`: the length of the text just added; only the end of the buffer (that and a little before it) can hold a new match,
++        so a long call is not scanned again with every token."""
++        held = self._opener(fresh)
++        start = max(0, len(self.buf) - fresh - _PREFIX_LOOKBACK)
++        buf = self.buf[start:]
++        if "<function=" in buf:
++            def spaced(m):
++                name = m.group(2).strip()
++                return f"<function={name}>" if name in self.schemas else m.group(0)
++            buf = _PREFIX_SPACED.sub(spaced, buf)
++            m = _PREFIX_PART.search(buf)
++            if m and not held:
++                held, buf = buf[m.start():], buf[:m.start()]
++            if self.recover:
++                def bare(m):
++                    body = m.group(3)
++                    names = re.findall(r"<parameter=\s*([^<>\s]+?)\s*>", body)
++                    tool = None if m.group(2) in self.schemas else self._tool_by_params(names)
++                    return f"{m.group(1)}<function={tool}>{body}</function>" if tool else m.group(0)
++                buf = _PREFIX_BARE.sub(bare, buf)
++                m = _PREFIX_BARE_OPEN.search(buf)
++                if m and m.group(1) not in self.schemas and not held and len(buf) - m.start() <= RCALL_MAX:
++                    held, buf = buf[m.start():], buf[:m.start()]
++            if buf != self.buf[start:]:
++                self.buf = self.buf[:start] + buf
++        return held
++
++    def _opener(self, fresh: int) -> str:
++        """#5276: `<toolcall>` / `<tool-call>` (the opener written as text, misspelled) followed by `<function=NAME>` of a declared
++        tool is `<tool_call>`, where a `<tool_call>` would open a call (in the reasoning the start of a line, outside code; in the
++        answer outside code).  Prose that names the misspelled tag, or any other follower, is left as it was.  Returns the tail of
++        an opener still arriving (held back by feed)."""
++        start = max(0, len(self.buf) - fresh - _PREFIX_LOOKBACK)
++        if "<tool" not in self.buf[start:]:
++            return ""
++        buf = self.buf
++        pos, out = start, []
++        for m in _MISSPELT_OPEN.finditer(buf, start):
++            name = m.group(2).strip()
++            name = self.aliases.get(name, name)
++            if name in self.schemas and self._opens_at(m.start()):
++                out.append(buf[pos:m.start()] + CALL_START + m.group(1) + FUNC_START + m.group(2) + ">")
++                pos = m.end()
++        buf = buf[:start] + "".join(out) + buf[pos:] if out else buf
++        held = ""
++        m = _MISSPELT_PART.search(buf, start)
++        tail = buf[m.start():] if m else ""
++        if not tail:                                        # the opener itself still arriving: a prefix of `<toolcall>`
++            for k in range(min(len(buf), 11), 5, -1):
++                if any(w.startswith(buf[-k:]) for w in ("<toolcall>", "<tool-call>")) and buf[-k:] != "<tool_":
++                    tail = buf[-k:]
++                    break
++        if tail:
++            held, buf = tail, buf[:len(buf) - len(tail)]
++        self.buf = buf
++        return held
++
++    def _tool_by_params(self, names: list[str]) -> str | None:
++        """The one declared tool whose properties hold every one of `names` and whose required parameters are all in them."""
++        found = []
++        for tname, schema in self.schemas.items():
++            params = (schema or {}).get("parameters") or {}
++            props = params.get("properties") or {}
++            if names and all(n in props for n in names) and all(r in names for r in params.get("required") or []):
++                found.append(tname)
++        return found[0] if len(found) == 1 else None
++
+     def feed(self, delta: str) -> list[Event]:
++        if self._held:
++            delta, self._held = self._held + delta, ""
+         self.buf += delta
++        if self.schemas and delta:
++            self._held = self._prefixed(len(delta))
++        return self._feed()
++
++    def _feed(self) -> list[Event]:
+         out: list[Event] = []
+         while True:
+             if self.state == "rcall":
+@@ -1494,7 +1647,7 @@ class OutputParser:
+                     try:
+                         name = body[:end].strip()[len("<function="):].split(">", 1)[0].strip()
+                         name = self.aliases.get(name, name)
+-                        if name in self.schemas:
++                        if self._callable(name):
+                             call = parse_tool_call(body[:end], self.schemas.get(name), self.notes)
+                             call.name = name
+                     except ValueError:
+@@ -1685,8 +1838,8 @@ class OutputParser:
+                         out.append(Event("content", self._track(self.buf[:j])))
+                         self.buf = self.buf[j:]
+                     return out
+-                if not self.schemas and self.declared_only:
+-                    # #3075 (local scope): a request that declared no tools gets no call; the name must be complete to tell
++                if self.schemas or self.declared_only:
++                    # #3075: a call counts only for a declared tool; the name must be complete to tell
+                     gt = after.find(">")
+                     nl = after.find("\n")
+                     if gt < 0 and nl < 0:
+@@ -1775,6 +1928,8 @@ class OutputParser:
+         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
+         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
+         out = []
++        if self._held:
++            self.buf, self._held = self.buf + self._held, ""
+         if self.buf and self.state in ("call", "rcall"):
+             self._final = True                  # #4701: a call held after its closing tags (could a file's text go on?) is whole now
+             out += self.feed("")
+@@ -1785,7 +1940,7 @@ class OutputParser:
+             f = function_end(body)
+             name = body.lstrip()[len(FUNC_START):].split(">", 1)[0].strip() if f >= 0 else ""
+             name = self.aliases.get(name, name)
+-            if f >= 0 and not body[f:].strip() and name in self.schemas:
++            if f >= 0 and not body[f:].strip() and self._callable(name):
+                 try:
+                     call = parse_tool_call(body[:f], self.schemas.get(name), self.notes)
+                     call.name = name
+diff --git a/serve/server.py b/serve/server.py
+index 6518703f..d19bcea2 100644
+--- a/serve/server.py
++++ b/serve/server.py
+@@ -1533,10 +1533,12 @@ class StrataEngine:
+         raise EngineDied("the GPU reported a fatal error and the engine ended: " + text[len("fatal GPU error:"):].strip()[:200])
+ 
+     def _apply_bdone(self, f: list[str]) -> None:
+-        """`BDONE <slot> <produced> <finish> <ms>` into this request's figures."""
++        """BDONE counts the admission token too, but its clock starts after the admission's DONE."""
+         if len(f) >= 5 and isinstance(self.last, dict):
+-            self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
+-                         "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
++            admission_ms = self.last.get("decode_ms")
++            self.last = {**self.last, "finish": f[3],
++                         "decode_ms": admission_ms + float(f[4]) if admission_ms is not None else None,
++                         "generated": int(f[2]) if f[2].isdigit() else None}
+ 
+     def _bdone_after_eos(self, slot: int, wait_s: float = 2.0):
+         """#1869: a request in a slot whose consumer left at the stop token has its BDONE right behind it (the engine prints it
+@@ -1737,6 +1739,8 @@ class StrataEngine:
+         holding, born = True, self.gen                  # (the engine it now has the control lines of)
+         btrace("ctl acquired")
+         slot, gen0, reserved = None, None, None
++        yielded_legs = []    # prompt reads that gave way before producing output
++        admission_pending, admission_before = False, None   # the admission's DONE is partial until BADM 0 or BDONE
+         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
+         stop_sent = False
+         yields, solo_again, refused = 0, 0, 0
+@@ -1788,6 +1792,7 @@ class StrataEngine:
+                     if self._done_finish() == "nonfinite":    # #879 (never promoted to a slot)
+                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
+                     if self._yielded is not None and reserved is not None and self._yielded[0] == reserved:
++                        yielded_legs.append(self.last)
+                         slot, reserved = reserved, None     # gave way: the read goes on in that slot (below)
+                     elif reserved is not None:              # it did not give way: the slot is free again
+                         with self.slot_cv:
+@@ -1870,6 +1875,7 @@ class StrataEngine:
+                     self._last_done = None                  # (#879: this admission's DONE decides below)
+                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
+                     self.slot_held[slot] = []               # the admission overwrites what the slot held
++                    admission_pending, admission_before = True, self.last
+                     phase = "admit"
+                     self._ctl_mode, self._ctl_result, self._yielded = "batch", None, None
+                     self._ctl_erred = False
+@@ -1910,6 +1916,7 @@ class StrataEngine:
+                         slot = None
+                         continue
+                     cont = bool(self._ctl_result and self._ctl_result[1])
++                    admission_pending = cont
+                     phase = "slot" if cont else "none"
+                     while pending:
+                         t = pending.pop(0)
+@@ -1918,6 +1925,7 @@ class StrataEngine:
+                     if not cont and self._done_finish() == "nonfinite":   # #879
+                         raise EngineNonFinite("the engine's logits became non-finite (#879)")
+                     if not cont and self._yielded is not None and self._yielded[0] == slot and not cancel.is_set():
++                        yielded_legs.append(self.last)
+                         continue                            # gave way: again once the shorter request is in
+                     break
+                 self.ctl.release()
+@@ -1957,6 +1965,7 @@ class StrataEngine:
+                         phase = "none"
+                         f = line.split()
+                         self._apply_bdone(f)
++                        admission_pending = False
+                         # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
+                         self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
+                         if f[3:4] == ["nonfinite"]:              # #879: the engine dropped the slot's state
+@@ -2004,10 +2013,17 @@ class StrataEngine:
+                 if bd is not None:
+                     self._apply_bdone(bd.split())
+                     bdone_in = True
++            ended_on_yield = bool(yielded_legs and self.last is yielded_legs[-1])
++            if admission_pending and isinstance(self.last, dict) and (self.last is not admission_before or carry):
++                # A background drain owns the rest. The admission's one token and time are not this request's totals.
++                self.last = {**self.last, "generated": None, "decode_ms": None}
+             if reused0 is not None and isinstance(self.last, dict):
+                 self.last = {**self.last, "reused": reused0}
+             if carry and isinstance(self.last, dict):
+                 self.last = add_carry(carry, self.last)
++            earlier_reads = yielded_legs[:-1] if ended_on_yield else yielded_legs
++            if earlier_reads and isinstance(self.last, dict):
++                self.last = prefill_leg_stats(earlier_reads, self.last, len(prompt))
+             if holding:
+                 self.ctl.release()
+             if admit_wait:
+@@ -3464,6 +3480,7 @@ class Service:
+         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
+         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
+         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
++        self.undeclared_tool_calls = "text"               # #4622: config "undeclared_tool_calls": "call" hands a call of an undeclared name to the client
+         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
+         self.images = None                                # serve/images.py's ImageGen when the config has "images"
+         self.restore_after_load = None                    # a session file an image job saved before it unloaded
+@@ -4709,7 +4726,8 @@ class Service:
+                       f"the answer (budget {budget})", flush=True)
+                 budget = max(1, max_new - reserve)
+         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
+-                              declared_only=declared_only)
++                              declared_only=declared_only,
++                              deferred=getattr(self, "undeclared_tool_calls", "text") == "call")
+         detok, n, finish = Detokenizer(self.tok), 0, "length"
+         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
+         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
+@@ -5222,14 +5240,14 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
+         # #1870: the engine says how many prompt tokens it read: the slot's own session may have held the rest
+         # (not the conversation cache), so the rate is not made of tokens it never read
+         cache_n = max(cache_n, max(0, prompt_tokens - int(last["prompt_read"])))
+-    prompt_n, prompt_ms, decode_ms = max(0, prompt_tokens - cache_n), float(last["prompt_ms"]), float(last.get("decode_ms") or 0)
+-    decoded = int(last.get("generated") or generated)          # the engine's count gives its rate, as /metrics does
++    prompt_n, prompt_ms, decode_ms = max(0, prompt_tokens - cache_n), float(last["prompt_ms"]), last.get("decode_ms")
++    decoded = last.get("generated")          # explicit zero and missing native work are not the API's output count
+     return {"cache_n": cache_n, "prompt_n": prompt_n, "prompt_ms": round(prompt_ms, 1),
+             "prompt_per_token_ms": round(prompt_ms / prompt_n, 3) if prompt_n else None,
+             "prompt_per_second": round(prompt_n / (prompt_ms / 1000), 1) if prompt_n and prompt_ms > 0 else None,
+-            "predicted_n": generated, "predicted_ms": round(decode_ms, 1),
++            "predicted_n": generated, "predicted_ms": round(decode_ms, 1) if decode_ms is not None else None,
+             "predicted_per_token_ms": round(decode_ms / decoded, 3) if decoded else None,
+-            "predicted_per_second": round(decoded / (decode_ms / 1000), 1) if decoded and decode_ms > 0 else None,
++            "predicted_per_second": round(decoded / (decode_ms / 1000), 1) if decoded and decode_ms and decode_ms > 0 else None,
+             # the speculative drafts, as llama.cpp names them (from PR #83, @mikicvi): only when the engine reported them
+             **({"draft_n": int(last["drafts_offered"]), "draft_n_accepted": int(last["drafts_accepted"])}
+                if last.get("drafts_offered") is not None else {})}
+@@ -5246,12 +5264,24 @@ def request_stats(segments: list[dict]) -> dict:
+         else:
+             result.pop(key, None)
+     for key in ("prompt_ms", "decode_ms", "generated", "drafts_offered", "drafts_accepted",
+-                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb"):
+-        if any(segment.get(key) is not None for segment in segments):
++                "hits", "lookups", "offloaded", "ram_blobs", "file_blobs", "file_mb", "experts_streamed"):
++        if key in ("decode_ms", "generated") and any(segment.get(key) is None for segment in segments):
++            result[key] = None
++        elif any(segment.get(key) is not None for segment in segments):
+             result[key] = sum(segment.get(key) or 0 for segment in segments)
+     return result
+ 
+ 
++def prefill_leg_stats(earlier: list[dict], last: dict, prompt_tokens: int) -> dict:
++    """Total yielded reads once, retaining only reuse from before this API request."""
++    legs = [*earlier, last]
++    total = request_stats(legs)
++    if all(leg.get("prompt_read") is not None for leg in legs):
++        fresh = max(0, prompt_tokens - int(total.get("reused") or 0))
++        total["prompt_read"] = min(fresh, sum(int(leg["prompt_read"]) for leg in legs))
++    return total
++
++
+ def _dump_claude_prompt(req: dict):
+     """Save full system prompt and tool definitions per model into dumps/claude_models/."""
+     try:
+@@ -5832,11 +5862,13 @@ def make_handler(svc: Service):
+             return False
+ 
+         def _foreign_page(self) -> bool:
+-            """Without an API key, a /v1 POST from a browser page of another site (any site can POST text/plain
+-            there without a CORS preflight) would burn GPU time: an Origin header must name an allowed page, and
+-            then the body must be JSON.  No Origin (curl, the SDKs, other servers): any content type, as before."""
++            """Without an explicit API key (for example when open, or when authenticated by an ambient Cloudflare
++            Access cookie), a /v1 POST from a browser page of another site (any site can POST text/plain there
++            without a CORS preflight) would burn GPU time: an Origin header must name an allowed page, and then
++            the body must be JSON.  No Origin (curl, the SDKs, other servers) or an explicit API key: any content
++            type, as before."""
+             origin = self.headers.get("Origin")
+-            if svc.api_key or not origin:
++            if not origin or self._given_key():
+                 return False
+             if not origin_allowed(origin, self.headers.get("Host"), svc.host_names,
+                                   [*svc.trusted_origins, *svc.cors_origins]):
+@@ -5997,12 +6029,15 @@ def make_handler(svc: Service):
+             tok = cf_access.token_of(self.headers)
+             return verifier.verify(tok) if tok else None
+ 
+-        def _authorized(self) -> bool:
++        def _given_key(self) -> bool:
+             if not svc.api_key:
+-                return True
++                return False
+             auth = self.headers.get("Authorization", "")
+             given = auth[7:].strip() if auth.lower().startswith("bearer ") else self.headers.get("x-api-key", "")
+-            if key_matches(given, svc.api_key) or self._access_claims() is not None:
++            return key_matches(given, svc.api_key)
++
++        def _authorized(self) -> bool:
++            if not svc.api_key or self._given_key() or self._access_claims() is not None:
+                 return True
+             self._json(401, {"error": {"type": "authentication_error", "message": "missing or wrong API key"}})
+             return False
+@@ -8311,6 +8346,18 @@ def main() -> int:
+         return _main()
+ 
+ 
++def undeclared_tool_calls_setting(cfg: dict) -> str:
++    """#4622: the config's "undeclared_tool_calls": "text" (the default, when the config does not name it) keeps a well-formed call of a tool the request
++    did not declare as the text the model wrote, with strata_rejected_tool_calls beside it; "call" returns it as a tool call, for a client that has
++    its own policy for unknown names (it answers the model with the tool names it has).  Anything else stops the start."""
++    mode = cfg.get("undeclared_tool_calls")
++    if mode is None:                                  # the environment names it too (STRATA_UNDECLARED_TOOL_CALLS); the config wins
++        mode = os.environ.get("STRATA_UNDECLARED_TOOL_CALLS") or "text"
++    if mode not in ("text", "call"):
++        raise SystemExit(f"[strata] config \"undeclared_tool_calls\" must be \"text\" or \"call\", not {mode!r}")
++    return mode
++
++
+ def _main() -> int:
+     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
+@@ -8565,6 +8612,7 @@ def _main() -> int:
+     if not isinstance(recovery, bool):
+         raise SystemExit(f"[strata] config \"tool_call_recovery\" must be true or false, not {recovery!r}")
+     svc.tool_call_recovery = recovery
++    svc.undeclared_tool_calls = undeclared_tool_calls_setting(cfg)
+     etu = cfg.get("env_to_user", False)                # opt-in: see frontend._env_to_user
+     if not isinstance(etu, bool):
+         raise SystemExit(f"[strata] config \"env_to_user\" must be true or false, not {etu!r}")
+diff --git a/src/core/verify.cpp b/src/core/verify.cpp
+index 89ac7ec7..e6d62826 100644
+--- a/src/core/verify.cpp
++++ b/src/core/verify.cpp
+@@ -2421,7 +2421,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
+             sink_.start2[0] = 0;
+             std::atomic_thread_fence(std::memory_order_seq_cst);
+             *(volatile uint32_t*) h_flagA_ = want;
+-            raise_flag(h_flagB_, want);
++            raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
+         }
+         // Layer 1's pre(1, 0) copies h_ple_ -> ple_ after Layer 0's wait_flag_ge(m_flag_, 1).
+         // By collecting PLE here at k == 0 (after publishing flagA/flagB for Layer 0 so the GPU can run
+@@ -2553,19 +2553,21 @@ void Verifier::set_plan_slot(int grp) {
+ }
+ 
+ // Flag B only rises: a host function of an earlier layer may run after a later layer already raised it directly.
+-void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
+-    volatile long* f = (volatile long*) flag;
+-#if defined(_WIN32)
+-    long cur = *f;
+-    while ((uint32_t) cur < value) {
+-        const long prev = _InterlockedCompareExchange(f, (long) value, cur);
+-        if (prev == cur) break;
+-        cur = prev;
++void Verifier::raise_flag(uint32_t* flag, uint32_t value) { strata::core::flag_raise_max(flag, value); }
++
++// Flag B for layer `want - 1`, behind every copy queued on the copy stream (PR #5096, @AlanJager).  The counter only
++// rises and the graph waits for "flag B >= layer + 1", so raising it on the spot for a layer with nothing to copy
++// releases an earlier layer (or the other token group of a split window) whose uploads are still in flight.
++void Verifier::raise_flag_b_ordered(uint32_t want) {
++    FlagSet& fs = flag_sets_[(want - 1) % (sizeof flag_sets_ / sizeof flag_sets_[0])];
++    const cudaError_t e = strata::core::raise_flag_b_ordered(copy_used_, copy_, &fs, h_flagB_, want);
++    if (e != cudaSuccess) {
++        // The flag was not raised: the consumers must not be released to staging that is still being written.
++        std::fprintf(stderr, "strata DMA: ordered flag B completion failed: %s\n", cudaGetErrorString(e));
++        std::fflush(stderr);
++        release_gpu_waits(5000);
++        std::abort();
+     }
+-#else
+-    uint32_t cur = __atomic_load_n((uint32_t*) flag, __ATOMIC_SEQ_CST);
+-    while (cur < value && !__atomic_compare_exchange_n((uint32_t*) flag, &cur, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
+-#endif
+ }
+ 
+ // Plan v0.3 P6: the PCIe share by DMA.  The copy engine moves the blobs while the CPU computes its own share and the
+@@ -2574,7 +2576,7 @@ void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
+ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes) {
+     Verifier* v = (Verifier*) ctx;
+     const uint32_t want = v->cur_layer_ + 1;
+-    if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
++    if (n <= 0) { v->raise_flag_b_ordered(want); return; }   // an empty plan stays behind the copies already queued
+     v->copy_used_ = true;
+     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
+     // STRATA_DMA_BATCH (midhatn's #807, F12): the group's independent uploads as one cudaMemcpyBatchAsync.  Mode 0 is
+@@ -2593,10 +2595,7 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
+             std::abort();
+         }
+     }
+-    FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
+-    fs.flag = v->h_flagB_;
+-    fs.value = want;
+-    cudaLaunchHostFunc(v->copy_, [](void* p) { FlagSet* s = (FlagSet*) p; raise_flag(s->flag, s->value); }, &fs);
++    v->raise_flag_b_ordered(want);   // copy_used_ is set: the host function runs after this group's uploads
+ }
+ 
+ void Verifier::publish_plan(void* ctx) {
+@@ -3136,7 +3135,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
+             sink_.start2[0] = 0;
+             std::atomic_thread_fence(std::memory_order_seq_cst);
+             *(volatile uint32_t*) h_flagA_ = want;
+-            raise_flag(h_flagB_, want);
++            raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
+         }
+         *flag = want;
+         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
+@@ -3291,7 +3290,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
+             sink_.start2[0] = 0;
+             std::atomic_thread_fence(std::memory_order_seq_cst);
+             *(volatile uint32_t*) h_flagA_ = want;
+-            raise_flag(h_flagB_, want);
++            raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
+         }
+         *(volatile uint32_t*) h_flag_ = want;
+         ms_pool += ms_since(b);
+@@ -3575,7 +3574,7 @@ int Verifier::service(PoolMultiFn pool, void* user, std::string& err) {
+             sink_.start2[0] = 0;
+             std::atomic_thread_fence(std::memory_order_seq_cst);
+             *(volatile uint32_t*) h_flagA_ = want;
+-            raise_flag(h_flagB_, want);
++            raise_flag_b_ordered(want);   // behind any copy still queued from an earlier layer
+         }
+         if (fl_k_ == 0 && !gather_ple()) return -1;
+         *(volatile uint32_t*) h_flag_ = want;
+diff --git a/src/prefill/moe_mmq.cu b/src/prefill/moe_mmq.cu
+index 9861b607..afa5efa3 100644
+--- a/src/prefill/moe_mmq.cu
++++ b/src/prefill/moe_mmq.cu
+@@ -231,7 +231,7 @@ bool fits(int t, int64_t w_rows) {
+         const int cc = info.devices[id].cc;
+         const size_t smpbo = info.devices[id].smpbo;
+         bool any = false;
+-        for (int J = 8; J <= 128 && !any; J += 8) {
++        for (int J = 8; J <= kMmqTileColsMax && !any; J += kMmqTileColsStep) {
+             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, fallback, cc);
+             any = c.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(c, cc) <= smpbo;
+         }
+diff --git a/src/prefill/prefill.cpp b/src/prefill/prefill.cpp
+index 2fa71c7c..e8166652 100644
+--- a/src/prefill/prefill.cpp
++++ b/src/prefill/prefill.cpp
+@@ -11,6 +11,7 @@
+ #include "strata/core/progress.hpp"
+ #include "strata/core/on_device.hpp"
+ #include "strata/platform/aux_cpus.hpp"
++#include "strata/prefill/mmq_ids_margin.hpp"
+ 
+ #include "strata/core/layout.hpp"
+ #include "strata/kernels/cpu/expert.hpp"
+@@ -1002,6 +1003,15 @@ constexpr int MMQ_GROUP = 16;                  // experts per MMQ launch (the ga
+ // product: 640 values).  Those bytes meet zero activations, which is harmless only if they decode to finite numbers -
+ // llama.cpp zero-pads after every tensor, and so does a group buffer: this many zeroed bytes follow its last expert.
+ constexpr size_t MMQ_TAIL = 4096;
++// J-column tile of ids before it compares the tile with the expert's rows (see mmq_ids_margin.hpp: the margin follows the
++// backend's tile bound).  An expert takes at most one row per token, so max_rows <= T.  Without the slack the table is an
++// exact-sized cudaMalloc that can end a 2 MiB page, and the over-read faults at the next one (Xid 31 FAULT_PDE, "prefill
++// copy_i32: an illegal memory access" on a long prompt).  The one size used by carve, bytes_needed_impl and the three
++// places that write the identity (bind_stage_helper, run_impl, lm_run).  0: the size overflows (carve fails).
++size_t mmq_ids_rows(size_t T) {
++    if (T > (size_t) INT64_MAX / (size_t) K) return 0;
++    return (size_t) mmq::mmq_ids_table_rows((uint64_t) (T * (size_t) K), (uint64_t) T);
++}
+ struct MmqPlan {
+     bool any = false, fallback = true;
+     std::vector<char> layer;                   // per layer: MMQ
+@@ -1307,7 +1317,9 @@ bool Prefill::carve(size_t T, void* alloc) {
+     for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
+     if (mmq_plan().any) {
+         const MmqPlan& mp = mmq_plan();
+-        m.ids_identity = o.take<int32_t>(T * K, ok);
++        const size_t ids_rows = mmq_ids_rows(T);
++        if (ids_rows == 0) ok = false;
++        m.ids_identity = o.take<int32_t>(ids_rows, ok);
+         m.bounds_dev = o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2)), ok);
+         m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
+         m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+@@ -1680,7 +1692,7 @@ bool Prefill::bind_stage_helper(int64_t T) {
+             return false;
+     }
+     const core::OnDevice on(P.dev);
+-    mmq::iota(P.ident, T * K, P.s);           // the helper's row table: a refill may have overwritten its slots
++    mmq::iota(P.ident, (int64_t) mmq_ids_rows((size_t) T), P.s);           // the helper's row table: a refill may have overwritten its slots
+     return true;
+ }
+ 
+@@ -1797,14 +1809,16 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
+         pp->pair = (int32_t*) take((size_t) Rt * 4);
+     }
+     pp->src = (int32_t*) take((size_t) Rt * 4);
+-    pp->ident = (int32_t*) take((size_t) Rt * 4);
++    const uint64_t ident_rows = mmq::mmq_ids_table_rows((uint64_t) Rt, (uint64_t) m.T_max);   // + the stream-k fixup's over-read
++    if (ident_rows == 0) ok = false;
++    pp->ident = (int32_t*) take((size_t) ident_rows * 4);
+     pp->bounds = (int32_t*) take((size_t) (2 * (NE + NE / MMQ_GROUP + 2)) * 4);
+     pp->grp_gu = (uint8_t*) take(MMQ_GROUP * mp.gu_max + MMQ_TAIL);
+     pp->grp_d = (uint8_t*) take(MMQ_GROUP * mp.d_max + MMQ_TAIL);
+     if (ok) {
+         pp->ctx = std::make_unique<mmq::Context>();
+         pp->run_ctx = pp->ctx.get();
+-        mmq::iota(pp->ident, pp->cap_rows, pp->s);
++        mmq::iota(pp->ident, (int64_t) ident_rows, pp->s);
+         ok = cudaStreamSynchronize(pp->s) == cudaSuccess;
+     }
+     if (ok && !pp->p2p) {   // the host route's mapped buffers, sized for the largest chunk
+@@ -1914,7 +1928,9 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
+     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
+     if (mmq_plan().any) {
+         const MmqPlan& mp = mmq_plan();
+-        o.take<int32_t>(T * K, ok);
++        const size_t ids_rows = mmq_ids_rows(T);
++        if (ids_rows == 0) ok = false;
++        o.take<int32_t>(ids_rows, ok);
+         o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2)), ok);
+         o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
+         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+@@ -2143,7 +2159,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
+     const cudaStream_t cs = (cudaStream_t) m.cs;
+     // the MMQ row table lives in the borrowed cache slots, which the refill after a prompt overwrites with experts:
+     // write it again for every prompt (a layout is reused as long as the chunk and the slots are the same)
+-    if (m.ids_identity != nullptr) mmq::iota(m.ids_identity, m.T * K, m.cs);
++    if (m.ids_identity != nullptr) mmq::iota(m.ids_identity, (int64_t) mmq_ids_rows((size_t) m.T), m.cs);
+     // The PLE rows of a chunk are read from the model file on the host (an SSD read per missed row): the chunk
+     // after this one is read on a thread while the GPU runs this one, into the other of two buffers.  The rows
+     // depend only on the tokens (the two before a position name its n-grams), so this is the same data.
