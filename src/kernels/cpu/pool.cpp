@@ -746,7 +746,10 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     pinned_ = pin;
     layout_ = logical_cpu_layout();   // now, before anything pins the caller (Linux reads the calling thread's allowed CPUs)
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
-        spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
+        // Read the way the other knobs in this file read them (`atoll`, clamped at 0, as STRATA_POOL_UMWAIT_ESC at the
+        // top of the file): negative, empty and non-numeric all land on 0, which means no hot stage at all, and a value
+        // past INT_MAX no longer truncates into an unrelated spin (issue #4624).
+        spin_before_sleep_ = std::chrono::microseconds((std::max)(0LL, std::atoll(e)));
     // STRATA_NUMA_SPLIT, read here for the worker count (the split itself is decided below, once the count is known).
     // 0.2.2: with 2 or more NUMA nodes and neither variable set the split is tried by itself, and STRATA_NUMA_POOL=0 turns that
     // off (numa_pool.hpp).  One node: pick_numa_pool says Unchanged and nothing below differs from the pool before the split.
@@ -990,7 +993,18 @@ void ExpertPool::worker(int id) {
         //
         // After `kSpinBeforeSleep` with no work the worker sleeps instead (issue #4).  The clock is read once
         // every 1024 pauses, so the spin itself is unchanged.
-        const auto parked_at = std::chrono::steady_clock::now();
+        // `STRATA_POOL_SPIN_US=0` asks for no hot stage: the worker goes to the kernel sleep instead of running the
+        // 1024 pauses the clock check sits behind (issue #4624).  The stage used to be unconditional and the clock was
+        // read only once per 1024 pauses, so 0 still cost 1,024 pauses per park.  The decision itself is
+        // `park_warm_stage` in pool.hpp, which `pool_spin_test` counts in every build with the tests on and
+        // `pool_tasks_test` asserts for 0 us, 1 us and the built-in 20 ms; it
+        // holds in every build of the pool.  What has been *measured* where is written over the test gate in
+        // cmake/backends/cpu.cmake, the file that prices what a park costs.
+        const bool spin_hot = park_warm_stage(spin_before_sleep_);
+        // With no hot stage there is nothing to time, so nothing is timed: `parked_at` is not taken and the loop below
+        // reads no clock and touches no spin counter (issue #4624).  A UMWAIT wait (the branch under MSVC) is still one
+        // wait, which is the same transition to the kernel's own wait that the sleep branch makes.
+        const auto parked_at = spin_hot ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         uint32_t spins = 0;
         const uint64_t um = umwait_cycles();
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)   // MSVC proper: clang-cl (the Windows HIP build) has no WAITPKG intrinsics by default
@@ -1009,11 +1023,17 @@ void ExpertPool::worker(int id) {
                 if ((++spins & 15u) != 0) continue;   // each wait is ~um cycles: look at the clock more often
             } else
 #endif
-            {
+            if (spin_hot) {
+#ifdef STRATA_POOL_PAUSE_COUNT
+                // Test seam: `pool_spin_test` (src/kernels/cpu/pool_spin_test.cpp) reads this to say whether the pause
+                // stage ran at all.  The macro is defined only for a build with STRATA_BUILD_TESTS=ON
+                // (cmake/backends/cpu.cmake), so a release build has no increment here.
+                strata_pool_pause_count.fetch_add(1, std::memory_order_relaxed);
+#endif
                 strata_cpu_pause();
                 if ((++spins & 1023u) != 0) continue;
             }
-            if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
+            if (spin_hot && std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
             std::unique_lock<std::mutex> lk(sleep_mu_);
             wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);
             sleepers_.fetch_add(1, std::memory_order_seq_cst);
