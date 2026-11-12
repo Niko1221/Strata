@@ -39,6 +39,12 @@ STORY_SCHEMA = object_schema({
         "boxes": {"type": "array", "items": {"type": "integer"}}, "description": TEXT})}})
 FORMAT = {"type": "json_schema", "json_schema": {"name": "h3_story", "strict": True, "schema": STORY_SCHEMA}}
 
+# a tool the model may call, and its call in the chat template's form: with tools offered, a turn may end in a call
+TOOLS = [{"type": "function", "function": {"name": "exec_command",
+          "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}}]
+TOOL_CALL = ("Let me look.\n</think>\n\n<tool_call>\n<function=exec_command>\n<parameter=cmd>\ncat a.txt\n"
+             "</parameter>\n</function>\n</tool_call>")
+
 
 class Structured(unittest.TestCase):
     def request(self, path, body=None, headers=None):
@@ -168,7 +174,7 @@ class Structured(unittest.TestCase):
         fmt = {"type": "json_schema", "json_schema": {"name": "local", "schema": schema}}
         self.assertEqual(self.chat('{"answer":4}', response_format=fmt)[0], 200)
 
-    def test_malformed_formats_and_tools_are_rejected_before_loading(self):
+    def test_malformed_formats_are_rejected_before_loading(self):
         formats = ([], {"type": "unsupported"},
                    {"type": "json_schema", "json_schema": {"schema": {"type": "object"}}},
                    {"type": "json_schema", "json_schema": {"name": "x", "strict": "true", "schema": {"type": "object"}}})
@@ -176,10 +182,33 @@ class Structured(unittest.TestCase):
             for fmt in formats:
                 with self.subTest(fmt=fmt):
                     self.assertEqual(self.chat(response_format=fmt)[0], 400)
-            self.assertEqual(self.chat(tools=[{"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}}])[0], 400)
-            self.assertEqual(self.chat(strata_mcp=True)[0], 400)
             self.assertEqual(self.request("/v1/chat/completions", [])[0], 400)
             load.assert_not_called()
+
+    def test_tools_with_a_format_pass_a_call_through_and_validate_the_answer(self):
+        # tools and a response_format together: the schema is for the final answer and a turn that calls a tool is
+        # not an answer, so a call goes out as written and only the JSON answer is validated
+        tools = TOOLS
+        code, reply = self.chat(TOOL_CALL, tools=tools)
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(reply["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(reply["choices"][0]["message"]["tool_calls"][0]["function"]["name"], "exec_command")
+        code, reply = self.chat(json.dumps(STORY), tools=tools)
+        self.assertEqual(code, 200, reply)
+        self.assertEqual(reply["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(json.loads(reply["choices"][0]["message"]["content"]), STORY)   # the canonical JSON
+        code, reply = self.chat("## Film Plan", tools=tools)                              # still validated
+        self.assertEqual(code, 502, reply)
+        self.assertEqual(reply["error"]["code"], "structured_output_failed")
+
+    def test_structured_stream_with_tools_sends_the_call_then_the_answer(self):
+        self.engine = self.svc.engine = MockEngine(self.tok, TOOL_CALL, max_context=16384)
+        code, body = self.request("/v1/chat/completions", {
+            "messages": [{"role": "user", "content": "Read a.txt and write the plan."}],
+            "response_format": FORMAT, "reasoning_effort": "none", "tools": TOOLS, "stream": True})
+        self.assertEqual(code, 200, body)
+        self.assertIn("tool_calls", body)                 # the call went out as the model wrote it
+        self.assertNotIn("structured_output_failed", body)
 
     def test_without_jsonschema_an_object_is_still_required(self):
         # jsonschema is optional: without it json_schema answers are checked to be one JSON object, json_object

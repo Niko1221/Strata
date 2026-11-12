@@ -7628,6 +7628,14 @@ def structured_chunks(chunks, validator):
                 yield chunk if progress else None
         result = openai_collect(buffered)
         choice = result["choices"][0]
+        if choice["finish_reason"] == "tool_calls":
+            # A turn that calls a tool is not an answer: with tools offered the schema is for the final answer
+            # (prepare_format's with_tools directive), so the call goes out as the model wrote it, tool_calls and all,
+            # instead of being failed for not being JSON. The same rule /v1/responses applies (#782).
+            for chunk in buffered:
+                if chunk is not None:
+                    yield chunk
+            return
         content = validated_json(choice["message"]["content"], validator, choice["finish_reason"])
         # logprobs: the entries spell what the model wrote, which this function replaces with the
         # canonical JSON.  `_structured_logprobs` gives back the form the tokens spell, or None.
@@ -8875,9 +8883,12 @@ def make_handler(svc: Service):
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))      # a bad value is a 400 before anything is sent
-            messages, validator = prepare_format(req.get("response_format"), messages)
-            if validator is not None and (tools or req.get("strata_mcp")):
-                raise ValueError("structured response_format with tools/MCP is not supported")
+            # tools and a response_format together are allowed, as /v1/responses and the Anthropic routes already
+            # allow them: the schema is for the final answer, and a turn that calls a tool is not an answer.
+            # prepare_format says exactly that in its directive (with_tools), and the answer is still validated
+            # before delivery, so a call and a schema'd answer can be asked for in one request.
+            has_tools = bool(tools or req.get("strata_mcp"))
+            messages, validator = prepare_format(req.get("response_format"), messages, with_tools=has_tools)
             svc.load()
             max_req = max_new = int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)   # 0/-1: the rest
             # No cap of our own on the reply's length when logprobs are asked for: the reply is already bounded by
