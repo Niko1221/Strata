@@ -287,6 +287,15 @@ def _bundle_missing_libraries(staging: Path, target: str, rels: list[str], searc
     return added
 
 
+def _refuse_too_new_for_mac(folder: Path) -> None:
+    bad = binary_deps.too_new_for_mac(folder)
+    if bad:
+        floor = ".".join(map(str, binary_deps.MAC_MIN_OS))
+        raise SystemExit(f"refusing to package: these programs need a newer macOS than {floor}, the oldest the app supports, so they stop "
+                         "before they start on it (#4634): " + ", ".join(f"{rel} (macOS {v})" for rel, v in bad)
+                         + f". Build with -DCMAKE_OSX_DEPLOYMENT_TARGET={floor}.")
+
+
 def package_sha256(folder: Path) -> str:
     """One digest for the whole package: SHA-256 of the manifest file (it holds every file's hash)."""
     return sha256(folder / ec.MANIFEST)
@@ -336,6 +345,12 @@ def main(argv: list[str] | None = None) -> int:
         if a.require_dsv41 and not any(f[0] in (DSV41_EXE, DSV41_EXE + ".exe") for f in component.files):
             print(f"{a.verify}: REFUSED: no {DSV41_EXE}[.exe] in the manifest (--require-dsv41)")
             return 1
+        if component.platform.startswith("macos"):
+            try:
+                _refuse_too_new_for_mac(a.verify)
+            except SystemExit as exc:
+                print(f"{a.verify}: REFUSED: {exc}")
+                return 1
         bad = binary_deps.uncovered(a.verify)
         if bad:
             for rel, name in bad:
