@@ -580,8 +580,10 @@ resident pages and the map, device to device, and a hand-back from a slot's turn
 
 **Slots that do not fit in RAM are not carved.** With KV streaming a slot's K/V is pinned RAM: 12.4 GiB a slot at a 1M
 context. `"parallel": 4` there left 4 GB of 156 free when the engine was ready, and the first requests ended it (the
-kernel's OOM killer). The engine now counts what it still loads after the slots - the experts' arena, the park's
-pre-faulted segments - and carves only the slots that leave `STRATA_SLOT_RAM_RESERVE_GIB` free (default 8; 0: no check),
+kernel's OOM killer). The engine now counts what it still loads after the slots - the experts' arena and an explicit
+`--conversation-cache-mib` (without it, 4 slots of 12.38 GiB with a 16 GiB cache were carved and the kernel ended the
+engine during start-up; a cache `--serve` sizes itself takes the RAM the slots leave) - and carves only the slots that
+leave `STRATA_SLOT_RAM_RESERVE_GIB` free (default 8; 0: no check),
 a multiple of the stages on a layer split, and says so: `--batch 4: a slot's K/V takes 12.38 GiB of pinned RAM ... 2
 slots keep 8 GiB free`. Four conversations need a smaller `--max-context` on this box (512K: 6.2 GiB a slot).
 
