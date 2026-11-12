@@ -14813,13 +14813,22 @@ struct Model::Impl {
 
     std::vector<std::string> info_lines() const {
         std::vector<std::string> v;
-        int nh = 0;
-        for (const Layer& l : L) nh += l.n_exp - l.n_vram;
+        int nh = 0, ntot = 0;
+        for (const Layer& l : L) {   // (the layers describe() counts: its "(X of Y in VRAM)" is ntot and ntot - nh)
+            nh += l.n_exp - l.n_vram;
+            ntot += l.n_exp;
+        }
+        size_t vbytes = 0;           // the VRAM the experts take, as the load line reports it ("experts %.2f GB")
+        for (const Dev& d : devs) vbytes += d.experts;
         char b[512];
         // kv=fp4: DeepSeek's own cache layout (the compressed KV and the index keys FP4, the window FP8)
-        std::snprintf(b, sizeof b, "INFO context=%lld kv=fp4 kv_resident=%lld expert_slots=%d engine_kind=ds4 "
-                                   "cpu_experts=%d ram_experts=%d engine=ds4-0.1",
-                      (long long) o.max_context, (long long) o.max_context, g.nl * g.n_exp - nh, nh, ram_held);
+        // experts: the total a reader needs as the denominator of expert_slots.  g.nl * g.n_exp is not it: the pack's
+        // block count leaves the trunk's last MoE block out (40 x 384 = 15360 against 15744 = 41 x 384), so
+        // expert_slots itself came out negative (-152 for 232 in VRAM of 15744, and no bar at all in the Monitor).
+        std::snprintf(b, sizeof b, "INFO context=%lld kv=fp4 kv_resident=%lld expert_slots=%d experts=%d "
+                                   "expert_cache_mib=%lld engine_kind=ds4 cpu_experts=%d ram_experts=%d engine=ds4-0.1",
+                      (long long) o.max_context, (long long) o.max_context, ntot - nh, ntot,
+                      (long long) (vbytes / 1048576), nh, ram_held);
         v.push_back(b);
         if (commit_kept > 0) {   // (Windows, an integrated GPU: the commit kept experts off the GPU - the server says so)
             std::snprintf(b, sizeof b,
