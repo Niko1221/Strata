@@ -3502,6 +3502,18 @@ int main(int argc, char **argv) try {
     // architecture ids (strata::intel_gpu_gen), with --serve and the MTP drafter; a single card, an Arc A-series card or
     // anything the pipeline does not support stays serial, said nothing.  STRATA_PIPELINE_AUTO=0 or
     // --pipeline-windows 0 turns it off.
+    // --batch with the solo path pipelined (opt-in, STRATA_PW_WITH_BATCH=1; port of upstream d17c52e7, CUDA only there).
+    // With slots, a request that is alone runs the solo path (GEN, with drafts; serve/server.py goes back to it when a slot
+    // is left alone), and that path can keep --pipeline-windows: both parities' verifiers share the stage's session
+    // (ver_b.init(.., ss, ..)), so when the solo request is STOPped for a newcomer, copy_to_slot reads a whole state from
+    // `ss` after the pipeline has drained.  Batch windows never use the second verifiers (stage_verifier: ver and the
+    // stages' ver).  Without this, --batch turns --pipeline-windows off and a request alone loses its overlap (2 x B70,
+    // Swift IQ2_XS, pw16: greedy 5-20% slower alone on a --batch 2 profile).
+    const bool pw_with_batch = [] {
+        const char* e = std::getenv("STRATA_PW_WITH_BATCH");
+        return e != nullptr && e[0] == '1';
+    }();
+    const bool batch_blocks_pw = o.batch != 0 && !pw_with_batch;
     if (o.pipeline_windows < 0) {
         static const char* ae = std::getenv("STRATA_PIPELINE_AUTO");
         const auto battlemage = [](int d) -> bool {
@@ -3515,7 +3527,7 @@ int main(int argc, char **argv) try {
         in.serve = o.serve; in.multi_gpu = multi_gpu; in.split_same = split_same;
         in.later_stages = (unsigned) split_devs.size();
         in.auto_off = ae != nullptr && std::atoi(ae) == 0;
-        in.has_mtp = !o.mtp.empty(); in.spec = o.spec; in.batch = o.batch;
+        in.has_mtp = !o.mtp.empty(); in.spec = o.spec; in.batch = batch_blocks_pw ? o.batch : 0;
         in.peer_device = o.peer_device >= 1;     // the same test as the validation below
         in.helper_caches = o.expert_cache_remote[0] > 0 || o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
         if (split_devs.size() == 1) {            // the devices are looked at only for a split the pipeline could take
@@ -3535,13 +3547,16 @@ int main(int argc, char **argv) try {
                         : !multi_gpu ? "it needs a layer split on two GPUs"
                         : split_devs.size() != 1 ? "it needs a layer split into exactly two stages"
                         : o.mtp.empty() || o.spec < 2 ? "it needs the MTP drafter (--mtp, --spec)"
-                        : o.batch != 0 ? "not with --batch slots"
+                        : batch_blocks_pw ? "not with --batch slots (STRATA_PW_WITH_BATCH=1 keeps it for the solo path)"
                         : o.peer_device >= 1 ? "not with --peer-device"
                         : helpers ? "not with the helper caches (--expert-cache-device1..3, --remote-expert-opt)"
                         : nullptr;
         if (off != nullptr) {
             std::fprintf(stderr, "strata generate: --pipeline-windows %d is off: %s\n", o.pipeline_windows, off);
             o.pipeline_windows = 0;
+        } else if (o.batch != 0) {
+            std::fprintf(stderr, "strata generate: --pipeline-windows %d stays on for the solo path beside %d batch slots "
+                                 "(STRATA_PW_WITH_BATCH=1); batch windows run without it\n", o.pipeline_windows, o.batch);
         }
     }
     // ---- layer split across GPUs: each later stage's own copy of the dense weights, its session and (the last) the
