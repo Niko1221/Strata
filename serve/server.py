@@ -881,6 +881,8 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    # --conversation-cache-dir: "conversation disk: wrote|read N tokens ...; entries=E bytes=B"
+    DISK = re.compile(r"conversation disk: (wrote|read) (\d+) tokens.*?entries=(\d+) bytes=(\d+)")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -890,7 +892,8 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      "disk_entries": 0, "disk_bytes": 0, "disk_writes": 0, "disk_reads": 0}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it.  One poll at a
@@ -919,6 +922,13 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            if "conversation disk:" in line:
+                m = self.DISK.search(line)
+                if m:
+                    st = self.state
+                    st["disk_writes" if m.group(1) == "wrote" else "disk_reads"] += 1
+                    st["disk_entries"], st["disk_bytes"] = int(m.group(3)), int(m.group(4))
+                continue
             if "conversation cache:" not in line:
                 continue
             m = self.EVENT.search(line)

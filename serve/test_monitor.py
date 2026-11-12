@@ -226,6 +226,22 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertEqual(c.poll(str(log), log.stat().st_size)["parked"], 0)   # the engine started again
             self.assertEqual(c.poll(None, None)["parked"], 0)
 
+    def test_disk_lines(self):
+        # --conversation-cache-dir: the disk tier's writes and reads, and what it holds
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(
+                "strata serve: conversation disk: wrote 80000 tokens (evicted) in 900.0 ms, 2.30 GB/s; "
+                "entries=3 bytes=6000000000 evictions=0\n"
+                "strata serve: conversation disk: read 80000 tokens (79000 reused, live) in 800.0 ms, 2.60 GB/s; "
+                "entries=3 bytes=6000000000\n" + self.RESTORE, encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((st["disk_writes"], st["disk_reads"], st["disk_entries"], st["disk_bytes"]),
+                             (1, 1, 3, 6000000000))
+            self.assertEqual((st["restores"], st["parks"]), (1, 0))
+
     def test_metrics(self):
         tok = ByteTokenizer()
         engine = MockEngine(tok, "Thought.</think>\nHello.", max_context=4096)
