@@ -128,6 +128,8 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostRegister hipHostRegister
 #define cudaHostUnregister hipHostUnregister
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
+#define cudaPointerAttributes hipPointerAttribute_t
+#define cudaPointerGetAttributes hipPointerGetAttributes
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaStreamDestroy hipStreamDestroy

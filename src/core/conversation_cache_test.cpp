@@ -19,9 +19,399 @@ SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
     s.cvec = cvec;
     return s;
 }
+
+void shared_buffer_serialization_and_mutation() {
+    KvChunkMap pool;
+    pool.init(2);
+    const auto lane = pool.add_lane(2);
+    check(pool.reserve(lane, 2), "allocate alias backing chunks");
+    std::vector<uint8_t> first(4096, 1), second(4096, 2);
+    auto prefix = pool.retain(lane, 2);
+    std::weak_ptr<const KvChunkMap::Prefix> lifetime = prefix;
+    ConversationBuffer aliased{9, 10};
+    aliased.prepend_shared(prefix, {first.data(), second.data()}, 4096);
+    ConversationBuffer ordinary;
+    ordinary.resize(8194);
+    check(ordinary.visit(0, ordinary.size(), [](uint8_t* p, size_t n, size_t at) {
+        for (size_t i = 0; i < n; ++i) {
+            const size_t offset = at + i;
+            p[i] = offset < 4096 ? 1 : offset < 8192 ? 2 : uint8_t(offset - 8192 + 9);
+        }
+        return true;
+    }), "construct ordinary expanded payload");
+    check(aliased.size() == ordinary.size() && aliased == ordinary, "aliased prefix expands to ordinary payload");
+    const size_t resident = aliased.bytes();
+    check(resident >= 2 * sizeof(const uint8_t*) && resident < 4096,
+          "alias accounting includes directory metadata but excludes shared payload");
+    const ConversationBuffer& constant = aliased;
+    // The session file writer uses this same const visit boundary to emit expanded bytes.
+    auto serialized = [](const ConversationBuffer& buffer) {
+        std::vector<uint8_t> out;
+        check(buffer.visit(0, buffer.size(), [&](const uint8_t* p, size_t n, size_t at) {
+            check(at == out.size(), "serialization emits contiguous absolute offsets");
+            out.insert(out.end(), p, p + n);
+            return true;
+        }), "serialize complete const buffer");
+        return out;
+    };
+    check(serialized(constant) == serialized(ordinary), "const serialization emits expanded shared bytes");
+    std::vector<uint8_t> crossing(4);
+    check(constant.read(crossing.data(), 4094, 4) && crossing == std::vector<uint8_t>({1, 1, 2, 2}),
+          "const read spans two alias chunks");
+    check(constant.visit(4096, 1, [&](const uint8_t* p, size_t, size_t) {
+        return p == second.data();
+    }) && aliased.bytes() == resident, "const reads and serialization preserve alias addresses");
+    check(aliased.allocation_peak(aliased.size()) >= aliased.bytes() + ordinary.bytes(),
+          "mutable alias materialization includes the expanded payload in peak admission");
+    auto overwrite = aliased;
+    overwrite.resize_for_overwrite(overwrite.size() + 1);
+    check(overwrite.read(crossing.data(), 4094, 4) && crossing == std::vector<uint8_t>({1, 1, 2, 2}) &&
+          aliased == ordinary && !overwrite.prefix_owner(),
+          "overwrite growth materializes the retained prefix before asynchronous writes");
+    auto private_copy = aliased;
+    check(private_copy.visit(4095, 2, [](uint8_t* p, size_t n, size_t) {
+        std::fill(p, p + n, 77); return true;
+    }), "mutable visit materializes alias");
+    check(first.back() == 1 && second.front() == 2 && aliased == ordinary,
+          "private mutable visit cannot overwrite sibling or shared payload");
+    std::vector<uint8_t> changed(2);
+    check(private_copy.read(changed.data(), 4095, 2) && changed == std::vector<uint8_t>({77, 77}),
+          "mutable visit changes the private expanded buffer");
+    auto resized = aliased;
+    const size_t resized_peak = resized.allocation_peak(8195);
+    resized.resize(8195, 55);
+    uint8_t last = 0;
+    check(resized.read(&last, 8194, 1) && last == 55 && aliased == ordinary && resized.bytes() <= resized_peak,
+          "resize materializes the prefix and grows privately within its admitted segment reserve");
+    check(pool.shrink(lane, 0), "release original alias lane");
+    prefix.reset();
+    check(!lifetime.expired() && pool.references() == 2, "const alias retains the real Prefix owner");
+    aliased = {};
+    check(lifetime.expired() && pool.references() == 0 && pool.free_chunks() == 2,
+          "materialized copies do not retain Prefix ownership after final alias release");
+}
+
+void shared_prefix_cache_lifecycle() {
+    for (int operation = 0; operation < 8; ++operation) {
+        KvChunkMap pool;
+        pool.init(2);
+        const auto lane = pool.add_lane(2);
+        check(pool.reserve(lane, 2), "allocate cache prefix backing");
+        std::vector<uint8_t> backing(64, 7);
+        auto prefix = pool.retain(lane, 2);
+        std::weak_ptr<const KvChunkMap::Prefix> lifetime = prefix;
+        auto saved = image({1, 2, 3});
+        ConversationCheckpoint checkpoint;
+        checkpoint.ids = {1, 2};
+        saved.checkpoints.push_back(std::move(checkpoint));
+        saved.kv.resize(1);
+        saved.kv[0].prefix = prefix;
+        saved.kv[0].k.prepend_shared(prefix, {backing.data(), backing.data() + 32}, 32);
+        prefix.reset();
+        check(pool.shrink(lane, 0), "cache is the sole physical owner after lane deletion");
+        ConversationCache cache(1 << 20, 4);
+        check(cache.put(std::move(saved)), "park image with a real immutable Prefix");
+        check(!lifetime.expired() && pool.references() == 2 && pool.free_chunks() == 0,
+              "parked image holds the final physical references");
+        if (operation == 0) {
+            check(cache.evict_oldest(), "evict shared image");
+        } else if (operation == 1) {
+            check(cache.clear() == 1, "clear parked shared image");
+        } else if (operation == 2) {
+            check(cache.drop_superseded({1, 2}, {}, {}, true) == 1, "drop superseded shared image");
+        } else {
+            auto restored = cache.take(0);
+            check(!lifetime.expired() && cache.size() == 0, "take transfers Prefix out of cache");
+            if (operation == 3) {
+                cache.clear();
+                check(!lifetime.expired(), "cache clear cannot release an externally taken image");
+                restored = {};
+            } else {
+                cache.retain(std::move(restored.kv), 3, {}, {1, 2, 3});
+                check(!lifetime.expired(), "retained reuse owns Prefix after restore");
+                if (operation == 4) cache.limit_reuse(0);
+                if (operation == 5) cache.retain({}, 0);
+                if (operation == 6) cache.clear();
+                if (operation == 7) {
+                    auto reuse = cache.take_reuse_for(std::vector<int32_t>{1, 2, 3});
+                    cache.clear();
+                    check(!lifetime.expired() && !reuse.kv.empty(), "take_reuse transfers ownership to caller");
+                    reuse = {};
+                }
+            }
+        }
+        check(lifetime.expired() && pool.references() == 0 && pool.free_chunks() == 2,
+              "production cache lifecycle releases the last Prefix and alias references");
+    }
+    ConversationCache cache(1 << 20, 4);
+    std::vector<uint8_t> backing(32, 42);
+    std::weak_ptr<const KvChunkMap::Prefix> lifetime;
+    {
+        KvChunkMap pool;
+        pool.init(1);
+        const auto lane = pool.add_lane(1);
+        check(pool.reserve(lane, 1), "allocate prefix whose map will be destroyed");
+        auto prefix = pool.retain(lane, 1);
+        lifetime = prefix;
+        auto saved = image({1, 2});
+        saved.kv.resize(1);
+        saved.kv[0].prefix = prefix;
+        saved.kv[0].k.prepend_shared(prefix, {backing.data()}, backing.size());
+        check(cache.put(std::move(saved)), "cache retains Prefix past map lifetime");
+    }
+    check(!lifetime.expired(), "destroying map leaves cache-owned Prefix alive");
+    check(cache.clear() == 1 && lifetime.expired(), "final cache owner destruction is safe after map destruction");
+}
+
+void shared_prefix_eviction_planning() {
+    auto shared_image = [](const std::shared_ptr<const KvChunkMap::Prefix>& prefix,
+                           int32_t id, const std::vector<uint8_t>& backing) {
+        auto saved = image({id, 2, 3});
+        saved.kv.resize(1);
+        saved.kv[0].prefix = prefix;
+        for (ConversationBuffer* buffer : {&saved.kv[0].k, &saved.kv[0].v, &saved.kv[0].k_scale,
+                                          &saved.kv[0].v_scale, &saved.kv[0].pooled})
+            buffer->prepend_shared(prefix, {backing.data()}, backing.size());
+        saved.stage_images.resize(1);
+        saved.stage_images[0].kv.resize(1);
+        saved.stage_images[0].kv[0].prefix = prefix;
+        saved.stage_images[0].kv[0].k.prepend_shared(prefix, {backing.data()}, backing.size());
+        return saved;
+    };
+    {
+        KvChunkMap pool;
+        pool.init(1);
+        const auto target = pool.add_lane(2);
+        check(pool.reserve(target, 1), "allocate full pool for eviction planning");
+        std::vector<uint8_t> backing(32, 7);
+        auto prefix = pool.retain(target, 1);
+        const auto* identity = prefix.get();
+        std::weak_ptr<const KvChunkMap::Prefix> lifetime = prefix;
+        ConversationCache cache(1 << 20, 4);
+        check(cache.put(shared_image(prefix, 10, backing)) && cache.put(shared_image(prefix, 20, backing)),
+              "park two images sharing one Prefix lease");
+        prefix.reset();
+        const auto first = cache.best(std::vector<int32_t>{10, 2, 3, 4}, {}, true);
+        const auto second = cache.best(std::vector<int32_t>{20, 2, 3, 4}, {}, true);
+        const auto version = pool.version();
+        const auto refs = pool.references();
+        const auto bytes = cache.bytes();
+        const auto* table = pool.table(target);
+        const auto physical = table[0];
+        std::vector<const KvChunkMap::Prefix*> released;
+        check(cache.eviction_prefixes(1, released) && released.empty(),
+              "one image cannot release a Prefix also owned by the other image");
+        check(cache.eviction_prefixes(2, released) && released.size() == 1 && released[0] == identity,
+              "full cohort accounts for every buffer and stage alias exactly once");
+        check(pool.reclaimable({}, released) == 0 && pool.free_chunks() == 0,
+              "evicting cache Prefix cannot reclaim the active lane's physical chunk");
+        check(pool.write_need(target, 0, 2, {}, released) == 1 &&
+              pool.write_need(target, 0, 2, {}, released) > pool.free_chunks() + pool.reclaimable({}, released),
+              "even all cache candidates cannot cover a new growth chunk");
+        check(!cache.eviction_prefixes(3, released) && released.empty(),
+              "planning beyond available candidates fails without a partial release list");
+        check(cache.size() == 2 && cache.bytes() == bytes && cache.evictions() == 0 &&
+              cache.find(first.serial) && cache.find(second.serial),
+              "failed growth planning preserves every cache entry and its accounting");
+        check(pool.version() == version && pool.references() == refs && pool.owners(physical) == 2 &&
+              pool.table(target) == table && table[0] == physical && pool.held(target) == 1 &&
+              pool.free_chunks() == 0 && !lifetime.expired(),
+              "failed growth planning preserves physical refs, table address, contents and version");
+
+        check(cache.eviction_prefixes(2, released) && pool.write_need(target, 0, 1, {}, released) == 0,
+              "cache cohort release predicts allocation-free target exclusivity");
+        check(cache.evict_oldest() && !lifetime.expired() && pool.owners(physical) == 2,
+              "first actual eviction retains the shared Prefix lease");
+        check(cache.evict_oldest() && lifetime.expired() && pool.owners(physical) == 1 &&
+              pool.free_chunks() == 0 && pool.write_need(target, 0, 1) == 0,
+              "last eviction makes active target exclusive without freeing its physical chunk");
+        std::vector<KvChunkMap::Copy> copies;
+        bool changed = true;
+        check(pool.prepare_write(target, 0, 1, copies, &changed) && !changed && copies.empty(),
+              "target writes after cache release without allocation or COW");
+    }
+    {
+        KvChunkMap pool;
+        pool.init(1);
+        const auto lane = pool.add_lane(1);
+        check(pool.reserve(lane, 1), "allocate external-owner planning fixture");
+        std::vector<uint8_t> backing(32, 8);
+        auto prefix = pool.retain(lane, 1);
+        ConversationCache cache(1 << 20, 4);
+        auto incoming = shared_image(prefix, 30, backing);
+        check(cache.put(shared_image(prefix, 10, backing)) && cache.put(shared_image(prefix, 20, backing)),
+              "park cohort alongside an external incoming image");
+        prefix.reset();
+        std::vector<const KvChunkMap::Prefix*> released;
+        check(cache.eviction_prefixes(2, released) && released.empty(),
+              "external incoming image prevents planned Prefix release");
+        incoming = {};
+        check(cache.eviction_prefixes(2, released) && released.size() == 1,
+              "dropping incoming image permits the complete cache cohort");
+        auto taken = cache.take(0);
+        check(cache.eviction_prefixes(1, released) && released.empty(),
+              "externally taken image prevents the remaining cache image releasing Prefix");
+        check(cache.put(std::move(taken)), "return external taken owner to cache");
+        const auto guarded = cache.best(std::vector<int32_t>{20, 2, 3, 4}, {}, true);
+        cache.guard(guarded.serial);
+        check(cache.eviction_prefixes(1, released) && released.empty(),
+              "guarded donor is not counted in the release cohort");
+        check(!cache.eviction_prefixes(2, released) && released.empty(),
+              "guarded donor is not an available eviction candidate");
+        cache.unguard();
+        check(cache.eviction_prefixes(2, released) && released.size() == 1,
+              "unguarding restores the complete evictable cohort");
+        taken = cache.take(0);
+        cache.retain(std::move(taken.kv), 3);
+        // The taken stage aliases are an external owner too; clear them before
+        // checking that retained reuse alone blocks release.
+        taken = {};
+        check(cache.eviction_prefixes(1, released) && released.empty(),
+              "retained reuse is not mistakenly counted as an evictable parked entry");
+        cache.retain({}, 0);
+        check(cache.eviction_prefixes(1, released) && released.size() == 1,
+              "dropping retained reuse permits the final parked owner to release Prefix");
+    }
+    {
+        KvChunkMap pool;
+        pool.init(1);
+        const auto lane = pool.add_lane(1);
+        check(pool.reserve(lane, 1), "allocate pinned-owner planning fixture");
+        std::vector<uint8_t> backing(32, 9);
+        auto prefix = pool.retain(lane, 1);
+        ConversationCache cache(1 << 20, 4);
+        auto pinned = shared_image(prefix, 10, backing);
+        ConversationCheckpoint checkpoint;
+        checkpoint.ids = {10};
+        checkpoint.pinned = true;
+        pinned.checkpoints.push_back(std::move(checkpoint));
+        check(cache.put(std::move(pinned)) && cache.put(shared_image(prefix, 20, backing)),
+              "park pinned and unpinned images of one Prefix");
+        prefix.reset();
+        std::vector<const KvChunkMap::Prefix*> released;
+        check(cache.eviction_prefixes(1, released) && released.empty(),
+              "pinned image prevents unpinned candidate releasing the shared Prefix");
+        check(!cache.eviction_prefixes(2, released) && released.empty(),
+              "pinned image cannot be planned as an eviction candidate");
+        check(cache.size() == 2 && cache.evictions() == 0 && pool.references() == 2,
+              "pinned planning remains read-only");
+    }
+}
+
+void shared_prefix_restore_admission() {
+    {
+        KvChunkMap pool;
+        pool.init(5);
+        const auto target = pool.add_lane(3), source = pool.add_lane(3), victim = pool.add_lane(1);
+        check(pool.reserve(target, 2) && pool.reserve(source, 2) && pool.reserve(victim, 1),
+              "fill restore-admission pool with old main, incoming prefix and victim");
+        std::vector<uint8_t> backing(64, 7);
+        auto pending_outgoing = image({90, 91, 92});
+        pending_outgoing.kv.resize(1);
+        pending_outgoing.kv[0].prefix = pool.retain(target, 2);
+        pending_outgoing.kv[0].k.prepend_shared(pending_outgoing.kv[0].prefix,
+                                               {backing.data(), backing.data() + 32}, 32);
+        auto incoming = image({10, 11, 12});
+        incoming.kv.resize(1);
+        incoming.kv[0].prefix = pool.retain(source, 2);
+        incoming.kv[0].k.prepend_shared(incoming.kv[0].prefix, {backing.data(), backing.data() + 32}, 32);
+        auto evictable = image({20, 21, 22});
+        evictable.kv.resize(1);
+        evictable.kv[0].prefix = pool.retain(victim, 1);
+        ConversationCache cache(1 << 20, 4);
+        check(cache.put(std::move(incoming)) && cache.put(std::move(evictable)),
+              "park incoming donor and genuinely reclaimable victim");
+        check(pool.shrink(source, 0) && pool.shrink(victim, 0), "cache images own donor and victim chunks");
+        const auto donor_match = cache.best(std::vector<int32_t>{10, 11, 12, 13}, {}, true);
+        const auto victim_match = cache.best(std::vector<int32_t>{20, 21, 22, 23}, {}, true);
+        const auto* donor = cache.find(donor_match.serial)->kv[0].prefix.get();
+        cache.guard(donor_match.serial);
+        const auto version = pool.version();
+        const auto refs = pool.references();
+        const auto bytes = cache.bytes();
+        const auto* target_address = pool.table(target);
+        const std::vector<int32_t> before_target(target_address, target_address + 3);
+        const std::vector<int32_t> before_source(pool.table(source), pool.table(source) + 3);
+        const std::vector<int32_t> before_victim(pool.table(victim), pool.table(victim) + 1);
+        std::vector<int64_t> owners;
+        for (int32_t physical = 0; physical < 5; ++physical) owners.push_back(pool.owners(physical));
+        auto unchanged = [&] {
+            check(pool.free_chunks() == 0 && pool.references() == refs && pool.version() == version,
+                  "restore dry-run preserves free count, references and version");
+            check(pool.table(target) == target_address && pool.held(target) == 2 &&
+                  std::vector<int32_t>(pool.table(target), pool.table(target) + 3) == before_target &&
+                  std::vector<int32_t>(pool.table(source), pool.table(source) + 3) == before_source &&
+                  std::vector<int32_t>(pool.table(victim), pool.table(victim) + 1) == before_victim,
+                  "restore dry-run preserves all lane tables and the captured target address");
+            for (int32_t physical = 0; physical < 5; ++physical)
+                check(pool.owners(physical) == owners[physical], "restore dry-run preserves each physical owner count");
+            check(cache.size() == 2 && cache.bytes() == bytes && cache.evictions() == 0 &&
+                  cache.find(donor_match.serial) && cache.find(victim_match.serial) &&
+                  pending_outgoing.live.ids == std::vector<int32_t>({90, 91, 92}),
+                  "refused admission leaves donor parked and outgoing image unparked and intact");
+        };
+        check(!pool.can_share(target, *donor, 2, 3),
+              "retained outgoing whole chunks cannot fund incoming private partial tail in a full pool");
+        unchanged();
+        check(pool.can_share(target, *donor, 2, 2),
+              "incoming completed chunks alone need no private tail allocation");
+        check(!pool.can_share(target, *donor, 2, 2, {}, {donor}),
+              "restore planner refuses to destroy its own raw source Prefix lease");
+        unchanged();
+        std::vector<const KvChunkMap::Prefix*> released;
+        check(cache.eviction_prefixes(1, released) && released.size() == 1 &&
+              released[0] != donor && pool.reclaimable({}, released) == 1,
+              "guarded incoming donor leaves one genuinely reclaimable cache candidate");
+        check(pool.can_share(target, *donor, 2, 3, {}, released),
+              "restore dry-run admits the partial tail when a real victim can release one chunk");
+        unchanged();
+        check(cache.evict_oldest() && cache.find(donor_match.serial) && !cache.find(victim_match.serial) &&
+              pool.free_chunks() == 1, "actual victim eviction releases exactly the planned private chunk");
+        check(pool.can_share(target, *donor, 2, 3), "actual eviction makes the same restore plan feasible");
+        std::vector<KvChunkMap::Copy> copies;
+        bool changed = false;
+        check(pool.share(target, *donor, 2, 3, copies, &changed) && changed && copies.empty(),
+              "production share succeeds after the admitted eviction");
+        check(pool.table(target) == target_address && pool.table(target)[0] == donor->chunks()[0] &&
+              pool.table(target)[1] == donor->chunks()[1] && pool.owners(pool.table(target)[2]) == 1,
+              "restore publishes shared completed chunks and an exclusive partial tail in the fixed table");
+        check(pool.owners(before_target[0]) == 1 && pool.owners(before_target[1]) == 1,
+              "retained outgoing image still owns the replaced old-main chunks");
+    }
+    {
+        KvChunkMap pool;
+        pool.init(5);
+        const auto donor = pool.add_lane(5), borrower = pool.add_lane(2);
+        check(pool.reserve(donor, 4), "capture donor longer than borrower's entire logical window");
+        auto prefix = pool.retain(donor, 4);
+        const auto version = pool.version();
+        const auto refs = pool.references();
+        constexpr int64_t chunk_tokens = 4, upto = 6;
+        constexpr int64_t whole = upto / chunk_tokens, need = (upto + chunk_tokens - 1) / chunk_tokens;
+        check(!pool.can_share(borrower, *prefix, 4, 5),
+              "donor's full captured extent does not fit the shorter borrower table");
+        check(pool.can_share(borrower, *prefix, whole, need),
+              "borrow admission uses only completed chunks below upto plus its private partial tail");
+        check(pool.version() == version && pool.references() == refs && pool.held(borrower) == 0 &&
+              pool.free_chunks() == 1 && pool.table(borrower)[0] == pool.trash() &&
+              pool.table(borrower)[1] == pool.trash(), "successful borrow dry-run is also read-only");
+        std::vector<KvChunkMap::Copy> copies;
+        check(pool.share(borrower, *prefix, whole, need, copies) && copies.empty(),
+              "actual shorter borrow agrees with production admission plan");
+        check(pool.held(borrower) == 2 && pool.table(borrower)[0] == prefix->chunks()[0] &&
+              pool.owners(pool.table(borrower)[1]) == 1 && pool.free_chunks() == 0,
+              "shorter borrow shares one complete chunk and privately owns its partial tail");
+        for (int c = 1; c < 4; ++c)
+            check(pool.table(borrower)[1] != prefix->chunks()[c], "borrow tail never aliases later donor chunks");
+    }
+}
 }
 
 int main() {
+    shared_buffer_serialization_and_mutation();
+    shared_prefix_cache_lifecycle();
+    shared_prefix_eviction_planning();
+    shared_prefix_restore_admission();
     {
         ConversationBuffer bytes;
         const size_t first = ConversationBuffer::segment_bytes + 17;
@@ -665,6 +1055,38 @@ int main() {
         check(cache.take_reuse_for(p_more).unchanged_tokens == 10, "the conversation's own continuation reuses all of it");
     }
     {
+        // --kv-pool-tokens: the chain moves with the K/V - every checkpoint that is a prefix of the conversation
+        // goes, in order; one of another conversation (or one past it) stays behind for the caller to drop
+        auto ck = [](std::vector<int32_t> ids, uint64_t used) {
+            ConversationCheckpoint c;
+            c.ids = std::move(ids);
+            c.used = used;
+            c.gdn.assign(8, 7);
+            return c;
+        };
+        std::vector<ConversationCheckpoint> from;
+        from.push_back(ck({1, 2}, 1));
+        from.push_back(ck({1, 2, 3, 4}, 2));
+        from.push_back(ck({1, 2, 9, 9}, 3));         // another branch
+        from.push_back(ck({1, 2, 3, 4, 5, 6, 7}, 4));  // past the conversation
+        from.push_back(ck({1, 2, 3, 4, 5}, 5));        // the whole conversation: a prefix
+        std::vector<ConversationCheckpoint> to;
+        to.push_back(ck({1}, 0));                      // what the receiver already holds stays first
+        check(conversation_checkpoints_carry(from, {1, 2, 3, 4, 5}, to) == 3, "carry: three checkpoints are prefixes");
+        check(to.size() == 4 && to[0].used == 0 && to[1].used == 1 && to[2].used == 2 && to[3].used == 5,
+              "carry: they arrive in order after what was there");
+        check(from.size() == 2 && from[0].used == 3 && from[1].used == 4, "carry: the others stay");
+        check(to[3].gdn.size() == 8 && to[3].gdn[0] == 7, "carry: the running state moved with it");
+        ConversationCheckpoint pic = ck({1, 2}, 6);
+        pic.imgs.push_back({1, 77});
+        std::vector<ConversationCheckpoint> with_picture, out;
+        with_picture.push_back(std::move(pic));
+        check(conversation_checkpoints_carry(with_picture, {1, 2, 3}, out) == 0 && out.empty(),
+              "carry: a checkpoint with a picture is not carried");
+        std::vector<ConversationCheckpoint> none, sink;
+        check(conversation_checkpoints_carry(none, {1, 2}, sink) == 0 && sink.empty(), "carry: nothing to move");
+    }
+    {
         // the later stages' retained K/V, kept with the first stage's and limited together
         auto kv = [](size_t n) {
             std::vector<ConversationKv> v(2);
@@ -744,6 +1166,26 @@ int main() {
         // what drop_superseded does with the slot's chain (the park this rule prevents): the root goes
         check(cache.drop_superseded(slot_ids, {}, slot_chain, true) == 1 && cache.size() == 0,
               "the slot's chain supersedes the richer copy");
+    }
+    {
+        // Equal placeholder tokens do not identify the image pixels affecting those K/V cells.
+        auto kv = [] { std::vector<ConversationKv> v(1); v[0].k.resize(100, 1); return v; };
+        ConversationCache cache(1 << 20, 4);
+        const std::vector<int32_t> root = {1, 2, 3, 4};
+        // the pictures: equal placeholder tokens over different pixels share only the cells before the picture
+        const std::vector<ConversationImageKey> img_a{{2, 111}}, img_b{{2, 222}};
+        cache.retain(kv(), 4, {}, root, img_a);
+        auto r = cache.take_reuse_for(root, img_b);
+        check(r.unchanged_tokens == 2, "the same tokens under different pixels stop at the picture");
+        cache.retain(kv(), 4, {}, root, img_a);
+        r = cache.take_reuse_for(root);
+        check(r.unchanged_tokens == 2, "a conversation without the picture reuses nothing past its start");
+        cache.retain(kv(), 4, {}, root, img_a);
+        r = cache.take_reuse_for(root, img_a);
+        check(r.unchanged_tokens == 4, "the same tokens and the same pixels keep everything");
+        check(conversation_shared_prefix({1, 2, 3}, {}, {1, 2}, {}) == 2, "shared prefix: the shorter prefix");
+        check(conversation_shared_prefix({1, 2, 3}, {}, {1, 9, 3}, {}) == 1, "shared prefix: to the first difference");
+        check(conversation_shared_prefix({1, 2}, {{1, 5}}, {1, 2}, {{1, 5}}) == 2, "shared prefix: equal pictures pass");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

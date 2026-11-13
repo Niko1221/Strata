@@ -384,25 +384,36 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     int64_t ring = (window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : 0;
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
-    const bool kv_hybrid_was = qsa_kv_hybrid();
-    const bool kv_int8_was = qsa_kv_int8();
-    qsa_set_kv_hybrid(false);
-    if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
-    uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
-    if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
-    if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
-        if (st_.kv_mode == 0) { err = "mtp: state init failed"; return false; }
-        std::fprintf(stderr, "strata mtp: no pinned RAM left for the draft layer's K/V copy; keeping it in VRAM\n");
-        cudaGetLastError();
-        cudaFree(state_arena_);
-        st_ = QsaState{};
-        ring = -1;   // fully resident
+    uint64_t sb = 0;
+    {
+        struct RestoreKvOptions {
+            bool hybrid = qsa_kv_hybrid();
+            bool int8 = qsa_kv_int8();
+            bool shared_host = qsa_kv_shared_host();
+            ~RestoreKvOptions() {
+                qsa_set_kv_int8(int8);
+                qsa_set_kv_hybrid(hybrid);
+                qsa_set_kv_shared_host(shared_host);
+            }
+        } restore;
+        qsa_set_kv_hybrid(false);
+        if (restore.hybrid) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
+        // The draft layer owns its host copy, including when its window covers the whole context.
+        qsa_set_kv_shared_host(false);
         sb = qsa_state_bytes(g, max_cells, false, ring);
         if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
-        if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
+        if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
+            if (st_.kv_mode == 0) { err = "mtp: state init failed"; return false; }
+            std::fprintf(stderr, "strata mtp: no pinned RAM left for the draft layer's K/V copy; keeping it in VRAM\n");
+            cudaGetLastError();
+            cudaFree(state_arena_);
+            st_ = QsaState{};
+            ring = -1;   // fully resident
+            sb = qsa_state_bytes(g, max_cells, false, ring);
+            if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
+            if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
+        }
     }
-    qsa_set_kv_int8(kv_int8_was);
-    qsa_set_kv_hybrid(kv_hybrid_was);
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;

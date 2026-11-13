@@ -58,6 +58,8 @@
 #define cudaGetDeviceProperties hipGetDeviceProperties
 #define cudaGetErrorString hipGetErrorString
 #define cudaGetLastError hipGetLastError
+#define cudaPointerAttributes hipPointerAttribute_t
+#define cudaPointerGetAttributes hipPointerGetAttributes
 #define cudaGraphDestroy hipGraphDestroy
 #define cudaGraphExecDestroy hipGraphExecDestroy
 #define cudaGraphExec_t hipGraphExec_t

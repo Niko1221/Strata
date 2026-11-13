@@ -206,6 +206,7 @@ bool layer_shared_early();
 /// `max_cells` is the sequence capacity the arena was sized for, and it fixes the rope table's length: a table
 /// shorter than the sequence would have `rope_neox_apply` read past it, which is a wrong rotation rather than a
 /// fault.
+class KvPool;
 struct QsaState {
     uint16_t* k_pool = nullptr;      ///< [page][kv_head][page_size][head_dim] fp16 (null in INT8 mode)
     uint16_t* v_pool = nullptr;
@@ -240,6 +241,7 @@ struct QsaState {
     /// context needs - its index in layer.cpp's registry; -1: carved from the arena as before.
     int32_t kv_elastic = -1;
     strata::kernels::KvHostPools host;
+    KvPool* prefix_pool = nullptr; ///< host-only opt-in owner API; never passed to a kernel
     strata::kernels::KvStreamMap map;
     int64_t idx_pooled_rows = 0;     ///< rows of `idx_pooled` (a ring, which has no indexer, keeps 2)
 
@@ -306,6 +308,13 @@ int64_t qsa_kv_resident();
 int64_t qsa_kv_resident_min();
 /// Pinned host bytes the streamed states hold (their host copies).
 uint64_t qsa_kv_host_bytes();
+/// A shared KV pool (kv_pool.hpp): a streamed state takes no host copy of its own, the pool attaches one. Set before
+/// initializing the sessions.
+void qsa_set_kv_shared_host(bool enabled);
+bool qsa_kv_shared_host();
+/// Pins `pages` blocks of host K/V in `st`'s format, device-mapped, and points `out`'s arrays into it (the layout
+/// of kv_stream.hpp). False when the driver refuses to pin.
+bool qsa_host_alloc(const ModelGeometry& g, const QsaState& st, int64_t pages, strata::kernels::KvHostPools& out);
 /// Plan v0.3 P7: store K/V as INT8 with FP16 scales per 64 values (half the VRAM of FP16). Set before sizing and
 /// initializing the session; default off until gate G-C accepts it.
 void qsa_set_kv_int8(bool enabled);
