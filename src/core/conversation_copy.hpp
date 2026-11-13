@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -135,12 +136,97 @@ inline void background_thread_placement() {
 #endif
 }
 
+/// #879-family (Windows/WDDM): the C++ heap can land inside a virtual range the HIP runtime tracks as pinned
+/// host memory.  The pointer attributes then claim type=host/dev=0 for an ordinary pageable allocation and
+/// hipMemcpyAsync refuses the copy with "invalid argument" - deterministically at one session size (the heap
+/// layout), clean at another, and never on Linux, where the heap placement differs.  And a GB-scale synchronous
+/// copy that is accepted can still interleave with expert-cache H2D streaming on the copy engine and land bytes
+/// wrong (decode then reads garbage as expert weights and the grouped GEMM writes NaN).  Stage the copy through
+/// a genuinely pinned buffer: the device leg sees a real HIP allocation, the per-chunk sync is the ordering
+/// WDDM honors at this size, and the host leg is a plain memcpy.  Same bytes, same order.
+inline bool copy_ptr_is_device(const void* p) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+    hipPointerAttribute_t a{};
+    if (hipPointerGetAttributes(&a, p) != hipSuccess) { cudaGetLastError(); return false; }
+    return a.type == hipMemoryTypeDevice;
+#elif defined(STRATA_GPU_METAL)
+    (void) p;   // no pointer-attribute query in the Metal shim: the staged path takes no part there
+    return false;
+#else
+    cudaPointerAttributes a{};
+    if (cudaPointerGetAttributes(&a, p) != cudaSuccess) { cudaGetLastError(); return false; }
+    return a.type == cudaMemoryTypeDevice;
+#endif
+}
+
+inline cudaError_t staged_copy(void* dst, const void* src, size_t bytes, bool to_host) {
+    cudaStream_t s = nullptr;
+    const cudaError_t se = private_stream(s);
+    void* stage = nullptr;
+    constexpr size_t kStage = (size_t) 16 << 20;
+    const cudaError_t he = cudaHostAlloc(&stage, bytes < kStage ? bytes : kStage, cudaHostAllocDefault);
+    if (se != cudaSuccess) return se;
+    if (he != cudaSuccess) return he;
+    cudaError_t staging = cudaSuccess;
+    for (size_t at = 0; at < bytes; at += kStage) {
+        const size_t n = std::min(kStage, bytes - at);
+        const cudaError_t st = to_host
+            ? cudaMemcpyAsync(stage, (const char*) src + at, n, cudaMemcpyDeviceToHost, s)
+            : (std::memcpy(stage, (const char*) src + at, n), cudaMemcpyAsync((char*) dst + at, stage, n, cudaMemcpyHostToDevice, s));
+        if (st != cudaSuccess) { staging = st; break; }
+        const cudaError_t sy = cudaStreamSynchronize(s);
+        if (sy != cudaSuccess) { staging = sy; break; }
+        if (to_host) std::memcpy((char*) dst + at, stage, n);
+        core::progress_beat();
+    }
+    cudaFreeHost(stage);   // the pinned buffer is released right away: a held one shifts the WDDM
+                           // allocation map again and can break the next graph capture
+    return staging;
+}
+
 /// `queued`: the copy is only queued on the private stream, and the caller synchronizes the device (or orders a
 /// later launch after it with order_after_queued) before anything reads the target or writes the source.
 inline cudaError_t copy_nonblocking(void* dst, const void* src, size_t bytes, bool queued = false) {
     if (const long at = test_copy_fail_at(); at > 0) {
         static std::atomic<long> copies{0};
         if (++copies == at) return cudaErrorMemoryAllocation;
+    }
+    // #879 (Windows/WDDM): every synchronous host<->device snapshot copy (running-state and K/V alike) goes
+    // staged-first through a pinned 16 MiB buffer; measured on an RX 9070 XT at 262144: direct copies ->
+    // non-finite logits every park round, staged-first -> clean.  STRATA_CKPT_STAGE_FIRST=0 opts back out for
+    // A/B (then: direct, and on a refusal consume it, retry with the direction explicit, stage as safety net).
+    // Queued copies keep the direct path (their ordering is the caller's event), as do device-to-device and
+    // host-to-host copies (the VRAM-slot and pool-alias paths).
+    if (!queued) {
+        const bool src_dev = copy_ptr_is_device(src), dst_dev = copy_ptr_is_device(dst);
+        if (src_dev != dst_dev) {
+            const bool to_host = src_dev;
+            static const bool stage_first = [] {
+                const char* v = std::getenv("STRATA_CKPT_STAGE_FIRST");
+                return v ? (v[0] != '0') : true;
+            }();
+            if (stage_first) return staged_copy(dst, src, bytes, to_host);
+            cudaStream_t s = nullptr;
+            cudaError_t e = private_stream(s);
+            if (e == cudaSuccess) e = cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDefault, s);
+            if (e == cudaSuccess) e = cudaStreamSynchronize(s);
+            if (e == cudaSuccess) { core::progress_beat(); return cudaSuccess; }
+            // The Default-kind copy was refused.  On Windows/WDDM HIP classifies the C++ heap as pinned host
+            // memory (hipPointerGetAttributes type 1), so the Default kind infers the wrong direction and the
+            // copy is rejected outright - the same bytes copy fine when the direction is stated.  Consume the
+            // refusal (a stale last-error would surface as a bogus launch failure in the next check_launch),
+            // retry with the direction explicit, and keep the staged path as the safety net.
+            cudaGetLastError();
+            s = nullptr;
+            if (private_stream(s) == cudaSuccess && s != nullptr) {
+                cudaError_t r = cudaMemcpyAsync(dst, src, bytes,
+                    to_host ? cudaMemcpyDeviceToHost : cudaMemcpyHostToDevice, s);
+                if (r == cudaSuccess) r = cudaStreamSynchronize(s);
+                if (r == cudaSuccess) { core::progress_beat(); return cudaSuccess; }
+                cudaGetLastError();
+            }
+            return staged_copy(dst, src, bytes, to_host);
+        }
     }
     cudaStream_t s = nullptr;
     cudaError_t e = private_stream(s);
