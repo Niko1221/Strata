@@ -1,0 +1,179 @@
+{
+  "label": "B",
+  "profile_sha256": "b1775fc10e8b2fe03f3552d49e1004d861abe061c1dbcf4b60cff6c2e2b68093",
+  "requests": [
+    {
+      "case": "clamp",
+      "prompt": "Return only Python 3 code for def clamp(x, lo, hi): which clips x to the inclusive interval [lo, hi]. Assume lo <= hi. No imports or explanation.",
+      "wall_seconds": 15.607508124012384,
+      "output": "```python\ndef clamp(x, lo, hi):\n    return max(lo, min(hi, x))\n```",
+      "quality_pass": true,
+      "raw": {
+        "id": "chatcmpl-53d2b873362e40939ed91081",
+        "object": "chat.completion",
+        "created": 1794241492,
+        "model": "qwen3.8-flash-next-iq3_xxs",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "```python\ndef clamp(x, lo, hi):\n    return max(lo, min(hi, x))\n```"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 49,
+          "completion_tokens": 26,
+          "total_tokens": 75,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 49,
+          "prompt_ms": 7216.8,
+          "prompt_per_token_ms": 147.282,
+          "prompt_per_second": 6.8,
+          "predicted_n": 26,
+          "predicted_ms": 8383.8,
+          "predicted_per_token_ms": 322.454,
+          "predicted_per_second": 3.1,
+          "draft_n": 21,
+          "draft_n_accepted": 21
+        }
+      }
+    },
+    {
+      "case": "overlap",
+      "prompt": "Return only Python 3 code for def overlap_length(a0, a1, b0, b1): which returns the length of the intersection of half-open intervals [a0,a1) and [b0,b1). Assume ordered endpoints. No imports or explanation.",
+      "wall_seconds": 53.19389633899846,
+      "output": "```python\ndef overlap_length(a0, a1, b0, b1):\n    return max(0, min(a1, b1) - max(a0, b0))\n```",
+      "quality_pass": true,
+      "raw": {
+        "id": "chatcmpl-dbb8bd5ad7954a70b706e06e",
+        "object": "chat.completion",
+        "created": 1794241507,
+        "model": "qwen3.8-flash-next-iq3_xxs",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "```python\ndef overlap_length(a0, a1, b0, b1):\n    return max(0, min(a1, b1) - max(a0, b0))\n```"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 67,
+          "completion_tokens": 43,
+          "total_tokens": 110,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 67,
+          "prompt_ms": 40579.5,
+          "prompt_per_token_ms": 605.664,
+          "prompt_per_second": 1.7,
+          "predicted_n": 43,
+          "predicted_ms": 12604.7,
+          "predicted_per_token_ms": 293.133,
+          "predicted_per_second": 3.4,
+          "draft_n": 41,
+          "draft_n_accepted": 34
+        }
+      }
+    },
+    {
+      "case": "sql",
+      "prompt": "Return only one SQLite SELECT statement. Given transactions(category TEXT, amount REAL), return category and the sum of strictly positive amounts for each category having such a row, ordered by category. Do not include zero or negative amounts. No explanation.",
+      "wall_seconds": 14.687494828991476,
+      "output": "SELECT category, SUM(amount) FROM transactions WHERE amount > 0 GROUP BY category ORDER BY category",
+      "quality_pass": true,
+      "raw": {
+        "id": "chatcmpl-f6ebb9760db844b8abc8fecc",
+        "object": "chat.completion",
+        "created": 1794241560,
+        "model": "qwen3.8-flash-next-iq3_xxs",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "SELECT category, SUM(amount) FROM transactions WHERE amount > 0 GROUP BY category ORDER BY category"
+            },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 59,
+          "completion_tokens": 20,
+          "total_tokens": 79,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 59,
+          "prompt_ms": 7993.2,
+          "prompt_per_token_ms": 135.478,
+          "prompt_per_second": 7.4,
+          "predicted_n": 20,
+          "predicted_ms": 6681.9,
+          "predicted_per_token_ms": 334.095,
+          "predicted_per_second": 3.0,
+          "draft_n": 18,
+          "draft_n_accepted": 13
+        }
+      }
+    }
+  ],
+  "ready_and_warm_seconds": 81.09551572900091,
+  "warmup_wall_seconds": 9.082154916992295,
+  "warmup": {
+    "id": "chatcmpl-6c8fa41307634a1083fc873b",
+    "object": "chat.completion",
+    "created": 1794241483,
+    "model": "qwen3.8-flash-next-iq3_xxs",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "OK"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 16,
+      "completion_tokens": 2,
+      "total_tokens": 18,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 16,
+      "prompt_ms": 7489.4,
+      "prompt_per_token_ms": 468.087,
+      "prompt_per_second": 2.1,
+      "predicted_n": 2,
+      "predicted_ms": 1586.6,
+      "predicted_per_token_ms": 793.3,
+      "predicted_per_second": 1.3,
+      "draft_n": 3,
+      "draft_n_accepted": 3
+    }
+  },
+  "cache_slots": 1587,
+  "capacity_match": true
+}

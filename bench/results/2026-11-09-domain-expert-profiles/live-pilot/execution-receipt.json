@@ -1,0 +1,14 @@
+{
+  "author": "Francisco Angulo de Lafuente",
+  "orcid": "https://orcid.org/0009-0001-1634-7063",
+  "managed_job": "a294856632574b15",
+  "actual_runtime_seconds": 513.1831982135773,
+  "execution_source_sha256": "8707ca420fc3323cf0dd39567e2793d692c942fd2cce3cc5c0058633984e076d",
+  "published_runner_sha256": "da8c51d5991f3b19de45ebc4602a5cfe0f31fcb8ed0b2e8dbc3d10adfca30222",
+  "published_runner_adjustment": "The lab checkout directory is read from baseline[\"cwd\"] instead of a hard-coded local path. Workload, generation settings, quality oracles and assessment logic are unchanged.",
+  "path_redaction": "Local lab and job-work paths are replaced by<LAB> and<RUN> in configuration and logs.",
+  "input_provenance": "PREREGISTRATION.json records the original pre-execution hashes. Config and runner paths were parameterized for publication; exact exported input hashes are in public-files.json.",
+  "training": "Both profiles were frozen from the original37requests before the pilot; none of the three new prompts is in that corpus.",
+  "profile_scope": "A profile orders both GPU-cache entries and the resident RAM tier; timings cannot isolate either tier alone.",
+  "outcome": "9of9 correctness gates pass; exact output/token parity fails in clamp. The frozen comparison and improvement gates fail. No speedup claim."
+}

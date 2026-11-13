@@ -1,0 +1,82 @@
+{
+  "author": "Francisco Angulo de Lafuente",
+  "orcid": "https://orcid.org/0009-0001-1634-7063",
+  "contribution_revision": "6d4bea0e44acba39f2679d75a13de008546a1ab1",
+  "upstream_base_revision": "f33c8c30588ff00e24b6b63bad0bf6a14da19081",
+  "head_counts": {
+    "passed": 1675,
+    "failed": 6,
+    "skipped": 78
+  },
+  "head_testcases": 1759,
+  "focused_profile_subset": {
+    "passed": 22,
+    "failed": 0,
+    "skipped": 0
+  },
+  "focused_modules": {
+    "tools.test_evaluate_domain_profiles": {
+      "passed": 13,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tools.test_make_profile": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0
+    },
+    "tools.test_make_profile_mix": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "base_selected_counts": {
+    "passed": 0,
+    "failed": 6,
+    "skipped": 0
+  },
+  "full_base_suite_executed": false,
+  "matched_failures": [
+    "tools.test_qwen4_intake.TablesMatchTheSources::test_reference_tokenizer_is_flash_nexts",
+    "tools.test_setup_pins.Requirements::test_a_changed_pin_is_installed",
+    "tools.test_setup_pins.Requirements::test_an_install_from_before_the_pins_is_left_alone",
+    "tools.test_setup_pins.Requirements::test_fresh_install_gets_every_pin",
+    "tools.test_sycl_build_guard.BuildGuard::test_known_bad_ocloc_stops_a_battlemage_aot_build",
+    "tools.test_sycl_build_guard.BuildGuard::test_other_versions_other_devices_and_the_switches_go_on"
+  ],
+  "matched_normalized_messages": true,
+  "environment": {
+    "os": "Windows",
+    "python": "3.13.7",
+    "pytest": "9.1.1",
+    "numpy": "2.5.4",
+    "requests": "2.34.2",
+    "jinja2": "3.1.6",
+    "pyyaml": "6.0.3"
+  },
+  "isolation": {
+    "task_local_userprofile": true,
+    "task_local_appdata": true,
+    "task_local_git_global_config": true,
+    "cuda_visible_devices": "",
+    "hf_hub_offline": "1",
+    "transformers_offline": "1"
+  },
+  "head_method": "Unchanged tools/check --only py-tools --keep, explicit scratch and JSON paths",
+  "base_method": "Full top-level tools/test_*.py collection; pytest -k selected only the six named failures",
+  "overall_extended_step_status": "failed",
+  "head_seconds": 1153.7,
+  "started_utc": "2026-11-09T20:38:02.217598+00:00",
+  "finished_utc": "2026-11-09T20:57:16.194031+00:00",
+  "harness_sha256": "2ca131130914d55de9d9d9a74de22aa4e5d167d88b27e2bb2b486c8db4f68692",
+  "original_junit_sha256": {
+    "head": "8e74a1085621dfdab068b605a97991a11187e3549cc2588b42ffa8b21e4b0cb3",
+    "base_selected": "37e9759dc73a0bbefc3f368808111d6c586fae5fa80c6ff9c654ff56485be010"
+  },
+  "observed_fake_gguf_allocated_bytes": 67766290144,
+  "observation_scope": "Four largest generated fixtures at one time; not a measured peak; cleaned by the test",
+  "test_sources_changed": false,
+  "production_sources_changed": false,
+  "claim_scope": "Local validation and matched base failures only; no full CI-matrix or inference-performance claim"
+}

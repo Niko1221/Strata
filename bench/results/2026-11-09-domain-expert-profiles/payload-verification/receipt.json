@@ -1,0 +1,31 @@
+{
+  "status": "succeeded",
+  "started_utc": "2026-11-09T17:21:01.864660+00:00",
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "metadata_sha256": "4c11beae2055edfaf739a04733a131cd8ccffb7bef3bbe3b625af08b07ab5634",
+  "verifier_sha256": "567a2c7f8908be68d4d198543a8072fdce0f7c8f8b3409b7e59c9b9f81e5792a",
+  "cpu_nice": 19,
+  "io_priority": "idle",
+  "method": "sequential full SHA256; read-only 8MiB chunks; stable file stat before/after",
+  "files": [
+    {
+      "file": "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "bytes": 47039860096,
+      "expected_sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+      "actual_sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+      "match": true,
+      "stable_stat": true
+    },
+    {
+      "file": "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "expected_sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+      "actual_sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+      "match": true,
+      "stable_stat": true
+    }
+  ],
+  "finished_utc": "2026-11-09T17:23:38.319157+00:00",
+  "seconds": 156.4544898180029
+}

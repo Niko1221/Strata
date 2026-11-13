@@ -1,0 +1,52 @@
+{
+  "exe": "<LAB>/strata/engine/strata",
+  "args": [
+    "--pack",
+    "<LAB>/data/packs/iq3_xxs",
+    "--native",
+    "<LAB>/models/iq3_xxs/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+    "--ple-gguf",
+    "<LAB>/models/iq3_xxs/IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+    "--expert-cache",
+    "1200",
+    "--prefill",
+    "auto",
+    "--spec",
+    "4",
+    "--spec-min-p",
+    "0.5",
+    "--mtp",
+    "<LAB>/data/mtp/rt",
+    "--max-context",
+    "65536",
+    "--kv",
+    "int8",
+    "--resident-budget-gib",
+    "10",
+    "--expert-profile",
+    "<RUN>/global.bin",
+    "--prompt-cache",
+    "0",
+    "--pcie-frac",
+    "0"
+  ],
+  "cwd": "<LAB>/strata",
+  "tokenizer": "<LAB>/data/packs/iq3_xxs/tokenizer",
+  "model_name": "qwen3.8-flash-next-iq3_xxs",
+  "log": "<RUN>/out/A1.engine.log",
+  "lib_dirs": [
+    "<LAB>/strata/.venv/lib/python3.13/site-packages/nvidia/cu13/lib"
+  ],
+  "port": 8199,
+  "gpu": [
+    0
+  ],
+  "open_browser": false,
+  "env": {
+    "STRATA_ROUTE_TAIL_SKIP": "0",
+    "STRATA_RESIDENT_HEADROOM_GIB": "6",
+    "STRATA_ROUTE_PRIOR": "0",
+    "STRATA_ADAPT_NOWAIT": "0",
+    "STRATA_ADAPT_LAG": "1"
+  }
+}

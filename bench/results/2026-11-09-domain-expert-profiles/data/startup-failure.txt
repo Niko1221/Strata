@@ -1,0 +1,17 @@
+loading the model (the first start takes a minute or two) ...
+[strata] Drafting: MTP (the DFlash2 drafter isn't downloaded yet)
+Traceback (most recent call last):
+  File "<LAB>/strata/serve/server.py", line 10479, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "<LAB>/strata/serve/server.py", line 9834, in main
+    return _main(argv, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code)
+  File "<LAB>/strata/serve/server.py", line 10170, in _main
+    engine = start_engine_or_fallback(cfg, exe, effort_end, env, lazy, tok, offline=a.offline, batch_telemetry=a.batch_telemetry)
+  File "<LAB>/strata/serve/server.py", line 9432, in start_engine_or_fallback
+    return StrataEngine(exe, engine_args(cfg, exe) + (effort_end or []), cwd=cfg.get("cwd"), log=cfg.get("log"), env=env, lazy=lazy,
+                        retry_args=mtp_retry_args(cfg, exe, effort_end), retry_vram_args=nodraft_retry_args(cfg, exe, effort_end))
+  File "<LAB>/strata/serve/server.py", line 1178, in __init__
+    self.log = open(log, "a", encoding="utf-8") if log else subprocess.DEVNULL
+               ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'out/tanda_3.engine.log'

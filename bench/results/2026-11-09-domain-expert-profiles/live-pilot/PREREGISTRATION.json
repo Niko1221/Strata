@@ -1,0 +1,17 @@
+{
+  "kind": "prospective_protocol_before_live_ABA_results",
+  "author": "Francisco Angulo de Lafuente",
+  "orcid": "https://orcid.org/0009-0001-1634-7063",
+  "sealed_utc": "2026-11-09T16:20:36.583100+00:00",
+  "files": {
+    "run_live.py": "8707ca420fc3323cf0dd39567e2793d692c942fd2cce3cc5c0058633984e076d",
+    "baseline.json": "f63dd51fb237c9c68757beeb43facd3388c3748741ae269f93f1f0c27acd8063",
+    "LIVE_PROTOCOL.md": "ac3c5da9115fef981d919f573d6a5e4f429953ac716575d3ac425f3c8c0d2a39",
+    "capacity-plan.json": "e094a4234854224ead175961ed39a38ef8ce24b8af6103f6420c8479265cef69",
+    "native_experts.txt": "ae28cf7a2a1c9063c4b55d6c8cf86d4d079dcddcf597f9e8697c9157d462c0ee",
+    "global.bin": "23decc69d005d2df51d24df9d0d7025c25d5d87985acdb45afa868a387b756f3",
+    "code.bin": "b1775fc10e8b2fe03f3552d49e1004d861abe061c1dbcf4b60cff6c2e2b68093"
+  },
+  "independent_review": "EGM read-only checks completed; no remaining findings; oracles,capacity,andcleanup verified in memory",
+  "selection": "Code domain selected after positive exploratory37request signal; three new prompts; pilotprofiles remain trainedon37"
+}

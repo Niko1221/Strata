@@ -1,0 +1,29 @@
+{
+  "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+  "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+  "source_url": "https://huggingface.co/api/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/revision/ed59f92082b1e93c0e96d60a8b11aab089b52f09?blobs=true",
+  "retrieved_utc": "2026-11-09T15:43:25.313670+00:00",
+  "files": [
+    {
+      "rfilename": "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+      "blobId": "669b2e63c1599cefdad9af03cf3825d619b6d409",
+      "size": 47039860096,
+      "lfs": {
+        "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15",
+        "size": 47039860096,
+        "pointerSize": 136
+      }
+    },
+    {
+      "rfilename": "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+      "blobId": "5b6ab49f5c8ac8c1ff7f3e9e9c79c7b2212660e6",
+      "size": 28800138432,
+      "lfs": {
+        "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113",
+        "size": 28800138432,
+        "pointerSize": 136
+      }
+    }
+  ],
+  "verification": "Both revision and LFSsha256 match the local Hugging Face download metadata; no full local payload rehash."
+}

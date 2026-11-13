@@ -1,0 +1,6 @@
+*.json text eol=lf
+data/*.txt text eol=lf -whitespace
+data/*.gz -text
+payload-verification/* -text -whitespace
+validation/* -text -whitespace
+holdout-transfer/* -text -whitespace
