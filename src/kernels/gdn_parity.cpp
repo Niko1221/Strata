@@ -611,11 +611,18 @@ int main(int argc, char** argv) {
         }
         cudaFree(d_a); cudaFree(d_b); cudaFree(d_h); cudaFree(d_qkv); cudaFree(d_g); cudaFree(d_bt); cudaFree(d_z);
         cudaFree(d_y); cudaFree(d_gm); cudaFree(d_nk);
-        if (launched)
+        const char* cs_env = std::getenv("STRATA_GDN_COMMIT_SPLIT");
+        const char* dbg_env = std::getenv("STRATA_DBG_GDN");
+        const bool expect_batched = (!cs_env || cs_env[0] != '0') && (!dbg_env || dbg_env[0] != '1');
+        if (launched) {
             std::printf("  %-42s %s (%d cases, %d layers)\n", "gdn_commit_layers == per-layer commit", lb_bad ? "*** NO ***" : "bitwise",
                         lb_n, L);
-        else
-            std::printf("  %-42s skipped (the per-layer commit is not the state-only kernel here)\n", "gdn_commit_layers");
+        } else if (expect_batched) {
+            std::printf("  %-42s *** NO (unexpectedly skipped) ***\n", "gdn_commit_layers == per-layer commit");
+            ++lb_bad;
+        } else {
+            std::printf("  %-42s skipped (per-layer commit override set)\n", "gdn_commit_layers");
+        }
         bad += lb_bad;
     }
 
