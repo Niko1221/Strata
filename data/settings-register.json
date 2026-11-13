@@ -7757,6 +7757,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DUMP_TOKENS_DIR",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 18245,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "research",
+   "owner": "program",
+   "note": "[reviewed] Measurement only, off by default: writes each slot's generated tokens to <dir> for a later STRATA_FOLLOW_DIR run. [src/program/generate.cpp:18239]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_DUMP_WINDOW_TOP2",
    "backends": [
     "sycl"
@@ -9176,6 +9209,39 @@
    "status": "research",
    "owner": "program",
    "note": "[reviewed] Described as a \"STRATA_FOLLOW test path\"; test-only switch. [notes-148-intel.md:83]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_FOLLOW_DIR",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 18244,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "research",
+   "owner": "program",
+   "note": "[reviewed] Measurement only, off by default: forces the continuation read from <dir> (written by STRATA_DUMP_TOKENS_DIR) in place of the head's picks. [src/program/generate.cpp:18239]",
    "retire_after": "",
    "retired_in": ""
   },
@@ -27980,6 +28046,76 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPELINE_HIT_MIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 16881,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "0.35",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:193"
+   ],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "default",
+   "owner": "program",
+   "note": "[reviewed] Tunable with a built-in default (0.35): the pipelined chain launches windows whose hit rate reaches it. [docs/MULTI_GPU.md:193]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_LAZY_CHAIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 16887,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:196"
+   ],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] The pipelined chain launches only the windows still needed by default; =0 restores the whole chain at once. [docs/MULTI_GPU.md:196]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPELINE_LOG",
    "backends": [
     "cuda-hip",
@@ -28056,6 +28192,41 @@
    "status": "research",
    "owner": "program",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_LOOKUP_RUN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 16894,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:198"
+   ],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] A copied stretch runs window behind window by default; =0 restores the chain's window. [docs/MULTI_GPU.md:198]",
    "retire_after": "",
    "retired_in": ""
   },
