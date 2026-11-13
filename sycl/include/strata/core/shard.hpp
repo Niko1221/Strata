@@ -350,6 +350,16 @@ inline int& tp_rank_ref() { thread_local int r = 0; return r; }
 inline int& tp_ranks_ref() { thread_local int r = 1; return r; }
 inline int tp_rank_current() { return tp_rank_ref(); }
 inline int tp_ranks_current() { return tp_ranks_ref(); }
+/// THE EXPERT GROUP (opt-in, STRATA_TP_DENSE=replicated).  In that mode every rank holds the WHOLE dense model
+/// (`tp_ranks_current()` stays 1, so every geometry is the single card's) and only the experts are split between
+/// the ranks.  These two say which member of the expert group a thread is; 0 of 1 when the mode is off, where the
+/// expert group is the tensor-parallel group itself.
+inline int& tp_xrank_ref() { thread_local int r = 0; return r; }
+inline int& tp_xranks_ref() { thread_local int r = 0; return r; }
+inline int tp_expert_rank() { return tp_xranks_ref() > 0 ? tp_xrank_ref() : tp_rank_ref(); }
+inline int tp_expert_ranks() { return tp_xranks_ref() > 0 ? tp_xranks_ref() : tp_ranks_ref(); }
+inline void tp_set_expert_ranks(int rank, int ranks) { tp_xrank_ref() = rank; tp_xranks_ref() = ranks; }
+
 /// The engine calls this ONCE, before anything is sized, when it assembles a tensor-parallel pair.  A pair that
 /// is not a pair (rank outside [0, ranks)) is refused rather than clamped: it would silently size a rank's
 /// buffers from another rank's geometry.

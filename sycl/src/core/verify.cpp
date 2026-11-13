@@ -851,7 +851,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     // TENSOR PARALLEL, EXPERT SPLIT (opt-in, `tp_expert_split()`): the shared expert is counted once, on rank 0.  Every
     // other rank combines its own experts' rows with zeros in the shared expert's place, and the all-reduce after the
     // combine adds the ranks' partial sums.
-    if (strata::core::tp_expert_split() && strata::core::tp_rank_current() > 0) {
+    if (strata::core::tp_expert_split() && strata::core::tp_expert_rank() > 0) {
         tp_zero_shared_ = sycl::malloc_device<float>((size_t) T * N, dpct::get_in_order_queue());
         if (tp_zero_shared_ == nullptr) { err = "verify: the expert split's zero rows failed"; return false; }
         dpct::get_in_order_queue().memset(tp_zero_shared_, 0, (size_t) T * N * sizeof(float)).wait();
@@ -1741,8 +1741,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
         }
         // EXPERT SPLIT: each rank computed only the experts it owns, so the layer's FFN output is the sum over ranks.
-        if (strata::core::tp_expert_split() && strata::core::tp_ranks_current() > 1 &&
-            !strata::core::tp_owed_reduce(bo_ + tb * N, (int64_t) n * N, cs, err))
+        if (strata::core::tp_expert_split() && strata::core::tp_expert_ranks() > 1 &&
+            !strata::core::tp_expert_reduce(bo_ + tb * N, (int64_t) n * N, cs, err))
             return false;
         if (grp == 0 && l <= 1) {
             if (tpd_on) {

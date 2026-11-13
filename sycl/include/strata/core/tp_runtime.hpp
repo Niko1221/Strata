@@ -74,6 +74,11 @@ private:
 /// before any rank is built; nothing reads the environment after that.
 inline std::atomic<bool>& tp_expert_split_flag() { static std::atomic<bool> on{false}; return on; }
 inline bool tp_expert_split() { return tp_expert_split_flag().load(std::memory_order_relaxed); }
+/// REPLICATED DENSE (opt-in, STRATA_TP_DENSE=replicated; needs the expert split).  Every rank loads the whole dense
+/// model and a whole session, so no dense projection owes a reduce; the experts are still split, and the one reduce
+/// a layer has is the one after the expert combine.
+inline std::atomic<bool>& tp_dense_replicated_flag() { static std::atomic<bool> on{false}; return on; }
+inline bool tp_dense_replicated() { return tp_dense_replicated_flag().load(std::memory_order_relaxed); }
 
 /// The all-reduce a tensor-parallel rank OWES at a contraction point (`ssm_out`, `attn_output`): add the
 /// peer's partial sum INTO `y` (`n` floats) on `stream`.  True with nothing done on a single-card run,
@@ -83,6 +88,14 @@ inline bool tp_owed_reduce(float* y, int64_t n, void* stream, std::string& err) 
     TpRuntime* tp = TpRuntime::current();
     if (std::getenv("STRATA_TP_DIAG_REDUCE") != nullptr)
         std::fprintf(stderr, "TPDIAG owed_reduce current=%p n=%lld\n", (void*) tp, (long long) n);
+    // replicated dense: the rank holds the whole projection, so `y` is already the sum
+    if (tp != nullptr && tp_dense_replicated()) return true;
+    return tp == nullptr || tp->reduce(y, n, stream, err);
+}
+
+/// The reduce after the expert combine under the expert split: every rank's `y` holds only its own experts' rows.
+inline bool tp_expert_reduce(float* y, int64_t n, void* stream, std::string& err) {
+    TpRuntime* tp = TpRuntime::current();
     return tp == nullptr || tp->reduce(y, n, stream, err);
 }
 

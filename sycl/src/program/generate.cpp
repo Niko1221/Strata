@@ -1147,6 +1147,7 @@ void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t 
 /// other ranks' logits are discarded.
 struct TpGroup {
     int n = 0;
+    bool whole = false;   // STRATA_TP_DENSE=replicated: the ranks hold the whole dense model, the experts are split
     strata::core::Verifier* ver0 = nullptr;
     std::vector<strata::program::TpRank*> ranks;      // rank 1..n-1
     std::vector<Drive> drives;                        // per-rank Drive copies (rank 0 uses drives[0])
@@ -1163,7 +1164,8 @@ struct TpGroup {
         for (int r = 0; r < n; ++r) {
             th.emplace_back([&, r] {
                 std::string e;
-                if (!strata::core::tp_set_ranks(r, n, e)) { errs[(size_t) r] = e; return; }
+                if (whole) strata::core::tp_set_expert_ranks(r, n);
+                else if (!strata::core::tp_set_ranks(r, n, e)) { errs[(size_t) r] = e; return; }
                 strata::core::TpRuntime::install(rt[(size_t) r].get());
                 strata::core::Verifier* v = r == 0 ? ver0 : &ranks[(size_t) r - 1]->ver;
                 int32_t* out = r == 0 ? out0 : outs.data() + (size_t) r * (size_t) T;
@@ -3177,7 +3179,19 @@ int main(int argc, char **argv) try {
     strata::core::ShardTable shard_table;
     strata::core::ShardPlan shard_plan;
     const strata::core::ShardPlan* shard_arg = nullptr;
-    if (o.tp > 0) {
+    // STRATA_TP_DENSE=replicated (opt-in, with STRATA_TP_EXPERT_SPLIT=1): every rank holds the whole dense model
+    // and only the experts are split, so rank 0 loads exactly what a single card loads.
+    const bool tp_whole = o.tp > 0 && [] {
+        const char* d = std::getenv("STRATA_TP_DENSE");
+        const char* s = std::getenv("STRATA_TP_EXPERT_SPLIT");
+        return d != nullptr && std::strcmp(d, "replicated") == 0 && s != nullptr && std::atoi(s) != 0;
+    }();
+    if (tp_whole) {
+        strata::core::tp_dense_replicated_flag().store(true);
+        std::fprintf(stderr, "strata generate: --tp %d: every rank holds the whole dense model; only the experts "
+                             "are split (STRATA_TP_DENSE=replicated)\n", o.tp);
+    }
+    if (o.tp > 0 && !tp_whole) {
         if (!strata::core::shard_table_n(g, 0, o.tp, shard_table, err)) {
             std::fprintf(stderr, "strata generate: --tp %d: %s\n", o.tp, err.c_str());
             return 2;
@@ -7820,7 +7834,7 @@ int main(int argc, char **argv) try {
         // computes its head ranges - both derive from `tp_rank_current()`/`tp_ranks_current()`, whose default is
         // "one rank holds the whole model".  Left at that default, this rank sizes a FULL geometry against tensors
         // the loader has already cut: a deterministic wrong answer.
-        if (o.tp > 0 && !strata::core::tp_set_ranks(0, o.tp, err)) {
+        if (o.tp > 0 && !tp_whole && !strata::core::tp_set_ranks(0, o.tp, err)) {
             std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
             return 1;
         }
@@ -7870,6 +7884,7 @@ int main(int argc, char **argv) try {
                 return 1;
             }
             tp_group.n = o.tp;
+            tp_group.whole = tp_whole;
             tp_group.ver0 = &ver;
             tp_group.ss0 = &ss;
             tp_group.pair = &tp_pair;
@@ -7972,13 +7987,19 @@ int main(int argc, char **argv) try {
                     }
                 }
             }
+            if (tp_whole && tp_owner.empty()) {   // whole ranks that all computed every expert would count them N times
+                std::fprintf(stderr, "strata serve: --tp %d: STRATA_TP_DENSE=replicated needs the expert split, which "
+                                     "did not turn on (see above)\n", o.tp);
+                return 1;
+            }
             for (int r = 1; r < o.tp; ++r) {
                 auto rk = std::make_unique<strata::program::TpRank>();
-                if (!rk->build(o.pack, o.native_shards, &tp_skip, g, o.max_context, ss.k, ordinals[(size_t) r], r,
+                // (a whole rank skips what the engine itself skips: it has no plan that keeps the head off it)
+                if (!rk->build(o.pack, o.native_shards, tp_whole ? &skip : &tp_skip, g, o.max_context, ss.k, ordinals[(size_t) r], r,
                                o.tp, tp_heads.empty() ? nullptr : tp_heads[(size_t) r - 1].get(),
                                std::max(o.spec, o.batch), err, &vh,
                                xcache.valid() ? xcache.bytes() : 0, &sized_slots,
-                               tp_owner.empty() ? nullptr : &tp_own[(size_t) r])) {
+                               tp_owner.empty() ? nullptr : &tp_own[(size_t) r], tp_whole)) {
                     std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
                     return 1;
                 }
@@ -11116,7 +11137,9 @@ int main(int argc, char **argv) try {
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
                 // TENSOR PARALLEL: the prompt must be read through the same verify windows on every rank.  The
                 // batched path is not wired for a group, and a rank that took it would skip the collective.
-                if (o.tp > 0) return true;
+                // (STRATA_TP_DENSE=replicated: rank 0 is a whole model, so it reads a long prompt on the batched
+                // path and its state is copied to the other ranks - `tp_broadcast` below)
+                if (o.tp > 0 && !tp_whole) return true;
                 if (no_short || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)
@@ -11443,6 +11466,39 @@ int main(int argc, char **argv) try {
             // far is copied into <slot> (this admission's own, or a free one the server reserved for a solo request),
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
+            // REPLICATED DENSE: RANK 0'S STATE TO EVERY OTHER RANK.  Rank 0 read the prompt up to `upto` on the batched
+            // path; the other ranks hold whole sessions carved alike, so the conversation snapshot - the same image a
+            // parked conversation is - is saved once from rank 0 and restored into each of them.
+            auto tp_broadcast = [&](int64_t upto, std::string& e) -> bool {
+                if (!tp_whole || tp_ranks.empty() || upto <= 0) return true;
+                const auto tb0 = Clock::now();
+                dpct::get_current_device().queues_wait_and_throw();
+                std::vector<int32_t> pre((size_t) upto);
+                for (int64_t i = 0; i < upto; ++i) pre[(size_t) i] = (int32_t) ids[(size_t) i];
+                const std::vector<strata::core::ConversationImageKey> no_imgs;
+                const std::vector<strata::core::ConversationCheckpoint> no_checks;
+                const strata::core::ConversationView view{pre, no_imgs, no_checks, false};
+                strata::core::SavedConversation image;
+                if (!strata::core::conversation_snapshot_save(image, view, ss, g, (const strata::core::QsaState*) nullptr, e))
+                    return false;
+                // (the background park and checkpoint copies are CUDA-only options: the image is whole here)
+                const double save_ms = std::chrono::duration<double, std::milli>(Clock::now() - tb0).count();
+                for (auto& rk : tp_ranks) {
+                    const strata::core::OnDevice on(rk->dev);
+                    dpct::get_current_device().queues_wait_and_throw();
+                    if (strata::core::conversation_snapshot_restore(image, rk->ss, g, (const strata::core::QsaState*) nullptr,
+                                                                    e) != strata::core::ConversationRestore::restored) {
+                        e = "tensor parallel: rank " + std::to_string(rk->rank) + " could not take rank 0's prompt state: " + e;
+                        return false;
+                    }
+                    dpct::get_current_device().queues_wait_and_throw();
+                }
+                std::fprintf(stderr, "strata serve: --tp %d: %lld prompt tokens' state copied to the other ranks in %.0f ms "
+                                     "(saved in %.0f ms, %zu MiB)\n", o.tp, (long long) upto,
+                             std::chrono::duration<double, std::milli>(Clock::now() - tb0).count(), save_ms,
+                             image.bytes() >> 20);
+                return true;
+            };
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
                 // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
                 if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
@@ -11609,7 +11665,8 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 const auto tsp = Clock::now();
-                const bool sp_ok = win ? read_windows(at, to, err) : read_part(at, to, err);
+                const bool sp_ok = win ? read_windows(at, to, err)
+                                       : (read_part(at, to, err) && tp_broadcast(to, err));
                 if (trace) {
                     std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (to - at),
                                  win ? "windows" : "batched",

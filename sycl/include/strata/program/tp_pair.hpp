@@ -103,7 +103,9 @@ struct TpRank {
                int64_t k, int device, int which, int how_many, const strata::core::NativeHead* head, int max_t,
                std::string& err, const strata::core::VerifyHits* src_cache = nullptr,
                int64_t src_cache_bytes = 0, const std::vector<int64_t>* slot_bytes = nullptr,
-               const std::vector<TpOwnedExpert>* own = nullptr) {
+               const std::vector<TpOwnedExpert>* own = nullptr, bool whole = false) {
+        // `whole` (STRATA_TP_DENSE=replicated): the rank loads the WHOLE dense model and a whole session, exactly
+        // as a single card does; only its experts are its own.
         dev = device;
         rank = which;
         ranks = how_many;
@@ -125,22 +127,23 @@ struct TpRank {
         // this rank's plan decides what it holds; `plan` outlives the load call below
         strata::core::ShardTable table;
         strata::core::ShardPlan plan;
-        if (!strata::core::shard_table_n(g, rank, ranks, table, err) ||
-            !strata::core::shard_plan_layers(table, g, rank, plan, err)) {
+        if (!whole && (!strata::core::shard_table_n(g, rank, ranks, table, err) ||
+                       !strata::core::shard_plan_layers(table, g, rank, plan, err))) {
             return false;
         }
-        if (!strata::core::WeightTable::pool_bytes(pack, arena_bytes, err, skip, &plan)) return false;
+        const strata::core::ShardPlan* plan_arg = whole ? nullptr : &plan;
+        if (!strata::core::WeightTable::pool_bytes(pack, arena_bytes, err, skip, plan_arg)) return false;
         sycl::queue& q = dpct::get_in_order_queue();
         arena = strata::malloc_device_guarded(arena_bytes, q, "tensor parallel rank arena");
         if (arena == nullptr) {
             err = "tensor parallel: the rank's arena failed";
             return false;
         }
-        if (!wt.load(pack, arena, arena_bytes, err, skip, &plan)) return false;
+        if (!wt.load(pack, arena, arena_bytes, err, skip, plan_arg)) return false;
         // the native upload takes only this rank's rows of each matrix it serves
         // include_ple_key: the rank needs its own copy of the PLE key, which the canonical loader skips
         // because the engine serves it natively on rank 0.  Without it the rank's PLE is not ready.
-        if (!dense.load(native_shards, wt, err, true, 0, -1, &plan)) return false;
+        if (!dense.load(native_shards, wt, err, true, 0, -1, plan_arg)) return false;
         // the session, exactly as the layer split builds one
         session_buf = sycl::malloc_device(strata::core::session_bytes(g, max_context, k, 0, g.n_layers), q);
         if (session_buf == nullptr) {
@@ -286,8 +289,11 @@ struct TpRank {
         // windows rank 1's head ranges.  Rank 1's thread sets it again for its own window.
         const int save_rank = strata::core::tp_rank_current();
         const int save_ranks = strata::core::tp_ranks_current();
-        if (!strata::core::tp_set_ranks(rank, ranks, err)) return false;
+        const int save_xrank = strata::core::tp_xrank_ref(), save_xranks = strata::core::tp_xranks_ref();
+        if (whole) strata::core::tp_set_expert_ranks(rank, ranks);
+        else if (!strata::core::tp_set_ranks(rank, ranks, err)) return false;
         const bool inited = ver.init(wt, g, ss, vh, head, max_t, err);
+        strata::core::tp_set_expert_ranks(save_xrank, save_xranks);
         std::string init_err = err;
         ver.set_stream(stream);
         ver.set_stage(0, g.n_layers, nullptr, nullptr);   // every layer, no hand-off anywhere
