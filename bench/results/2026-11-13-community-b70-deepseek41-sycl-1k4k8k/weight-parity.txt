@@ -1,0 +1,11 @@
+Q6_K head.weight: 17x5120, decode mismatches 0, mv mismatches 0, max abs error 8.51694e-07; busy FP16 unsupported: decode mismatches 0, GEMM mismatches 0, max abs error 0
+Q8_0 embed.weight: 17x5120, decode mismatches 0, mv mismatches 0, max abs error 1.03219e-06; busy FP16 unsupported: decode mismatches 0, GEMM mismatches 0, max abs error 0
+IQ1_S layers.0.ffn.experts.0.w2.weight: 17x2304, decode mismatches 0, mv mismatches 0, max abs error 8.73115e-08; busy FP16 tested: decode mismatches 0, GEMM mismatches 0, max abs error 2.68221e-07
+BF16 layers.2.attn.compressor.wgate.weight: 17x5120, decode mismatches 0, mv mismatches 0, max abs error 1.39582e-07; busy FP16 unsupported: decode mismatches 0, GEMM mismatches 0, max abs error 0
+IQ2_XXS layers.5.ffn.experts.0.w2.weight: 17x2304, decode mismatches 0, mv mismatches 0, max abs error 1.32073e-07; busy FP16 tested: decode mismatches 0, GEMM mismatches 0, max abs error 1.19209e-07
+IQ2_S layers.20.ffn.experts.0.w2.weight: 17x2304, decode mismatches 0, mv mismatches 0, max abs error 8.09378e-08; busy FP16 tested: decode mismatches 0, GEMM mismatches 0, max abs error 1.63913e-07
+Q5_K layers.27.ffn.shared_experts.w2.weight: 17x2304, decode mismatches 0, mv mismatches 0, max abs error 5.89062e-08; busy FP16 unsupported: decode mismatches 0, GEMM mismatches 0, max abs error 0
+IQ2_XS layers.30.ffn.experts.0.w2.weight: 17x2304, decode mismatches 0, mv mismatches 0, max abs error 1.01398e-07; busy FP16 tested: decode mismatches 0, GEMM mismatches 0, max abs error 1.49012e-07
+IQ4_NL layers.1.engram.embed.weight: 17x256, decode mismatches 0, mv mismatches 0, max abs error 1.53482e-06; busy FP16 tested: decode mismatches 0, GEMM mismatches 0, max abs error 1.78814e-06
+MXFP4 mtp.0.ffn.experts.0.w1.weight: 17x5120, decode mismatches 0, mv mismatches 0, max abs error 0; busy FP16 unsupported: decode mismatches 0, GEMM mismatches 0, max abs error 0
+Real-weight parity: 10 types, 0 failures

@@ -1,0 +1,200 @@
+{
+  "upstream_base": "13eedf552417a6a791a7d13c6597e24300ee3a09",
+  "source_diff_sha256": "e013fcd4d696b2c2915113684d3260e4c865e739747104211a29090ebe686035",
+  "source_diff_note": "33-file implementation diff before committing; compiled inputs are pinned below",
+  "compiled_source_files": [
+    {
+      "path": "sycl/CMakeLists.txt",
+      "sha256": "ab8b9f2e25973b1720a419590c2e82280dad40fbd4aacb56394906175d664a6f",
+      "bytes": 40434
+    },
+    {
+      "path": "sycl/DSV41.md",
+      "sha256": "97c92e29983005a1cb880377cb7b65ae544ebcb2517929a343dd2eef0d1f3fe2",
+      "bytes": 6409
+    },
+    {
+      "path": "sycl/include/strata/dsv41/exl3.hpp",
+      "sha256": "ea3863f32f9df6697b614ee98fcd00a3746fdacb513acc907241d10b748b4653",
+      "bytes": 12378
+    },
+    {
+      "path": "sycl/include/strata/dsv41/moe_win.hpp",
+      "sha256": "1aaabbb27a762360d18e1a2482c1e8f77729c06495f6ff393fd6af37358368b3",
+      "bytes": 2122
+    },
+    {
+      "path": "sycl/include/strata/dsv41/sampler.hpp",
+      "sha256": "a67f8fc0820f556f9b38d85d68f5fac5b312b89ee30d13d494ff2beed7a72983",
+      "bytes": 6608
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_attn_split.dp.hpp",
+      "sha256": "85dc8f3e48ac4f57f48b092b0fe3d3e2e47274cbb7d568ca3e08a7221a93dbc9",
+      "bytes": 14127
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_gguf.dp.cpp",
+      "sha256": "b00fc51b74a46ca573ee71764ccbc4b8c4f2a06f39e44190732c314d4e7defdd",
+      "bytes": 110062
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_gguf.dp.hpp",
+      "sha256": "150b4e5c5e57366eb2e7737fb27a920534d1548de28143d5c0a750f5306949fc",
+      "bytes": 6222
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_iq.dp.cpp",
+      "sha256": "c96b31bd612577678806b787077c84ce85ffacb55cac65dbc44c750bd2c20d13",
+      "bytes": 147901
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_iq.dp.hpp",
+      "sha256": "19e6171bd75fac2f82707d96cb4dd8744cbe0f2abde781bdb79ba02f199bc86f",
+      "bytes": 9696
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_kernels.dp.cpp",
+      "sha256": "5ab81c5ead60018cc04dc98b9af804daad1e718975abfd9186bb3f2daa7561c2",
+      "bytes": 218252
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_kernels.dp.hpp",
+      "sha256": "665631d043ff28414382d13b58d9172b42e8339e5b56018ef1184955f97be35a",
+      "bytes": 24003
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_launch.h",
+      "sha256": "2b8d28d98053e8d43496b15ba0cc4f7f94bed86b257ba9a14916313c8e45b6e9",
+      "bytes": 278
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_main.cpp",
+      "sha256": "44a172806e32de5a6f02e7059561d8023c7818fa815d48ca476e3f18afba0d8e",
+      "bytes": 157782
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_model.dp.cpp",
+      "sha256": "688fe33c79df6a103168a8f9b37262856c52fb4c1c5f49560bb57488ab828ab4",
+      "bytes": 997881
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_numerics.dp.hpp",
+      "sha256": "464639fb681f481ac444885b09a20dc995be6ebee8b794b3a4f3226c1867c08d",
+      "bytes": 2376
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_packinfo.cpp",
+      "sha256": "592b3c354d2975f5823bf1422b6ed51282866383d0addb447682e5b4776b92e0",
+      "bytes": 13468
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_pcie.dp.hpp",
+      "sha256": "1c57d2fa9f4244607d19527795a8c5dabd734f4707da9e1fb9f6ab62bb19afa8",
+      "bytes": 14230
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_q6k.dp.hpp",
+      "sha256": "fb60a15416464b9b37d27ee755c8ab73da1f48730233fb4f4642be529d825ff0",
+      "bytes": 1951
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_sycl_wait.hpp",
+      "sha256": "b8bf4be210834231ee9575dc2f811e475ac90c8a036d62c7a8bcbbd08a85e6e5",
+      "bytes": 968
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_tq.dp.cpp",
+      "sha256": "dca476c750713881fc2bb8f2625be6a78eb623b97ead379b3f2b149b3e214f28",
+      "bytes": 46612
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_vision.dp.cpp",
+      "sha256": "6b6ed8814c34383cd8a315eebfba68b11e85a001d463c1bebca19e3a5c02a5c1",
+      "bytes": 52154
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_vision.dp.hpp",
+      "sha256": "acfebd4d4ad3464a168559fdfdea63a6de877bb01ad64ae8d97dbb0c2e1e2475",
+      "bytes": 6907
+    },
+    {
+      "path": "sycl/src/dsv41/ds4_wmma.dp.hpp",
+      "sha256": "7d2ec9248c114cf53550fdd02d7da91711a8d7267a035d4ebe155cf99607330f",
+      "bytes": 1481
+    },
+    {
+      "path": "sycl/src/dsv41/ggml-common-tq.dp.hpp",
+      "sha256": "222e6ec6f1733c9bd326b423d53a6b2578d901d9b76784015c4612ba9775a1e9",
+      "bytes": 39525
+    },
+    {
+      "path": "sycl/src/dsv41/ggml-common.dp.hpp",
+      "sha256": "0ba6ef93a05658a0ae68f143732ece782cf4c8da011caa57c2d6c6aa32e0f2df",
+      "bytes": 145623
+    },
+    {
+      "path": "sycl/src/dsv41/vendor/exl3.dp.cpp",
+      "sha256": "db8b524b824586ab9f18b02d9e534dbeba8baab830b55d9e65695c4befeb1997",
+      "bytes": 104049
+    },
+    {
+      "path": "sycl/src/dsv41/vendor/moe_win.dp.cpp",
+      "sha256": "121ab069ff2e251482a761b50a26ab80b865f703a669c00a80058846863462b3",
+      "bytes": 3846
+    },
+    {
+      "path": "sycl/src/dsv41/vendor/sampler.dp.cpp",
+      "sha256": "7027daf21358023ccdcad149d02e8c1896b1c878fe0ee213885b9c0be24083eb",
+      "bytes": 60534
+    },
+    {
+      "path": "sycl/tests/dsv41_mailbox.cpp",
+      "sha256": "b69d15d1fb7fcb5cb76d277908c9826395ef7ba69d058c3575d54c47abcca585",
+      "bytes": 2829
+    },
+    {
+      "path": "sycl/tests/dsv41_numerics.cpp",
+      "sha256": "dd8f8bd85220793eb46db171bc3b36fdd4d735f4be51a345d4e30e052d3b091d",
+      "bytes": 3723
+    },
+    {
+      "path": "sycl/tests/dsv41_rollback.cpp",
+      "sha256": "47136910119f5168327665c4373c5999ec4524781919d4818dedb469b4190b25",
+      "bytes": 4004
+    },
+    {
+      "path": "sycl/tests/dsv41_weights.cpp",
+      "sha256": "9c586b2b454de866672fa028a724ffae141c999fec325f5d534d91a4dc79b347",
+      "bytes": 10828
+    }
+  ],
+  "measured_binaries": {
+    "strata-dsv41": "3c81b234ffe80359123a67f6c0ac8bd3ba162da938a9c7c255af8934aeb1e5ed",
+    "dsv41_numerics_parity": "26bde99ade1bc333607b4302b9c2aa5674d4a2e7b8f990fbb3cbaf58868ce432",
+    "dsv41_mailbox_parity": "98ee936b5065a4f85e571ec49b2b1143fc1b7f2940ee61f3df373bc74a515c5b",
+    "dsv41_rollback_parity": "55c3afc51d555db06b7af5cad0d69d757a1954cf310da74bb81b10f8dd7d5c54"
+  },
+  "build_kind": "Release source build in omix 0.4.1; SYCL JIT with stateless addressing, no AOT",
+  "build_id_note": "Built from an uncommitted implementation on the recorded base. The binary build ID is the base commit, not the later publication commit.",
+  "image": "intel/omix:0.4.1-devel-ubuntu24.04",
+  "image_id": "sha256:3e8b0e469c972b312bf4fe114ed95f629bc6a65c706bc266db085468dca3b09f",
+  "image_digest": "intel/omix@sha256:6f8c8893cc89ff441e3604a3d785d78bdbe79726550e88d5cf8eab769444389a",
+  "template_sha256": "06cada875e3a04665f9cf47deae9ef32e16ede2c6511205a4031c8b48140d01b",
+  "measured_implementation_commit": "730e44a8f3da4396d0a30cfca0c7260aa7054ece",
+  "publication_cleanup": [
+    {
+      "path": "sycl/src/dsv41/ggml-common-tq.dp.hpp",
+      "lines": 1,
+      "measured_sha256": "222e6ec6f1733c9bd326b423d53a6b2578d901d9b76784015c4612ba9775a1e9",
+      "publication_sha256": "ddd9cc27a17956dfd15777360f6afef3cfb5824a8630dfc6a22e8c43036b7c5d"
+    },
+    {
+      "path": "sycl/src/dsv41/vendor/exl3.dp.cpp",
+      "lines": 3,
+      "measured_sha256": "db8b524b824586ab9f18b02d9e534dbeba8baab830b55d9e65695c4befeb1997",
+      "publication_sha256": "c4ec3b112f98eceec9bca458feeff939f7a0b91659723b365d392241b63a84b0"
+    }
+  ],
+  "publication_note": "Measurements identify the retained engine implementation and binary. Publication documentation and benchmark files are not a separately rebuilt engine."
+}

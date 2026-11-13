@@ -1,0 +1,87 @@
+{
+  "concurrency": 1,
+  "real_gpu_engine": true,
+  "cases": [
+    {
+      "case": "after-cancel",
+      "passed": true
+    },
+    {
+      "case": "anthropic",
+      "passed": true
+    },
+    {
+      "case": "client-cancel",
+      "passed": true
+    },
+    {
+      "case": "conversation-interleaved",
+      "passed": true
+    },
+    {
+      "case": "conversation-restore",
+      "passed": true
+    },
+    {
+      "case": "conversation-start",
+      "passed": true
+    },
+    {
+      "case": "health-after",
+      "passed": true
+    },
+    {
+      "case": "health",
+      "passed": true
+    },
+    {
+      "case": "invalid-request",
+      "passed": true
+    },
+    {
+      "case": "openai-nonstream",
+      "passed": true
+    },
+    {
+      "case": "openai-stream",
+      "passed": true
+    },
+    {
+      "case": "props",
+      "passed": true
+    },
+    {
+      "case": "responses",
+      "passed": true
+    },
+    {
+      "case": "v1-models",
+      "passed": true
+    },
+    {
+      "case": "anthropic-stream",
+      "passed": true
+    },
+    {
+      "case": "context-overflow",
+      "passed": true
+    },
+    {
+      "case": "health-after-extra",
+      "passed": true
+    },
+    {
+      "case": "responses-stream",
+      "passed": true
+    },
+    {
+      "case": "tool-call",
+      "passed": true
+    },
+    {
+      "case": "tool-result-turn",
+      "passed": true
+    }
+  ],
+  "external_tool_actions": false
+}
