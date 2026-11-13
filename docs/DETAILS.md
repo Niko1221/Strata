@@ -1016,6 +1016,17 @@ every turn, is encoded once.
 On an NVIDIA card under 24 GB the CPU encoder is the default, because the GPU encoder takes ~850 expert slots of a 16 GB card's ~4,500
 (about 5% of decode). `--vision gpu` is kept with a note.
 
+**The Monitor's Image encoder card (0.1.45):** when images are on, the Monitor tab gains a card for the image encoder:
+whether its process runs or sleeps (with `"elastic"`, and its starts and stops), the card or CPU and threads it runs
+on, the mmproj file, the last picture's encode time, image-token count and grid, how many pictures the encoder's cache
+holds (the last 64, keyed by the picture's bytes), and the totals since the server started: pictures encoded, pictures
+answered from the cache, image tokens added, seconds spent encoding, and pictures refused. While a request is reading
+its pictures, the Monitor's state line says "Reading N pictures". `/metrics` has the same under `"vision"`, and a
+Prometheus scrape carries it as `strata:vision_images_total`, `strata:vision_image_tokens_total`,
+`strata:vision_encode_seconds_total`, `strata:vision_encode_failures_total`, `strata:vision_cache_images`,
+`strata:vision_encoder_up` and `strata:vision_encode_ms_last` (no sample when the last picture was a cache hit).
+A request's own row in `/metrics` keeps its `"images"`, `"image_tokens"` and `"encode_ms"`.
+
 ### Sending a picture
 
 Terminal chat: type `/image <path>`, press Enter, then type your question. OpenAI API: an `image_url` part (a `data:` URL, an
