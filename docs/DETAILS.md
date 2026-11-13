@@ -148,7 +148,10 @@ Some engine settings depend on the PC more than on the model:
 | `--prefill-pipe` | On two or more cards (layer split), the prompt chunks that keep the cards reading at once. See [MULTI_GPU.md](MULTI_GPU.md). |
 
 The defaults were measured on a Ryzen 5 7600 with an RTX 5070. From a source checkout, `START-HERE.bat --calibrate` (Linux: `./setup.sh --calibrate`)
-measures output speed with each setting on your PC and keeps one only when it is more than 3% faster. The result is
+measures output speed with each setting on your PC and keeps one only when the gain clearly beats the machine's own
+run variation: the PCIe share and the draft floor are re-measured against the product default in alternating pairs, and
+the decision (gain, measured noise, verdict) is printed; settings measured across engine restarts, and the prompt chunks
+of a multi-card split (which must win every one of its paired rounds), still need a measured gain over 3%. The result is
 remembered per PC and model, and updates keep it. Measuring the worker count restarts the model more than once, so the PC
 is busy and can stop responding for a minute or two at each restart.
 
