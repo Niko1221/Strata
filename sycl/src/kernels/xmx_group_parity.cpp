@@ -21,10 +21,12 @@ int main(int argc, char** argv) {
     std::printf("xmx_group_parity: SKIP (the sub-group 8 / 8x8x16 kernels are not built for this AOT device)");
     return 0;
 #else
+#ifndef STRATA_XMX_SG16
     if (strata::intel_gpu_gen(q->get_device()) == strata::IntelGpuGen::Battlemage) {
-        std::printf("xmx_group_parity: SKIP (Battlemage has no sub-group 8 / 8x8x16 joint_matrix)");
+        std::printf("xmx_group_parity: SKIP (this build has the sub-group 8 / 8x8x16 kernels; Battlemage needs the AOT bmg build)");
         return 0;
     }
+#endif
 #endif
     dpct::blas::descriptor_ptr hd = new dpct::blas::descriptor();
     hd->set_queue(q);

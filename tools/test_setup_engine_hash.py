@@ -83,7 +83,7 @@ class WhereTheHashComesFrom(unittest.TestCase):
 
     def test_a_local_folder_asks_the_api_nothing_at_all(self):
         # Air-gapped and shared-IP installs must not depend on GitHub answering.
-        with mock.patch.object(setup.urllib.request, "urlopen",
+        with mock.patch.object(setup.netpolicy, "urlopen",
                                side_effect=AssertionError("the API was called")):
             self.assertIsNone(setup.engine_digest(ASSET, LOCAL_BASE))
 
@@ -119,7 +119,7 @@ class DigestLookup(unittest.TestCase):
             seen.append(req.full_url)
             return R(payload)
 
-        patcher = mock.patch.object(setup.urllib.request, "urlopen", open_it)
+        patcher = mock.patch.object(setup.netpolicy, "urlopen", open_it)
         patcher.start()
         self.addCleanup(patcher.stop)
         return seen
@@ -164,7 +164,7 @@ class DigestLookup(unittest.TestCase):
 
     def test_none_when_github_cannot_be_reached(self):
         for exc in (OSError("no network"), TimeoutError("slow")):
-            with mock.patch.object(setup.urllib.request, "urlopen", side_effect=exc):
+            with mock.patch.object(setup.netpolicy, "urlopen", side_effect=exc):
                 self.assertIsNone(setup.engine_digest(ASSET, TAG_BASE), exc)
 
     def test_picks_the_asset_the_url_actually_wants(self):
@@ -295,6 +295,12 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         (Path(self.tmp.name) / "engine").mkdir(parents=True, exist_ok=True)
+        # get_prebuilt looks for the release with a HEAD request before it downloads (0.2.0), and keeps the engine in
+        # an engine folder of its own: no network, and never this checkout's engine folder.  A published release answers the probe.
+        for patcher in (mock.patch.object(setup, "engine_dir", lambda toolkit=13: Path(self.tmp.name) / "engine"),
+                        mock.patch.object(setup, "_urlopen", lambda req, timeout=None: mock.MagicMock())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def fake_download(self, url, dst, what=None):
         with zipfile.ZipFile(dst, "w") as z:

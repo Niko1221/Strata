@@ -87,6 +87,9 @@ private:
     float* d_out_ = nullptr;
     uint8_t* d_q8_ = nullptr;
     float* d_scales_ = nullptr;
+    float* d_xr_ = nullptr;                 // APR: the Hadamard-rotated expert input (CAP x H)
+    const float* d_sx_ = nullptr;           // APR: device sign vectors (x: H, h: FF); nullptr = identity
+    const float* d_sh_ = nullptr;
     void* d_scratch_ = nullptr;
     void* d_meta_ = nullptr;  ///< one contiguous upload of grouped indices, instead of five small copies
     int32_t* d_start_ = nullptr;
@@ -127,6 +130,9 @@ public:
     const uint8_t* blob(int64_t layer, int64_t expert) override { return fallback_.blob(layer, expert); }
     const uint8_t* blob_stable(int64_t layer, int64_t expert) override {
         return fallback_.blob_stable(layer, expert);
+    }
+    int blob_parts(int64_t layer, int64_t expert, BlobPart* out) override {
+        return from_helper(layer, expert) ? 0 : fallback_.blob_parts(layer, expert, out);
     }
     int64_t reads() const override { return fallback_.reads(); }
     bool pinned(int64_t layer, int64_t expert) const override {

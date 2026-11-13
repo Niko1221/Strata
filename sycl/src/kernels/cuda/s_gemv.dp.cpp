@@ -6,6 +6,7 @@
 // tensor and a 13-way switch inside the inner loop would be the naive-but-wrong kind of naive.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/s_gemv.hpp"
@@ -421,8 +422,8 @@ void s_gemv(const uint16_t *x, const uint8_t *codes, const float *scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        dpct::get_in_order_queue()
-            .parallel_for<dpct_kernel_name<class s_gemv_kernel_4f63f9,
+        strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_kernel_4f63f9,
                                            dpct_kernel_scalar<2>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)blocks) *
                                       sycl::range(1, 1, threads),
@@ -437,8 +438,8 @@ void s_gemv(const uint16_t *x, const uint8_t *codes, const float *scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        dpct::get_in_order_queue()
-            .parallel_for<dpct_kernel_name<class s_gemv_kernel_9c529a,
+        strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_kernel_9c529a,
                                            dpct_kernel_scalar<4>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)blocks) *
                                       sycl::range(1, 1, threads),
@@ -453,8 +454,8 @@ void s_gemv(const uint16_t *x, const uint8_t *codes, const float *scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        dpct::get_in_order_queue()
-            .parallel_for<dpct_kernel_name<class s_gemv_kernel_e40e1f,
+        strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_kernel_e40e1f,
                                            dpct_kernel_scalar<8>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)blocks) *
                                       sycl::range(1, 1, threads),
@@ -657,7 +658,7 @@ static void s_gemv_split_impl(const uint16_t *x, const uint8_t *codes,
             dpct::has_capability_or_fail(stream->get_device(),
                                          {sycl::aspect::fp16});
 
-            stream->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(stream, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);
 
@@ -691,7 +692,7 @@ static void s_gemv_split_impl(const uint16_t *x, const uint8_t *codes,
             dpct::has_capability_or_fail(stream->get_device(),
                                          {sycl::aspect::fp16});
 
-            stream->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(stream, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);
 
@@ -725,7 +726,7 @@ static void s_gemv_split_impl(const uint16_t *x, const uint8_t *codes,
             dpct::has_capability_or_fail(stream->get_device(),
                                          {sycl::aspect::fp16});
 
-            stream->submit([&](sycl::handler &cgh) {
+            strata::kprof::kp(stream, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);
 
@@ -827,8 +828,8 @@ void s_gemv_q8k(const uint8_t* x_q8k, const uint8_t* codes, const float* scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class s_gemv_q8k_kernel_9b1637,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_q8k_kernel_9b1637,
                                             dpct_kernel_scalar<4>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, threads),
@@ -843,8 +844,8 @@ void s_gemv_q8k(const uint8_t* x_q8k, const uint8_t* codes, const float* scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class s_gemv_q8k_kernel_adeed5,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_q8k_kernel_adeed5,
                                             dpct_kernel_scalar<8>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, threads),
@@ -894,8 +895,8 @@ void s_gemv_q8k_split(const uint8_t* x_q8k, const uint8_t* codes, const float* s
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_19ad26,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_19ad26,
                                             dpct_kernel_scalar<4>,
                                             dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -913,8 +914,8 @@ void s_gemv_q8k_split(const uint8_t* x_q8k, const uint8_t* codes, const float* s
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_4da4f5,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_4da4f5,
                                             dpct_kernel_scalar<8>,
                                             dpct_kernel_scalar<true>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -971,8 +972,8 @@ void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_147ee4,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_147ee4,
                                             dpct_kernel_scalar<4>,
                                             dpct_kernel_scalar<false>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -990,8 +991,8 @@ void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_bac5c0,
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_bac5c0,
                                             dpct_kernel_scalar<8>,
                                             dpct_kernel_scalar<false>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *

@@ -29,6 +29,7 @@ import quantscope as qs  # noqa: E402
 
 FINGERPRINTS = ROOT / "data" / "gguf_fingerprints.json"
 ARCH = "qwen4exp"                                       # Qwen3.8-Flash-Next's general.architecture
+PREVIEW_ARCHS = {"qwen35moe": "Qwen3.6-35B-A3B"}         # model families Strata knows but does not run yet (T0)
 
 # the files setup installs: (family, model, ModelScope repository, file name prefix) - for --fingerprints
 KNOWN = [
@@ -39,9 +40,13 @@ KNOWN = [
     ("swift", "Q2_0", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0"),
     ("swift", "IQ2_XS", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS"),
     ("swift", "IQ3_XXS", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS"),
+    ("swift", "IQ3_S", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S"),
     ("coder", "IQ1_M", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "IQ1_M/"),
     ("unsloth", "UD-IQ4_XS", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-IQ4_XS/"),
     ("unsloth", "UD-Q4_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q4_K_XL/"),
+    ("unsloth", "UD-Q5_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q5_K_XL/"),
+    ("unsloth", "UD-Q6_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q6_K_XL/"),
+    ("unsloth", "Q8_0", "unsloth/Qwen3.8-Flash-Next-GGUF", "Q8_0/"),
 ]
 
 
@@ -88,10 +93,15 @@ def load_fingerprints(path: Path = FINGERPRINTS) -> dict:
 
 
 def verdict(fp: dict, table: dict) -> tuple[str, str]:
-    """(kind, sentence): kind is "known" (a file setup installs, under any name), "layout" (the same routed-expert
+    """(kind, sentence): kind is "known" (a file setup installs, under any name), "family" (another family Strata
+    runs on its own engine path: Qwen3.6), "layout" (the same routed-expert
     layout as one: a fine-tune made with the same recipe, untested), "no" (Strata cannot run it) or "untested"
     (naming the tensors whose quantization no file Strata runs has for them)."""
     known = {k: v for k, v in table.items() if not k.startswith("_")}
+    if fp["arch"] in PREVIEW_ARCHS:
+        return "family", (f"{PREVIEW_ARCHS[fp['arch']]} (architecture {fp['arch']!r}): Strata runs it on its own "
+                          "engine path in the NVIDIA (CUDA) and AMD (HIP) builds, not yet on Intel Arc (SYCL); setup "
+                          "installs it with --family qwen36")
     if fp["arch"] != ARCH:
         return "no", f"not Qwen3.8-Flash-Next (architecture {fp['arch']!r}): Strata runs only that model"
     exact = [k for k, v in known.items() if v["expert_bytes"] == fp["expert_bytes"] and v["bytes"] == fp["bytes"]

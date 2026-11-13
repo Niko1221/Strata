@@ -77,6 +77,12 @@ public:
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
 
+    /// DFlash2 taps (the CUDA verifier's contract): before init(), the zero-based layers whose completed output the drafter reads.  Each window then leaves
+    /// tap_dev() = [max_t][n_taps][n_embd] floats (the mean of the hc streams after the layer's FFN write), valid until the next window.  Single-stage only.
+    void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
+    const float* tap_dev() const { return tap_dev_; }
+    bool tapping() const { return tap_on_; }
+
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
@@ -172,12 +178,18 @@ public:
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
     bool batch_busy() const { return b_running_; }
-    /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
-    /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
-    /// default.  Set on the first stage, it reaches the last.
+    /// A slot's sampling (temperature / top_p / top_k / min_p / seed and the repeat / frequency / presence penalties,
+    /// whose window comes from set_slot_history): its row is drawn again on the last stage with Philox(seed, position),
+    /// as a solo window draws it.  Greedy by default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const strata::kernels::SamplerParams& sp) {
         if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
         if (next_) next_->set_slot_sampling(slot, sp);
+    }
+    /// The slot's reply tail for its penalty window: the `n` tokens its session consumed since the reply began (the last penalty_last_n are used), the
+    /// fed-back head not included.  Set before every batch window that holds the slot while it has a penalty; reaches the last stage.
+    void set_slot_history(int slot, const int32_t* tail, int64_t n) {
+        if (slot >= 0 && slot < (int) slot_tail_.size()) slot_tail_[(size_t) slot].assign(tail, tail + (n > 0 ? n : 0));
+        if (next_) next_->set_slot_history(slot, tail, n);
     }
     const int32_t* batch_out() const { return b_out_; }
     bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
@@ -205,6 +217,11 @@ public:
     /// expert evicted on the host (the pool then computes it on the CPU) before the device table follows.  Also turns
     /// the device-planned layers (E-6) off.  Before `init`.
     void set_always_publish(bool on) { always_publish_ = on; }
+    /// The pipelined windows never let a one-token window advance the state itself: its graph may run *speculatively*
+    /// (ahead of the previous window's verdict), so a self-commit would land before the state it must build on is
+    /// final.  With this set, record_window does not self-commit and pl_commit_async always queues the commit graph -
+    /// the configuration that measures token-identical to the serial path.  Before `capture_all`.
+    void set_self_commit_off(bool on) { self_commit_off_ = on; }
     dpct::queue_ptr stream() const { return cs_; }
     int device() const { return device_; }
     /// Capture every window size and the commit graph now (a capture syncs the stream: never with a window in flight).
@@ -267,6 +284,12 @@ private:
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;               ///< record_window is capturing a batch window
+    bool tap_on_ = false;
+    std::vector<int> tap_req_;             ///< set_taps
+    std::vector<int> tap_layers_;          ///< the tapped layer ids (zero-based, completed outputs)
+    std::vector<int> tap_slot_;            ///< layer -> slot in tap_layers_, or -1
+    float* tap_dev_ = nullptr;             ///< [max_t][n_taps][n_embd]
+    bool self_commit_off_ = false;         ///< set_self_commit_off: the pipelined windows commit through the graph
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
@@ -275,6 +298,7 @@ private:
     std::map<std::vector<int>, uint64_t> bm_used_;   ///< last use of each captured layout (LRU, only with a graph limit)
     uint64_t bm_tick_ = 0;
     size_t batch_graph_limit_ = 0;         ///< 0: keep every captured batch graph (0.1.39); N: LRU-evict beyond N layouts
+    int prof_S_ = 0;                        ///< rows of the batch window being profiled (0: a plain window)
     int last_rows_[8] = {};                ///< the slots of the last batch window's rows
     std::vector<int> bkey(const int* rows, int S, int hbase) const {   // #871: the doorbell variant has its own graphs
         std::vector<int> k = batch_key(rows, S, hbase);
@@ -294,6 +318,9 @@ private:
     std::chrono::steady_clock::time_point b_last_;
     int32_t b_out_[8] = {};
     std::vector<strata::kernels::SamplerParams> slot_sp_;
+    std::vector<std::vector<int32_t>> slot_tail_;        ///< per slot: its reply tail for the penalty window (set_slot_history)
+    int32_t* slot_hist_d_ = nullptr;                     ///< the penalty-history rows of the current batch window (device)
+    size_t slot_hist_cap_ = 0;
     bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
     int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
@@ -460,6 +487,10 @@ private:
     static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;
     uint8_t* nat_xq_ = nullptr;   // plan v0.3 P6: q8_1 activations for a native pack's grouped experts
+    float* nat_xr_ = nullptr;     // APR: the Hadamard-rotated expert input (the shared expert and the CPU keep xm); nullptr
+                                  // unless some layer's gate/up is folded
+    const float* had_sx_ = nullptr;   // APR: device sign vectors for x (n_embd) and h (n_ff); nullptr = identity
+    const float* had_sh_ = nullptr;
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;

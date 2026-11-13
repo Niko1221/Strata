@@ -10,6 +10,7 @@
 #include "strata/ngram/ple_reader.hpp"
 #include "strata/platform/direct_file.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <set>
 #include <vector>
 
 namespace ng = strata::ngram;
@@ -75,6 +77,25 @@ bool check_rows(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n
     return true;
 }
 
+/// issue() folds the rows of one ticket that share a 4 KiB page into one read (PR #4910: a small stack buffer for up to 64
+/// misses, a reusable vector above that, sorted by offset and merged in one pass).  The bytes are checked as always; here the
+/// counters too: `requests` grows by the rows asked for, and `dedup_rows` by (rows read - distinct pages), worked out from the
+/// row numbers alone.  Needs a reader without a row cache (a cached row is not a miss).
+bool check_coalescing(ng::PleReader& rd, const std::vector<uint32_t>& rows, uint32_t n_rows, uint32_t rb, const char* what) {
+    const ng::ReaderStats before = rd.snapshot();
+    if (!check_rows(rd, rows, n_rows, rb, what)) return false;
+    const ng::ReaderStats after = rd.snapshot();
+    std::set<uint64_t> pages;
+    size_t misses = 0;
+    for (uint32_t r : rows)
+        if (r < n_rows) { ++misses; pages.insert((HEADER + (uint64_t) r * rb) / 4096 * 4096); }
+    CHECK(after.requests - before.requests == rows.size(), "%s: requests grew by %llu, not %zu", what,
+          (unsigned long long) (after.requests - before.requests), rows.size());
+    CHECK(after.dedup_rows - before.dedup_rows == misses - pages.size(), "%s: dedup_rows grew by %llu, not %zu", what,
+          (unsigned long long) (after.dedup_rows - before.dedup_rows), misses - pages.size());
+    return true;
+}
+
 /// THE BF16 TABLE, and the claim it rests on.  A bfloat16 is literally the top half of a float32, so widening
 /// one is a shift: exact for every value, normal or not, with no rounding to hide behind.  These patterns are
 /// the ones a lossy path would break on - the subnormals and the NaN/inf encodings a saturating cast to FP8
@@ -105,7 +126,7 @@ void bf16_widening_is_exact() {
 /// and the type lookup all have to be right for every format, not only for IQ4_NL.
 uint32_t gguf_type_id(const char* name) {
     static const struct { const char* name; uint32_t id; } ids[] = {
-        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}};
+        {"IQ4_NL", 20}, {"Q4_0", 2}, {"Q4_1", 3}, {"Q5_0", 6}, {"Q5_1", 7}, {"Q8_0", 8}, {"BF16", 30}, {"F8_E4M3", 24}, {"NVFP4", 24}};
     for (const auto& e : ids)
         if (std::strcmp(e.name, name) == 0) return e.id;
     return 0xFFFFFFFFu;
@@ -129,11 +150,11 @@ std::string write_format_table(const std::string& dir, const k::PleFormatInfo& f
         const float scale = 0.75f;
         uint32_t sb;
         std::memcpy(&sb, &scale, 4);
-        head += str("strata.ple.format") + le(8u, 4) + str("f8_e4m3");
+        head += str("strata.ple.format") + le(8u, 4) + str(f.id == k::PleFormat::NVFP4 ? "nvfp4x16" : "f8_e4m3");
         head += str("strata.ple.scale") + le(6u, 4) + le(sb, 4);       // 6 = FLOAT32
     }
     head += str("per_layer_token_embd.weight") + le(2u, 4);
-    head += le((uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
+    head += le(f.id == k::PleFormat::NVFP4 ? (uint64_t) f.row_bytes : (uint64_t) k::PLE_HEAD_DIM, 8) + le(claimed_rows != 0 ? claimed_rows : (uint64_t) rows, 8);
     head += le(gguf_type_id(f.name), 4) + le(0ull, 8);
     while (head.size() % 32) head += '\0';
     out.write(head.data(), (std::streamsize) head.size());
@@ -168,6 +189,10 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
         if (g_fail) break;
         CHECK(std::strcmp(t.format(), f.name) == 0, "%s: format() says \"%s\"", f.name, t.format());
         CHECK(t.rows() == rows, "%s: rows %llu, not %u", f.name, (unsigned long long) t.rows(), rows);
+        // The residency policy in generate.cpp sizes the table with table_bytes(); it must be the file's own
+        // row count x row bytes in both modes, and 0 once the table is closed.
+        CHECK(t.table_bytes() == (uint64_t) rows * f.row_bytes, "%s: %s: table_bytes %llu, not %u x %u", f.name, name,
+              (unsigned long long) t.table_bytes(), rows, f.row_bytes);
         std::vector<uint8_t> raw(f.row_bytes);
         float got[k::PLE_HEAD_DIM], ref[k::PLE_HEAD_DIM];
         for (uint32_t r : want) {
@@ -188,6 +213,27 @@ void format_round_trip(const std::string& dir, const k::PleFormatInfo& f, uint32
             expected_row(rows16[h], f.row_bytes, raw.data());
             f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
             CHECK(std::memcmp(tok + (size_t) h * k::PLE_HEAD_DIM, ref, sizeof ref) == 0, "%s: %s: gather head %d differs", f.name, name, h);
+        }
+        // a prompt chunk: gather_batch over more rows than one prefetch window (4096), one of them past the table's end
+        {
+            const size_t nt = 700, nr = nt * 16;     // 11200 rows, three windows
+            std::vector<uint32_t> br(nr);
+            for (size_t i = 0; i < nr; ++i) br[i] = want[i % want.size()];
+            if (mode == k::PleIo::Mmap) br[5000] = rows + 7;   // out of range (mapped): zeros, as read_row gives
+            std::vector<float> bo(nr * k::PLE_HEAD_DIM);
+            std::string e2;
+            CHECK(t.gather_batch(br.data(), nt, bo.data(), e2), "%s: %s: gather_batch: %s", f.name, name, e2.c_str());
+            size_t bad = 0;
+            for (size_t i = 0; i < nr && !g_fail; ++i) {
+                if (br[i] >= rows) {
+                    for (int d = 0; d < k::PLE_HEAD_DIM; ++d) bad += bo[i * k::PLE_HEAD_DIM + d] != 0.0f;
+                    continue;
+                }
+                expected_row(br[i], f.row_bytes, raw.data());
+                f.dequant(raw.data(), f.needs_scale ? 0.75f : 1.0f, ref);
+                bad += std::memcmp(bo.data() + i * k::PLE_HEAD_DIM, ref, sizeof ref) != 0;
+            }
+            CHECK(bad == 0, "%s: %s: gather_batch differs in %zu rows", f.name, name, bad);
         }
     }
     std::filesystem::remove(path);
@@ -221,14 +267,209 @@ void bad_sizes_are_refused(const std::string& dir) {
     }
 }
 
+// #2622 (reported by @hotschmoe): gather_batch matched the prefetched tokens by position, so a prefetch of A..F
+// gathered as D,E,F,A,B,C (or A gathered as A,A,A) issued a second ticket for rows that were already in flight.
+// Every case: the bytes equal the mapped reader's, and the requested-row counter says how many rows were re-read.
+void prefetched_keys_are_reused(const std::string& dir) {
+    const k::PleFormatInfo* fmt = nullptr;
+    for (int i = 0; i < k::ple_format_count(); ++i)
+        if (std::string(k::ple_formats()[i].name) == "IQ4_NL") fmt = &k::ple_formats()[i];
+    if (fmt == nullptr) { CHECK(false, "no IQ4_NL format"); return; }
+    const std::string path = write_format_table(dir, *fmt, 4096);
+    if (path.empty()) { CHECK(false, "cannot write the prefetch table"); return; }
+    struct Case { const char* name; std::vector<int> pre, want; uint64_t extra_rows; };
+    std::vector<int> seventeen;
+    for (int i = 0; i < 17; ++i) seventeen.push_back(i);
+    const std::vector<Case> cases = {
+        {"ordered", {0, 1}, {0, 1}, 0},
+        {"permutation", {0, 1, 2, 3, 4, 5}, {3, 4, 5, 0, 1, 2}, 0},
+        {"subset", {0, 1, 2, 3, 4, 5}, {4, 1}, 0},
+        {"duplicates", {0}, {0, 0, 0}, 0},
+        {"duplicate prefetch", {0, 0, 1}, {0, 1}, 0},
+        {"missing key", {0, 1}, {0, 2}, 32},
+        {"extra prefetch", {0, 1, 2}, {1}, 0},
+        {"none", {0}, {}, 0},
+        {"over the window", {0, 1}, seventeen, 17u * k::PLE_N_HEADS},
+        {"window overflow", seventeen, {16}, 0},
+    };
+    const auto keys = [](const std::vector<int>& ids) {
+        std::vector<uint32_t> r;
+        for (int id : ids) for (int h = 0; h < k::PLE_N_HEADS; ++h) r.push_back((uint32_t) (id * 32 + h));
+        return r;
+    };
+    const auto requests = [](const k::PleTable& t) {
+        unsigned long long n = 0;
+        const std::string s = t.io_report();
+        return std::sscanf(s.c_str(), "ple io: %llu rows", &n) == 1 ? (uint64_t) n : ~0ull;
+    };
+    const size_t tok = (size_t) k::PLE_N_HEADS * k::PLE_HEAD_DIM;
+    std::vector<std::vector<float>> refs(cases.size());
+    {
+        k::PleTable mapped;
+        k::PleIoOptions mio;
+        mio.mode = k::PleIo::Mmap;
+        std::string err;
+        if (!mapped.open(path, err, mio)) { CHECK(false, "mapped open: %s", err.c_str()); return; }
+        for (size_t c = 0; c < cases.size(); ++c) {
+            const auto r = keys(cases[c].want);
+            refs[c].resize(cases[c].want.size() * tok);
+            CHECK(mapped.gather_batch(r.data(), cases[c].want.size(), refs[c].data(), err), "mapped gather: %s", err.c_str());
+        }
+    }
+    for (uint64_t cache : {uint64_t(0), uint64_t(256)}) for (bool worker : {false, true}) {
+        for (size_t c = 0; c < cases.size(); ++c) {
+            k::PleTable t;
+            k::PleIoOptions io;
+            io.mode = k::PleIo::Direct;
+            io.cache_rows = cache;
+            io.io_thread = worker;
+            io.max_inflight = 8;
+            io.keepalive_ms = 0;
+            std::string err;
+            if (!t.open(path, err, io)) { CHECK(false, "direct open: %s", err.c_str()); return; }
+            const auto pr = keys(cases[c].pre), wr = keys(cases[c].want);
+            for (size_t i = 0; i < cases[c].pre.size(); ++i) t.prefetch_rows(pr.data() + i * k::PLE_N_HEADS);
+            const uint64_t rq = requests(t), by = t.bytes_read();
+            const float sentinel = -12345.5f;
+            std::vector<float> out(refs[c].size() + 2, sentinel);
+            const bool ok = t.gather_batch(wr.data(), cases[c].want.size(), out.data() + 1, err);
+            CHECK(ok, "%s (cache %llu worker %d): %s", cases[c].name, (unsigned long long) cache, (int) worker, err.c_str());
+            CHECK(requests(t) - rq == cases[c].extra_rows, "%s (cache %llu worker %d): %llu rows re-requested, want %llu",
+                  cases[c].name, (unsigned long long) cache, (int) worker, (unsigned long long) (requests(t) - rq),
+                  (unsigned long long) cases[c].extra_rows);
+            CHECK(t.bytes_read() - by == cases[c].want.size() * k::PLE_N_HEADS * fmt->row_bytes, "%s: bytes_read", cases[c].name);
+            CHECK(refs[c].empty() || std::memcmp(out.data() + 1, refs[c].data(), refs[c].size() * sizeof(float)) == 0,
+                  "%s (cache %llu worker %d): bytes differ from the mapped reader", cases[c].name, (unsigned long long) cache, (int) worker);
+            CHECK(out.front() == sentinel && out.back() == sentinel, "%s: wrote outside the output", cases[c].name);
+        }
+    }
+    if (g_fail == 0) std::printf("ple prefetched-key reuse (reordered, duplicated, subset), Direct vs Mmap bytes: OK\n");
+}
+
+/// #3602: the table the way the engine uses it - one PleTable shared by the prompt path (big gather_batch calls on a
+/// thread of their own, as prefill's std::async does), the decode window (prefetch_rows for each token, then
+/// gather_batch of the window) and the single-token gather, all at once, with a row cache that evicts all the time
+/// and one in-flight slot. Every float must equal what the mapped reader returns for the same rows.
+void table_is_consistent_under_concurrent_use(const std::string& dir) {
+    const k::PleFormatInfo* fmt = nullptr;
+    for (int i = 0; i < k::ple_format_count(); ++i)
+        if (std::string(k::ple_formats()[i].name) == "IQ4_NL") fmt = &k::ple_formats()[i];
+    if (fmt == nullptr) { CHECK(false, "no IQ4_NL format"); return; }
+    const uint32_t rows = 30000;
+    const std::string path = write_format_table(dir, *fmt, rows);
+    if (path.empty()) { CHECK(false, "cannot write the concurrency table"); return; }
+    k::PleTable mapped;
+    {
+        k::PleIoOptions mio;
+        mio.mode = k::PleIo::Mmap;
+        std::string err;
+        if (!mapped.open(path, err, mio)) { CHECK(false, "mapped open: %s", err.c_str()); return; }
+    }
+    const size_t tok = (size_t) k::PLE_N_HEADS * k::PLE_HEAD_DIM;
+    // rows that straddle a page: row r sits at (header + 90 r), the header is the GGUF's; just take every 7th and every 45th
+    auto pick_rows = [&](std::mt19937& rng, size_t n) {
+        std::vector<uint32_t> r(n);
+        for (auto& x : r) {
+            switch (rng() % 6) {
+                case 0: x = rows - 1 - rng() % 8; break;
+                case 1: x = rng() % 8; break;
+                case 2: x = (uint32_t) (rng() % (rows / 45)) * 45u; break;
+                case 3: x = 100 + rng() % 12; break;     // a hot neighbourhood
+                case 4: x = rows + rng() % 3; break;     // out of range: zeros in both readers
+                default: x = rng() % rows;
+            }
+        }
+        return r;
+    };
+    for (uint64_t cache : {uint64_t(0), uint64_t(16), uint64_t(4096)})
+    for (uint32_t inflight : {1u, 3u, 64u}) {
+        k::PleTable t;
+        k::PleIoOptions io;
+        io.mode = k::PleIo::Direct;
+        io.cache_rows = cache;
+        io.max_inflight = inflight;
+        io.io_thread = true;
+        io.keepalive_ms = inflight == 3 ? 1.0 : 0;
+        std::string err;
+        if (!t.open(path, err, io)) { CHECK(false, "direct open: %s", err.c_str()); return; }
+        std::atomic<int> bad{0};
+        std::printf("  table under concurrent use: cache %llu rows, inflight %u\n", (unsigned long long) cache, inflight);
+        auto same = [&](const std::vector<uint32_t>& r, size_t n_tokens, const float* got, const char* what) {
+            std::vector<float> ref(n_tokens * tok);
+            std::string e;
+            if (!mapped.gather_batch(r.data(), n_tokens, ref.data(), e)) { ++bad; CHECK(false, "mapped reference: %s", e.c_str()); return; }
+            // (equal as numbers: a row past the table's end is zero bytes in both readers, but the direct one decodes the
+            // zero bytes, which can give -0.0 where the mapped one writes +0.0; the table's bytes are random, so some values are NaN:
+            // those are compared by their bits)
+            size_t at = 0;
+            while (at < ref.size() && (ref[at] == got[at] || std::memcmp(&ref[at], &got[at], sizeof(float)) == 0)) ++at;
+            if (at < ref.size()) {
+                ++bad;
+                CHECK(false, "%s (cache %llu, inflight %u): value %zu of %zu differs from the mapped reader (row %u of %u in range: mapped %g, direct %g)",
+                      what, (unsigned long long) cache, inflight, at, ref.size(), r[at / k::PLE_HEAD_DIM], rows,
+                      (double) ref[at], (double) got[at]);
+            }
+        };
+        std::thread prompt([&] { try {   // prefill: chunks of tokens, gathered on a thread
+            std::mt19937 rng(5);
+            for (int i = 0; i < 12 && bad == 0; ++i) {
+                static const size_t sizes[4] = {17, 300, 700, 64};
+                const size_t nt = sizes[rng() % 4];
+                const auto r = pick_rows(rng, nt * k::PLE_N_HEADS);
+                std::vector<float> out(nt * tok, -7.0f);
+                std::string e;
+                if (!t.gather_batch(r.data(), nt, out.data(), e)) { ++bad; CHECK(false, "prompt gather_batch: %s", e.c_str()); return; }
+                same(r, nt, out.data(), "prompt gather_batch");
+            }
+        } catch (const std::exception& e) { ++bad; CHECK(false, "prompt thread: exception %s", e.what()); } });
+        std::thread decode([&] { try {   // verify windows: prefetch each token's rows, then gather the window
+            std::mt19937 rng(6);
+            for (int i = 0; i < 300 && bad == 0; ++i) {
+                const size_t T = 1 + rng() % 8;
+                const auto r = pick_rows(rng, T * k::PLE_N_HEADS);
+                for (size_t j = 0; j < T; ++j) t.prefetch_rows(r.data() + j * k::PLE_N_HEADS);
+                if (rng() % 4 == 0) {   // a prefetch nobody asks for (a draft that was dropped)
+                    const auto extra = pick_rows(rng, k::PLE_N_HEADS);
+                    t.prefetch_rows(extra.data());
+                }
+                std::vector<float> out(T * tok, -7.0f);
+                std::string e;
+                if (!t.gather_batch(r.data(), T, out.data(), e)) { ++bad; CHECK(false, "window gather_batch: %s", e.c_str()); return; }
+                same(r, T, out.data(), "window gather_batch");
+            }
+        } catch (const std::exception& e) { ++bad; CHECK(false, "decode thread: exception %s", e.what()); } });
+        std::thread single([&] { try {   // the single-token gather
+            std::mt19937 rng(7);
+            for (int i = 0; i < 300 && bad == 0; ++i) {
+                const auto r = pick_rows(rng, k::PLE_N_HEADS);
+                std::vector<float> out(tok, -7.0f);
+                t.gather(r.data(), out.data());
+                same(r, 1, out.data(), "gather");
+            }
+        } catch (const std::exception& e) { ++bad; CHECK(false, "single thread: exception %s", e.what()); } });
+        prompt.join();
+        decode.join();
+        single.join();
+        t.close();
+    }
+    mapped.close();   // (Windows cannot delete a file that is still mapped, and remove() throws)
+    std::error_code rm_ec;
+    std::filesystem::remove(path, rm_ec);
+    if (g_fail == 0) std::printf("ple table shared by a prompt thread, a decode window and a single gather, 9 reader configurations, vs the mapped reader: OK\n");
+}
+
 void all_formats_round_trip(const std::string& dir) {
     bf16_widening_is_exact();                      // BF16's own claim: a shift, exact for every pattern
     bad_sizes_are_refused(dir);
+    prefetched_keys_are_reused(dir);
+    table_is_consistent_under_concurrent_use(dir);
     CHECK(k::ple_format_count() > 0, "no formats");
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
         CHECK((int) f.id == i, "%s: the table is not in PleFormat order", f.name);
-        CHECK(k::ple_format_for_type(f.gguf_type) == &f, "%s: type lookup", f.name);
+        // NVFP4 and F8_E4M3 are both I8 bytes: the type finds the FP8 entry, `strata.ple.format` picks NVFP4 in PleTable::open
+        const k::PleFormatInfo* want = f.id == k::PleFormat::NVFP4 ? &k::ple_format_info(k::PleFormat::F8_E4M3) : &f;
+        CHECK(k::ple_format_for_type(f.gguf_type) == want, "%s: type lookup", f.name);
         format_round_trip(dir, f, 2000);
     }
     CHECK(k::ple_format_for_type("Q6_K") == nullptr, "Q6_K must not be a PLE format");
@@ -268,6 +509,31 @@ int selftest(const std::string& dir, uint32_t rb) {
             check_rows(rd, straddle, N, rb, "straddle");
             // duplicates, neighbours on one page, the first and last rows, and out-of-range rows
             check_rows(rd, {5, 5, 6, 7, 5, 0, N - 1, N, 0xFFFFFFFFu, 44, 45}, N, rb, "dedup/edges");
+            if (cache == 0) {
+                // batch sizes around the small-buffer bound (64), empty, one, and well above it; each shape twice, big and
+                // small alternating so the reusable overflow vector is reused at a smaller size too
+                for (size_t n : {(size_t) 0, (size_t) 1, (size_t) 2, (size_t) 15, (size_t) 16, (size_t) 63, (size_t) 64,
+                                 (size_t) 65, (size_t) 66, (size_t) 127, (size_t) 128, (size_t) 129, (size_t) 1000, (size_t) 4096,
+                                 (size_t) 65, (size_t) 1, (size_t) 300}) {
+                    std::vector<uint32_t> rows(n);
+                    for (auto& r : rows) r = rng() % N;
+                    check_coalescing(rd, rows, N, rb, "random");
+                    for (auto& r : rows) r = 1000 + rng() % 200;           // ~200 rows of a few dozen pages: many shared
+                    check_coalescing(rd, rows, N, rb, "clustered");
+                    for (auto& r : rows) r = 77;                           // one row n times
+                    check_coalescing(rd, rows, N, rb, "one row");
+                    for (size_t i = 0; i < n; ++i) rows[i] = (uint32_t) (n - 1 - i) * 3;   // descending: the sort reorders them
+                    check_coalescing(rd, rows, N, rb, "descending");
+                    for (size_t i = 0; i < n; ++i) rows[i] = (i % 5 == 0) ? N + (uint32_t) i : (uint32_t) (i / 2) * 7;   // out of range among misses
+                    check_coalescing(rd, rows, N, rb, "out of range mix");
+                }
+                std::vector<uint32_t> straddle_dup;                        // rows that cross a page, each twice, interleaved
+                for (uint32_t r = 0; r < N && straddle_dup.size() < 140; ++r) {
+                    const uint64_t at = HEADER + (uint64_t) r * rb;
+                    if (at / 4096 != (at + rb - 1) / 4096) { straddle_dup.push_back(r); straddle_dup.push_back(r); }
+                }
+                check_coalescing(rd, straddle_dup, N, rb, "straddle twice");
+            }
             // a prefill-shaped ticket much larger than the in-flight window
             std::vector<uint32_t> bulk(20000);
             for (auto& r : bulk) r = rng() % N;
@@ -429,6 +695,7 @@ int real(const std::string& gguf, int n_random, const std::string& tokens_path, 
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);   // (progress lines survive a crash)
     std::string gguf, dir = std::filesystem::temp_directory_path().string(), tokens;
     int rows = 20000;
     uint32_t inflight = 64;

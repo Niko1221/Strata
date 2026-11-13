@@ -20,6 +20,7 @@
 
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_flash_attn.hpp"
@@ -344,8 +345,8 @@ void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint1
                 ->get_device(),
             {sycl::aspect::fp16});
 
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<class attend_9d5505>>(
+        strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+            ->template parallel_for<dpct_kernel_name<class attend_9d5505>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 24) * sycl::range(1, 4, 32),
                                   sycl::range(1, 4, 32)),
                 exp_props,

@@ -19,9 +19,11 @@
 // activations are stored in it (perm32), and a lane's two B registers (h = 0 and 1) are adjacent: one 8-byte load.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/prefill/moe_fused.hpp"
+#include "strata/core/geometry.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -938,7 +940,8 @@ catch (sycl::exception const &exc) {
 }  // namespace
 
 bool built() { return true; }
-bool available() { return dev_info().cc >= 80; }
+// the blob layout and the tile loops below are Flash-Next's 2560 x 640 (O_D_CODES = 1280 * 640 ...): another compiled shape never takes this path
+bool available() { return strata::core::kCompiledGeometry.n_embd == 2560 && strata::core::kCompiledGeometry.n_ff == 640 && dev_info().cc >= 80; }
 // 0.1.36: on by default for the Q2_0 pack (+13-23% prompts on an RTX 5070; teacher-forced against the FP16 path as
 // close as MMQ at 8K and closer at 32K: phaseA-tests s18-tf); STRATA_PF_FUSED=0 keeps MMQ.  The native packs' kernels
 // (moe_fused_iq) stay opt-in: STRATA_PF_FUSED=1 (requested()).
@@ -975,8 +978,8 @@ void quantize_act(const float* x, int64_t rows, int64_t cols, void* xa, void* st
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
-                ->parallel_for<dpct_kernel_name<class quant_act_kernel_da6c97>>(
+            strata::kprof::kp(strata::q_of(stream), __FILE__, __func__, __LINE__)
+                ->template parallel_for<dpct_kernel_name<class quant_act_kernel_da6c97>>(
                     sycl::nd_range<3>(sycl::range(1, 1, blocks(nblk, 8)) *
                                           sycl::range(1, 1, 256),
                                       sycl::range(1, 1, 256)),
@@ -1015,7 +1018,7 @@ void group(const int32_t* ids, int64_t n, int k, int n_expert, void* scratch, in
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                s->submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                         sycl::range((size_t)n_expert * 4), cgh);
 
@@ -1043,7 +1046,7 @@ void group(const int32_t* ids, int64_t n, int k, int n_expert, void* scratch, in
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<dpct_kernel_name<class scan_kernel_7ed98e>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class scan_kernel_7ed98e>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((n_expert + 31) / 32 * 32)),
                     sycl::range(1, 1, (unsigned)((n_expert + 31) / 32 * 32))),
@@ -1057,7 +1060,7 @@ void group(const int32_t* ids, int64_t n, int k, int n_expert, void* scratch, in
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            s->parallel_for<dpct_kernel_name<class place_kernel_cf784d>>(
+            strata::kprof::kp(s, __FILE__, __func__, __LINE__)->template parallel_for<dpct_kernel_name<class place_kernel_cf784d>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(n, 256)) *
                                       sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -1099,7 +1102,7 @@ void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                 sycl::range(smem_bytes(true)), cgh);
 
@@ -1130,7 +1133,7 @@ void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
 
-        s->submit([&](sycl::handler &cgh) {
+        strata::kprof::kp(s, __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                 sycl::range(smem_bytes(false)), cgh);
 

@@ -18,7 +18,9 @@
 // for the k of a half-block: mma k index 16h + 4t + j stands for weight (and activation) 16h + t + 4j.  The
 // activations are stored in it (perm32), and a lane's two B registers (h = 0 and 1) are adjacent: one 8-byte load.
 #include "strata/prefill/moe_fused.hpp"
+#include "strata/prefill/pf_fused_override.hpp"
 #include "strata/kernels/gfx_arch.hpp"
+#include "strata/core/emulate.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -42,17 +44,23 @@ void ck(cudaError_t e, const char* what) {
 constexpr int AB = 80;                  // activation bytes per 64 values: 64 codes, then {d0, c0, d1, c1}
 constexpr int MAGIC = 0x4B400000;       // the bits of 1.5 * 2^23
 constexpr float MAGICF = 12582912.0f;
-// The Strata Q2_0 blob (moe_mmq.cu strata_q2_kernel, kernels.cu blob_dequant_kernel): gate/up codes [1280][640 B]
-// (rows interleaved: gate of feature f at row 2f, its up at 2f + 1), down codes [2560][160 B], gate/up scales
-// [1280][40] fp16, down scales [2560][10] fp16.
-constexpr size_t O_GU_CODES = 0, O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                 O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+// The Strata Q2_0 blob (moe_mmq.cu strata_q2_kernel, kernels.cu blob_dequant_kernel): gate/up codes [2 F][E / 4 B]
+// (rows interleaved: gate of feature f at row 2f, its up at 2f + 1), down codes [E][F / 4 B], gate/up scales
+// [2 F][E / 64] fp16, down scales [E][F / 64] fp16; E, F the compiled geometry's (Flash-Next 2560, 640: [1280][640 B],
+// [2560][160 B], [1280][40], [2560][10]).
+constexpr int GU_ROWS = kMoeGuRows, D_ROWS = kMoeEmbd;           // weight rows of the two products
+constexpr int ROW_GU = kMoeEmbd / 4, ROW_D = kMoeFF / 4;         // code bytes per weight row
+constexpr int SC_GU = kMoeEmbd / 64, SC_D = kMoeFF / 64;         // 64-weight blocks (scales) per row = stages along K
+constexpr int H_ROW_BYTES = SC_D * AB;                           // bytes of a row of H (AB per 64 values)
+static_assert(kMoeEmbd % 64 == 0 && kMoeFF % 64 == 0, "the Strata Q2 blob holds whole 64-weight blocks");
+constexpr size_t O_GU_CODES = 0, O_D_CODES = (size_t) GU_ROWS * ROW_GU, O_GU_SC = O_D_CODES + (size_t) D_ROWS * ROW_D,
+                 O_D_SC = O_GU_SC + (size_t) GU_ROWS * SC_GU * 2;
 constexpr int THREADS = 512;            // 16 warps: 4 along the weight rows (64 each) x 4 along the tile rows (16 each)
 constexpr int WROWS = 256;              // weight rows per work item: 128 features of gate/up, or 256 outputs of down
 constexpr int STAGES = 4;               // cp.async pipeline depth, one 64-weight block of K per stage
 constexpr int STAGE_BYTES = WROWS * 16 + kTileRows * AB;
 constexpr size_t smem_bytes(bool gu) {
-    return (size_t) WROWS * (gu ? 40 : 10) * 2 + STAGES * STAGE_BYTES + kTileRows * 4;
+    return (size_t) WROWS * (gu ? SC_GU : SC_D) * 2 + STAGES * STAGE_BYTES + kTileRows * 4;
 }
 
 // the stored position of value k of a 32-value half-block (see "The K order")
@@ -194,11 +202,31 @@ __device__ __forceinline__ void mma_s8(int (&d)[4], const uint32_t (&a)[4], uint
         : "=r"(d[0]), "=r"(d[1]), "=r"(d[2]), "=r"(d[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1), "r"(0));
 }
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+// Turing (STRATA_PF_FUSED_SM75): no cp.async - the stages are filled by plain copies (the same bytes; the barriers
+// around them stay) - and no m16n8k32 with s8 operands: it is four m8n8k16, rows g / g + 8 by k 0-15 / 16-31 (the
+// m16n8k32 fragments: a[0] / a[1] rows g / g + 8 at k 4 tig.., a[2] / a[3] the same at k 16 + 4 tig.., b0 / b1 the
+// two k halves).  The int32 sums are exact in any order: the same d as the sm_80 instruction.
+__device__ __forceinline__ void cp16(void* dst, const void* src) { *(uint4*) dst = __ldg((const uint4*) src); }
+__device__ __forceinline__ void cp4(void* dst, const void* src) { *(uint32_t*) dst = __ldg((const uint32_t*) src); }
+__device__ __forceinline__ void cp_commit() {}
+template <int N> __device__ __forceinline__ void cp_wait() {}
+__device__ __forceinline__ void mma8_s8(int& c0, int& c1, uint32_t a, uint32_t b) {
+    asm("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%0,%1};\n"
+        : "+r"(c0), "+r"(c1) : "r"(a), "r"(b));
+}
+__device__ __forceinline__ void mma_s8(int (&d)[4], const uint32_t (&a)[4], uint32_t b0, uint32_t b1) {
+    d[0] = d[1] = d[2] = d[3] = 0;
+    mma8_s8(d[0], d[1], a[0], b0);
+    mma8_s8(d[0], d[1], a[2], b1);
+    mma8_s8(d[2], d[3], a[1], b0);
+    mma8_s8(d[2], d[3], a[3], b1);
+}
 #endif
 
 // One work item = (tile of up to 64 routed rows of expert e, a block of 256 weight rows); a persistent grid walks
 // the batch's items (their count is on the device).  GU: gate/up rows of 128 features against the rows' tokens'
-// activations (`act` per token, 2560 values), SwiGLU, H to int8 per 32 features into `out` (per row, 640 values).
+// activations (`act` per token, E values), SwiGLU, H to int8 per 32 features into `out` (per row, F values).
 // !GU: down rows (256 outputs) against H (`act` per row), FP32 into `dm` per row.
 // Warp (wf, wt): weight rows 64 wf.. as four m16 tiles (GU: a tile = 8 features, its gate rows as mma rows 0-7 and
 // its up rows as 8-15, so a lane holds gate and up of one feature: SwiGLU in registers), tile rows 16 wt.. as two n8.
@@ -206,12 +234,15 @@ template <bool GU>
 __global__ void __launch_bounds__(THREADS, 1)
 expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, const int32_t* __restrict__ src,
               uint8_t* __restrict__ out, float* __restrict__ dm) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
-    constexpr int NKB = GU ? 40 : 10;                 // 64-weight blocks along K
-    constexpr int NFB = GU ? 5 : 10;                  // weight-row blocks per tile
-    constexpr int CODE_LD = GU ? 640 : 160;           // code bytes per weight row
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 750
+    constexpr int NKB = GU ? SC_GU : SC_D;            // 64-weight blocks along K
+    constexpr int NFB = (GU ? GU_ROWS : D_ROWS) / WROWS;   // weight-row blocks per tile
+    static_assert(GU_ROWS % WROWS == 0 && D_ROWS % WROWS == 0, "the Strata Q2 expert kernel: weight rows are whole work items of 256");
+    static_assert((SC_GU * 2) % 16 == 0, "the Strata Q2 expert kernel stages a row's gate/up scales in 16-byte copies (hidden width a multiple of 512)");
+    constexpr int NSC = GU ? SC_GU * 2 / 16 : SC_D * 2 / 4;   // scale copies per weight row (16 B for gate/up, 4 B for down)
+    constexpr int CODE_LD = GU ? ROW_GU : ROW_D;      // code bytes per weight row
     constexpr size_t O_CODES = GU ? O_GU_CODES : O_D_CODES, O_SC = GU ? O_GU_SC : O_D_SC;
-    constexpr int ACT_LD = NKB * AB;                  // bytes per activation row: 3200 (a token), 800 (a row's H)
+    constexpr int ACT_LD = NKB * AB;                  // bytes per activation row: 3200 (a token), 800 (a row's H) for Flash-Next
     constexpr unsigned M2 = 0x03030303u;
     extern __shared__ __align__(16) uint8_t smem[];
     const __half* wsc = (const __half*) smem;                     // [256][NKB] the work item's weight scales
@@ -237,10 +268,10 @@ expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, c
             const int r = row0 + min(tid, nrows - 1);             // rows past the tile's end repeat its last one
             srow[tid] = GU ? src[r] : r;
         }
-        for (int c = tid; c < WROWS * 5; c += THREADS) {          // the scales: 5 x 16 B (GU) or 5 x 4 B a row
-            const int r = c / 5, q = c % 5;
-            if (GU) cp16(smem + r * 80 + q * 16, blob + O_SC + (size_t) (rbase + r) * 80 + q * 16);
-            else cp4(smem + r * 20 + q * 4, blob + O_SC + (size_t) (rbase + r) * 20 + q * 4);
+        for (int c = tid; c < WROWS * NSC; c += THREADS) {        // the scales: NSC x 16 B (GU) or NSC x 4 B a row (5 for Flash-Next)
+            const int r = c / NSC, q = c % NSC;
+            if (GU) cp16(smem + r * (SC_GU * 2) + q * 16, blob + O_SC + (size_t) (rbase + r) * (SC_GU * 2) + q * 16);
+            else cp4(smem + r * (SC_D * 2) + q * 4, blob + O_SC + (size_t) (rbase + r) * (SC_D * 2) + q * 4);
         }
         __syncthreads();                                          // srow
         auto load = [&](int kb) {
@@ -334,7 +365,7 @@ expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, c
                     for (int o = 4; o < 32; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
                     const int r = nb0 + 8 * n + 2 * tig + c;
                     if (r < nrows) {
-                        uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (blk >> 1) * AB;
+                        uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (blk >> 1) * AB;
                         const int hh = blk & 1;
 #pragma unroll
                         for (int i = 0; i < 4; ++i) o[32 * hh + perm32(8 * i + g)] = (uint8_t) (int8_t) qv[i];
@@ -351,7 +382,7 @@ expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, c
 #pragma unroll
                     for (int q = 0; q < 4; ++q) {
                         const int r = nb0 + 8 * n + 2 * tig + (q & 1);
-                        if (r < nrows) dm[(size_t) (row0 + r) * 2560 + rbase + (q < 2 ? ra[i] : rb[i])] = acc[i][n][q];
+                        if (r < nrows) dm[(size_t) (row0 + r) * kMoeEmbd + rbase + (q < 2 ? ra[i] : rb[i])] = acc[i][n][q];
                     }
                 }
         }
@@ -371,7 +402,7 @@ expert_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, c
 // No LDS staging: a wave reads its weight rows (16 B per row and 64-weight block) and its tile rows' activation
 // blocks (80 B) straight from global memory (L2: an expert's rows are read by every tile, a token's by every weight
 // block), one block ahead in registers; the work item's weight scales go to LDS once.
-#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || defined(__gfx1151__)
+#if defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || defined(__gfx1151__)
 #define STRATA_FUSED_W11 1
 #else
 #define STRATA_FUSED_W11 0
@@ -395,9 +426,10 @@ __global__ void __launch_bounds__(W_THREADS)
 expert_w11_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ act, const int32_t* __restrict__ src,
                   uint8_t* __restrict__ out, float* __restrict__ dm) {
 #if STRATA_FUSED_W11
-    constexpr int NKB = GU ? 40 : 10;                 // 64-weight blocks along K
-    constexpr int NFB = (GU ? 1280 : 2560) / W_ROWS;  // work items per tile
-    constexpr int CODE_LD = GU ? 640 : 160;           // code bytes per weight row
+    constexpr int NKB = GU ? SC_GU : SC_D;            // 64-weight blocks along K
+    constexpr int NFB = (GU ? GU_ROWS : D_ROWS) / W_ROWS;  // work items per tile
+    static_assert(GU_ROWS % W_ROWS == 0 && D_ROWS % W_ROWS == 0, "the Strata Q2 gfx11 kernel: weight rows are whole work items of 128");
+    constexpr int CODE_LD = GU ? ROW_GU : ROW_D;      // code bytes per weight row
     constexpr size_t O_CODES = GU ? O_GU_CODES : O_D_CODES, O_SC = GU ? O_GU_SC : O_D_SC;
     constexpr int ACT_LD = NKB * AB;                  // bytes per activation row
     constexpr unsigned M2 = 0x03030303u;
@@ -533,7 +565,7 @@ expert_w11_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ ac
 #pragma unroll 8
                     for (int j = 0; j < 32; ++j) am = fmaxf(am, fabsf(hs[r][32 * hh + j]));
                     const float inv = am > 0.0f ? 127.0f / am : 0.0f;
-                    uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (size_t) fb * AB;
+                    uint8_t* o = out + (size_t) (row0 + r) * H_ROW_BYTES + (size_t) fb * AB;
                     int sum = 0;
                     uint32_t wd[8] = {};
 #pragma unroll
@@ -556,7 +588,7 @@ expert_w11_kernel(const Batch b, const Tables tb, const uint8_t* __restrict__ ac
                 for (int nt = 0; nt < 2; ++nt) {
                     const int r = 32 * wn + 16 * nt + l16;
                     if (r < nrows) {
-                        float* d = dm + (size_t) (row0 + r) * 2560 + rbase + 32 * wm + 16 * mt + hi;
+                        float* d = dm + (size_t) (row0 + r) * kMoeEmbd + rbase + 32 * wm + 16 * mt + hi;
 #pragma unroll
                         for (int i = 0; i < 8; ++i) d[2 * i] = acc[mt][nt][i];
                     }
@@ -625,11 +657,13 @@ const DevInfo& dev_info() {
     cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
     cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
     cudaDeviceGetAttribute(&d.sms, cudaDevAttrMultiProcessorCount, dev);
-    d.cc = 10 * major + minor;
-    if (d.cc < 80) return d;
-    // the device code of this card's arch must have the kernels (a build without an sm_80+ target has an empty body)
+    d.cc = 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);   // STRATA_EMULATE_CC counts (tests)
+    // Turing (sm_75): the same kernels with plain copies and m8n8k16 MMAs, opt-in (STRATA_PF_FUSED_SM75=1)
+    static const bool sm75 = [] { const char* v = std::getenv("STRATA_PF_FUSED_SM75"); return v != nullptr && v[0] == '1'; }();
+    if (d.cc < 75 || (d.cc < 80 && !sm75)) { d.cc = d.cc < 80 ? 0 : d.cc; return d; }
+    // the device code of this card's arch must have the kernels (a build without an sm_75+ target has an empty body)
     cudaFuncAttributes fa{};
-    if (cudaFuncGetAttributes(&fa, expert_kernel<true>) != cudaSuccess || fa.ptxVersion < 80) {
+    if (cudaFuncGetAttributes(&fa, expert_kernel<true>) != cudaSuccess || fa.ptxVersion < (d.cc >= 80 ? 80 : 75)) {
         cudaGetLastError();
         d.cc = 0;
         return d;
@@ -649,7 +683,7 @@ const DevInfo& dev_info() {
 }  // namespace
 
 bool built() { return true; }
-bool available() { return dev_info().cc >= 80; }
+bool available() { return dev_info().cc >= 75; }
 // 0.1.36: on by default for the Q2_0 pack (+13-23% prompts on an RTX 5070; teacher-forced against the FP16 path as
 // close as MMQ at 8K and closer at 32K: phaseA-tests s18-tf); STRATA_PF_FUSED=0 keeps MMQ.  The native packs' kernels
 // (moe_fused_iq) stay opt-in: STRATA_PF_FUSED=1 (requested()).
@@ -662,14 +696,14 @@ bool enabled() {
         return v == nullptr || v[0] != '0';
 #endif
     }();
-    return env && available();
+    return env && available() && strata::prefill::pf_fused_override().load(std::memory_order_relaxed) != 0;
 }
 bool requested() {
     static const bool env = [] {
         const char* v = std::getenv("STRATA_PF_FUSED");
         return v != nullptr && v[0] == '1';
     }();
-    return env && available();
+    return env && available() && strata::prefill::pf_fused_override().load(std::memory_order_relaxed) != 0;
 }
 
 size_t act_bytes(int64_t rows, int64_t cols) { return (size_t) rows * (size_t) (cols / 64) * AB; }
@@ -711,13 +745,13 @@ void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const
     // the most tiles the batch can have: every row in it, plus a partial tile per expert
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
 #if defined(__HIPCC__)
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / W_ROWS), (int64_t) d.sms * wgp_blocks(d.occ_gu));
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / W_ROWS), (int64_t) d.sms * wgp_blocks(d.occ_d));
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS / W_ROWS), (int64_t) d.sms * wgp_blocks(d.occ_gu));
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS / W_ROWS), (int64_t) d.sms * wgp_blocks(d.occ_d));
     expert_w11_kernel<true><<<g_gu, W_THREADS, 0, s>>>(b, tb, (const uint8_t*) xa, src, (uint8_t*) ha, nullptr);
     expert_w11_kernel<false><<<g_d, W_THREADS, 0, s>>>(b, tb, (const uint8_t*) ha, src, nullptr, dm);
 #else
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * 5, (int64_t) d.sms * d.occ_gu);
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * 10, (int64_t) d.sms * d.occ_d);
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (GU_ROWS / WROWS), (int64_t) d.sms * d.occ_gu);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (D_ROWS / WROWS), (int64_t) d.sms * d.occ_d);
     expert_kernel<true><<<g_gu, THREADS, smem_bytes(true), s>>>(b, tb, (const uint8_t*) xa, src, (uint8_t*) ha,
                                                                 nullptr);
     expert_kernel<false><<<g_d, THREADS, smem_bytes(false), s>>>(b, tb, (const uint8_t*) ha, src, nullptr, dm);

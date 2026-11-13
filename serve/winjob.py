@@ -10,7 +10,10 @@ power throttling, see `no_throttle` (#691). Elsewhere, and if the job cannot be 
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
+
+_REAL_POPEN = subprocess.Popen   # the class itself, before any test replaces the name
 
 _job = None
 _lock = threading.Lock()
@@ -45,6 +48,7 @@ if os.name == "nt":
     _k32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
     _k32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
     _k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _k32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
 
     def _make_job():
         job = _k32.CreateJobObjectW(None, None)     # no security attributes: the handle is not inherited
@@ -78,6 +82,99 @@ if os.name == "nt":
 else:
     def no_throttle(handle) -> bool:
         return False
+
+
+def terminate() -> bool:
+    """End every process in the job now (the deadline kill of an owner that must not leave a tree behind). False when
+    there is no job (nothing was contained, or not Windows)."""
+    if os.name != "nt" or not _job:
+        return False
+    return bool(_k32.TerminateJobObject(_job, 1))
+
+
+CREATE_SUSPENDED = 0x00000004
+
+
+def start_contained(args, **kw):
+    """``subprocess.Popen(args, **kw)`` with the child in the kill-on-close job before it runs a single instruction.
+    contain() after Popen leaves a window: a child that starts a process in its first milliseconds (the `npx` / `uvx`
+    wrappers of MCP servers, serve/mcp.py) can do so before it is assigned, and that process stays outside the job and
+    survives a hard kill of the server.  So the child is created suspended, assigned, then resumed.  The resume
+    happens whatever the assignment did (a child that is not in the job still runs, as contain() would leave it); a
+    child that cannot be resumed is ended and the start fails, never left hanging.  Elsewhere: plain Popen."""
+    if os.name != "nt":
+        return subprocess.Popen(args, **kw)
+    # the caller's own flags (CREATE_NO_WINDOW, CREATE_NEW_PROCESS_GROUP, ...) are kept; every other argument passes as is
+    kw["creationflags"] = kw.get("creationflags", 0) | CREATE_SUSPENDED
+    proc = subprocess.Popen(args, **kw)
+    real = isinstance(proc, _REAL_POPEN)              # (a test's stand-in object has no suspended process behind it)
+    try:
+        contain(proc)                                  # False when refused (the server's own job forbids it): it still runs
+    except BaseException:
+        if real:
+            _end(proc)                                 # the caller never gets it: not left suspended, not left running
+        raise
+    pid = getattr(proc, "pid", None)
+    resumed = isinstance(pid, int) and pid > 0 and _resume(pid)   # (a stand-in wrapping a real process is resumed too)
+    if real and not resumed:
+        _end(proc)
+        program = args[0] if args else "?"
+        raise OSError(f"Windows started {program} but did not let it run, so Strata stopped it. "
+                      "Start it again; if this keeps happening, restart the computer.")
+    return proc
+
+
+def _end(proc) -> None:
+    try:
+        proc.kill()
+        proc.wait(10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+if os.name == "nt":
+    class _ThreadEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD),
+                    ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD)]
+
+    _TH32CS_SNAPTHREAD, _THREAD_SUSPEND_RESUME = 0x00000004, 0x0002
+    _INVALID_HANDLE = wintypes.HANDLE(-1).value
+    _k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _k32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    _k32.Thread32First.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ThreadEntry))
+    _k32.Thread32Next.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ThreadEntry))
+    _k32.OpenThread.restype = wintypes.HANDLE
+    _k32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _k32.ResumeThread.restype = wintypes.DWORD
+    _k32.ResumeThread.argtypes = (wintypes.HANDLE,)
+    _k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+
+def _resume(pid: int) -> bool:
+    """Resume every thread of a process created suspended (a new process has one, its main thread).  True if at least
+    one thread was resumed."""
+    if os.name != "nt":
+        return True
+    snap = _k32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+    if not snap or snap == _INVALID_HANDLE:
+        return False
+    resumed = 0
+    try:
+        entry = _ThreadEntry()
+        entry.dwSize = ctypes.sizeof(_ThreadEntry)
+        ok = _k32.Thread32First(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32OwnerProcessID == pid:
+                th = _k32.OpenThread(_THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
+                if th:
+                    if _k32.ResumeThread(th) != 0xFFFFFFFF:
+                        resumed += 1
+                    _k32.CloseHandle(th)
+            ok = _k32.Thread32Next(snap, ctypes.byref(entry))
+    finally:
+        _k32.CloseHandle(snap)
+    return resumed > 0
 
 
 def contain(proc) -> bool:

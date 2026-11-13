@@ -85,6 +85,46 @@ class ContextOverflow(unittest.TestCase):
                         else:
                             self.assertEqual(set(error), {"type", "message"})
 
+    def test_the_anthropic_route_says_it_the_way_anthropic_does_and_keeps_strata_s_sentence(self):
+        # #4838: Claude Code decides from the words of a 400: "prompt is too long" makes it compact, "input length and `max_tokens` exceed
+        # context limit" makes it shorten max_tokens. Strata's own sentence stays after it, so the other clients' phrase is still in the message.
+        for stream in (False, True):
+            with self.subTest(stream=stream, case="prompt alone"):
+                status, _, body = self.post("/v1/messages", "max_tokens", 150722, 16, stream)
+                self.assertEqual(status, 400, body)
+                message = body["error"]["message"]
+                self.assertTrue(message.startswith(f"prompt is too long: 150722 tokens > {CTX - CTX_SLACK - 1} maximum; "), message)
+                self.assertIn("request exceeds the context window", message)
+                self.assertEqual(body["error"]["type"], "invalid_request_error")
+            with self.subTest(stream=stream, case="prompt plus max_tokens"):
+                status, _, body = self.post("/v1/messages", "max_tokens", 1024, CTX, stream)
+                self.assertEqual(status, 400, body)
+                message = body["error"]["message"]
+                self.assertTrue(message.startswith(f"input length and `max_tokens` exceed context limit: 1024 + {CTX} > {CTX - CTX_SLACK}; "), message)
+                self.assertIn("request exceeds the context window", message)
+        for path, key in (("/v1/chat/completions", "max_tokens"), ("/v1/responses", "max_output_tokens")):
+            with self.subTest(path=path):
+                status, _, body = self.post(path, key, 150722, 16)
+                self.assertEqual(status, 400, body)
+                self.assertTrue(body["error"]["message"].startswith("request exceeds the context window"), body)   # the other dialects are unchanged
+
+    def test_default_service_shortens_an_overshooting_budget_in_every_dialect(self):
+        # the Service default (fit_max_tokens on): a prompt that fits is answered, streaming or not; the prompt that
+        # alone leaves no room is the 400 of the strict test above
+        self.assertTrue(Service(self.engine, ByteTokenizer(), self.svc.template).fit_max_tokens)
+        self.svc.fit_max_tokens = True
+        for path, key in APIS:
+            for stream in (False, True):
+                with self.subTest(path=path, stream=stream):
+                    if not stream:      # (a 200 stream is SSE, not the JSON post() reads)
+                        with mock.patch.object(self.engine, "generate", wraps=self.engine.generate) as generate:
+                            status, _, body = self.post(path, key, 1024, CTX, stream)
+                        self.assertEqual(status, 200, body)
+                        self.assertEqual(generate.call_args.args[1], CTX - CTX_SLACK - 1024)
+                    status, _, body = self.post(path, key, CTX - CTX_SLACK, CTX, stream)
+                    self.assertEqual(status, 400, body)
+                    self.assertIn("no room to answer", body["error"]["message"])
+
     def test_one_token_of_room_still_answers_but_zero_is_rejected(self):
         for path, key in APIS:
             for fit in (False, True):

@@ -1,5 +1,6 @@
 // src/kernels/cpu/expert_layout.cpp - plan v0.3 P6: the per-layer expert table.  See the header.
 #include "strata/kernels/cpu/expert_layout.hpp"
+#include "strata/kernels/cpu/hadamard.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -9,7 +10,7 @@
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
-#else
+#elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
 #include <fstream>
@@ -38,10 +39,47 @@ int cpu_isa_cap() {
     return cap;
 }
 
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) && !defined(_M_IX86)
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx512bw_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+bool cpu_avx1_ok() { return false; }
+bool cpu_sse42_ok() { return false; }
+bool cpu_gather_fast() { return false; }
+bool cpu_gather_fast_here() { return false; }
+bool cpu_avxvnni_ok() { return false; }
+bool cpu_vnni_ok() { return false; }
+std::string cpu_name() {
+#if defined(__APPLE__)
+    return "unknown";   // as before: the Metal build's cpuid shim read all zeros
+#else
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("model name", 0) == 0 || line.rfind("Model", 0) == 0) {
+            const size_t c = line.find(':');
+            if (c != std::string::npos) {
+                const size_t b = line.find_first_not_of(" \t", c + 1);
+                if (b != std::string::npos) return line.substr(b);
+            }
+        }
+    }
+#if defined(__aarch64__)
+    return "aarch64";
+#else
+    return "unknown";
+#endif
+#endif  // __APPLE__
+}
+#else
+bool cpu_isa_free() {                                    // STRATA_FORCE_AVX2 and the ISA cap, shared by the probes
+    if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
+    return cpu_isa_cap() >= 3;
+}
+
 bool cpu_avx512_ok() {
     static const bool ok = [] {
-        if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
-        if (cpu_isa_cap() < 3) return false;
+        if (!cpu_isa_free()) return false;
         unsigned r[4] = {0, 0, 0, 0};
         auto cpuid = [&](unsigned leaf, unsigned sub) {
 #if defined(_MSC_VER)
@@ -60,7 +98,9 @@ bool cpu_avx512_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
@@ -92,13 +132,73 @@ bool cpu_avx512bw_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
         cpuid(7, 0);
         const unsigned ebx = r[1];
         return ((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u);
+    }();
+    return ok;
+}
+
+static void isa_probe(unsigned& ebx, unsigned& ecx) {
+    unsigned r[4] = {0, 0, 0, 0};
+    auto cpuid = [&](unsigned leaf, unsigned sub) {
+#if defined(_MSC_VER)
+        int x[4];
+        __cpuidex(x, (int) leaf, (int) sub);
+        for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+        __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+    };
+    cpuid(0, 0);
+    if (r[0] < 7) return;
+    cpuid(1, 0);
+    if (!((r[2] >> 27) & 1u)) return;                     // OSXSAVE
+#if defined(_MSC_VER)
+    const unsigned long long xcr0 = _xgetbv(0);
+#else
+    unsigned lo = 0, hi = 0;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
+#endif
+    if ((xcr0 & 0xE6) != 0xE6) return;                    // the OS saves the AVX-512 state
+    cpuid(7, 0);
+    ebx = (unsigned) r[1];
+    ecx = (unsigned) r[2];
+}
+
+bool cpu_vbmi_ok() {                                     // the byte-permute shuffles (VPERMB, VPMULTISHIFTQB)
+    // STRATA_NO_VBMI=1 answers no (a test knob: it runs the substitute q2 unpack on a CPU that has VBMI)
+    static const bool ok = cpu_isa_free() && std::getenv("STRATA_NO_VBMI") == nullptr && [] {
+        unsigned ebx = 0, ecx = 0;
+        isa_probe(ebx, ecx);
+        // AVX-512F + VL + VBMI (ECX bit 1).  Cascade Lake has F/BW/VL/VNNI but NOT VBMI: that is the
+        // whole reason for the substitute unpack in expert.cpp, so this bit must not be confused with F.
+        return bool(((ebx >> 16) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 1) & 1u));
+    }();
+    return ok;
+}
+
+bool cpu_vnni_ok() {                                     // VNNI's dpbusd at all, the integer dot at half the lanes
+    static const bool ok = cpu_isa_free() && [] {
+        unsigned ebx = 0, ecx = 0;
+        isa_probe(ebx, ecx);
+        // AVX-512F + DQ + BW + VL + VNNI (ECX bit 11), VBMI not required: the Cascade Lake Xeon tier (DQ is there on every VNNI CPU; asked for
+        // because iq_avx512.cpp is compiled with it).
+        const bool vnni = bool(((ebx >> 16) & 1u) && ((ebx >> 17) & 1u) && ((ebx >> 30) & 1u) && ((ebx >> 31) & 1u) && ((ecx >> 11) & 1u));
+        if (!vnni) return false;
+        // The tier below VBMI is OPT-IN (STRATA_VNNI_TIER=1): on such a CPU the 512-bit i-quant and Q2_0 rows round differently from the
+        // AVX-2 rows it runs today (measured under SDE Cascade Lake: every multi-token gate/up line and the Q2_0 rows differ), so turning it on
+        // changes that CPU's output.  Every CPU that has VBMI as well answers as before.
+        if (cpu_avx512_ok()) return true;
+        const char* e = std::getenv("STRATA_VNNI_TIER");
+        return e != nullptr && e[0] == '1';
     }();
     return ok;
 }
@@ -126,7 +226,9 @@ bool cpu_avx2_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0x6) != 0x6) return false;            // the OS saves the SSE and AVX state
@@ -154,7 +256,9 @@ bool cpu_avx1_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
+#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         return (xcr0 & 0x6) == 0x6;
@@ -177,6 +281,8 @@ bool cpu_sse42_ok() {
     return ok;
 }
 
+#endif  // x86 cpu probes
+
 const char* isa_floor_build() {
 #if defined(STRATA_ISA_FLOOR_AVX)
     return "avx";
@@ -187,6 +293,7 @@ const char* isa_floor_build() {
 #endif
 }
 
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 namespace {
 void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #if defined(_MSC_VER)
@@ -198,6 +305,7 @@ void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #endif
 }
 }  // namespace
+#endif  // x86 cpuid helper
 
 int iq256_gather_setting() {
     static const int s = [] {
@@ -208,6 +316,7 @@ int iq256_gather_setting() {
     return s;
 }
 
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
 bool cpu_gather_fast() {
     static const bool ok = [] {
         if (cpu_isa_cap() < 3) return false;   // STRATA_FORCE_ISA: as on a CPU that stops at AVX2
@@ -286,6 +395,7 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+#endif  // x86 cpuid probes
 
 // ---- the AVX-512 probe and the oracle flag (#795) ----
 //
@@ -313,6 +423,9 @@ const char* CpuFeatures::reason() const {
 
 CpuFeatures cpu_features() {
     CpuFeatures f;
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) && !defined(_M_IX86)
+    return f;   // the AVX-512 kernels are x86-only: no AVX-512 on this architecture
+#else
     int reg[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(reg, 0);
@@ -332,6 +445,7 @@ CpuFeatures cpu_features() {
     f.avx512_vnni = (ecx >> 11) & 1u;
     f.avx512_vbmi = (ecx >> 1) & 1u;
     return f;
+#endif
 }
 
 void cpu_require_expert_support() {
@@ -339,7 +453,10 @@ void cpu_require_expert_support() {
     if (f.usable()) return;
     std::fprintf(stderr,
                  "strata: this CPU cannot run the expert kernel: %s.\n"
-                 "        The engine needs AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
+                 "        The pack in --pack is the AVX-512 Q2_0 pack (its folder has no native_experts.txt): its CPU kernel needs\n"
+                 "        AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
+                 "        An i-quant (IQ3_XXS, IQ3_S, ...), NVFP4 or Unsloth pack has native_experts.txt in its folder and runs on an\n"
+                 "        AVX2 CPU as well: build that pack (setup does it on a CPU without AVX-512) and give its folder as --pack.\n"
                  "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
                  f.reason());
     std::exit(1);
@@ -347,7 +464,9 @@ void cpu_require_expert_support() {
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
-    if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    // VNNI-512 without VBMI: expert.cpp's zmm row dot has a substitute for the VBMI-only 2-bit unpack there
+    // (q2_rows_512_ok also leaves the STRATA_CPU_YMM=1 choice to the AVX-2 kernel, on this CPU on the rung below).
+    if (q2_rows_512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);   // issue #1699: the third rung
 }
@@ -360,7 +479,8 @@ void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const A
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
-    if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
+    // the q8 quantizer is VBMI-free: a VNNI-but-no-VBMI CPU (Cascade Lake Xeon) keeps its 512-bit form
+    if (cpu_vnni_ok()) act_quant_q8_1(x, n, a);
     else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
     else act_quant_q8_1_avx1(x, n, a);   // issue #1699
 }
@@ -374,6 +494,8 @@ void native_quant_h(const NativeFmt&, const float*, void*) { std::abort(); }
 int native_gu_mt_min(int) { return 2; }
 void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+void native_gu_rows_invariant(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
+void native_down_rows_invariant(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif
 
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
@@ -383,6 +505,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
     std::ifstream in(pack_dir + "/native_experts.txt");
     if (!in) {
         L.total = (uint64_t) n_layers * (uint64_t) n_expert * (uint64_t) BLOB;
+        hadamard_set({});
         g_layout = L;
         return true;
     }
@@ -479,6 +602,49 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
         at += L.bytes[(size_t) l] * (uint64_t) L.n_expert;
     }
     L.total = at;
+    // v5: Agention's Hadamard-folded experts (prism.hadamard, hadamard.hpp).  The pack must say which layers are
+    // rotated and with what signs; a v5 pack without hadamard.txt (or the reverse) is refused, never run unrotated.
+    {
+        std::ifstream probe(pack_dir + "/hadamard.txt");
+        const bool have = (bool) probe;
+        if (L.version >= 5 && !have) {
+            err = "native_experts.txt v5 declares Hadamard-folded experts, but " + pack_dir + "/hadamard.txt is missing";
+            return false;
+        }
+        if (have && L.version < 5) {
+            err = pack_dir + "/hadamard.txt exists but native_experts.txt is v" + std::to_string(L.version) +
+                  ": the pack is inconsistent (repack with tools/iq_pack.py)";
+            return false;
+        }
+        for (int64_t l = 0; l < n_layers; ++l) L.fmt[(size_t) l].layer = (int) l;
+        HadamardSpec h;
+        if (have && !hadamard_parse(pack_dir + "/hadamard.txt", n_layers, h, err)) return false;
+        hadamard_set(std::move(h));
+        const HadamardSpec& hs = hadamard_spec();
+        for (int64_t l = 0; hs.any() && l < n_layers; ++l) {
+            NativeFmt& f = L.fmt[(size_t) l];
+            f.had_block = hs.block;
+            f.had_gu = hs.gu(l);
+            f.had_d = hs.down(l);
+            if ((f.had_gu && f.n_embd % hs.block) || (f.had_d && f.n_ff % hs.block)) {
+                err = "hadamard.txt: block " + std::to_string(hs.block) + " does not divide layer " +
+                      std::to_string(l) + "'s expert widths";
+                return false;
+            }
+            // the Q2_0 rows quantize their activations with Strata's own act_quant_any, which does not rotate
+            if ((f.had_gu && f.gu_type == 42) || (f.had_d && f.d_type == 42)) {
+                err = "hadamard.txt: layer " + std::to_string(l) + " folds a Q2_0 expert, which this engine cannot rotate";
+                return false;
+            }
+            f.gu_signs = f.had_gu ? hadamard_signs((int) f.n_embd) : nullptr;
+            f.d_signs = f.had_d ? hadamard_signs((int) f.n_ff) : nullptr;
+            // explicit signs are per width: a width without a vector would silently mean identity signs
+            if (!hs.signs.empty() && ((f.had_gu && !f.gu_signs) || (f.had_d && !f.d_signs))) {
+                err = "hadamard.txt: no sign vector for layer " + std::to_string(l) + "'s expert width";
+                return false;
+            }
+        }
+    }
     g_layout = L;
     return true;
 #endif

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Hand fixes on top of the SYCLomatic output (sycl/migrate.sh). Idempotent: re-run after a re-migration.
+"""Hand fixes on top of the SYCLomatic output (sycl/tools/migrate.sh). Idempotent: re-run after a re-migration.
 
 Each entry is a thing dpct 2025.3 got wrong or could not do, with the reason. Upstream files are never touched.
 """
-import re, sys, pathlib
+import re, pathlib
 root = pathlib.Path(__file__).resolve().parents[1]
 changed = 0
 
@@ -125,7 +125,9 @@ edit("src/kernels/cuda/qsa_select.dp.cpp", lambda s: s.replace(
     "                            void *stream) try {\n#if 1   // SYCL port: no thread-block clusters (sm_90): the caller takes the plain top-k\n"))
 # 0.1.38: dpct could not deduce fused_gr's templated kernel names (the staged read and the MAX_T down kernels)
 def gr_kernel_names(s):
-    pat = re.compile(r",\s*dpct_placeholder /\*Fix the type mannually\*/>>\((.{0,900}?)\b(gr_down_staged_kernel|gr_down_multi_kernel<(\d+)>)\(", re.S)
+    # the tile is a number (Flash-Next 1280 / 2560 before the geometry came from core/geometry.hpp) or the expression the source now
+    # spells it as: `N`, `(N / 2)` (fused_gr.cu, Q4-SYCL)
+    pat = re.compile(r",\s*dpct_placeholder /\*Fix the type mannually\*/>>\((.{0,900}?)\b(gr_down_staged_kernel|gr_down_multi_kernel<(\d+|\w+|\([^<>()]+\))>)\(", re.S)
     return pat.sub(lambda m: (">>(" if m.group(2) == "gr_down_staged_kernel" else f", dpct_kernel_scalar<{m.group(3)}>>>(")
                    + m.group(1) + m.group(2) + "(", s)
 edit("src/kernels/cuda/fused_gr.dp.cpp", gr_kernel_names)
@@ -234,6 +236,26 @@ edit("src/program/generate.cpp", lambda s: s.replace(
     "gs ? gs->adapt_stream\n                           : adapt_stream->memcpy(",
     "(gs ? gs->adapt_stream : adapt_stream)->memcpy("))
 
+# 9c. conversation_snapshot_test: dpct migrated cudaFreeHost(p) on sycl::malloc_host memory to libc free(p) - the
+#     test aborted with "munmap_chunk(): invalid pointer". USM host memory goes back through sycl::free.
+edit("src/core/conversation_snapshot_test.cpp", lambda s: s.replace(
+    "for (void *p : host) DPCT_CHECK_ERROR(free(p));",
+    "for (void *p : host) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));   // SYCL port: dpct wrote free(p) for cudaFreeHost"))
+
+# 9d. s2_expert_grouped: the new transposed kernels (gu/down_grouped_t_kernel) write `acc += dw * dx * v` in one
+#     expression, which -fp-model=precise contracts to an FMA; the previous kernels compute the product in
+#     chunk_dot and add it in the caller, which it does not. nvcc contracts both, so on CUDA they are bitwise equal
+#     (s2_expert_grouped_parity checks that); here they differed in the last bit. No contraction in the new ones.
+def s2_no_contract(s):
+    import re as _re
+    note = "    #pragma clang fp contract(off)   // SYCL port: round as the previous kernels do (see tools/fixups.py)\n"
+    for name in ("gu_grouped_t_kernel", "down_grouped_t_kernel"):
+        m = _re.search(r"__dpct_inline__ void " + name + r"\([^{]*\{\n", s)
+        if m and not s[m.end():].startswith(note):
+            s = s[:m.end()] + note + s[m.end():]
+    return s
+edit("src/kernels/cuda/s2_expert_grouped.dp.cpp", s2_no_contract)
+
 # 10. %globaltimer: there is no device-side wall clock in SPIR-V; the verify-window stage profiler reads zeros.
 edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: s.replace(
     'asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));',
@@ -340,3 +362,79 @@ edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
 edit("include/strata/core/mtp.hpp", lambda s: s.replace(
     "    dpct::queue_ptr cs_ = &dpct::get_in_order_queue();\n",
     "    dpct::queue_ptr cs_ = nullptr;   // load() creates it; not the device's queue, which ~MtpDrafter would destroy\n"))
+
+# `strata --version` must print before any GPU is touched (the engine smoke test of `strata update` runs it, and a user outside the
+# `render` group has no usable device). Two things in dpct's helper headers looked up the SYCL devices before main:
+# 1. blas::descriptor's `static inline queue_ptr _saved_queue_ptr = &get_default_queue();` (an inline variable): the default is
+#    looked up in get_saved_queue() instead.
+def lazy_saved_queue(s):
+    s = s.replace("  static inline ::dpct::cs::queue_ptr _saved_queue_ptr =\n      &::dpct::cs::get_default_queue();",
+                  "  static inline ::dpct::cs::queue_ptr _saved_queue_ptr = nullptr;")
+    return s.replace("  static inline sycl::queue &get_saved_queue() noexcept {\n    return *_saved_queue_ptr;",
+                     "  static inline sycl::queue &get_saved_queue() noexcept {\n"
+                     "    if (!_saved_queue_ptr) _saved_queue_ptr = &::dpct::cs::get_default_queue();\n"
+                     "    return *_saved_queue_ptr;")
+edit("include/dpct/blas_utils.hpp", lazy_saved_queue)
+
+# 2. dpct::device_memory (global_memory / constant_memory) sized its per-device pointer table, and so built mem_mgr and dev_mgr, in its
+#    constructor. The engine's namespace-scope tables (iq4nl_values, c_codes) are heap objects built before main. Both now happen at the
+#    first get_ptr_impl(); the destruction order the original comment protected does not arise for objects that are never freed.
+def lazy_device_memory(s):
+    s = s.replace("        _host_ptr(nullptr), _device_ptrs(get_ptrs_size(), nullptr) {\n", "        _host_ptr(nullptr) {\n")
+    s = s.replace("    // Make sure that singleton class mem_mgr and dev_mgr will destruct later\n    // than this.\n"
+                  "    detail::mem_mgr::instance();\n    dev_mgr::instance();\n  }\n",
+                  "    // Strata: the pointer table, mem_mgr and dev_mgr are made at the first get_ptr_impl() (sycl/tools/fixups.py)\n  }\n")
+    s = s.replace("  std::vector<value_t *> _device_ptrs;\n  sycl::queue _q;\n};",      # a default-built sycl::queue picks a device
+                  "  std::vector<value_t *> _device_ptrs;\n  std::optional<sycl::queue> _q;   // Strata: a default-built sycl::queue picks a device (sycl/tools/fixups.py)\n};")
+    return s.replace("  value_t *get_ptr_impl(sycl::queue &q) {\n#ifdef DPCT_USM_LEVEL_NONE\n",
+                     "  value_t *get_ptr_impl(sycl::queue &q) {\n"
+                     "    if (_device_ptrs.empty()) {\n      detail::mem_mgr::instance();\n      dev_mgr::instance();\n"
+                     "      _device_ptrs.assign(get_ptrs_size(), nullptr);\n    }\n#ifdef DPCT_USM_LEVEL_NONE\n")
+edit("include/dpct/detail/memory_detail.hpp", lazy_device_memory)
+
+# 3. the migrated generate.cpp has no `--version` (src/program/generate.cpp answers it before any GPU is touched): the engine printed its
+#    usage and exited 2. Same lines as the CUDA tree, at the top of main().
+def version_flag(s):
+    if '"--version"' in s:
+        return s
+    return s.replace("    std::setvbuf(stdout, nullptr, _IONBF, 0);\n#if (defined(STRATA_USE_HIP)",
+                     "    std::setvbuf(stdout, nullptr, _IONBF, 0);\n"
+                     "    // `strata --version` / `-V` (also `strata generate --version`): the version and nothing else, before any GPU is touched, as the CUDA\n"
+                     "    // and HIP engines have answered it. `strata update` runs it as the engine's smoke test, and the Intel package build runs it with\n"
+                     "    // an empty environment.\n"
+                     "    for (int i = 1; i < argc && i < 3; ++i) {\n"
+                     "        if (std::strcmp(argv[i], \"--version\") == 0 || std::strcmp(argv[i], \"-V\") == 0) {\n"
+                     "            std::printf(\"strata %s\\n\", STRATA_VERSION);\n"
+                     "            return 0;\n"
+                     "        }\n"
+                     "    }\n"
+                     "#if (defined(STRATA_USE_HIP)", 1)
+edit("src/program/generate.cpp", version_flag)
+
+# 14. No permanently excluded blocks in the port (cleanup 4.1). Three `#if 0` regions used to sit in the migrated sources: the AMD-tuned S26/S27
+#     expert kernels in iq_kernels.dp.cpp (997 lines), the inline-PTX tile helpers that fixup 11 switches off in native_qsa_score.dp.cpp, and
+#     the #542 CUDA-runtime mismatch warning in generate.cpp. Each is dead text here and has a canonical implementation in src/ (the .cu
+#     file or src/program/generate.cpp). A re-migration or a 3-way merge could bring them back, so this removes each region (depth-aware:
+#     through its matching #endif) and leaves one comment. Idempotent: the marker line is gone after the first run.
+#     qsa_prompt_attn.dp.cpp and qsa_select.dp.cpp keep their `#elif 0` arms: those sit in a live #if chain and are not part of this item.
+def strip_dead_region(marker, comment, next_line=None):
+    def fn(s):
+        L = s.split("\n")
+        for i, line in enumerate(L):
+            if line.lstrip().startswith(marker) and (next_line is None or next_line in L[i + 1]):
+                depth = 0
+                for j in range(i, len(L)):
+                    t = L[j].lstrip()
+                    if re.match(r"#\s*(if|ifdef|ifndef)\b", t): depth += 1
+                    elif re.match(r"#\s*endif\b", t):
+                        depth -= 1
+                        if depth == 0:
+                            return "\n".join(L[:i] + [comment] + L[j + 1:])
+                    elif depth == 1 and re.match(r"#\s*(else|elif)\b", t):
+                        return s   # an #else arm would be live code: leave it for a person to read
+                return s
+        return s
+    return fn
+edit("src/kernels/cuda/iq_kernels.dp.cpp", strip_dead_region("#if 0", "// (the S26/S27 kernels and their launchers are not here: the canonical code is src/kernels/cuda/iq_kernels.cu, STRATA_EXPERT_V2 / STRATA_EXPERT_V2K; sycl/tools/fixups.py keeps this block out)", "S26 STRATA_EXPERT_V2=1"))
+edit("src/kernels/cuda/native_qsa_score.dp.cpp", strip_dead_region("#if 0   // SYCL: inline PTX", "// (no load_a/load_b/mma here: the inline-PTX tensor-core path is src/kernels/cuda/native_qsa_score.cu, and the SYCL port scores with the scalar path below; sycl/tools/fixups.py keeps this block out)"))
+edit("src/program/generate.cpp", strip_dead_region("#if 0 // the SYCL port has no CUDA runtime", "// (the CUDA runtime/headers mismatch warning, #542, lives in src/program/generate.cpp; a SYCL port has no CUDA runtime to mismatch; sycl/tools/fixups.py keeps this block out)"))

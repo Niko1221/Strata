@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
@@ -51,7 +52,7 @@ int main(int argc, char** argv) {
         std::printf("%-6s %s, %llu rows: read_row %d/%zu values differ, gather_batch %s %d differ\n",
                     mode == k::PleIo::Direct ? "Direct" : "Mmap", t.format(), (unsigned long long) t.rows(), diff,
                     got.size(), ok ? "ok," : "FAILED,", bdiff);
-        bad += diff + bdiff + (ok ? 0 : 1) + (std::strcmp(t.format(), "F8_E4M3") != 0);
+        bad += diff + bdiff + (ok ? 0 : 1) + (std::strcmp(t.format(), std::getenv("PLE_EXPECT_FORMAT") ? std::getenv("PLE_EXPECT_FORMAT") : "F8_E4M3") != 0);
     }
     if (argc > 3) {
         k::PleTable q;

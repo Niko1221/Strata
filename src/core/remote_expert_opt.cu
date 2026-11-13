@@ -4,6 +4,7 @@
 #include "strata/kernels/cpu/expert_layout.hpp"
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/kernels/window_limits.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -11,7 +12,7 @@
 namespace strata::core {
 namespace {
 constexpr int64_t H = strata::kernels::cpu::H;
-constexpr int K = 10, MAXT = strata::kernels::cpu::MAXT, CAP = MAXT * K;
+constexpr int K = 10, MAXT = strata::kernels::kWindowMaxT, CAP = MAXT * K;   // (a window's rows)
 struct ReduceMeta { int32_t row[CAP]; float weight[CAP]; };
 
 bool check(cudaError_t status, std::string& err) {
@@ -98,8 +99,12 @@ void RemoteExpertOpt::prepare(const RemoteExperts& remote, void* metadata) const
 
 bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::string& err) {
     const auto& p = *std::find_if(peers_.begin(), peers_.end(), [&](const Peer& p) { return p.remote == &remote; });
+    // finish() synchronizes this stream before the host reads h_out_. When mapped output is available,
+    // write the reduced rows there directly, avoiding a separate device-to-host copy for every layer.
+    float* sum = remote.zero_copy_ ? remote.z_out_ : p.sum;
     reduce_experts<<<dim3((H + 255) / 256, tokens_), 256, 0, remote.stream_>>>(
-        remote.d_out_, (const ReduceMeta*) metadata, p.sum);
+        remote.d_out_, (const ReduceMeta*) metadata, sum);
+    if (remote.zero_copy_) return check(cudaGetLastError(), err);
     return check(cudaMemcpyAsync(remote.h_out_, p.sum, tokens_ * H * sizeof(float),
                                   cudaMemcpyDeviceToHost, remote.stream_), err);
 }

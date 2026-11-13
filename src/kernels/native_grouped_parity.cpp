@@ -63,10 +63,11 @@ const char* name_of(int t) {
         case 14: return "Q6_K";
         case 7: return "Q5_1";
         case 8: return "Q8_0";
+        case 6: return "Q5_0";
         default: return "?";
     }
 }
-int block_values(int t) { return t == 20 || t == 7 || t == 8 ? 32 : t == 42 ? 64 : 256; }
+int block_values(int t) { return t == 20 || t == 7 || t == 8 || t == 6 || t == 2 || t == 3 ? 32 : t == 42 ? 64 : 256; }   // (6 = Q5_0: 32-value blocks, each needs its own finite scale)
 
 // `rows` rows of `n` values of format t: random bytes, then a finite fp16 scale in every block
 std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& rng) {
@@ -99,6 +100,7 @@ std::vector<uint8_t> random_rows(int t, int64_t rows, int64_t n, std::mt19937& r
 struct Setup {
     k::NativeExpertLayout L;
     int T = 0, K = 0, cap = 0, n_blobs = 0;
+    int active_lo = 0, active_hi = 0;
     size_t slot = 0;
     uint8_t* blobs = nullptr;
     uint8_t* xq = nullptr;
@@ -174,6 +176,8 @@ struct Setup {
         }
         if (st.back() > cap) { std::fprintf(stderr, "plan: %d entries > cap %d\n", st.back(), cap); std::exit(2); }
         const int ng = (int) p.size();
+        active_lo = base;
+        active_hi = st.back();
         std::iota(ds.begin(), ds.end(), 0);
         std::shuffle(ds.begin(), ds.end(), rng);                  // scattered rows of `out`
         for (int e = 0; e < cap; ++e) tk_v.push_back(tk(rng));
@@ -197,9 +201,43 @@ struct Setup {
         ck(cudaStreamSynchronize(s), "sync");
         std::vector<uint32_t> o(out_floats);
         ck(cudaMemcpy(o.data(), out, o.size() * 4, cudaMemcpyDeviceToHost), "out");
+        // Fused SwiGLU does not write h or inactive Q8 rows. Compare only the
+        // active Q8_1 bytes, appended after the full output (including padding).
+        const size_t fa = ((size_t) cap * L.n_ff * sizeof(float) + 255) & ~(size_t) 255;
+        const size_t qrow = (size_t) (L.n_ff / 32) * 36;
+        const size_t qb = (size_t) (active_hi - active_lo) * qrow;
+        const size_t old = o.size();
+        o.resize(old + qb / sizeof(uint32_t));
+        if (qb)
+            ck(cudaMemcpy(o.data() + old, scr + 3 * fa + active_lo * qrow, qb, cudaMemcpyDeviceToHost), "active hq");
         return o;
     }
 };
+
+// The words that differ between v1 and the new launches: where, their values, and whether it is a NaN / Inf pair or a finite difference.
+void diff_list(const std::vector<uint32_t>& v1, const std::vector<uint32_t>& nw, int64_t H, size_t out_floats, const char* what) {
+    size_t shown = 0, total = 0, nan_pairs = 0, fin = 0;
+    double maxrel = 0;
+    for (size_t i = 0; i < v1.size(); ++i) {
+        if (v1[i] == nw[i]) continue;
+        ++total;
+        float a, b;
+        std::memcpy(&a, &v1[i], 4);
+        std::memcpy(&b, &nw[i], 4);
+        const bool fa = std::isfinite(a), fb = std::isfinite(b);
+        if (!fa && !fb) ++nan_pairs;
+        if (fa && fb && i < out_floats) { ++fin; maxrel = std::max(maxrel, (double) std::fabs(a - b) / (std::fabs(a) + 1e-30)); }
+        if (shown++ < 6) {
+            if (i < out_floats)
+                std::printf("      %s word %zu (row %zu col %lld): v1 %.9g (0x%08x)  new %.9g (0x%08x)\n", what, i, i / (size_t) H,
+                            (long long) (i % (size_t) H), a, v1[i], b, nw[i]);
+            else
+                std::printf("      %s q8 word %zu (past the output): v1 0x%08x  new 0x%08x\n", what, i - out_floats, v1[i], nw[i]);
+        }
+    }
+    std::printf("      %s: %zu words differ: %zu both non-finite, %zu finite output floats (max relative difference %.3e)\n", what, total,
+                nan_pairs, fin, maxrel);
+}
 
 void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& rng) {
     Setup S(gu, dt, H, FF, 6, 4, 9, rng, s);   // 6 tokens x 4 experts: cap 24 entries
@@ -210,7 +248,7 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
             const int ng = S.plan(groups, base, rng);
             const auto ref = S.result(true, 0, 0x00, s);
             size_t w = 0;
-            for (const uint32_t v : ref) w += v != 0xFFFFFFFFu;
+            for (size_t i = 0; i < S.out_floats; ++i) w += ref[i] != 0xFFFFFFFFu;
             written += w;
             for (const int64_t gy : {(int64_t) 0, (int64_t) 1, (int64_t) 2, (int64_t) 3, (int64_t) 4, (int64_t) S.cap + 3}) {
                 const auto got = S.result(false, gy, (calls & 1) ? 0x7F : 0x00, s);
@@ -218,8 +256,11 @@ void check(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::mt19937& 
                 size_t diff = 0;
                 for (size_t i = 0; i < ref.size(); ++i) diff += ref[i] != got[i];
                 if (diff) {
-                    std::printf("  %-8s/%-7s base %d, %d groups, grid_groups %lld: %zu of %zu floats differ  FAIL\n",
+                    std::printf("  %-8s/%-7s base %d, %d groups, grid_groups %lld: %zu of %zu output/Q8 words differ  FAIL\n",
                                 name_of(gu), name_of(dt), base, ng, (long long) gy, diff, ref.size());
+                    if (!bad) {
+                        diff_list(ref, got, H, S.out_floats, "first failure");
+                    }
                     ++bad;
                 }
             }
@@ -337,6 +378,23 @@ void bench(cudaStream_t s, std::mt19937& rng) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, nullptr, _IONBF, 0);   // keep the trail on a crash
+#if defined(__HIP_PLATFORM_AMD__)
+    {   // gfx1151 defaults to expert mode 8 (the fused gate/up + SwiGLU + q8_1 LDS kernel) for an unstrided call and to the CUDA layout
+        // for a strided one; the two sum in a different order, so "bitwise equal to v1" does not hold between them there (summation
+        // order only: round 0214 diagnosis, RESULTS-ENGAMD.md).  Pin the CUDA layout for both runs unless the caller chose a mode.
+        cudaDeviceProp prop;
+        if (std::getenv("STRATA_EXP_MODE") == nullptr && cudaGetDeviceProperties(&prop, 0) == cudaSuccess &&
+            std::strstr(prop.gcnArchName, "gfx1151") != nullptr) {
+#ifdef _WIN32
+            _putenv_s("STRATA_EXP_MODE", "0");
+#else
+            setenv("STRATA_EXP_MODE", "0", 1);
+#endif
+            std::printf("gfx1151: STRATA_EXP_MODE=0 pinned for both runs (mode 8 and the CUDA layout differ in summation order)\n");
+        }
+    }
+#endif
     const bool do_bench = argc > 1 && std::string(argv[1]) == "--bench";
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");
@@ -346,8 +404,13 @@ int main(int argc, char** argv) {
                    14,
 #endif
                    8})        // STRATA_GU_FMTS
-        for (int dt : {20, 23, 42, 7, 8}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS; IQ4_XS: n_ff % 256
+        for (int dt : {20, 23, 42, 7, 8, 6}) check(gu, dt, 512, 256, s, rng);   // STRATA_D_FMTS (6 = Q5_0: UD-IQ4_XS / Q3_K_XL); IQ4_XS: n_ff % 256
+    check(42, 42, 2560, 640, s, rng);
     check(21, 20, 2560, 640, s, rng);                                   // a model's shapes
+    // round 0214: every expert type pair of the new Unsloth Qwen3.8-Flash-Next sets at the model's 2560 x 640
+    // (IQ1_M/IQ2_XXS/IQ2_XS/IQ2_S/Q2_0/IQ3_XXS/IQ4_XS gate/up; Q2_0/IQ4_NL/Q5_0/Q8_0 down; IQ4_XS is 256-wide so n_ff 640 needs a 32-block down)
+    for (int gu : {29, 16, 17, 22, 42, 18, 23})
+        for (int dt : {42, 20, 6, 8}) check(gu, dt, 2560, 640, s, rng);
     check(21, 23, 2560, 768, s, rng);
     if (do_bench) bench(s, rng);
     std::printf("native_grouped_parity: %d failures\n", g_fail);

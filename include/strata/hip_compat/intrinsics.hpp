@@ -16,7 +16,7 @@ __device__ __forceinline__ int signed_byte(uint32_t word, int lane) {
 
 // CUDA's signed __dp4a: four signed byte products accumulated modulo 2^32.
 __device__ __forceinline__ int dp4a(int a, int b, int c) {
-#if (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1150__) || \
+#if (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1103__) || defined(__gfx1150__) || \
      defined(__gfx1151__) || defined(__gfx1200__) || \
      defined(__gfx1201__)) && __has_builtin(__builtin_amdgcn_sudot4)
     // RDNA3 and RDNA4 expose the signed/unsigned dot4 form (v_dot4_i32_iu8). Mark
@@ -27,9 +27,12 @@ __device__ __forceinline__ int dp4a(int a, int b, int c) {
     // RDNA2 has no sudot4 (that is gfx11+), but it has the plain signed v_dot4_i32_i8 (dot1-insts): the same
     // signed x signed byte products accumulated modulo 2^32, no clamp.
     return __builtin_amdgcn_sdot4(a, b, c, false);
-#elif defined(__gfx1012__) && !defined(STRATA_GFX1012_PORTABLE_DOT)
-    // RDNA1 has no native signed dot4. SDWA selects and sign-extends byte
-    // operands directly, avoiding separate shift/mask/sign-extension work.
+#elif (defined(__gfx1012__) || (defined(__gfx1010__) && !defined(STRATA_AMD_COMMUNITY_DOT_OFF))) && \
+    !defined(STRATA_GFX1012_PORTABLE_DOT)
+    // RDNA1 has no native signed dot4 (gfx1010 has no dot instructions at all). SDWA selects and sign-extends byte
+    // operands directly, avoiding separate shift/mask/sign-extension work.  gfx1010 takes this since #4855 (Keoian; no card here
+    // runs it): the community switch, cmake -DSTRATA_AMD_COMMUNITY_TUNING=OFF, defines STRATA_AMD_COMMUNITY_DOT_OFF and
+    // gfx1010 gets the portable loop again (strata/core/amd_community.hpp).
     // Adapted from pinned llama.cpp ggml-cuda/common.cuh (MIT; see
     // third_party/ggml/LICENSE), same modulo-2^32 accumulation contract.
     int lo, hi;

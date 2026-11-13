@@ -22,20 +22,23 @@
 // All of those are asserted observable in `ple_parity.cpp` rather than trusted.
 #pragma once
 
+#include "strata/core/geometry.hpp"
+
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::kernels {
 
 // ---- geometry, every value confirmed against the artifact (docs/gguf-metadata.txt) ----
-inline constexpr int NG_N_EMBD = 2560;          // n_embd
-inline constexpr int PLE_HEAD_DIM = 160;        // qwen4exp.embedding_length_per_layer_input
+inline constexpr int NG_N_EMBD = strata::core::kCompiledGeometry.n_embd;          // n_embd
 inline constexpr int NGRAM_SIZE = 3;            // qwen4exp.ple.ngram_size
 inline constexpr int HEADS_PER_NGRAM = 8;       // qwen4exp.ple.heads_per_ngram
 inline constexpr int PLE_N_HEADS = (NGRAM_SIZE - 1) * HEADS_PER_NGRAM;   // 16
+inline constexpr int PLE_HEAD_DIM = NG_N_EMBD / PLE_N_HEADS;   // 160: qwen4exp.embedding_length_per_layer_input (16 heads make one hidden row)
 inline constexpr int PLE_CONV_KERNEL = 4;       // qwen4exp.ple.conv_kernel
 inline constexpr int32_t PLE_EOS_TOKEN_ID = 248044;
-inline constexpr int NG_HC = 4;                 // hyper_connection.count
+inline constexpr int NG_HC = strata::core::kCompiledGeometry.hc;                 // hyper_connection.count
 inline constexpr int NG_HC_DIM = NG_HC * NG_N_EMBD;                      // 10240
 inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
@@ -49,20 +52,21 @@ inline constexpr int PLE_ROW_BYTES_FP8 = PLE_HEAD_DIM;                   // 160:
 inline constexpr int PLE_ROW_BYTES_Q5_1 = (PLE_HEAD_DIM / 32) * 24;     // 120: a Q5_1 row (a Q5_K_M finetune)
 inline constexpr int PLE_ROW_BYTES_Q8_0 = (PLE_HEAD_DIM / 32) * 34;     // 170: a Q8_0 row (UD-Q6_K_XL, Swift-1.5 Q4_K_L)
 inline constexpr int PLE_ROW_BYTES_BF16 = PLE_HEAD_DIM * 2;             // 320: a BF16 row, two bytes a value
+inline constexpr int PLE_ROW_BYTES_NVFP4 = PLE_HEAD_DIM / 2 + PLE_HEAD_DIM / 16;   // 90: 80 B of E2M1 codes + 10 E4M3 block scales
 inline constexpr int PLE_ROW_BYTES_MAX = PLE_ROW_BYTES_BF16;             // the widest row any format in `ple_formats()` has
 
 /// THE FORMATS OF THE TABLE, ONE ROW EACH. A table type is one entry here (its GGUF type name, the bytes of one
 /// 160-value row, how to turn a row into floats) and nothing else: `PleTable::open`, `format()`, the reader's row size,
 /// the error string and the buffers' size all read this list, so a new format cannot be in one switch and missing from
 /// another. A row is always `PLE_HEAD_DIM` = 160 values = 5 blocks of 32 for the block formats.
-enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16 };
+enum class PleFormat : uint8_t { IQ4_NL, Q5_0, F8_E4M3, Q5_1, Q8_0, Q4_0, BF16, NVFP4 };
 
 struct PleFormatInfo {
     PleFormat id;
     const char* name;          ///< what `PleTable::format()` returns
     const char* gguf_type;     ///< `TensorInfo::type_name()` of the table tensor ("I8" for F8_E4M3: GGUF has no FP8 type)
     uint32_t row_bytes;        ///< bytes of one 160-value row in the file
-    bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`), F8_E4M3 only
+    bool needs_scale;          ///< the table has one scale in the GGUF metadata (`strata.ple.scale`): F8_E4M3 and NVFP4
     void (*dequant)(const uint8_t* row, float scale, float* out160);
 };
 
@@ -93,6 +97,13 @@ struct PleConsts {
     uint64_t offset[PLE_N_HEADS];
 };
 PleConsts ple_artifact_consts();
+
+/// The hash constants a model file carries in its own metadata (`<arch>.ple.layer_multipliers`, `.head_vocab_sizes`,
+/// `.head_offsets`), checked: NGRAM_SIZE multipliers, PLE_N_HEADS vocabulary sizes (none zero) and offsets, every head's
+/// range [offset, offset + vocab) inside `table_rows` (0 = do not check the table size).  Returns false and sets `err`
+/// when the arrays do not fit; `ple_artifact_consts()` stays the default for a file that carries none.
+bool ple_consts_from_arrays(const std::vector<uint64_t>& mult, const std::vector<uint64_t>& vocab,
+                            const std::vector<uint64_t>& offset, uint64_t table_rows, PleConsts& out, std::string& err);
 
 /// `mixed_n = (ctx[0]*m[0]) ^ (ctx[1]*m[1]) ^ ... ^ (ctx[n-1]*m[n-1])` in uint64.
 ///
@@ -186,6 +197,10 @@ public:
     /// as ONE reader request - page dedupe and sort across the whole batch, the reader's full queue depth.  Not
     /// while a single-token `issue` is pending.  The mapped mode gathers row by row.
     bool gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err);
+    /// STRATA_PLE_COMPACT: the same rows as their raw IQ4_NL bytes (n_tokens x 16 rows of PLE_ROW_BYTES; a row past the
+    /// table: scale 0 and code 8 everywhere, which decode to the +0.0f gather_batch writes) for ple_iq4nl_dequant on the device.  False (nothing
+    /// written) unless the table is in memory (--ple-io ram / mmap) and IQ4_NL.
+    bool gather_raw_iq4nl(const uint32_t* rows, size_t n_tokens, uint8_t* out) const;
 
     /// Fault injection (Direct mode): every row read completes no earlier than `us` after issue.
     void set_injected_delay_us(double us);
@@ -200,7 +215,14 @@ public:
     bool is_open() const;
     /// True when `PleIoOptions::lock` was asked for and the OS lock succeeded (false: pages only pre-touched).
     bool locked() const;
+    /// Gives a resident lock back (Mmap mode): the pages stay mapped and cached, but the OS may reclaim them again, so the RAM counts as
+    /// available.  False when the table was not locked.  Used by the residency policy when the table's lock would leave the
+    /// conversation cache no room (#4518).
+    bool unlock();
     uint64_t rows() const;
+    /// Bytes of the whole table (rows x row bytes) while open; 0 when closed.  The residency policy in
+    /// generate.cpp sizes the table with this before it decides to keep it in RAM.
+    uint64_t table_bytes() const;
     /// "IQ4_NL" or "F8_E4M3" (a GGUF from tools/ple_fp8_pack.py: type I8, strata.ple.format = f8_e4m3).
     const char* format() const;
 

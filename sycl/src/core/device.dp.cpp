@@ -1,6 +1,7 @@
 // src/core/device.cu - P2.S1: the CUDA side of the runtime core.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/kprof.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/device.hpp"
@@ -428,7 +429,7 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
                 auto exp_props = sycl::ext::oneapi::experimental::properties{
                     sycl::ext::oneapi::experimental::use_root_sync};
 
-                dpct::get_in_order_queue().submit([&](sycl::handler &cgh) {
+                strata::kprof::kp(&dpct::get_in_order_queue(), __FILE__, __func__, __LINE__)->submit([&](sycl::handler &cgh) {
                     auto float_base__b_threads_ct0 =
                         (float *)base_ + b * threads;
                     auto n_b_threads_ct1 = n - b * threads;

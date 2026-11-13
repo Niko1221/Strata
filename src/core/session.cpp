@@ -1,5 +1,6 @@
 // src/core/session.cpp - one token through all 48 layers.  See the header for why the graphs are per-layer.
 #include "strata/core/session.hpp"
+#include "strata/core/pin_budget.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
 
@@ -20,14 +21,9 @@
 #include <cstring>
 #include <vector>
 
-// `_mm_pause` for the doorbell spin.  Guarded because it is x86-only; a target without it still builds, the
-// spin is just less polite to the pipeline.
-#if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
-#include <immintrin.h>
-#define STRATA_SPIN_PAUSE() _mm_pause()
-#else
-#define STRATA_SPIN_PAUSE() ((void) 0)
-#endif
+// The doorbell spin.  x86 pauses, aarch64 yields (include/strata/platform/cpu_relax.hpp).
+#include "strata/platform/cpu_relax.hpp"
+#define STRATA_SPIN_PAUSE() strata_cpu_pause()
 
 namespace strata::core {
 namespace {
@@ -137,7 +133,24 @@ void session_release(SessionState& s) {
         }
 }
 
+#if defined(STRATA_GPU_METAL)
+}  // namespace strata::core
+namespace strata::metal_engine {
+void window_reset(const strata::core::SessionState* ss);   // metal/src/engine/window.cpp: that session's running state (the main one or a batch slot's) back to a new sequence's
+}  // namespace strata::metal_engine
+namespace strata::core {
+#endif
+
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
+#if defined(STRATA_GPU_METAL)
+    // the running state lives in the Metal decode window; the session's own device buffers are not read there
+    (void) g; (void) R_init; (void) stream;
+    strata::metal_engine::window_reset(&s);
+    s.ple_prev[0] = -1;
+    s.ple_prev[1] = -1;
+    s.ple_token = -1;
+    return;
+#endif
     cudaStream_t cs = (cudaStream_t) stream;
     // the residual: `hc` copies of the one vector a caller hands in.  A real sequence's first token is the
     // embedding broadcast to every stream, which is the reference's own initial condition.
@@ -176,12 +189,7 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
 void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
-    strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
-    sh.n_head = g.n_head;
-    sh.n_head_kv = g.n_head_kv;
-    sh.head_dim = g.head_dim;
-    sh.idx_n_head = g.idx_q_heads;
-    sh.idx_dim = g.idx_key_dim;
+    const strata::kernels::QsaShapes sh = qsa_shapes(g);
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);
@@ -529,7 +537,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     }
     parts_bytes = parts_bytes_in;
     // MAPPED as well as pinned: the token graph's handoff kernel reads it through its device pointer.
-    if (cudaHostAlloc((void**) &y_miss, parts_bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+    if (strata::core::host_alloc_guarded((void**) &y_miss, parts_bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
         err = "SessionLoopScratch: cudaHostAlloc for the pool's staging failed";
         return false;
     }
@@ -545,7 +553,8 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
     // core or its SMT sibling.  The symptom is not an error: it is a CPU path at 26.9 GB/s where the same pool
     // runs at 36.32.  It was being done and undone on EVERY token, which is a syscall pair on the critical path
     // for a property that wants to hold for the whole session.
-    // The host's core is the pool's reserved one: the first physical core, or the last with --host-core last (F12).
+    // The host's core is the pool's reserved one: the first physical core, or the last with --host-core last (F12),
+    // or the first core's SMT sibling with --host-core sibling.
     const int host_core = strata::kernels::cpu::planned_host_core();
     if (host_core >= 0) {
         pinned_core = strata::kernels::cpu::pin_current_thread(host_core);
@@ -557,6 +566,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) {
             pinned = pinned_core.valid;
         }
     }
+    strata::platform::name_this_thread("strata-host");
     strata::aux_cpus::note_owned_thread();   // the host: --aux-cpus leaves it where it is
     return true;
 }
@@ -701,6 +711,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
             if (rang) break;                             // rung, and the graph is still running: the overlap
             STRATA_SPIN_PAUSE();
         }
+        strata_load_fence();   // the ring was seen: the GPU's x_f / ids / weights are read after it (a no-op on x86)
         if (mid_graph) ++gr.rings_mid_graph;
         // the window, from just before the launch to the instant the ring was seen
         const auto t_ring = std::chrono::steady_clock::now();
@@ -953,11 +964,12 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
                 return false;
             }
         }
+        strata_load_fence();   // as above, for the token loop's wait
         const auto t1 = Clock::now();
         progress_at("token: the CPU experts of layer", l);
         if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        _mm_sfence();
+        strata_store_fence();
         *flag = want;
         const auto t2 = Clock::now();
         tg.ms_wait += std::chrono::duration<double, std::milli>(t1 - t0).count();

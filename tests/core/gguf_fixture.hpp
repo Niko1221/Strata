@@ -1,6 +1,6 @@
 // tests/core/gguf_fixture.hpp - synthetic GGUF v3 files for the loader tests (no gguf-py, no model, no GPU).
 //
-// A file is a header, metadata (strings and integers only), a tensor directory whose offsets are 32-byte aligned
+// A file is a header, metadata (strings, integers, f32, and arrays of u32 or strings), a tensor directory whose offsets are 32-byte aligned
 // in the data section, and the tensors' payloads, each filled with a pattern the test can recognise.
 #pragma once
 
@@ -18,14 +18,34 @@ namespace fixture {
 
 struct Kv {
     std::string key;
-    uint32_t type = 8;         ///< GGUF value type: 8 string, 2 u16, 4 u32, 5 i32
+    uint32_t type = 8;         ///< GGUF value type: 8 string, 2 u16, 4 u32, 5 i32, 6 f32, 9 array
     std::string s;
     uint64_t u = 0;
+    float f = 0;
+    uint32_t elem = 4;                 ///< arrays: 4 u32 (`arr`) or 8 string (`sarr`)
+    std::vector<uint64_t> arr;
+    std::vector<std::string> sarr;
 };
-inline Kv str(const std::string& k, const std::string& v) { return Kv{k, 8, v, 0}; }
-inline Kv u16(const std::string& k, uint64_t v) { return Kv{k, 2, {}, v}; }
-inline Kv i32(const std::string& k, uint64_t v) { return Kv{k, 5, {}, v}; }
-inline Kv u32(const std::string& k, uint64_t v) { return Kv{k, 4, {}, v}; }
+// fields set by name: a braced Kv{...} that stops short warns under -Wmissing-field-initializers (clang -Wextra)
+inline Kv make_kv(const std::string& k, uint32_t type) {
+    Kv r;
+    r.key = k;
+    r.type = type;
+    return r;
+}
+inline Kv str(const std::string& k, const std::string& v) { Kv r = make_kv(k, 8); r.s = v; return r; }
+inline Kv u16(const std::string& k, uint64_t v) { Kv r = make_kv(k, 2); r.u = v; return r; }
+inline Kv i32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 5); r.u = v; return r; }
+inline Kv u32(const std::string& k, uint64_t v) { Kv r = make_kv(k, 4); r.u = v; return r; }
+inline Kv f32(const std::string& k, float v) { Kv r = make_kv(k, 6); r.f = v; return r; }
+inline Kv u32s(const std::string& k, std::vector<uint64_t> v) { Kv r = make_kv(k, 9); r.arr = std::move(v); return r; }
+inline Kv strs(const std::string& k, std::vector<std::string> v) {
+    Kv r = make_kv(k, 9);
+    r.elem = 8;
+    r.sarr = std::move(v);
+    return r;
+}
+inline Kv str_array(const std::string& k, std::vector<std::string> v) { return strs(k, std::move(v)); }
 
 struct Tensor {
     std::string name;
@@ -65,7 +85,16 @@ inline Written write(const std::filesystem::path& path, const std::vector<Kv>& k
         if (k.type == 8) puts(k.s);
         else if (k.type == 2) { const uint16_t v = (uint16_t) k.u; put(&v, 2); }
         else if (k.type == 4 || k.type == 5) { const uint32_t v = (uint32_t) k.u; put(&v, 4); }
-        else throw std::runtime_error("fixture: unsupported metadata type");
+        else if (k.type == 6) put(&k.f, 4);
+        else if (k.type == 9 && k.elem == 4) {
+            put32(4);
+            put64(k.arr.size());
+            for (uint64_t x : k.arr) put32((uint32_t) x);
+        } else if (k.type == 9 && k.elem == 8) {
+            put32(8);
+            put64(k.sarr.size());
+            for (const auto& x : k.sarr) puts(x);
+        } else throw std::runtime_error("fixture: unsupported metadata type");
     }
     Written w;
     std::vector<uint64_t> bytes;

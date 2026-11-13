@@ -1,5 +1,6 @@
 // sycl/src/kernels/gr_bench.cpp - SYCL port: time fused_gr_read_multi (norm + down + up) for 1-6 tokens on random
 // weights at the Coder's shapes; prints a checksum of every output so two builds/switches can be compared bitwise.
+// Both GR decompositions: STRATA_GR_MORE_GROUPS=0 / =1 (default: on for Arc A-series only); STRATA_GR_LARGE_GRF the same.
 #include "strata/kernels/fused_gr.hpp"
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>

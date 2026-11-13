@@ -106,7 +106,32 @@ static bool inherited_default(int core, ULONG id, int temporary_core, ULONG temp
     return check(ok && restored, "restore inherited process default");
 }
 
+// --host-core sibling: the host on the first layout's host core's SMT sibling, which no worker takes, and the first
+// logical processor left to nothing; `first` on a core without SMT.  Every affinity mode.
+static bool host_sibling_layout() {
+    bool ok = true;
+    for (const auto affinity : {cpu::PoolAffinity::All, cpu::PoolAffinity::Auto, cpu::PoolAffinity::PCores}) {
+        cpu::set_host_core(cpu::HostCore::First);
+        const cpu::CpuTopology first = cpu::detect_cpu_topology(true, affinity);
+        cpu::set_host_core(cpu::HostCore::Sibling);
+        const cpu::CpuTopology sib = cpu::detect_cpu_topology(true, affinity);
+        cpu::set_host_core(cpu::HostCore::First);
+        const auto has = [&](int core) {
+            return std::find(sib.worker_cores.begin(), sib.worker_cores.end(), core) != sib.worker_cores.end();
+        };
+        if (first.host_sibling < 0)
+            ok = check(sib.host_core == first.host_core && sib.worker_cores == first.worker_cores,
+                       "--host-core sibling without SMT must be first") && ok;
+        else
+            ok = check(sib.host_core == first.host_sibling && sib.host_core != first.host_core && !has(sib.host_core) &&
+                           !has(first.host_core),
+                       "--host-core sibling: the host on the sibling, no worker on its core") && ok;
+    }
+    return ok;
+}
+
 int main() {
+    if (!host_sibling_layout()) return 1;
     const auto all = cpu::physical_cores(false);
     std::vector<int> cores;
     std::vector<ULONG> ids;
