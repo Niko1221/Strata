@@ -1,0 +1,154 @@
+{
+  "audit": "independent_saved_record_counts_medians_and_artifact_hashes",
+  "result_count": 1,
+  "passed": true,
+  "results": [
+    {
+      "path": "standards-r2\\official-quick-r2\\qwen36\\report\\2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl\\results.json",
+      "sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d",
+      "kind": "official-quick",
+      "params": {
+        "runs": 3,
+        "think": false,
+        "clients": 0,
+        "long": true,
+        "started_server": true,
+        "command": "python tools/strata_bench.py --long"
+      },
+      "duration_s": 449.26300621032715,
+      "request_records": 36,
+      "request_successes": 36,
+      "failures": [],
+      "skipped": {},
+      "model": "qwen3.6-35b-a3b-ud-q4_k_xl",
+      "machine": {
+        "gpu": [
+          "AMD Radeon"
+        ],
+        "gpu_vram_mib": 12272.0,
+        "gpu_driver": null,
+        "gpu_detail": null,
+        "cuda": null,
+        "engine_build": null,
+        "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+        "cpu_cores": 6,
+        "storage": "nvme0n1 INTEL SSDPEKNW010T8                      nvme",
+        "cpu_threads": 10,
+        "ram_gib": 56.0,
+        "os": "Linux 7.0.14-26-pve",
+        "python": "3.12.15",
+        "strata_version": null,
+        "strata_commit": null,
+        "engine_version": "0.1.59",
+        "model": "qwen3.6-35b-a3b-ud-q4_k_xl",
+        "quant": "UD-Q4_K_XL",
+        "context": 65536,
+        "parallel_slots": 1,
+        "config": {
+          "exe": "component:strata-engine",
+          "args": [
+            "--native",
+            "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+            "--max-context",
+            "65536",
+            "--prefill",
+            "auto",
+            "--mtp",
+            "2"
+          ],
+          "model_name": "qwen3.6-35b-a3b-ud-q4_k_xl",
+          "arch": "qwen35moe",
+          "lib_dirs": [],
+          "port": 8080,
+          "backend": "hip",
+          "host": "127.0.0.1",
+          "open_browser": false
+        },
+        "launch": "component:strata-engine --native Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --max-context 65536 --prefill auto --mtp 2",
+        "engine_info": {
+          "model": "qwen3.6-35b-a3b-ud-q4_k_xl",
+          "max_context": 65536,
+          "images": false,
+          "version": "0.1.59",
+          "drafting": "mtp",
+          "drafting_note": ""
+        },
+        "vram_after": {
+          "elastic": false
+        }
+      },
+      "chat_decode": {
+        "median": 32.6,
+        "min": 32.1,
+        "max": 33.0,
+        "n": 9
+      },
+      "chat_ttft": {
+        "median": 0.52,
+        "min": 0.505,
+        "max": 0.594,
+        "n": 9
+      },
+      "prompts": {
+        "4K": {
+          "prompt": {
+            "median": 820.2,
+            "min": 817.1,
+            "max": 820.4,
+            "n": 3
+          },
+          "decode": {
+            "median": 30.1,
+            "min": 29.8,
+            "max": 30.5,
+            "n": 3
+          },
+          "tokens": [
+            4019,
+            4019,
+            4019
+          ]
+        },
+        "16K": {
+          "prompt": {
+            "median": 683.2,
+            "min": 683.1,
+            "max": 683.8,
+            "n": 3
+          },
+          "decode": {
+            "median": 23.0,
+            "min": 22.7,
+            "max": 23.3,
+            "n": 3
+          },
+          "tokens": [
+            16058,
+            16058,
+            16058
+          ]
+        },
+        "32K": {
+          "prompt": {
+            "median": 548.5,
+            "min": 548.5,
+            "max": 548.5,
+            "n": 3
+          },
+          "decode": {
+            "median": 18.1,
+            "min": 18.0,
+            "max": 18.3,
+            "n": 3
+          },
+          "tokens": [
+            32049,
+            32049,
+            32049
+          ]
+        }
+      },
+      "audit_problems": []
+    }
+  ]
+}

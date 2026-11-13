@@ -1,0 +1,15 @@
+{
+  "policy": "Original owner evidence remains immutable. Per-suite manifests record exact source/published hashes and all factual prose corrections. Measured result subtrees were checked for equality; no numeric request, rate, count, outcome or summary was edited. The failed capacity attempt is retained separately.",
+  "suites": {
+    "flash": {
+      "source_result_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+      "published_result_sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f"
+    },
+    "qwen36": {
+      "source_result_sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d",
+      "published_result_sha256": "2c08a54fc8ec4857978b2abb9e6f1e4a2adb535b34681fdfd9e3635d8c16f29d"
+    }
+  },
+  "official_only": true,
+  "private_comparisons_included": false
+}

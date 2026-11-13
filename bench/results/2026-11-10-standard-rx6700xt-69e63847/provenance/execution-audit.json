@@ -1,0 +1,186 @@
+{
+  "verdict": "pass",
+  "verified_utc": "2026-11-10T14:29:28.288036+00:00",
+  "scope": "Independent exact corpus/order/settings, saved API counts, native timing evidence, actual cache bounds, performance lengths, latency, strict sanity scoring, phase counts, summaries and artifact hashes. Identity/report publication requirements are separately reviewed.",
+  "results_sha256": "2e29246103e62b51e05231911f91eca53a823b1ba59464d3a8da0867e6a66246",
+  "requests": [
+    {
+      "id": "warmup",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 75,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-short-r1",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 77,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-prompt-4k-r1",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 4093,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-prompt-16k-r1",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 16387,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-short-r2",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 77,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-prompt-4k-r2",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 4093,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-prompt-16k-r2",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 16387,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-short-r3",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 77,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-prompt-4k-r3",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 4093,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "performance-prompt-16k-r3",
+      "status": "truncated",
+      "cached_tokens": 0,
+      "input_tokens": 16387,
+      "sanity_passed": null,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-I1",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 82,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-I2",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 90,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-I3",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 85,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-I4",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 71,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-R1",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 4089,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-R2",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 4089,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-R3",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 16382,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-R4",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 16390,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-T1",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 334,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-T2",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 344,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-T3",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 361,
+      "sanity_passed": true,
+      "checks_passed": true
+    },
+    {
+      "id": "sanity-T4",
+      "status": "completed",
+      "cached_tokens": 0,
+      "input_tokens": 348,
+      "sanity_passed": true,
+      "checks_passed": true
+    }
+  ],
+  "native_timing_lines": 22,
+  "problems": []
+}

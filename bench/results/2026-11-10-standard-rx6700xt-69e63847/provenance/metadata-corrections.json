@@ -1,0 +1,140 @@
+{
+  "purpose": "Correct factual identity metadata in the candidate report from retained evidence. The official runner, workload and raw measurements were not changed.",
+  "original_private_results_sha256": "2e29246103e62b51e05231911f91eca53a823b1ba59464d3a8da0867e6a66246",
+  "sanitized_runner_results_sha256": "ca93a36cff147cc661fb442b09db66a0ef4460dcbbc69d7368c242ff18b4e7c1",
+  "changes": [
+    {
+      "pointer": "/protocol/model_card_revision",
+      "before": null,
+      "after": "812d96e10a0dd82b69d749e68693698cf6c36daa",
+      "evidence": "provenance/predeclared.json: model_card; declared before engine load"
+    },
+    {
+      "pointer": "/model/files/4",
+      "before": {
+        "path": "qwen3.8-flash-next-dflash2.q4_0.pack",
+        "sha256": "cda40d62d0eb8f37ed6e272142641a1d2f0de4a32f9e14d0416e7a71534849f1"
+      },
+      "after": {
+        "path": "qwen3.8-flash-next-dflash2.q4_0-selq4.pack",
+        "sha256": "4a42b98220ea7880664002c8edda1563aecbae754b762a2e2f31b2b91ee93ecd"
+      },
+      "evidence": "provenance/observed-engine-argv.json plus actual-loaded-draft-identity.json; native startup selector-codebook line"
+    },
+    {
+      "pointer": "/model/files/5",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "conversions.json",
+        "sha256": "b0908ca2ee3712d3734aaf778c38f75f4a8a8753edae5fb9429ba6a04fbb2c07"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/model/files/6",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "dense.bin",
+        "sha256": "d2af3d8331e5c7a1985d1d589747230f9d56719a6d33c7cddc9ee6b81cde6b13"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/model/files/7",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "index.txt",
+        "sha256": "19e781af360ca3b83fd90fe09e757ac9aa2a9dcada26810ddc9e933bdb112091"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/model/files/8",
+      "before": "not included by original runner file discovery",
+      "after": {
+        "path": "native_experts.txt",
+        "sha256": "48df605acb89c7e8c3176a51cec777c2ed344ea439e8f3a37e5ce4f9dcb6946c"
+      },
+      "evidence": "provenance/native-pack-identities.json; engine.log explicitly records packed dense-weight loading; hashed after tests with inference stopped"
+    },
+    {
+      "pointer": "/hardware/gpus/0/name",
+      "before": "AMD Radeon",
+      "after": "AMD Radeon RX 6700 XT",
+      "evidence": "provenance/hardware-observations.json: owner identified model, observed PCI/sysfs identity; no inferred marketing lookup"
+    },
+    {
+      "pointer": "/hardware/gpus/0/memory_bytes",
+      "before": null,
+      "after": 12868124672,
+      "evidence": "provenance/hardware-observations.json: sysfs dedicated VRAM total"
+    },
+    {
+      "pointer": "/hardware/gpus/0/power_limit_w",
+      "before": null,
+      "after": 211.0,
+      "evidence": "provenance/hardware-observations.json: hwmon power cap"
+    },
+    {
+      "pointer": "/hardware/ram_bytes",
+      "before": 60129542144,
+      "after": 68719476736,
+      "evidence": "provenance/hardware-observations.json: sum of four DMI16GiB DIMMs; original56GiB is guest limit, preserved in baseline and extensions"
+    },
+    {
+      "pointer": "/hardware/storage",
+      "before": null,
+      "after": [
+        {
+          "kind": "NVMe SSD",
+          "model": "INTEL SSDPEKNW010T8",
+          "bus": "nvme"
+        }
+      ],
+      "evidence": "provenance/hardware-observations.json: physical NVMe model/bus; models stored on this host thin pool"
+    },
+    {
+      "pointer": "/software/os/version",
+      "before": "7.0.14-26-pve",
+      "after": "13 (trixie)",
+      "evidence": "Original runner OS name states Debian GNU/Linux13; original version field held kernel, now retained under driver identity/extensions"
+    },
+    {
+      "pointer": "/software/drivers",
+      "before": null,
+      "after": [
+        {
+          "name": "linux kernel amdgpu",
+          "version": "7.0.14-26-pve; module srcversion B1D135B579C294611EB792D"
+        }
+      ],
+      "evidence": "Kernel/module build identity, not an independently numbered AMD driver package release; provenance/hardware-observations.json"
+    },
+    {
+      "pointer": "/software/runtime",
+      "before": null,
+      "after": [
+        {
+          "name": "hip",
+          "version": "7.13.26193"
+        }
+      ],
+      "evidence": "provenance/portable-runtime-identity.json: direct signed library hipRuntimeGetVersion/hipDriverGetVersion before this run; integer encoding7*10000000+13*100000+26193"
+    }
+  ],
+  "additional_changes": [
+    "Removed obsolete model-card null reason",
+    "Added provenance artifact entries and this metadata correction reference",
+    "Recomputed artifact hashes after public string redaction",
+    "Added exact quantization repository under extensions and complete native pack inventory omitted by original runner discovery; model tensor files themselves are not published",
+    "Filled canonical physical hardware/OS/kernel-module/HIP identity fields from retained dated observations and removed their obsolete null reasons; guest allocation retained separately; no request or performance measurements changed"
+  ],
+  "measurement_invariants": [
+    "requests",
+    "summaries",
+    "request_counts",
+    "quality",
+    "concurrency_rounds"
+  ],
+  "scope": "This does not establish final full submission conformance; complete report/link/privacy/current-guideline review remains required."
+}

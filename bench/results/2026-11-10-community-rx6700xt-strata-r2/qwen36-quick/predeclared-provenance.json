@@ -1,0 +1,17 @@
+{
+  "created_utc": "2026-11-10T14:42:28.422371+00:00",
+  "track": "setup-generated configuration copied to dedicated log path",
+  "configuration_sha256": "a8e4df3ceb174453f5e9d505567550cbd95f4f191efae2a981fcf004bede6b50",
+  "harness_sha256": "9934a012c14d48cc72f7aa5e15c7c74d974a88e089e63cabac8fcf88ad7f8098",
+  "terminal_commit": "628f74955a56fcba092495b800dd02af75373a0f",
+  "model_identities": {
+    "--native": {
+      "filename": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "bytes": 22853663008,
+      "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"
+    }
+  },
+  "background": "Dedicated loopback benchmark guest, other guest A/104 stopped, host resource sampler only",
+  "purpose": "Official quick suite, separate from draft standard; three repetitions, long case, complete native timing log retained",
+  "limits": "No general accuracy or isolated version speedup claim; Flash custom template is same as separate draft run, thinking off for quick suite."
+}

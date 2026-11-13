@@ -1,0 +1,32 @@
+{
+  "scope": "All three main GGUF files matched by complete SHA256 and byte size at exact immutable upstream revisions. Auxiliary draft/profile/tokenizer/native pack identities are retained separately. Quantization provenance is distinct from model quality.",
+  "files": [
+    {
+      "suite": "flash",
+      "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+      "repository_path": "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+      "filename": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+      "bytes": 39225954592,
+      "sha256": "92cee27ae5bbadcd732416a0f7a7f0acc092399dbbe8f5a5efa707c2ec0a49d7"
+    },
+    {
+      "suite": "flash",
+      "repository": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+      "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+      "repository_path": "IQ2_XS/Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+      "filename": "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+      "bytes": 28800138432,
+      "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    },
+    {
+      "suite": "qwen36",
+      "repository": "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
+      "revision": "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
+      "repository_path": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "filename": "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+      "bytes": 22853663008,
+      "sha256": "55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1"
+    }
+  ]
+}

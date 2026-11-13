@@ -1,0 +1,64 @@
+Starting config.json on port 8080 (loading takes 1-3 minutes; the PC may be slow meanwhile) ...
+  still loading (0 s) ...
+Running the suite (about 3-10 minutes) ...
+warming up (not measured) ...
+  calibrated: about 1.08 tokens per word
+chat: 3 short questions x 3 runs, up to 100 new tokens
+  run 1 q1: decode 32.1 tok/s, first token 0.579 s, 100 tokens
+  run 1 q2: decode 32.7 tok/s, first token 0.518 s, 100 tokens
+  run 1 q3: decode 32.4 tok/s, first token 0.54 s, 100 tokens
+  run 2 q1: decode 32.1 tok/s, first token 0.594 s, 100 tokens
+  run 2 q2: decode 33.0 tok/s, first token 0.505 s, 100 tokens
+  run 2 q3: decode 32.6 tok/s, first token 0.515 s, 100 tokens
+  run 3 q1: decode 32.5 tok/s, first token 0.59 s, 100 tokens
+  run 3 q2: decode 32.6 tok/s, first token 0.506 s, 100 tokens
+  run 3 q3: decode 32.6 tok/s, first token 0.52 s, 100 tokens
+4K prompt: 3 fresh prompts of about 4096 tokens, 24 new tokens
+  run 1: 4019 tokens, prompt 817.1 tok/s (0 reused), first token 4.925 s
+  run 2: 4019 tokens, prompt 820.4 tok/s (0 reused), first token 4.905 s
+  run 3: 4019 tokens, prompt 820.2 tok/s (0 reused), first token 4.905 s
+16K prompt: 3 fresh prompts of about 16384 tokens, 24 new tokens
+  run 1: 16058 tokens, prompt 683.8 tok/s (0 reused), first token 23.5 s
+  run 2: 16058 tokens, prompt 683.1 tok/s (0 reused), first token 23.527 s
+  run 3: 16058 tokens, prompt 683.2 tok/s (0 reused), first token 23.517 s
+agent: a session of 6 turns with four tools, x 3 runs
+  run 1 turn 0: prompt 609, reused 0, read 609, first token 0.855 s
+  run 1 turn 1: prompt 2282, reused 0, read 2282, first token 3.199 s
+  run 1 turn 2: prompt 3978, reused 0, read 3978, first token 4.957 s
+  run 1 turn 3: prompt 5680, reused 0, read 5680, first token 7.272 s
+  run 1 turn 4: prompt 7358, reused 0, read 7358, first token 9.69 s
+  run 1 turn 5: prompt 9036, reused 0, read 9036, first token 12.247 s
+  run 2 turn 0: prompt 609, reused 0, read 609, first token 0.853 s
+  run 2 turn 1: prompt 2275, reused 0, read 2275, first token 3.203 s
+  run 2 turn 2: prompt 3967, reused 0, read 3967, first token 4.928 s
+  run 2 turn 3: prompt 5639, reused 0, read 5639, first token 7.235 s
+  run 2 turn 4: prompt 7318, reused 0, read 7318, first token 9.647 s
+  run 2 turn 5: prompt 9004, reused 0, read 9004, first token 12.221 s
+  run 3 turn 0: prompt 609, reused 0, read 609, first token 0.853 s
+  run 3 turn 1: prompt 2277, reused 0, read 2277, first token 3.201 s
+  run 3 turn 2: prompt 3968, reused 0, read 3968, first token 4.926 s
+  run 3 turn 3: prompt 5648, reused 0, read 5648, first token 7.235 s
+  run 3 turn 4: prompt 7332, reused 0, read 7332, first token 9.672 s
+  run 3 turn 5: prompt 9021, reused 0, read 9021, first token 12.227 s
+32K prompt: 3 fresh prompts of about 32768 tokens, 24 new tokens
+  run 1: 32049 tokens, prompt 548.5 tok/s (0 reused), first token 58.464 s
+  run 2: 32049 tokens, prompt 548.5 tok/s (0 reused), first token 58.463 s
+  run 3: 32049 tokens, prompt 548.5 tok/s (0 reused), first token 58.463 s
+
+Results (median, range over the runs):
+  chat decode tok/s                     32.60   (32.10 - 33.00, n=9)
+  chat first token (s)                   0.52   (0.51 - 0.59, n=9)
+  4K prompt tok/s                      820.20   (817.10 - 820.40, n=3)
+  4K first token (s)                     4.91   (4.91 - 4.92, n=3)
+  16K prompt tok/s                     683.20   (683.10 - 683.80, n=3)
+  16K first token (s)                   23.52   (23.50 - 23.53, n=3)
+  32K prompt tok/s                     548.50   (548.50 - 548.50, n=3)
+  32K first token (s)                   58.46   (58.46 - 58.46, n=3)
+  agent cache hit %                      0.00   (0.00 - 0.00, n=3)
+  agent re-read tokens/session       20061.00   (20018.00 - 20148.00, n=3)
+  agent turn first token (s)             7.24   (3.20 - 12.25, n=15)
+  agent decode tok/s                    28.70   (26.10 - 31.90, n=15)
+
+Report: <campaign>/standards-r2/official-quick-r2/qwen36/report/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl/README.md
+Share it: open a pull request that adds the folder <campaign>/standards-r2/official-quick-r2/qwen36/report/2026-11-10-community-unknown-qwen3-6-35b-a3b-ud-q4-k-xl (see docs/COMMUNITY_BENCHMARKS.md), or paste README.md into a GitHub issue. Home folders, user and host names and IP addresses are already replaced; read it once before you share it.
+For results other people can compare with, run the standard benchmark: strata bench run (docs/BENCHMARK_PROTOCOL.md).

@@ -1,0 +1,9 @@
+[
+  "<terminal>/python/bin/python3",
+  "<terminal>/tools/strata_bench.py",
+  "--config",
+  "<campaign>/standards-r2/official-quick-r2/qwen36/config.json",
+  "--long",
+  "--out",
+  "<campaign>/standards-r2/official-quick-r2/qwen36/report"
+]

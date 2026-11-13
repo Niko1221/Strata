@@ -1,0 +1,216 @@
+{
+  "audit": "independent_saved_record_counts_medians_and_artifact_hashes",
+  "result_count": 1,
+  "passed": true,
+  "results": [
+    {
+      "path": "standards-r2\\official-quick-r2\\flash\\report\\2026-11-10-community-unknown-qwen3-8-flash-next-iq2-xs\\results.json",
+      "sha256": "65fa4b2ec738c83799cc0d5819d1a0f71de52226c403bac8078e53297f7a127f",
+      "kind": "official-quick",
+      "params": {
+        "runs": 3,
+        "think": false,
+        "clients": 0,
+        "long": true,
+        "started_server": true,
+        "command": "python tools/strata_bench.py --long"
+      },
+      "duration_s": 631.9168190956116,
+      "request_records": 36,
+      "request_successes": 36,
+      "failures": [],
+      "skipped": {},
+      "model": "qwen3.8-flash-next-iq2_xs",
+      "machine": {
+        "gpu": [
+          "AMD Radeon"
+        ],
+        "gpu_vram_mib": 12272.0,
+        "gpu_driver": null,
+        "gpu_detail": null,
+        "cuda": null,
+        "engine_build": null,
+        "cpu": "AMD Ryzen 5 3600 6-Core Processor",
+        "cpu_cores": 6,
+        "storage": "nvme0n1 INTEL SSDPEKNW010T8                      nvme",
+        "cpu_threads": 10,
+        "ram_gib": 56.0,
+        "os": "Linux 7.0.14-26-pve",
+        "python": "3.12.15",
+        "strata_version": null,
+        "strata_commit": null,
+        "engine_version": "0.1.59",
+        "model": "qwen3.8-flash-next-iq2_xs",
+        "quant": "IQ2_XS",
+        "context": 131072,
+        "parallel_slots": 1,
+        "config": {
+          "exe": "component:strata-engine",
+          "args": [
+            "--pack",
+            "iq2_xs",
+            "--native",
+            "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+            "--ple-gguf",
+            "Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+            "--expert-profile",
+            "expert-profile.bin",
+            "--expert-cache",
+            "auto",
+            "--prefill",
+            "auto",
+            "--max-context",
+            "131072",
+            "--kv",
+            "int8",
+            "--kv-resident",
+            "32768",
+            "--draft",
+            "dflash2",
+            "--draft-model",
+            "qwen3.8-flash-next-dflash2.q4_0-selq4.pack",
+            "--draft-fallback",
+            "none",
+            "--mtp-draft-vocab",
+            "draft_vocab.bin",
+            "--spec",
+            "6",
+            "--draft-conf",
+            "0.8",
+            "--pool-workers",
+            "5"
+          ],
+          "model_name": "qwen3.8-flash-next-iq2_xs",
+          "lib_dirs": [],
+          "port": 8080,
+          "host": "127.0.0.1",
+          "backend": "hip",
+          "drafting": "dflash2",
+          "open_browser": false,
+          "parallel": 1,
+          "user_args": [
+            "--spec",
+            "6",
+            "--draft-conf",
+            "0.8",
+            "--pool-workers",
+            "5"
+          ],
+          "engine_ready_s": 884
+        },
+        "launch": "component:strata-engine --pack iq2_xs --native Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf --ple-gguf Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf --expert-profile expert-profile.bin --expert-cache auto --prefill auto --max-context 131072 --kv int8 --kv-resident 32768 --draft dflash2 --draft-model qwen3.8-flash-next-dflash2.q4_0-selq4.pack --draft-fallback none --mtp-draft-vocab draft_vocab.bin --spec 6 --draft-conf 0.8 --pool-workers 5",
+        "engine_info": {
+          "model": "qwen3.8-flash-next-iq2_xs",
+          "max_context": 131072,
+          "images": false,
+          "version": "0.1.59",
+          "logit_bias": 1,
+          "context": 131072,
+          "kv": "int8",
+          "kv_resident": 32768,
+          "expert_slots": 4581,
+          "expert_cache_mib": 6294,
+          "expert_slots_primary": 4581,
+          "expert_cache_primary_mib": 6294,
+          "spec": 8,
+          "mtp_max": 6,
+          "lookup": 3,
+          "vram_free_mib": 924,
+          "cvec": 0,
+          "arena_mib": 33812,
+          "pool_workers": 5,
+          "pcie_frac": "0.55",
+          "spec_min_p": "0.00",
+          "conversation_cache_mib": 7168,
+          "conversation_cache_slots": 4,
+          "conversation_cache_min_free_mib": 2560,
+          "conversation_cache_min_tokens": 0,
+          "tail_role_token": -1,
+          "vram_elastic": 0,
+          "prefill_cap": 8192,
+          "prefill_stages": 1,
+          "stream_all_min": 1024,
+          "prefill_pipe": 0,
+          "engine": "0.1.59",
+          "drafting": "dflash2",
+          "drafting_note": ""
+        },
+        "vram_after": {
+          "elastic": false
+        }
+      },
+      "chat_decode": {
+        "median": 28.2,
+        "min": 23.6,
+        "max": 30.5,
+        "n": 9
+      },
+      "chat_ttft": {
+        "median": 1.434,
+        "min": 1.258,
+        "max": 1.694,
+        "n": 9
+      },
+      "prompts": {
+        "4K": {
+          "prompt": {
+            "median": 329.2,
+            "min": 324.8,
+            "max": 330.7,
+            "n": 3
+          },
+          "decode": {
+            "median": 26.4,
+            "min": 22.5,
+            "max": 28.8,
+            "n": 3
+          },
+          "tokens": [
+            4019,
+            4019,
+            4019
+          ]
+        },
+        "16K": {
+          "prompt": {
+            "median": 351.7,
+            "min": 351.2,
+            "max": 352.1,
+            "n": 3
+          },
+          "decode": {
+            "median": 30.9,
+            "min": 21.9,
+            "max": 31.3,
+            "n": 3
+          },
+          "tokens": [
+            16058,
+            16058,
+            16058
+          ]
+        },
+        "32K": {
+          "prompt": {
+            "median": 350.5,
+            "min": 350.3,
+            "max": 350.7,
+            "n": 3
+          },
+          "decode": {
+            "median": 28.6,
+            "min": 26.3,
+            "max": 29.4,
+            "n": 3
+          },
+          "tokens": [
+            32049,
+            32049,
+            32049
+          ]
+        }
+      },
+      "audit_problems": []
+    }
+  ]
+}
