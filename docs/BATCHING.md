@@ -642,12 +642,12 @@ another group stands idle the reading slot's next whole window goes through that
 flight: two windows in the pipeline, one a stage. Nothing is allocated for it; the borrowed rows are one more layout a
 slot. A window in flight ends at the turn boundary whose checkpoint is still to take, and a stop lets what is in
 flight land (the slot keeps what it read). Two 177K-token conversations taking turns (each sends when the other has
-ended, 500-token replies; ABBA on one build): the slot reads 193 to 292 tokens/s where it read 135 to 182, the first
-token comes after 2.2 s instead of 3.5, and a conversation's tokens/s from its request to its last token go from 62.3
-to 72.6 (+17%). At 440K tokens (one pair, whole windows and windows ahead against neither): 178 to 239 tokens/s
-where the slot read 117 to 144, the first token after 3.0 s instead of 4.6, 52.9 -> 63.8 tokens/s a turn (+21%). Where
-both conversations read at once the pipeline is full already: there it sends 2 to 5 windows ahead a turn and the first
-token comes after 4.5 s instead of 4.7.
+ended, 500-token replies; the same build with `STRATA_SLOT_READ_AHEAD=0` and without, 4 pairs, a fresh engine a run):
+the slot reads 191 to 282 tokens/s where it read 134 to 185, the first token comes after 2.4 s instead of 3.5, and a
+conversation's tokens/s from its request to its last token go from 63.2 to 72.6 (+15%). At 440K tokens (the three
+pairs in which every turn was read in the slot): 198 to 246 tokens/s where the slot read 127 to 159, the first token
+after 2.9 s instead of 4.2, 54.9 -> 64.7 tokens/s a turn (+18%). Where both conversations read at once the pipeline
+is full already: there 14 of a run's 540 windows go ahead and the first token comes after 4.6 s instead of 4.7.
 
 **Parks that keep nothing are skipped** (`STRATA_SLOT_PARK_SKIP`, default on; `=0`: off). An admission through the main
 sessions parked the conversation they held before - with batch slots, a stale copy of a conversation that a slot holds
