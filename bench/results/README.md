@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../../docs/README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../../docs/BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2236 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2242 files in all.
 
 
 ## 2026-09
@@ -163,7 +163,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 
 | Folder | What | Files |
 | --- | --- | ---: |
-| [2026-11-09-domain-expert-profiles](2026-11-09-domain-expert-profiles/) | Domain-informed expert profiles: a real-routing pilot | 51 |
+| [2026-11-09-domain-expert-profiles](2026-11-09-domain-expert-profiles/) | Domain-informed expert profiles: a real-routing pilot | 57 |
 
 ## Loose files
 

@@ -107,6 +107,21 @@
     },
     "validation/summary.json": {
       "sha256": "5aede0188bb7c96fb451f6045fb8b1e4a293d77628eeeef7c6163e05f8072c47"
+    },
+    "holdout-transfer/README.md": {
+      "sha256": "a0e9191c8ee91941694e509d77d8479d57076ffb418f2e28c29424be4ef95be3"
+    },
+    "holdout-transfer/analyze.py": {
+      "sha256": "4412ecf66a6d7962db2e3349d9b32a4e691812a8d3f6211a75431e60efe62d97"
+    },
+    "holdout-transfer/plan.json": {
+      "sha256": "609ca51bd4107ed5b7d825168996af70179bec9b358ee9847492be2f9a517f57"
+    },
+    "holdout-transfer/results.json": {
+      "sha256": "9922441cd84e80c5ba3dd6d54b27038c9f640299c60f0c0f4e7d7f2e835ac245"
+    },
+    "holdout-transfer/verify.py": {
+      "sha256": "5b286daa78e5bc1c521189e3009647e9b63999e7df72ee64c5072c987e0b19bb"
     }
   },
   "labels": "Coarse groups from the original study: code,STEM,languages,other. These are known labels,not classifier predictions.",
@@ -131,5 +146,11 @@
     "extended_skipped": 78,
     "same_failures_on_base": 6,
     "scope": "Windows/Python3.13 local run; upstream CI remains separate"
+  },
+  "cross_domain_followup": {
+    "date": "2026-11-13",
+    "comment": "https://github.com/Niko1221/Strata/pull/5668#issuecomment-6813531444",
+    "record": "holdout-transfer/results.json",
+    "scope": "Exploratory code/non-code transfer on the existing45held-out routing records; no runtime adoption or speed claim"
   }
 }

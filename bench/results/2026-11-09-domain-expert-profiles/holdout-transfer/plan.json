@@ -1,0 +1,55 @@
+{
+  "frozen_utc": "2026-11-13T17:09:55.492569+00:00",
+  "author": "Francisco Angulo de Lafuente",
+  "orcid": "https://orcid.org/0009-0001-1634-7063",
+  "motivation_comment": "https://github.com/Niko1221/Strata/pull/5668#issuecomment-6813531444",
+  "status": "Exploratory analysis of already-seen routing corpus; plan fixed before this new calculation, not before data collection",
+  "slots": 1582,
+  "folds": 5,
+  "seed": 20261109,
+  "expected_domains": {
+    "code": 12,
+    "languages": 6,
+    "other": 16,
+    "stem": 11
+  },
+  "profiles": [
+    "mixed_reference",
+    "code_only",
+    "balanced_code_general"
+  ],
+  "training_weights": {
+    "mixed_reference": "Each training request has unit weight",
+    "code_only": "Only training-fold code requests, each with unit weight",
+    "balanced_code_general": "Half code mean distribution plus half non-code mean distribution"
+  },
+  "capacity": "All candidate profiles retain the mixed reference slots per layer in every fold",
+  "evaluation": "Reuse exact published folds; full-fold exclusion; score all45requests, bothcohorts and all4domains; equal request weighting; report every result; no winner selection",
+  "diagnostic": "Zero percentage-point mean static coverage tolerance in each code/non-code cohort; also list every regressing original domain. This is not a runtime promotion gate or a statistical population claim.",
+  "inputs_sha256": {
+    "manifest.json": "fdc7689a43022f64eab11c6b265607be5ed23000c702d6339915060ea0d75477",
+    "results-1582.json": "a218e8ea25f1ee567fbf7a37c5c9b0321cdfb5d5464153f3554d66f7da73356e",
+    "../../../tools/evaluate_domain_profiles.py": "62789bee088abfd4360e6723450f82056d8367e1374ae4b333293e750d0a5de9",
+    "../../../tools/make_profile.py": "54864322d25f688144ce01217aed8a829a9c3dc1dad9610f2feb033d0e601027"
+  },
+  "limits": [
+    "Static fixed-trace coverage only: no measured speed, generated-answer quality or adaptive-cache benefit.",
+    "The corpus and original domain results were known when this exploratory follow-up was planned.",
+    "No GPU run, model load, runtime update, automatic selection or rollback is performed.",
+    "The pre-existing live-pilot parity/improvement gate remains failed and unchanged.",
+    "A runtime promotion requires separately fixed code and non-code quality and latency criteria, live measurements and an agreed scope."
+  ],
+  "amendments": [
+    {
+      "utc": "2026-11-13T17:10:32.191621+00:00",
+      "prior_plan_sha256": "9da95ad1651bb2732e0747f9e503ccfe96e7a8a4da4a562e24eaf37e74438c58",
+      "change": "Correct literal domain label STEM to stem to match the frozen manifest. Initial run stopped at the domain-count assertion before computing comparisons. Counts, profiles, folds, budget and diagnostics unchanged."
+    },
+    {
+      "utc": "2026-11-13T17:15:24.386687+00:00",
+      "prior_plan_sha256": "e92871d5caf59a3d422f58dba9c3481b15c0ba9d90c614604479920c9d8d896c",
+      "change": "After first scoring, normalize pinned text-input checksums to LF for Windows/Linux portability. Only input-hash validation changed; profile choices, folds, quotas and metric calculations unchanged. All metric output sections must match the retained first results exactly."
+    }
+  ],
+  "input_hash_format": "SHA-256 of text input bytes after CRLF to LF normalization"
+}

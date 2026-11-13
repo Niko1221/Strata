@@ -120,6 +120,11 @@ The same 22 focused checks also passed inside the official extended tools suite,
 which passed 1,675 checks locally on Windows. The [per-case record and base
 comparison](validation/README.md) retain its failures and skips with exact scope.
 
+The [code/non-code transfer follow-up](holdout-transfer/README.md) applies a single
+profile across both held-out cohorts at matched layer capacities. It makes the
+specialization tradeoff visible and records a reference-preservation procedure;
+all inputs, profile choices and per-request outcomes are retained.
+
 ## Observations
 
 - This is an exploratory profiling corpus: all 45 planned requests, with code 12,

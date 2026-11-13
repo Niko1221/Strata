@@ -1,0 +1,1270 @@
+{
+  "kind": "exploratory_cross_domain_static_routing_coverage",
+  "author": "Francisco Angulo de Lafuente",
+  "orcid": "https://orcid.org/0009-0001-1634-7063",
+  "plan_sha256": "609ca51bd4107ed5b7d825168996af70179bec9b358ee9847492be2f9a517f57",
+  "slots": 1582,
+  "folds": 5,
+  "seed": 20261109,
+  "weighting": "one held-out request, one vote; non-code retains its observed domain mixture",
+  "cohorts": {
+    "all": {
+      "requests": 45,
+      "mean_coverage": {
+        "mixed_reference": 0.17410322687299054,
+        "code_only": 0.1382581529374223,
+        "balanced_code_general": 0.1662511962733349
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": -3.584507393556824,
+        "balanced_code_general": -0.785203059965564
+      }
+    },
+    "code": {
+      "requests": 12,
+      "mean_coverage": {
+        "mixed_reference": 0.2006625145664027,
+        "code_only": 0.3221075586775202,
+        "balanced_code_general": 0.28569781132785116
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": 12.144504411111754,
+        "balanced_code_general": 8.503529676144847
+      }
+    },
+    "non_code": {
+      "requests": 33,
+      "mean_coverage": {
+        "mixed_reference": 0.16444530407538613,
+        "code_only": 0.07140382357738674,
+        "balanced_code_general": 0.1228160635262381
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": -9.304148049799938,
+        "balanced_code_general": -4.162924054914803
+      }
+    }
+  },
+  "domains": {
+    "code": {
+      "requests": 12,
+      "mean_coverage": {
+        "mixed_reference": 0.2006625145664027,
+        "code_only": 0.3221075586775202,
+        "balanced_code_general": 0.28569781132785116
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": 12.144504411111754,
+        "balanced_code_general": 8.503529676144847
+      }
+    },
+    "languages": {
+      "requests": 6,
+      "mean_coverage": {
+        "mixed_reference": 0.16769475613277093,
+        "code_only": 0.09522699509635717,
+        "balanced_code_general": 0.14244041674606892
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": -7.246776103641377,
+        "balanced_code_general": -2.5254339386702016
+      }
+    },
+    "other": {
+      "requests": 16,
+      "mean_coverage": {
+        "mixed_reference": 0.1517747907682399,
+        "code_only": 0.042373210303278216,
+        "balanced_code_general": 0.09667935007665424
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": -10.940158046496169,
+        "balanced_code_general": -5.509544069158567
+      }
+    },
+    "stem": {
+      "requests": 11,
+      "mean_coverage": {
+        "mixed_reference": 0.18110271321811613,
+        "code_only": 0.10063571296574253,
+        "balanced_code_general": 0.1501289086057251
+      },
+      "gain_over_mixed_pp": {
+        "mixed_reference": 0.0,
+        "code_only": -8.04670002523736,
+        "balanced_code_general": -3.097380461239105
+      }
+    }
+  },
+  "fold_profiles": [
+    {
+      "fold": 0,
+      "training_ids": [
+        "c01",
+        "c02",
+        "c04",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10",
+        "c11",
+        "c12",
+        "c13",
+        "c14",
+        "c15",
+        "c16",
+        "c17",
+        "c18",
+        "c19",
+        "c22",
+        "c24",
+        "c27",
+        "c28",
+        "c29",
+        "c30",
+        "c31",
+        "c32",
+        "c34",
+        "c35",
+        "c36",
+        "c37",
+        "c38",
+        "c41",
+        "c42",
+        "c44"
+      ],
+      "code_training_ids": [
+        "c01",
+        "c02",
+        "c04",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10",
+        "c11"
+      ],
+      "non_code_training_ids": [
+        "c12",
+        "c13",
+        "c14",
+        "c15",
+        "c16",
+        "c17",
+        "c18",
+        "c19",
+        "c22",
+        "c24",
+        "c27",
+        "c28",
+        "c29",
+        "c30",
+        "c31",
+        "c32",
+        "c34",
+        "c35",
+        "c36",
+        "c37",
+        "c38",
+        "c41",
+        "c42",
+        "c44"
+      ],
+      "layer_quotas": [
+        9,
+        10,
+        14,
+        30,
+        29,
+        21,
+        17,
+        18,
+        33,
+        40,
+        26,
+        32,
+        28,
+        31,
+        39,
+        45,
+        53,
+        37,
+        24,
+        36,
+        34,
+        20,
+        25,
+        33,
+        28,
+        35,
+        27,
+        36,
+        28,
+        34,
+        37,
+        47,
+        50,
+        37,
+        28,
+        35,
+        36,
+        32,
+        28,
+        39,
+        43,
+        41,
+        39,
+        47,
+        52,
+        39,
+        40,
+        40
+      ],
+      "selected_set_sha256_i32le": {
+        "mixed_reference": "994b4603e5dc23bfdf1afcfe187e6e5e9f6253f6ebb429efcf433d7ef0db7ed9",
+        "code_only": "3bd7f6e5d49c96936a0fc9591f71de154857fa42ccaae6b1541f76b91c72e7e4",
+        "balanced_code_general": "472903d532ca8590e4bee377a9e3c74f58ce64d49c0cce3f5ba23665883d5304"
+      }
+    },
+    {
+      "fold": 1,
+      "training_ids": [
+        "c00",
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c08",
+        "c09",
+        "c11",
+        "c12",
+        "c13",
+        "c14",
+        "c16",
+        "c17",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c27",
+        "c28",
+        "c29",
+        "c30",
+        "c33",
+        "c35",
+        "c36",
+        "c38",
+        "c39",
+        "c40",
+        "c41",
+        "c42",
+        "c43"
+      ],
+      "code_training_ids": [
+        "c00",
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c08",
+        "c09",
+        "c11"
+      ],
+      "non_code_training_ids": [
+        "c12",
+        "c13",
+        "c14",
+        "c16",
+        "c17",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c27",
+        "c28",
+        "c29",
+        "c30",
+        "c33",
+        "c35",
+        "c36",
+        "c38",
+        "c39",
+        "c40",
+        "c41",
+        "c42",
+        "c43"
+      ],
+      "layer_quotas": [
+        10,
+        9,
+        15,
+        32,
+        31,
+        22,
+        19,
+        19,
+        35,
+        35,
+        23,
+        29,
+        26,
+        36,
+        37,
+        46,
+        45,
+        33,
+        27,
+        34,
+        31,
+        26,
+        24,
+        32,
+        34,
+        39,
+        31,
+        36,
+        29,
+        38,
+        36,
+        45,
+        40,
+        30,
+        29,
+        34,
+        44,
+        34,
+        31,
+        35,
+        40,
+        43,
+        42,
+        48,
+        45,
+        44,
+        37,
+        42
+      ],
+      "selected_set_sha256_i32le": {
+        "mixed_reference": "d901ee4d3edf58e705b447b3fddb0a0b60a4881541b6a9e9fecf69e426abe760",
+        "code_only": "c41e9001b4bb8d74048effe743ba253434e37750d190d5d28d0874668fcd8af4",
+        "balanced_code_general": "99b69a8ffcc8fca297328c289d6f39c4193128d4dc82d798749b51299ac7395a"
+      }
+    },
+    {
+      "fold": 2,
+      "training_ids": [
+        "c00",
+        "c01",
+        "c03",
+        "c04",
+        "c05",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10",
+        "c12",
+        "c14",
+        "c15",
+        "c16",
+        "c17",
+        "c19",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c28",
+        "c29",
+        "c30",
+        "c31",
+        "c32",
+        "c33",
+        "c34",
+        "c37",
+        "c38",
+        "c39",
+        "c40",
+        "c41",
+        "c43",
+        "c44"
+      ],
+      "code_training_ids": [
+        "c00",
+        "c01",
+        "c03",
+        "c04",
+        "c05",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10"
+      ],
+      "non_code_training_ids": [
+        "c12",
+        "c14",
+        "c15",
+        "c16",
+        "c17",
+        "c19",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c28",
+        "c29",
+        "c30",
+        "c31",
+        "c32",
+        "c33",
+        "c34",
+        "c37",
+        "c38",
+        "c39",
+        "c40",
+        "c41",
+        "c43",
+        "c44"
+      ],
+      "layer_quotas": [
+        11,
+        10,
+        15,
+        35,
+        26,
+        23,
+        17,
+        17,
+        37,
+        36,
+        21,
+        30,
+        28,
+        37,
+        37,
+        51,
+        49,
+        32,
+        26,
+        37,
+        33,
+        20,
+        24,
+        33,
+        31,
+        33,
+        28,
+        37,
+        33,
+        39,
+        41,
+        46,
+        42,
+        28,
+        29,
+        39,
+        36,
+        34,
+        26,
+        35,
+        46,
+        46,
+        38,
+        47,
+        43,
+        42,
+        39,
+        39
+      ],
+      "selected_set_sha256_i32le": {
+        "mixed_reference": "5058d609459ef7588bc5b4620fa1879e6d28e0af102adc37aad90ac9d9c89eb6",
+        "code_only": "5b6a5b64e98a8bb55eb32514d12aeda57832d7ed5a79a0c503e5c21c21b99b49",
+        "balanced_code_general": "58af5c49d439746e2869094aaa508829a65d8d38dfec29c918f433f9070124c6"
+      }
+    },
+    {
+      "fold": 3,
+      "training_ids": [
+        "c00",
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c06",
+        "c07",
+        "c10",
+        "c11",
+        "c13",
+        "c14",
+        "c15",
+        "c17",
+        "c18",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c27",
+        "c29",
+        "c31",
+        "c32",
+        "c33",
+        "c34",
+        "c35",
+        "c36",
+        "c37",
+        "c38",
+        "c39",
+        "c40",
+        "c42",
+        "c43",
+        "c44"
+      ],
+      "code_training_ids": [
+        "c00",
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c06",
+        "c07",
+        "c10",
+        "c11"
+      ],
+      "non_code_training_ids": [
+        "c13",
+        "c14",
+        "c15",
+        "c17",
+        "c18",
+        "c20",
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25",
+        "c26",
+        "c27",
+        "c29",
+        "c31",
+        "c32",
+        "c33",
+        "c34",
+        "c35",
+        "c36",
+        "c37",
+        "c38",
+        "c39",
+        "c40",
+        "c42",
+        "c43",
+        "c44"
+      ],
+      "layer_quotas": [
+        9,
+        10,
+        13,
+        35,
+        28,
+        25,
+        17,
+        18,
+        36,
+        39,
+        25,
+        32,
+        27,
+        35,
+        37,
+        50,
+        49,
+        38,
+        28,
+        35,
+        29,
+        22,
+        24,
+        35,
+        31,
+        37,
+        29,
+        38,
+        34,
+        37,
+        36,
+        54,
+        43,
+        24,
+        30,
+        35,
+        33,
+        34,
+        25,
+        42,
+        49,
+        42,
+        32,
+        43,
+        42,
+        38,
+        39,
+        39
+      ],
+      "selected_set_sha256_i32le": {
+        "mixed_reference": "0df29bd0ea6776f650594fecf9d09514b3bea6a8af2a161bc7feaf2122a4922e",
+        "code_only": "972793ce94565d9454231c4cc8c9f1fe205a69627ec75e3844f7a7962cc91e36",
+        "balanced_code_general": "2d5e2de9155b9dcf626278dbf08f95b27a38d86e32cbf64c01476e473a4fc07d"
+      }
+    },
+    {
+      "fold": 4,
+      "training_ids": [
+        "c00",
+        "c02",
+        "c03",
+        "c05",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10",
+        "c11",
+        "c12",
+        "c13",
+        "c15",
+        "c16",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c23",
+        "c25",
+        "c26",
+        "c27",
+        "c28",
+        "c30",
+        "c31",
+        "c32",
+        "c33",
+        "c34",
+        "c35",
+        "c36",
+        "c37",
+        "c39",
+        "c40",
+        "c41",
+        "c42",
+        "c43",
+        "c44"
+      ],
+      "code_training_ids": [
+        "c00",
+        "c02",
+        "c03",
+        "c05",
+        "c06",
+        "c07",
+        "c08",
+        "c09",
+        "c10",
+        "c11"
+      ],
+      "non_code_training_ids": [
+        "c12",
+        "c13",
+        "c15",
+        "c16",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c23",
+        "c25",
+        "c26",
+        "c27",
+        "c28",
+        "c30",
+        "c31",
+        "c32",
+        "c33",
+        "c34",
+        "c35",
+        "c36",
+        "c37",
+        "c39",
+        "c40",
+        "c41",
+        "c42",
+        "c43",
+        "c44"
+      ],
+      "layer_quotas": [
+        9,
+        8,
+        14,
+        30,
+        23,
+        24,
+        18,
+        15,
+        40,
+        34,
+        29,
+        30,
+        28,
+        32,
+        38,
+        47,
+        41,
+        43,
+        27,
+        31,
+        29,
+        26,
+        25,
+        30,
+        35,
+        33,
+        31,
+        36,
+        30,
+        38,
+        40,
+        50,
+        43,
+        37,
+        31,
+        35,
+        39,
+        33,
+        29,
+        37,
+        46,
+        43,
+        39,
+        46,
+        42,
+        38,
+        37,
+        43
+      ],
+      "selected_set_sha256_i32le": {
+        "mixed_reference": "f7c54788d039bc7209f050cc7bd256de0c52507d6f2d82cdbf1c63aba27c7c5d",
+        "code_only": "510b988cf9424795664a105d4b8379eee1b7448e3f149bd6945d90dc7b70f636",
+        "balanced_code_general": "4c2db3878cdc9090638fc04e47e64c4d89233014e0d644b4e767b3a2bcc771b9"
+      }
+    }
+  ],
+  "rows": [
+    {
+      "id": "c00",
+      "domain": "code",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.23799078525641026,
+        "code_only": 0.32540064102564104,
+        "balanced_code_general": 0.29755608974358977
+      }
+    },
+    {
+      "id": "c01",
+      "domain": "code",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.21259469696969696,
+        "code_only": 0.3776733682983683,
+        "balanced_code_general": 0.30856643356643354
+      }
+    },
+    {
+      "id": "c02",
+      "domain": "code",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.24323076923076922,
+        "code_only": 0.27006410256410257,
+        "balanced_code_general": 0.28425
+      }
+    },
+    {
+      "id": "c03",
+      "domain": "code",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.22526776384535005,
+        "code_only": 0.3630616509926855,
+        "balanced_code_general": 0.3232105538140021
+      }
+    },
+    {
+      "id": "c04",
+      "domain": "code",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.189975845410628,
+        "code_only": 0.4467315821256039,
+        "balanced_code_general": 0.32894021739130436
+      }
+    },
+    {
+      "id": "c05",
+      "domain": "code",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.13276143790849673,
+        "code_only": 0.3257761437908497,
+        "balanced_code_general": 0.22128267973856208
+      }
+    },
+    {
+      "id": "c06",
+      "domain": "code",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.1368719362745098,
+        "code_only": 0.26660539215686274,
+        "balanced_code_general": 0.20912990196078432
+      }
+    },
+    {
+      "id": "c07",
+      "domain": "code",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.17874503968253969,
+        "code_only": 0.30952380952380953,
+        "balanced_code_general": 0.278844246031746
+      }
+    },
+    {
+      "id": "c08",
+      "domain": "code",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.20961972891566266,
+        "code_only": 0.2678840361445783,
+        "balanced_code_general": 0.283992218875502
+      }
+    },
+    {
+      "id": "c09",
+      "domain": "code",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.2525477296181631,
+        "code_only": 0.3016189370485036,
+        "balanced_code_general": 0.32572884416924663
+      }
+    },
+    {
+      "id": "c10",
+      "domain": "code",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.23245218579234972,
+        "code_only": 0.23719262295081966,
+        "balanced_code_general": 0.2756898907103825
+      }
+    },
+    {
+      "id": "c11",
+      "domain": "code",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.1558922558922559,
+        "code_only": 0.3737584175084175,
+        "balanced_code_general": 0.29118265993265996
+      }
+    },
+    {
+      "id": "c12",
+      "domain": "stem",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.1479858803986711,
+        "code_only": 0.06661129568106312,
+        "balanced_code_general": 0.10755813953488372
+      }
+    },
+    {
+      "id": "c13",
+      "domain": "stem",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.17031604308390022,
+        "code_only": 0.12448979591836734,
+        "balanced_code_general": 0.16087726757369614
+      }
+    },
+    {
+      "id": "c14",
+      "domain": "stem",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.15780716723549487,
+        "code_only": 0.0949943117178612,
+        "balanced_code_general": 0.13219567690557452
+      }
+    },
+    {
+      "id": "c15",
+      "domain": "stem",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.19101740867579908,
+        "code_only": 0.10033533105022831,
+        "balanced_code_general": 0.1616795091324201
+      }
+    },
+    {
+      "id": "c16",
+      "domain": "stem",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.1559171597633136,
+        "code_only": 0.06651257396449704,
+        "balanced_code_general": 0.11563732741617357
+      }
+    },
+    {
+      "id": "c17",
+      "domain": "stem",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.21273985745614035,
+        "code_only": 0.11077302631578947,
+        "balanced_code_general": 0.1638706140350877
+      }
+    },
+    {
+      "id": "c18",
+      "domain": "other",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.16698623402163226,
+        "code_only": 0.04745575221238938,
+        "balanced_code_general": 0.1094948377581121
+      }
+    },
+    {
+      "id": "c19",
+      "domain": "other",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.17074574574574575,
+        "code_only": 0.034884884884884886,
+        "balanced_code_general": 0.09872997997997998
+      }
+    },
+    {
+      "id": "c20",
+      "domain": "other",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.1540160642570281,
+        "code_only": 0.041246234939759034,
+        "balanced_code_general": 0.10562248995983936
+      }
+    },
+    {
+      "id": "c21",
+      "domain": "other",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.16125700280112046,
+        "code_only": 0.1087359943977591,
+        "balanced_code_general": 0.15047268907563024
+      }
+    },
+    {
+      "id": "c22",
+      "domain": "other",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.11569919278252612,
+        "code_only": 0.01631054131054131,
+        "balanced_code_general": 0.056991927825261156
+      }
+    },
+    {
+      "id": "c23",
+      "domain": "other",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.17259160756501182,
+        "code_only": 0.024216903073286052,
+        "balanced_code_general": 0.06155437352245863
+      }
+    },
+    {
+      "id": "c24",
+      "domain": "other",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.1429202483285578,
+        "code_only": 0.02006924546322827,
+        "balanced_code_general": 0.06457139446036295
+      }
+    },
+    {
+      "id": "c25",
+      "domain": "stem",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.25591233435270133,
+        "code_only": 0.1982670744138634,
+        "balanced_code_general": 0.25704638124362894
+      }
+    },
+    {
+      "id": "c26",
+      "domain": "stem",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.22701632553606238,
+        "code_only": 0.05641447368421053,
+        "balanced_code_general": 0.13547149122807017
+      }
+    },
+    {
+      "id": "c27",
+      "domain": "stem",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.1790665064102564,
+        "code_only": 0.05639690170940171,
+        "balanced_code_general": 0.12688969017094018
+      }
+    },
+    {
+      "id": "c28",
+      "domain": "other",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.10442637759710931,
+        "code_only": 0.01789182475158085,
+        "balanced_code_general": 0.05597335140018067
+      }
+    },
+    {
+      "id": "c29",
+      "domain": "other",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.14583333333333334,
+        "code_only": 0.046713525835866264,
+        "balanced_code_general": 0.11259498480243162
+      }
+    },
+    {
+      "id": "c30",
+      "domain": "other",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.18245833333333333,
+        "code_only": 0.04551190476190476,
+        "balanced_code_general": 0.11731547619047619
+      }
+    },
+    {
+      "id": "c31",
+      "domain": "other",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.11379310344827587,
+        "code_only": 0.04956896551724138,
+        "balanced_code_general": 0.0874580938697318
+      }
+    },
+    {
+      "id": "c32",
+      "domain": "other",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.1796875,
+        "code_only": 0.04518821022727273,
+        "balanced_code_general": 0.12048413825757576
+      }
+    },
+    {
+      "id": "c33",
+      "domain": "stem",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.1859280303030303,
+        "code_only": 0.14494949494949494,
+        "balanced_code_general": 0.19139520202020202
+      }
+    },
+    {
+      "id": "c34",
+      "domain": "stem",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.10842313218390805,
+        "code_only": 0.0872485632183908,
+        "balanced_code_general": 0.09879669540229885
+      }
+    },
+    {
+      "id": "c35",
+      "domain": "other",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.1836119957537155,
+        "code_only": 0.07608147558386412,
+        "balanced_code_general": 0.13911889596602972
+      }
+    },
+    {
+      "id": "c36",
+      "domain": "other",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.17385940409683426,
+        "code_only": 0.04899906890130354,
+        "balanced_code_general": 0.11404795158286779
+      }
+    },
+    {
+      "id": "c37",
+      "domain": "languages",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.22060676392572945,
+        "code_only": 0.04992263483642794,
+        "balanced_code_general": 0.1216788240495137
+      }
+    },
+    {
+      "id": "c38",
+      "domain": "languages",
+      "fold": 4,
+      "coverage": {
+        "mixed_reference": 0.08630490956072351,
+        "code_only": 0.04970930232558139,
+        "balanced_code_general": 0.07425710594315245
+      }
+    },
+    {
+      "id": "c39",
+      "domain": "languages",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.10869436553030302,
+        "code_only": 0.043229166666666666,
+        "balanced_code_general": 0.081640625
+      }
+    },
+    {
+      "id": "c40",
+      "domain": "languages",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.1719951923076923,
+        "code_only": 0.06047962454212454,
+        "balanced_code_general": 0.12690018315018314
+      }
+    },
+    {
+      "id": "c41",
+      "domain": "languages",
+      "fold": 3,
+      "coverage": {
+        "mixed_reference": 0.22074453551912568,
+        "code_only": 0.2737841530054645,
+        "balanced_code_general": 0.28855191256830603
+      }
+    },
+    {
+      "id": "c42",
+      "domain": "languages",
+      "fold": 2,
+      "coverage": {
+        "mixed_reference": 0.19782276995305165,
+        "code_only": 0.09423708920187794,
+        "balanced_code_general": 0.16161384976525822
+      }
+    },
+    {
+      "id": "c43",
+      "domain": "other",
+      "fold": 0,
+      "coverage": {
+        "mixed_reference": 0.1018092105263158,
+        "code_only": 0.028289473684210528,
+        "balanced_code_general": 0.060512609649122806
+      }
+    },
+    {
+      "id": "c44",
+      "domain": "other",
+      "fold": 1,
+      "coverage": {
+        "mixed_reference": 0.1587012987012987,
+        "code_only": 0.026807359307359307,
+        "balanced_code_general": 0.09192640692640693
+      }
+    }
+  ],
+  "zero_tolerance_static_diagnostic": {
+    "code_only": {
+      "both_cohorts_nonregressing": false,
+      "regressing_domains": [
+        "languages",
+        "other",
+        "stem"
+      ]
+    },
+    "balanced_code_general": {
+      "both_cohorts_nonregressing": false,
+      "regressing_domains": [
+        "languages",
+        "other",
+        "stem"
+      ]
+    }
+  },
+  "checks": {
+    "published_global_rows_matched": 45,
+    "published_code_rows_matched": 12,
+    "training_excludes_entire_held_out_fold": true,
+    "matched_slots_and_layer_quotas": true
+  },
+  "limits": [
+    "Static fixed-trace coverage only: no measured speed, generated-answer quality or adaptive-cache benefit.",
+    "The corpus and original domain results were known when this exploratory follow-up was planned.",
+    "No GPU run, model load, runtime update, automatic selection or rollback is performed.",
+    "The pre-existing live-pilot parity/improvement gate remains failed and unchanged.",
+    "A runtime promotion requires separately fixed code and non-code quality and latency criteria, live measurements and an agreed scope."
+  ]
+}
