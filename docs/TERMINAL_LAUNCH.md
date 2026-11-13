@@ -91,7 +91,7 @@ strata launch --show-key
 | `--model-path PATH` | Use model files you already have: a folder of shards or one `.gguf`. |
 | `--data-dir DIR`, `--move-data` | Where new downloads go. `--move-data` also moves the models you already have. |
 | `--context SIZE` | `32k`, `64k`, `128k`, `256k` or a number of tokens. |
-| `--kv FORMAT` | Conversation memory format: `int8` (default), `q4_0` (half the memory), `k8v4`, `fp16`. |
+| `--kv FORMAT` | Conversation memory format: `fp16` (raw halves, no quantization — the default on a PC card), `int8` (codes with a scale per 64 values, half the cache — the default on a Mac), `q4_0` (a quarter), `k8v4`. On a Mac, `fp16` is opt-in and buys exactness, not speed: the same reply speed, twice the cache memory ([MAC.md](MAC.md#limits-this-version)). |
 | `--vision off\|on\|gpu\|cpu` | Picture reading. Default: on when the model and the engine can. |
 | `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card; DeepSeek: one at a time. |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |
