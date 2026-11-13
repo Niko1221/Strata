@@ -43,8 +43,9 @@ int main() {
         CHECK(!ac::tuning_on());
     }
 
-    // which tables are the community's: exactly the two named, only for gfx1030 (feature suffix allowed)
+    // which tables are the community's: exactly the three named, only for gfx1030 (feature suffix allowed)
     CHECK(ac::is_community_rocblas_table("gfx1030", "5.4.0.ad84daa81c"));
+    CHECK(ac::is_community_rocblas_table("gfx1030", "5.8.0.efafc1c1"));
     CHECK(ac::is_community_rocblas_table("gfx1030:xnack-", "5.2.0.dabb6df2b98-dirty"));
     CHECK(!ac::is_community_rocblas_table("gfx1030", "5.6.0.8d1ae90e"));      // shipped before, not under the switch
     CHECK(!ac::is_community_rocblas_table("gfx1031", "5.4.0.ad84daa81c"));    // another card

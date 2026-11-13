@@ -1,6 +1,6 @@
 // include/strata/core/amd_community.hpp - the AMD changes that came from the community and that we have no card to test.
 //
-// Four changes, one switch.  STRATA_AMD_COMMUNITY_TUNING is on unless it is set to 0 (or "off"/"false"/"no").  Each change
+// Five changes, one switch.  STRATA_AMD_COMMUNITY_TUNING is on unless it is set to 0 (or "off"/"false"/"no").  Each change
 // is limited to the card or the exact library build it was made for, so nothing here touches any other card:
 //
 //   1. gfx1010 (RX 5700 / 5700 XT) integer dot product: the SDWA byte-select sequence gfx1012 already used instead of the portable
@@ -10,7 +10,9 @@
 //      set to 0 on a gfx1010 build that has the SDWA sequence.
 //   2. rocBLAS solution table gfx1030 / rocBLAS 5.4.0.ad84daa81c (TheRock gfx103X-all 7.13.0a20260515 wheels; #3343, elightcap).
 //   3. rocBLAS solution table gfx1030 / rocBLAS 5.2.0.dabb6df2b98-dirty (Arch Linux ROCm 7.2.4; #3924, schmittcn).
-//   4. QSA block-score selector mode 2 (the simt2 scorer, STRATA_SELECT_SIMT=2) as the default on gfx103x (#3073, Vop3p).  Another
+//   4. rocBLAS solution table gfx1030 / rocBLAS 5.8.0.efafc1c1 (the Windows prebuilt engine, ROCm 10.2.0a20260930;
+//      #5910, Jupiterxia553).
+//   5. QSA block-score selector mode 2 (the simt2 scorer, STRATA_SELECT_SIMT=2) as the default on gfx103x (#3073, Vop3p).  Another
 //      summation order than the warp kernel, so values change in the last bits (the contributor's KL 0.0256 against main).  Any
 //      STRATA_SELECT_SIMT value the user sets wins (=0 / =1 keep the warp kernel / mode 1).  Not a default on any other card.
 //
@@ -55,6 +57,7 @@ struct RocblasTable {
 inline constexpr RocblasTable kRocblasTables[] = {
     {"gfx1030", "5.4.0.ad84daa81c", "#3343 elightcap"},
     {"gfx1030", "5.2.0.dabb6df2b98-dirty", "#3924 schmittcn"},
+    {"gfx1030", "5.8.0.efafc1c1", "#5910 Jupiterxia553"},
 };
 
 /// True when (arch, version) names one of the community tables above.  `arch` may carry feature suffixes ("gfx1030:xnack-").
