@@ -5,6 +5,8 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/kprof.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/shard.hpp"
+#include "strata/tp/dims.hpp"
 #include "strata/kernels/dflash2.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
@@ -269,6 +271,8 @@ bool mapped(size_t bytes, void **h, void **d) try {
     */
     // polled by the window's kernels: uncached host memory (sycl_queue.hpp); a buffer only read or written between
     // kernels (the stepped window's payload) is ordinary host USM
+    // A TENSOR-PARALLEL RANK NEEDS PORTABLE MAPPINGS TOO: every rank's kernels read the same staging, and a
+    // mapping that belongs to one card is not visible to the others.
     if (DPCT_CHECK_ERROR(*h = window_host_uncached() ? strata::host_malloc_polled(bytes, dpct::get_in_order_queue())
                                      : sycl::malloc_host(bytes, dpct::get_in_order_queue())) !=
         0 || *h == nullptr) return false;
@@ -281,7 +285,7 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return qsa_shapes(g); }
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return strata::tp::qsa_shapes_rank(g); }
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);
@@ -553,8 +557,14 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
-    const uint64_t C = (uint64_t) g.ssm_conv_channels, ZV = (uint64_t) g.ssm_value_dim, HV = (uint64_t) g.ssm_v_heads;
-    const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
+    // TENSOR PARALLEL: the GDN block runs on THIS RANK's head-channels, so every GDN buffer carved below is
+    // narrower.  The attention heads are split the same way; the KV heads replicate when there are fewer of them
+    // than ranks.  With one rank these are the geometry's own numbers.
+    const uint64_t tpr = (uint64_t) strata::core::tp_ranks_current();
+    const uint64_t C = (uint64_t) g.ssm_conv_channels / tpr, ZV = (uint64_t) g.ssm_value_dim / tpr,
+                   HV = (uint64_t) g.ssm_v_heads / tpr;
+    const uint64_t NH = (uint64_t) g.n_head / tpr, HD = (uint64_t) g.head_dim,
+                   NKV = (uint64_t) (g.n_head_kv >= (int64_t) tpr ? g.n_head_kv / tpr : g.n_head_kv);
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
     const uint64_t nG = (uint64_t) g.n_gdn_layers(), nQ = (uint64_t) g.n_qsa_layers();
     const uint64_t HS = (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM;
@@ -880,13 +890,16 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     const bool lean = lean_env && no_host_env && device_plan_ && !batch_rec_ && !step_hook_ && !step_hook2_ && !remote_opt_ && !always_publish_ && !g_stepped;
     const WeightTable& wt = *wt_;
     SessionState& ss = *ss_;
-    const int64_t N = g.n_embd, HC = g.hc, K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;
-    const int64_t HV = g.ssm_v_heads, HK = g.ssm_k_heads, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
+    const int64_t N = g.n_embd, HC = g.hc, K = ss.k;
+    const int64_t tpr = strata::core::tp_ranks_current();
+    const int64_t C = g.ssm_conv_channels / tpr, ZV = g.ssm_value_dim / tpr;
+    const int64_t HV = g.ssm_v_heads / tpr, HK = g.ssm_k_heads / tpr, NH = g.n_head / tpr, HD = g.head_dim,
+                  NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
     const int64_t IQ = g.idx_q_heads, ID = g.idx_key_dim, NE = g.n_expert, MT = max_t_;
     const QsaShapes s = shapes_of(g);
     const GrShapes gs{g.n_embd, g.hc, g.hc_lr};
-    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
-                                (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size +
+                                (uint64_t) strata::tp::gdn_channels_rank(g) * (g.ssm_d_conv - 1);
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
     const int64_t TS = (s.idx_block - 1) * ID;
     const bool ple_on = ss.ple.ready() && ple_stage();
@@ -1089,7 +1102,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                     return false;
                 const int64_t gi = gdn_idx[(size_t) l];
                 float* state = ss.gdn_state + (size_t) (gi - ss.gdn_ord0) * gdn_floats;
-                float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                float* conv = state + (uint64_t) g.ssm_state_size * HV * g.ssm_state_size;
                 float* qkv = qkv_L_ + (size_t) gi * MT * C;
                 float* hb = h_L_ + (size_t) gi * MT * C;
                 float* gate = gate_L_ + (size_t) gi * MT * HV;
@@ -1103,7 +1116,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                         while (t < te && brow_[t] == brow_[first]) ++t;
                         SessionState& sx = slot_ss(first);
                         const float* cx = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats +
-                                          (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                                          (uint64_t) g.ssm_state_size * HV * g.ssm_state_size;
                         gdn_conv_l2_multi(cx, qkv + (size_t) first * C, (const float*) wc->data,
                                           hb + (size_t) first * C, (int) C, (int) (2 * HK), EPS, t - first, cs, 0);
                     }
@@ -1996,9 +2009,12 @@ bool Verifier::capture_commit(std::string &err) try {
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     const QsaShapes s = shapes_of(g);
-    const int64_t C = g.ssm_conv_channels, HV = g.ssm_v_heads, ID = g.idx_key_dim, MT = max_t_;
-    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
-                                (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+    const int64_t tpr = strata::core::tp_ranks_current();
+    const int64_t C = g.ssm_conv_channels / tpr, HV = g.ssm_v_heads / tpr, HK = g.ssm_k_heads / tpr,
+                  NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv,
+                  ID = g.idx_key_dim, MT = max_t_;
+    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size +
+                                (uint64_t) strata::tp::gdn_channels_rank(g) * (g.ssm_d_conv - 1);
     const int64_t TS = (s.idx_block - 1) * ID;
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
@@ -2016,12 +2032,12 @@ bool Verifier::capture_commit(std::string &err) try {
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
                 if (!wnm) { ok = false; break; }
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
-                float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                float* conv = state + (uint64_t) g.ssm_state_size * HV * g.ssm_state_size;
                 const float* qkv = qkv_L_ + (size_t) gdn_index * MT * C;
                 gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
                 gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C, gate_L_ + (size_t) gdn_index * MT * HV,
                                     beta_L_ + (size_t) gdn_index * MT * HV, z_, (const float*) wnm->data, EPS, y_dummy_,
-                                    (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_,
+                                    (int) HK, (int) HV, (int) MT, commit_, cs_,
                                     (int) MT);   // S26: t_out_begin = MT - the replay's outputs (y_dummy_) are never read
                 ++gdn_index;
             } else {
@@ -2082,14 +2098,16 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     const QsaShapes s = shapes_of(g);
-    int32_t* const pk = h_pos_ + (size_t) max_t_ * g.n_head;
-    int32_t* const pi = pk + (size_t) max_t_ * g.n_head_kv;
+    const int64_t tpr = strata::core::tp_ranks_current();
+    const int64_t NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
+    int32_t* const pk = h_pos_ + (size_t) max_t_ * NH;
+    int32_t* const pi = pk + (size_t) max_t_ * NKV;
     for (int t = 0; t < T; ++t) {
         h_tok_[t] = tokens[t];
         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
         const int32_t pos_t = (int32_t) (pos0 + t);
-        for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = pos_t;
-        for (int64_t h = 0; h < g.n_head_kv; ++h) pk[t * g.n_head_kv + h] = pos_t;
+        for (int64_t h = 0; h < NH; ++h) h_pos_[t * NH + h] = pos_t;
+        for (int64_t h = 0; h < NKV; ++h) pk[t * NKV + h] = pos_t;
         for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = pos_t;
     }
     *(volatile uint32_t*) h_seq_ = 0;
@@ -2171,6 +2189,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
+    const int64_t tpr = strata::core::tp_ranks_current();
+    const int64_t NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
     refresh_ar();
@@ -2193,8 +2213,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
     if (std::FILE* sf = state_hash_file()) {   // debug only (STRATA_STATE_HASH_FILE)
         cs_->wait();
-        const uint64_t gf = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
-                            (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+        const uint64_t gf = (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size +
+                            (uint64_t) strata::tp::gdn_channels_rank(g) * (g.ssm_d_conv - 1);
         std::vector<char> hb(std::max<uint64_t>(gf * 4, 1u << 20));
         for (int64_t i = 0; i < ss.gdn_alloc; ++i) {
             cs_->memcpy(hb.data(), ss.gdn_state + (size_t) i * gf, gf * 4).wait();
@@ -2209,7 +2229,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         for (int64_t i = 0; i < ss.qsa_alloc; ++i) {
             const QsaState& q = ss.qsa_states[i];
             if (!q.kv_int8 || q.k_q == nullptr) continue;
-            const size_t kb = (size_t) pages * g.n_head_kv * 4 * g.head_dim;
+            const size_t kb = (size_t) pages * NKV * 4 * g.head_dim;
             uint64_t h = 1469598103934665603ull;
             auto mix = [&](const void* dev, size_t bytes) {
                 if (bytes > hb.size()) hb.resize(bytes);
@@ -3120,10 +3140,12 @@ bool Verifier::capture_commit_batch(const int *rows, int S, int hbase,
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     const QsaShapes s = shapes_of(g);
-    const int64_t C = g.ssm_conv_channels, HV = g.ssm_v_heads, ZV = g.ssm_value_dim, ID = g.idx_key_dim, MT = max_t_;
+    const int64_t tpr = strata::core::tp_ranks_current();
+    const int64_t C = g.ssm_conv_channels / tpr, HV = g.ssm_v_heads / tpr, ZV = g.ssm_value_dim / tpr,
+                  HK = g.ssm_k_heads / tpr, ID = g.idx_key_dim, MT = max_t_;
     const int64_t CB = 2 + MT, nQ = g.n_qsa_layers();
-    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
-                                (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+    const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size +
+                                (uint64_t) strata::tp::gdn_channels_rank(g) * (g.ssm_d_conv - 1);
     const int64_t TS = (s.idx_block - 1) * ID;
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
@@ -3155,7 +3177,7 @@ bool Verifier::capture_commit_batch(const int *rows, int S, int hbase,
                     SessionState& sx = *slots_[(size_t) rows[first]];
                     const int32_t* keep = commitb_ + (size_t) rows[first] * CB;
                     float* state = sx.gdn_state + (size_t) (gdn_index - sx.gdn_ord0) * gdn_floats;
-                    float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                    float* conv = state + (uint64_t) g.ssm_state_size * HV * g.ssm_state_size;
                     gdn_conv_commit(conv, qkv_L_ + (size_t) gdn_index * MT * C + (size_t) first * C,
                                     (int) C, keep, cs_);
                     if (gdn_groups_on && one_row) {
@@ -3170,14 +3192,14 @@ bool Verifier::capture_commit_batch(const int *rows, int S, int hbase,
                                         gate_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV,
                                         beta_L_ + (size_t) gdn_index * MT * HV + (size_t) first * HV,
                                         z_ + (size_t) first * ZV, (const float*) wnm->data, EPS,
-                                        y_dummy_ + (size_t) first * ZV, (int) g.ssm_k_heads,
+                                        y_dummy_ + (size_t) first * ZV, (int) HK,
                                         (int) HV, t - first, keep, cs_,
                                         t - first > 1 ? t - first : 0);   // a 1-row group keeps the 0.1.39 kernel
                 }
                 if (gg.n > 0)
                     gdn_step_norm_groups(gg, h_L_ + (size_t) gdn_index * MT * C, (int) C,
                                          gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV,
-                                         z_, (const float*) wnm->data, EPS, y_dummy_, (int) g.ssm_k_heads, (int) HV, true,
+                                         z_, (const float*) wnm->data, EPS, y_dummy_, (int) HK, (int) HV, true,
                                          cs_);
                 ++gdn_index;
             } else {
@@ -3311,10 +3333,12 @@ bool Verifier::stage_batch(const int *rows, int S, int hbase,
     for (int t = 0; t < S; ++t) {
         h_tok_[t] = tokens[t];
         qsa_step_fill(h_step_ + t * kStepCount, pos[t], s);
-        for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = (int32_t) pos[t];
-        int32_t* pk = h_pos_ + (size_t) max_t_ * g.n_head;
-        int32_t* pi = pk + (size_t) max_t_ * g.n_head_kv;
-        for (int64_t h = 0; h < g.n_head_kv; ++h) pk[t * g.n_head_kv + h] = (int32_t) pos[t];
+        const int64_t tpr = strata::core::tp_ranks_current();
+        const int64_t NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
+        for (int64_t h = 0; h < NH; ++h) h_pos_[t * NH + h] = (int32_t) pos[t];
+        int32_t* pk = h_pos_ + (size_t) max_t_ * NH;
+        int32_t* pi = pk + (size_t) max_t_ * NKV;
+        for (int64_t h = 0; h < NKV; ++h) pk[t * NKV + h] = (int32_t) pos[t];
         for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = (int32_t) pos[t];
     }
     if (ss_->ple.ready() && ple_stage()) {

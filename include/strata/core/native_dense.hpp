@@ -1,5 +1,7 @@
 #pragma once
 
+#include "strata/core/shard.hpp"   // ShardPlan is a using-alias and cannot be forward declared
+
 #include <cstdint>
 #include <set>
 #include <string>
@@ -23,7 +25,8 @@ public:
     /// With layer_hi >= 0, only the `blk.<l>.` matrices with layer_lo <= l < layer_hi are uploaded (a layer
     /// split's stage holds its own layers' projections, not the whole model's); the others keep data == nullptr.
     bool load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
-              bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1);
+              bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1,
+              const ShardPlan* shard = nullptr);
     /// Plan v0.3 P1: the canonical tensor names `load` would serve natively from these shards (eligible name,
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -35,7 +38,8 @@ public:
     /// filters, each matrix rounded up to the granule cudaMalloc backs it with - reading the GGUF headers and `table`
     /// only, so it allocates nothing and needs no device (#1238).  `table` must hold every tensor the shards carry.
     static bool weight_bytes_for(const std::vector<std::string>& shards, WeightTable& table, bool include_ple_key,
-                                 int64_t lb, int64_t le, uint64_t& out, std::string& err);
+                                 int64_t lb, int64_t le, uint64_t& out, std::string& err,
+                                 const ShardPlan* shard = nullptr);
     /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.

@@ -227,7 +227,7 @@ set(_kernel_cu dequant_s2 s2_gemv s_gemv s2_gemv_quads s2_gemv_fast router_top10
     s2_expert_grouped shared_expert gr gdn qsa elementwise bf16_gemv native_mmvq native_bf16 native_gr_norm native_moe
     native_gdn native_gr_postops native_router native_gdn_preprocess native_qsa native_rope native_ple_postops
     native_flash_attn native_qsa_indexer native_qsa_score ple kv_q8 kv_stream kv_q4 fused_gr cvec qsa_decode_attn
-    qsa_prompt_attn fused_gdn dequant_bf16 qsa_select verify_kernels iq_kernels dflash2)
+    qsa_prompt_attn fused_gdn dequant_bf16 qsa_select verify_kernels iq_kernels dflash2 allreduce)
 set(_kernel_files "")
 foreach(k IN LISTS _kernel_cu)
   list(APPEND _kernel_files src/kernels/cuda/${k}.cu)

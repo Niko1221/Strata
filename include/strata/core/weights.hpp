@@ -27,6 +27,8 @@
 // logits.  Python wrote the manifest and already parses it correctly.
 #pragma once
 
+#include "strata/core/shard.hpp"
+
 #include <cstdint>
 #include <map>
 #include <set>
@@ -117,7 +119,8 @@ public:
     /// than halfway through a 5 GB upload.
     /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.
     static bool pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                           const std::set<std::string>* skip = nullptr);
+                           const std::set<std::string>* skip = nullptr,
+                           const ShardPlan* shard = nullptr);
 
     /// The `code_bits` field of one row of `<pack_dir>/index.txt`, readable WITHOUT loading anything (0 = the
     /// pack stores the tensor unquantized, e.g. a --compat-bf16 key; -1 = no such row).  #326: the loader has
@@ -132,7 +135,7 @@ public:
     /// With `skip`, the named tensors are not read: their rows keep their metadata with `data == nullptr` and
     /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-              const std::set<std::string>* skip = nullptr);
+              const std::set<std::string>* skip = nullptr, const ShardPlan* shard = nullptr);
 
     /// A SKIPPED bf16 tensor's values read back from the pack file (the promoted-f32 and the raw 16-bit forms), for
     /// the host-side Q8_0 quantizer of STRATA_HC_Q8 (the tensor then has no copy in the arena).

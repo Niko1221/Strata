@@ -5,6 +5,8 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/layer.hpp"
+#include "strata/core/tp_runtime.hpp"
+#include "strata/tp/dims.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -44,6 +46,7 @@
 #include <memory>
 #include <vector>
 namespace strata::core {
+using strata::tp::qsa_shapes_rank;
 namespace { bool g_shared_early = true; bool g_fused_gr = false; bool g_fast_attn = true; bool g_publish_kernel = true; bool g_fused_gdn = true; bool g_fast_select = true; }
 namespace {constexpr int Q8K_BYTES_PER_BLOCK = 292;
 constexpr int Q8K_ELEMS_PER_BLOCK = 256;
@@ -186,54 +189,93 @@ void qsa_set_kv_q4(bool enabled) { g_kv_q4 = enabled; }
 bool qsa_kv_q4() { return g_kv_q4; }
 void qsa_set_kv_hybrid(bool enabled) { g_kv_hybrid = enabled; }
 bool qsa_kv_hybrid() { return g_kv_hybrid; }
-uint64_t gdn_buffers_bytes(const ModelGeometry& g) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd),
-// x_q8k
-(uint64_t) (g.n_embd / 32) * 34,
-// x_q8_0
-(uint64_t) g.n_embd * 2,
-// x_bf16
-(uint64_t) C * 4,
-// qkv
-(uint64_t) C * 4,
-// conv_out
-(uint64_t) C * 4,
-// h
-(uint64_t) g.ssm_v_heads * 4,
-// alpha
-(uint64_t) g.ssm_v_heads * 4,
-// beta
-(uint64_t) g.ssm_v_heads * 4,
-// gate
-(uint64_t) g.ssm_v_heads * g.ssm_state_size * 4,
-// o
-(uint64_t) V * 4,
-// z
-(uint64_t) V * 4,
-// y
-q8k_bytes(V),
-// y_q8k
-(uint64_t) (V / 32) * 34,
-// y_q8_0
-(uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size * 4,
-// state
-(uint64_t) C * (g.ssm_d_conv - 1) * 4,
-// conv_state
-};    uint64_t total = 0;    for (uint64_t v : parts) total += (v + 15) & ~(uint64_t) 15;    return total;}
-uint64_t gdn_buffers_init(const ModelGeometry& g, void* base, GdnBuffers& b) {    const int64_t C = g.ssm_conv_channels;    const int64_t V = g.ssm_value_dim;    const uint64_t parts[] = {        q8k_bytes(g.n_embd), (uint64_t) (g.n_embd / 32) * 34, (uint64_t) g.n_embd * 2, (uint64_t) C * 4,        (uint64_t) C * 4, (uint64_t) C * 4,        (uint64_t) g.ssm_v_heads * 4, (uint64_t) g.ssm_v_heads * 4, (uint64_t) g.ssm_v_heads * 4,        (uint64_t) g.ssm_v_heads * g.ssm_state_size * 4, (uint64_t) V * 4, (uint64_t) V * 4, q8k_bytes(V),        (uint64_t) (V / 32) * 34,        (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size * 4, (uint64_t) C * (g.ssm_d_conv - 1) * 4,    };    uint8_t* p = (uint8_t*) base;    void* ptr[16];    uint64_t total = 0;    for (int i = 0; i < 16; ++i) {        ptr[i] = p;        const uint64_t al = (parts[i] + 15) & ~(uint64_t) 15;        p += al;        total += al;    }    b.x_q8k = (uint8_t*) ptr[0];    b.x_q8_0 = (uint8_t*) ptr[1];    b.x_bf16 = (uint16_t*) ptr[2];    b.qkv = (float*) ptr[3];    b.conv_out = (float*) ptr[4];    b.h = (float*) ptr[5];    b.alpha = (float*) ptr[6];    b.beta = (float*) ptr[7];    b.gate = (float*) ptr[8];    b.o = (float*) ptr[9];    b.z = (float*) ptr[10];    b.y = (float*) ptr[11];    b.y_q8k = (uint8_t*) ptr[12];    b.y_q8_0 = (uint8_t*) ptr[13];    b.state = (float*) ptr[14];    b.conv_state = (float*) ptr[15];    return total;}
+uint64_t gdn_buffers_bytes(const ModelGeometry& g) {
+    // TENSOR PARALLEL: a rank's GDN buffers are ITS slice, exactly as `core/shard.hpp` carves them - the two
+    // must agree or the later pointers land past the arena.  With one rank these are the geometry's numbers.
+    const int64_t tpr = (int64_t) strata::core::tp_ranks_current();
+    const int64_t C = g.ssm_conv_channels / tpr;
+    const int64_t V = g.ssm_value_dim / tpr;
+    const int64_t HV = g.ssm_v_heads / tpr;
+    const uint64_t parts[] = {
+        q8k_bytes(g.n_embd),                                   // x_q8k  (full width)
+        (uint64_t) (g.n_embd / 32) * 34,                       // x_q8_0 (full width)
+        (uint64_t) g.n_embd * 2,                               // x_bf16 (full width)
+        (uint64_t) C * 4,                                      // qkv
+        (uint64_t) C * 4,                                      // conv_out
+        (uint64_t) C * 4,                                      // h
+        (uint64_t) HV * 4,                                     // alpha
+        (uint64_t) HV * 4,                                     // beta
+        (uint64_t) HV * 4,                                     // gate
+        (uint64_t) HV * g.ssm_state_size * 4,                  // o
+        (uint64_t) V * 4,                                      // z
+        (uint64_t) V * 4,                                      // y
+        q8k_bytes(V),                                          // y_q8k
+        (uint64_t) (V / 32) * 34,                              // y_q8_0
+        (uint64_t) g.ssm_state_size * HV * g.ssm_state_size * 4,   // state
+        (uint64_t) C * (g.ssm_d_conv - 1) * 4,                 // conv_state
+    };
+    uint64_t total = 0;
+    for (uint64_t v : parts) total += (v + 15) & ~(uint64_t) 15;
+    return total;
+}
+
+uint64_t gdn_buffers_init(const ModelGeometry& g, void* base, GdnBuffers& b) {
+    const int64_t tpr = (int64_t) strata::core::tp_ranks_current();
+    const int64_t C = g.ssm_conv_channels / tpr;
+    const int64_t V = g.ssm_value_dim / tpr;
+    const int64_t HV = g.ssm_v_heads / tpr;
+    const uint64_t parts[] = {
+        q8k_bytes(g.n_embd), (uint64_t) (g.n_embd / 32) * 34, (uint64_t) g.n_embd * 2, (uint64_t) C * 4,
+        (uint64_t) C * 4, (uint64_t) C * 4,
+        (uint64_t) HV * 4, (uint64_t) HV * 4, (uint64_t) HV * 4,
+        (uint64_t) HV * g.ssm_state_size * 4, (uint64_t) V * 4, (uint64_t) V * 4, q8k_bytes(V),
+        (uint64_t) (V / 32) * 34,
+        (uint64_t) g.ssm_state_size * HV * g.ssm_state_size * 4, (uint64_t) C * (g.ssm_d_conv - 1) * 4,
+    };
+    uint8_t* p = (uint8_t*) base;
+    void* ptr[16];
+    uint64_t total = 0;
+    for (int i = 0; i < 16; ++i) {
+        ptr[i] = p;
+        const uint64_t al = (parts[i] + 15) & ~(uint64_t) 15;
+        p += al;
+        total += al;
+    }
+    b.x_q8k = (uint8_t*) ptr[0];
+    b.x_q8_0 = (uint8_t*) ptr[1];
+    b.x_bf16 = (uint16_t*) ptr[2];
+    b.qkv = (float*) ptr[3];
+    b.conv_out = (float*) ptr[4];
+    b.h = (float*) ptr[5];
+    b.alpha = (float*) ptr[6];
+    b.beta = (float*) ptr[7];
+    b.gate = (float*) ptr[8];
+    b.o = (float*) ptr[9];
+    b.z = (float*) ptr[10];
+    b.y = (float*) ptr[11];
+    b.y_q8k = (uint8_t*) ptr[12];
+    b.y_q8_0 = (uint8_t*) ptr[13];
+    b.state = (float*) ptr[14];
+    b.conv_state = (float*) ptr[15];
+    return total;
+}
+
 void gdn_buffers_zero_state(const GdnBuffers &b, const ModelGeometry &g,
                             void *stream) {
-    const uint64_t st = (uint64_t)g.ssm_state_size * g.ssm_v_heads *
-                        g.ssm_state_size * sizeof(float);
-    const uint64_t cs = (uint64_t)g.ssm_conv_channels * (g.ssm_d_conv - 1) *
-                        sizeof(float);
-    strata::q_of(stream)-> memset(b.state, 0, st);
-    strata::q_of(stream)->memset(b.conv_state, 0, cs);
+    const int64_t tpr = (int64_t) strata::core::tp_ranks_current();
+    const uint64_t st = (uint64_t) g.ssm_state_size * (g.ssm_v_heads / tpr) * g.ssm_state_size * sizeof(float);
+    const uint64_t cs = (uint64_t) (g.ssm_conv_channels / tpr) * (g.ssm_d_conv - 1) * sizeof(float);
+    dpct::get_in_order_queue().memset(b.state, 0, st);
+    dpct::get_in_order_queue().memset(b.conv_state, 0, cs);
 }
+
 // Forward-declared because `gdn_layer` and `qsa_layer` are both defined above the timer's own definition, and
 // the sub-stage marks live inside them.
 static void st_begin(int64_t layer, int slot, void* stream);
 static void st_end(int64_t layer, int slot, void* stream);
-bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const GdnBuffers& b,               const float* mixed, float* out, void* stream, std::string& err) {    const LayerView v(tables, layer);    const int64_t C = g.ssm_conv_channels;
+bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const GdnBuffers& b,               const float* mixed, float* out, void* stream, std::string& err) {    const LayerView v(tables, layer);    const int64_t tpr = (int64_t) strata::core::tp_ranks_current();
+    const int64_t C = g.ssm_conv_channels / tpr, HV = HV / tpr, HK = HK / tpr,
+                  V = V / tpr;
 // ---- resolve.  Every one of these was shape-checked by `check_layer` at load time, so a miss here is a
 //      NAME problem and not a geometry one, and the message says which name.
 const WeightRef* w_qkv = v.get("attn_qkv.weight");    const WeightRef* w_gate = v.get("attn_gate.weight");    const WeightRef* w_out = v.get("ssm_out.weight");    const WeightRef* w_alpha = v.get("ssm_alpha.weight");    const WeightRef* w_beta = v.get("ssm_beta.weight");    const WeightRef* w_conv = v.get("ssm_conv1d.weight");    const WeightRef* w_norm = v.get("ssm_norm.weight");    const WeightRef* w_dt = v.get("ssm_dt.bias");    const WeightRef* w_a = v.get("ssm_a");    const char* missing = !w_qkv ? "attn_qkv.weight" : !w_gate ? "attn_gate.weight"                          : !w_out ? "ssm_out.weight" : !w_alpha ? "ssm_alpha.weight"                          : !w_beta ? "ssm_beta.weight" : !w_conv ? "ssm_conv1d.weight"                          : !w_norm ? "ssm_norm.weight" : !w_dt ? "ssm_dt.bias"                          : !w_a ? "ssm_a" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }
@@ -276,7 +318,7 @@ st_begin(layer, 10, stream);
 const bool fused_pre = g_fused_gdn && native_gdn_enabled() && native_bf16_projections && g.ssm_d_conv == 4 &&
                        g.ssm_state_size == 128;
 if (fused_pre) {
-    fused_gdn_conv_l2(b.conv_state, b.qkv, conv_kernel, b.h, (int) C, (int) (2 * g.ssm_k_heads), RMS_EPS, stream);
+    fused_gdn_conv_l2(b.conv_state, b.qkv, conv_kernel, b.h, (int) C, (int) (2 * HK), RMS_EPS, stream);
 } else
 try {
     if (native_gdn_enabled()) native_gdn_conv_silu(b.conv_state, b.qkv, conv_kernel, b.conv_out, b.h, C, g.ssm_d_conv, stream);
@@ -295,14 +337,14 @@ try {
 st_end(layer, 10, stream);
 // ---- 4. q,k = l2_norm; v is NOT normalised.  The three views are contiguous runs of the same buffer:
 //         q at [0, 2048), k at [2048, 4096), v at [4096, 10240), each 128-wide heads.    const
-st_begin(layer, 11, stream);    int64_t qk = g.ssm_state_size * g.ssm_k_heads;
+st_begin(layer, 11, stream);    int64_t qk = g.ssm_state_size * HK;
 if (!fused_pre) try {
     if (native_gdn_enabled()) {
-        native_gdn_l2_norm(b.h, g.ssm_k_heads, g.ssm_state_size, RMS_EPS, stream);
-        native_gdn_l2_norm(b.h + qk, g.ssm_k_heads, g.ssm_state_size, RMS_EPS, stream);
+        native_gdn_l2_norm(b.h, HK, g.ssm_state_size, RMS_EPS, stream);
+        native_gdn_l2_norm(b.h + qk, HK, g.ssm_state_size, RMS_EPS, stream);
     } else {
-        gdn_l2_norm(b.h, g.ssm_k_heads, g.ssm_state_size, RMS_EPS, stream);
-        gdn_l2_norm(b.h + qk, g.ssm_k_heads, g.ssm_state_size, RMS_EPS, stream);
+        gdn_l2_norm(b.h, HK, g.ssm_state_size, RMS_EPS, stream);
+        gdn_l2_norm(b.h + qk, HK, g.ssm_state_size, RMS_EPS, stream);
     }
 } catch (const std::exception& error) { err = v.name("gdn_l2_norm") + ": " + error.what(); return false; }
 // The recurrence needs another 1/sqrt(S) beyond Q/K normalization. The legacy
@@ -320,23 +362,23 @@ st_end(layer, 11, stream);
 st_begin(layer, 12, stream);
     if (fused_pre) {
         fused_gdn_ab(mixed, (const uint16_t*) w_alpha->data, (const uint16_t*) w_beta->data, dt, ssm_a, b.gate, b.beta,
-                     (int) g.n_embd, (int) g.ssm_v_heads, stream);
+                     (int) g.n_embd, (int) HV, stream);
     } else {
     if (!native_bf16_projections) f32_to_bf16_bulk(mixed, b.x_bf16, g.n_embd, stream);
-    project_bf16(mixed, b.x_bf16, (const uint16_t*) w_alpha->data, b.alpha, g.n_embd, g.ssm_v_heads, true, stream);
-    project_bf16(mixed, b.x_bf16, (const uint16_t*) w_beta->data, b.beta, g.n_embd, g.ssm_v_heads, true, stream);
+    project_bf16(mixed, b.x_bf16, (const uint16_t*) w_alpha->data, b.alpha, g.n_embd, HV, true, stream);
+    project_bf16(mixed, b.x_bf16, (const uint16_t*) w_beta->data, b.beta, g.n_embd, HV, true, stream);
     }
     if (!fused_pre) try {
         if (native_gdn_enabled()) {
-            native_gdn_beta_gate(b.beta, g.ssm_v_heads, stream);
-            native_gdn_gate(b.alpha, dt, ssm_a, b.gate, g.ssm_v_heads, stream);
+            native_gdn_beta_gate(b.beta, HV, stream);
+            native_gdn_gate(b.alpha, dt, ssm_a, b.gate, HV, stream);
         } else {
-            gdn_beta_gate(b.beta, g.ssm_v_heads, stream);
-            gdn_gate(b.alpha, dt, ssm_a, b.gate, 1, g.ssm_v_heads, stream);
+            gdn_beta_gate(b.beta, HV, stream);
+            gdn_gate(b.alpha, dt, ssm_a, b.gate, 1, HV, stream);
         }
     } catch (const std::exception& error) { err = v.name("gdn_gate") + ": " + error.what(); return false; }
     st_end(layer, 12, stream); st_begin(layer, 13, stream);
-    GdnShapes gs{g.ssm_state_size, g.ssm_k_heads, g.ssm_v_heads};
+    GdnShapes gs{g.ssm_state_size, HK, HV};
     // Plan v0.3 P3: with the native contract the step and the output norm are one kernel (after the z GEMV).
     const bool fused_gdn = g_fused_gdn && native_gdn_enabled() && g.ssm_state_size == 128;
     if (!fused_gdn) try {
@@ -351,21 +393,26 @@ st_begin(layer, 12, stream);
 // it live at the end of the alpha/beta/gate line above, because the gate and the step are one sequence.
 // ---- 7. z, then y = rms_norm(o) * ssm_norm * sigmoid(z).  SIGMOID, not SiLU.
 // qkv's native quantize of `mixed` is still in the shared q8_1 scratch: nothing native ran in between.
-if (!gemv_quantized(*w_gate, p_gate, f_gate, b.x_q8_0, b.x_q8k, b.z, g.n_embd, g.ssm_value_dim, v.name("attn_gate.weight"), stream, err, mixed,
+if (!gemv_quantized(*w_gate, p_gate, f_gate, b.x_q8_0, b.x_q8k, b.z, g.n_embd, V, v.name("attn_gate.weight"), stream, err, mixed,
                     w_qkv->native_data != nullptr && w_gate->native_data != nullptr)) return false;
 try {
     if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, b.beta, b.z, ssm_norm, RMS_EPS, b.y,
-                                       (int) g.ssm_k_heads, (int) g.ssm_v_heads, stream);
-    else if (native_gdn_enabled()) native_gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
-    else gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
+                                       (int) HK, (int) HV, stream);
+    else if (native_gdn_enabled()) native_gdn_out_norm(b.o, b.z, ssm_norm, b.y, HV, g.ssm_state_size, RMS_EPS, stream);
+    else gdn_out_norm(b.o, b.z, ssm_norm, b.y, HV, g.ssm_state_size, RMS_EPS, stream);
 } catch (const std::exception& error) { err = v.name("gdn_out_norm") + ": " + error.what(); return false; }
 st_end(layer, 14, stream);
 // ---- 8. out = ssm_out @ y, whose activation is whatever THIS layer's `ssm_out` asks for
 st_begin(layer, 15, stream);
     if (!w_out->native_data) {
-        quantize_q8_K(b.y, b.y_q8k, g.ssm_value_dim, stream);
-        quantize_q8_0(b.y, b.y_q8_0, g.ssm_value_dim, stream);
-    }    if (!gemv_quantized(*w_out, p_out, f_out, b.y_q8_0, b.y_q8k, out, g.ssm_value_dim, g.n_embd,                        v.name("ssm_out.weight"), stream, err, b.y)) return false;    st_end(layer, 15, stream);    return true;}
+        quantize_q8_K(b.y, b.y_q8k, V, stream);
+        quantize_q8_0(b.y, b.y_q8_0, V, stream);
+    }    if (!gemv_quantized(*w_out, p_out, f_out, b.y_q8_0, b.y_q8k, out, V, g.n_embd,                        v.name("ssm_out.weight"), stream, err, b.y)) return false;
+    // TENSOR PARALLEL: `ssm_out` is cut on the contraction axis, so this rank formed a PARTIAL sum over its
+    // own columns of `y`.  Add the peers' partials before the next layer can use the result.  Null on a
+    // single-card run, where nothing is owed.
+    if (!strata::core::tp_owed_reduce(out, g.n_embd, stream, err)) return false;
+    st_end(layer, 15, stream);    return true;}
 // ================================ the MoE block ================================
 uint64_t moe_buffers_bytes(const ModelGeometry& g, int64_t k) {    const uint64_t parts[] = {        (uint64_t) g.n_embd * 2,
 // x_bf16
@@ -563,7 +610,7 @@ bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
 // ================================ the QSA mixer ================================
 namespace {using strata::kernels::QsaIndexerBuffers;using strata::kernels::QsaShapes;
-// `qsa_shapes(g)` (layout.hpp): the geometry the QSA kernels want, every field from the model's geometry
+// `qsa_shapes_rank(g)` (layout.hpp): the geometry the QSA kernels want, every field from the model's geometry
 uint64_t align_up16(uint64_t n) { return (n + 15) & ~15ull; }
 /// One cursor over an arena, so every region is 16-byte aligned without a list of hand-added offsets.
 struct Cursor {    uint8_t* p;    uint64_t used = 0;    template <typename T>    T* take(uint64_t count) {        T* r = (T*) (p + used);        used = align_up16(used + count * sizeof(T));        return r;    }    uint8_t* take_bytes(uint64_t n) {        uint8_t* r = p + used;        used = align_up16(used + n);        return r;    }};
@@ -756,7 +803,7 @@ int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
-    const QsaShapes s = qsa_shapes(g);
+    const QsaShapes s = qsa_shapes_rank(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     uint64_t n = 0;
     if (!(g_kv_elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
@@ -776,7 +823,7 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope, int64_t ring_cells) {
-    const QsaShapes s = qsa_shapes(g);
+    const QsaShapes s = qsa_shapes_rank(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
@@ -979,7 +1026,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
 }
 
 void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
-    const QsaShapes s = qsa_shapes(g);
+    const QsaShapes s = qsa_shapes_rank(g);
     dpct::queue_ptr cs = strata::q_of(stream);
     // an elastic state zeroes what is mapped (the rest is zeroed when it is mapped)
     const int64_t live_slots = st.kv_elastic >= 0 ? pool_slots_mapped(*g_pools[(size_t) st.kv_elastic]) : st.n_slots;
@@ -1032,23 +1079,23 @@ void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* i
                     int64_t cap, void* stream) {
     if (st.kv_mode != 1) return;
     strata::kernels::kv_stream_resolve(st.map, qsa_attn_pools(st), st.host, qsa_kv_format(st), ids, steps, n_q, cap,
-                                       qsa_shapes(g), stream);
+                                       qsa_shapes_rank(g), stream);
 }
 
-uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);    uint64_t n = 0;    n += (uint64_t) q8k_bytes(g.n_embd);    n += (uint64_t) (g.n_embd / 32) * 34;
+uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells) {    const QsaShapes s = qsa_shapes_rank(g);    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);    uint64_t n = 0;    n += (uint64_t) q8k_bytes(g.n_embd);    n += (uint64_t) (g.n_embd / 32) * 34;
 // block_q8_0
-n += (uint64_t) g.n_embd * 2;    n += (uint64_t) g.n_head * 2 * g.head_dim * 4;    n += (uint64_t) g.n_head * g.head_dim * 4;    n += (uint64_t) g.n_head_kv * g.head_dim * 4 * 2;    n += (uint64_t) g.idx_key_dim * 4;    n += (uint64_t) g.idx_q_heads * g.idx_key_dim * 4;    n += (uint64_t) max_cells * 4;    n += (uint64_t) cap * 4;    n += (uint64_t) cap * g.n_head_kv * g.head_dim * 2 * 2;    n += (uint64_t) g.n_head * g.head_dim * 4;
+n += (uint64_t) g.n_embd * 2;    n += (uint64_t) s.n_head * 2 * g.head_dim * 4;    n += (uint64_t) s.n_head * g.head_dim * 4;    n += (uint64_t) s.n_head_kv * g.head_dim * 4 * 2;    n += (uint64_t) g.idx_key_dim * 4;    n += (uint64_t) s.idx_n_head * g.idx_key_dim * 4;    n += (uint64_t) max_cells * 4;    n += (uint64_t) cap * 4;    n += (uint64_t) cap * s.n_head_kv * g.head_dim * 2 * 2;    n += (uint64_t) s.n_head * g.head_dim * 4;
 // attn
-n += (uint64_t) g.n_head * g.head_dim * 2;
+n += (uint64_t) s.n_head * g.head_dim * 2;
 // attn16
-n += (uint64_t) g.n_head * g.head_dim * 4;
+n += (uint64_t) s.n_head * g.head_dim * 4;
 // attn32
-n += (uint64_t) q8k_bytes(g.n_head * g.head_dim);
+n += (uint64_t) q8k_bytes(s.n_head * g.head_dim);
 // attn_q8k
 n += strata::kernels::qsa_decode_attn_scratch_floats(cap, s) * 4 + 16;
 // attn_scratch
 return align_up16(n) + 256;}
-uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);    Cursor c{(uint8_t*) base};    b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));    b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);    b.x_bf16 = c.take<uint16_t>((uint64_t) g.n_embd);    b.q_full = c.take<float>((uint64_t) g.n_head * 2 * g.head_dim);    b.qcur = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.kcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.vcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.idx_raw = c.take<float>((uint64_t) g.idx_key_dim);    b.q_idx = c.take<float>((uint64_t) g.idx_q_heads * g.idx_key_dim);    b.cell_scores = c.take<float>((uint64_t) max_cells);    b.ids = c.take<int32_t>((uint64_t) cap);    b.k_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.v_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.attn = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn16 = c.take<uint16_t>((uint64_t) g.n_head * g.head_dim);    b.attn32 = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn_q8k = c.take_bytes(q8k_bytes(g.n_head * g.head_dim));    b.attn_scratch = c.take<float>(strata::kernels::qsa_decode_attn_scratch_floats(cap, s));    return c.used;}
+uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {    const QsaShapes s = qsa_shapes_rank(g);    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);    Cursor c{(uint8_t*) base};    b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));    b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);    b.x_bf16 = c.take<uint16_t>((uint64_t) g.n_embd);    b.q_full = c.take<float>((uint64_t) s.n_head * 2 * g.head_dim);    b.qcur = c.take<float>((uint64_t) s.n_head * g.head_dim);    b.kcur = c.take<float>((uint64_t) s.n_head_kv * g.head_dim);    b.vcur = c.take<float>((uint64_t) s.n_head_kv * g.head_dim);    b.idx_raw = c.take<float>((uint64_t) g.idx_key_dim);    b.q_idx = c.take<float>((uint64_t) s.idx_n_head * g.idx_key_dim);    b.cell_scores = c.take<float>((uint64_t) max_cells);    b.ids = c.take<int32_t>((uint64_t) cap);    b.k_scratch = c.take<uint16_t>((uint64_t) cap * s.n_head_kv * g.head_dim);    b.v_scratch = c.take<uint16_t>((uint64_t) cap * s.n_head_kv * g.head_dim);    b.attn = c.take<float>((uint64_t) s.n_head * g.head_dim);    b.attn16 = c.take<uint16_t>((uint64_t) s.n_head * g.head_dim);    b.attn32 = c.take<float>((uint64_t) s.n_head * g.head_dim);    b.attn_q8k = c.take_bytes(q8k_bytes(s.n_head * g.head_dim));    b.attn_scratch = c.take<float>(strata::kernels::qsa_decode_attn_scratch_floats(cap, s));    return c.used;}
 // ================================ PER-STAGE TIMING, DEBUG ONLY ================================
 //
 // **THE ENGINE SPENDS 1.047 ms PER LAYER WITH THE EXPERTS OFF, AND EVERY COST MODEL IN `bench/` PREDICTS LESS
@@ -1178,7 +1225,7 @@ catch (sycl::exception const &exc) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes_rank(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
@@ -1210,7 +1257,7 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
 // local vector here would be captured as a dangling POINTER and replayed as garbage - see the note in
 // `layer.hpp`.  That is a silent failure, not a fault: the copy succeeds, the counts are wrong, and the
 // token that comes out is plausible.
-{        qsa_step_fill(st.host_step, pos, s);        for (int64_t h = 0; h < g.n_head; ++h) st.host_pos[h] = (int32_t) (pos_base + pos);
+{        qsa_step_fill(st.host_step, pos, s);        for (int64_t h = 0; h < s.n_head; ++h) st.host_pos[h] = (int32_t) (pos_base + pos);
         int32_t* m_step = nullptr;
         int32_t* m_pos = nullptr;
         if (g_publish_kernel &&
@@ -1218,7 +1265,7 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
                 0 &&
             DPCT_CHECK_ERROR(*(void **)&m_pos = (int32_t *)st.host_pos) == 0) {
             strata::kernels::copy_i32_from_mapped(st.step, m_step, strata::kernels::kStepCount, stream);
-            strata::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, g.n_head, stream);
+            strata::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, s.n_head, stream);
         } else
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -1226,7 +1273,7 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.step, st.host_step, qsa_step_bytes())) != 0 ||            DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.pos_dev, st.host_pos, (size_t) g.n_head * 4)) != 0) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
+        if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.step, st.host_step, qsa_step_bytes())) != 0 ||            DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.pos_dev, st.host_pos, (size_t) s.n_head * 4)) != 0) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
 // ---- 3. the indexer's RAW key: appended before any norm, pooled later once per block
 project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
 // ---- 4. K and V, in Q8_K, then norm and rotate K only
@@ -1234,7 +1281,7 @@ SForm f_k, f_v, f_o, f_q;    if (!sform_of(*w_attnk, f_k, v.name("attn_k.weight"
 // k and v, with the activation THIS layer's tensors ask for.  Both are K-quants in every QSA layer of this
 // artifact, but the dispatch is here for the same reason it is in `gdn_layer`: the pack decides per tensor,
 // and "it happens to be uniform here" is the assumption that was wrong for `attn_q`.
-if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
+if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, s.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, s.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) s.n_head * g.head_dim,                            (uint64_t) s.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) s.n_head_kv, (int) g.head_dim)) return false;
 // ---- 5. into the cache, and the indexer's append (which pools AND rotates on a block completion).
 // EVERY ENTRY POINT FROM HERE ON IS THE CAPTURABLE ONE: the per-token counts come from `st.step` and every
 // launch is sized from a capacity in `st`/`b`, so this sequence can be captured and replayed.  The
@@ -1244,7 +1291,7 @@ if (st.kv_hybrid) {
     // output - a mix of rotated values - is rotated back after attention. Each append/gather call folds the
     // unused half's lanes onto the used pool (a bit-identical duplicate write), so no kernel variants exist.
     // Streamed (--kv-resident), each half also writes its part of the host copy (kv_hybrid_*_half).
-    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+    strata::kernels::fwht256_inplace_cuda(b.vcur, s.n_head_kv, stream);
     const strata::kernels::KvHostPools hk = strata::kernels::kv_hybrid_k_half(st.host),
                                        hv = strata::kernels::kv_hybrid_v_half(st.host);
     const bool mirror = st.host.present();
@@ -1254,12 +1301,12 @@ if (st.kv_hybrid) {
                                        mirror ? &hv : nullptr);
 } else {
 if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
-    strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
-    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+    strata::kernels::fwht256_inplace_cuda(b.kcur, s.n_head_kv, stream);
+    strata::kernels::fwht256_inplace_cuda(b.vcur, s.n_head_kv, stream);
 }
 if (st.kv_q4) {
     strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
-} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
+} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) s.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) s.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
             (const float*) w_ikn->data, RMS_EPS, ib, s, st.max_cells, rope_scaling(), stream);
@@ -1272,7 +1319,7 @@ if (st.kv_q4) {
 // four, and this line used to call `s2_gemv_q8` unconditionally - so TEN of the twelve layers decoded an
 // S4 code plane with a Q8_0 activation.  Both are "a quantized activation", both produce a plausible
 // vector, and the difference is 0.6-1.4%.
-if (!gemv_quantized(*w_attnq, p_q, f_q, b.x_q8_0, b.x_q8k, b.q_full, g.n_embd, g.n_head * 2 * g.head_dim,                        v.name("attn_q.weight"), stream, err, x, w_attnv->native_data && w_attnq->native_data)) return false;
+if (!gemv_quantized(*w_attnq, p_q, f_q, b.x_q8_0, b.x_q8k, b.q_full, g.n_embd, s.n_head * 2 * g.head_dim,                        v.name("attn_q.weight"), stream, err, x, w_attnv->native_data && w_attnq->native_data)) return false;
 // `per_head[:, :head_dim]` - the FIRST half of each head's 2*head_dim block, copied out contiguously so
 // the norm and the rotation see whole rows.  A 2-D copy is a memcpy node, which captures (`pinned_capture`
 // case A) and needs no kernel.
@@ -1284,10 +1331,10 @@ synchronization behavior.
 */
 if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
         b.qcur, (size_t)g.head_dim * 4, b.q_full, (size_t)g.head_dim * 2 * 4,
-        (size_t)g.head_dim * 4, (size_t)g.n_head, dpct::device_to_device,
+        (size_t)g.head_dim * 4, (size_t)s.n_head, dpct::device_to_device,
         *strata::q_of(stream))) != 0) {
     err = "qsa_layer: the q/gate split failed"; return false;
-} if (!normalize_rotate(b.qcur, w_qn, (int)g.n_head,
+} if (!normalize_rotate(b.qcur, w_qn, (int)s.n_head,
                         (int)g.head_dim)) return false;
 // ---- 7. the indexer's query: BF16, then norm and rotate
 project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim, false, stream);
@@ -1305,7 +1352,7 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     }
     // KV streaming: every block the selection names is made resident before anything reads it
     qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
-    if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(b.qcur, g.n_head, stream);   // <Hq, Hk> = <q, k>
+    if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(b.qcur, s.n_head, stream);   // <Hq, Hk> = <q, k>
     if (g_fast_attn && !native_flash_attn_short && dump == nullptr) {
         const strata::kernels::QsaAttnPools pools = qsa_attn_pools(st);
         strata::kernels::qsa_decode_attn_step(b.qcur, pools, b.ids, st.step, cap, s, b.attn_scratch, b.attn, stream);
@@ -1339,22 +1386,38 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     }
 } else qsa_attend_step(b.qcur, b.k_scratch, b.v_scratch, st.step, cap, s, b.attn, nullptr, stream);
     }
-    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
-    dump_slot(dump, g, layer, b.attn, (uint64_t) 2 * g.n_embd + 2 * g.hc,                            (uint64_t) g.n_head * g.head_dim, stream);    {        const uint64_t vs = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim +                            (uint64_t) 2 * g.n_head_kv * g.head_dim;        dump_slot(dump, g, layer, (const float*) b.v_scratch, vs,                            (uint64_t) g.n_head_kv * g.head_dim / 2, stream);        dump_slot(dump, g, layer, (const float*) b.ids, vs + (uint64_t) g.n_head_kv * g.head_dim / 2, 4, stream);        dump_slot(dump, g, layer, (const float*) st.step,                            vs + (uint64_t) g.n_head_kv * g.head_dim / 2 + 4, 4, stream);    }
+    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, s.n_head, stream);   // the output back: H is self-inverse
+    dump_slot(dump, g, layer, b.attn, (uint64_t) 2 * g.n_embd + 2 * g.hc,                            (uint64_t) s.n_head * g.head_dim, stream);    {        const uint64_t vs = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) s.n_head * g.head_dim +                            (uint64_t) 2 * s.n_head_kv * g.head_dim;        dump_slot(dump, g, layer, (const float*) b.v_scratch, vs,                            (uint64_t) s.n_head_kv * g.head_dim / 2, stream);        dump_slot(dump, g, layer, (const float*) b.ids, vs + (uint64_t) s.n_head_kv * g.head_dim / 2, 4, stream);        dump_slot(dump, g, layer, (const float*) st.step,                            vs + (uint64_t) s.n_head_kv * g.head_dim / 2 + 4, 4, stream);    }
 // ---- 9. Gate the attention output before its projection. Native CUDA keeps F32
 // sigmoid/multiply arithmetic and uses Q8_1 for the native quantized projection.
 // The canonical fallback retains its prior FP64 gate and Q8_K projection.
 try {
-    if (native_qsa_enabled()) native_qsa_gate_apply(b.attn, b.q_full, b.attn32, (int) g.n_head, (int) g.head_dim, stream);
+    if (native_qsa_enabled()) native_qsa_gate_apply(b.attn, b.q_full, b.attn32, (int) s.n_head, (int) g.head_dim, stream);
     else qsa_gate_apply_f32(b.attn, b.q_full, s, b.attn32, stream);
 } catch (const std::exception& error) { err = v.name("qsa_gate") + ": " + error.what(); return false; }
-    if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);    if (w_attno->native_data) {
-    if (!gemv_quantized(*w_attno, p_o, f_o, nullptr, b.attn_q8k, out,
-        g.n_head * g.head_dim, g.n_embd, v.name("attn_output.weight"), stream, err, b.attn32)) return false;
+    // TENSOR PARALLEL: the same contraction split as `ssm_out`, on the attention output projection.  Both
+    // activation forms below take this rank's width and offsets; a site that updated one and not the other
+    // would read the wrong half of the activation.
+    int64_t ao_at = 0, ao_n = s.n_head * g.head_dim;
+    if (!v.k_slice("attn_output.weight", s.n_head * g.head_dim, ao_at, ao_n)) {
+        err = v.name("attn_output.weight") + ": a tensor-parallel split of the contraction axis is not one range";
+        return false;
+    }
+    strata::core::KActivation aokoff;
+    if (!strata::core::k_activation_slice(ao_at, (int64_t) q8k_bytes(256), aokoff, err)) {
+        err = v.name("attn_output.weight") + ": " + err;
+        return false;
+    }
+    if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, s.n_head * g.head_dim, stream);    if (w_attno->native_data) {
+    if (!gemv_quantized(*w_attno, p_o, f_o, nullptr, b.attn_q8k + aokoff.q8k, out,
+        ao_n, g.n_embd, v.name("attn_output.weight"), stream, err, b.attn32 + aokoff.scalars)) return false;
 } else {
-    s_gemv_q8k_split(b.attn_q8k, p_o.codes, p_o.scales, p_o.offset, out,
-                    g.n_head * g.head_dim, g.n_embd, f_o, stream);
-}    return true;}
+    s_gemv_q8k_split(b.attn_q8k + aokoff.q8k, p_o.codes, p_o.scales, p_o.offset, out,
+                    ao_n, g.n_embd, f_o, stream);
+}
+    // the owed all-reduce: this rank has its share of the contraction axis
+    if (!strata::core::tp_owed_reduce(out, g.n_embd, stream, err)) return false;
+    return true;}
 // ================================ THE DOORBELL ================================
 namespace {}
 // namespace

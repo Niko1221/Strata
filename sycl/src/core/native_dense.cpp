@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include "strata/core/weights.hpp"
 #include "strata/artifact/gguf_reader.hpp"
+#include "strata/core/native_shard.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/platform/memory.hpp"
 
@@ -222,7 +223,7 @@ NativeDense::~NativeDense() {
 bool NativeDense::load(const std::vector<std::string> &shards,
                        WeightTable &table, std::string &err,
                        bool include_ple_key, int64_t layer_lo,
-                       int64_t layer_hi) try {
+                       int64_t layer_hi, const ShardPlan *shard) try {
     auto outside = [&](const std::string& name) {   // a blk.<l>. tensor of another stage's layers
         if (layer_hi < 0 || name.rfind("blk.", 0) != 0) return false;
         const long l = std::strtol(name.c_str() + 4, nullptr, 10);
@@ -314,22 +315,66 @@ bool NativeDense::load(const std::vector<std::string> &shards,
                 if (!strata::kernels::native_mmvq_supported(tensor.type)) continue;
                 // #326: the pack keeps an unquantized (--compat-bf16) key, which the PLE reads from the arena
                 if (tensor.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
-                if (!ref.quantized() || tensor.shape.size() != 2 ||
-                    ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
-                    tensor.shape[0] != (uint64_t) ref.ne0 || tensor.shape[1] != (uint64_t) ref.ne1) {
-                    err = "native dense: incompatible matrix " + tensor.name; return false;
+                // Which rows of the GGUF matrix this rank keeps.  `ref.ne1` is the SHARDED extent the canonical
+                // loader recorded (a tensor-parallel load cuts the output axis), so the checks below compare
+                // the GGUF's own width against the RANGES rather than against `ref.ne1`.
+                const TensorShard* ts = nullptr;
+                if (shard != nullptr) {
+                    const auto sit = shard->find(tensor.name);
+                    if (sit != shard->end()) ts = &sit->second;
                 }
+                // THE KEPT BYTES, AS A LIST OF RUNS.  A run is (source offset, length) inside the GGUF matrix,
+                // and the destination is the runs packed in this order - which for a quantized tensor is
+                // exactly the engine form: whole rows for an output split, and for a contraction split every
+                // row keeps the same block range.
+                const uint64_t full_bytes = strata::kernels::native_mmvq_weight_bytes(
+                    tensor.type, (int) tensor.shape[0], (int) tensor.shape[1]);
+                int block_elements = 0, block_bytes = 0;
+                (void) strata::block_geometry(tensor.type, block_elements, block_bytes);
+                std::vector<ShardRun> runs;
+                if (!strata::core::shard_runs(tensor.shape[0], tensor.shape.size() > 1 ? tensor.shape[1] : 1,
+                                              full_bytes, block_elements, block_bytes, ts, runs, err)) {
+                    err = "native dense: " + tensor.name + ": " + err;
+                    return false;
+                }
+                const uint64_t runs_bytes = strata::core::shard_runs_bytes(runs);
                 const auto bytes = strata::kernels::native_mmvq_weight_bytes(
                     tensor.type, (int) ref.ne0, (int) ref.ne1);
+                if (!ref.quantized() || tensor.shape.size() != 2 ||
+                    ref.ne0 <= 0 || ref.ne0 > INT_MAX || ref.ne1 <= 0 || ref.ne1 > INT_MAX ||
+                    (ts == nullptr && tensor.shape[0] != (uint64_t) ref.ne0) ||
+                    (ts == nullptr && tensor.shape[1] != (uint64_t) ref.ne1) ||
+                    (ts != nullptr && ts->axis == ShardAxis::Output && ts->kept() != ref.ne1) ||
+                    (ts != nullptr && ts->axis == ShardAxis::Input && ts->kept() != ref.ne0) ||
+                    runs_bytes != bytes) {
+                    char buf[320];
+                    std::snprintf(buf, sizeof buf,
+                                  "native dense: incompatible matrix %s (gguf %llux%llu, shard %lldx%lld, "
+                                  "%llu B of runs against %llu B of engine form)",
+                                  tensor.name.c_str(), (unsigned long long) tensor.shape[0],
+                                  (unsigned long long) tensor.shape[1], (long long) ref.ne0, (long long) ref.ne1,
+                                  (unsigned long long) runs_bytes, (unsigned long long) bytes);
+                    err = buf;
+                    return false;
+                }
+                const uint8_t* src = (const uint8_t*) gguf.tensor_data(tensor);
                 void* allocation = nullptr;
                 auto status =
                     DPCT_CHECK_ERROR(allocation = dense_alloc(bytes));
                 DevicePtr data(allocation);
-                if (status == 0)
+                uint64_t at = 0;
+                uint8_t* dst = (uint8_t*) data.get();
+                for (const ShardRun& run : runs) {
+                    if (status != 0) break;
                     status = DPCT_CHECK_ERROR(
-                        dpct::get_in_order_queue()
-                            .memcpy(data.get(), gguf.tensor_data(tensor), bytes)
-                            .wait());
+                        dpct::get_in_order_queue().memcpy(dst + at, src + run.src, run.len).wait());
+                    at += run.len;
+                }
+                if (status == 0 && at != bytes) {
+                    err = "native dense upload " + tensor.name + ": the runs cover " + std::to_string(at) +
+                          " B of " + std::to_string(bytes);
+                    return false;
+                }
                 /*
                 DPCT1000: Error handling if-stmt was detected but could not
                 be rewritten.
