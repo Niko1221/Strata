@@ -12,6 +12,8 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -25,6 +27,7 @@ from strata_cli.client import Endpoint
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
 # Every reply is the bytes of "ok, done." then <|im_end|> (ByteTokenizer: 257).
 FAKE_BATCH = r'''import queue, sys, threading, time
+from pathlib import Path
 args = sys.argv[1:]
 slots = int(args[args.index("--batch") + 1]) if "--batch" in args else 0
 fit = int(args[args.index("--fit") + 1]) if "--fit" in args else slots
@@ -148,6 +151,12 @@ while True:
             if (q // CH) % PPK:   # --pp-every K: a PP line and a boundary every K chunks (the pipelined groups' pieces)
                 continue
             print(f"PP {q} {len(ids)} 1 1", flush=True)
+            if q == CH and b"METRICSHOLD" in pb and "--prefill-gate" in args:
+                gate = Path(args[args.index("--prefill-gate") + 1])
+                while not gate.exists():
+                    time.sleep(STEP)
+                    if active:
+                        window()
             held = []
             while True:
                 try:
@@ -497,11 +506,20 @@ class PickSlot(unittest.TestCase):
         self.assertEqual(v[1], {"slot": 1, "state": "idle", "held_tokens": 2})
 
 
+def wait_until(cond, timeout=10.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return False
+
+
 class FakeEngineCase(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
     def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0,
-              more=(), stage_plan=False, batch_sample=False, stage_sample=False):
+              more=(), stage_plan=False, batch_sample=False, stage_sample=False, prefill_gate=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
@@ -517,6 +535,9 @@ class FakeEngineCase(unittest.TestCase):
         extra += ["--fake-batch-sample"] if batch_sample else []
         extra += ["--fake-stage-sample"] if stage_sample else []
         extra += list(more)
+        self.prefill_gate = Path(self.tmp.name) / "prefill.done"
+        if prefill_gate:
+            extra += ["--prefill-gate", str(self.prefill_gate)]
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
             self.engine = StrataEngine("strata", extra, log=str(Path(self.tmp.name) / "engine.log") if stage_plan else None)
@@ -683,6 +704,57 @@ class BatchLegAccounting(FakeEngineCase):
 class ParallelService(FakeEngineCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them: slots, queues, benchmarks, telemetry.
     The yielding, restart and failure tests are in serve/test_parallel_yield.py (this file alone ran past 100 s)."""
+
+    def test_monitor_waiter_does_not_clear_or_borrow_the_readers_progress(self):
+        self.start(2, prefill_gate=True)
+        self.engine.YIELDS_MAX = 0
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            reader = pool.submit(self.chat, "METRICSHOLD " + "x" * 500)
+            self.assertTrue(wait_until(lambda: self.engine.progress, 5))
+            before = self.engine.progress
+            waiter = pool.submit(self.chat, "waiting request")
+            self.assertTrue(wait_until(lambda: self.engine.waiting, 5))
+            self.assertEqual(self.engine.progress, before, "a control-line waiter cleared the active reader's PP")
+            live = self.get("/metrics")["live"]
+            with self.svc.status_lock:
+                reading_id = next(r["id"] for r in self.svc.terminal_requests.values() if r["state"] == "reading")
+            self.assertEqual(live["request_id"], reading_id)
+            self.assertEqual((live["prompt_read"], live["prompt_total"]), before)
+            self.assertEqual(live["prompt_tokens"], before[1])
+            self.prefill_gate.touch()
+            reader.result(timeout=10)
+            waiter.result(timeout=10)
+
+    def test_monitor_mixed_prefill_and_decode_keeps_aggregate_and_request_rates_separate(self):
+        self.start(2, prefill_gate=True)
+        self.engine.YIELDS_MAX = 0
+        self.engine.SOLO_AGAIN_MAX = 0
+        with ThreadPoolExecutor(max_workers=2) as pool, ExitStack() as cleanup:
+            cleanup.callback(self.prefill_gate.touch)
+            decoder = pool.submit(self.chat, "LONGREPLY first")
+            self.assertTrue(wait_until(lambda: self.svc._tok_s() > 0, 5))
+            reader = pool.submit(self.chat, "METRICSHOLD LONGREPLY " + "x" * 1100)
+            self.assertTrue(wait_until(lambda: any(
+                s["state"] == "reading" and s.get("prompt_read") for s in self.engine.slots_view()) and any(
+                s["state"] == "decoding" and s.get("generated", 0) > 1 for s in self.engine.slots_view()), 5))
+            mixed = self.get("/metrics")["live"]
+            self.assertEqual(mixed["state"], "reading")
+            self.assertIsNotNone(mixed["tok_s"], "decoding did not stop while another request read its prompt")
+            self.assertGreater(mixed["tok_s"], 0)
+            self.assertIsNone(mixed["request_tok_s"])
+            reading = next(s for s in mixed["slots"] if s["state"] == "reading")
+            self.assertEqual(mixed["request_id"], reading["request_id"])
+            self.assertEqual(mixed["prompt_total"], reading["prompt_tokens"])
+            self.prefill_gate.touch()
+            self.assertTrue(wait_until(lambda: all(
+                s["state"] == "decoding" and s.get("generated", 0) > 2 for s in self.engine.slots_view()), 5))
+            decoding = self.get("/metrics")["live"]
+            self.assertGreater(decoding["request_tok_s"], 0)
+            self.assertGreater(decoding["tok_s"], decoding["request_tok_s"])
+            self.assertIn(decoding["request_id"], [s["request_id"] for s in decoding["slots"]])
+            decoder.result(timeout=10)
+            reader.result(timeout=10)
 
     def test_bgen_refused_by_the_engine_is_retried_not_a_400(self):
         """#1994: the engine refuses a BGEN ("no such free slot") although the server saw the slot free: the request
