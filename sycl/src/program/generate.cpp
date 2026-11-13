@@ -9109,7 +9109,7 @@ int main(int argc, char **argv) try {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s token_mask=1 engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s token_mask=2 engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -12040,23 +12040,16 @@ int main(int argc, char **argv) try {
                 for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                 return true;
             };
+            // serve/constrain.py: the server's token mask (token_mask.hpp); MF = free, MK = one row, MKN = rows.
+            // The mask exchange now lives after the window's candidate and its drafts (plan 3-1, the CUDA side's
+            // shape): the drafts ride along on the MQ line and the server's row count shrinks the window
+            // (INFO token_mask=2).  The state persists across windows: an MF line's cut list also ends the NEXT
+            // window's drafts (plan 1-4).
+            bool gm_on = false;
+            std::vector<uint32_t> gm_words;
+            std::vector<int32_t> gm_cut;
+            int gm_rows = 0;
             while (!pl_ran && !cancelled && produced_n < max_new) {
-                // serve/constrain.py: the server's token mask for this window (token_mask.hpp); MF = free, MK = masked
-                bool gm_on = false;
-                std::vector<uint32_t> gm_words;
-                std::vector<int32_t> gm_cut;
-                if (req_mask) {
-                    std::printf("MQ\n");
-                    std::fflush(stdout);
-                    std::string gm_line, gm_err;
-                    if (!next_line(gm_line)) { finish = "cancel"; break; }   // the server closed stdin
-                    if (!strata::core::mask_parse_reply(gm_line, gm_on, gm_words, gm_cut, gm_err)) {
-                        std::fprintf(stderr, "strata serve: %s; the request ends\n", gm_err.c_str());
-                        finish = "cancel";
-                        break;
-                    }
-                    if (stop_req.load()) { finish = "cancel"; break; }
-                }
                 bool dfr_lookup = false;
                 int dfr_T = 0, dfr_match = 0;
                 if (df2_deferred) {   // the draft skipped for a long lookup match: the lookup if the policy takes it, else the draft now (same taps and rows)
@@ -12082,13 +12075,12 @@ int main(int argc, char **argv) try {
                     wr.draft_conf = o.draft_conf; wr.dprob = dprob.data();
                     T = strata::spec::choose_window(wr);
                 }
-                if (gm_on) T = 1;   // a masked window is one row (token_mask.hpp): the mask exchange's reply governs
                 if (first_window) T = 1;
                 // a repeat of earlier context (prompt lookup) where the MTP's own first guess agrees: the policy takes it
                 // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
                 bool from_sfx = false;
                 int sfx_match = 0;
-                if (!gm_on && o.suffix_draft > 0 && !first_window) {
+                if (o.suffix_draft > 0 && !first_window) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
                     if (k > 0 && (!draft_on || sbuf[0] == drafts[0])) {
@@ -12096,13 +12088,13 @@ int main(int argc, char **argv) try {
                         if (pk.lookup) { T = pk.t; from_sfx = true; }
                     }
                 }
-                if (dfr_lookup && !gm_on) {   // the lookup window chosen before the draft (the draft was skipped); never under the mask: a masked window is one row (token_mask.hpp)
+                if (dfr_lookup) {   // the lookup window chosen before the draft (the draft was skipped); the server's row count caps it below (plan 3-1)
                     sfx.propose(S - 1, sbuf.data());
                     T = dfr_T; from_sfx = true; sfx_match = dfr_match;
                 }
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
-                if (!gm_on && o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
+                if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
                     int csrc = -1;
                     const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
                     chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
@@ -12117,12 +12109,49 @@ int main(int argc, char **argv) try {
                 }
                 const int T_mtp = T;
                 T += chain_n;
-                const bool timed_round = !first_window;
-                const Clock::time_point round0 = Clock::now();
-                if (p + T > o.max_context) break;
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i) window[(size_t) i] = from_sfx ? sbuf[(size_t) i - 1] : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                // 1-4: a draft at a cut id (the end of the thinking, a tool call) ends the candidate there - the row
+                // holding the cut id can still be adopted, nothing past it (12: a think_end inside the window never
+                // lets the rows behind it run unconstrained)
+                if (!gm_cut.empty()) {
+                    for (int i = 1; i < T; ++i) {
+                        bool hit_cut = false;
+                        for (const int32_t c : gm_cut) hit_cut = hit_cut || window[(size_t) i] == c;
+                        if (!hit_cut) continue;
+                        if (i < T_mtp) chain_n = 0;
+                        else chain_n = i - T_mtp + 1;
+                        T = i + 1;
+                        break;
+                    }
+                }
+                // 3-1: the mask exchange now runs with this window's drafts on the MQ line (the CUDA side's shape):
+                // the server looks them through the grammar and answers one mask row per draft it accepts (MK: one
+                // row, MKN: n rows); the row count is the grammar's own cap on the window (INFO token_mask=2).
+                // STOP/cancel keeps its old check position.
+                gm_on = false;
+                gm_words.clear();
+                gm_cut.clear();
+                gm_rows = 0;
+                if (req_mask) {
+                    std::printf("MQ");
+                    for (int i = 1; i < T; ++i) std::printf(" %d", (int) window[(size_t) i]);   // T == 1: a bare MQ
+                    std::printf("\n");
+                    std::fflush(stdout);
+                    std::string gm_line, gm_err;
+                    if (!next_line(gm_line)) { finish = "cancel"; break; }   // the server closed stdin
+                    if (!strata::core::mask_parse_reply_rows(gm_line, gm_on, gm_rows, gm_words, gm_cut, gm_err)) {
+                        std::fprintf(stderr, "strata serve: %s; the request ends\n", gm_err.c_str());
+                        finish = "cancel";
+                        break;
+                    }
+                    if (stop_req.load()) { finish = "cancel"; break; }
+                    if (gm_on && T > gm_rows) T = gm_rows;   // 3-1/5: T = min(T_cand, rows)
+                }
+                const bool timed_round = !first_window;
+                const Clock::time_point round0 = Clock::now();
+                if (p + T > o.max_context) break;
                 drive.d.layers = 0;
                 drive.d.experts = 0;
                 drive.d.failed = false;
@@ -12158,7 +12187,9 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 tr("window", p, T);
-                ver.set_token_mask(gm_on ? gm_words.data() : nullptr, gm_on ? (int64_t) gm_words.size() : 0);
+                const int64_t gm_n_words = gm_on && gm_rows > 0 ? (int64_t) gm_words.size() / gm_rows : 0;
+                ver.set_token_mask(gm_on ? gm_words.data() : nullptr, gm_on ? gm_n_words : 0,
+                                   gm_on ? gm_rows : 1);
                 const Clock::time_point tw0 = Clock::now();
                 if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());

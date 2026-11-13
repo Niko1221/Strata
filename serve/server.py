@@ -1647,10 +1647,13 @@ class StrataEngine:
 
     @property
     def supports_mask(self) -> bool:
-        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py); not with batch slots.
+        """The engine takes a token mask per window (INFO token_mask=1, serve/constrain.py). With batch slots a
+        masked request runs on the solo path only (generate_batched sends the mask on GEN, never on BGEN;
+        notes/pr3800-batch-spec.md). DeepSeek --parallel (multi) is out of that spec: its own request-id line
+        protocol answers no MQ there, so it stays off.
         token_mask=2 also means it can mask a whole MTP window (MQ with drafts -> MKN); the server answers both."""
         return str((getattr(self, "info", None) or {}).get("token_mask", 0)) in ("1", "2") \
-            and not getattr(self, "batch", 0)
+            and not getattr(self, "multi", 0)
     def _mask_reply(self, c, line="MQ"):
         # "MQ d1 d2 ..." (token_mask=2): the drafts become the multi-row lookahead (serve/constrain.py 1-2);
         # a bare "MQ" is answered as before, so an older engine never sees MKN.
@@ -1823,11 +1826,13 @@ class StrataEngine:
                     self.slot_cv.notify_all()
         threading.Thread(target=run, daemon=True).start()
 
-    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False, lines_q=None):
+    def _control(self, cancel, on_token, stop_when=None, on_quiet=None, want_lp=False, lines_q=None, mask_answer=None):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
         true sends STOP once (the request is then read to its DONE).  `on_quiet()` runs whenever the engine has been
         quiet for half a second: between two PP lines of a read whose chunks take longer than that.
+        `mask_answer(line)` answers an `MQ` line (the masked solo leg of generate_batched answers its masks here:
+        the engine waits on stdin for it, notes/pr3800-batch-spec.md 4-3); without it an MQ line is read past as before.
 
         `want_lp`: a batch admission's token is the only one this reader ever sees with an `LP` line after it (a
         slot's `BT` lines carry none), so a request asking for logprobs there is a `max_tokens` 1 one: read the
@@ -1863,6 +1868,9 @@ class StrataEngine:
                 raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
             if not line.startswith(("PP ", "INFO")):
                 btrace("ctl<", self._ctl_mode, line.strip()[:60])
+            if mask_answer is not None and isinstance(line, str) and line.startswith("MQ"):   # masked solo leg: the
+                mask_answer(line)                                     # mask for its next window (the engine waits on stdin)
+                continue
             if line.startswith("T "):
                 t = int(line[2:])
                 if want_lp:
@@ -1920,7 +1928,8 @@ class StrataEngine:
         f = (getattr(self, "_last_done", None) or "").split()
         return f[5] if len(f) > 5 else None
 
-    def _drain_control(self, until: str, timeout: float | None = None, born: int | None = None, lines_q=None):
+    def _drain_control(self, until: str, timeout: float | None = None, born: int | None = None, lines_q=None,
+                       mask_answer=None):
         """After a consumer left early: read the control lines up to the next `until` line (DONE or BADM) so the next
         request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered).
         `born`: the engine process (self.gen) the request started on; once that one is gone there is nothing to
@@ -1928,7 +1937,9 @@ class StrataEngine:
         a request that had failed for the whole 300 s (#1012), or read the lines of the engine that replaced it.
         `timeout` (DRAIN_TIMEOUT_S) is a NO-PROGRESS limit: it counts from the last line the engine wrote, so an engine that
         is still talking (PP / T lines of a read or a decode it was told to stop but has not yet) is never given up on;
-        only one that says nothing for that long is."""
+        only one that says nothing for that long is.
+        `mask_answer(line)` answers an `MQ` a stopped masked leg still waits on (MF: nothing more is wanted); without
+        it the engine waits on stdin and the drain runs to its timeout (notes/pr3800-batch-spec.md 3-3)."""
         wait_s = self.DRAIN_TIMEOUT_S if timeout is None else timeout
         end = time.monotonic() + wait_s
         lines_q = self.lines if lines_q is None else lines_q
@@ -1942,6 +1953,9 @@ class StrataEngine:
             if line is None:
                 return None
             end = time.monotonic() + wait_s                  # any line is progress
+            if mask_answer is not None and isinstance(line, str) and line.startswith("MQ"):
+                mask_answer(line)                            # the stopped leg still waits for its mask: answer MF
+                continue
             if line.startswith("DONE"):
                 self._parse_done(line)
             if line.startswith(until) or line.startswith("ERR"):
@@ -2264,6 +2278,10 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(sampling or {})
+        c = (sampling or {}).get(constrain.KEY) if self.supports_mask and not embeddings else None
+        # a masked request runs on the solo path only (notes/pr3800-batch-spec.md 4-2): a mask is never sent on a
+        # BGEN - the engine parses the mask key for BGEN too and would wait on stdin for the MQ answer the batch
+        # admission read never gives, so engine and server would wait on each other (spec 3-1).
         # logprobs: only an admission's token can have an LP line here (the slot's "BT" lines carry none), so the
         # server refuses these requests unless max_tokens is 1.  The lines go to the request itself, through its
         # cancel Event: several requests read control lines at once, and the engine's lp_lines is one attribute.
@@ -2288,7 +2306,9 @@ class StrataEngine:
         btrace("ctl acquired")
         slot, gen0, reserved = None, None, None
         pre = getattr(cancel, "_strata_preslot", None)
-        if pre is not None:                             # STRATA_COALESCE_PREFILL: a request before this one read the prompt into this slot
+        if pre is not None and c is not None:             # a masked request never decodes in a slot: hand the slot a
+            self._release_preslot(cancel)                 # coalesced read put it in back (STRATA_COALESCE_PREFILL)
+        elif pre is not None:                             # STRATA_COALESCE_PREFILL: a request before this one read the prompt into this slot
             slot, cancel._strata_preslot = pre, None
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
         stop_sent = False
@@ -2305,9 +2325,11 @@ class StrataEngine:
                     lines_q, sq = self.lines, self.slot_q           # (it holds no slot of the engine before: nothing to lose)
                 with self.slot_cv:
                     alone = not any(self.slot_busy) and self.waiting == 0
-                if alone and left > 1:
+                if alone and (left > 1 or c is not None):
                     pf = self.pen_from_key(orig_len, len(prompt))
                     head = f"GENI {left}{keys}{pf} {embeddings}" if embeddings else f"GEN {left}{keys}{pf}"
+                    if c is not None:
+                        head += " mask=1"                   # the engine asks MQ before every window (as generate() does)
                     self._last_done = None                  # (#879: this request's DONE decides below)
                     deadline = getattr(cancel, "_strata_queue_deadline", None)
                     if deadline is not None and time.monotonic() >= deadline:
@@ -2322,11 +2344,15 @@ class StrataEngine:
                     self._ctl_mode, self._ctl_result, self._yielded = "solo", None, None
                     self._ctl_erred = False
                     def others():
+                        if c is not None:
+                            return False                # masked: no STOP mid-leg, the leg is never handed to a slot
                         with self.slot_cv:
                             return self.waiting > 0
 
                     def give_way():   # at a PP line, and between two far apart (the engine takes it at its next boundary)
                         nonlocal reserved
+                        if c is not None:
+                            return                      # masked: no BYIELD, no reserved slot (spec 4-2)
                         if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
                                 self._shorter_waiting(len(prompt))):
                             with self.slot_cv:          # the slot the part read will wait in
@@ -2336,8 +2362,14 @@ class StrataEngine:
                                     self.slot_claims.add(reserved)
                             if reserved is not None:
                                 self._send_for(born, f"BYIELD {reserved}")
-                    for x in self._control(cancel, pending.append, stop_when=others, on_quiet=give_way,
-                                           want_lp=want_lp, lines_q=lines_q):
+
+                    def on_tok(t):
+                        if c is not None:
+                            c.feed(t)                   # the grammar advances with every accepted token (as generate() does)
+                        pending.append(t)
+                    for x in self._control(cancel, pending.append if c is None else on_tok, stop_when=others,
+                                           on_quiet=give_way, want_lp=want_lp, lines_q=lines_q,
+                                           mask_answer=(lambda ln: self._mask_reply(c, ln)) if c is not None else None):
                         while pending:
                             t = pending.pop(0)
                             out.append(t)
@@ -2366,11 +2398,30 @@ class StrataEngine:
                         left = int(max_new) - len(out)
                         if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
                             return
+                        if c is not None:
+                            return                    # masked: it never continues in a slot (spec 4-2); an unfinished
+                                                      # answer fails the caller's validation as before (502)
                         if reused0 is None:
                             reused0 = (self.last or {}).get("reused")
                         carry_leg(carry, self.last)         # #1869: the solo leg's figures; the slot's admission (a copy of
                                                             # the held prefix: prompt_read 1) and BDONE replace them
                         prompt = list(ids) + out            # promoted: it continues in a batch slot from here
+                if c is not None:
+                    # masked and not alone: the batch windows never answer an MQ (the engine waits on stdin, the
+                    # slot read answers nothing), so this request waits for the engine to be empty again and runs
+                    # on the solo path above (notes/pr3800-batch-spec.md 3-2).  The control lines go back to the
+                    # others while it waits (holding them here would stop the very requests it waits for).
+                    if holding:
+                        self.ctl.release()
+                        holding = False
+                    deadline = getattr(cancel, "_strata_queue_deadline", None)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+                    if cancel.is_set():
+                        return
+                    with self.slot_cv:
+                        self.slot_cv.wait(timeout=1.0)
+                    continue
                 while True:
                     if slot is None:
                         # a free slot (they free themselves at BDONE, which needs no control lines): the one that holds
@@ -2441,6 +2492,9 @@ class StrataEngine:
                     while not sq[slot].empty():
                         sq[slot].get_nowait()
                     pf = self.pen_from_key(orig_len, len(prompt))
+                    # never a mask key on this line: a masked request never reaches the admission (it waits for the
+                    # solo path above); the engine's shared GEN/BGEN parser would read a mask here and wait on stdin
+                    # for an MQ answer this batch read does not give (notes/pr3800-batch-spec.md 3-1)
                     head = f"BGENI {slot} {left}{keys}{pf} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}{pf}"
                     live = {"slot": slot, "request_id": getattr(cancel, "_strata_request_id", None),
                             "state": "reading", "prompt_tokens": len(prompt), "prompt_read": 0, "generated": 0,
@@ -2597,7 +2651,15 @@ class StrataEngine:
                     phase = "none"                      # #1059: it ended on the engine's ERR: no DONE to wait 300 s for
                 if phase == "solo":
                     self._send("STOP")
-                    if self._drain_control("DONE", born=born, lines_q=lines_q) is None and self.gen == born and self.alive():
+                    # a masked leg stopped at a window boundary still waits for its mask: answer MF, or its DONE
+                    # never comes and the drain runs to its timeout (spec 3-3; same meaning as generate()'s 2943).
+                    # the keyword goes only with a masked leg: tests wrap _drain_control with the old signature
+                    if c is not None:
+                        drained = self._drain_control("DONE", born=born, lines_q=lines_q,
+                                                      mask_answer=lambda ln: self._mask_reply(None))
+                    else:
+                        drained = self._drain_control("DONE", born=born, lines_q=lines_q)
+                    if drained is None and self.gen == born and self.alive():
                         undrained = "DONE"
                 elif phase == "admit":
                     line = self._drain_control("BADM", born=born, lines_q=lines_q)

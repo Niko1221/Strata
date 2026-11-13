@@ -116,17 +116,30 @@ public:
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
     void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
-    /// serve's constrained decoding (token_mask.hpp): the next run() sets every head logit of row 0 outside the
-    /// mask to kMaskedLogit and samples row 0 again with the request's sampling.  The engine sets it for a T = 1
-    /// window and clears it after (null).  `words` must stay alive until then.
-    void set_token_mask(const uint32_t* words, int64_t n_words) {
+    /// serve's constrained decoding (token_mask.hpp): the next run() sets every head logit of row t outside the
+    /// mask row t (words + t * n_words, the MKN layout of token_mask.hpp) to kMaskedLogit BEFORE the request's
+    /// own sampler runs, so plain sampling and the greedy argmax both read the masked distribution; a pick that
+    /// still falls outside its row's mask (inverse-CDF rounding) becomes that row's masked argmax.  `rows` is
+    /// how many mask rows `words` holds; run() masks the window's first min(rows, T) rows.  The 2-arg form is
+    /// the old single-row call (rows = 1) - generate.cpp passes the MKN row count.  The engine sets it before a
+    /// constrained window and clears it after (null).  `words` must stay alive until then.
+    void set_token_mask(const uint32_t* words, int64_t n_words, int rows = 1) {
         tmask_ = words;
         tmask_words_ = n_words;
-        if (next_) next_->set_token_mask(words, n_words);
+        tmask_rows_ = words != nullptr ? (rows > 0 ? rows : 1) : 0;
+        if (next_) next_->set_token_mask(words, n_words, rows);
     }
     const uint32_t* tmask_ = nullptr;
     int64_t tmask_words_ = 0;
-    std::vector<float> tmask_row_;
+    int tmask_rows_ = 0;              // mask rows held at tmask_ (1 for the old 2-arg call, 0 when off)
+    // T4 (PR #3800): the mask works on the device: no host staging of the logits.  d_tmask_ holds the
+    // window's mask words (grown on demand, the capacity counted in words); d_tmask_ok_ holds the per-row
+    // allowed counts the apply kernel bumps (kVerifyMaxT of them, plus one scratch slot the rare masked
+    // argmax writes); h_tmask_ok_ is their host landing, read back on the sampler's own wait.
+    uint32_t* d_tmask_ = nullptr;
+    int64_t d_tmask_cap_words_ = 0;
+    int32_t* d_tmask_ok_ = nullptr;
+    std::vector<int32_t> h_tmask_ok_;
 
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that

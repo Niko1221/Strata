@@ -620,7 +620,10 @@ This is **schema prompting followed by server validation** on the ordinary path.
 the venv; the default install does not include it, so every deployment pays nothing for the mask path), the chat
 route's JSON formats are also **grammar-constrained**: before every generation window the engine asks the server
 (MQ) and the server answers with the tokens the grammar allows (MK) or free sampling (MF), so every emitted token
-advances the schema; a turn that opens a tool call leaves the grammar. Without the engine support or the package
+advances the schema; a turn that opens a tool call leaves the grammar. On a batching engine (`--batch` / `parallel`)
+the masks work too: a constrained request runs on the engine's solo path only, never inside a batch slot and never
+with a mask on a `BGEN` line, and it waits for the slots to empty while other requests decode; constrained requests
+run one at a time, the ordinary batch of unconstrained requests is untouched. Without the engine support or the package
 the server says so once and validation after the turn is all there is. Either way one generation is made per
 request, with no hidden retry. Successful responses contain a validated JSON object. Malformed JSON,
 duplicate keys, non-finite numbers, schema violations and incomplete generations return **502** with

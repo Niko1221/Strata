@@ -14,6 +14,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -424,6 +425,139 @@ class FakeEngine(Http):
         code, r = self.chat()
         self.assertEqual(code, 200, r)
         self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": 4})
+
+
+@need
+@unittest.skipIf(os.name == "nt", "the fake engine is started through a POSIX shell script")
+class FakeEngineBatch(unittest.TestCase):
+    """The mask over a batch engine (fake --batch 2): notes/pr3800-batch-spec.md 案B, serve side.  A masked
+    request runs on the solo path only - never a mask on a BGEN (the fake refuses one with ERR), no promote /
+    BYIELD / mid-leg STOP, the MQ answered on the control lines - and it waits while a batch slot is active."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        d = Path(self.dir.name)
+        self.script, self.log = d / "script.txt", d / "mq.log"
+        self.script.write_text('Sure! {"n": "7"} done', encoding="utf-8")
+        os.environ["FAKE_SCRIPT_FILE"], os.environ["FAKE_LOG"] = str(self.script), str(self.log)
+        self.exe = d / "strata"
+        self.exe.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{ROOT / "serve/fake_mask_engine.py"}" "$@"\n')
+        self.exe.chmod(self.exe.stat().st_mode | stat.S_IEXEC)
+        self.args = ["--max-context", "8192", "--batch", "2"]
+
+    def tearDown(self):
+        if getattr(self, "httpd", None):
+            self.httpd.shutdown()
+            self.httpd.server_close()
+        if getattr(self, "engine", None):
+            self.engine.close()
+        for k in ("FAKE_SCRIPT_FILE", "FAKE_LOG"):
+            os.environ.pop(k, None)
+        self.dir.cleanup()
+
+    def start(self, engine):
+        self.engine = engine
+        self.svc = Service(engine, self.tok, TEMPLATE)
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def post(self, path, body):
+        req = urllib.request.Request(self.base + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            r = urllib.request.urlopen(req, timeout=60)
+        except urllib.error.HTTPError as e:
+            r = e
+        with r:
+            return r.status, json.loads(r.read().decode())
+
+    def chat(self, **kw):
+        body = {"messages": [{"role": "user", "content": "a number"}], "response_format": FMT,
+                "reasoning_effort": "none", **kw}
+        return self.post("/v1/chat/completions", body)
+
+    tok = ByteTokenizer()
+
+    def test_masks_work_with_batch_slots(self):
+        self.start(StrataEngine(str(self.exe), self.args))
+        self.assertEqual(self.engine.batch, 2)
+        self.assertTrue(self.engine.supports_mask)         # the gate of 1649: batch no longer denies the mask
+        code, r = self.chat()
+        self.assertEqual(code, 200, r)
+        self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": 7})
+        answers = self.log.read_text().split()
+        self.assertTrue(answers.count("MK"), answers)      # the solo GEN exchanged its masks
+        self.assertIn("MASKGEN 0", self.log.read_text().splitlines())   # it saw no active batch slot (spec 3-2)
+
+    def test_batch_masked_run_serialized(self):
+        self.start(StrataEngine(str(self.exe), self.args))
+        out = []
+        th = [threading.Thread(target=lambda: out.append(self.chat())) for _ in range(2)]
+        for t in th:
+            t.start()
+        for t in th:
+            t.join(60)
+        self.assertEqual(len(out), 2, out)
+        for code, r in out:
+            self.assertEqual(code, 200, r)
+            self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": 7})
+        lines = self.log.read_text().split()
+        self.assertEqual(lines.count("MASKGEN"), 2, lines)
+        first, end = lines.index("MASKGEN"), lines.index("GENEND")
+        self.assertNotIn("MASKGEN", lines[first + 1:end], lines)   # one masked leg at a time (the control lines
+        #                                                  serialize them; a masked one never continues in a slot)
+
+    def _slot_and_masked(self):
+        """The unbatched request gives way (BYIELD) into a slot - the fake logs `BGEN <slot> mask=-` - while the
+        masked one waits for the engine to be empty; both answers are correct and the masked leg saw 0 slots."""
+        self.script.write_text('Sure! {"n": "7"} done and more words to keep the reply long', encoding="utf-8")
+        out = {}
+
+        def unbatched():
+            out["long"] = self.chat(response_format=None, max_tokens=30,
+                                    messages=[{"role": "user", "content": "YIELDME " + "slow window " * 200}])
+        t = threading.Thread(target=unbatched)
+        t.start()
+        time.sleep(1.2)                                    # the slow read is mid-way: the give_way beat takes it
+        code, r = self.chat()                              # masked: waits for the slot, then runs solo
+        t.join(60)
+        self.assertEqual(code, 200, r)
+        self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": 7})
+        self.assertEqual(out.get("long", [None])[0], 200, out)
+        lines = self.log.read_text().splitlines()
+        self.assertTrue([l for l in lines if l.startswith("BGEN")], lines)          # the read did reach a slot
+        self.assertEqual([l for l in lines if l.startswith("MASKGEN")], ["MASKGEN 0"], lines)
+        return lines
+
+    def test_masked_solo_and_unbatched_concurrent(self):
+        self.start(StrataEngine(str(self.exe), self.args))
+        self._slot_and_masked()                            # no window froze (spec 3-2): both finished correct
+        self.assertTrue(self.engine.alive())
+
+    def test_bgen_never_carries_mask(self):
+        self.start(StrataEngine(str(self.exe), self.args))
+        lines = self._slot_and_masked()
+        bgen = [l for l in lines if l.startswith("BGEN")]
+        self.assertTrue(bgen, lines)
+        for l in bgen:
+            self.assertIn("mask=-", l, lines)              # the fake logs the mask key it saw: none (spec 3-1);
+        #                                                  a masked BGEN would be ERR BGEN and a failed request
+        self.assertTrue(self.engine.alive())
+
+    def test_masked_leg_stop_answers_mf(self):
+        # the batch version of test_a_stop_while_the_engine_waits_for_a_mask: a consumer that leaves mid-leg gets
+        # its STOP, the engine's next MQ is answered MF on the drain, the engine stays in step for the next request
+        self.start(StrataEngine(str(self.exe), self.args))
+        self.script.write_text('{"n": 123456789}', encoding="utf-8")
+        sampling = self.svc._with_constraint({"response_format": FMT}, None, False)
+        gen = self.engine.generate(self.tok.encode("hi"), 100, sampling, threading.Event())
+        self.assertEqual([next(gen), next(gen)], [ord("{"), ord('"')])
+        gen.close()                                        # STOP; the engine's next MQ is answered MF, then DONE
+        self.script.write_text('{"n": 4}', encoding="utf-8")
+        code, r = self.chat()
+        self.assertEqual(code, 200, r)
+        self.assertEqual(json.loads(r["choices"][0]["message"]["content"]), {"n": 4})
+        self.assertIn("MF", self.log.read_text().split(), self.log.read_text())
 
 
 if __name__ == "__main__":
