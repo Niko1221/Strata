@@ -172,6 +172,8 @@ struct MtpSamplingFixture {
                     }
                 }
                 check(cudaMemcpy(source, outputs.data(), sizeof(outputs), cudaMemcpyHostToDevice), "stage chain fixture");
+                // Nonblocking owner streams do not wait for this pageable upload on the default stream.
+                check(cudaStreamSynchronize(nullptr), "finish chain fixture upload");
                 for (auto& d : owners)
                     require(d.chain_launch(1, &token, 10, 0, nullptr, 0, budget, 3, err, true, threshold), err.c_str());
                 for (auto& d : owners) {
