@@ -1,0 +1,52 @@
+{
+  "started": "2026-11-13T00:30:58Z",
+  "duration_s": 3601.4,
+  "engine": "3.8.10",
+  "requests": 4025,
+  "ok": 4025,
+  "failed": 0,
+  "decode_tps": {
+    "median": 264.8,
+    "p10": 108.7,
+    "p90": 318.2,
+    "min": 47.3,
+    "max": 367.1
+  },
+  "prompt_tps": {
+    "median": 88.7,
+    "p10": 75.4,
+    "p90": 1965.7
+  },
+  "wall_s": {
+    "median": 0.61,
+    "max": 1.695
+  },
+  "by_kind": {
+    "short": {
+      "n": 2013,
+      "decode_median": 281.4,
+      "decode_min": 187.0,
+      "decode_max": 367.1
+    },
+    "medium": {
+      "n": 1342,
+      "decode_median": 259.8,
+      "decode_min": 199.1,
+      "decode_max": 284.9
+    },
+    "long": {
+      "n": 670,
+      "decode_median": 107.25,
+      "decode_min": 47.3,
+      "decode_max": 113.0
+    }
+  },
+  "drift": {
+    "first_half_median": 264.8,
+    "second_half_median": 264.7
+  },
+  "health_at_end": [
+    "ok",
+    true
+  ]
+}

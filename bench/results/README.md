@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../../docs/README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../../docs/BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 143 folders and 3 loose files, 2194 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 144 folders and 3 loose files, 2199 files in all.
 
 
 ## 2026-09
@@ -164,6 +164,8 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | Folder | What | Files |
 | --- | --- | ---: |
 | [2026-11-13-community-rtx5090-xeon5218-docker-256k](2026-11-13-community-rtx5090-xeon5218-docker-256k/) | RTX 5090 32 GB in Docker, Q2_0 at 256K: a standard run, and where the memory goes at 64K-1M (2026-11-13) | 9 |
+
+| [2026-11-13-community-rtx5090-xeon5218-docker-256k-soak-1h](2026-11-13-community-rtx5090-xeon5218-docker-256k-soak-1h/) | An hour of back-to-back requests on a 5090 in Docker: 4,025 requests, 0 failed, decode flat to 0.7% (2026-11-13) | 5 |
 
 ## Loose files
 
