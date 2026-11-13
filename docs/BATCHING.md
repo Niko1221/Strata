@@ -546,7 +546,7 @@ tree has its own copy of the batch code and does not have this).
 ## Two cards with a CPU expert tier: the pipelined groups beside the drafts
 
 `STRATA_PIPED_MTP` (above) was measured with every expert in VRAM. On two cards that hold three quarters of the experts,
-and with conversations of 30K to 180K tokens that go on turn after turn, four more things decided what several
+and with conversations of 30K to 180K tokens that go on turn after turn, several more things decided what several
 conversations got; each is on where it applies and has a switch for the A/B. Hardware for every figure of this section:
 2x RTX 3090 at a 250 W cap each, 32 vCPU, Swift-Qwen3.8-Flash-Next IQ3_S, `--layer-split 27`, a 1M context with
 `--kv-resident 32768`, `"parallel": 2` (2 groups of 1 slot), `--batch-mtp` with `STRATA_PIPED_MTP=2` and
@@ -579,13 +579,12 @@ resident pages and the map, device to device, and a hand-back from a slot's turn
 (`STRATA_SLOT_CKPT_KV_DIRECT`, default on). 147.9 -> 158.7 tok/s (+7%) on continuing conversations.
 
 **Slots that do not fit in RAM are not carved.** With KV streaming a slot's K/V is pinned RAM: 12.4 GiB a slot at a 1M
-context. `"parallel": 4` there left 4 GB of 156 free when the engine was ready, and the first requests ended it (the
+context. `"parallel": 4` there left 4 GB free when the engine was ready, and the first requests ended it (the
 kernel's OOM killer). The engine now counts what it still loads after the slots - the experts' arena and an explicit
-`--conversation-cache-mib` (without it, 4 slots of 12.38 GiB with a 16 GiB cache were carved and the kernel ended the
-engine during start-up; a cache `--serve` sizes itself takes the RAM the slots leave) - and carves only the slots that
+`--conversation-cache-mib` (a cache `--serve` sizes itself takes the RAM the slots leave) - and carves only the slots that
 leave `STRATA_SLOT_RAM_RESERVE_GIB` free (default 8; 0: no check),
 a multiple of the stages on a layer split, and says so: `--batch 4: a slot's K/V takes 12.38 GiB of pinned RAM ... 2
-slots keep 8 GiB free`. Four conversations need a smaller `--max-context` on this box (512K: 6.2 GiB a slot).
+slots keep 8 GiB free`. Four conversations need a smaller `--max-context` on this box (256K, as measured: 3.09 GiB a slot).
 
 ### A conversation's next turn is read in its slot (`STRATA_SLOT_READ`)
 
@@ -604,9 +603,9 @@ new turn boundary is taken from the slot's sessions when the read reaches it (th
 to 90 ms). Nothing is copied and no other slot stops. The server asks for it with `slot_read=1` on `BGEN` (it must take an
 admission that answers `DONE` with 0 tokens and `BADM <slot> 1` at once); the engine says `INFO slot_read=1`.
 
-A window reads a few rows at a decode row's cost, so the read itself is slower than the prompt path's: 105 to 155
-tokens/s a slot at 178K tokens (the lower end with both slots reading), where the prompt path reads 475 tokens in
-1.3 s. So it takes a turn of at most `STRATA_SLOT_READ_MAX` new tokens (default 1024). Anything else is admitted as
+A window reads a few rows at a decode row's cost, so the read itself is slower than the prompt path's: 103 to 128
+tokens/s a slot at 177K tokens with both slots reading and 121 to 175 alone, where `main`'s prompt path read 427 to 742
+new tokens in 2.4 to 3.6 s. So it takes a turn of at most `STRATA_SLOT_READ_MAX` new tokens (default 1024). Anything else is admitted as
 before: a longer turn, a conversation the slot does not hold, a parked copy that holds more, pictures, `logprobs`,
 `pin=`. A lower limit for a turn that arrives while no other slot decodes (nothing would stop for the prompt path
 then) was measured and is not in: the next request's read waited behind that admission instead of running beside it,
@@ -645,6 +644,14 @@ four rounds, sampled with a seed. "Before" is `"parallel"` alone on the engine b
 in the slots); "after" adds `--batch-mtp`, `STRATA_PIPED_MTP=2`, `STRATA_BATCH_SELF_COMMIT=0`,
 `STRATA_PIPE_ADAPT_EVERY=auto` and `STRATA_PW_WITH_BATCH=1`.
 
+Against `main` (`13eedf552`, the same drafts settings, 4 pairs, a fresh engine per run; #5864): two 177K
+conversations sending their turns together ran 52.7% more tokens a second over the round (median pair ratio 1.525)
+and 29.1% more while both decode; taking turns (sent 11 s apart) they ran 7.6% less over the round, a conversation's
+decode 13.7% slower and its first token 21.4% later; four 32K conversations ran 11.9% more over the round (1.119),
+their first token 35.5% later. With `main` at a fixed `STRATA_PIPE_ADAPT_EVERY=32` (2 pairs) the together case was
++47.5% over the round and +20.9% while both decode. The tables below are an earlier engine against `"parallel"`
+without drafts.
+
 Two conversations of 177K tokens, 1M context, `"parallel": 2` (three runs before and two after, interleaved):
 
 | | before | after | |
@@ -677,8 +684,8 @@ Exact. `tools/slot_read_test.py` runs two conversations of three turns twice on 
 fixed - every turn admitted through the main sessions, then turns 2 and 3 read in their slots; one conversation is
 rendered again without the reply's thinking, so its read restarts at the slot's turn checkpoint, the other continues
 what its slot holds, and the two turns of a round arrive back to back. The replies' tokens are the same, greedy and
-sampled with a presence penalty (8 turns of 61 to 102 tokens, each read in its slot). Two slots on 32K-token
-conversations gave the 220 tokens of their solo decodes, greedy and sampled (the method of `tools/batch_test.py`, with
+sampled with a presence penalty (8 turns of 68 to 106 tokens, each read in its slot). Four slots (greedy) and two
+slots (sampled) on prompts of 3,088 to 4,062 tokens gave the 220 tokens of their solo decodes (the method of `tools/batch_test.py`, with
 the per-run launches, the lookup's drafts and the residency copies on).
 
 Without `"parallel"` none of this runs: one 177K-token conversation on the same settings with and without the five
@@ -790,7 +797,8 @@ counter-based draw (Philox(seed, position)).
   `STRATA_SLOT_RAM_RESERVE_GIB` free are not carved.
 - A slot that decodes alone in the pipelined groups runs its windows through the stages one after another (nothing to
   overlap them with), slower than the solo path: the reason a conversation goes back to that path once the others
-  have been quiet for `STRATA_PARALLEL_STICKY_S` seconds.
+  have been quiet for `STRATA_PARALLEL_STICKY_S` seconds. With turns sent 11 s apart that is every turn: against
+  `main`'s solo path a conversation's decode is 13.7% slower and its first token 21.4% later.
 - A turn read in its slot (`STRATA_SLOT_READ`) reads at the windows' rate, slower than the prompt path: a turn of more
   than `STRATA_SLOT_READ_MAX` new tokens is admitted through the main sessions as before.
 
