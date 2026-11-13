@@ -4650,18 +4650,25 @@ def vision_card_off_igpu(env: dict, archs: dict[int, str] | None = None) -> int 
 def vision_env(cfg: dict, env: dict, archs: dict[int, str] | None = None) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
-    keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
-    dev = (cfg.get("vision") or {}).get("cuda_device")
+    keeps all of its own cards' VRAM (#408, Efs-O).  The section's own "env" goes on top, for the encoder alone: the config's
+    top-level "env" reaches the encoder too, so a setting meant only for it (#4668: {"GPU_MAX_HW_QUEUES": "1"}, when the encoder
+    shares a gfx1030 card with the engine and their compute queues together exceed the 8 the kernel gives that card) would
+    otherwise cap the engine as well.  Without either, nothing changes."""
+    vision = cfg.get("vision") or {}
+    dev = vision.get("cuda_device")
     if dev is None and cfg.get("backend") == "hip":
         dev = vision_card_off_igpu(env, archs)
-    if dev is None:
+    own = vision.get("env") or {}
+    if dev is None and not own:
         return env
     env = dict(env)
-    if cfg.get("backend") == "hip":
-        env["HIP_VISIBLE_DEVICES"] = str(dev)
-    else:
-        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        env["CUDA_VISIBLE_DEVICES"] = str(dev)
+    if dev is not None:
+        if cfg.get("backend") == "hip":
+            env["HIP_VISIBLE_DEVICES"] = str(dev)
+        else:
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            env["CUDA_VISIBLE_DEVICES"] = str(dev)
+    env.update({str(k): str(v) for k, v in own.items()})
     return env
 
 
