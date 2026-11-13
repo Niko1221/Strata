@@ -1,0 +1,133 @@
+{
+  "id": "strata-harness-soft-cut-v2",
+  "commit": "571902028a75c64c1d767f4ae5fd099485f0ddf0",
+  "archiveSha256": "44fffca8d4626f6efc29b71cd7b7039c2a2653f3aca5f3525f3df64734d80a5e",
+  "patchSha256": "fdac9e2dcf0cf4be9bee4c7018ff4c664c2e718552f67e2830abde9ed09dff49",
+  "sources": [
+    {
+      "path": "docs/persistence-catalog.i18n.yaml",
+      "before": "d7066c99e288482619073137916f452d4aa637ce34cf7eb1618cf65e0b4079ea",
+      "after": "8d9fbe90fe50153e5b4fbeacb936d4c48cea40eef20882cdaca9c204ca45f7fd"
+    },
+    {
+      "path": "docs/persistence-catalog.md",
+      "before": "bfd9bb667e49560f53def0bc379681573c8fc7291122a0ac483f25bdfb8927eb",
+      "after": "493ba3317486857a04804c3dc64fb69e501d9e5c0c9c065ee60085405daefb45"
+    },
+    {
+      "path": "docs/persistence-catalog.zh.md",
+      "before": "6f5c6f507580d8caeb9cc96bb3d6e25eab1899fa4181960f2995bba53fa8ee20",
+      "after": "0715a7bf5ad2eee356084b9a2606deaeb194c31384d4708c3e0e7a00642c417a"
+    },
+    {
+      "path": "docs/persistence-changes/2026-11-05-strata-turn-bound-steering.i18n.yaml",
+      "before": null,
+      "after": "7e815088be21d42bfe0d74edc9b4981db08e2e0ad9f9ed20c401a86fef0b4a68"
+    },
+    {
+      "path": "docs/persistence-changes/2026-11-05-strata-turn-bound-steering.md",
+      "before": null,
+      "after": "317ee4da6ead6709c6c273aeb0ba6926e60563387dcb28f863789a9f1867aec7"
+    },
+    {
+      "path": "docs/persistence-changes/2026-11-05-strata-turn-bound-steering.schema.json",
+      "before": null,
+      "after": "34099ddfa520b0485317ad2fbeff543ad0a7ceb178242dc12f061796a50e62f6"
+    },
+    {
+      "path": "docs/persistence-changes/2026-11-05-strata-turn-bound-steering.zh.md",
+      "before": null,
+      "after": "dcf97bdc15d75740010a2c368c2a0e8fdc4fa5913bfaf54e5b64261f455c0c28"
+    },
+    {
+      "path": "docs/persistence-schema.json",
+      "before": "501ae66f151e6343f870dd364932d04ac47e74b688018a2da6d5439832180735",
+      "after": "4f657a3bc7cd913b8d7351ca4d2e24ba392754590ad6c234b32f3ad4a7960856"
+    },
+    {
+      "path": "packages/api/session-controller/README.md",
+      "before": "d8fdb1e206b0e4edb2e3939a9b85e4f7770fdee037c47475a7ab0e70aad7b73b",
+      "after": "4ee6bcc8604acab5c909e78b3b857d63499c7a1062c74240e71dff2541ba3327"
+    },
+    {
+      "path": "packages/api/session-controller/src/commands.ts",
+      "before": "b1d3f6cc7b42d850a391d988a8d5dc2bee2e5f10f35ae4e6c1ae88e836c165b1",
+      "after": "dbb3bc5f0f54b586880430e43f6f62a550a37d609f8e03ccbf7b990e055a5b18"
+    },
+    {
+      "path": "packages/api/session-controller/src/types.ts",
+      "before": "72a35c7df913a2a2d0548b40aa8a7abbbbc7807e55f4f9f5fb236a9a2550a042",
+      "after": "b48b682d8026a5a31b06fbce3686665fc7e9020bc7107d9c72a830e25a2355d1"
+    },
+    {
+      "path": "packages/api/session-controller/tests/session-cold.host.spec.ts",
+      "before": "3599b2af0121a78d6a304cb09d2e6b0fedf080b7bd93a537df8e3f2f13cace40",
+      "after": "56f24c0f7509f3b34ce01f18bcabce960443fa62543528556441a6ea396a02ff"
+    },
+    {
+      "path": "packages/core/agent-loop/README.md",
+      "before": "4c9fb8c7bcd7e563e5f24abbb1d9f52479ed7388ffa50e288bc1ec1eca4ab551",
+      "after": "8d2b54316a65184d5e0558e2b30819b39a8abb228c043273f3fe28c435cb1860"
+    },
+    {
+      "path": "packages/core/agent-loop/src/agent.ts",
+      "before": "4add12f5c22bb1b8cf1dbc239c9b09fa3351feff2c936cb2b8900036468bd01b",
+      "after": "d455fa01397b5aa9f99ea19e2d22ade0295773452d82d08852799f73d5087e29"
+    },
+    {
+      "path": "packages/core/agent-loop/src/assistant-stream.ts",
+      "before": "120d2bec5efeec2aa54bf0e4261a45282936272d610dbbab21eee36b902629de",
+      "after": "8aac033238521f246c6385ef9b04b8b7ce4515cc4a0637ef49585d1e4450463f"
+    },
+    {
+      "path": "packages/core/agent-loop/src/tool-calls.ts",
+      "before": "5c7e8d8ff0028b436efdd13e5dffa4801d2311c211c3af039e7dab705f87b303",
+      "after": "890bf666f25d9a297b31cbbd96eae9eb927942d15c5e4dc00b3f4e9b65c53165"
+    },
+    {
+      "path": "packages/core/agent-loop/tests/cancel.spec.ts",
+      "before": "ccec6f34e6dc8b9a2493e516a5b5aa5025ca72eb9231fc004de447850ce081db",
+      "after": "706d8087ee01be0dc66ed2488d35757a93c4f0ac56d54eff0d85fa8219984c28"
+    },
+    {
+      "path": "packages/core/agent-loop/tests/request-reconstruction.spec.ts",
+      "before": "e72809149d82f3126a894ef61c5fb3b187d33b2cbaaae91bc450cc583e5b95c3",
+      "after": "f7772e674abfe4030bcaf79bad049d103805f0ad4783d7e506cad449cb611907"
+    },
+    {
+      "path": "packages/core/agent-loop/tests/tool-calls.spec.ts",
+      "before": "f8e046ed3ec459b58117b2feec99716cf1337cf45dfb85fe75d75484ba707a32",
+      "after": "bf3bd6b34721c28ac3f9192d0f46cbb1644051d024d74e7625126a3337055f56"
+    },
+    {
+      "path": "packages/core/agent/README.md",
+      "before": "652a3283721fb5b52f0671c43d458b04c039d5bfe7e900894cc0f64229b68641",
+      "after": "673350e7c05b3e407c44ae34517a3a771c598dcef5c0064d1fc9a3219133cda0"
+    },
+    {
+      "path": "packages/core/agent/src/runtime-types.ts",
+      "before": "1ae0003c6968dc4af86e596d3ea08f6e517da0808e08089af2ed1818ab0651fc",
+      "after": "bd606177f4bf9d8a9d80cee87fafdd09373d7e5438c4d0035c9d8df57b3e8a0d"
+    }
+  ],
+  "artifacts": [
+    {
+      "source": "packages/core/agent-loop/lib/index.js",
+      "staged": "node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js"
+    },
+    {
+      "source": "packages/api/session-controller/lib/index.js",
+      "staged": "node_modules/@deepseek-ai/dsh-api-session-controller/lib/index.js"
+    },
+    {
+      "source": "packages/api/session-controller/lib/typert.host.js",
+      "staged": "node_modules/@deepseek-ai/dsh-api-session-controller/lib/typert.host.js"
+    }
+  ],
+  "tests": [
+    "packages/api/session-controller/tests/session-cold.host.spec.ts",
+    "packages/core/agent-loop/tests/cancel.spec.ts",
+    "packages/core/agent-loop/tests/request-reconstruction.spec.ts",
+    "packages/core/agent-loop/tests/tool-calls.spec.ts"
+  ]
+}

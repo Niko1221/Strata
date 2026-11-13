@@ -117,6 +117,7 @@ export class GatewayClient {
         this.#wsReady = null;
         if (this.#ws === ws) this.#ws = null;
         this.#onState('closed');
+        for (const s of this.#streams.values()) if (!s.closed) s.onDisconnect?.();
         if (wasReady) reject(new GatewayError('the agent socket closed before it opened', { code: 'gateway/socket' }));
         if (this.#closed) return;
         // Streams are re-opened by a new socket; a dropped socket must not strand a follower.

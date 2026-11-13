@@ -42,7 +42,7 @@ test('sendMessage checks for a model before it adds the message, picks a chat or
     const at = body.indexOf(later);
     assert.ok(at < 0 || at > guard, `${later} comes after the guard`);
   }
-  assert.match(body, /!nativeState\(\) && !state\.remoteModel && !state\.library\?\.loaded\) \{ pushToast\('info', 'Still starting up'/, 'before the first read of the engine nothing is claimed and nothing is sent');
+  assert.match(body, /!nativeState\(\) && !remoteModel && !state\.library\?\.loaded\) \{ pushToast\('info', 'Still starting up'/, 'before the first read of the engine nothing is claimed and nothing is sent');
 });
 
 test('over HTTP, a chat with no model loaded gets one plain error and no reply', async t => {
