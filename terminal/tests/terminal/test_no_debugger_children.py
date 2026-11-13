@@ -67,6 +67,21 @@ class SpawnEnvironments(unittest.TestCase):
         self.assertEqual(server.vision_env({"vision": {"cuda_device": 1}}, env)[NO_BACKTRACE], "1")     # the copy for a reader on its own card
         self.assertEqual(server.child_env({}, offline=True)[NO_BACKTRACE], "1")
 
+    def test_the_vision_section_env_reaches_the_reader_alone(self):
+        import serve.server as server
+        cfg = {"env": {"STRATA_X": "engine"}, "vision": {"env": {"GPU_MAX_HW_QUEUES": 1, "STRATA_X": "reader"}}}
+        env = server.child_env(cfg)
+        reader = server.vision_env(cfg, env)
+        self.assertEqual(reader["GPU_MAX_HW_QUEUES"], "1")          # numbers become strings, as the top-level env's
+        self.assertEqual(reader["STRATA_X"], "reader")              # the section's value wins for the reader
+        self.assertNotIn("GPU_MAX_HW_QUEUES", env)                  # and the engine's environment is untouched
+        self.assertEqual(env["STRATA_X"], "engine")
+        self.assertEqual(reader[NO_BACKTRACE], "1")
+        both = {"backend": "hip", "vision": {"cuda_device": 1, "env": {"GPU_MAX_HW_QUEUES": "1"}}}
+        reader = server.vision_env(both, server.child_env(both))
+        self.assertEqual((reader["HIP_VISIBLE_DEVICES"], reader["GPU_MAX_HW_QUEUES"]), ("1", "1"))
+        self.assertIs(server.vision_env({"vision": {}}, env), env)  # no section env, no card: the engine's mapping, unchanged
+
     def test_the_developer_switch_reaches_the_engine_environment(self):
         import serve.server as server
         with mock.patch.dict(os.environ, {DEVELOPER_SWITCH: "1"}):
