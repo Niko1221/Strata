@@ -1,0 +1,38 @@
+{
+ "samples": 654,
+ "interval_s": 2.0,
+ "failed_samples": 0,
+ "power_draw_w": {
+  "median": 116.9,
+  "min": 39.7,
+  "max": 139.1,
+  "p90": 127.9
+ },
+ "gpu_util_pct": {
+  "median": 91.0,
+  "min": 1.0,
+  "max": 100.0,
+  "p90": 96.0
+ },
+ "gpu_mem_used_mib": {
+  "median": 15375.0,
+  "min": 14806.0,
+  "max": 15670.0,
+  "p90": 15399.0
+ },
+ "gpu_temp_c": {
+  "median": 72.5,
+  "min": 59.0,
+  "max": 84.0,
+  "p90": 79.0
+ },
+ "clock_sm_mhz": {
+  "median": 2670.0,
+  "min": 2625.0,
+  "max": 2685.0,
+  "p90": 2685.0
+ },
+ "power_limit_w": [
+  165.0
+ ]
+}
