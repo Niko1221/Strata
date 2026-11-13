@@ -15,6 +15,7 @@ and the formats change often; the engine boundary is token ids in, text deltas o
 """
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import os
@@ -828,16 +829,21 @@ def _close_verdict(after: str, final: bool) -> str:
 
 
 
-def param_end(text: str, final: bool = False, name: str | None = None, hold: bool = True) -> int:
+def param_end(text: str, final: bool = False, name: str | None = None, hold: bool = True, held_ok: bool = True) -> int:
     """Where a parameter value in `text` ends: the first PARAM_END followed (after whitespace) by the next
     PARAM_START or FUNC_END, or by the wrapper's CALL_END when the call's `</function>` was left out (#4427) - the
     same text inside a value (a file that documents the call format, #210) is
     part of the value.  #4078: a close inside a call the value itself quotes (more _QUOTED_OPEN than FUNC_END before
-    it), or one followed by the same parameter `name` again, is part of the value too.  `text` starts at the value.
+    it), or one followed by the same parameter `name` again, is part of the value too - unless only the rest of the
+    call follows it (_ends_call: a quoted opener that is never closed; not `held_ok` inside that check, which keeps
+    it linear).  `text` starts at the value.
     -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
-    at = text.find(PARAM_END)
+    at, held = text.find(PARAM_END), -1
+    # where the quoted openers and FUNC_END are, found once: counting them again before every close was quadratic
+    opens = [m.start() for m in _QUOTED_OPEN.finditer(text)] if at >= 0 else []
+    closes = [m.start() for m in re.finditer(FUNC_END, text)] if opens else []
     while at >= 0:
-        if len(_QUOTED_OPEN.findall(text, 0, at)) <= text.count(FUNC_END, 0, at):
+        if bisect.bisect_left(opens, at) <= bisect.bisect_left(closes, at):
             after = text[at + len(PARAM_END):].lstrip()
             if after.startswith(PARAM_START):
                 gt = after.find(">")
@@ -853,14 +859,45 @@ def param_end(text: str, final: bool = False, name: str | None = None, hold: boo
                     return -2
             elif not after or PARAM_START.startswith(after) or FUNC_END.startswith(after) or CALL_END.startswith(after):
                 return at if final else -2
+        elif held_ok and held < 0 and _ends_call(text[at + len(PARAM_END):], final):
+            held = at        # an unclosed quote would keep the call open for ever; a later close above still wins
         at = text.find(PARAM_END, at + 1)
-    return -1
+    return -1 if held < 0 else held if final else -2
+
+
+def _ends_call(text: str, final: bool) -> bool:
+    """#4078: whether `text`, what follows a value's PARAM_END, is only the rest of the call - parameters, FUNC_END,
+    CALL_END and nothing after them but the next call; before `final` (the output may still go on) a start of that
+    counts too."""
+    pos = 0
+    while True:
+        rest = text[pos:]
+        s = rest.lstrip()
+        pos += len(rest) - len(s)
+        if s.startswith(PARAM_START):
+            gt = text.find(">", pos)
+            if gt < 0:
+                return not final
+            end = param_end(text[gt + 1:], final, text[pos:gt].split("=", 1)[1].strip(), held_ok=False)
+            if end < 0:
+                return not final
+            pos = gt + 1 + end + len(PARAM_END)
+        elif s.startswith(FUNC_END):
+            s = s[len(FUNC_END):].lstrip()
+            if s.startswith(CALL_END):
+                s = s[len(CALL_END):].lstrip()
+            elif not final and CALL_END.startswith(s):
+                return True
+            return (not s or s.startswith((CALL_START, FUNC_START))
+                    or not final and (CALL_START.startswith(s) or FUNC_START.startswith(s)))
+        else:
+            return not final and (not s or PARAM_START.startswith(s) or FUNC_END.startswith(s))
 
 
 def call_end(text: str, final: bool = False, hold: bool = True) -> int:
     """Where a tool call's body ends (#210): the `</tool_call>` after the call's own `</function>`, found by walking
     its parameters with param_end, so a value may contain either tag.  -1: not complete yet.  A body that is not in
-    the call format ends at the first `</tool_call>`, as before."""
+    the call format ends at the first `</tool_call>`, as before.  `final`: the output has ended (param_end)."""
     s = text.lstrip()
     pos = len(text) - len(s)
     if not s.startswith("<function="):
@@ -940,7 +977,7 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 PARAM_START = "<parameter="
 
 
-def function_end(text: str) -> int:
+def function_end(text: str, final: bool = False) -> int:
     """Where a `<function=NAME>...</function>` at the start of `text` ends (just past `</function>`), walking its
     parameters with param_end like call_end does; -1: not complete (or not in the call format)."""
     s = text.lstrip()
@@ -959,7 +996,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip(), hold=False)   # a bare or unwrapped call: the old rule
+            end = param_end(text[gt + 1:], final, name=text[pos:gt].split("=", 1)[1].strip(), hold=False)   # a bare or unwrapped call: the old rule
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -1707,9 +1744,9 @@ class OutputParser:
                 # #804: a `<tool_call>` inside the reasoning, with tools declared.  It is held whole (never streamed
                 # as a call) until it ends: a declared name is then a tool call, anything else stays reasoning text.
                 body = self.buf[len(CALL_START):]
-                end, think = call_end(body, hold=False), body.find(THINK_END)
+                end, think = call_end(body, self._final, hold=False), body.find(THINK_END)
                 drop = len(CALL_END)
-                f = function_end(body)               # #4427: as in the answer, a following call opener confirms an omitted closer
+                f = function_end(body, self._final)               # #4427: as in the answer, a following call opener confirms an omitted closer
                 if f >= 0 and (end < 0 or f < end) and re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", body[f:].lstrip()):
                     end, drop = f, 0
                 if end >= 0 and (think < 0 or think >= end):
@@ -1947,7 +1984,7 @@ class OutputParser:
             else:
                 drop = None
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
-                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    i = function_end(self.buf, self._final)   # </tool_call> after it is the wrapper's closer, dropped
                     if i >= 0:
                         after = self.buf[i:].lstrip()
                         if after.startswith(CALL_END):
@@ -1959,7 +1996,7 @@ class OutputParser:
                     if i >= 0:
                         drop = len(CALL_END)
                     # Only a following call opener confirms an omitted wrapper closer.
-                    f = function_end(self.buf)
+                    f = function_end(self.buf, self._final)
                     nxt = self.buf[f:].lstrip() if f >= 0 else ""
                     if re.match(r"<tool_call>\s*<function=\s*[^<>\s]+\s*>", nxt):
                         i, drop = f, 0
@@ -1973,10 +2010,12 @@ class OutputParser:
                 if self.stream_tools:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body
-                        final, self._final = self._final, True       # #5040: its end is known, so no closing tag is still arriving
-                        out += self._scan()
-                        out += self._close_scan()
-                        self.buf, self._final = whole, final
+                        final, self._final = self._final, True      # the structural walk confirmed this body's boundary
+                        try:
+                            out += self._scan()
+                            out += self._close_scan()
+                        finally:
+                            self.buf, self._final = whole, final
                     else:
                         out += self._scan()
                 if i < 0 or drop is None:
@@ -1996,14 +2035,14 @@ class OutputParser:
         out = []
         if self._held:
             self.buf, self._held = self.buf + self._held, ""
+        self._final = True                      # Decide boundaries held by #4078 and #4701 at the end of the turn.
         if self.buf and self.state in ("call", "rcall"):
-            self._final = True                  # #4701: a call held after its closing tags (could a file's text go on?) is whole now
             out += self.feed("")
         if self.state == "rcall" and reason in (None, "stop"):
             # #4427: a call in the reasoning whose `</function>` is the end of the output (the `</tool_call>` left out)
             # is as whole as one in the answer: it waits for the turn's end like the others
             body = self.buf[len(CALL_START):]
-            f = function_end(body)
+            f = function_end(body, True)
             name = body.lstrip()[len(FUNC_START):].split(">", 1)[0].strip() if f >= 0 else ""
             name = self.aliases.get(name, name)
             if f >= 0 and not body[f:].strip() and self._callable(name):
@@ -2014,10 +2053,14 @@ class OutputParser:
                     self.buf, self.state = "", "reasoning"
                 except ValueError:
                     pass
+        if self.state == "rcall":               # OutputParser.feed: a subclass's feed has had its say before finish
+            out += OutputParser.feed(self, "")
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
-        if self.state == "call" and self.bare and function_end(self.buf) >= 0:
-            i = function_end(self.buf)          # recover: a bare call is whole at its </function>
+        if self.state == "call":
+            out += OutputParser.feed(self, "")
+        if self.state == "call" and self.bare and function_end(self.buf, True) >= 0:
+            i = function_end(self.buf, True)    # recover: a bare call is whole at its </function>
             body, rest = self.buf[:i], self.buf[i:].strip()
             self.buf = ""
             out += self._finish_call(body)
