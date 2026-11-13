@@ -17615,7 +17615,7 @@ int main(int argc, char** argv) {
             // least STRATA_PIPELINE_HIT_MIN (0.35: a window off the path costs its card's time and, on a power-capped
             // card, clock for the windows after it; on 2x RTX 3090 at 250 W 0.2, 0.3 and 0.4 measured +7.0%, +7.8% and
             // +7.5% over the serial loop, a flat optimum).  STRATA_PIPELINE_THETA=<f> (testing) gates on the chain's own
-            // estimate >= f instead, as upstream 0.1.59.1 does: there the default is 0.2 and two launches in three were
+            // estimate >= f instead, as the earlier pipelined loop does: there the default is 0.2 and two launches in three were
             // rolled back.
             float pl_theta = [] {
                 const char* v = pipe_dbg_env("STRATA_PIPELINE_THETA");
@@ -17626,14 +17626,14 @@ int main(int argc, char** argv) {
                 return v != nullptr && v[0] != '\0' ? (float) std::atof(v) : 0.35f;
             }();
             // The drafter's chain behind a window runs the steps the outputs before them call for (chain_extend), not
-            // every step it has graphs for.  STRATA_PIPELINE_LAZY_CHAIN=0: the whole chain at once, as upstream 0.1.59.1.
+            // every step it has graphs for.  STRATA_PIPELINE_LAZY_CHAIN=0: the whole chain at once, as the earlier pipelined loop.
             bool pl_lazy = [] {
                 const char* v = std::getenv("STRATA_PIPELINE_LAZY_CHAIN");
                 return v == nullptr || std::atoi(v) != 0;
             }();
             // Behind a lookup's continuation that was on the path the next window is the same lookup's, not the chain's
             // (2x RTX 3090: a 2400-token rewrite +23.5% over the serial loop against +17.9% without, other text level).
-            // STRATA_PIPELINE_LOOKUP_RUN=0: the chain's, as upstream 0.1.59.1.
+            // STRATA_PIPELINE_LOOKUP_RUN=0: the chain's, as the earlier pipelined loop.
             bool pl_run = [] {
                 const char* v = std::getenv("STRATA_PIPELINE_LOOKUP_RUN");
                 return v == nullptr || std::atoi(v) != 0;
@@ -18971,7 +18971,7 @@ int main(int argc, char** argv) {
             // STRATA_FOLLOW_DIR=<dir> / STRATA_DUMP_TOKENS_DIR=<dir> (measurement only, off by default): the forced continuation keyed by
             // the PROMPT instead of the request's place in the order.  A request whose prompt ids hash (FNV-1a 64) to <key> is forced with
             // <dir>/<key>.txt when that file exists (the same comma-separated ids), so a plan of several prompts replays in any order and
-            // the requests of other prompts (the router's probes) stay unforced; the dump directory gets <key>.txt from every request that
+            // the requests of other prompts (requests from other clients) stay unforced; the dump directory gets <key>.txt from every request that
             // was not forced.  Both decode loops (the serial windows and --pipeline-windows 2) take the forced tokens.
             static const char* const fol_dir = [] { const char* d = std::getenv("STRATA_FOLLOW_DIR"); return d != nullptr && d[0] != '\0' ? d : nullptr; }();
             static const char* const dump_dir = [] { const char* d = std::getenv("STRATA_DUMP_TOKENS_DIR"); return d != nullptr && d[0] != '\0' ? d : nullptr; }();
@@ -19452,7 +19452,7 @@ int main(int argc, char** argv) {
                     // S_mtp - 1 drafts) - so stage 0 need not wait for the whole chain.  The chain is launched with the
                     // outputs that are needed whatever they say (A's drafts; behind an on-path verdict the forced steps
                     // and B's row 0) and gets one more step at a time while B can still use it: the gate would launch
-                    // B, no draft has ended it and it has room.  (Upstream 0.1.59.1 runs every chain to its 7th step: on
+                    // B, no draft has ended it and it has room.  (The earlier pipelined loop runs every chain to its 7th step: on
                     // 2x RTX 3090 that was 3.2 ms of the drafter's card a window, most of it for a B the gate held.)
                     if (chain_kind != 0) {
                         const int k_ready = mtp.chain_outputs_ready(err);
@@ -19702,8 +19702,8 @@ int main(int argc, char** argv) {
                         // A lookup's continuation (B) was on the path: the window behind it comes from the same lookup -
                         // what followed the earlier occurrence, past B's drafts - and waits for no chain, so a copied
                         // stretch runs window behind window, each as long as a lookup window may be.  The drafter only
-                        // catches up A's cells, as the serial loop does in a round that needs no draft.  (In upstream
-                        // 0.1.59.1 the window behind a lookup's B is the chain's: S_mtp rows, a forced chain late.)
+                        // catches up A's cells, as the serial loop does in a round that needs no draft.  (In the earlier
+                        // pipelined loop the window behind a lookup's B is the chain's: S_mtp rows, a forced chain late.)
                         // STRATA_PIPELINE_LOOKUP_RUN=0: the chain's again.
                         PW nB;
                         if (lookup_run && B.lk && o.suffix_draft > 0 && pl_lookup_pon > 0.0f) {
