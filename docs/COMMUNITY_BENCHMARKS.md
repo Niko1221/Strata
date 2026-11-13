@@ -20,6 +20,19 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-11-11: RTX PRO 5000 Blackwell 48 GB, Threadripper PRO 9975WX, 250 GB RAM](../bench/results/2026-11-11-community-rtx-pro-5000-blackwell-iq3xxs-mtpq4/README.md):
+  Strata v0.2.12 (engine 0.1.58), original Flash-Next GSQ-RCO IQ3_XXS, native 262,144, 4 batch slots with
+  `--batch-mtp` + `--batch-groups 1`; measured the no-draft batch path (112–150 tok/s solo, per-response draft
+  counters read 0 — #5890) and the same config plus `--mtp-q4 all` + `--lookup-chain 3` (solo 229.7/237.6,
+  two-at-once 116–131, four-at-once 66–77 per request, acceptance 69.6 % → 68.5 % over two days).
+- [2026-11-10: 2× RTX 4090 24 GB layer split, i9-14900K, 123 GB RAM](../bench/results/2026-11-10-community-2x4090-layer-split-iq3xxs-mtpq4/README.md):
+  Strata v0.2.12, abliterated GSQ-RCO IQ3_XXS, 300,000 context (YaRN 1.1444 over native 262,144),
+  `--kv int8 --kv-resident 32768`, 2 pipelined batch slots; lever ladder `--mtp-q4 all` + exact-kernel switches
+  (solo 130–140 → 147–161, acceptance intact), `--lookup-chain 3` (kept, marginal), and a `--batch-mtp
+  --batch-groups 1` retest showing the serial-vs-pipelined ranking flips for solo windows at Q4 draft cost
+  (173.3 solo, +15 %) while team-concurrent stayed with pipelined; includes a boot-pcie_frac measurement
+  confounder (0.10 → 0.18 shifts fresh-read rates ~5 %) to record in long-read A/Bs.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
