@@ -46,6 +46,7 @@ Intel engines are unchanged.
 | Gyro-S (agentionai, one 58.5 GB file) | 29.7 GB (the other 28.8 GB is the n-gram table) | 38 GB | 48 GB; streams below that |
 | Gyro-M (agentionai, one 92.0 GB file) | 63.2 GB (+ the 28.8 GB table) | 71 GB | 96 GB; streams below that |
 
+- **The engine's own memory grows with the context.** Beside the mapped file, the engine holds its buffers and the decode window's K/V for the whole `--max-context`. Measured on the M5 Max with Qwen3.8-Flash-Next IQ3_S (phys_footprint 5 s after the engine is ready): 7.68 GiB at 64K context and 10.61 GiB at 262K. Before this version the engine also kept an unused second copy of the K/V in the session buffer, resident in full: 9.27 GiB at 64K and 16.99 GiB at 262K.
 - **The n-gram table.** Each pack also has a 28.8 GB n-gram table (the model's second file). It is read from the SSD a few rows at
   a time and does not count against the memory above.
 - **Disk.** The original Q2_0 and IQ3 packs download roughly 66 to 84 GB, plus preparation and draft data. Unsloth packs are much
