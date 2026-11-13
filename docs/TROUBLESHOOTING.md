@@ -365,6 +365,10 @@ overwrite local branches or edits just to make `git pull` succeed.
 - **Linux app crash:** if the window crashes or will not open, run the AppImage with `--save-logs` in a terminal; it writes
   the crash log and the other logs to one file in Downloads.
 - **Installer or source checkout:** `strata-<model>.log` from the Strata folder.
+- **The server ends on its own:** when the server process dies natively (Windows `exit code 0xC0000005` or
+  `0xC0000409`, Linux/Mac `signal 11`), the app log only ever carried the exit code. The server now arms CPython's own
+  crash reporter, so the log also carries the Python stack of the thread that died and of the request workers beside it.
+  Include that stack; it names the line, where the exit code names nothing. `STRATA_NO_FAULTHANDLER=1` turns it off.
 
 Look through a log before you send it, and never send an API key. Include model and quantization, OS, GPU/VRAM, RAM,
 driver, install route (app, Terminal or the installer), Strata and engine versions, exact command, expected result and
