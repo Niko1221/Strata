@@ -681,6 +681,7 @@ solution rocBLAS refuses at run time falls back to the default kernel for that c
 `hip_prefill_rocblas_gemm` (with `STRATA_ROCBLAS_TUNING` set) is the smoke test.
 
 Shipped: `gfx1030-rocblas-5.6.0.8d1ae90e.txt` (ROCm 10.0.0, the `/opt/rocm` setup installs on Ubuntu), measured on an RX 6900 XT.
+`gfx1030-rocblas-5.8.0.efafc1c1.txt` covers the Windows prebuilt engine, whose bundled rocBLAS is 5.8.0.efafc1c1; before it none of the tables above matched that build, so a Windows RDNA2 engine pointed at `tools/hip` loaded none of them and ran rocBLAS's default kernels.
 Other gfx1030 cards run it too, but a table calibrated for them may pick differently; `tune_rocblas` makes one in about 5
 minutes. Data: [2026-10-05-rdna2-rocblas-table](../bench/results/2026-10-05-rdna2-rocblas-table/README.md).
 
@@ -695,6 +696,7 @@ tell us. The numbers below are the contributors', not ours.
 | Integer dot product through the SDWA byte-select sequence, as gfx1012 already had (#4855, Keoian) | gfx1010 only (RX 5700 / 5700 XT), device code | 2x RX 5700 XT, Qwen3.8-Flash-Next Q2_0, decode 22.38 -> 28.77 tok/s (12 of 12 pairs faster), identical greedy text in 6 of 6 fixed-placement runs |
 | `gfx1030-rocblas-5.4.0.ad84daa81c.txt` (#3343, elightcap) | gfx1030, the rocBLAS build `5.4.0.ad84daa81c` (TheRock `gfx103X-all` 7.13.0a20260515 wheels) | RX 6900 XT, UD-Q4_K_XL, `STRATA_HIP_PROMPT_F16=1`: 268-395-token follow-up on a cached conversation 1,851 -> 1,635 ms (median), fresh 745-1,569 tokens -3.3%, fresh 4,859-6,690 tokens -1.0% |
 | `gfx1030-rocblas-5.2.0.dabb6df2b98-dirty.txt` (#3924, schmittcn) | gfx1030, the rocBLAS build `5.2.0.dabb6df2b98-dirty` (Arch Linux ROCm 7.2.4) | RX 6900 XT, Coder IQ1_M, GPU timeline of prompts below 1,152 tokens 12-18% shorter, 1.3K-1.5K tokens 2-4%, 11K-12K tokens 4-9%; 11 of 12 answers identical (one differs by FP16 rounding of a different kernel) |
+| `gfx1030-rocblas-5.8.0.efafc1c1.txt` (#5910, Jupiterxia553) | gfx1030, the rocBLAS build `5.8.0.efafc1c1` (the Windows prebuilt engine, ROCm 10.2.0a20260930) | RX 6900 XT, IQ3_S, `--prefill auto` (10,496-token chunks): prefill 1,231.8 -> 1,247.1 tok/s (+1.3%) on a 9,699-token prompt, decode 69.4 -> 69.6 tok/s; 6-question battery 0 of 6 degraded. The four `T=10496` rows were re-measured 2-3 times |
 | `STRATA_SELECT_SIMT=2` (the simt2 QSA block scorer) as the default (#3073, Vop3p) | gfx103x (RX 6000) only; any `STRATA_SELECT_SIMT` value you set wins, `=0` keeps the warp kernel | 2x RX 6900 XT, IQ3_S, prompt time -1.35% at 31K and -6.53% at 119K tokens (10 of 10 interleaved cold-start pairs each); another summation order than the warp kernel, so values change in the last bits (their KL against a double-precision reference 0.0220, against main 0.0256) |
 
 What the exact-build rule leaves out: a table loads only when the architecture and the full rocBLAS version string of the running library match the table's header.
