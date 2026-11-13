@@ -617,14 +617,19 @@ Prompt tokens need no draft: while it is the only slot of its group that runs an
 slot takes all 8 rows. Every group's window, hand-off rows and saved commit rows are sized for that, and a slot's
 drafter catches up 8 rows a round; only the whole window is taken, because a layout of rows is a set of graphs on each
 stage (20 to 30 MiB of VRAM), so a read adds one layout a slot and not one for every size in between. A prompt row
-costs nearly the same wherever it sits - about 3 ms a stage at 32K tokens, 5 ms at 440K - so what is gained is the
-windows saved, not the rows:
+costs nearly the same wherever it sits - 8.0 against 8.5 ms a token of a slot's read at 177K tokens, 6.9 against 7.8
+at 32K - so what is gained is the windows saved, not the rows. Two conversations sending their turns together,
+`STRATA_SLOT_READ_WIDE=0` against the default, on two RTX 3090 with a layer split:
 
-| two conversations sending their turns together, one build | read, tokens/s a slot | first token | total tok/s of the round |
-| --- | ---: | ---: | ---: |
-| 32K tokens, four slots (one pair) | 120-138 -> 134-165 | 4.2 -> 3.7 s | 126.2 -> 135.0 |
-| 177K tokens, two slots (ABBA) | | 5.0 -> 4.7 s | 114.6 -> 118.6 |
-| 440K tokens, two slots (one pair) | 91-114 -> 94-124 | 6.1 -> 5.8 s | 104.6 -> 102.8 |
+| conversations | read, tok/s a slot | first token | total tok/s of the round | while both decode |
+| --- | ---: | ---: | ---: | ---: |
+| 32K tokens, four slots (2 pairs) | 126.8 -> 145.3 | 4.41 -> 3.74 s | 122.9 -> 130.7 | 189.6 -> 191.4 |
+| 177K tokens, two slots (4 pairs) | 116.4 -> 124.9 | 4.98 -> 4.75 s | 116.4 -> 116.6 | 177.2 -> 177.5 |
+| 440K tokens, two slots (2 pairs) | 103.3 -> 109.2 | 6.20 -> 5.96 s | 103.1 -> 100.2 | 170.8 -> 160.9 |
+
+The first token comes sooner at every size. The round's total gains at 32K, is level at 177K and is lower at 440K
+(-2.8%, and -5.8% while both decode); with long conversations that send their turns together, `=0` keeps the old
+read.
 
 With two slots at a 1M context the cards have 40 and 52 MiB less free once everything is loaded (the saved rows 31.8
 -> 50.9 MiB a stage, the verifiers' windows 5 -> 8 rows); the expert caches keep their slots but two.
