@@ -1,0 +1,420 @@
+{
+ "suite": {
+  "rc": 0,
+  "report_folder": "<HOME>/.local/state/benchmark-supervisor/runs/20261113-171546-strata-community-complet/community/2026-11-13-community-rtx-4060-ti-qwen3-8-flash-next-unsloth-ud-iq4-xs",
+  "elapsed_s": 418.9050397872925,
+  "machine": {
+   "gpu": [
+    "NVIDIA GeForce RTX 4060 Ti"
+   ],
+   "gpu_vram_mib": 16380,
+   "gpu_driver": "610.88",
+   "gpu_detail": [
+    {
+     "power_limit_w": "165.00",
+     "power_draw_w": "94.63",
+     "pcie": "gen4 x8",
+     "pstate": "P2",
+     "temp_c": "67"
+    }
+   ],
+   "cuda": "13.3",
+   "engine_build": null,
+   "cpu": "13th Gen Intel(R) Core(TM) i7-13700F",
+   "cpu_cores": 8,
+   "storage": "ram0; ram1; ram2; ram3; ram4; ram5; ram6; ram7; ram8; ram9; ram10; ram11; ram12; ram13; ram14; ram15; sda   Virtual Disk; sdb   Virtual Disk; sdc   Virtual Disk; sdd   CT1000BX500SSD1; sde   Virtual Disk",
+   "cpu_threads": 16,
+   "ram_gib": 78.5,
+   "os": "Linux 6.18.26.1-microsoft-standard-WSL2",
+   "python": "3.10.12",
+   "strata_version": "0.1.58",
+   "strata_commit": null,
+   "engine_version": "0.1.58",
+   "model": "qwen3.8-flash-next-unsloth-ud-iq4-xs",
+   "quant": null,
+   "context": 131072,
+   "parallel_slots": 1,
+   "config": {},
+   "launch": null,
+   "engine_info": {
+    "model": "qwen3.8-flash-next-unsloth-ud-iq4-xs",
+    "max_context": 131072,
+    "images": false,
+    "version": "0.1.58",
+    "logit_bias": 1,
+    "context": 131072,
+    "kv": "k8v4",
+    "kv_resident": 0,
+    "expert_slots": 2294,
+    "expert_cache_mib": 5413,
+    "expert_slots_primary": 2294,
+    "expert_cache_primary_mib": 5413,
+    "spec": 6,
+    "mtp_max": 0,
+    "lookup": 0,
+    "vram_free_mib": 0,
+    "cvec": 0,
+    "arena_mib": 0,
+    "pool_workers": 7,
+    "pcie_frac": "0.20",
+    "spec_min_p": "0.00",
+    "conversation_cache_mib": 4096,
+    "conversation_cache_slots": 2,
+    "conversation_cache_min_free_mib": 2560,
+    "conversation_cache_min_tokens": 0,
+    "tail_role_token": -1,
+    "vram_elastic": 0,
+    "prefill_cap": 9472,
+    "prefill_stages": 1,
+    "stream_all_min": 3072,
+    "prefill_pipe": 0,
+    "engine": "0.1.58",
+    "drafting": "dflash2",
+    "drafting_note": ""
+   },
+   "vram_after": {
+    "elastic": false
+   }
+  },
+  "params": {
+   "runs": 3,
+   "think": false,
+   "clients": 0,
+   "long": true,
+   "started_server": false,
+   "command": "python tools/strata_bench.py --long"
+  },
+  "chat": {
+   "decode_tps": {
+    "median": 27.9,
+    "min": 26.7,
+    "max": 37.7,
+    "n": 9
+   },
+   "ttft_s": {
+    "median": 1.209,
+    "min": 1.056,
+    "max": 1.305,
+    "n": 9
+   },
+   "generated_tokens": {
+    "median": 100,
+    "min": 100,
+    "max": 100,
+    "n": 9
+   },
+   "prompt_tokens": {
+    "median": 46,
+    "min": 43,
+    "max": 51,
+    "n": 9
+   }
+  },
+  "prompts": {
+   "4K": {
+    "target_tokens": 4096,
+    "prompt_tps": {
+     "median": 502.8,
+     "min": 455.5,
+     "max": 511.4,
+     "n": 3
+    },
+    "ttft_s": {
+     "median": 8.038,
+     "min": 7.903,
+     "max": 8.873,
+     "n": 3
+    },
+    "prompt_tokens": {
+     "median": 4019,
+     "min": 4019,
+     "max": 4019,
+     "n": 3
+    },
+    "reused_tokens": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    }
+   },
+   "16K": {
+    "target_tokens": 16384,
+    "prompt_tps": {
+     "median": 814.2,
+     "min": 796.3,
+     "max": 817.7,
+     "n": 3
+    },
+    "ttft_s": {
+     "median": 19.765,
+     "min": 19.686,
+     "max": 20.215,
+     "n": 3
+    },
+    "prompt_tokens": {
+     "median": 16058,
+     "min": 16058,
+     "max": 16058,
+     "n": 3
+    },
+    "reused_tokens": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    }
+   },
+   "32K": {
+    "target_tokens": 32768,
+    "prompt_tps": {
+     "median": 824.8,
+     "min": 800.3,
+     "max": 827.0,
+     "n": 3
+    },
+    "ttft_s": {
+     "median": 38.92,
+     "min": 38.814,
+     "max": 40.11,
+     "n": 3
+    },
+    "prompt_tokens": {
+     "median": 32049,
+     "min": 32049,
+     "max": 32049,
+     "n": 3
+    },
+    "reused_tokens": {
+     "median": 0,
+     "min": 0,
+     "max": 0,
+     "n": 3
+    }
+   }
+  },
+  "agent": {
+   "hit_pct": {
+    "median": 69.811,
+    "min": 69.642,
+    "max": 69.817,
+    "n": 3
+   },
+   "reread_tokens": {
+    "median": 4,
+    "min": 3,
+    "max": 74,
+    "n": 3
+   },
+   "new_tokens": {
+    "median": 12725,
+    "min": 12725,
+    "max": 12725,
+    "n": 3
+   },
+   "turn_ttft_s": {
+    "median": 7.195,
+    "min": 5.866,
+    "max": 8.922,
+    "n": 15
+   },
+   "last_turn_prompt_tokens": {
+    "median": 13566,
+    "min": 13554,
+    "max": 13577,
+    "n": 3
+   },
+   "turn_decode_tps": {
+    "median": 29.1,
+    "min": 26.6,
+    "max": 36.5,
+    "n": 15
+   },
+   "first_turn_ttft_s": {
+    "median": 6.064,
+    "min": 5.549,
+    "max": 6.335,
+    "n": 3
+   }
+  },
+  "skipped": {},
+  "failures": []
+ },
+ "long_arm": {
+  "target_tokens": 130000,
+  "context": 131072,
+  "calibration_tokens_per_word": 1.0767,
+  "wall_s": 524.1,
+  "result": {
+   "target_tokens": 130000,
+   "requests": [
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 143.976,
+     "total_s": 144.771,
+     "prompt_tokens": 126936,
+     "reused_tokens": 0,
+     "read_tokens": 126936,
+     "generated_tokens": 24,
+     "prompt_tps": 882.2,
+     "prompt_tps_source": "engine",
+     "decode_tps": 29.0,
+     "decode_tps_source": "engine",
+     "prompt_ms": 143884.4,
+     "decode_ms": 828.7,
+     "drafts_offered": 12,
+     "drafts_accepted": 11,
+     "run": 0
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 147.267,
+     "total_s": 148.004,
+     "prompt_tokens": 126936,
+     "reused_tokens": 0,
+     "read_tokens": 126936,
+     "generated_tokens": 24,
+     "prompt_tps": 862.5,
+     "prompt_tps_source": "engine",
+     "decode_tps": 31.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 147176.2,
+     "decode_ms": 767.3,
+     "drafts_offered": 12,
+     "drafts_accepted": 11,
+     "run": 1
+    },
+    {
+     "ok": true,
+     "err": null,
+     "ttft_s": 145.115,
+     "total_s": 145.826,
+     "prompt_tokens": 126936,
+     "reused_tokens": 0,
+     "read_tokens": 126936,
+     "generated_tokens": 24,
+     "prompt_tps": 875.3,
+     "prompt_tps_source": "engine",
+     "decode_tps": 32.3,
+     "decode_tps_source": "engine",
+     "prompt_ms": 145022.5,
+     "decode_ms": 743.3,
+     "drafts_offered": 12,
+     "drafts_accepted": 11,
+     "run": 2
+    }
+   ],
+   "prompt_tps": {
+    "median": 875.3,
+    "min": 862.5,
+    "max": 882.2,
+    "n": 3
+   },
+   "ttft_s": {
+    "median": 145.115,
+    "min": 143.976,
+    "max": 147.267,
+    "n": 3
+   },
+   "prompt_tokens": {
+    "median": 126936,
+    "min": 126936,
+    "max": 126936,
+    "n": 3
+   },
+   "reused_tokens": {
+    "median": 0,
+    "min": 0,
+    "max": 0,
+    "n": 3
+   }
+  },
+  "failures": [],
+  "skipped": null
+ },
+ "clients": {
+  "clients": 4,
+  "rounds": 3,
+  "max_tokens_each": 128,
+  "prompt_words_each": 400,
+  "result": {
+   "clients": 4,
+   "rounds": [
+    {
+     "round": 0,
+     "wall_s": 26.04,
+     "tokens": 512,
+     "total_tps": 19.66,
+     "first_s": [
+      2.127075605036225,
+      9.240679910988547,
+      15.478307076962665,
+      21.63767452299362
+     ],
+     "latency_s": [
+      7.507051446009427,
+      13.840875590976793,
+      19.81202047195984,
+      26.03649609297281
+     ],
+     "errors": [],
+     "error_count": 0
+    },
+    {
+     "round": 1,
+     "wall_s": 27.21,
+     "tokens": 512,
+     "total_tps": 18.82,
+     "first_s": [
+      1.7072675169911236,
+      8.154933284036815,
+      15.141829574014992,
+      22.74666496901773
+     ],
+     "latency_s": [
+      6.410208966990467,
+      13.35585518804146,
+      21.126862065983005,
+      27.210242947970983
+     ],
+     "errors": [],
+     "error_count": 0
+    },
+    {
+     "round": 2,
+     "wall_s": 26.19,
+     "tokens": 512,
+     "total_tps": 19.55,
+     "first_s": [
+      1.704210168973077,
+      8.902073623961769,
+      14.81899545097258,
+      21.48645173496334
+     ],
+     "latency_s": [
+      7.1032350360183045,
+      13.100729423982557,
+      19.891528766951524,
+      26.18566560896579
+     ],
+     "errors": [],
+     "error_count": 0
+    }
+   ],
+   "total_tps": {
+    "median": 19.55,
+    "min": 18.82,
+    "max": 19.66,
+    "n": 3
+   },
+   "ttft_p50_s": 12.03,
+   "ttft_p95_s": 22.137,
+   "latency_p50_s": 16.826,
+   "latency_p95_s": 26.647,
+   "errors": 0
+  },
+  "failures": []
+ }
+}
