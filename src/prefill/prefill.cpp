@@ -1557,11 +1557,19 @@ const MmqPlan& mmq_plan() {
                 }
                 p.fallback = true;
                 // the fused path's buffers (Xq, H) exist for it; a chunk it does not take (a small one) keeps the FP16 path
-                if (on && lay.native && fused::native_supported(gt, dt)) { p.fo[(size_t) l] = 1; p.any = true; }
+                // WHICH device's fused kernels take it is NOT part of the plan: mmq_plan() is one global, computed on
+                // whichever device opened the model first, while the layer loop asks the current device (the fused_nat
+                // gate below calls native_supported() per chunk). The plan only records "no MMQ tile anywhere, a native
+                // fused kernel can take this format"; deciding the coverage here froze the first device's answer onto
+                // every stage: on a layer split over unlike cards (measured 2026-11-08, RX 6800 XT + AI PRO R9700,
+                // UD-IQ4_XS-v31 with STRATA_PF_FUSED_Q50=1) the Q5_0-down layers got no path on the RDNA4 stage -
+                // neither MMQ nor fused_only - so it ran them on the FP16 GEMM at the full chunk inside the buffers
+                // fused_layout() had shrunk for the fused path, and that stage's backstop aborted the request.
+                if (on && lay.native) { p.fo[(size_t) l] = 1; p.any = true; }
                 if (mf) {
                     const bool fo = p.fo[(size_t) l] != 0;
                     const std::string why = std::string(!mmq::fits(gt, kFF2) ? "no MMQ tile for the gate/up format on every visible GPU" : "no MMQ tile for the down format on every visible GPU") +
-                                            (fo ? "; the native fused kernels take it" : "; the dequantize + FP16 GEMM path takes it");
+                                            (fo ? "; a native fused kernel takes it where the device covers it, the FP16 GEMM elsewhere" : "; the dequantize + FP16 GEMM path takes it");
                     mf_note(fo ? "fused-native" : "fp16-gemm", why, gt, dt);
                 }
                 continue;
@@ -1691,8 +1699,23 @@ uint64_t hc_set_bytes(size_t T, bool f16_io) {
 // lets a bigger chunk or ring fit in the slots the prompt path borrows.  A last chunk below stream_all_min() still runs
 // MMQ in the same buffers, so each keeps MMQ's size for stream_all_min() - 1 tokens.  `src`: the layout streams experts
 // (Prefill::init got an ExpertSource; without one no chunk takes the streamed walk, so no chunk is fused).
+// STATIC LAYERS THAT DON'T TAKE THE FUSED KERNELS: a layer with no planned path at all (no MMQ tile on any visible
+// GPU and no native fused kernel for its formats) takes the dequantize + FP16 GEMM, a WMMA-tile layer and an
+// APR-folded layer take MMQ.  Any of them at the full chunk writes T*K rows, which is what the fused layout's
+// shrunk buffers cannot hold - so the shrink needs every layer to be on the fused path, not just every FORMAT to
+// be covered: on a layer split over unlike cards fused_ring() asks the current device and can say "all covered"
+// while the global plan still leaves one layer on the FP16 path (the mmq_plan() note above; measured 2026-11-08,
+// RX 6800 XT + AI PRO R9700, UD-IQ4_XS-v31: the stage's backstop aborted at the first Q5_0-down layer).
+bool fused_shrink_ok() {
+    const strata::kernels::cpu::ExpertLayout& lay = strata::kernels::cpu::expert_layout();
+    if (!lay.native) return true;   // the Q2_0 fused path takes every layer; fused_ring() decided on the pack
+    const MmqPlan& mp = mmq_plan();
+    for (size_t l = 0; l < lay.fmt.size(); ++l)
+        if (!(mp.layer[l] || mp.fo[l]) || mp.wmma_only[l] || lay.fmt[l].had_gu || lay.fmt[l].had_d) return false;
+    return true;
+}
 bool fused_layout(size_t T, bool src) {
-    return src && fused_ring() && mmq_plan().any && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
+    return src && fused_ring() && fused_shrink_ok() && mmq_plan().any && ring_slots(T) > STAGE && (int64_t) T >= stream_all_min();
 }
 // The MoE buffers MMQ and the fused path share: GU and H in floats, Xq and Hq in bytes.  Without `fused` (the
 // default): MMQ's, for T tokens.
