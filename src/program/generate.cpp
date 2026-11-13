@@ -163,6 +163,8 @@ void set_batch_slots(int n);   // metal/src/engine/window.cpp: how many --batch 
 bool window_slot_copy_main(bool into_slot, int slot, int64_t upto, bool kv_only, std::string& err);
 std::string draft_vocab_default();   // metal/src/engine/window.cpp: the packaged default draft subset (data/draft_vocab.bin)
 bool draft_vocab_whole_head();       // STRATA_METAL_DRAFT_VOCAB=full
+// session files: the MTP GGUF the window loads (a model input of the fingerprint), empty without --mtp
+const std::string& mtp_gguf_path();   // metal/src/engine/window.cpp
 }
 #endif
 
@@ -12106,7 +12108,13 @@ int main(int argc, char** argv) {
                 in.embedding = o.embd_gguf;
                 in.ple = o.ple_gguf;
                 in.pack = o.pack;
+#if defined(STRATA_GPU_METAL)
+                // the Mac's drafter is the MTP GGUF beside the rt directory (window.cpp mtp_load): its rt directory
+                // holds draft_vocab.bin only, none of the pack's dense.bin / dense.txt / experts.bin
+                in.mtp = o.mtp.empty() ? std::string() : strata::metal_engine::mtp_gguf_path();
+#else
                 in.mtp = o.mtp.empty() ? std::string() : o.mtp + "/dense.bin";
+#endif
                 if (srcp != nullptr) in.experts = srcp->model_inputs();
                 std::vector<strata::core::SessionModelFile> files = strata::core::session_model_inputs(in);
                 // the pack's other files the loader reads (weights.cpp, expert_layout.cpp)
@@ -12117,7 +12125,9 @@ int main(int argc, char** argv) {
                     if (srcp == nullptr) files.push_back({"pack experts.bin", o.pack + "/experts.bin", true});
                 }
                 if (!o.mtp.empty()) {
+#if !defined(STRATA_GPU_METAL)   // (Metal: the drafter is the one GGUF above)
                     for (const char* n : {"dense.txt", "experts.bin"}) files.push_back({std::string("mtp ") + n, o.mtp + "/" + n});
+#endif
                     files.push_back({"mtp draft_vocab.bin", o.mtp + "/draft_vocab.bin", true});
                 }
                 uint64_t fp = 0;
@@ -15640,6 +15650,9 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                 };
                 strata::core::progress_at(save ? "saving a session" : "restoring a session");
+                // without a drafter the file holds no draft layer, as a parked conversation (the park context passes
+                // no draft state either): the drafter's empty state has no cells to save or restore
+                const strata::core::QsaState* sdraft = use_mtp ? &mtp.kv_state() : nullptr;
                 // the background copy of the last turn checkpoint (STRATA_CKPT_ASYNC) lands before anything below copies, frees
                 // or writes the checkpoints (a join inside the session file writer would match only the copy of a checkpoint)
                 strata::core::conversation_checkpoint_join(nullptr);
@@ -15690,7 +15703,7 @@ int main(int argc, char** argv) {
                             sl.state_bytes = state;
                             sl.tokens = live.size();
                             sl.images = live_imgs.size();
-                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + 1;
+                            sl.kv_layers = (uint64_t) std::max<int64_t>(ss.qsa_alloc, 0) + (sdraft ? 1 : 0);
                         }
                         const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib << 20;
                         if (o.session_save_reclaim) {
@@ -15728,7 +15741,7 @@ int main(int argc, char** argv) {
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
                         blocking("capture", sl.state_bytes == UINT64_MAX ? 0 : sl.state_bytes);
-                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, mtp.kv_state(),
+                        if (!strata::core::conversation_snapshot_sources(meta, sources, view, ss, g, sdraft,
                                                                          err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -15774,7 +15787,7 @@ int main(int argc, char** argv) {
                             return false;
                         };
                         if (!strata::core::conversation_session_read_limits(
-                                limits, ss, g, mtp.kv_state(), (uint64_t) o.max_context,
+                                limits, ss, g, sdraft, (uint64_t) o.max_context,
                                 (uint64_t) std::max(o.prompt_cache, 1), err)) {
                             refuse(err, strata::core::SessionError::io);
                             continue;
@@ -15791,7 +15804,7 @@ int main(int argc, char** argv) {
                     const double read_ms = ms();
                     // the whole image against this engine, still without any device write
                     blocking("validate", bytes);
-                    if (!strata::core::conversation_snapshot_validate(image, ss, g, mtp.kv_state(), err)) {
+                    if (!strata::core::conversation_snapshot_validate(image, ss, g, sdraft, err)) {
                         refuse(err);
                         continue;
                     }
@@ -15804,7 +15817,7 @@ int main(int argc, char** argv) {
                     live_ok = false;
                     // host -> device in synchronous copies of the whole state: one bounded allowance
                     blocking("transfer", bytes);
-                    if (strata::core::conversation_snapshot_restore(image, ss, g, mtp.kv_state(), err) !=
+                    if (strata::core::conversation_snapshot_restore(image, ss, g, sdraft, err) !=
                         strata::core::ConversationRestore::restored) {
                         // validated above: a failure here is a transfer failure, after device writes began - never
                         // decode from a partial state; the server starts the engine again
