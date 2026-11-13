@@ -2891,6 +2891,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
+                    if (owner_ != nullptr && !owner_[(size_t) l * m.g->n_expert + e]) continue;   // expert split: another rank's
                     int job = -1;
                     const uint8_t* b = nullptr;
                     if (gsrc != nullptr) {   // read by the stager's thread when its turn comes (see Stager::Job)
@@ -3683,6 +3684,13 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                               "'s expert path at a chunk of " + std::to_string(T) + " tokens";
                         return false;
                     }
+                    if (owner_ != nullptr && fused_l) {
+                        err = "prefill: the expert split is not wired for the fused int8 expert path (layer " +
+                              std::to_string(l) + ")";
+                        return false;
+                    }
+                    int64_t zero_row = -1;                // expert split: the Dm row every pair of another rank's expert reads
+                    double split_rows_per_expert = 0.0;   // expert split: the layer's routed rows per routed expert, all ranks'
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false;                // multi-GPU: the peer computed rows of this layer (MMQ path only)
                     if (fused_l) {
@@ -3787,9 +3795,25 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 pe.fold(); dpct::select_device(pd);
                         }
                         std::fill(m.cnt.begin(), m.cnt.end(), 0);
+                        if (owner_ != nullptr) {
+                            // THE INT8 / FP16 CHOICE MUST NOT DEPEND ON WHICH RANK HOLDS WHAT.  `auto` picks per group of
+                            // experts from the group's rows per expert, and a rank's groups are made of its own experts:
+                            // the ranks then mixed the two chains differently from a single card, and the prompt's state
+                            // drifted from it (measured: layer 0 within 0.5% a row, the tokens after the prompt differed).
+                            // Under the split the choice is per LAYER, from every rank's routed rows.
+                            std::vector<char> routed((size_t) m.g->n_expert, 0);
+                            int64_t n_routed = 0;
+                            for (int64_t i = 0; i < T * K; ++i) {
+                                const int32_t e = ids_h[(size_t) i];
+                                if (e >= 0 && e < m.g->n_expert && !routed[(size_t) e]) { routed[(size_t) e] = 1; ++n_routed; }
+                            }
+                            split_rows_per_expert = n_routed > 0 ? (double) (T * K) / (double) n_routed : 0.0;
+                        }
                         for (int64_t i = 0; i < T * K; ++i) {
                             const int32_t e = ids_h[(size_t) i];
                             if (e < 0 || e >= m.g->n_expert) { err = "prefill: routed id out of range"; return false; }
+                            // expert split: another rank's expert gets no rows here (its count stays 0)
+                            if (owner_ != nullptr && !owner_[(size_t) l * m.g->n_expert + e]) continue;
                             ++m.cnt[(size_t) e];
                         }
                         // multi-GPU: the rows of the experts the peer computes go last, as one block [rows_local, T*K)
@@ -3825,8 +3849,20 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             m.off[(size_t) m.g->n_expert] = r;
                         }
                         std::vector<int32_t> fill(m.off.begin(), m.off.end() - 1);
+                        if (owner_ != nullptr) {
+                            // EXPERT SPLIT: this rank's rows are [0, rows_local); every pair of another rank's expert
+                            // reads row `rows_local`, which is zeroed before the combine, so it adds nothing here and
+                            // the owner's rank adds it in the reduce after the combine.
+                            rows_local = m.off[(size_t) m.g->n_expert];
+                            if (rows_local < T * K) zero_row = rows_local;
+                            for (int64_t p = rows_local; p < T * K; ++p) src_h[(size_t) p] = 0;
+                        }
                         for (int64_t i = 0; i < T * K; ++i) {
                             const int32_t e = ids_h[(size_t) i];
+                            if (owner_ != nullptr && !owner_[(size_t) l * m.g->n_expert + e]) {
+                                slot_h[(size_t) i] = (int32_t) rows_local;
+                                continue;
+                            }
                             const int32_t p = fill[(size_t) e]++;
                             slot_h[(size_t) i] = p;
                             src_h[(size_t) p] = (int32_t) (i / K);
@@ -4438,7 +4474,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                     static std::map<std::tuple<const void*, int, int>, I8Cross> xover;   // per queue (a layer split has a card per queue)
                                     auto it = xover.find({(const void*) m.cs, f.gu_type, f.d_type});
                                     if (it == xover.end()) it = xover.emplace(std::make_tuple((const void*) m.cs, f.gu_type, f.d_type), i8_calibrate(m, f)).first;
-                                    use_i8 = (double) nr / xg_n < it->second.rows;
+                                    use_i8 = (owner_ != nullptr ? split_rows_per_expert : (double) nr / xg_n) < it->second.rows;
                                     static long groups_i8 = 0, groups_fp = 0;
                                     (use_i8 ? groups_i8 : groups_fp) += 1;
                                     if (static bool said_n = false; !said_n && groups_i8 + groups_fp >= 500) {
@@ -4771,7 +4807,13 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                         if (!m.pp->p2p)
                             copy_f32_wide(m.Dm + (size_t) m.pp->back_at * N, m.pp->host_rows, m.pp->back_rows * N, m.cs);
                     }
+                    if (owner_ != nullptr) {   // expert split: the zero row, and the shared expert on its one rank
+                        if (zero_row >= 0) m.cs->memset(m.Dm + (size_t) zero_row * N, 0, (size_t) N * sizeof(float));
+                        // (the rows, not the gate: the combine multiplies by sigmoid(gate), which is 0.5 at 0)
+                        if (!own_shared_) m.cs->memset(m.shared, 0, (size_t) T * (size_t) N * sizeof(float));
+                    }
                     moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
+                    if (on_ffn && !on_ffn(m.bo, T, l, (void*) m.cs, err)) return false;
                     // debug: STRATA_DBG_NAN=1 reports the first layer of a chunk whose MoE produced non-finite values
                     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {
                         m.cs->wait();

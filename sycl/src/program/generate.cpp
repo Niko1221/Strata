@@ -7856,6 +7856,10 @@ int main(int argc, char **argv) try {
         std::vector<std::unique_ptr<strata::core::NativeHead>> tp_heads;
         std::vector<std::unique_ptr<strata::kernels::PleTable>> tp_ple_tables;
         std::vector<std::vector<float>> tp_ple_host;
+        // Replicated dense: the parallel prompt path's owner tables (one per rank) and its host reduce.
+        std::vector<std::vector<uint8_t>> tp_owned;
+        strata::program::TpBulkReduce tp_bulk;
+        bool tp_prefill_par = false;
         if (o.tp > 0) {
             g_tp_pool_serialise = true;
             // the later ranks' devices: --tp-device D1[,D2..] or the next visible ones
@@ -8105,6 +8109,72 @@ int main(int argc, char **argv) try {
                     tp_ple_tables.push_back(std::move(tbl));
                     std::fprintf(stderr, "strata serve: --tp %d: rank %d's PLE wired (ready=%d)\n", o.tp, r,
                                  (int) s1.ple.ready());
+                }
+            }
+            // THE PARALLEL PROMPT PATH (replicated dense; STRATA_TP_PREFILL=rank0 keeps the prompt on rank 0 alone).
+            // Every rank reads the prompt on its own batched path, computing only the experts it owns, and the ranks'
+            // layer outputs are added on the host after every combine (`TpBulkReduce`).  No rank streams another
+            // rank's experts, and no state is copied afterwards: every rank's session advanced by itself.
+            if (tp_whole && !tp_owner.empty() && o.prefill_chunk > 0 && srcp != nullptr) {
+                const char* pm = std::getenv("STRATA_TP_PREFILL");
+                const bool want = pm == nullptr || std::strcmp(pm, "rank0") != 0;
+                const size_t n_tab = tp_owner.size();
+                tp_owned.assign((size_t) o.tp, std::vector<uint8_t>(n_tab, 0));
+                for (size_t i = 0; i < n_tab; ++i) tp_owned[(size_t) tp_owner[i]][i] = 1;
+                bool ok = want;
+                int64_t rank_chunk = 0;
+                static constexpr int64_t kRankChunks[] = {8192, 6144, 4096, 3072, 2048, 1536, 1024, 512};
+                for (int r = 1; ok && r < o.tp; ++r) {
+                    strata::program::TpRank& rk = *tp_ranks[(size_t) r - 1];
+                    const strata::core::OnDevice on_sp(ordinals[(size_t) r]);
+                    bool up = false;
+                    for (const int64_t c : kRankChunks) {
+                        if (c > o.prefill_chunk || (rank_chunk > 0 && c > rank_chunk)) continue;
+                        std::string e2;
+                        if (rk.sp.init(rk.wt, g, rk.ss, srcp, &rk.xcache, rk.h_res_own.data(), c, (void*) rk.stream, e2)) {
+                            up = true;
+                            rank_chunk = c;
+                            break;
+                        }
+                        rk.sp.reset();
+                        if (e2.find("do not fit") == std::string::npos) {
+                            std::fprintf(stderr, "strata serve: --tp %d: rank %d's prompt path: %s\n", o.tp, r, e2.c_str());
+                            break;
+                        }
+                    }
+                    rk.sp_ready = up;
+                    ok = up;
+                }
+                if (ok) {
+                    std::vector<sycl::queue*> qs;
+                    for (int r = 0; r < o.tp; ++r) {
+                        const strata::core::OnDevice on_q(ordinals[(size_t) r]);
+                        qs.push_back(&dpct::get_in_order_queue());
+                    }
+                    if (!tp_bulk.init(qs, (size_t) o.prefill_chunk * (size_t) g.n_embd)) ok = false;
+                }
+                // TPDIAG (STRATA_TP_PREFILL_OWNER=<r>): rank r owns every expert on the prompt path and the other ranks
+                // add zeros - the plumbing (lockstep, reduce, the ranks' dense paths) without the ownership filter.
+                if (const char* ow = std::getenv("STRATA_TP_PREFILL_OWNER"); ok && ow != nullptr)
+                    for (int r = 0; r < o.tp; ++r)
+                        std::fill(tp_owned[(size_t) r].begin(), tp_owned[(size_t) r].end(), r == std::atoi(ow) ? 1 : 0);
+                if (ok) {
+                    for (int r = 0; r < o.tp; ++r) {
+                        strata::prefill::Prefill& p = r == 0 ? sp : tp_ranks[(size_t) r - 1]->sp;
+                        p.set_expert_owner(tp_owned[(size_t) r].data(), r == 0);
+                        p.on_ffn = [&tp_bulk, r, &g](float* bo, int64_t T, int64_t l, void* stream, std::string& e) -> bool {
+                            return tp_bulk.reduce(r, bo, T * g.n_embd, *strata::q_of(stream), e, l);
+                        };
+                    }
+                    tp_prefill_par = true;
+                    std::fprintf(stderr, "strata serve: --tp %d: every rank reads the prompt on its own batched path "
+                                         "(chunks of up to %lld tokens on ranks 1..%d)\n", o.tp, (long long) rank_chunk,
+                                 o.tp - 1);
+                } else if (want) {
+                    for (auto& rk : tp_ranks)
+                        if (rk->sp_ready) { const strata::core::OnDevice on_sp(rk->dev); rk->sp.reset(); rk->sp_ready = false; }
+                    std::fprintf(stderr, "strata serve: --tp %d: the ranks' own prompt paths did not come up; rank 0 reads "
+                                         "the prompt and its state is copied to the others\n", o.tp);
                 }
             }
             std::fprintf(stderr, "strata serve: --tp %d: %d ranks on devices", o.tp, o.tp);
@@ -11499,6 +11569,36 @@ int main(int argc, char **argv) try {
                              image.bytes() >> 20);
                 return true;
             };
+            // THE PARALLEL PROMPT PATH: every rank's own `Prefill` over the same chunk at the same time.  The ranks meet
+            // on the host after every layer's combine (`tp_bulk`), so a chunk is the same tokens on every rank; the chunk
+            // is the smallest any rank's buffers hold.  Rank 0 runs on this thread (its draft layer and loan are here).
+            auto read_part_tp = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
+                int64_t C = std::max<int64_t>(sp.chunk(), 1);
+                for (auto& rk : tp_ranks) C = std::min<int64_t>(C, std::max<int64_t>(rk->sp.chunk(), 1));
+                for (int64_t q = a0; q < b0;) {
+                    const int64_t r1 = std::min(b0, q + C);
+                    tp_bulk.restart();
+                    std::vector<std::string> errs(tp_ranks.size());
+                    std::vector<char> oks(tp_ranks.size(), 0);
+                    std::vector<std::thread> th;
+                    for (size_t k = 0; k < tp_ranks.size(); ++k)
+                        th.emplace_back([&, k] {
+                            strata::program::TpRank& rk = *tp_ranks[k];
+                            const strata::core::OnDevice on(rk.dev);
+                            oks[k] = rk.sp.run(ids.data() + q, r1 - q, q, errs[k]) ? 1 : 0;
+                            if (!oks[k]) tp_bulk.fail();
+                        });
+                    const bool ok0 = sp.run(ids.data() + q, r1 - q, q, e);
+                    if (!ok0) tp_bulk.fail();
+                    for (auto& t : th) t.join();
+                    if (!ok0) return false;
+                    for (size_t k = 0; k < tp_ranks.size(); ++k)
+                        if (!oks[k]) { e = "rank " + std::to_string(k + 1) + "'s prompt path: " + errs[k]; return false; }
+                    q = r1;
+                }
+                tp_bulk.restart();   // (STRATA_PREFILL_TIMING: prints the last chunk's reduce times)
+                return true;
+            };
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
                 // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
                 if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
@@ -11666,6 +11766,7 @@ int main(int argc, char **argv) try {
                 }
                 const auto tsp = Clock::now();
                 const bool sp_ok = win ? read_windows(at, to, err)
+                                   : tp_prefill_par ? read_part_tp(at, to, err)
                                        : (read_part(at, to, err) && tp_broadcast(to, err));
                 if (trace) {
                     std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (to - at),

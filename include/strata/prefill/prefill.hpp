@@ -218,6 +218,14 @@ public:
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
     /// K/V from them.  The prefill stream is synchronized before the call.
     std::function<bool(const float* R_rows, int64_t T, int64_t pos0, std::string& err)> on_chunk;
+    /// TENSOR PARALLEL, EXPERT SPLIT (SYCL, opt-in).  `owned` is [n_layers][n_expert], 1 where THIS rank owns the
+    /// expert; null (the default) = it owns every expert and nothing below changes.  With a table, an expert the
+    /// rank does not own is neither streamed nor computed and its rows add zero to the combine; `shared` says
+    /// whether this rank counts the shared expert.  The table must outlive the runs.
+    void set_expert_owner(const uint8_t* owned, bool shared) { owner_ = owned; own_shared_ = shared; }
+    /// Called after every layer's expert combine with the layer's FFN output (`bo`, T x n_embd floats, device) on
+    /// the compute stream: the expert split adds the other ranks' partial sums into it here.
+    std::function<bool(float* bo, int64_t T, int64_t layer, void* stream, std::string& err)> on_ffn;
     /// DFlash2 prompt taps (CUDA / HIP, single stage): before `run`, ask for the completed output of each layer in `layers` (zero-based; the
     /// mean of the hc streams) for the prompt rows at positions >= `first_pos`, at most `cap_rows` rows per chunk (a staging buffer of
     /// cap_rows x layers x n_embd floats is allocated at the first chunk).  After each chunk that has such rows, on_taps(taps
@@ -335,6 +343,8 @@ private:
     bool lm_mid_ = false;
     bool lm_force_ = false;        ///< run_multi: the walk even for a short total
     bool lm_by_default_ = false;   ///< the walk is on because nothing was set (a wider VRAM margin, the measured super-chunk size)
+    const uint8_t* owner_ = nullptr;                 ///< set_expert_owner (survives `reset`)
+    bool own_shared_ = true;
     int ring_room_ = 0;                              ///< set_ring_room (this instance's, and it survives `reset`)
     void* ring_room_base_ = nullptr;                 ///< set_ring_room_base: the bytes the room's slots are
     uint64_t ring_room_bytes_ = 0;

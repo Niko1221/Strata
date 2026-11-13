@@ -20,6 +20,7 @@
 #include "strata/core/weights.hpp"
 #include "strata/core/on_device.hpp"
 #include "strata/sycl_queue.hpp"
+#include "strata/prefill/prefill.hpp"
 
 #include <algorithm>
 #include <sycl/sycl.hpp>
@@ -28,6 +29,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -39,6 +44,143 @@ namespace strata::program {
 using OnTpDevice = strata::core::OnDevice;
 
 /// One rank of a tensor-parallel pair.
+/// THE PROMPT PATH'S REDUCE (replicated dense + expert split).  A prompt chunk is thousands of rows, far past what
+/// the in-kernel collective is sized for, so the ranks meet on the host: each copies its layer output down, every
+/// rank's thread adds the partial sums in rank order (the same order on every rank, so the sums are bit-identical),
+/// and each copies its sum back up.  One instance, shared by the ranks' threads.
+struct TpBulkReduce {
+    int n = 0;
+    size_t cap = 0;   // floats
+    std::vector<float*> part, sum;
+    std::mutex mu;
+    std::condition_variable cv;
+    int arrived = 0;
+    uint64_t gen = 0;
+    bool broken = false;
+
+    std::vector<sycl::context> ctx;
+    /// `queues[r]` is rank r's queue: its two buffers are host USM of ITS context, so its copies down and up are
+    /// DMA (a copy into pageable memory measured ~25 ms for a 21 MB layer output, 4x Arc Pro B60).
+    bool init(const std::vector<sycl::queue*>& queues, size_t max_floats) {
+        n = (int) queues.size();
+        cap = max_floats;
+        const size_t bytes = (max_floats * sizeof(float) + 63) / 64 * 64;
+        part.assign((size_t) n, nullptr);
+        sum.assign((size_t) n, nullptr);
+        for (int r = 0; r < n; ++r) {
+            ctx.push_back(queues[(size_t) r]->get_context());
+            part[(size_t) r] = (float*) sycl::aligned_alloc_host(64, bytes, ctx.back());
+            sum[(size_t) r] = (float*) sycl::aligned_alloc_host(64, bytes, ctx.back());
+            if (part[(size_t) r] == nullptr || sum[(size_t) r] == nullptr) return false;
+            std::memset(part[(size_t) r], 0, bytes);   // the pages are in before the first prompt
+            std::memset(sum[(size_t) r], 0, bytes);
+        }
+        return true;
+    }
+    ~TpBulkReduce() {
+        for (size_t r = 0; r < ctx.size(); ++r) {
+            if (r < part.size() && part[r] != nullptr) sycl::free(part[r], ctx[r]);
+            if (r < sum.size() && sum[r] != nullptr) sycl::free(sum[r], ctx[r]);
+        }
+    }
+    // rank 0's thread's time in each part of the reduce, since the last `restart` (STRATA_PREFILL_TIMING prints it)
+    double ms_down = 0, ms_meet1 = 0, ms_sum = 0, ms_meet2 = 0;
+    int64_t calls0 = 0;
+    void restart() {
+        std::lock_guard<std::mutex> lk(mu);
+        broken = false;
+        arrived = 0;
+        if (calls0 > 0 && std::getenv("STRATA_PREFILL_TIMING") != nullptr)
+            std::fprintf(stderr, "strata tp: prompt reduce, rank 0, %lld calls: copy down %.0f ms, waiting for the ranks "
+                                 "%.0f ms, sum %.0f ms, waiting for the sums %.0f ms\n", (long long) calls0, ms_down,
+                         ms_meet1, ms_sum, ms_meet2);
+        ms_down = ms_meet1 = ms_sum = ms_meet2 = 0;
+        calls0 = 0;
+    }
+    void fail() { std::lock_guard<std::mutex> lk(mu); broken = true; cv.notify_all(); }
+    /// Every rank's thread waits here until all of them have arrived.  False: a rank failed or never came.
+    bool meet() {
+        std::unique_lock<std::mutex> lk(mu);
+        if (broken) return false;
+        const uint64_t g = gen;
+        if (++arrived == n) { arrived = 0; ++gen; cv.notify_all(); return true; }
+        if (!cv.wait_for(lk, std::chrono::seconds(120), [&] { return gen != g || broken; })) {
+            broken = true;
+            cv.notify_all();
+            return false;
+        }
+        return !broken;
+    }
+    bool reduce(int r, float* y, int64_t floats, sycl::queue& q, std::string& err, int64_t layer = -1) {
+        if (r < 0 || r >= n || floats <= 0 || (size_t) floats > cap) {
+            err = "tensor parallel: a prompt reduce of " + std::to_string(floats) + " floats against room for " +
+                  std::to_string(cap);
+            fail();
+            return false;
+        }
+        using RClock = std::chrono::steady_clock;
+        auto since = [](RClock::time_point t) { return std::chrono::duration<double, std::milli>(RClock::now() - t).count(); };
+        auto t0 = RClock::now();
+        q.memcpy(part[(size_t) r], y, (size_t) floats * sizeof(float)).wait();
+        if (r == 0) { ms_down += since(t0); ++calls0; }
+        t0 = RClock::now();
+        if (!meet()) { err = "tensor parallel: a rank did not reach the prompt reduce"; return false; }
+        if (r == 0) ms_meet1 += since(t0);
+        t0 = RClock::now();
+        // THIS THREAD SUMS ITS STRIPE, FOR EVERY RANK.  One pass over the partials in all (each thread a 1/n stripe)
+        // instead of every thread summing the whole output; the adds are in rank order, so every rank's copy of the
+        // sum holds the same bits.
+        {
+            const int64_t lo = floats * r / n, hi = floats * (r + 1) / n;
+            float tmp[2048];
+            for (int64_t at = lo; at < hi; at += 2048) {
+                const int64_t m = std::min<int64_t>(2048, hi - at);
+                const float* p0 = part[0] + at;
+                for (int64_t i = 0; i < m; ++i) tmp[i] = p0[i];
+                for (int k = 1; k < n; ++k) {
+                    const float* pk = part[(size_t) k] + at;
+                    for (int64_t i = 0; i < m; ++i) tmp[i] += pk[i];
+                }
+                for (int k = 0; k < n; ++k) std::memcpy(sum[(size_t) k] + at, tmp, (size_t) m * sizeof(float));
+            }
+        }
+        float* s = sum[(size_t) r];
+        if (r == 0) ms_sum += since(t0);
+        t0 = RClock::now();
+        // TPDIAG (STRATA_TP_DIAG_BULK=1): every rank's partial and the sum, per layer, for the first chunks.
+        static const bool diag = std::getenv("STRATA_TP_DIAG_BULK") != nullptr;
+        // nobody stages the next layer over `part` until every rank has read this one
+        if (!meet()) { err = "tensor parallel: a rank did not finish the prompt reduce"; return false; }
+        if (r == 0) ms_meet2 += since(t0);
+        if (r == 0) {   // TPDIAG (STRATA_TP_DIAG_BULK_DUMP=<file>): the first reduce's sum, raw floats
+            static bool dumped = false;
+            if (const char* dp = std::getenv("STRATA_TP_DIAG_BULK_DUMP"); dp != nullptr && !dumped) {
+                dumped = true;
+                if (std::FILE* f = std::fopen(dp, "wb")) { std::fwrite(s, sizeof(float), (size_t) floats, f); std::fclose(f); }
+            }
+        }
+        if (diag && r == 0) {
+            static int calls = 0;
+            if (calls++ < 96) {
+                std::string line;
+                char b[96];
+                for (int k = 0; k < n; ++k) {
+                    double a2 = 0.0;
+                    for (int64_t i = 0; i < floats; ++i) a2 += (double) part[(size_t) k][i] * (double) part[(size_t) k][i];
+                    std::snprintf(b, sizeof b, " part%d=%.9g", k, a2);
+                    line += b;
+                }
+                double t1 = 0.0, t2 = 0.0;
+                for (int64_t i = 0; i < floats; ++i) { t1 += (double) s[i]; t2 += (double) s[i] * (double) s[i]; }
+                std::fprintf(stderr, "TPDIAG bulk layer=%lld n=%lld%s sum=%.9g sumsq=%.9g\n", (long long) layer,
+                             (long long) floats, line.c_str(), t1, t2);
+            }
+        }
+        q.memcpy(y, s, (size_t) floats * sizeof(float));   // in order on the stream; the next reduce's copy down waits for it
+        return true;
+    }
+};
+
 /// One expert a rank owns under the expert split: where its bytes are in pinned host memory.
 struct TpOwnedExpert {
     int32_t layer = 0;
@@ -63,6 +205,10 @@ struct TpRank {
     strata::core::SessionState ss;
     strata::core::VerifyHits vh;
     strata::core::Verifier ver;
+    /// Replicated dense + expert split: this rank's own batched prompt path and the host copy of its residency table.
+    strata::prefill::Prefill sp;
+    bool sp_ready = false;
+    std::vector<int32_t> h_res_own;
 
     /// OPENS THIS RANK'S DEVICE AND STREAM - early, before the engine allocates the single-card arenas it
     /// needs for its own context.  The port's `OnDevice` guard switches the current device; the queue is
@@ -189,6 +335,7 @@ struct TpRank {
                 return false;
             }
             q.memcpy(residency, res.data(), nres * sizeof(int32_t)).wait();
+            h_res_own = res;
             vh.n_slots = (int64_t) own->size();
             vh.blob = src_cache != nullptr && src_cache->blob > 0 ? src_cache->blob : max_blob;
             vh.cache_base = base;
@@ -309,6 +456,7 @@ struct TpRank {
     void free() {
         if (dev < 0) return;
         (void) DPCT_CHECK_ERROR(dpct::select_device(dev));
+        if (sp_ready) { sp.reset(); sp_ready = false; }
         sycl::queue& q = dpct::get_in_order_queue();
         if (residency != nullptr) sycl::free(residency, q);
         xcache.close();
