@@ -1,8 +1,9 @@
-// sycl/src/kernels/tq_sycl_parity.cpp - the Gyro trellis experts (TQ2_T 144, TQK6 145, TQK7 146, Hadamard-folded) on the
+// sycl/src/kernels/tq_sycl_parity.cpp - the Gyro trellis experts (TQ2_T 144, TQK6 145, TQK7 146 and Gyro-L's pair trellis
+// TQP5 147, TQP6 148, TQP7 149, Hadamard-folded) on the
 // SYCL kernels, against real tensors of a Gyro GGUF.
 //
 //   tq_sycl_parity <pack-dir> <model.gguf> [layer ...]
-//   tq_sycl_parity --synthetic [--hadamard] GU/DOWN ...      (random trellis codes and scales, e.g. 145/146 144/144)
+//   tq_sycl_parity --synthetic [--hadamard] GU/DOWN ...      (random trellis codes and scales, e.g. 145/146 144/144 148/149)
 //   tq_sycl_parity --bench GU/DOWN [groups [entries-per-group [iterations]]]   (native_expert_grouped on distinct experts in VRAM)
 //
 // For one expert of each layer (the gate/up/down rows read from the GGUF, the Hadamard signs and block from the pack):
@@ -53,22 +54,35 @@ double rel(const std::vector<float>& a, const std::vector<float>& b) {
     return n / (d + 1e-30);
 }
 float h2f(uint16_t b) { return cpu::tq_detail::tq_half_to_float(b); }
-int kbits(int t) { return t == 144 ? 8 : t == 145 ? 6 : 7; }
-size_t bsize(int t) { return 2 + 4 * (size_t) kbits(t); }
+// TQP (Gyro-L, 147-149): 64 steps of K bits and 2 weights; the others: 32 steps of K bits and 4 weights
+bool is_tqp(int t) { return t >= 147 && t <= 149; }
+int kbits(int t) { return t == 144 ? 8 : t == 147 ? 5 : t == 145 || t == 148 ? 6 : 7; }
+size_t bsize(int t) { return 2 + (is_tqp(t) ? 8 : 4) * (size_t) kbits(t); }
 
-// the 32 trellis states of block b (qs after the fp16 scale)
+// the trellis states of block b (64 for TQP, 32 otherwise) (qs after the fp16 scale)
 void states(int t, const uint8_t* blk, uint32_t* st) {
     if (t == 144) cpu::tq_detail::tq_states<8>(blk + 2, st);
     else if (t == 145) cpu::tq_detail::tq_states<6>(blk + 2, st);
-    else cpu::tq_detail::tq_states<7>(blk + 2, st);
+    else if (t == 146) cpu::tq_detail::tq_states<7>(blk + 2, st);
+    else if (t == 147) cpu::tq_detail::tq_states_tqp<5>(blk + 2, st);
+    else if (t == 148) cpu::tq_detail::tq_states_tqp<6>(blk + 2, st);
+    else cpu::tq_detail::tq_states_tqp<7>(blk + 2, st);
 }
 // float dequantization of one row of n values with the fp16 codebook
 void dq_row(int t, const uint8_t* row, int64_t n, float* y) {
     for (int64_t b = 0; b < n / 128; ++b) {
         const uint8_t* blk = row + b * bsize(t);
         const float d = h2f((uint16_t) (blk[0] | (blk[1] << 8)));
-        uint32_t st[32];
+        uint32_t st[64];
         states(t, blk, st);
+        if (is_tqp(t)) {   // the first pair of TQ2_T state s
+            for (int s = 0; s < 64; ++s) {
+                const uint32_t pa = ((st[s] & TQ_STATE_MASK) * 0x9e3779b1u) >> 21;
+                y[b * 128 + 2 * s + 0] = d * h2f(tq_lut_f16[2 * pa]);
+                y[b * 128 + 2 * s + 1] = d * h2f(tq_lut_f16[2 * pa + 1]);
+            }
+            continue;
+        }
         for (int s = 0; s < 32; ++s) {
             const uint32_t x = (st[s] & TQ_STATE_MASK) * 0x9e3779b1u;
             const uint32_t pa = x >> 21, pb = (x >> 10) & 2047u;
@@ -88,13 +102,20 @@ float emu_dot(int t, const uint8_t* row, const uint8_t* q8, int64_t n) {
         for (int k = sub; k < nb * 8; k += LN) {
             const int kbx = k / 8, lane = k % 8;
             const uint8_t* blk = row + (size_t) kbx * bsize(t);
-            uint32_t st[32];
+            uint32_t st[64];
             states(t, blk, st);
             int sumi = 0;
             const uint8_t* b8 = q8 + (size_t) (kbx * 4 + lane / 2) * 36;
             for (int i = 0; i < 4; ++i) {
-                const uint32_t x = (st[4 * lane + i] & TQ_STATE_MASK) * 0x9e3779b1u;
-                const uint16_t p0 = tq_lut_i8[x >> 21], p1 = tq_lut_i8[(x >> 10) & 2047u];
+                uint16_t p0, p1;
+                if (is_tqp(t)) {   // int i: steps 8 lane + 2i and + 2i + 1, the first pair of each
+                    p0 = tq_lut_i8[((st[8 * lane + 2 * i] & TQ_STATE_MASK) * 0x9e3779b1u) >> 21];
+                    p1 = tq_lut_i8[((st[8 * lane + 2 * i + 1] & TQ_STATE_MASK) * 0x9e3779b1u) >> 21];
+                } else {
+                    const uint32_t x = (st[4 * lane + i] & TQ_STATE_MASK) * 0x9e3779b1u;
+                    p0 = tq_lut_i8[x >> 21];
+                    p1 = tq_lut_i8[(x >> 10) & 2047u];
+                }
                 const int8_t w[4] = {(int8_t) (p0 & 0xff), (int8_t) (p0 >> 8), (int8_t) (p1 & 0xff), (int8_t) (p1 >> 8)};
                 const int8_t* a = (const int8_t*) (b8 + 4 + 16 * (lane & 1) + 4 * i);
                 for (int j = 0; j < 4; ++j) sumi += (int) w[j] * (int) a[j];

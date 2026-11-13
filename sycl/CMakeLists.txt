@@ -486,6 +486,9 @@ if(STRATA_SYCL_PARITY)
     # the prompt-path dequantizers against the fp16 codebook, and the Hadamard rotations against the CPU's
     add_test(NAME tq_sycl_parity_synthetic COMMAND tq_sycl_parity --synthetic 145/146 144/144 144/146 145/144)
     add_test(NAME tq_sycl_parity_synthetic_hadamard COMMAND tq_sycl_parity --synthetic --hadamard 145/146 144/144)
+    # Gyro-L's pair trellis: the three layer pairs its file uses (TQP5, TQP6, TQP7 for gate/up and down) and one mixed pair
+    add_test(NAME tq_sycl_parity_synthetic_tqp COMMAND tq_sycl_parity --synthetic 147/147 148/148 149/149 148/149)
+    add_test(NAME tq_sycl_parity_synthetic_tqp_hadamard COMMAND tq_sycl_parity --synthetic --hadamard 147/147 149/149)
     # MODEL-UPDATE: the CPU pool's expert rows per format against the RAM bandwidth (as the top-level build's)
     add_executable(kq_cpu_bench ${STRATA_ROOT}/src/kernels/cpu/kq_cpu_bench.cpp)
     target_link_libraries(kq_cpu_bench PRIVATE strata_kernels_cpu)
