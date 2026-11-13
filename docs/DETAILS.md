@@ -808,9 +808,16 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   no room; `500` for other I/O failures or an engine that ended. `error.published: true` means a save failed after its new
   file had replaced the old one. Requests must be `application/json` (else `415`) and come from no browser page, Strata's own
   page or a trusted origin.
-- Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
-  only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
-  change later output.
+- The reader is fail-closed: the magic, the version and the model-geometry hash are checked before any payload is
+  read, and every count is bounded before its bytes are taken, so an unrelated, older or truncated file is refused
+  rather than partly read.
+- With `--layer-split` a session file holds one image per stage: stage 0's own state, then the count of later stages and
+  each later stage's state, checkpoints and K/V (format v3).  The draft layer's K/V is written once, with the stage that
+  owns the draft head (the last stage when the drafter is loaded there, stage 0 otherwise).  Restore needs the identical
+  split: a file saved with a different stage count or a different layer carve is refused; a checkpoint whose
+  per-stage parts do not cover every stage is not saved in the first place.  Not supported with `--peer-device`, `--batch` or `--prompt-cache 0`. The
+  engine has been run on Linux and CUDA only for this feature. Exact token replay across restarts is not guaranteed:
+  expert residency and CPU/GPU rounding can change later output.
 
 ### The web page (Chat, Images, Monitor, About)
 
