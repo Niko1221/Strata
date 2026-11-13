@@ -1,0 +1,104 @@
+[
+  {
+    "input_tokens": 1024,
+    "excluded": true,
+    "status": 200,
+    "content": "# How a Hash Table Finds a Value (with Collisions and Concrete Examples)\n\nA hash table stores key–value pairs in an array and uses a **hash function** to map each key to an array index. Lookup is fast on average — O(1) — because the hash function tells you *where* to look instead of scanning everything.\n\n## The basic lookup procedure\n\n1. **Hash the key** → `h = hash(key)`\n2. **Map to a bucket** → `index = h % capacity` (or another reduction)\n3. **Go to that bucket** and compare the stored key(s)",
+    "reasoning_content": "",
+    "ttft_s": 13.572829618002288,
+    "duration_s": 32.48792785406113,
+    "usage": {
+      "prompt_tokens": 1024,
+      "completion_tokens": 128,
+      "total_tokens": 1152,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 1024,
+      "prompt_ms": 13487.2,
+      "prompt_per_token_ms": 13.171,
+      "prompt_per_second": 75.9,
+      "predicted_n": 128,
+      "predicted_ms": 18995.4,
+      "predicted_per_token_ms": 148.402,
+      "predicted_per_second": 6.7,
+      "draft_n": 226,
+      "draft_n_accepted": 80
+    },
+    "finish_reason": "length",
+    "done": true,
+    "cancelled_by_client": false,
+    "error": null
+  },
+  {
+    "input_tokens": 4096,
+    "excluded": true,
+    "status": 200,
+    "content": "# How a Hash Table Finds a Value\n\nA hash table stores key–value pairs in an array and uses a **hash function** to map each key to an array index. Lookup is fast (average O(1)) because the hash function tells you *where* to look, rather than scanning everything.\n\n## The basic lookup procedure\n\n1. **Compute the hash:** `h = hash(key)`\n2. **Map to a bucket index:** `i = h mod m` (where `m` is the table size)\n3. **Go to bucket `i`** and compare the stored key(s) with the",
+    "reasoning_content": "",
+    "ttft_s": 12.424766105948947,
+    "duration_s": 23.127692947979085,
+    "usage": {
+      "prompt_tokens": 4096,
+      "completion_tokens": 128,
+      "total_tokens": 4224,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 4096,
+      "prompt_ms": 12413.7,
+      "prompt_per_token_ms": 3.031,
+      "prompt_per_second": 330.0,
+      "predicted_n": 128,
+      "predicted_ms": 10702.1,
+      "predicted_per_token_ms": 83.61,
+      "predicted_per_second": 12.0,
+      "draft_n": 216,
+      "draft_n_accepted": 83
+    },
+    "finish_reason": "length",
+    "done": true,
+    "cancelled_by_client": false,
+    "error": null
+  },
+  {
+    "input_tokens": 8192,
+    "excluded": true,
+    "status": 200,
+    "content": "# How a Hash Table Finds a Value\n\nA hash table stores key–value pairs in an array and uses a **hash function** to map each key to an array index. Lookup is (on average) O(1): instead of scanning every entry, you compute the index directly and check only the entries that could be there.\n\n## The basic lookup procedure\n\nGiven a key `k`:\n\n1. **Compute the hash:** `h = hash(k)`.\n2. **Reduce to a bucket index:** `i = h mod m` (where `m` is the table size, often a prime).\n3. **",
+    "reasoning_content": "",
+    "ttft_s": 14.48952120298054,
+    "duration_s": 25.00131369708106,
+    "usage": {
+      "prompt_tokens": 8192,
+      "completion_tokens": 128,
+      "total_tokens": 8320,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 8192,
+      "prompt_ms": 14470.9,
+      "prompt_per_token_ms": 1.766,
+      "prompt_per_second": 566.1,
+      "predicted_n": 128,
+      "predicted_ms": 10511.5,
+      "predicted_per_token_ms": 82.121,
+      "predicted_per_second": 12.2,
+      "draft_n": 218,
+      "draft_n_accepted": 83
+    },
+    "finish_reason": "length",
+    "done": true,
+    "cancelled_by_client": false,
+    "error": null
+  }
+]

@@ -1,0 +1,12 @@
+DeepSeek E4M3: 9209 rounding inputs, 256 codes, 0 failures
+DeepSeek CPU/GPU mailbox: top-6, 5120-value request, response visibility; 0 failures
+Internal ctest changing into directory: /evidence/build
+Test project /evidence/build
+    Start 1: dsv41_numerics_parity
+1/2 Test #1: dsv41_numerics_parity ............   Passed    0.07 sec
+    Start 2: dsv41_mailbox_parity
+2/2 Test #2: dsv41_mailbox_parity .............   Passed    0.31 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   0.39 sec

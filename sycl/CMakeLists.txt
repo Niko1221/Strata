@@ -266,6 +266,66 @@ strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 
+# The current DeepSeek engine has its own opt-in SYCL target. Its source copies
+# and backend fixups live under sycl/; CUDA, HIP and the Qwen target are unchanged.
+option(STRATA_BUILD_DSV41 "Build the DeepSeek V4.1 SYCL engine" OFF)
+if(STRATA_BUILD_DSV41)
+  if(NOT STRATA_NATIVE_EXPERTS)
+    message(FATAL_ERROR "The DeepSeek CPU expert lane requires STRATA_NATIVE_EXPERTS=ON")
+  endif()
+  set(_ds4 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+  set(_ds4_original ${STRATA_ROOT}/src/dsv41)
+  add_library(strata_dsv41_sycl STATIC
+    ${_ds4}/ds4_model.dp.cpp ${_ds4}/ds4_kernels.dp.cpp
+    ${_ds4}/ds4_gguf.dp.cpp ${_ds4}/ds4_iq.dp.cpp
+    ${_ds4}/ds4_tq.dp.cpp ${_ds4}/ds4_vision.dp.cpp
+    ${_ds4}/vendor/exl3.dp.cpp ${_ds4}/vendor/moe_win.dp.cpp ${_ds4}/vendor/sampler.dp.cpp
+    ${_ds4}/ds4_packinfo.cpp)
+  add_library(strata_dsv41_cpu STATIC
+    ${_ds4_original}/vendor/exl3_cpu.cpp
+    ${_ds4_original}/ds4_gguf_cpu.cpp ${_ds4_original}/ds4_iq_cpu.cpp
+    ${_ds4_original}/ds4_gg_cpu.cpp ${_ds4_original}/ds4_tq_cpu.cpp
+    ${STRATA_ROOT}/src/platform/io_priority.cpp)
+  target_include_directories(strata_dsv41_sycl PUBLIC ${_ds4} ${_ds4_original}
+    ${STRATA_ROOT}/third_party/ggml ${_strata_ggml_root}/ggml/include
+    ${_strata_ggml_root}/ggml/src ${_strata_ggml_root}/ggml/src/ggml-cpu)
+  target_compile_options(strata_dsv41_sycl PUBLIC -qmkl=sequential)
+  target_link_options(strata_dsv41_sycl PUBLIC -qmkl=sequential)
+  target_compile_definitions(strata_dsv41_sycl PRIVATE STRATA_DSV41_TQ_CPU=1)
+  target_compile_options(strata_dsv41_cpu PRIVATE -fno-sycl)
+  target_compile_definitions(strata_dsv41_cpu PRIVATE STRATA_NATIVE_EXPERTS=1 STRATA_DSV41_TQ_CPU=1)
+  target_include_directories(strata_dsv41_cpu PRIVATE ${STRATA_ROOT}/include
+    ${STRATA_ROOT}/third_party/ggml ${_strata_ggml_root}/ggml/include
+    ${_strata_ggml_root}/ggml/src ${_strata_ggml_root}/ggml/src/ggml-cpu)
+  target_link_libraries(strata_dsv41_cpu PUBLIC ggml-cpu ggml-base Threads::Threads)
+  target_link_libraries(strata_dsv41_sycl PUBLIC strata_includes strata_dsv41_cpu strata_kernels_cpu Threads::Threads)
+  if(STRATA_ZE_LOADER)
+    target_link_libraries(strata_dsv41_sycl PUBLIC ${STRATA_ZE_LOADER})
+  endif()
+  add_executable(strata-dsv41 ${_ds4}/ds4_main.cpp)
+  target_link_libraries(strata-dsv41 PRIVATE strata_dsv41_sycl)
+  get_filename_component(_ds4_root ${STRATA_ROOT} REALPATH)
+  execute_process(COMMAND git -c safe.directory=${_ds4_root} -C ${_ds4_root} rev-parse HEAD
+    OUTPUT_VARIABLE _ds4_revision OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE _ds4_git_result)
+  if(NOT _ds4_git_result EQUAL 0)
+    message(FATAL_ERROR "Cannot resolve the DeepSeek source revision")
+  endif()
+  target_compile_definitions(strata-dsv41 PRIVATE DS4_BUILD_ID="${_ds4_revision}")
+  add_executable(dsv41_numerics_parity tests/dsv41_numerics.cpp)
+  target_include_directories(dsv41_numerics_parity PRIVATE ${_ds4})
+  target_link_libraries(dsv41_numerics_parity PRIVATE strata_includes)
+  enable_testing()
+  add_test(NAME dsv41_numerics_parity COMMAND dsv41_numerics_parity)
+  add_executable(dsv41_weights_parity tests/dsv41_weights.cpp)
+  target_link_libraries(dsv41_weights_parity PRIVATE strata_dsv41_sycl)
+  add_executable(dsv41_mailbox_parity tests/dsv41_mailbox.cpp)
+  target_link_libraries(dsv41_mailbox_parity PRIVATE strata_dsv41_sycl)
+  add_test(NAME dsv41_mailbox_parity COMMAND dsv41_mailbox_parity)
+  set_tests_properties(dsv41_numerics_parity dsv41_mailbox_parity PROPERTIES TIMEOUT 30)
+  add_executable(dsv41_rollback_parity tests/dsv41_rollback.cpp)
+  target_link_libraries(dsv41_rollback_parity PRIVATE strata_dsv41_sycl)
+endif()
+
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
