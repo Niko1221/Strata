@@ -290,6 +290,8 @@ def _measure_locked(ref: str, path: Path, profile: dict | None, revision: str | 
                     output: Path, *, say, runner, job_id: str | None = None,
                     progress=None, cancel_event=None) -> dict:
     _exclusive_preflight(cfg, profile)
+    if not output.parent.is_dir():
+        raise ProfileError("report output directory does not exist", 5)
     if output.exists() or output.is_symlink():
         raise ProfileError("calibration report path already exists", 2)
     if not output.parent.is_dir():                    # before the 19 minute sweep, not after it (#3187)
