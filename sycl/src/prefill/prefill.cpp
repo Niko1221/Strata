@@ -4387,6 +4387,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             if (!lay.native) return false;
                             const int gt = lay.fmt[(size_t) l].gu_type, dt = lay.fmt[(size_t) l].d_type;
                             if ((gt == 144 || gt == 145) && (dt == 144 || dt == 146)) return true;   // Gyro's trellis experts (rotated above)
+                            if (gt >= 147 && gt <= 149 && dt >= 147 && dt <= 149) return true;   // Gyro-L's pair trellis (dq_tqp)
                             return (gt == 18 || gt == 21 || gt == 22 || gt == 23) && (dt == 20 || dt == 42);
                         };
                         const bool xmx2_only = strata::prefill::xmx::mode() == 2 && !use_mmq && xmx2_fmt();
