@@ -1,0 +1,164 @@
+# App 0.2.2 Acceptance — 2026-10-22
+
+The public launcher and external package ran in the actual installed Windows
+App 0.2.2, with the compiled public Tray candidate as the sole model owner.
+The run exposed and fixed duplicate Storage cards. Current Model, Manage Models,
+Storage and exact Use In Chat selection were then checked in the native App.
+Scope agreement remains requested in [#3369](https://github.com/Niko1221/Strata/issues/3369).
+
+## Tested Inputs
+
+Extension source `71e26101131235b42422494bff0550cb193200cf` includes the focused
+Storage fix. Its corrected immutable package is `1.0.0-088a8606771d`, manifest
+SHA-256 `088a8606771d8182c2959cf9a2274dbbdba3e27a874e15ee699a10243df8bf92`.
+The preceding package `1.0.0-dd445334ea48` supplied the unchanged launcher,
+bridge, owner API and lifecycle implementation for the initial checks. The
+[sanitized receipt](validation-app-0.2.2.json) binds the source files, both
+packages, actual observations and remaining limits.
+
+Tray source was `ff69390ecaeb6e130cbe1939d78c64d6fa60a81b`, compiled executable
+SHA-256 `1d226b998942de822c5752caf74205266d0166da86a3b6dd40004f8fcb276e72`.
+App/Host 0.2.2, Control/engine 0.1.47, Windows 11 x64, RTX 5080, Python 3.12.10
+and the App's Node 24.12.0 were used. This is not an installed App upgrade test.
+
+All activation state, test credentials, App data/settings/components/workspace,
+temp and WebView2 profile were disposable and outside the App install directory.
+Acquisition, automatic bundled-engine installation and access repair were disabled.
+The real existing GGUF was read through a copied profile with 8192 context,
+24 GiB resident budget and no vision. No model download/copy or production-client
+configuration change was needed. The existing production Tray/server stayed running.
+
+## Passed In The Initial Run
+
+- Public `extension_manager.py install --source <package> --root <external-root>
+  --activate`, `launch.py --config <disposable-config> --check` and actual
+  `launch.py --config <disposable-config>` succeeded. The exact native child
+  Host reported App 0.2.2, Bridge API 1, compatible/ready, and the expected
+  immutable package. Actual WebView2 arguments confirmed isolated browser storage.
+- Current Model displayed the verified physical ID, loaded state, selected/effective
+  context and idle setting. All eight context values came from the actual
+  `/api/native` catalog. Manage Models retained `No downloaded models` and showed
+  the connected model separately.
+- Explicit Use In Chat from Current Model and Manage Models selected the native
+  picker with title `Acceptance Local API · acceptance-local-model`. The source
+  dialog closed, the credential sentinel remained intact and an unrelated model
+  row retained its name and capacity.
+- Real preload/unload received terminal owner acknowledgments. Context changes
+  8192 → 65536 → 8192 and idle 0 → 300 were confirmed by owner and live API.
+  Process restart restored 8192/300 without preload. Unloaded configured capacity
+  is not proof of GPU allocation at 64K.
+- Actual direct chat returned `OK` with child-only `STRATA_AGENT=off`. The existing
+  server later unloaded automatically after 300 seconds without inference; the
+  owner, live API and App agreed. This is model-connection acceptance, not a
+  successful default agent-task run or a performance comparison.
+- **Storage regression:** App 0.2.2 has two native directory sections. The old
+  observer inserted two cards. A new regression failed with `2 !== 1`, then
+  passed after anchoring one card to the enclosing panel. In the actual App,
+  the corrected package showed exactly one card, preserved both directory
+  sections and `0.0 GB`/`No downloaded models`, scrolled normally, and completed
+  Storage Use In Chat with the exact physical target.
+- **Recovery:** a disposable synthetic 1.0.1 package exercised activation history.
+  `disable` made home HTML byte-identical to the installed official file; a control
+  POST returned 503 without changing the owner request. Fresh native App startup
+  succeeded without Current Model. `rollback` restored the exact original 1.0.0
+  hash and Current Model returned after native restart. Preferences were unchanged.
+  The corrected source package was then activated and rechecked in the real App.
+- All 188 observed installed App/Host/Control files retained SHA-256. Original
+  profiles, Tray settings and observed client configs stayed identical. The one
+  delta among 206 observed files was the production owner's mutable
+  `context-status.json`; it was read only and not restored. Only test processes
+  were stopped, and production listener identities were preserved.
+
+Regression commands (local windowless runner omitted):
+
+```powershell
+node --test tools/local-model-extension/owner_api.test.mjs tools/local-model-extension/extension_bridge.test.mjs tools/local-model-extension/host-preload.test.mjs tools/local-model-extension/package/ui.test.mjs
+python -B -m unittest discover -s tools/local-model-extension -p test_*.py
+```
+
+**71 Node tests passed, 0 skipped**, using `STRATA_TRAY_SOURCE` and
+`STRATA_TEST_PYTHON` for the real cross-language IPC case. **13 Python tests
+passed**. The companion Tray passed 81 C# checks, 16 managed tests, 15 IPC tests
+and 3 installed-App metadata checks. No backend source was touched.
+
+## Initial Failures And Limits
+
+The initial test profile referenced a nonexistent expert-profile file, producing
+a terminal preload error. Only the disposable configuration was corrected.
+The original Storage duplication was reproduced and fixed as described above.
+Default agent chat reached the real server with 6545 prompt tokens at 8192
+context but ended with a length limit and no answer; direct chat passed.
+No effort, Fast, permissions or retry policy was changed to conceal that limit.
+
+
+## Follow-Up: Public Native Menus And Open App
+
+A fresh isolated run used the same compiled public Tray binary and runtime
+source, with `Acceptance Menu Model`, selected/effective 8K Context and separate
+ports 18148/18149. A user-supplied native screenshot confirmed the real menu's
+Profile, effective Context/Idle, lifecycle controls and updater ownership labels.
+The initial menu discovery and Context/Idle group were human-assisted. A Windows
+UIAutomation harness then located the unique test notification icon, verified
+its executable/config and menu process ID, and invoked the actual native
+MenuItems. It inspected the live Context and Idle submenus and captured them
+without editing. Owner snapshots, live API state and process/listener identity
+provided separate evidence of each action's effect.
+
+**Open App passed at 2026-10-22T04:22:48.4492562Z.** The actual menu started the official App
+0.2.2: App PID 16504 had Tray PID 29212 as parent;
+Host PID 2180 was the App's child. `/api/health` reported the
+managed `http://127.0.0.1:18148/v1` URL, physical model `acceptance-menu-model`
+and Context 8192. This overrode the deliberately unused inherited port 19999.
+Native automation observed the real App window and rendered chat controls;
+WebView2 used the isolated test profile. No Extension launcher/preload was used.
+The clean native model picker remained empty: launch/backend handoff does not
+register the externally owned model as a native download or select it in chat.
+
+- **Context And Idle:** human-assisted Unload Model Now, Context 8K → 32K → 8K and Idle Never → 5 Minutes → Never matched continuous owner snapshots.
+- **Server Lifecycle:** automated native-menu Stop Server, Start Server and Apply Configuration / Restart matched owner state and process evidence. Stop ended server PID 23408; Start created PID 4112; Restart ended PID 4112 and created PID 10780, remaining lazy/unloaded.
+- **Model Lifecycle And Exit:** automated native-menu Preload Model created engine PID 3756 and reached loaded; Unload Model Now ended that engine and reached unloaded. Exit Tray And Stop Server ended the Tray, controller and upstream without forced termination; Tray exit code was 0 and test ports closed. Each of the six automated actions was invoked once.
+
+The [owner timeline](validation-app-0.2.2-followup.ndjson) preserves the observed
+transitions; its count and SHA-256 are recorded in the sanitized receipt.
+
+Admission was observed closed during startup/restart before Ready returned;
+the UI actions were not repeated. The isolated App/Host and recorder were also
+cleaned up. Production Tray PID 18596 and listeners 10100/19480, 8081/22316 and
+8080/7404 retained their identities. Of 206 protected files, 205 were unchanged;
+only the production owner's live `context-status.json` advanced. Installed
+pi-ai retained its original hash. GPU memory was 1285 MiB after cleanup.
+
+## Follow-Up: Default-Agent Output Budget
+
+The earlier no-answer result remains recorded in the initial evidence: the
+shipped default Harness sent a one-token output cap at 8K. The first candidate
+copy returned `OK` with a 104-token cap, but a later file-tool turn still ran
+out of answer room. These are historical results, not the final candidate.
+
+[#3684](https://github.com/Niko1221/Strata/pull/3684) is now **Ready For Review**
+at `f273ef65e8f4548125f3e72833cd61019b82080f`. Its final `strata-pi-ai-context-safety-v2` patch passed a
+fresh full Harness build (9 build gates), production deploy/staging and
+authenticated web-profile boot, plus 10 focused and 12 staged tests with no
+failures or skips.
+
+Actual native App 0.2.2 default-agent acceptance at 8K / Medium / Manual with
+26 tools completed `read` then displayed `READY-3684` (`stop`), with first and
+follow-up wire caps 298 and 242. Four additional real-model turns all answered
+with `stop`, including two completed reads; final context was 7106 tokens.
+The real Harness's separate scripted-model compaction fixture passed six
+long turns at 16K. The [source-bound budget report](https://github.com/medking82/Strata/blob/f273ef65e8f4548125f3e72833cd61019b82080f/apps/host/server/agent/output-budget-validation.md) separates
+these scopes and records the final patch/BUNDLE hashes and native capture.
+
+This correction is independent of the portable companion packages. Installed
+Harness files and the tested Tray/Extension runtime were not changed, and a
+combined patched-Harness plus portable-companion run was not performed.
+Unbounded 8K tool/long-form stress, signed installers and other providers/OS
+remain untested. No performance comparison is claimed.
+
+## Not Run
+
+Windows reboot/autostart; cross-monitor transitions; other GPU backends;
+larger-context allocation/inference; live App/Engine installer, signature or
+upgrade/restart; multiple-profile switching and auxiliary menu open/copy actions;
+unbounded default-agent tool/long-form stress at 8K. The bounded run does not certify future App
+layouts or a general upstream plugin API. No backend source changed here.
