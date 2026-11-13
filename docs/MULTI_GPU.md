@@ -196,17 +196,14 @@ tokens. The tokens are the serial loop's, up to CPU rounding.
   still be launched, not all seven. `STRATA_PIPELINE_LAZY_CHAIN=0` runs them all.
 - **Copied text:** behind a prompt-lookup window that was accepted whole the next window comes from the same lookup, without
   waiting for a chain, so a copied stretch runs window behind window. `STRATA_PIPELINE_LOOKUP_RUN=0` takes the chain's window.
-- **Measured on:** two RTX 3090 at a 250 W limit each, Swift-Qwen3.8-Flash-Next IQ3_S, 1M context, split at layer 27, against
-  the serial loop. A 32K prompt, sampled answers (five tasks, three seeds, 42.7K tokens an arm, two paired runs): code +12%,
-  prose +7%, an agent turn +12%, text with copied stretches +26%, a 2400-token rewrite +18%; 162.7 against 142.3 tokens/s,
-  +14%. The same 23.9K sampled tokens replayed through both loops: +11% (code +7%, prose +1%, agent +5%, copied stretches
-  +16%, rewrite +22%); a replay rejects a draft wherever the run's own pick is not the recorded token, and that costs the
-  pipeline more than the serial loop. A 460K prompt of mixed documents, where the draft layer is unsure far more often (305
-  of 489 windows below the gate): +1%. Switched per request on one engine, the loop without the three changes above (the gate
-  at the chain's estimate of 0.2, every chain to its last step) gave +9% on the replays where this one gave +14%. At 250 W
-  both cards are at their power limit while they take turns (about 1,790 of 2,100 MHz, 1,630 to 1,690 MHz with the pipeline
-  on), so a window that is thrown away costs clock for the windows after it, and so did a chain that always ran to its last
-  step.
+- **Measured on:** two RTX 3090 at a 250 W limit each, Swift-Qwen3.8-Flash-Next IQ3_S, 1M context, split at layer 27, the
+  draft layer on the last card; one conversation of 900-token sampled turns at 32K, 177K and 440K tokens. Against the
+  pipelined loop without the three changes above (4 pairs): decode +4.0% over all turns, +4.5% at 32K, -1.3% at 177K,
+  +6.3% at 440K; copied text from -11% (177K) to +22% (440K). Against the serial loop (2 pairs): +6.4% over all turns,
+  +10.6% at 32K, +1.5% at 177K, +7.3% at 440K. The loop without the changes launched 77% to 81% of its windows
+  speculatively and rolled back 51% to 57% of those; with them 39% to 45% and 26% to 36%. At 250 W both cards are at
+  their power limit while they take turns (about 1,800 of 2,100 MHz serial, 1,620 to 1,695 MHz with the pipeline on), so a
+  window that is thrown away costs clock for the windows after it, and so did a chain that always ran to its last step.
 - **Off, with one log line saying why:** `--batch` slots, `--peer-device`, the helper caches (`--expert-cache-device1..3`, which
   `--remote-expert-opt` builds on), a split onto one GPU, no draft layer, and on three or more stages `--pipeline-windows 1` and
   `--adapt-async 1`. A request with repetition penalties or coupled draft sampling decodes serially.
