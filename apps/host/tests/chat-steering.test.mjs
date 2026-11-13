@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 
 const { outputFiles } = await build({ stdin: { contents: `
   export * from './src/lib/store';
+  export { tr, translationsReady } from './src/lib/i18n';
   export { applyGoalFrame } from './src/lib/goal';
   export { queueOf } from './src/lib/plan';
   export { pendingChatPhotos, restoreChatPhotos } from './src/lib/chat-photos';
@@ -211,7 +212,7 @@ test('Send after parks one ordinary message and sends only after the stream clos
 });
 
 test('Interrupt waits for the stop acknowledgement AND closed stream, keeping the partial reply in history and storage', async () => {
-  const h = open(); h.setWhileBusy('interject');
+  const h = open(); await h.translationsReady(); h.setWhileBusy('interject');
   const ack = deferred(); h.stopWith(() => ack.promise);
   const first = await start(h);
   first.request.frame({ type: 'start', agent: true, model: 'fixture' });
@@ -227,7 +228,7 @@ test('Interrupt waits for the stop acknowledgement AND closed stream, keeping th
   const partial = h.session(first.id).messages[1];
   assert.equal(partial.content, 'Partial answer');
   assert.equal(partial.streaming, false);
-  assert.match(partial.error, /interrupted/);
+  assert.equal(partial.error, h.tr('Response interrupted. Ask again to retry; the partial answer is kept.'));
   assert.match(JSON.stringify(h.session(first.id)), /Partial answer/);
   finish(second); await tick();
 });
