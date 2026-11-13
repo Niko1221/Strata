@@ -217,11 +217,11 @@ class EngineArguments(unittest.TestCase):
         pack = self.pack()
         self.layer()
         for drafting_mode in ("dflash2", "auto", None):
-            c = self.cfg(args=[*self.args, "--batch-mtp", "--mtp-q4", "all"], **({} if drafting_mode is None else {"drafting": drafting_mode}))
+            c = self.cfg(args=[*self.args, "--batch-mtp", "--batch-mtp-multistep", "--mtp-q4", "all"], **({} if drafting_mode is None else {"drafting": drafting_mode}))
             d = self.apply(c)
             self.assertEqual(d.drafter, "dflash2", drafting_mode)
             a = c["args"]
-            for flag in ("--mtp", "--spec-min-p", "--batch-mtp", "--mtp-q4", "--draft-mtp-spec"):
+            for flag in ("--mtp", "--spec-min-p", "--batch-mtp", "--batch-mtp-multistep", "--mtp-q4", "--draft-mtp-spec"):
                 self.assertNotIn(flag, a, (drafting_mode, flag))
             self.assertEqual(a[a.index("--draft") + 1], "dflash2")
             self.assertEqual(a[a.index("--draft-model") + 1], str(pack))

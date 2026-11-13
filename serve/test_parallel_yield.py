@@ -144,6 +144,55 @@ class ParallelServiceYield(tp.FakeEngineCase):
         with self.svc.status_lock:
             self.assertEqual(len(self.svc.history), 2)
 
+    def test_unified_request_keeps_its_slot_when_neighbours_change(self):
+        self.start(2, slot_cache=True, more=("--unified-slots",))
+        results, errors = {}, []
+
+        def long_reply():
+            try:
+                results["long"] = self.chat("LONGREPLY please", max_tokens=200)
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=long_reply)
+        worker.start()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if any(s and s.get("state") == "decoding" for s in self.engine.slot_live):
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("the first request never started decoding in its slot")
+        short = self.chat("short", max_tokens=200)
+        worker.join(30)
+        self.assertFalse(worker.is_alive(), "the first request never finished")
+        self.assertEqual(errors, [])
+        self.assertEqual(short["choices"][0]["message"]["content"], "ok, done.")
+        self.assertEqual(results["long"]["choices"][0]["message"]["content"], "ok, " + "la " * 15 + "done.")
+        requests = [line.split() for line in self.log.read_text().splitlines()]
+        self.assertEqual([row[0] for row in requests], ["BGEN", "BGEN"], requests)
+        self.assertNotEqual(requests[0][1], requests[1][1], requests)
+        self.assertEqual(requests[1][3], "1", requests)
+        self.assertFalse(any(self.engine.slot_busy))
+        self.assertEqual(len(self.svc.history), 2)
+
+    def test_unified_prompt_resumes_in_the_slot_it_yielded(self):
+        self.start(2, more=("--unified-slots",))
+        long_q, short_q = "long " * 600, "short"
+        results = self.race(long_q, short_q)
+        self.assertEqual(results[long_q][0], "ok, done.")
+        self.assertEqual(results[short_q][0], "ok, done.")
+        requests = [line.split() for line in self.log.read_text().splitlines()]
+        yielded = [row for row in requests if row[0] == "YIELD"]
+        self.assertTrue(yielded, requests)
+        admissions = [row for row in requests if row[0] == "BGEN"]
+        self.assertEqual(len(admissions), 3, requests)
+        self.assertEqual(admissions[0][1], yielded[0][1], requests)
+        self.assertEqual(admissions[2][1], yielded[0][1], requests)
+        self.assertNotEqual(admissions[1][1], yielded[0][1], requests)
+        self.assertNotIn("GEN", [row[0] for row in requests])
+        self.assertFalse(any(self.engine.slot_busy))
+
     def test_next_turn_goes_back_to_its_slot(self):
         self.start(2)
         a = "conversation A, first turn"

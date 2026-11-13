@@ -33,6 +33,19 @@ class Launches(Base):
         arg_layers.stamp(cfg)
         return json.loads(json.dumps(cfg))
 
+    def test_fixed_slot_switches_are_bare_explicit_options(self):
+        for flag, mode in (("--unified-slots", "off"), ("--batch-mtp-multistep", "mtp")):
+            with self.subTest(flag=flag):
+                first = self.launch(extra={flag: ""}, drafting=mode)
+                argv = self.server_args(first)
+                self.assertEqual(argv.count(flag), 1)
+                index = argv.index(flag)
+                self.assertTrue(index + 1 == len(argv) or argv[index + 1].startswith("--"))
+                second = self.launch(extra={flag: ""}, prev=first, drafting=mode)
+                self.assertEqual(self.server_args(second), argv)
+                disabled = self.launch(base=first, extra={flag: "off"}, drafting=mode)
+                self.assertNotIn(flag, self.server_args(disabled))
+
     # ---- #5178
     def test_an_explicit_draft_conf_reaches_the_engine_and_survives_a_second_launch(self):
         for mode in ("dflash2", "auto"):

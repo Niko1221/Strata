@@ -1046,7 +1046,8 @@ def needs_mtp(mode: Any, *, klass: str = "other", model_name: str | None = None,
 DRAFT_FLAGS = {"--draft": True, "--draft-model": True, "--draft-conf": True, "--draft-mtp-spec": True, "--draft-fallback": True, "--draft-cap": True,
                "--draft-rule": True, "--draft-mtp-min-p": True}
 #: The engine options of the MTP layer; none of them goes with DFlash2 (``--mtp-max-t`` is left: DFlash2 reads it too).
-MTP_ONLY_FLAGS = {"--mtp": True, "--mtp-q4": True, "--mtp-hnorm": True, "--mtp-window": True, "--mtp-draft-vocab": True, "--spec-min-p": True, "--batch-mtp": False}
+MTP_ONLY_FLAGS = {"--mtp": True, "--mtp-q4": True, "--mtp-hnorm": True, "--mtp-window": True, "--mtp-draft-vocab": True, "--spec-min-p": True,
+                  "--batch-mtp": False, "--batch-mtp-multistep": False}
 
 
 def _strip(args: list[Any], table: dict[str, bool]) -> list[str]:

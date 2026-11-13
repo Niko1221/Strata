@@ -126,11 +126,52 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 }
 
 void session_release(SessionState& s) {
+    if (s.mrope) cudaFree(s.mrope);
+    s.mrope = nullptr;
+    s.mrope_cells = 0;
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
         if (s.qsa_states[j].owns_rope) {
             strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
             s.qsa_states[j].owns_rope = false;
         }
+}
+
+bool session_mrope_upload(SessionState& s, const int32_t* positions, int64_t cells, std::string& err) {
+    if (!s.mrope || cells != s.mrope_cells || !positions) {
+        err = "session: rotary layout does not match its allocation";
+        return false;
+    }
+    const auto e = cudaMemcpy(s.mrope, positions, (size_t) cells * 3 * sizeof(int32_t), cudaMemcpyHostToDevice);
+    if (e != cudaSuccess) { err = std::string("session: rotary upload: ") + cudaGetErrorString(e); return false; }
+    // Pageable H2D may return after host staging, before the DMA reaches this table. Consumers use
+    // non-blocking streams, so upload must complete before they can capture or launch its reads.
+    const auto ready = cudaStreamSynchronize(nullptr);
+    if (ready != cudaSuccess) {
+        err = std::string("session: rotary upload completion: ") + cudaGetErrorString(ready);
+        return false;
+    }
+    return true;
+}
+
+bool session_mrope_reset(SessionState& s, std::string& err) {
+    const int64_t cells = s.mrope_cells;
+    std::vector<int32_t> identity((size_t) cells * 3);
+    for (int64_t c = 0; c < cells; ++c)
+        identity[(size_t) c * 3] = identity[(size_t) c * 3 + 1] = identity[(size_t) c * 3 + 2] = (int32_t) c;
+    if (!session_mrope_upload(s, identity.data(), cells, err)) return false;
+    s.mrope_identity = true;
+    return true;
+}
+
+bool session_mrope_init(SessionState& s, int64_t cells, std::string& err) {
+    if (s.mrope || cells < s.max_cells || cells <= 0) {
+        err = "session: invalid rotary allocation";
+        return false;
+    }
+    const auto e = cudaMalloc((void**) &s.mrope, (size_t) cells * 3 * sizeof(int32_t));
+    if (e != cudaSuccess) { err = std::string("session: rotary allocation: ") + cudaGetErrorString(e); return false; }
+    s.mrope_cells = cells;
+    return session_mrope_reset(s, err);
 }
 
 #if defined(STRATA_GPU_METAL)
@@ -199,6 +240,7 @@ void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionS
 
 bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionState& s, const float* parts,
                      SessionGraphs& gr, std::string& err, bool split, int64_t layer_lo, int64_t layer_hi) {
+    const strata::kernels::MropeScope rotary(s.mrope);
     if (gr.captured) return true;
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
@@ -801,6 +843,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
 bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
                    SessionState& s, const float* parts, void* stream, bool sync_every_layer,
                    std::string& err) {
+    const strata::kernels::MropeScope rotary(s.mrope);
     cudaStream_t cs = (cudaStream_t) stream;
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
@@ -849,6 +892,7 @@ namespace strata::core {
 bool session_capture_token(const WeightTable& tables, const ModelGeometry& g, SessionState& s, float* parts_dev,
                            const float* y_miss_host, size_t parts_bytes, TokenGraph& tg, std::string& err,
                            const TokenHits* hits) {
+    const strata::kernels::MropeScope rotary(s.mrope);
     if (hits != nullptr && !hits->on()) { err = "session_capture_token: incomplete hit configuration"; return false; }
     if (tg.captured) return true;
     if (s.db == nullptr || s.db->d_flag == nullptr || s.db->d_seq == nullptr) {
