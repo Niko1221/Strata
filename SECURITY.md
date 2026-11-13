@@ -53,9 +53,10 @@ the model. The section above is about the engine's HTTP server. This is what the
   changed). A request to its `/api/` endpoints that carries a browser `Origin` from any other site gets 403. The app shell holds a
   random secret (32 characters or more, compared in constant time) that is needed to quit the host or tell it which window is open,
   and the host gives its own helper processes a second random secret. By default the models the app starts are served on this PC only.
-- **Sharing is a separate, key-protected listener.** "Share with other devices" (and the Cloudflare tunnel) will not start until an
-  API key is set. It opens a different listener that answers only `/v1/models`, `/v1/chat/completions` and `/v1/messages`, never the
-  app's page or its host endpoints.
+- **Sharing uses a separate listener for inference.** LAN sharing and the Cloudflare tunnel answer `/v1/models`,
+  `/v1/chat/completions` and `/v1/messages`. LAN sharing also answers `POST /v1/responses` with a supported native model loaded.
+  Both listeners require the API key when one is set. The app warns if you share without a key. The app's page and host endpoints
+  are available only on the app's loopback listener.
 - **App and Terminal talk through an owner channel.** One owner process per installation starts and ends the engine, and a second
   client (the Terminal) attaches to it. On macOS and Linux that is a private Unix socket in a folder only you can open. On Windows it
   is a TCP listener on `127.0.0.1` that answers only requests carrying a 256-bit token kept in an owner-only folder. That is a weaker
