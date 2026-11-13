@@ -32,6 +32,7 @@
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/kernels/mrope.hpp"
 #include "strata/kernels/ngram.hpp"
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
@@ -2201,6 +2202,36 @@ bool Prefill::carve(size_t T, void* alloc) {
     return ok;
 }
 
+bool Prefill::bind_session(core::SessionState& ss, std::string& err) {
+    Impl& m = *impl_;
+    if (m.ss == &ss) return true;
+    if (next_run_.valid()) { err = "prefill: binding while a stage is in flight"; return false; }
+    if (!m.ss || m.ss->max_cells != ss.max_cells || m.ss->k != ss.k ||
+        m.ss->layer_lo != ss.layer_lo || m.ss->layer_hi != ss.layer_hi ||
+        m.ss->qsa_ord0 != ss.qsa_ord0 || m.ss->qsa_alloc != ss.qsa_alloc ||
+        m.ss->gdn_ord0 != ss.gdn_ord0 || m.ss->gdn_alloc != ss.gdn_alloc ||
+        m.ss->ple.ready() != ss.ple.ready()) {
+        err = "prefill: binding needs an initialized session with the same layout";
+        return false;
+    }
+    for (int64_t j = 0; j < ss.qsa_alloc; ++j) {
+        const auto& from = m.ss->qsa_states[ss.qsa_ord0 + j];
+        const auto& to = ss.qsa_states[ss.qsa_ord0 + j];
+        if (from.kv_mode != to.kv_mode || from.n_pages != to.n_pages ||
+            from.kv_q4 != to.kv_q4 || from.kv_hybrid != to.kv_hybrid || from.kv_int8 != to.kv_int8) {
+            err = "prefill: binding needs the same KV staging layout";
+            return false;
+        }
+    }
+    if (cudaStreamSynchronize(m.cs) != cudaSuccess || cudaStreamSynchronize(m.copy) != cudaSuccess ||
+        (m.kv_copy && cudaStreamSynchronize(m.kv_copy) != cudaSuccess)) {
+        err = "prefill: binding: the stream failed";
+        return false;
+    }
+    m.ss = &ss;
+    return true;
+}
+
 bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err) {
     Impl& m = *impl_;
     if (m.borrow_spill) {
@@ -3322,6 +3353,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const core::WatchedStream watched("the prompt's GPU work", (void*) m.cs, m.device);
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
+    const strata::kernels::MropeScope rotary(ss.mrope);
     const auto t_start = Clock::now();
     const int64_t LB = stage_lb_, LE = stage_le_;
     // STRATA_KVA: the approximate-prefix plan of this run, if it qualifies (a cold read of one long prompt, one
@@ -7658,6 +7690,7 @@ bool Prefill::lm_run(const std::vector<Seg>& segs, int depth, const std::vector<
                     } else if (half == 0) {
                         // ======================= QSA (run_impl's, without its debug dumps) =======================
                         const core::QsaState& st = ssp->qsa_states[qsa_index];
+                        const strata::kernels::MropeScope rotary(ssp->mrope);
                         const core::WeightRef *wq = need(v, "attn_q.weight", err), *wk = need(v, "attn_k.weight", err),
                                               *wv = need(v, "attn_v.weight", err), *wo = need(v, "attn_output.weight", err),
                                               *wik = need(v, "indexer.k_proj.weight", err),

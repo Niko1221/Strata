@@ -45,10 +45,11 @@ bool overlaps(const void* a, size_t an, const void* b, size_t bn) {
 template <bool TAB>
 __global__ void apply(const float* x, float* out, int rows, int width,
                       int n_rot, float theta_scale, float freq_scale, float corr_low, float corr_high,
-                      float ext_factor, float mscale, const int* positions, const int32_t* mtab, RopeTab rt) {
+                      float ext_factor, float mscale, const int* positions, const int32_t* mtab, MropeRows owners, RopeTab rt) {
     const int row = blockIdx.y;
     const int pair = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= rows || pair >= width / 2) return;
+    mtab = mrope_row_table(mtab, owners, row);
     const size_t start = size_t(row) * width;
     if (pair >= n_rot / 2) {
         if (x != out) {
@@ -72,9 +73,10 @@ __global__ void norm_rope_kernel(const float* x, int in_stride, const float* __r
                                  int n_cols, int n_rot, float epsilon, float theta_scale,
                                  float freq_scale, float corr_low, float corr_high,
                                  float ext_factor, float mscale, const int* positions,
-                                 const int32_t* mtab, RopeTab rt) {
+                                 const int32_t* mtab, MropeRows owners, RopeTab rt) {
     const int tid = threadIdx.x;
     const int row = blockIdx.x;
+    mtab = mrope_row_table(mtab, owners, row);
     const float* in_row = x + size_t(row) * in_stride;
     float* out_row = out + size_t(row) * n_cols;
     float partial = 0.0f;
@@ -209,10 +211,10 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
     const dim3 grid(threads == 32u ? 1u : unsigned((head_dim / 2 + 127) / 128), rows);
     if (rt.cos != nullptr)
         apply<true><<<grid, threads, 0, static_cast<cudaStream_t>(stream)>>>(x, out, rows, head_dim, n_rot, theta_scale,
-            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_table(), rt);
+            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_current_table(), mrope_rows(), rt);
     else
         apply<false><<<grid, threads, 0, static_cast<cudaStream_t>(stream)>>>(x, out, rows, head_dim, n_rot, theta_scale,
-            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_table(), rt);
+            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_current_table(), mrope_rows(), rt);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
@@ -234,11 +236,11 @@ void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma,
     if (rt.cos != nullptr)
         norm_rope_kernel<true><<<unsigned(rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(
             x, in_stride, gamma, out, head_dim, n_rot, epsilon, theta_scale,
-            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_table(), rt);
+            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_current_table(), mrope_rows(), rt);
     else
         norm_rope_kernel<false><<<unsigned(rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(
             x, in_stride, gamma, out, head_dim, n_rot, epsilon, theta_scale,
-            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_table(), rt);
+            k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_current_table(), mrope_rows(), rt);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }

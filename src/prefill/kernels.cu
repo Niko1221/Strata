@@ -3421,11 +3421,11 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
     if (rt.cos != nullptr)
         rope_kernel<true><<<(unsigned) (T * heads), 32, 0, (cudaStream_t) stream>>>(
             x, heads, dim, ld, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
-            strata::kernels::mrope_table(), rt);
+            strata::kernels::mrope_current_table(), rt);
     else
         rope_kernel<false><<<(unsigned) (T * heads), 32, 0, (cudaStream_t) stream>>>(
             x, heads, dim, ld, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
-            strata::kernels::mrope_table(), rt);
+            strata::kernels::mrope_current_table(), rt);
     check("rope");
 }
 void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, int64_t out_ts, const float* w, int64_t T,
@@ -3446,11 +3446,11 @@ void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, in
     if (rt.cos != nullptr)
         rms_rope_rows_kernel<true><<<(unsigned) (T * heads), 256, 0, (cudaStream_t) stream>>>(
             in, in_ts, in_hs, out, out_ts, w, heads, dim, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high,
-            k.ext_factor, k.attn_factor, strata::kernels::mrope_table(), rt);
+            k.ext_factor, k.attn_factor, strata::kernels::mrope_current_table(), rt);
     else
         rms_rope_rows_kernel<false><<<(unsigned) (T * heads), 256, 0, (cudaStream_t) stream>>>(
             in, in_ts, in_hs, out, out_ts, w, heads, dim, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high,
-            k.ext_factor, k.attn_factor, strata::kernels::mrope_table(), rt);
+            k.ext_factor, k.attn_factor, strata::kernels::mrope_current_table(), rt);
     check("rms_rope_rows");
 }
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {

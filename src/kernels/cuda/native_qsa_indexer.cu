@@ -288,11 +288,11 @@ void native_qsa_indexer_append_steps(const float* raw, const int32_t* relative_p
     if (rt.cos != nullptr)
         append<true><<<1,THREADS,0,static_cast<cudaStream_t>(stream)>>>(raw,relative_pos_device,pos_stride,n_steps,pos_base,gamma,epsilon,
             b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,k.freq_scale,
-            k.corr_low,k.corr_high,k.ext_factor,k.attn_factor,mrope_table(),rt);
+            k.corr_low,k.corr_high,k.ext_factor,k.attn_factor,mrope_current_table(),rt);
     else
         append<false><<<1,THREADS,0,static_cast<cudaStream_t>(stream)>>>(raw,relative_pos_device,pos_stride,n_steps,pos_base,gamma,epsilon,
             b.tail,b.dead,b.pooled,b.block_pos,int(max_cells),theta_scale,k.freq_scale,
-            k.corr_low,k.corr_high,k.ext_factor,k.attn_factor,mrope_table(),rt);
+            k.corr_low,k.corr_high,k.ext_factor,k.attn_factor,mrope_current_table(),rt);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
@@ -323,11 +323,11 @@ void native_qsa_indexer_append_steps_layers(const float* raw0, int64_t raw_strid
     if (rt.cos != nullptr)
         append_layers<true><<<n_layers, THREADS, 0, st>>>(raw0, (long long) raw_stride, relative_pos_device, pos_stride, n_steps,
             pos_base, epsilon, layers, int(max_cells), theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor,
-            k.attn_factor, mrope_table(), rt);
+            k.attn_factor, mrope_current_table(), rt);
     else
         append_layers<false><<<n_layers, THREADS, 0, st>>>(raw0, (long long) raw_stride, relative_pos_device, pos_stride, n_steps,
             pos_base, epsilon, layers, int(max_cells), theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor,
-            k.attn_factor, mrope_table(), rt);
+            k.attn_factor, mrope_current_table(), rt);
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
@@ -349,7 +349,7 @@ void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, in
     const RopeKernelArgs k = scaling.kernel_args(ROT);   // none: the identity constants
     const float fsf = k.freq_scale, cl = k.corr_low, ch = k.corr_high, ef = k.ext_factor, ms = k.attn_factor;
     const cudaStream_t st = static_cast<cudaStream_t>(stream);
-    const int32_t* mtab = mrope_table();
+    const int32_t* mtab = mrope_current_table();
     const RopeTab rt = rope_table_for(scaling);
     if (p0 == 0) {
         if (rt.cos != nullptr)

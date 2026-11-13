@@ -30,12 +30,17 @@
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
+#define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
+#define cudaErrorInvalidValue hipErrorInvalidValue
 #define cudaStream_t hipStream_t
 #define cudaEvent_t hipEvent_t
 #define cudaGraph_t hipGraph_t
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphNode_t hipGraphNode_t
 #define cudaDeviceProp hipDeviceProp_t
+#define cudaPointerAttributes hipPointerAttribute_t
+#define cudaMemoryTypeDevice hipMemoryTypeDevice
+#define cudaMemoryTypeUnregistered hipMemoryTypeUnregistered
 #define cudaMemcpyKind hipMemcpyKind
 #define cudaMemcpyHostToDevice hipMemcpyHostToDevice
 #define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
@@ -85,6 +90,7 @@
 #define cudaSetDevice hipSetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
 #define cudaGetDeviceProperties hipGetDeviceProperties
+#define cudaPointerGetAttributes hipPointerGetAttributes
 // The shared-memory opt-in limit: some HIP versions report 0 for it on GCN cards; the real ceiling there is
 // the plain per-block limit (64 KB of LDS on gfx906).
 inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, int dev) {

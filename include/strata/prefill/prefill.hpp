@@ -81,6 +81,10 @@ public:
               void* stream, std::string& err, void* borrow = nullptr, uint64_t borrow_bytes = 0,
               bool borrow_spill = false);
 
+    /// Reuse this workspace for another equal-layout session on the same device.
+    /// Call between runs, after the pipeline has drained; no state or scratch is copied.
+    bool bind_session(core::SessionState& ss, std::string& err);
+
     /// With borrowed buffers: lay them out again for chunks of `chunk` tokens (at most `init`'s) in `borrow` - a
     /// request lends only the slots its prompt needs.  The stream must be idle (between prompts).
     bool relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err);

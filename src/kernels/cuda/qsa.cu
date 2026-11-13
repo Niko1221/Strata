@@ -733,7 +733,7 @@ void indexer_key_append(const float* raw, const int32_t* pos_dev, int32_t pos_ba
     // be captured and replayed, and the position arrives through `pos_dev` like every other kernel's data.
     indexer_key_append_kernel<<<1, threads, smem, (cudaStream_t) stream>>>(
         raw, pos_dev, (int) pos_base, w_k_norm, eps, b.tail, b.dead, b.pooled, b.block_pos, (int) s.idx_dim,
-        (int) s.idx_block, (int) s.n_rot, cos_tab, sin_tab, mrope_table());
+        (int) s.idx_block, (int) s.n_rot, cos_tab, sin_tab, mrope_current_table());
     check_launch("indexer_key_append");
     if (stream == nullptr) check_sync("indexer_key_append");
 }

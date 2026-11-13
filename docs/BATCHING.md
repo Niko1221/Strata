@@ -22,6 +22,29 @@ asked, with a note when it is more than setup would recommend.
 "parallel": 2
 ```
 
+### Keep requests in their physical slots
+
+For Qwen3.8-Flash-Next, add `--unified-slots` to the config's `args` with `--serve --batch N` (`N >= 2`) on a single GPU.
+The request reads its prompt, decodes and finishes in the same session. When it is alone, the engine uses
+single-sequence kernels in that session; a neighbour arriving or leaving does not copy it to another session.
+The server follows `INFO unified_slots=1`: it sends `BGEN` from the start, resumes a yielded prompt in its owning
+slot, and does not promote or hand a request back to `GEN`. Without the flag, existing scheduling is unchanged.
+
+With MTP, a lone request keeps its normal multi-token window in its slot. With several active requests,
+`--batch-mtp` enables at most one proposal per slot; without it, those windows use target tokens only.
+
+With `--vision`, each physical session keeps its own image-position table. Prefill, verification, the indexer
+and MTP use that session's positions. Changing another slot between pictures and text leaves its neighbours'
+tables intact.
+
+DFlash2 (`--draft dflash2`) also keeps a private drafter in each physical slot. Its weights and head are shared;
+its K/V ring, token history, deferred context and prompt taps follow that slot. A lone request uses its normal
+block proposals, and concurrent requests use the existing spare-row batch proposals. `STRATA_BATCH_DF2=0` disables
+those concurrent proposals while retaining the owning drafter and the lone-request path.
+
+Use the existing scheduling paths for Metal, layer splits or peer/helper GPUs.
+
+
 With MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the server's
 environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch behaviour
 described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so check the

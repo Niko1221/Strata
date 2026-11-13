@@ -97,9 +97,10 @@ namespace {
 __global__ void rope_neox_kernel(const float* __restrict__ x, float* __restrict__ out, long long rows,
                                  int head_dim, int n_rot, const float* __restrict__ cos_tab,
                                  const float* __restrict__ sin_tab, const int* __restrict__ pos,
-                                 const int32_t* __restrict__ mtab) {
+                                 const int32_t* mtab, MropeRows owners) {
     const long long r = (long long) blockIdx.x * blockDim.x + threadIdx.x;
     if (r >= rows) return;
+    mtab = mrope_row_table(mtab, owners, (int) r);
     const int half = n_rot / 2;
     const float* xr = x + r * head_dim;
     float* orow = out + r * head_dim;
@@ -124,7 +125,7 @@ void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int
     const int threads = 128;
     const unsigned grid = (unsigned) ((rows + threads - 1) / threads);
     rope_neox_kernel<<<grid, threads, 0, (cudaStream_t) stream>>>(x, out, rows, head_dim, n_rot, cos_tab,
-                                                                 sin_tab, pos, mrope_table());
+                                                                 sin_tab, pos, mrope_current_table(), mrope_rows());
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "rope_neox_apply launch: %s\n", cudaGetErrorString(e));

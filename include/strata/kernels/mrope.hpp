@@ -10,8 +10,8 @@
 // rotary position.  Set, it is a DEVICE int32 [cells][3] (t, h, w) and the position a caller passes is read as a
 // CELL index; pair i rotates by tab[cell * 3 + mrope_sector(i)].  Every caller in the engine passes cell indices
 // (pos_base is 0 everywhere), so the table covers the prompt path, the verify window and the MTP drafter at once.
-// The pointer must be set before any CUDA graph is captured (kernels take it as an argument); the contents may
-// change between requests.
+// A graph retains the selected table (and, for a batch, the device row-owner array). Session tables keep their
+// addresses for their entire lifetime; updating one request never writes another session's positions.
 #pragma once
 
 #include <cstdint>
@@ -26,6 +26,38 @@ namespace strata::kernels {
 /// The table of the CURRENT device (a layer split sets one per device; null = the identity).
 void mrope_table_set(const int32_t* device_table);
 const int32_t* mrope_table();
+
+/// A batched rotation selects one table per token, shared by its `heads` contiguous head rows.
+struct MropeRows {
+    const int32_t* const* tables = nullptr;   ///< device array, one session table per token
+    int heads = 1;
+};
+
+namespace detail {
+struct MropeBinding {
+    const int32_t* table = nullptr;
+    MropeRows rows;
+    bool bound = false;
+};
+inline thread_local MropeBinding mrope_binding;
+}
+
+/// Launch/capture-local binding. It changes kernel arguments, not device-global state or table contents.
+/// A null session table preserves the legacy per-device table, including the flag-off path.
+class MropeScope {
+    detail::MropeBinding saved_;
+public:
+    explicit MropeScope(const int32_t* table, MropeRows rows = {}) : saved_(detail::mrope_binding) {
+        if (table || rows.tables) detail::mrope_binding = {table, rows, true};
+    }
+    ~MropeScope() { detail::mrope_binding = saved_; }
+    MropeScope(const MropeScope&) = delete;
+    MropeScope& operator=(const MropeScope&) = delete;
+};
+inline const int32_t* mrope_current_table() {
+    return detail::mrope_binding.bound ? detail::mrope_binding.table : mrope_table();
+}
+inline MropeRows mrope_rows() { return detail::mrope_binding.rows; }
 
 /// #280, opt-in (STRATA_ROPE_TABLE=1): the rotation angles, 32 pairs of a 64-wide rotary slice, from the session's
 /// float64 table (build_rope_table, [max_pos][32] cos and sin in VRAM, the rope scaling inside) of the CURRENT
@@ -50,6 +82,9 @@ RopeTab rope_table_for(const RopeScaling& scaling);
 /// == 2 -> w (sector < 30), == 0 -> t (sector < 33).  For pairs 0..31 all three bounds hold, so it is pair % 3.
 __device__ __forceinline__ int mrope_pos(const int32_t* tab, int pos, int pair) {
     return tab ? __ldg(tab + (size_t) pos * 3 + pair % 3) : pos;
+}
+__device__ __forceinline__ const int32_t* mrope_row_table(const int32_t* table, MropeRows rows, int row) {
+    return rows.tables ? rows.tables[row / rows.heads] : table;
 }
 /// cos and sin of rotary position p, pair `pair` (0..31) from the table (scaling and magnitude included); false
 /// when there is no table or p lies past it - then the caller computes the angle as it always did

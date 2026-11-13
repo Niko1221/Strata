@@ -37,6 +37,7 @@ const Cvec& cvec() {
     static const Cvec none{};
     return none;
 }
+bool cvec_enabled() { return false; }
 }  // namespace strata::kernels
 
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and

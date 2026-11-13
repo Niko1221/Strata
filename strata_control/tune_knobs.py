@@ -48,7 +48,8 @@ def default_unsteady(ctx: "Context") -> bool:
 #: Flags that take no value (present = on, absent = off).
 BOOL_FLAGS = frozenset({"--kv-grow", "--trim-stage-weights", "--no-host-worker", "--no-pool", "--mmap-experts",
                         "--resident-experts", "--prompt-cache-tail", "--vram-elastic", "--split-skip-if-fits",
-                        "--resident-cpu-experts", "--no-hit-poke", "--expert-cache-per-layer", "--batch-mtp"})
+                        "--resident-cpu-experts", "--no-hit-poke", "--expert-cache-per-layer", "--batch-mtp",
+                        "--unified-slots"})
 
 #: Flags of BOOL_FLAGS that strata-dsv41 (DeepSeek) reads with a word: ``--mmap-experts on|off|auto`` (src/dsv41/ds4_main.cpp). A bare one there takes the
 #: next argument as its word, or stops the engine ("--mmap-experts needs a value") when it is last. Qwen's engine takes it as a bare switch (#5027).

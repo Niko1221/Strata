@@ -33,6 +33,17 @@ class Launches(Base):
         arg_layers.stamp(cfg)
         return json.loads(json.dumps(cfg))
 
+    def test_unified_slots_is_a_bare_explicit_option(self):
+        first = self.launch(extra={"--unified-slots": ""}, drafting="off")
+        argv = self.server_args(first)
+        self.assertEqual(argv.count("--unified-slots"), 1)
+        index = argv.index("--unified-slots")
+        self.assertTrue(index + 1 == len(argv) or argv[index + 1].startswith("--"))
+        second = self.launch(extra={"--unified-slots": ""}, prev=first, drafting="off")
+        self.assertEqual(self.server_args(second), argv)
+        disabled = self.launch(base=first, extra={"--unified-slots": "off"}, drafting="off")
+        self.assertNotIn("--unified-slots", self.server_args(disabled))
+
     # ---- #5178
     def test_an_explicit_draft_conf_reaches_the_engine_and_survives_a_second_launch(self):
         for mode in ("dflash2", "auto"):
