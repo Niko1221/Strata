@@ -2225,7 +2225,11 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
             }
         }
     }
-    const bool is_first = (tid < n && first_j == tid && (slot >= 0 || maddr != 0));
+    // TENSOR PARALLEL, EXPERT SPLIT (opt-in): a mirror entry of 1 means "another rank owns this expert".  The entry
+    // joins no group and gets no row here, so its row in the parts stays zero and the owner's rank adds it in the
+    // all-reduce after the combine.  No table holds a 1 unless the split is on, so the plan is unchanged without it.
+    const bool not_mine = (slot < 0 && maddr == 1ull);
+    const bool is_first = (tid < n && first_j == tid && (slot >= 0 || maddr != 0) && !not_mine);
     const int my_cnt = is_first ? count_same : 0;
     const int my_pack = (my_cnt << 16) | (is_first ? 1 : 0);
     const int lane = tid & 31;
@@ -2275,7 +2279,7 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
                                  : maddr;
         start[grp_idx] = ent_start;
     }
-    if (tid < n) {
+    if (tid < n && !not_mine) {
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
@@ -2289,11 +2293,12 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     if (tid == 0) {
         int groups = 0;
         for (int w = 0; w < n_warps; ++w) groups += s_wsum[w];
+        const int mine = groups >> 16;   // the entries this rank computes: n when no entry is another rank's
         groups &= 0xffff;
-        start[groups] = n;
-        start2[0] = n;
+        start[groups] = mine;
+        start2[0] = mine;
         counts[0] = groups;
-        counts[1] = n;
+        counts[1] = mine;
         counts[2] = 0;
         if (skip != nullptr) {
             /*

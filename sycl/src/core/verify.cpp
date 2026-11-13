@@ -848,6 +848,14 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         */
         if (!ok2) {; all_resident_ = false; device_plan_ = false; }
     }
+    // TENSOR PARALLEL, EXPERT SPLIT (opt-in, `tp_expert_split()`): the shared expert is counted once, on rank 0.  Every
+    // other rank combines its own experts' rows with zeros in the shared expert's place, and the all-reduce after the
+    // combine adds the ranks' partial sums.
+    if (strata::core::tp_expert_split() && strata::core::tp_rank_current() > 0) {
+        tp_zero_shared_ = sycl::malloc_device<float>((size_t) T * N, dpct::get_in_order_queue());
+        if (tp_zero_shared_ == nullptr) { err = "verify: the expert split's zero rows failed"; return false; }
+        dpct::get_in_order_queue().memset(tp_zero_shared_, 0, (size_t) T * N * sizeof(float)).wait();
+    }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: the per-layer residual ladder (token 0)
         dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
         dbgM_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
@@ -1715,21 +1723,27 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             ev_join_ != nullptr) {
             cs->ext_oneapi_submit_barrier({*ev_join_});
         }
+        // expert split: a rank other than 0 adds zeros where the shared expert goes (rank 0 counts it once)
+        float* const sh_rows = tp_zero_shared_ != nullptr ? tp_zero_shared_ : shared_;
         if (sg_gated_[grp]) {   // STRATA_LFUSE: the shared expert's gate was not applied: the combine applies it (all rows are hits)
             try {
-                native_moe_combine_multi_hits_gated(parts_out, w_ + tb * K, shared_ + tb * N, sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
+                native_moe_combine_multi_hits_gated(parts_out, w_ + tb * K, sh_rows + tb * N, sh_g_ + tb, bo_ + tb * N, N, K, n, cs);
             } catch (const std::exception& e) { err = "verify combine: " + std::string(e.what()); return false; }
         } else
         if (dec_batch && n > 1 && native_moe_combine_enabled()) {   // one launch for the window's rows
             try {
-                native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N, K, n, cs);
+                native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, sh_rows + tb * N, bo_ + tb * N, N, K, n, cs);
             } catch (const std::exception& e) { err = "verify combine: " + std::string(e.what()); return false; }
         } else
         for (int t = tb; t < te; ++t) {
             MoEBuffers mb = ss.moe;
-            mb.weights = w_ + t * K; mb.shared = shared_ + t * N;
+            mb.weights = w_ + t * K; mb.shared = sh_rows + t * N;
             if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
         }
+        // EXPERT SPLIT: each rank computed only the experts it owns, so the layer's FFN output is the sum over ranks.
+        if (strata::core::tp_expert_split() && strata::core::tp_ranks_current() > 1 &&
+            !strata::core::tp_owed_reduce(bo_ + tb * N, (int64_t) n * N, cs, err))
+            return false;
         if (grp == 0 && l <= 1) {
             if (tpd_on) {
                 cs->wait();

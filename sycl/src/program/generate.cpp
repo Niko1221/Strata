@@ -7904,12 +7904,81 @@ int main(int argc, char **argv) try {
                     tp_heads.push_back(std::move(h));
                 }
             }
+            // THE EXPERT SPLIT (opt-in, STRATA_TP_EXPERT_SPLIT=1).  Without it every rank holds a copy of rank 0's
+            // cache and computes every routed expert, most of them over PCIe from the host mirror.  With it rank 0
+            // keeps the experts in its cache, the mirrored ones are dealt to ranks 1..N-1 until their caches are
+            // full (STRATA_TP_RANK_CACHE_MIB, default rank 0's cache size), and what is left over is owned round
+            // robin and read from the mirror by its owner alone.  `tp_owner` is the owning rank of each expert.
+            std::vector<std::vector<strata::program::TpOwnedExpert>> tp_own((size_t) o.tp);
+            std::vector<int8_t> tp_owner;
+            std::vector<unsigned long long> tp_tab;
+            {
+                const char* sv = std::getenv("STRATA_TP_EXPERT_SPLIT");
+                const char* nh = std::getenv("STRATA_VERIFY_NO_HOST");
+                const char* dp = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
+                const bool want = sv != nullptr && std::atoi(sv) != 0;
+                const bool lean_env = nh != nullptr && std::atoi(nh) != 0 && dp != nullptr && std::atoi(dp) != 0;
+                if (want && (mirror_table_d == nullptr || !xcache.valid() || !lean_env)) {
+                    std::fprintf(stderr, "strata serve: --tp %d: STRATA_TP_EXPERT_SPLIT needs the host mirror and "
+                                         "STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1; the experts stay replicated\n", o.tp);
+                } else if (want) {
+                    const size_t n_tab = (size_t) (g.n_layers * g.n_expert);
+                    tp_tab.resize(n_tab);
+                    dpct::get_in_order_queue().memcpy(tp_tab.data(), mirror_table_d, n_tab * sizeof(unsigned long long)).wait();
+                    tp_owner.assign(n_tab, 0);
+                    const char* cm = std::getenv("STRATA_TP_RANK_CACHE_MIB");
+                    const uint64_t cap = cm != nullptr ? (uint64_t) std::atoll(cm) << 20 : (uint64_t) xcache.bytes();
+                    std::vector<uint64_t> used((size_t) o.tp, 0);
+                    std::vector<uint8_t> seen(n_tab, 0);
+                    size_t rr = 0, left = 0, n_missing = 0;
+                    const auto& xlay = strata::kernels::cpu::expert_layout();
+                    auto deal = [&](int64_t l, int64_t e) {
+                        const size_t i = (size_t) (l * g.n_expert + e);
+                        if (l < 0 || l >= g.n_layers || e < 0 || e >= g.n_expert || seen[i]) return;
+                        seen[i] = 1;
+                        if (xcache.slot_of(l, e) != strata::core::kNotResident) return;   // rank 0 holds it
+                        if (tp_tab[i] == 0) { ++n_missing; return; }
+                        const uint64_t b = ((uint64_t) xlay.blob_bytes(l) + 255) / 256 * 256;
+                        for (int t = 0; t < o.tp - 1; ++t) {
+                            const int r = 1 + (int) ((rr + (size_t) t) % (size_t) (o.tp - 1));
+                            if (used[(size_t) r] + b > cap) continue;
+                            used[(size_t) r] += b;
+                            tp_own[(size_t) r].push_back({(int32_t) l, (int32_t) e, (const uint8_t*) tp_tab[i],
+                                                          (int64_t) xlay.blob_bytes(l)});
+                            tp_owner[i] = (int8_t) r;
+                            ++rr;
+                            return;
+                        }
+                        tp_owner[i] = (int8_t) (left++ % (size_t) o.tp);   // no cache has room: its owner reads the mirror
+                    };
+                    for (const auto& pr : profile) deal(pr.first, pr.second);   // the most routed first
+                    for (int64_t l = 0; l < g.n_layers; ++l)
+                        for (int64_t e = 0; e < g.n_expert; ++e) deal(l, e);
+                    bool every = n_missing == 0;
+                    for (int r = 1; r < o.tp; ++r) every = every && !tp_own[(size_t) r].empty();
+                    if (!every) {
+                        std::fprintf(stderr, "strata serve: --tp %d: STRATA_TP_EXPERT_SPLIT: %zu experts are in no cache and "
+                                             "not mirrored, or a rank got none; the experts stay replicated\n", o.tp, n_missing);
+                        tp_owner.clear();
+                        for (auto& v : tp_own) v.clear();
+                    } else {
+                        strata::core::tp_expert_split_flag().store(true);
+                        std::fprintf(stderr, "strata serve: --tp %d: expert split on: rank 0 holds %lld experts", o.tp,
+                                     (long long) xcache.slots());
+                        for (int r = 1; r < o.tp; ++r)
+                            std::fprintf(stderr, ", rank %d %zu (%.2f GiB)", r, tp_own[(size_t) r].size(),
+                                         (double) used[(size_t) r] / 1073741824.0);
+                        std::fprintf(stderr, "; %zu stay in the host mirror\n", left);
+                    }
+                }
+            }
             for (int r = 1; r < o.tp; ++r) {
                 auto rk = std::make_unique<strata::program::TpRank>();
                 if (!rk->build(o.pack, o.native_shards, &tp_skip, g, o.max_context, ss.k, ordinals[(size_t) r], r,
                                o.tp, tp_heads.empty() ? nullptr : tp_heads[(size_t) r - 1].get(),
                                std::max(o.spec, o.batch), err, &vh,
-                               xcache.valid() ? xcache.bytes() : 0, &sized_slots)) {
+                               xcache.valid() ? xcache.bytes() : 0, &sized_slots,
+                               tp_owner.empty() ? nullptr : &tp_own[(size_t) r])) {
                     std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
                     return 1;
                 }
@@ -7924,7 +7993,16 @@ int main(int argc, char **argv) try {
                 const size_t n_tab = (size_t) (g.n_layers * g.n_expert);
                 std::vector<unsigned long long> tab(n_tab);
                 dpct::get_in_order_queue().memcpy(tab.data(), mirror_table_d, n_tab * sizeof(unsigned long long)).wait();
+                if (!tp_owner.empty()) {   // expert split: 1 = "another rank owns this expert" in rank 0's table
+                    std::vector<unsigned long long> t0 = tab;
+                    for (size_t i = 0; i < n_tab; ++i)
+                        if (tp_owner[i] != 0) t0[i] = 1ull;
+                    dpct::get_in_order_queue().memcpy(mirror_table_d, t0.data(), n_tab * sizeof(unsigned long long)).wait();
+                }
+                const std::vector<unsigned long long> tab_all = tab;
                 for (int r = 1; r < o.tp; ++r) {
+                    if (!tp_owner.empty())   // this rank's view: its own experts' addresses, 1 for everyone else's
+                        for (size_t i = 0; i < n_tab; ++i) tab[i] = tp_owner[i] == (int8_t) r ? tab_all[i] : 1ull;
                     strata::program::TpRank& rk = *tp_ranks[(size_t) r - 1];
                     const strata::core::OnDevice on_mir(ordinals[(size_t) r]);
                     unsigned long long* t = sycl::malloc_device<unsigned long long>(n_tab, dpct::get_in_order_queue());

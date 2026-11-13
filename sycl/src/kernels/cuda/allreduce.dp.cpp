@@ -67,6 +67,23 @@ inline float bf16_to_f32(uint16_t b) {
 inline bool ar_same_bits(float a, float b) { return sycl::bit_cast<uint32_t>(a) == sycl::bit_cast<uint32_t>(b); }
 inline bool ar_same_bits(uint16_t a, uint16_t b) { return a == b; }
 
+/// EIGHT BYTES PER PCIe TRANSACTION.  The staging used to be stored and loaded one wire value at a time (2 B for
+/// bf16), and the time of a reduce was the number of transactions: 4 ranks, 15,360 floats, 2.0 ms a call on
+/// 4x Arc Pro B60.  A word holds 4 bf16 or 2 f32 in the same byte order the single stores wrote, so the staging
+/// bytes - and every rank's result - are unchanged.
+inline uint64_t ar_bits(uint16_t v) { return v; }
+inline uint64_t ar_bits(float v) { return sycl::bit_cast<uint32_t>(v); }
+inline void ar_unbits(uint64_t b, uint16_t& v) { v = (uint16_t) b; }
+inline void ar_unbits(uint64_t b, float& v) { v = sycl::bit_cast<float>((uint32_t) b); }
+template <typename T> inline uint64_t ar_pack(const T* v) {
+    uint64_t w = 0;
+    for (int k = 0; k < (int) (8 / sizeof(T)); ++k) w |= ar_bits(v[k]) << (k * 8 * (int) sizeof(T));
+    return w;
+}
+template <typename T> inline void ar_unpack(uint64_t w, T* v) {
+    for (int k = 0; k < (int) (8 / sizeof(T)); ++k) ar_unbits(w >> (k * 8 * (int) sizeof(T)), v[k]);
+}
+
 template <typename Wire> struct WireOps;
 template <> struct WireOps<float> {
     using type = float;
@@ -123,7 +140,7 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                       int blocks, int threads, uint32_t spin_bound) {
     using Ops = WireOps<Wire>;
     using T = typename Ops::type;
-    constexpr int ELEMS = Ops::elems;
+    constexpr int ELEMS = (int) (8 / sizeof(T));   // one 8-byte word per staging transaction
     const int nvec = count / ELEMS, tail = nvec * ELEMS;
 
     // THE KERNEL TAKES THESE TABLES BY VALUE.  The parameters point at the caller's stack arrays; a lambda
@@ -159,13 +176,15 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
         // the standalone test failed 4-6 runs of 6, mostly on the first call, with either spin bound).
         const T* last_p = nullptr;
         T last_v{};
+        const uint64_t* last_wp = nullptr;
+        uint64_t last_wv = 0;
         for (int i = gtid; i < nvec; i += gnt) {
             const int off = i * ELEMS;
-            for (int k = 0; k < ELEMS; ++k) {
-                last_v = Ops::from(x[off + k]);
-                last_p = mine_h + off + k;
-                strata::sys_store_mapped(mine_h + off + k, last_v);
-            }
+            T v[ELEMS];
+            for (int k = 0; k < ELEMS; ++k) v[k] = Ops::from(x[off + k]);
+            last_wv = ar_pack<T>(v);
+            last_wp = (const uint64_t*) (mine_h + off);
+            strata::sys_store_mapped((uint64_t*) (mine_h + off), last_wv);
         }
         if (bid == 0 && tid < count - tail) {
             last_v = Ops::from(x[tail + tid]);
@@ -173,6 +192,8 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
             strata::sys_store_mapped(mine_h + tail + tid, last_v);
         }
         sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+        if (last_wp != nullptr)
+            for (uint32_t s = 0; s < spin_bound && strata::sys_load_mapped(last_wp) != last_wv; ++s) {}
         if (last_p != nullptr)
             for (uint32_t s = 0; s < spin_bound && !ar_same_bits(strata::sys_load_mapped(last_p), last_v); ++s) {}
 
@@ -248,16 +269,22 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                 // this rank's stripe plus every peer's, accumulated in float, stored as wire
                 const T* sum_p = nullptr;
                 T sum_v{};
+                const uint64_t* sum_wp = nullptr;
+                uint64_t sum_wv = 0;
                 for (int i = gtid; i < nvec; i += gnt) {
                     const int off = i * ELEMS;
-                    for (int k = 0; k < ELEMS; ++k) {
-                        float acc = Ops::to(strata::sys_load_mapped(mine_h + off + k));
-                        for (int r = 1; r < ranks; ++r)
-                            acc += Ops::to(strata::sys_load_mapped(peers0_v[r] + off + k));
-                        sum_v = Ops::from(acc);
-                        sum_p = mine_h + off + k;
-                        strata::sys_store_mapped(mine_h + off + k, sum_v);
+                    T v[ELEMS];
+                    float acc[ELEMS];
+                    ar_unpack<T>(strata::sys_load_mapped((const uint64_t*) (mine_h + off)), v);
+                    for (int k = 0; k < ELEMS; ++k) acc[k] = Ops::to(v[k]);
+                    for (int r = 1; r < ranks; ++r) {   // the same order of adds as one value at a time
+                        ar_unpack<T>(strata::sys_load_mapped((const uint64_t*) (peers0_v[r] + off)), v);
+                        for (int k = 0; k < ELEMS; ++k) acc[k] += Ops::to(v[k]);
                     }
+                    for (int k = 0; k < ELEMS; ++k) v[k] = Ops::from(acc[k]);
+                    sum_wv = ar_pack<T>(v);
+                    sum_wp = (const uint64_t*) (mine_h + off);
+                    strata::sys_store_mapped((uint64_t*) (mine_h + off), sum_wv);
                 }
                 if (bid == 0 && tid < count - tail) {
                     float acc = Ops::to(strata::sys_load_mapped(mine_h + tail + tid));
@@ -269,6 +296,8 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                 }
                 // the same read-back as the staging: the done token must not overtake the sum
                 sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+                if (sum_wp != nullptr)
+                    for (uint32_t s = 0; s < spin_bound && strata::sys_load_mapped(sum_wp) != sum_wv; ++s) {}
                 if (sum_p != nullptr)
                     for (uint32_t s = 0; s < spin_bound && !ar_same_bits(strata::sys_load_mapped(sum_p), sum_v); ++s) {}
             }
@@ -286,8 +315,9 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
             const int other = 1 - rank;
             for (int i = gtid; i < nvec; i += gnt) {
                 const int off = i * ELEMS;
-                for (int k = 0; k < ELEMS; ++k)
-                    x[off + k] = Ops::to(Ops::from(x[off + k])) + Ops::to(strata::sys_load_mapped(peers0_v[other] + off + k));
+                T v[ELEMS];
+                ar_unpack<T>(strata::sys_load_mapped((const uint64_t*) (peers0_v[other] + off)), v);
+                for (int k = 0; k < ELEMS; ++k) x[off + k] = Ops::to(Ops::from(x[off + k])) + Ops::to(v[k]);
             }
             if (bid == 0 && tid < count - tail)
                 x[tail + tid] = Ops::to(Ops::from(x[tail + tid])) +
@@ -298,7 +328,9 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
             const T* const sum_h = (rank == 0) ? mine_h : peers0_v[0];
             for (int i = gtid; i < nvec; i += gnt) {
                 const int off = i * ELEMS;
-                for (int k = 0; k < ELEMS; ++k) x[off + k] = Ops::to(strata::sys_load_mapped(sum_h + off + k));
+                T v[ELEMS];
+                ar_unpack<T>(strata::sys_load_mapped((const uint64_t*) (sum_h + off)), v);
+                for (int k = 0; k < ELEMS; ++k) x[off + k] = Ops::to(v[k]);
             }
             if (bid == 0 && tid < count - tail) x[tail + tid] = Ops::to(strata::sys_load_mapped(sum_h + tail + tid));
         }

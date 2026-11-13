@@ -21,6 +21,7 @@
 #include "strata/core/on_device.hpp"
 #include "strata/sycl_queue.hpp"
 
+#include <algorithm>
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 
@@ -38,6 +39,14 @@ namespace strata::program {
 using OnTpDevice = strata::core::OnDevice;
 
 /// One rank of a tensor-parallel pair.
+/// One expert a rank owns under the expert split: where its bytes are in pinned host memory.
+struct TpOwnedExpert {
+    int32_t layer = 0;
+    int32_t expert = 0;
+    const uint8_t* host = nullptr;
+    int64_t bytes = 0;
+};
+
 struct TpRank {
     int dev = -1;
     int rank = 0;
@@ -93,7 +102,8 @@ struct TpRank {
                const std::set<std::string>* skip, const strata::core::ModelGeometry& g, int64_t max_context,
                int64_t k, int device, int which, int how_many, const strata::core::NativeHead* head, int max_t,
                std::string& err, const strata::core::VerifyHits* src_cache = nullptr,
-               int64_t src_cache_bytes = 0, const std::vector<int64_t>* slot_bytes = nullptr) {
+               int64_t src_cache_bytes = 0, const std::vector<int64_t>* slot_bytes = nullptr,
+               const std::vector<TpOwnedExpert>* own = nullptr) {
         dev = device;
         rank = which;
         ranks = how_many;
@@ -144,7 +154,47 @@ struct TpRank {
         // THE SESSION MUST START ZEROED.  Rank 0's is zeroed by the engine; a rank whose GDN state and KV
         // cache are uninitialized reads garbage on the first window and the ranks diverge from token one.
         strata::core::session_zero(ss, g, nullptr, stream);
-        if (src_cache != nullptr && src_cache->n_slots > 0 && src_cache->cache_base != nullptr &&
+        if (own != nullptr && !own->empty()) {
+            // THE EXPERT SPLIT (opt-in): THIS RANK'S OWN EXPERTS.  Each expert in `own` is held by this rank and
+            // by no other, so the cache is filled from the pinned host copies instead of from rank 0's cache, and
+            // the residency table names this rank's slots.
+            std::vector<int64_t> sizes;
+            sizes.reserve(own->size());
+            int64_t max_blob = 0;
+            for (const TpOwnedExpert& x : *own) { sizes.push_back(x.bytes); max_blob = std::max(max_blob, x.bytes); }
+            if (!xcache.open_sized(sizes, g.n_layers, g.n_expert, err)) return false;
+            const uint64_t* off = xcache.slot_offsets();
+            uint8_t* base = (uint8_t*) xcache.device_slot(0);
+            if (off == nullptr || base == nullptr) {
+                err = "tensor parallel: the rank's own expert cache has no slot table";
+                return false;
+            }
+            const size_t nres = (size_t) (g.n_layers * g.n_expert);
+            std::vector<int32_t> res(nres, -1);
+            size_t total = 0;
+            for (size_t i = 0; i < own->size(); ++i) {
+                const TpOwnedExpert& x = (*own)[i];
+                q.memcpy(base + (size_t) off[i], x.host, (size_t) x.bytes);
+                res[(size_t) x.layer * (size_t) g.n_expert + (size_t) x.expert] = (int32_t) i;
+                total += (size_t) x.bytes;
+                if ((i & 63) == 63) q.wait();
+            }
+            q.wait();
+            residency = sycl::malloc_device<int32_t>(nres, q);
+            if (residency == nullptr) {
+                err = "tensor parallel: the rank's residency table failed";
+                return false;
+            }
+            q.memcpy(residency, res.data(), nres * sizeof(int32_t)).wait();
+            vh.n_slots = (int64_t) own->size();
+            vh.blob = src_cache != nullptr && src_cache->blob > 0 ? src_cache->blob : max_blob;
+            vh.cache_base = base;
+            vh.slot_off = off;
+            vh.d_res = residency;
+            vh.h_res = nullptr;
+            std::fprintf(stderr, "strata tp: rank %d: holds %zu experts of its own (%llu MiB)\n", rank, own->size(),
+                         (unsigned long long) (total >> 20));
+        } else if (src_cache != nullptr && src_cache->n_slots > 0 && src_cache->cache_base != nullptr &&
             src_cache->d_res != nullptr && src_cache->blob > 0 && std::getenv("STRATA_TP_NO_CACHE") == nullptr) {
             // REPLICATE RANK 0'S EXPERT CACHE ON THIS CARD.  The MoE is replicated, not sharded, so both ranks
             // must compute it identically: the same residents through the same GPU hit kernel and the same

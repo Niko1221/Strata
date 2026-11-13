@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <atomic>
 #include <string>
 
 #include "strata/core/shard.hpp"   // tp_ranks_current
@@ -66,6 +67,13 @@ private:
     /// single-card run has no thread that installs anything, so every thread still reads null.
     inline static thread_local TpRuntime* current_ = nullptr;
 };
+
+/// EXPERT SPLIT (opt-in, STRATA_TP_EXPERT_SPLIT=1).  Off: every rank holds the same experts and computes all of
+/// them (the MoE is replicated).  On: each expert is owned by one rank, a rank computes only the experts it owns,
+/// and one more all-reduce after the combine adds the ranks' partial sums.  The serve program turns it on, once,
+/// before any rank is built; nothing reads the environment after that.
+inline std::atomic<bool>& tp_expert_split_flag() { static std::atomic<bool> on{false}; return on; }
+inline bool tp_expert_split() { return tp_expert_split_flag().load(std::memory_order_relaxed); }
 
 /// The all-reduce a tensor-parallel rank OWES at a contraction point (`ssm_out`, `attn_output`): add the
 /// peer's partial sum INTO `y` (`n` floats) on `stream`.  True with nothing done on a single-card run,

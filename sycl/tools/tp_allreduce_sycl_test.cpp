@@ -11,6 +11,7 @@
 #include "strata/kernels/allreduce.hpp"
 #include "strata/sycl_queue.hpp"
 
+#include <chrono>
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 
@@ -53,6 +54,7 @@ int main(int argc, char** argv) {
             dpct::get_in_order_queue().memcpy(x[r], host.data(), n * sizeof(float)).wait();
         }
         std::vector<std::thread> th;
+        const auto t0 = std::chrono::steady_clock::now();
         for (int r = 0; r < ranks; ++r)
             th.emplace_back([&, r] {
                 dpct::select_device(ordinals[r]);
@@ -60,6 +62,9 @@ int main(int argc, char** argv) {
                 dpct::get_in_order_queue().wait_and_throw();
             });
         for (auto& t : th) t.join();
+        // launch to drained on every rank, with the threads' start in it (tens of microseconds)
+        const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("call %d: %.0f us\n", c, us);
         if (const int tr = pair.timed_out_rank(); tr >= 0) {
             std::printf("call %d: rank %d timed out\n", c, tr);
             ++bad;
