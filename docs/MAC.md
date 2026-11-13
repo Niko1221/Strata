@@ -229,6 +229,16 @@ from each other: top-1 agreement 95.4% against 95.8%, mean KL 0.0207 against 0.0
 
 - **Context:** measured up to 32K (needles, KL). Setup recommends 32K below 96 GB and 64K from 96 GB. Up to the model's 262K can
   be set, but it is not measured.
+- **The KV cache's format (`--kv`):** the Mac stores 8-bit codes with one fp16 scale per 64 values, which is the default and what
+  every measurement here used. `--kv fp16` keeps the keys and values as raw halves instead, with no quantization. It is opt-in:
+  without the flag nothing changes. On an M1 Max (64 GB) with the UD-IQ4_XS pack, arena 32 GB and 204800 context, a 357-token
+  prompt and 192 new tokens: 22.5 against 22.8 tokens/s decode (the same, within noise), prompts 24.4 against 26.4 (7% slower), and
+  2.5 GB more resident, because a half is two bytes where a code is one. It buys the cache's exact values, not speed, and its
+  answers score the same as 8-bit on the token-forcing check (`tools/force_check.py`: 12.8% of forced tokens take a different
+  argmax, against 12.0% and 12.3% for two 8-bit arms). On the Terminal, `strata launch --kv fp16` sets it. A server started from a
+  run settings file (a script that runs `serve/server.py --config …`) takes the flag in that file's `args`, as `"--kv", "fp16"`;
+  those args reach the engine unchanged, so a script that names no `--kv` runs the 8-bit default. `--kv q4_0` and `--kv k8v4` have
+  no Mac kernel: the Mac runs its 8-bit path.
 - **Several requests at once.** `--parallel N` keeps N sequences side by side in the engine, each with its own running state and K/V (0.65 GB each at a 36,864-token context). Measured on an M5 Max with IQ3_S, the MTP draft layer and `--spec 2`, N requests of 150 tokens sent at the same time, tokens a second over all of them: 1 request 85, 2 requests 95 to 102, 3 requests 115, 4 requests 119 to 125. One request alone decodes at 96 to 100; with 2, 3 and 4 at once each decodes at 53 to 61, 41 to 48 and 32 to 40. The engine uses 8.3, 12.0, 14.0 and 16.0 GB for 1 to 4.
 - **Not ported:** the control vector (`--control-vector-scaled`) and the PC tuning (`--calibrate`).
 - **Streaming** is measured at 32 GB only.
