@@ -220,7 +220,8 @@ bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string
 bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                        uint64_t arena_bytes, std::string &err,
                        const std::set<std::string> *skip, const ShardPlan *shard) try {
-    shard_ = shard;
+    has_shard_ = shard != nullptr;
+    if (has_shard_) shard_ = *shard; else shard_.clear();
     const std::string path = pack_dir + "/index.txt";
     std::FILE* idx = std::fopen(path.c_str(), "rb");
     if (!idx) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }

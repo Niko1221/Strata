@@ -152,11 +152,13 @@ public:
     const LoadReport& report() const { return report_; }
     /// The shard plan this table was loaded with (null on a single-card load).  `LayerView` reads it so a
     /// contraction split knows this rank's slice without threading the plan through every layer signature.
-    const ShardPlan* shard() const { return shard_; }
+    /// The table keeps its OWN copy: a caller's plan is often a local that ends with the load call.
+    const ShardPlan* shard() const { return has_shard_ ? &shard_ : nullptr; }
 
 private:
     friend class NativeDense;
-    const ShardPlan* shard_ = nullptr;
+    ShardPlan shard_;
+    bool has_shard_ = false;
     std::map<std::string, WeightRef> table_;
     LoadReport report_;
     std::string pack_dir_;
