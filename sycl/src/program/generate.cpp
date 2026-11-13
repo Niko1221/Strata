@@ -1189,8 +1189,26 @@ struct TpGroup {
         if (!ver0->commit(n_keep, err)) return false;
         for (auto* rk : ranks)
             if (!rk->ver.commit(n_keep, err)) return false;
+        // TPDIAG (STRATA_TP_DIAG_STATE=1): a checksum of the start of every rank's first GDN state after the
+        // commit.  A rank whose line stops changing from one commit to the next is not advancing its session.
+        static const bool diag = std::getenv("STRATA_TP_DIAG_STATE") != nullptr;
+        if (diag && ss0 != nullptr) {
+            static int n_commit = 0;
+            ++n_commit;
+            for (int r = 0; r < n; ++r) {
+                const strata::core::SessionState* s = r == 0 ? ss0 : &ranks[(size_t) r - 1]->ss;
+                sycl::queue* q = r == 0 ? strata::q_of((void*) ver0->stream()) : strata::q_of((void*) ranks[(size_t) r - 1]->stream);
+                std::vector<float> h(4096);
+                q->wait();
+                q->memcpy(h.data(), s->gdn_state, h.size() * sizeof(float)).wait();
+                double a1 = 0.0, a2 = 0.0;
+                for (float v : h) { a1 += (double) v; a2 += (double) v * (double) v; }
+                std::fprintf(stderr, "TPDIAG state commit=%d keep=%d rank=%d sum=%.9g sumsq=%.9g\n", n_commit, n_keep, r, a1, a2);
+            }
+        }
         return true;
     }
+    const strata::core::SessionState* ss0 = nullptr;
 };
 
 /// Layer split across GPUs: a later stage on its own device, with its own copy of the dense weights, a session, an
@@ -7853,6 +7871,7 @@ int main(int argc, char **argv) try {
             }
             tp_group.n = o.tp;
             tp_group.ver0 = &ver;
+            tp_group.ss0 = &ss;
             tp_group.pair = &tp_pair;
             tp_group.drives.resize((size_t) o.tp);
             for (int r = 0; r < o.tp; ++r) {
@@ -7896,6 +7915,29 @@ int main(int argc, char **argv) try {
                 }
                 tp_ranks.push_back(std::move(rk));
                 tp_group.ranks.push_back(tp_ranks.back().get());
+            }
+            // RANK 1..N-1'S MIRROR TABLE.  With STRATA_VERIFY_NO_HOST the experts that are not in VRAM are read
+            // from pinned host memory through a device table of their addresses, found from the residency table's
+            // pointer.  Only rank 0's was registered, so on every other rank a window with one such expert had no
+            // plan and its routed experts' rows were zeros (measured: rank 1's expert outputs all zero, TP=2).
+            if (mirror_table_d != nullptr) {
+                const size_t n_tab = (size_t) (g.n_layers * g.n_expert);
+                std::vector<unsigned long long> tab(n_tab);
+                dpct::get_in_order_queue().memcpy(tab.data(), mirror_table_d, n_tab * sizeof(unsigned long long)).wait();
+                for (int r = 1; r < o.tp; ++r) {
+                    strata::program::TpRank& rk = *tp_ranks[(size_t) r - 1];
+                    const strata::core::OnDevice on_mir(ordinals[(size_t) r]);
+                    unsigned long long* t = sycl::malloc_device<unsigned long long>(n_tab, dpct::get_in_order_queue());
+                    if (t == nullptr || rk.residency == nullptr) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's mirror table failed\n", o.tp, r);
+                        return 1;
+                    }
+                    dpct::get_in_order_queue().memcpy(t, tab.data(), n_tab * sizeof(unsigned long long)).wait();
+                    if (!strata::kernels::resident_plan_add_mirror(rk.residency, t, (long long) n_tab)) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's mirror table was refused\n", o.tp, r);
+                        return 1;
+                    }
+                }
             }
             // RANK 1..N-1'S PLE.  The engine wires its own above; each rank's `ss.ple` was left empty, so
             // `ple.ready()` would be false and the whole per-layer embedding would be silently skipped on that
@@ -7974,8 +8016,28 @@ int main(int argc, char **argv) try {
         // is on.  A lambda rather than a branch at every call site, so no site can forget one of the ranks.
         auto tp_run = [&](int T, const int32_t* tok, int64_t pos, strata::core::PoolMultiFn pool, void* user,
                           int32_t* out, std::string& e) -> bool {
-            return o.tp > 0 ? tp_group.run(T, tok, pos, pool, user, out, e)
-                            : ver.run(T, tok, pos, pool, user, out, e);
+            const bool ok = o.tp > 0 ? tp_group.run(T, tok, pos, pool, user, out, e)
+                                     : ver.run(T, tok, pos, pool, user, out, e);
+            // TPDIAG (STRATA_TP_DIAG_FINAL=1): a checksum of every rank's final hidden rows after the window.
+            // The ranks of a correct group hold the same residual, and it is the single card's for the same
+            // window (read the prompt through the windows there too: --short-read 100000).
+            static const bool diag = std::getenv("STRATA_TP_DIAG_FINAL") != nullptr;
+            static int n_win = 0;
+            if (diag && ok && ++n_win <= 12) {
+                const int nr = o.tp > 0 ? o.tp : 1;
+                for (int r = 0; r < nr; ++r) {
+                    strata::core::Verifier& v = r == 0 ? ver : tp_group.ranks[(size_t) r - 1]->ver;
+                    sycl::queue* q = strata::q_of((void*) v.stream());
+                    std::vector<float> h((size_t) g.n_embd);
+                    q->wait();
+                    q->memcpy(h.data(), v.final_R_all(), h.size() * sizeof(float)).wait();
+                    double a1 = 0.0, a2 = 0.0;
+                    for (float x : h) { a1 += (double) x; a2 += (double) x * (double) x; }
+                    std::fprintf(stderr, "TPDIAG final win=%d T=%d pos=%lld rank=%d sum=%.9g sumsq=%.9g x0=%.7g x1=%.7g out0=%d\n",
+                                 n_win, T, (long long) pos, r, a1, a2, (double) h[0], (double) h[1], r == 0 ? out[0] : -1);
+                }
+            }
+            return ok;
         };
         auto tp_commit = [&](int n_keep, std::string& e) -> bool {
             return o.tp > 0 ? tp_group.commit(n_keep, e) : ver.commit(n_keep, e);
@@ -10681,7 +10743,8 @@ int main(int argc, char **argv) try {
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
-                    if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
+                    if (o.tp == 0 &&   // --tp: a checkpoint holds rank 0's session only; the live session is every rank's
+                        (int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
                         resume = (int64_t) c.ids.size();
                         from_live = false;
                     }
@@ -10888,6 +10951,11 @@ int main(int argc, char **argv) try {
                     const strata::core::OnDevice on(st->dev);
                     strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                     st->stream->wait();
+                }
+                for (auto* rk : tp_group.ranks) {   // --tp: every rank starts the sequence from the same empty state
+                    const strata::core::OnDevice on(rk->dev);
+                    strata::core::session_zero(rk->ss, g, nullptr, (void*) rk->stream);
+                    if (rk->stream != nullptr) rk->stream->wait();
                 }
                 checks.clear();
             } else if (!from_live) {
@@ -12474,7 +12542,7 @@ int main(int argc, char **argv) try {
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
                 if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
                     adapt_thr = std::thread([&] { adapt_ok = adapt(); });
-                if (!ver.commit(a + 1, err)) {
+                if (!tp_commit(a + 1, err)) {   // every rank: a rank that kept its old state replays the same context
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());
                     return 1;

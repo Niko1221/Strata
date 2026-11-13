@@ -29,6 +29,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
 
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -61,6 +62,10 @@ inline float bf16_to_f32(uint16_t b) {
     std::memcpy(&f, &u, sizeof f);
     return f;
 }
+
+/// Bitwise equality of two wire values (a float compare would never match a NaN).
+inline bool ar_same_bits(float a, float b) { return sycl::bit_cast<uint32_t>(a) == sycl::bit_cast<uint32_t>(b); }
+inline bool ar_same_bits(uint16_t a, uint16_t b) { return a == b; }
 
 template <typename Wire> struct WireOps;
 template <> struct WireOps<float> {
@@ -121,6 +126,21 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
     constexpr int ELEMS = Ops::elems;
     const int nvec = count / ELEMS, tail = nvec * ELEMS;
 
+    // THE KERNEL TAKES THESE TABLES BY VALUE.  The parameters point at the caller's stack arrays; a lambda
+    // that captured the POINTERS would dereference host stack memory on the device.  On Arc (xe) that does
+    // not fault: the driver mirrors the CPU address, migrates the page to VRAM, and the kernel crashed when
+    // the host touched the page again (general protection fault in drm_pagemap_migrate_to_ram, 4x Arc Pro
+    // B60, Linux 7.0.0-42).  In a captured graph the stack is gone by the replay as well.
+    std::array<const T*, kArRanks> peers0_v{};
+    std::array<const uint32_t*, kArRanks> peer_timeout_v{};
+    std::array<const uint32_t*, kArRanks> peer_arrival_v{};
+    for (int j = 0; j < ranks && j < kArRanks; ++j) {
+        peers0_v[j] = peers0[j];
+        peer_timeout_v[j] = peer_timeout[j];
+        peer_arrival_v[j] = peer_arrival[j];
+    }
+    (void) peers1;
+
     q.parallel_for(sycl::nd_range<1>((size_t) blocks * (size_t) threads, (size_t) threads), [=](sycl::nd_item<1> it) {
         const int bid = (int) it.get_group(0);
         const int tid = (int) it.get_local_id(0);
@@ -131,13 +151,30 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
         // same parity for the same logical call.  `mine1` is unused by this call (the host passes the other
         // parity so the two calls never share bytes).
         T* const mine_h = mine0;
-        const T* const peer0 = peers0[rank];
+        const T* const peer0 = peers0_v[rank];
 
+        // THE LAST STORE OF EVERY THREAD IS READ BACK BEFORE THE BARRIER.  The arrival token is thread 0's
+        // store; the payload is every thread's.  Without the read-back the token reached the peer before
+        // some threads' payload did, and the peer summed stale bytes (measured on 2 and 4 Arc Pro B60:
+        // the standalone test failed 4-6 runs of 6, mostly on the first call, with either spin bound).
+        const T* last_p = nullptr;
+        T last_v{};
         for (int i = gtid; i < nvec; i += gnt) {
             const int off = i * ELEMS;
-            for (int k = 0; k < ELEMS; ++k) strata::sys_store_mapped(mine_h + off + k, Ops::from(x[off + k]));
+            for (int k = 0; k < ELEMS; ++k) {
+                last_v = Ops::from(x[off + k]);
+                last_p = mine_h + off + k;
+                strata::sys_store_mapped(mine_h + off + k, last_v);
+            }
         }
-        if (bid == 0 && tid < count - tail) strata::sys_store_mapped(mine_h + tail + tid, Ops::from(x[tail + tid]));
+        if (bid == 0 && tid < count - tail) {
+            last_v = Ops::from(x[tail + tid]);
+            last_p = mine_h + tail + tid;
+            strata::sys_store_mapped(mine_h + tail + tid, last_v);
+        }
+        sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+        if (last_p != nullptr)
+            for (uint32_t s = 0; s < spin_bound && !ar_same_bits(strata::sys_load_mapped(last_p), last_v); ++s) {}
 
         sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
         sycl::group_barrier(it.get_group());
@@ -158,23 +195,23 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                 // and adds the peer's half in place.  No done token, no rank-0 sum.
                 const int other = 1 - rank;
                 uint32_t spins = 0;
-                while (strata::sys_load(peer_arrival[other] + (size_t) bid * kArrivalInts) < tok) {
-                    if (peer_timeout[other] != nullptr && strata::sys_load(peer_timeout[other]) == kTimedOut) {
+                while (strata::sys_load(peer_arrival_v[other] + (size_t) bid * kArrivalInts) < tok) {
+                    if (peer_timeout_v[other] != nullptr && strata::sys_load(peer_timeout_v[other]) == kTimedOut) {
                         strata::sys_store(timed_out, kTimedOut);
                         break;
                     }
                     if (++spins >= spin_bound) { strata::sys_store(timed_out, kTimedOut); break; }
                 }
                 if (bid == 0) strata::sys_store(progress + kArProgressSawPeer,
-                                                strata::sys_load(peer_arrival[other]));
+                                                strata::sys_load(peer_arrival_v[other]));
             } else if (rank == 0) {
                 // WAIT FOR EVERY RANK'S ARRIVAL, then sum the staged partials into this rank's staging.
                 uint32_t spins = 0;
                 for (int r = 0; r < ranks; ++r) {
-                    while (strata::sys_load(peer_arrival[r] + (size_t) bid * kArrivalInts) < tok) {
+                    while (strata::sys_load(peer_arrival_v[r] + (size_t) bid * kArrivalInts) < tok) {
                         bool give_up = false;
                         for (int q2 = 0; q2 < ranks; ++q2)
-                            if (peer_timeout[q2] != nullptr && strata::sys_load(peer_timeout[q2]) == kTimedOut)
+                            if (peer_timeout_v[q2] != nullptr && strata::sys_load(peer_timeout_v[q2]) == kTimedOut)
                                 give_up = true;
                         if (give_up) { strata::sys_store(timed_out, kTimedOut); break; }
                         if (++spins >= spin_bound) { strata::sys_store(timed_out, kTimedOut); break; }
@@ -182,33 +219,14 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                     if (strata::sys_load(timed_out) == kTimedOut) break;
                 }
                 if (bid == 0) strata::sys_store(progress + kArProgressSawPeer,
-                                                strata::sys_load(peer_arrival[ranks - 1]));
-                if (strata::sys_load(timed_out) != kTimedOut) {
-                    // sum: this rank's stripe plus every peer's, accumulated in float, stored as wire
-                    for (int i = gtid; i < nvec; i += gnt) {
-                        const int off = i * ELEMS;
-                        for (int k = 0; k < ELEMS; ++k) {
-                            float acc = Ops::to(strata::sys_load_mapped(mine_h + off + k));
-                            for (int r = 1; r < ranks; ++r)
-                                acc += Ops::to(strata::sys_load_mapped(peers0[r] + off + k));
-                            strata::sys_store_mapped(mine_h + off + k, Ops::from(acc));
-                        }
-                    }
-                    if (bid == 0 && tid < count - tail) {
-                        float acc = Ops::to(strata::sys_load_mapped(mine_h + tail + tid));
-                        for (int r = 1; r < ranks; ++r)
-                            acc += Ops::to(strata::sys_load_mapped(peers0[r] + tail + tid));
-                        strata::sys_store_mapped(mine_h + tail + tid, Ops::from(acc));
-                    }
-                    strata::sys_store(done + (size_t) bid * kArrivalInts, tok);
-                }
+                                                strata::sys_load(peer_arrival_v[ranks - 1]));
             } else {
                 // WAIT FOR RANK 0'S SUM.
                 uint32_t spins = 0;
                 while (strata::sys_load(peer_done + (size_t) bid * kArrivalInts) < tok) {
                     bool give_up = false;
                     for (int q2 = 0; q2 < ranks; ++q2)
-                        if (peer_timeout[q2] != nullptr && strata::sys_load(peer_timeout[q2]) == kTimedOut)
+                        if (peer_timeout_v[q2] != nullptr && strata::sys_load(peer_timeout_v[q2]) == kTimedOut)
                             give_up = true;
                     if (give_up) { strata::sys_store(timed_out, kTimedOut); break; }
                     if (++spins >= spin_bound) { strata::sys_store(timed_out, kTimedOut); break; }
@@ -220,21 +238,64 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
         sycl::group_barrier(it.get_group());
         sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);   // acquire the sum
 
+        if (ranks > 2 && rank == 0) {
+            // RANK 0 SUMS, WITH EVERY THREAD.  The wait above is thread 0's alone, but the sum is striped
+            // over the whole block like the staging: a sum done by thread 0 only covers one stripe in
+            // `threads` and leaves the rest of rank 0's region holding rank 0's partial (measured: TP=4
+            // generated different tokens from the single card from the first token on).
+            const bool ok = strata::sys_load(timed_out) != kTimedOut;
+            if (ok) {
+                // this rank's stripe plus every peer's, accumulated in float, stored as wire
+                const T* sum_p = nullptr;
+                T sum_v{};
+                for (int i = gtid; i < nvec; i += gnt) {
+                    const int off = i * ELEMS;
+                    for (int k = 0; k < ELEMS; ++k) {
+                        float acc = Ops::to(strata::sys_load_mapped(mine_h + off + k));
+                        for (int r = 1; r < ranks; ++r)
+                            acc += Ops::to(strata::sys_load_mapped(peers0_v[r] + off + k));
+                        sum_v = Ops::from(acc);
+                        sum_p = mine_h + off + k;
+                        strata::sys_store_mapped(mine_h + off + k, sum_v);
+                    }
+                }
+                if (bid == 0 && tid < count - tail) {
+                    float acc = Ops::to(strata::sys_load_mapped(mine_h + tail + tid));
+                    for (int r = 1; r < ranks; ++r)
+                        acc += Ops::to(strata::sys_load_mapped(peers0_v[r] + tail + tid));
+                    sum_v = Ops::from(acc);
+                    sum_p = mine_h + tail + tid;
+                    strata::sys_store_mapped(mine_h + tail + tid, sum_v);
+                }
+                // the same read-back as the staging: the done token must not overtake the sum
+                sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+                if (sum_p != nullptr)
+                    for (uint32_t s = 0; s < spin_bound && !ar_same_bits(strata::sys_load_mapped(sum_p), sum_v); ++s) {}
+            }
+            sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+            sycl::group_barrier(it.get_group());
+            // the done token is this block's arrival token: published once the whole block has summed
+            if (ok && tid == 0)
+                strata::sys_store(done + (size_t) bid * kArrivalInts,
+                                  strata::sys_load(my_arrival + (size_t) bid * kArrivalInts));
+            sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
+        }
+
         if (ranks == 2) {
             // add the peer's staged half to x, in place
             const int other = 1 - rank;
             for (int i = gtid; i < nvec; i += gnt) {
                 const int off = i * ELEMS;
                 for (int k = 0; k < ELEMS; ++k)
-                    x[off + k] = Ops::to(Ops::from(x[off + k])) + Ops::to(strata::sys_load_mapped(peers0[other] + off + k));
+                    x[off + k] = Ops::to(Ops::from(x[off + k])) + Ops::to(strata::sys_load_mapped(peers0_v[other] + off + k));
             }
             if (bid == 0 && tid < count - tail)
                 x[tail + tid] = Ops::to(Ops::from(x[tail + tid])) +
-                                Ops::to(strata::sys_load_mapped(peers0[other] + tail + tid));
+                                Ops::to(strata::sys_load_mapped(peers0_v[other] + tail + tid));
         } else {
             // Rank 0's staging holds the sum; every rank reads it.  Rank 0 reads its own region (the sum it
-            // just wrote); ranks > 0 read RANK 0's region, which is `peers0[0]` - not their own staging.
-            const T* const sum_h = (rank == 0) ? mine_h : peers0[0];
+            // just wrote); ranks > 0 read RANK 0's region, which is `peers0_v[0]` - not their own staging.
+            const T* const sum_h = (rank == 0) ? mine_h : peers0_v[0];
             for (int i = gtid; i < nvec; i += gnt) {
                 const int off = i * ELEMS;
                 for (int k = 0; k < ELEMS; ++k) x[off + k] = Ops::to(strata::sys_load_mapped(sum_h + off + k));

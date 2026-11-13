@@ -2451,11 +2451,30 @@ bool in_mirror_table(const int32_t* res_layer) {
     return g_mirror_entries <= 0 || res_layer - g_mirror_res < g_mirror_entries;
 }
 }
+namespace {
+// --tp: every further rank's own residency table and its own device copy of the mirror table (the addresses are
+// the same pinned host memory; the table itself has to live on the card whose kernel reads it)
+struct ExtraMirror { const int32_t* res; const unsigned long long* table; long long entries; };
+ExtraMirror g_extra_mirror[8] = {};
+int g_extra_mirrors = 0;
+const unsigned long long* extra_mirror_of(const int32_t* res_layer) {
+    for (int i = 0; i < g_extra_mirrors; ++i) {
+        const ExtraMirror& m = g_extra_mirror[i];
+        if (res_layer >= m.res && res_layer - m.res < m.entries) return m.table + (res_layer - m.res);
+    }
+    return nullptr;
+}
+}
 void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage, long long entries) {
     g_mirror_entries = entries;
     g_usage = usage;
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
+}
+bool resident_plan_add_mirror(const int32_t* d_res, const unsigned long long* mirror_table, long long entries) {
+    if (d_res == nullptr || mirror_table == nullptr || entries <= 0 || g_extra_mirrors >= 8) return false;
+    g_extra_mirror[g_extra_mirrors++] = ExtraMirror{d_res, mirror_table, entries};
+    return true;
 }
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
@@ -2463,6 +2482,7 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
     int32_t* use = nullptr;                    // the layer's slice of the device routing counts, if on
     if (g_mirror_table != nullptr && in_mirror_table(res_layer)) mir = g_mirror_table + (res_layer - g_mirror_res);
+    if (mir == nullptr) mir = extra_mirror_of(res_layer);
     if (g_usage != nullptr && in_mirror_table(res_layer)) use = g_usage + (res_layer - g_mirror_res);
     static const bool compact = strata::bm_default_on("STRATA_RESIDENT_PLAN_COMPACT", strata::q_of(stream)->get_device(), false);
     const int threads = compact ? std::max(32, ((n_entries + 31) / 32) * 32) : kResidentPlanMax;

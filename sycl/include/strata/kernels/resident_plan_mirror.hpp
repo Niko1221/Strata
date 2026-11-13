@@ -12,4 +12,7 @@ namespace strata::kernels {
 /// 0: unchecked, as before.
 void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage = nullptr,
                               long long entries = 0);
+/// --tp: one more residency table (`entries` long) with its own device copy of the mirror table - a rank's.  The
+/// first table set with resident_plan_set_mirror is looked up first; up to 8 further ones.  False when full.
+bool resident_plan_add_mirror(const int32_t* d_res, const unsigned long long* mirror_table, long long entries);
 }

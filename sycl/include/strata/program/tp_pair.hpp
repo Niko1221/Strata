@@ -163,22 +163,21 @@ struct TpRank {
             {
                 const uint8_t* sp = src_cache->cache_base;
                 const size_t chunk = 64u << 20;
-                uint8_t* stage = sycl::malloc_host<uint8_t>(chunk, q);
-                if (stage == nullptr) {
-                    err = "tensor parallel: the replica staging buffer";
-                    return false;
-                }
+                // EACH COPY ON ITS OWN CARD'S QUEUE.  `q` is THIS rank's queue and stays so after a
+                // select_device: reading rank 0's device memory through it does not fault on Arc (xe), it
+                // returns other bytes, and the replica - and so every expert this rank computed - was wrong
+                // (measured: the ranks' residuals parted at layer 0's expert output, 2x Arc Pro B60).
+                std::vector<uint8_t> stage(chunk);
                 bool cok = true;
                 uint8_t* dcache = (uint8_t*) xcache.device_slot(0);
                 for (size_t off = 0; off < cache_bytes && cok; off += chunk) {
                     const size_t nb = (off + chunk <= cache_bytes) ? chunk : cache_bytes - off;
                     if (DPCT_CHECK_ERROR(dpct::select_device(src_dev)) != 0) { cok = false; break; }
-                    q.memcpy(stage, sp + off, nb).wait();
+                    dpct::get_in_order_queue().memcpy(stage.data(), sp + off, nb).wait();
                     if (DPCT_CHECK_ERROR(dpct::select_device(dev)) != 0) { cok = false; break; }
-                    q.memcpy(dcache + off, stage, nb).wait();
+                    dpct::get_in_order_queue().memcpy(dcache + off, stage.data(), nb).wait();
                 }
                 (void) DPCT_CHECK_ERROR(dpct::select_device(dev));
-                sycl::free(stage, q);
                 if (!cok) return false;
             }
             vh.cache_base = (const uint8_t*) xcache.device_slot(0);
@@ -195,12 +194,12 @@ struct TpRank {
                     err = "tensor parallel: the rank's residency table failed";
                     return false;
                 }
-                q.memcpy(stage.data(), src_cache->d_res, nres * sizeof(int32_t)).wait();
+                dpct::get_in_order_queue().memcpy(stage.data(), src_cache->d_res, nres * sizeof(int32_t)).wait();
                 if (DPCT_CHECK_ERROR(dpct::select_device(dev)) != 0) {
                     err = "tensor parallel: the rank's residency table failed";
                     return false;
                 }
-                q.memcpy(residency, stage.data(), nres * sizeof(int32_t)).wait();
+                dpct::get_in_order_queue().memcpy(residency, stage.data(), nres * sizeof(int32_t)).wait();
             }
             vh.d_res = residency;
             vh.h_res = src_cache->h_res;
