@@ -2549,6 +2549,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_BATCH_SLOT_RUNS",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/verify.cpp",
+     "line": 1365,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:556"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "core",
+   "note": "[reviewed] A slot's rows run in one launch a layer by default; =0 restores a launch per row. [docs/BATCHING.md:556]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_BATCH_TELEMETRY",
    "backends": [
     "cuda-hip"
@@ -7757,6 +7792,39 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_DUMP_TOKENS_DIR",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 18972,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "research",
+   "owner": "program",
+   "note": "[reviewed] Measurement only, off by default: writes each slot's generated tokens to <dir> for a later STRATA_FOLLOW_DIR run. [src/program/generate.cpp:18966]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_DUMP_WINDOW_TOP2",
    "backends": [
     "sycl"
@@ -9176,6 +9244,39 @@
    "status": "research",
    "owner": "program",
    "note": "[reviewed] Described as a \"STRATA_FOLLOW test path\"; test-only switch. [notes-148-intel.md:83]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_FOLLOW_DIR",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 18971,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "research",
+   "owner": "program",
+   "note": "[reviewed] Measurement only, off by default: forces the continuation read from <dir> (written by STRATA_DUMP_TOKENS_DIR) in place of the head's picks. [src/program/generate.cpp:18966]",
    "retire_after": "",
    "retired_in": ""
   },
@@ -16434,6 +16535,41 @@
    "status": "opt-in",
    "owner": "prefill",
    "note": "[auto] documented for users (docs/KVA.md:14), 2 more",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_KV_COPY_RESIDENT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/core/conversation_snapshot.cpp",
+     "line": 436,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:575"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "core",
+   "note": "[reviewed] Direct K/V copies keep the VRAM residency by default; =0 restores the reset. [docs/BATCHING.md:575]",
    "retire_after": "",
    "retired_in": ""
   },
@@ -27584,6 +27720,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPED_LOOKUP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 6950,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:562"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] The prompt lookup's drafts in the pipelined groups, on with STRATA_PIPED_MTP and --suffix-draft; =0 turns them off. [docs/BATCHING.md:562]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPED_MTP",
    "backends": [
     "cuda-hip"
@@ -27980,6 +28151,76 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PIPELINE_HIT_MIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 17620,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "0.35",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:193"
+   ],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "default",
+   "owner": "program",
+   "note": "[reviewed] Tunable with a built-in default (0.35): the pipelined chain launches windows whose hit rate reaches it. [docs/MULTI_GPU.md:193]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_LAZY_CHAIN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 17626,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:196"
+   ],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] The pipelined chain launches only the windows still needed by default; =0 restores the whole chain at once. [docs/MULTI_GPU.md:196]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PIPELINE_LOG",
    "backends": [
     "cuda-hip",
@@ -28056,6 +28297,41 @@
    "status": "research",
    "owner": "program",
    "note": "[auto] diagnostic / trace / measurement switch by name or by code, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_PIPELINE_LOOKUP_RUN",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 17633,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:198"
+   ],
+   "first_commit": "1759d16736",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "1759d16736",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] A copied stretch runs window behind window by default; =0 restores the chain's window. [docs/MULTI_GPU.md:198]",
    "retire_after": "",
    "retired_in": ""
   },
@@ -35676,6 +35952,41 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_SLOT_CKPT_KV_DIRECT",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 14651,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:579"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] A slot's turn checkpoint copies K/V directly by default; =0 restores the image. [docs/BATCHING.md:579]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_SLOT_CKPT_MOVE",
    "backends": [
     "cuda-hip"
@@ -35829,6 +36140,236 @@
    "status": "default",
    "owner": "program",
    "note": "the engine's own default (the parallel-request stack, bit-exact, QUAL-PAR): on with 2 or more batch slots on Linux CUDA (arch_defaults.cpp parallel_default_env_cuda, applied in generate.cpp) and on Windows gfx1151; NAME=0 turns it off; a value you set is kept",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SLOT_PARK_SKIP",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 17148,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:646"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] Parks that keep nothing are skipped by default with batch slots; =0 turns the skip off. [docs/BATCHING.md:646]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SLOT_RAM_RESERVE_GIB",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 7072,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "float",
+   "default_state": null,
+   "code_default": "8.0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:584",
+    "docs/BATCHING.md:803"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "default",
+   "owner": "program",
+   "note": "[reviewed] Tunable with a built-in default (8 GiB; 0: no check): slots that would leave less RAM free are not carved. [docs/BATCHING.md:584]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SLOT_READ",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 6968,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    },
+    {
+     "file": "src/program/generate.cpp",
+     "line": 14091,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "on",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [
+    "serve/server.py"
+   ],
+   "launch_sets": [],
+   "launch_reads": [
+    {
+     "file": "serve/server.py",
+     "line": 2251
+    }
+   ],
+   "doc_mentions": [
+    "docs/BATCHING.md:588",
+    "docs/BATCHING.md:597",
+    "docs/BATCHING.md:687",
+    "docs/BATCHING.md:807"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "c94f186de9",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] A conversation's next turn is read in its slot where the pipelined groups draft; =0 restores the main-session admission. [docs/BATCHING.md:588]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SLOT_READ_AHEAD",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 15167,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:631",
+    "docs/BATCHING.md:810",
+    "docs/BATCHING.md:901"
+   ],
+   "first_commit": "c94f186de9",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "c94f186de9",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] A slot that reads alone sends windows ahead, on with the whole-window read; =0 turns it off. [docs/BATCHING.md:631]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SLOT_READ_MAX",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 15157,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:607",
+    "docs/BATCHING.md:808"
+   ],
+   "first_commit": "9f7e09ccdd",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "9f7e09ccdd",
+   "last_date": "2026-11-12",
+   "status": "default",
+   "owner": "program",
+   "note": "[reviewed] Tunable with a built-in default (1024): the most new tokens a turn read in its slot takes. [docs/BATCHING.md:607]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SLOT_READ_WIDE",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/program/generate.cpp",
+     "line": 6967,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/BATCHING.md:613"
+   ],
+   "first_commit": "f8830a9296",
+   "first_date": "2026-11-12",
+   "since": null,
+   "last_commit": "c94f186de9",
+   "last_date": "2026-11-12",
+   "status": "rollback",
+   "owner": "program",
+   "note": "[reviewed] A slot alone in its group reads whole windows, on with STRATA_SLOT_READ; =0 turns it off. [docs/BATCHING.md:613]",
    "retire_after": "",
    "retired_in": ""
   },
