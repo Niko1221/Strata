@@ -40,9 +40,9 @@ About half of each file is the n-gram (PLE) table. It stays on the SSD and is re
 the file on a fast local drive. The memory figure is what the weights take once loaded.
 
 Gyro-L (agentionai's 50 GiB file) uses another trellis family, the pair trellis (types 147 to 149, TQP5 to TQP7). The
-engine reads it with the same pack step and expert kernels as the other Gyro files, on the CPU and on CUDA cards. The
-prompt path uses the trellis MMQ build where the build has it; Metal and SYCL have no kernels for it, so they use the CPU
-rows and the FP16 prompt path. We have not run the 50 GiB file ourselves yet.
+engine reads it with the same pack step and expert kernels as the other Gyro files, on the CPU, on CUDA cards and on
+Intel Arc (SYCL, [below](#intel-arc-sycl)). The prompt path uses the trellis MMQ build where the build has it; Metal has
+no kernels for it, so it uses the CPU rows and the FP16 prompt path. We have not run the 50 GiB file ourselves yet.
 
 **Pictures.** Gyro reads pictures with the original model's picture reader file, the same one every
 Qwen3.8-Flash-Next model uses. Setup downloads it with the model. The reader opens only the vocabulary and the header of
@@ -122,6 +122,22 @@ The trellis decode kernels do the same integer and float operations in the same 
 q8_1 activations). The Hadamard rotation of the expert input and of the SwiGLU output runs on the card, and the prompt
 takes the grouped XMX path, which decodes the trellis types into its tiles. Experts in the card's cache run on the card.
 Misses go to the CPU pool or over the PCIe link, as with every pack.
+
+**Gyro-L (TQP5, TQP6, TQP7).** The decode kernels, the prompt dequantizer and the grouped XMX path take the pair-trellis
+types too, transcribed from the CUDA kernels. Before that, the engine stopped at start with "layer 0's experts are
+TQP6/TQP6 (ggml types 148/148), which this engine has no GPU kernels for". `tq_sycl_parity` covers the 64-step pair
+layout, and ctest runs it on the three layer pairs the file uses (147/147, 148/148, 149/149), a mixed pair and a
+Hadamard run.
+
+> **Measured on:** 2x Arc Pro B70 32 GB (xe driver, `bmg-g31` AOT, oneAPI 2026.1.1), CachyOS, `main` 13eedf55 with the
+> change. Layer split 24, one slot, 256K context, int8 KV, `--spec 4 --spec-min-p 0.6`.
+
+| Check | Result |
+| --- | --- |
+| `tq_sycl_parity` on the file (layers 0 to 3, 20 and 47) | 0 failures; the kernels equal their host replay in every bit |
+| Experts resident | 99% (layer split 24; at the default split one card is ~800 experts short) |
+| Decode, greedy, thinking off | 64 / 90 tok/s (prose / code), Gyro-M on the same cards 86 / 113 |
+| Prompt | 1,644 tok/s at 60K tokens, 2,125 at 212K |
 
 **Checks.** `tq_sycl_parity <pack> <model.gguf> [layer ...]` (also `--synthetic [--hadamard] GU/DOWN` and
 `--bench GU/DOWN`) takes real experts of the file (layers 0 to 3, 10, 20, 30 and 47, two experts each) and compares the
