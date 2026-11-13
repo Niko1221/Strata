@@ -6,6 +6,7 @@
 #include "strata/kprof.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/shard.hpp"
+#include "strata/core/tp_runtime.hpp"
 #include "strata/tp/dims.hpp"
 #include "strata/kernels/dflash2.hpp"
 #include "strata/core/remote_expert_opt.hpp"
@@ -1167,6 +1168,9 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 stamp(l, 6, grp);
                 if (!g_qfuse()) native_quantize_q8_1(y_ + (size_t) tb * ZV, xq_, (int) ZV, n, cs);   // STRATA_QFUSE: done above
                 native_mmvq(wout->native_type, wout->native_data, xq_, bo_ + tb * N, (int) ZV, (int) N, n, cs);
+                // TENSOR PARALLEL: `ssm_out` is contraction-split, so this rank's rows are a PARTIAL sum.
+                // Add the peers' partials before the residual is written.
+                if (!strata::core::tp_owed_reduce(bo_ + tb * N, (int64_t) n * N, cs, err)) return false;
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
@@ -1408,6 +1412,14 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 stamp(l, 14, grp);
                 native_quantize_q8_1(attn32_ + tb * NH * HD, xq_, (int) (NH * HD), n, cs);
                 native_mmvq(wo->native_type, wo->native_data, xq_, bo_ + tb * N, (int) (NH * HD), (int) N, n, cs);
+                // TENSOR PARALLEL: `attn_output` is contraction-split for TP=2/3; TP=4 replicates the QSA
+                // layers, so the plan says Replicated and no reduce is owed.
+                {
+                    const strata::core::TensorShard* ao = v.shard_of("attn_output.weight");
+                    if (ao != nullptr && ao->axis == strata::core::ShardAxis::Input &&
+                        !strata::core::tp_owed_reduce(bo_ + tb * N, (int64_t) n * N, cs, err))
+                        return false;
+                }
             }
         } catch (const std::exception& e) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();

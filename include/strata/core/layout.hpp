@@ -49,8 +49,8 @@ class LayerView {
 public:
     /// `shard` is this rank's split table when the model was loaded tensor-parallel; null (the default) is the
     /// single-card case, where every tensor is the whole tensor.
-    LayerView(const WeightTable& table, int64_t layer, const ShardTable* shard = nullptr)
-        : table_(&table), layer_(layer), shard_(shard) {}
+    LayerView(const WeightTable& table, int64_t layer, const ShardPlan* shard = nullptr)
+        : table_(&table), layer_(layer), shard_(shard ? shard : table.shard()) {}
 
     int64_t layer() const { return layer_; }
     std::string name(const char* suffix) const;
@@ -58,8 +58,10 @@ public:
     /// This rank's ranges of a tensor, or null when there is no table or no entry for it.  The layer code
     /// needs it to place its OUTPUT inside the full-width buffer: an `Output` split means this rank computes
     /// rows [begin, end) of the full feature axis, so it passes `y + begin` and `end - begin` to the kernel.
-    const ShardSpec* shard_of(const char* suffix) const {
-        return shard_ == nullptr ? nullptr : shard_->find(suffix);
+    const TensorShard* shard_of(const char* suffix) const {
+        if (shard_ == nullptr) return nullptr;
+        const auto it = shard_->find(name(suffix));
+        return it == shard_->end() ? nullptr : &it->second;
     }
     /// This rank's part of a tensor's OUTPUT axis, for a kernel that writes into a full-width buffer: pass
     /// `y + begin` and `count` rows.  `full` is the UNSPLIT extent of that axis.  False when the split is not
@@ -77,7 +79,7 @@ public:
 private:
     const WeightTable* table_;
     int64_t layer_;
-    const ShardTable* shard_ = nullptr;
+    const ShardPlan* shard_ = nullptr;
 };
 
 /// Every shape the kernels depend on, asserted for ONE layer.  Returns false and fills `err` with the first

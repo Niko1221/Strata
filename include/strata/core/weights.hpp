@@ -150,9 +150,13 @@ public:
     static void hc_q8_names(int64_t n_layers, std::set<std::string>& out);
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
+    /// The shard plan this table was loaded with (null on a single-card load).  `LayerView` reads it so a
+    /// contraction split knows this rank's slice without threading the plan through every layer signature.
+    const ShardPlan* shard() const { return shard_; }
 
 private:
     friend class NativeDense;
+    const ShardPlan* shard_ = nullptr;
     std::map<std::string, WeightRef> table_;
     LoadReport report_;
     std::string pack_dir_;

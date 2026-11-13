@@ -73,6 +73,8 @@ private:
 /// a rank that cannot reduce must not carry on with half a sum, because the result would look plausible.
 inline bool tp_owed_reduce(float* y, int64_t n, void* stream, std::string& err) {
     TpRuntime* tp = TpRuntime::current();
+    if (std::getenv("STRATA_TP_DIAG_REDUCE") != nullptr)
+        std::fprintf(stderr, "TPDIAG owed_reduce current=%p n=%lld\n", (void*) tp, (long long) n);
     return tp == nullptr || tp->reduce(y, n, stream, err);
 }
 

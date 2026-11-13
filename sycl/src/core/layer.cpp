@@ -274,6 +274,8 @@ void gdn_buffers_zero_state(const GdnBuffers &b, const ModelGeometry &g,
 static void st_begin(int64_t layer, int slot, void* stream);
 static void st_end(int64_t layer, int slot, void* stream);
 bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const GdnBuffers& b,               const float* mixed, float* out, void* stream, std::string& err) {    const LayerView v(tables, layer);    const int64_t tpr = (int64_t) strata::core::tp_ranks_current();
+    if (std::getenv("STRATA_TP_DIAG_REDUCE") != nullptr)
+        std::fprintf(stderr, "TPDIAG gdn_layer layer=%lld tpr=%lld\n", (long long) layer, (long long) tpr);
     const int64_t C = g.ssm_conv_channels / tpr, HV = HV / tpr, HK = HK / tpr,
                   V = V / tpr;
 // ---- resolve.  Every one of these was shape-checked by `check_layer` at load time, so a miss here is a
@@ -1225,7 +1227,9 @@ catch (sycl::exception const &exc) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes_rank(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes_rank(g);    const LayerView v(tables, layer);
+    if (std::getenv("STRATA_TP_DIAG_REDUCE") != nullptr)
+        std::fprintf(stderr, "TPDIAG qsa_layer layer=%lld tpr=%lld\n", (long long) layer, (long long) strata::core::tp_ranks_current());    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
@@ -1416,7 +1420,7 @@ try {
                     ao_n, g.n_embd, f_o, stream);
 }
     // the owed all-reduce only when `attn_output` is contraction-split; TP=4 replicates the QSA layers.
-    const strata::core::ShardSpec* ao = v.shard_of("attn_output.weight");
+    const strata::core::TensorShard* ao = v.shard_of("attn_output.weight");
     if (ao != nullptr && ao->axis == strata::core::ShardAxis::Input) {
         if (!strata::core::tp_owed_reduce(out, g.n_embd, stream, err)) return false;
     }
