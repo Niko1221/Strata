@@ -1,0 +1,8 @@
+# after-round2 2026-11-10 09:46:27 KST
+{"arm":"concurrent","run":1,"pre_running":2,"mid_running":4,"A":{"decode_tps":72.9,"decode_ms":3509.6,"pred_n":256,"draft_n":0,"draft_acc":0,"prompt_ms":692,"prompt_n":92,"prompt_tps":133,"e2e_s":15.03},"B":{"decode_tps":73.3,"decode_ms":3490.5,"pred_n":256,"draft_n":0,"draft_acc":0,"prompt_ms":729,"prompt_n":88,"prompt_tps":121,"e2e_s":10.77}}
+{"arm":"concurrent","run":2,"pre_running":1,"mid_running":3,"A":{"decode_tps":79.8,"decode_ms":3208.1,"pred_n":256,"draft_n":0,"draft_acc":0,"prompt_ms":620,"prompt_n":92,"prompt_tps":148,"e2e_s":4.15},"B":{"decode_tps":80.7,"decode_ms":3172.2,"pred_n":256,"draft_n":0,"draft_acc":0,"prompt_ms":627,"prompt_n":90,"prompt_tps":144,"e2e_s":7.87}}
+{"arm":"concurrent","run":3,"pre_running":1,"mid_running":3,"A":{"decode_tps":131.2,"decode_ms":1951,"pred_n":256,"draft_n":157,"draft_acc":117,"prompt_ms":615,"prompt_n":90,"prompt_tps":146,"e2e_s":6.58},"B":{"decode_tps":78.4,"decode_ms":3264,"pred_n":256,"draft_n":0,"draft_acc":0,"prompt_ms":636,"prompt_n":91,"prompt_tps":143,"e2e_s":3.96}}
+{"arm":"long128","waited_s":0,"pre_running":0,"post_running":1,"decode_tps":2,"decode_ms":3935.4,"pred_n":8,"draft_n":0,"draft_acc":0,"prompt_ms":31480,"prompt_n":203638,"prompt_tps":6469,"e2e_s":35.82}
+{"arm":"solo","waited_s":20,"pre_running":0,"post_running":0,"decode_tps":147,"decode_ms":1741.8,"pred_n":256,"draft_n":184,"draft_acc":143,"prompt_ms":908,"prompt_n":90,"prompt_tps":99,"e2e_s":2.75}
+{"arm":"solo","waited_s":150,"pre_running":1,"post_running":1,"decode_tps":76.5,"decode_ms":3345,"pred_n":256,"draft_n":0,"draft_acc":0,"prompt_ms":912,"prompt_n":89,"prompt_tps":98,"e2e_s":4.53}
+# DONE
