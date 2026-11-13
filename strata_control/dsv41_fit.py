@@ -173,7 +173,7 @@ def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: b
     """The cards one DeepSeek run uses when the person named none: (cards, left out with 'why_ignored'), in card order.  The ONE rule that
     `strata launch --plan`, setup and the app share, so the plan says what the run does.
     Every card that counts (gpu_fit.usable_cards: no integrated chip beside a card with memory of its own, no card under 8 GB).  AMD:
-    on Windows one card only (several AMD cards sharing a model is Linux-only, setup.py), and only cards the engine package holds code for
+    on Windows one card only (the DeepSeek Windows package runs a model on one AMD card), and only cards the engine package holds code for
     (`covered`, default DSV41_HIP_ARCHS): a PC with an RX 9070 and an RX 7900 uses the RX 9070 and says why the other is left out.
     `named`: the person named these cards: they are used as named (setup warns about one the package has no code for)."""
     mine = gpu_fit.for_vendor(list(cards or []), vendor)[0] if vendor else list(cards or [])
