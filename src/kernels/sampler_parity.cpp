@@ -565,9 +565,9 @@ int main(int argc, char** argv) {
         check(cudaMalloc(&dp, sizeof(SamplerParams)), "coupled params");
         check(cudaMalloc(&scratch, strata::kernels::coupled_draft_scratch_bytes(nv)), "coupled scratch");
         check(cudaHostAlloc(&hp, sizeof(SamplerParams), cudaHostAllocMapped), "coupled mapped params");
-        check(cudaHostGetDevicePointer(&mp, hp, 0), "coupled params alias");
+        check(cudaHostGetDevicePointer(reinterpret_cast<void**>(&mp), hp, 0), "coupled params alias");
         check(cudaHostAlloc(&hh, cap * sizeof(int), cudaHostAllocMapped), "coupled mapped history");
-        check(cudaHostGetDevicePointer(&mh, hh, 0), "coupled history alias");
+        check(cudaHostGetDevicePointer(reinterpret_cast<void**>(&mh), hh, 0), "coupled history alias");
         *hp = SamplerParams{};
         hp->top_k = 1; hp->top_p = 1; hp->seed = 71;
         std::fill(hh, hh + cap, -1);
