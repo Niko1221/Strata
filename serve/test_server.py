@@ -2839,6 +2839,17 @@ class StartCrashReported(unittest.TestCase):
                     StrataEngine("strata", [], log=str(log))
             return str(cm.exception), out.getvalue()
 
+    def test_kfd_evicted_ms(self):
+        from serve.server import kfd_evicted_ms
+        self.assertIsNone(kfd_evicted_ms(None))
+        with tempfile.TemporaryDirectory() as root:
+            self.assertIsNone(kfd_evicted_ms(42, root))   # not a KFD process
+            for gpu, ms in (("1001", "250\n"), ("1002", "7\n")):
+                d = Path(root, "42", f"stats_{gpu}")
+                d.mkdir(parents=True)
+                (d / "evicted_ms").write_text(ms)
+            self.assertEqual(kfd_evicted_ms(42, root), 250)   # one pause, counted by each GPU
+
     def test_status_words(self):
         from serve.server import engine_crashed, engine_exit_words
         self.assertEqual(engine_exit_words(None), "")
