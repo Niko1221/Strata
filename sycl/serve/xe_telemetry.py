@@ -55,12 +55,23 @@ class _XeGpu:
             return "Intel Arc GPU"
 
     def _stat(self):
+        """The sampler's entry for THIS card, or None.  A host can hold several Intel cards and the
+        sampler writes one entry per card, keyed by PCI address, so the entry is looked up rather than
+        taking whatever fields are present: the flat fields describe the first card, and reading those
+        on the second card reports the other card's capacity and usage as its own."""
         try:
             import json
             with open(self.STAT) as f:
                 st = json.load(f)
-            return st if time.time() - float(st.get("ts", 0)) < 15 else None
-        except (OSError, ValueError):
+            if time.time() - float(st.get("ts", 0)) >= 15:
+                return None
+            pci = os.path.basename(self.dev) if self.dev else None
+            cards = st.get("cards")
+            if isinstance(cards, dict):
+                return cards.get(pci)
+            # a sampler that sampled a single card: use it only if it is this card
+            return st if (pci and st.get("pci") in (None, pci)) else None
+        except (OSError, ValueError, AttributeError):
             return None
 
     def _rd(self, p):
