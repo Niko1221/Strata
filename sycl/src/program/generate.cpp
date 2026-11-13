@@ -7820,6 +7820,10 @@ int main(int argc, char **argv) try {
         std::vector<std::unique_ptr<strata::program::TpRank>> tp_ranks;
         strata::kernels::ArPair tp_pair;
         TpGroup tp_group;
+        // These MUST outlive the serve loop: the rank verifiers and sessions hold raw pointers into them.
+        std::vector<std::unique_ptr<strata::core::NativeHead>> tp_heads;
+        std::vector<std::unique_ptr<strata::kernels::PleTable>> tp_ple_tables;
+        std::vector<std::vector<float>> tp_ple_host;
         if (o.tp > 0) {
             g_tp_pool_serialise = true;
             // the later ranks' devices: --tp-device D1[,D2..] or the next visible ones
@@ -7866,10 +7870,26 @@ int main(int argc, char **argv) try {
                 tp_group.rt[(size_t) r] = std::make_unique<strata::core::TpHostRuntime>(&tp_pair, r);
             std::set<std::string> tp_skip = skip;
             tp_skip.erase("output.weight");
+            // THE HEAD IS PER RANK.  The shard table keeps the head on rank 0, so ranks 1..N-1 have no
+            // `output.weight` in their arena; handing the verifier a null head makes it fall back to the
+            // canonical head, which dereferences the skipped tensor and faults.  Each rank loads its own copy
+            // on its own device, exactly as the CUDA TP prototype does.
+            if (native_head.loaded()) {
+                for (int r = 1; r < o.tp; ++r) {
+                    auto h = std::make_unique<strata::core::NativeHead>();
+                    const strata::core::OnDevice on_head(ordinals[(size_t) r]);
+                    if (!h->load(o.native_head_shards, g.n_embd, n_vocab, err)) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's own head: %s\n", o.tp, r, err.c_str());
+                        return 1;
+                    }
+                    tp_heads.push_back(std::move(h));
+                }
+            }
             for (int r = 1; r < o.tp; ++r) {
                 auto rk = std::make_unique<strata::program::TpRank>();
                 if (!rk->build(o.pack, o.native_shards, &tp_skip, g, o.max_context, ss.k, ordinals[(size_t) r], r,
-                               o.tp, nullptr, std::max(o.spec, o.batch), err, &vh,
+                               o.tp, tp_heads.empty() ? nullptr : tp_heads[(size_t) r - 1].get(),
+                               std::max(o.spec, o.batch), err, &vh,
                                xcache.valid() ? xcache.bytes() : 0, &sized_slots)) {
                     std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
                     return 1;
@@ -7882,8 +7902,6 @@ int main(int argc, char **argv) try {
             // rank - the ranks would run different models.  Same tensors, looked up in each rank's table and
             // allocated on each rank's card; the file reader is per rank (it holds prefetch tickets, a row cache
             // and an IO worker, and one reader cannot serve two ranks).
-            std::vector<std::unique_ptr<strata::kernels::PleTable>> tp_ple_tables;
-            std::vector<std::vector<float>> tp_ple_host;
             if (ss.ple.table != nullptr) {
                 for (int r = 1; r < o.tp; ++r) {
                     strata::core::SessionState& s1 = tp_ranks[(size_t) r - 1]->ss;

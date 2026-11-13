@@ -115,7 +115,7 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                       const typename WireOps<Wire>::type* const* peers1, const uint32_t* const* peer_timeout,
                       int count, uint32_t* my_arrival, const uint32_t* const* peer_arrival, uint32_t* done,
                       const uint32_t* peer_done, uint32_t* token, uint32_t* timed_out, uint32_t* progress,
-                      int blocks, int threads) {
+                      int blocks, int threads, uint32_t spin_bound) {
     using Ops = WireOps<Wire>;
     using T = typename Ops::type;
     constexpr int ELEMS = Ops::elems;
@@ -153,7 +153,21 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
             if (bid == 0) strata::sys_store(progress + kArProgressSignalled, tok);
             sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);
 
-            if (rank == 0) {
+            if (ranks == 2) {
+                // TWO RANKS: THE ORIGINAL PEER-ADD.  Each rank stages its half, waits for the other's arrival
+                // and adds the peer's half in place.  No done token, no rank-0 sum.
+                const int other = 1 - rank;
+                uint32_t spins = 0;
+                while (strata::sys_load(peer_arrival[other] + (size_t) bid * kArrivalInts) < tok) {
+                    if (peer_timeout[other] != nullptr && strata::sys_load(peer_timeout[other]) == kTimedOut) {
+                        strata::sys_store(timed_out, kTimedOut);
+                        break;
+                    }
+                    if (++spins >= spin_bound) { strata::sys_store(timed_out, kTimedOut); break; }
+                }
+                if (bid == 0) strata::sys_store(progress + kArProgressSawPeer,
+                                                strata::sys_load(peer_arrival[other]));
+            } else if (rank == 0) {
                 // WAIT FOR EVERY RANK'S ARRIVAL, then sum the staged partials into this rank's staging.
                 uint32_t spins = 0;
                 for (int r = 0; r < ranks; ++r) {
@@ -163,7 +177,7 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                             if (peer_timeout[q2] != nullptr && strata::sys_load(peer_timeout[q2]) == kTimedOut)
                                 give_up = true;
                         if (give_up) { strata::sys_store(timed_out, kTimedOut); break; }
-                        if (++spins >= kGiveUpSpins) { strata::sys_store(timed_out, kTimedOut); break; }
+                        if (++spins >= spin_bound) { strata::sys_store(timed_out, kTimedOut); break; }
                     }
                     if (strata::sys_load(timed_out) == kTimedOut) break;
                 }
@@ -197,7 +211,7 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
                         if (peer_timeout[q2] != nullptr && strata::sys_load(peer_timeout[q2]) == kTimedOut)
                             give_up = true;
                     if (give_up) { strata::sys_store(timed_out, kTimedOut); break; }
-                    if (++spins >= kGiveUpSpins) { strata::sys_store(timed_out, kTimedOut); break; }
+                    if (++spins >= spin_bound) { strata::sys_store(timed_out, kTimedOut); break; }
                 }
                 if (bid == 0) strata::sys_store(progress + kArProgressSawPeer,
                                                 strata::sys_load(peer_done));
@@ -206,15 +220,28 @@ void ar_reduce_kernel(sycl::queue& q, float* x, int rank, int ranks, typename Wi
         sycl::group_barrier(it.get_group());
         sycl::atomic_fence(sycl::memory_order::seq_cst, sycl::memory_scope::system);   // acquire the sum
 
-        // Rank 0's staging holds the sum; every rank reads it.  Rank 0 reads its own region (the sum it just
-        // wrote); ranks > 0 read RANK 0's region, which is `peers0[0]` - not their own staging.
-        const T* const sum_h = (rank == 0) ? mine_h : peers0[0];
-        for (int i = gtid; i < nvec; i += gnt) {
-            const int off = i * ELEMS;
-            for (int k = 0; k < ELEMS; ++k) x[off + k] = Ops::to(strata::sys_load_mapped(sum_h + off + k));
+        if (ranks == 2) {
+            // add the peer's staged half to x, in place
+            const int other = 1 - rank;
+            for (int i = gtid; i < nvec; i += gnt) {
+                const int off = i * ELEMS;
+                for (int k = 0; k < ELEMS; ++k)
+                    x[off + k] = Ops::to(Ops::from(x[off + k])) + Ops::to(strata::sys_load_mapped(peers0[other] + off + k));
+            }
+            if (bid == 0 && tid < count - tail)
+                x[tail + tid] = Ops::to(Ops::from(x[tail + tid])) +
+                                Ops::to(strata::sys_load_mapped(peers0[other] + tail + tid));
+        } else {
+            // Rank 0's staging holds the sum; every rank reads it.  Rank 0 reads its own region (the sum it
+            // just wrote); ranks > 0 read RANK 0's region, which is `peers0[0]` - not their own staging.
+            const T* const sum_h = (rank == 0) ? mine_h : peers0[0];
+            for (int i = gtid; i < nvec; i += gnt) {
+                const int off = i * ELEMS;
+                for (int k = 0; k < ELEMS; ++k) x[off + k] = Ops::to(strata::sys_load_mapped(sum_h + off + k));
+            }
+            if (bid == 0 && tid < count - tail) x[tail + tid] = Ops::to(strata::sys_load_mapped(sum_h + tail + tid));
         }
-        if (bid == 0 && tid < count - tail) x[tail + tid] = Ops::to(strata::sys_load_mapped(sum_h + tail + tid));
-    }).wait();
+    });
 }
 
 }  // namespace
@@ -259,9 +286,11 @@ bool ArPair::init(const int* ordinals, int ranks, int64_t max_floats, ArWire wir
             return false;
         }
         sycl::queue& q = dpct::get_in_order_queue();
-        // Mapped + portable in CUDA terms: one host allocation every card can see.  The uncached host
-        // allocation is what makes the peer's staging bytes visible mid-kernel on Arc (xe).
-        void* h = strata::host_malloc_polled(L.total, q);
+        // Mapped + portable in CUDA terms: one host allocation every card can see.  PLAIN host USM: the
+        // uncached zeMemAllocHost allocation is tied to one context and a peer's kernel faults on it
+        // (measured: UR_RESULT_ERROR_DEVICE_LOST).  The uncached access hints below make the bytes visible
+        // mid-kernel on Arc (xe), and plain host USM is visible across contexts (measured).
+        void* h = sycl::malloc_host(L.total, q);
         if (h == nullptr) {
             err = "allreduce: rank " + std::to_string(r) + ": " + std::to_string(L.total >> 20) +
                   " MiB of mapped host memory";
@@ -330,7 +359,7 @@ void ArPair::shutdown() {
         }
         if (host_[r] != nullptr) {
             (void) DPCT_CHECK_ERROR(dpct::select_device(dev_[r] < 0 ? 0 : dev_[r]));
-            strata::host_free_polled(host_[r], dpct::get_in_order_queue());
+            sycl::free(host_[r], dpct::get_in_order_queue());
         }
         host_[r] = nullptr;
         view_[r] = ArRankView{};
@@ -347,6 +376,12 @@ void ArPair::shutdown() {
 
 namespace {
 const ArPair* g_ar_debug = nullptr;
+/// The multi-device contexts the staging allocations live in.  A `sycl::context` must outlive the native
+/// handle used by `zeMemAllocHost`, so the contexts are kept here for the process's life.
+std::vector<std::unique_ptr<sycl::context>>& ar_contexts() {
+    static std::vector<std::unique_ptr<sycl::context>> v;
+    return v;
+}
 }
 
 const void* ArPair::host_staging(int rank, int half) const {
@@ -382,7 +417,7 @@ void ArPair::launch(int rank, float* x, int count, void* stream) {
         }
         ar_reduce_kernel<float>(*q, x, r, ranks_, (float*) v.mine[parity], (float*) v.mine[1 - parity], peers0,
                                 peers1, pt, count, v.arrival[parity], pa, v.done[parity], v.peer_done[parity],
-                                v.token, v.timeout, v.progress, blocks_, kArThreads);
+                                v.token, v.timeout, v.progress, blocks_, kArThreads, strata::spin_max(*q));
     } else {
         const uint16_t* peers0[kArRanks] = {};
         const uint16_t* peers1[kArRanks] = {};
@@ -396,7 +431,8 @@ void ArPair::launch(int rank, float* x, int count, void* stream) {
         }
         ar_reduce_kernel<uint16_t>(*q, x, r, ranks_, (uint16_t*) v.mine[parity], (uint16_t*) v.mine[1 - parity],
                                    peers0, peers1, pt, count, v.arrival[parity], pa, v.done[parity],
-                                   v.peer_done[parity], v.token, v.timeout, v.progress, blocks_, kArThreads);
+                                   v.peer_done[parity], v.token, v.timeout, v.progress, blocks_, kArThreads,
+                                   strata::spin_max(*q));
     }
 }
 
@@ -421,13 +457,11 @@ bool ArPair::reduce_host(int rank, float* x, int count, void* stream, std::strin
 }
 
 void ArPair::flush(int rank, void* stream) {
-    if (!ready_) return;
-    const int r = rank <= 0 ? 0 : (rank >= ranks_ ? ranks_ - 1 : rank);
-    if (DPCT_CHECK_ERROR(dpct::select_device(dev_[r])) != 0) return;
-    sycl::queue* q = strata::q_of(stream);
-    // A trailing submission on the rank's queue.  On Level Zero an in-order queue submits immediately, so
-    // this is a marker rather than a flush; it keeps the CUDA contract and costs host microseconds.
-    q->ext_oneapi_submit_barrier();
+    // NO SUBMISSION HERE.  The CUDA original needed a trailing event under WDDM; on Level Zero an in-order
+    // queue submits immediately, and inside a captured window graph a barrier would be recorded as an extra
+    // node (or refused).  The graph's own end_recording is the submission.
+    (void) rank;
+    (void) stream;
 }
 
 void ArPair::release() {

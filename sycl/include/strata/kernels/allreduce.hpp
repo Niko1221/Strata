@@ -144,6 +144,7 @@ private:
     uint64_t pinned_bytes_ = 0;
     uint64_t calls_[kArRanks] = {0, 0, 0, 0};
     void* host_[kArRanks] = {nullptr, nullptr, nullptr, nullptr};
+    void* ze_ctx_ = nullptr;   ///< the multi-device Level Zero context the staging was allocated in
     ArRankView view_[kArRanks];
     uint32_t* h_arrival_[kArRanks][2] = {};
     uint32_t* h_done_[2] = {nullptr, nullptr};

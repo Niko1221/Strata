@@ -115,7 +115,7 @@ struct TpRank {
         // this rank's plan decides what it holds; `plan` outlives the load call below
         strata::core::ShardTable table;
         strata::core::ShardPlan plan;
-        if (!strata::core::shard_table(g, rank, table, err) ||
+        if (!strata::core::shard_table_n(g, rank, ranks, table, err) ||
             !strata::core::shard_plan_layers(table, g, rank, plan, err)) {
             return false;
         }
@@ -128,7 +128,9 @@ struct TpRank {
         }
         if (!wt.load(pack, arena, arena_bytes, err, skip, &plan)) return false;
         // the native upload takes only this rank's rows of each matrix it serves
-        if (!dense.load(native_shards, wt, err, false, 0, -1, &plan)) return false;
+        // include_ple_key: the rank needs its own copy of the PLE key, which the canonical loader skips
+        // because the engine serves it natively on rank 0.  Without it the rank's PLE is not ready.
+        if (!dense.load(native_shards, wt, err, true, 0, -1, &plan)) return false;
         // the session, exactly as the layer split builds one
         session_buf = sycl::malloc_device(strata::core::session_bytes(g, max_context, k, 0, g.n_layers), q);
         if (session_buf == nullptr) {
@@ -139,6 +141,9 @@ struct TpRank {
             err = "tensor parallel: session_init failed";
             return false;
         }
+        // THE SESSION MUST START ZEROED.  Rank 0's is zeroed by the engine; a rank whose GDN state and KV
+        // cache are uninitialized reads garbage on the first window and the ranks diverge from token one.
+        strata::core::session_zero(ss, g, nullptr, stream);
         if (src_cache != nullptr && src_cache->n_slots > 0 && src_cache->cache_base != nullptr &&
             src_cache->d_res != nullptr && src_cache->blob > 0 && std::getenv("STRATA_TP_NO_CACHE") == nullptr) {
             // REPLICATE RANK 0'S EXPERT CACHE ON THIS CARD.  The MoE is replicated, not sharded, so both ranks

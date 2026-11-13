@@ -618,16 +618,25 @@ inline bool shard_table_n(const ModelGeometry& g, int rank, int ranks, ShardTabl
     const int64_t q_out = 2 * g.n_head * g.head_dim;          // the per-head row is 2 * head_dim wide
     const int64_t kv_out = g.n_head_kv * g.head_dim;
     const int64_t o_in = g.n_head * g.head_dim;
-    if (!add("attn_q.weight", q_out, all([&](int r) { return slice(ShardAxis::Output, q_out, r); }))) return false;
-    for (const char* suf : {"attn_k.weight", "attn_v.weight"}) {
-        if (kv_split) {
-            if (!add(suf, kv_out, all([&](int r) { return slice(ShardAxis::Output, kv_out, r); }))) return false;
-        } else {
-            // REPLICATED: every rank computes all KV heads and keeps the full KV cache.
+    if (ranks == 4) {
+        // THE QSA LAYERS ARE REPLICATED FOR TP=4.  The compiled QSA attention kernel requires
+        // n_head == G * n_head_kv with G in {4, 8, 12, 16}; TP=4's 6 query heads over 2 replicated KV heads
+        // give G=3, which has no kernel.  Replicating the QSA projections keeps the model's G=12 on every rank
+        // and costs 4x the QSA dense compute - 12 of 48 layers, and the decode is expert-bound.
+        for (const char* suf : {"attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight"})
             if (!add(suf, 0, all([&](int) { return replicated(); }))) return false;
+    } else {
+        if (!add("attn_q.weight", q_out, all([&](int r) { return slice(ShardAxis::Output, q_out, r); }))) return false;
+        for (const char* suf : {"attn_k.weight", "attn_v.weight"}) {
+            if (kv_split) {
+                if (!add(suf, kv_out, all([&](int r) { return slice(ShardAxis::Output, kv_out, r); }))) return false;
+            } else {
+                // REPLICATED: every rank computes all KV heads and keeps the full KV cache.
+                if (!add(suf, 0, all([&](int) { return replicated(); }))) return false;
+            }
         }
+        if (!add("attn_output.weight", o_in, all([&](int r) { return slice(ShardAxis::Input, o_in, r); }))) return false;
     }
-    if (!add("attn_output.weight", o_in, all([&](int r) { return slice(ShardAxis::Input, o_in, r); }))) return false;
     // the per-head norms are over head_dim, which every rank needs whole for the heads it owns
     for (const char* suf : {"attn_q_norm.weight", "attn_k_norm.weight", "indexer.q_norm.weight",
                             "indexer.k_norm.weight"})

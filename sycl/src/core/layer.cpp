@@ -1415,8 +1415,11 @@ try {
     s_gemv_q8k_split(b.attn_q8k + aokoff.q8k, p_o.codes, p_o.scales, p_o.offset, out,
                     ao_n, g.n_embd, f_o, stream);
 }
-    // the owed all-reduce: this rank has its share of the contraction axis
-    if (!strata::core::tp_owed_reduce(out, g.n_embd, stream, err)) return false;
+    // the owed all-reduce only when `attn_output` is contraction-split; TP=4 replicates the QSA layers.
+    const strata::core::ShardSpec* ao = v.shard_of("attn_output.weight");
+    if (ao != nullptr && ao->axis == strata::core::ShardAxis::Input) {
+        if (!strata::core::tp_owed_reduce(out, g.n_embd, stream, err)) return false;
+    }
     return true;}
 // ================================ THE DOORBELL ================================
 namespace {}

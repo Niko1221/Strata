@@ -32,9 +32,14 @@ inline int64_t gdn_k_heads_rank(const core::ModelGeometry& g) {
 inline kernels::QsaShapes qsa_shapes_rank(const core::ModelGeometry& g) {
     kernels::QsaShapes s = core::qsa_shapes(g);
     const int64_t tpr = (int64_t) core::tp_ranks_current();
+    // TP=4 REPLICATES THE QSA LAYERS (see core/shard.hpp): the full geometry is what every rank runs.
+    if (tpr == 4) return s;
     if (tpr > 1) {
         s.n_head = (int) ((int64_t) g.n_head / tpr);
-        s.n_head_kv = (int) ((int64_t) g.n_head_kv / tpr);
+        // THE KV HEADS REPLICATE WHEN THERE ARE FEWER OF THEM THAN RANKS.  Qwen3.8-Flash-Next has 2 KV heads,
+        // so TP=4 cannot give each rank one; every rank keeps both and reads the whole KV cache.  Dividing
+        // unconditionally gave 0, which the KV kernels refuse (`n_head_kv <= 0`).
+        s.n_head_kv = (int) ((int64_t) (g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv));
     }
     return s;
 }

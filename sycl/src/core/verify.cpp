@@ -563,8 +563,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     const uint64_t tpr = (uint64_t) strata::core::tp_ranks_current();
     const uint64_t C = (uint64_t) g.ssm_conv_channels / tpr, ZV = (uint64_t) g.ssm_value_dim / tpr,
                    HV = (uint64_t) g.ssm_v_heads / tpr;
-    const uint64_t NH = (uint64_t) g.n_head / tpr, HD = (uint64_t) g.head_dim,
-                   NKV = (uint64_t) (g.n_head_kv >= (int64_t) tpr ? g.n_head_kv / tpr : g.n_head_kv);
+    const uint64_t NH = (uint64_t) s.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) s.n_head_kv;
     const uint64_t IQ = (uint64_t) g.idx_q_heads, ID = (uint64_t) g.idx_key_dim;
     const uint64_t nG = (uint64_t) g.n_gdn_layers(), nQ = (uint64_t) g.n_qsa_layers();
     const uint64_t HS = (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM;
@@ -893,8 +892,9 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     const int64_t N = g.n_embd, HC = g.hc, K = ss.k;
     const int64_t tpr = strata::core::tp_ranks_current();
     const int64_t C = g.ssm_conv_channels / tpr, ZV = g.ssm_value_dim / tpr;
-    const int64_t HV = g.ssm_v_heads / tpr, HK = g.ssm_k_heads / tpr, NH = g.n_head / tpr, HD = g.head_dim,
-                  NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
+    const int64_t HV = g.ssm_v_heads / tpr, HK = g.ssm_k_heads / tpr, HD = g.head_dim;
+    const QsaShapes qs = shapes_of(g);
+    const int64_t NH = qs.n_head, NKV = qs.n_head_kv;
     const int64_t IQ = g.idx_q_heads, ID = g.idx_key_dim, NE = g.n_expert, MT = max_t_;
     const QsaShapes s = shapes_of(g);
     const GrShapes gs{g.n_embd, g.hc, g.hc_lr};
@@ -2011,7 +2011,7 @@ bool Verifier::capture_commit(std::string &err) try {
     const QsaShapes s = shapes_of(g);
     const int64_t tpr = strata::core::tp_ranks_current();
     const int64_t C = g.ssm_conv_channels / tpr, HV = g.ssm_v_heads / tpr, HK = g.ssm_k_heads / tpr,
-                  NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv,
+                  NH = shapes_of(g).n_head, NKV = shapes_of(g).n_head_kv,
                   ID = g.idx_key_dim, MT = max_t_;
     const uint64_t gdn_floats = (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size +
                                 (uint64_t) strata::tp::gdn_channels_rank(g) * (g.ssm_d_conv - 1);
@@ -2099,7 +2099,8 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     const ModelGeometry& g = *g_;
     const QsaShapes s = shapes_of(g);
     const int64_t tpr = strata::core::tp_ranks_current();
-    const int64_t NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
+    const QsaShapes qs = shapes_of(g);
+    const int64_t NH = qs.n_head, NKV = qs.n_head_kv;
     int32_t* const pk = h_pos_ + (size_t) max_t_ * NH;
     int32_t* const pi = pk + (size_t) max_t_ * NKV;
     for (int t = 0; t < T; ++t) {
@@ -2190,7 +2191,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
     const int64_t tpr = strata::core::tp_ranks_current();
-    const int64_t NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
+    const QsaShapes qs = shapes_of(g);
+    const int64_t NH = qs.n_head, NKV = qs.n_head_kv;
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
     if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
     refresh_ar();
@@ -3334,7 +3336,8 @@ bool Verifier::stage_batch(const int *rows, int S, int hbase,
         h_tok_[t] = tokens[t];
         qsa_step_fill(h_step_ + t * kStepCount, pos[t], s);
         const int64_t tpr = strata::core::tp_ranks_current();
-        const int64_t NH = g.n_head / tpr, NKV = g.n_head_kv >= tpr ? g.n_head_kv / tpr : g.n_head_kv;
+        const QsaShapes qs = shapes_of(g);
+    const int64_t NH = qs.n_head, NKV = qs.n_head_kv;
         for (int64_t h = 0; h < NH; ++h) h_pos_[t * NH + h] = (int32_t) pos[t];
         int32_t* pk = h_pos_ + (size_t) max_t_ * NH;
         int32_t* pi = pk + (size_t) max_t_ * NKV;
