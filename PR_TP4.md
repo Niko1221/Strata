@@ -42,8 +42,12 @@ TP=4 is the target: 4× Arc Pro B60 (96 GB) running the Unsloth UD-IQ4_XS pack.
   `tp_visibility_test`, `tp_hint_test`, `tp_flag_test`, `tp_bulk_test`, `tp_reverse_bulk_test`,
   `tp_dev_to_host_test` and `tp_barrier_test`.
 - Engine: TP=2 and TP=4 start, load the model, replicate the expert cache on every rank, wire the PLE
-  on every rank, capture the windows and answer requests. **The output is garbled** — the ranks'
-  residuals diverge from the first token. This is the known blocker; the PR is a draft.
+  on every rank and capture the windows. The verifier's window path implements the layers inline
+  (`native_mmvq`), not through `gdn_layer`/`qsa_layer`, so the contraction reduces were initially never
+  called; they are now wired at `ssm_out` and `attn_output`. With `STRATA_TP_DIAG_REDUCE=1` the first
+  prompt window reaches 16 reduces (`TPDIAG owed_reduce`, `TPDIAG rcall`), then the engine segfaults
+  (exit -11). The standalone collective passes host-driven (1/4/8 blocks), so the remaining blocker is
+  the captured-graph all-reduce path. The PR is a draft.
 - Benchmarks below are the measured engine speed, not a correctness claim.
 
 ## Benchmarks
