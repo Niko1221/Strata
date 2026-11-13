@@ -3537,6 +3537,7 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     arena_ = a;
     base_ = a->data();
     pinned_bytes_ = a->registered_bytes;
+    copy_ready_bytes_ = a->copy_registered_bytes;
     // plan v0.3 P6: device aliases of the mapped registration, for the PCIe share of the misses
     dev_slice_.clear();
     slice_bytes_ = a->slice_bytes;
@@ -3622,6 +3623,12 @@ bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {
     if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return false;
     const auto& lay = strata::kernels::cpu::expert_layout();
     return lay.blob_offset(layer, expert) + lay.blob_bytes(layer) <= pinned_bytes_;
+}
+
+bool ArenaExpertSource::copy_ready(int64_t layer, int64_t expert) const {
+    if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_) return false;
+    const auto& lay = strata::kernels::cpu::expert_layout();
+    return lay.blob_offset(layer, expert) + lay.blob_bytes(layer) <= copy_ready_bytes_;
 }
 
 const uint8_t* ArenaExpertSource::device_alias(int64_t layer, int64_t expert) const {

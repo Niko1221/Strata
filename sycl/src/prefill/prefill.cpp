@@ -131,6 +131,7 @@ using Clock = std::chrono::steady_clock;
 // stager's pinned buffers by its threads first, the path unpinned experts already take.  STRATA_PF_DMA_PAGEABLE=1 restores the
 // direct copy from pageable memory.
 inline bool dma_direct(const core::ExpertSource* src, int64_t layer, int64_t expert, const void* blob) {
+    if (src->copy_ready(layer, expert)) return true;   // imported for device copies (Windows arena): no stager copy
     if (!src->pinned(layer, expert)) return false;
     static const bool pageable_ok = [] { const char* v = std::getenv("STRATA_PF_DMA_PAGEABLE"); return v && v[0] == '1'; }();
     if (pageable_ok) return true;

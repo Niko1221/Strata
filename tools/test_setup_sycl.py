@@ -631,6 +631,30 @@ class ToSycl(unittest.TestCase):
             m.S.combined_embeddings_path(Path("/tmp/x"), 10)
         self.assertEqual(out.getvalue().count("/dev/shm has no room"), 1)
 
+    def test_windows_names_the_arc_not_a_geforce_beside_it(self):
+        # an RTX 3060 beside an Arc Pro B60: the benchmark report named the GeForce the SYCL engine never used
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("server_intel_t2", ROOT / "sycl" / "serve" / "server_intel.py")
+        sys.path.insert(0, str(ROOT / "sycl" / "serve"))
+        try:
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+        except ImportError as e:
+            self.skipTest(str(e))
+        finally:
+            sys.path.pop(0)
+        nvml = mock.Mock(ok=mock.Mock(return_value=True), name=mock.Mock(return_value="NVIDIA GeForce RTX 3060"))
+        arc = {"name": "Intel(R) Arc(TM) Pro B60 Graphics", "provider": "Intel Corporation", "driver": "32.0.101.8976",
+               "vram_bytes": 24 << 30}
+        with mock.patch.object(m.T, "gpu_reader", lambda index=0, amd=False: nvml), \
+                mock.patch.object(m.os, "name", "nt"), \
+                mock.patch.object(m.T.os, "name", "nt"), \
+                mock.patch.object(m.T, "windows_display_adapters", lambda vendor=None: [arc]):
+            m.install_xe_reader()
+            t = m.T.Telemetry()
+        self.assertEqual(t.static["gpu_name"], "Intel(R) Arc(TM) Pro B60 Graphics")
+        self.assertEqual(t.static["gpu_vram_total_mib"], 24 << 10)
+
 
 class WindowsDeviceProbe(unittest.TestCase):
     """#3607 (budiony): a machine with an integrated GPU beside the Arc must not stop setup. intel_gpus() serves the
