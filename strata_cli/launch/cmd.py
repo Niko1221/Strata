@@ -173,6 +173,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     c.add_argument("--preset", metavar="NAME", help="take the address, key and model from this saved preset")
     c.add_argument("--check", action="store_true", help="send one prompt and one tool call to the running server the way this app would, and say if each worked")
     c.add_argument("--write", action="store_true", help="write the file(s), after asking; a replaced file is backed up first")
+    c.add_argument("--if-unchanged", action="store_true",
+                   help="with --write: a file that already holds exactly the rendered content is left alone - no write, no backup (reported as unchanged)")
     c.add_argument("--yes", action="store_true", help="do not ask before --write")
     c.add_argument("--show-key", action="store_true", help="print the real key instead of a masked one")
     c.add_argument("--output", choices=("human", "json"), default="human")
@@ -1167,6 +1169,6 @@ def run_connect(a: argparse.Namespace) -> int:
                 _say("Nothing was written.")
                 return 0
         for f in out["files"]:
-            r = harness.write_file(f)
+            r = harness.write_file(f, if_unchanged=a.if_unchanged)
             _say(f"{r['action'].capitalize()} {r['path']}" + (f" (backup: {r['backup']})" if r["backup"] else ""))
     return 0
