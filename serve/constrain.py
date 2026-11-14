@@ -363,6 +363,18 @@ def masks_for_window(m, drafts, cut_ids):
     finally:
         if done and not m.rollback(done):
             raise RuntimeError("llguidance rollback failed")
+    # The engine's parser (include/strata/core/token_mask.hpp) rejects a reply claiming rows above the build's
+    # kVerifyMaxT and ENDS THE REQUEST: generate.cpp logs "MKN rows above kVerifyMaxT; the request ends" and the
+    # server reports the structured output incomplete with finish_reason=length.  A prompt-lookup window runs up
+    # to kVerifyLongT (12 on a build whose windows hold 8 rows), past the 8-row cap the mask reply may claim
+    # (measured 2026-11-14 on the .216 ed7f0d1e build, kVerifyMaxT=8: a repetitive JSON answer filled such a
+    # window and every such PaFuM2 report request died, 125 aborts logged).  Every build holds at least 8 rows
+    # (auto = 8 on CUDA and on SYCL/Metal, 16 on HIP), so 8 is the reply cap the engine accepts everywhere; the
+    # engine shrinks its window to the reply's row count (generate.cpp: T = min(T_cand, rows)), so the reply
+    # below the sent drafts is safe.  (A later INFO line could advertise the build's cap so the server never
+    # shrinks a window it need not.)
+    if len(masks) > 8:
+        masks = masks[:8]
     return masks
 
 
