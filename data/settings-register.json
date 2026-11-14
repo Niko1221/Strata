@@ -29682,6 +29682,37 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PREFILL_HELP_P2P",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 2452,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:148",
+    "docs/MULTI_GPU.md:289"
+   ],
+   "status": "opt-in",
+   "owner": "prefill",
+   "note": "[reviewed] Documented multi-GPU option: the layer split's prompt help over peer copies (NVLink); off when the cards cannot. [docs/MULTI_GPU.md]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PREFILL_HOST_PLAN",
    "backends": [
     "cuda-hip"
