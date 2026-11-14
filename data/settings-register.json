@@ -39578,6 +39578,480 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_TP_DENSE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 3186,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "string",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "6cd34c61d4",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "6cd34c61d4",
+   "last_date": "2026-11-13",
+   "status": "opt-in",
+   "owner": "sycl/program",
+   "note": "Read only under --tp. `replicated` keeps the whole dense model on every rank; with STRATA_TP_EXPERT_SPLIT=1 that is the mode the --tp numbers were measured in (4x Arc Pro B60, UD-IQ4_XS: --tp 4 316.7-354.4 tok/s on a 259-token prompt, 44.0-44.6 tok/s decode). Unset: the dense layers are cut across the ranks.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_EAGER",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/verify.cpp",
+     "line": 991,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "9978c7f9a1",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "9978c7f9a1",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/core",
+   "note": "Diagnostic for --tp, with STRATA_VERIFY_EAGER=1: prints a checksum of device buffers in the first window, one line per rank. Prints only when set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_EXPERTS",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/prefill/prefill.cpp",
+     "line": 4820,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "c7ab0273f8",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "c7ab0273f8",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/prefill",
+   "note": "Diagnostic for --tp: prints a checksum of every owned expert's output rows up to layer <n> of the first prompt chunk. Prints only when set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_FINAL",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 8209,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "9978c7f9a1",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "9978c7f9a1",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/program",
+   "note": "Diagnostic for --tp: prints a checksum of every rank's final hidden rows after each of the first 12 windows. Prints only when set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_LAYERX",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/verify.cpp",
+     "line": 2616,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "9978c7f9a1",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "9978c7f9a1",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/core",
+   "note": "Diagnostic for --tp: prints what each layer's experts were handed (row 0, norm and routed ids) in the first two windows. Prints only when set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_MIXED_DUMP",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/prefill/prefill.cpp",
+     "line": 4831,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "c7ab0273f8",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "c7ab0273f8",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/prefill",
+   "note": "Diagnostic for --tp, with STRATA_TP_DIAG_EXPERTS=<n>: writes rank 0's expert input at layer <n> to the named file, raw floats.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_REDUCE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/layer.cpp",
+     "line": 277,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "sycl/src/core/layer.cpp",
+     "line": 1231,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "a03a1064bf",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "a03a1064bf",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/core",
+   "note": "Diagnostic for --tp: prints the layer and shard count where a sharded layer runs. Prints only when set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_DIAG_STATE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 1197,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": "off",
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "9978c7f9a1",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "9978c7f9a1",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/program",
+   "note": "Diagnostic for --tp: prints a checksum of every rank's first GDN state after each commit. Prints only when set.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_EXPERT_SPLIT",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 3187,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 7951,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "69a0866cf3",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "6cd34c61d4",
+   "last_date": "2026-11-13",
+   "status": "opt-in",
+   "owner": "sycl/program",
+   "note": "Read only under --tp. 1: every expert belongs to one rank, and a rank computes only its own. Unset: every rank holds a copy of rank 0's expert cache.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_PREFILL",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 8135,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "31e20a8b01",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "31e20a8b01",
+   "last_date": "2026-11-13",
+   "status": "rollback",
+   "owner": "sycl/program",
+   "note": "Read only under --tp with replicated dense. `rank0` turns the parallel prompt path off: rank 0 reads the prompt alone and its state is copied to the other ranks. Evidence that the two agree: with rank 0 owning every prompt expert (STRATA_TP_PREFILL_OWNER=0) the parallel path's result is bit-identical to this one (4x Arc Pro B60, 259 and 819 tokens).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_PREFILL_OWNER",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 8174,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "0",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "31e20a8b01",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "c7ab0273f8",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/program",
+   "note": "Diagnostic for --tp: rank <r> owns every expert on the prompt path and the other ranks add zeros. Used to separate the ownership split from the plumbing.",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_RANK_CACHE_MIB",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 7964,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "69a0866cf3",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "69a0866cf3",
+   "last_date": "2026-11-13",
+   "status": "opt-in",
+   "owner": "sycl/program",
+   "note": "Read only under --tp with the expert split. The cap, in MiB, on the experts dealt to each other rank's VRAM; default: the size of rank 0's cache. 15500 with replicated dense left about 56 MiB free on rank 0 and a run failed (4x Arc Pro B60).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_SPIN_MIN",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/kernels/cuda/allreduce.dp.cpp",
+     "line": 501,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": "400000",
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "efe2e15d47",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "efe2e15d47",
+   "last_date": "2026-11-13",
+   "status": "opt-in",
+   "owner": "sycl/kernels",
+   "note": "Read only under --tp. The least number of reads a rank waits for its peer in the decode collective before it gives up; default 400000. With the shorter bound before it 2 of 4 --tp 2 runs ended \"rank 0 gave up waiting for its peer\"; with 400000, 12 of 12 ran (2 of the 4x Arc Pro B60).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_TP_WIRE",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 7896,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [],
+   "first_commit": "c7ab0273f8",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "c7ab0273f8",
+   "last_date": "2026-11-13",
+   "status": "research",
+   "owner": "sycl/program",
+   "note": "`f32`: the decode reduce carries FP32 instead of bf16 (twice the bytes). Measured on 4x Arc Pro B60, 259-token prompt: no closer to the single card's logits (KL 0.080, 0.166, 0.110) and the same decode speed (44.2 tok/s).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_TQ_ISA",
    "backends": [
     "cpu"
