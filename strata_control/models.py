@@ -18,9 +18,56 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 import sys
 from pathlib import Path
+
+_RUST_BIN_CACHE: str | None | bool = False
+
+
+def _rust_models_bin() -> str | None:
+    global _RUST_BIN_CACHE
+    if os.environ.get("STRATA_NO_RUST_MODELS") == "1":
+        return None
+    if _RUST_BIN_CACHE is not False:
+        return _RUST_BIN_CACHE  # type: ignore[return-value]
+    exe = "strata-models.exe" if os.name == "nt" else "strata-models"
+    candidates = [
+        Path(__file__).resolve().parent.parent / "crates" / "strata-models" / "target" / "release" / exe,
+        Path(__file__).resolve().parent.parent / "crates" / "strata-models" / "target" / "debug" / exe,
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            _RUST_BIN_CACHE = str(cand)
+            return _RUST_BIN_CACHE
+    found = shutil.which(exe)
+    _RUST_BIN_CACHE = found
+    return found
+
+
+def _rust_gguf_header(real: Path, orig: Path) -> dict | None:
+    exe = _rust_models_bin()
+    if not exe:
+        return None
+    try:
+        res = subprocess.run([exe, "gguf-header", str(real)], capture_output=True, text=True, timeout=10)
+    except OSError:
+        return None
+    if res.returncode != 0:
+        msg = res.stderr.strip() or "GGUF shard is unreadable"
+        raise ProfileError(msg, 5)
+    try:
+        data = json.loads(res.stdout)
+        return {
+            "name": orig.name,
+            "path": str(orig),
+            "bytes": int(data["bytes"]),
+            "gguf_version": int(data["gguf_version"]),
+        }
+    except (ValueError, KeyError, TypeError):
+        return None
 
 from strata_control import discovery
 from strata_control.doctor import inspect as inspect_components
@@ -237,6 +284,9 @@ def inspect(model_id: str, override: str | None = None) -> dict:
 def _gguf_header(path: Path) -> dict:
     """The first bytes of one model file (a link to it is followed: Hugging Face cache snapshots and Ollama blobs are links)."""
     real = real_model_file(path)
+    rust = _rust_gguf_header(real, path)
+    if rust is not None:
+        return rust
     try:
         descriptor = os.open(real, os.O_RDONLY)
         with os.fdopen(descriptor, "rb") as stream:

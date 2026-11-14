@@ -1,0 +1,14 @@
+[package]
+name = "strata-models"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Opt-in GGUF shard header and model ID validation for Strata"
+
+[lib]
+name = "strata_models"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strata-models"
+path = "src/main.rs"
