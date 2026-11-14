@@ -2442,6 +2442,59 @@ namespace {
 // Layer split: STRATA_PREFILL_HELP=1 lends the idle stage's GPU (opt-in: the helped rows are computed in another MMQ
 // grouping and round differently from the default, like STRATA_SPLIT_OWN). Unset or 0: every stage's prompt experts on
 // its own GPU, as before.
+// STRATA_PREFILL_HELP_P2P=1 (opt-in, with STRATA_PREFILL_HELP=1): the helped stage sends the chunk's activations to the
+// helper card and takes its rows back with peer copies (NVLink or another direct path) instead of the mapped host route,
+// which also leaves both cards' PCIe links to the streamed experts. Used only when both cards report peer access to each
+// other, enabling it succeeds and a test copy each way arrives exact (#2666: a host bridge can claim P2P and move nothing);
+// otherwise the host route, with one line saying why.
+bool split_help_p2p_env() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_HELP_P2P"); return e != nullptr && std::atoi(e) != 0; }();
+    return v;
+}
+const char* split_help_p2p_fail(int a, int b) {
+    int ab = 0, ba = 0;
+    if (cudaDeviceCanAccessPeer(&ab, a, b) != cudaSuccess || cudaDeviceCanAccessPeer(&ba, b, a) != cudaSuccess) {
+        cudaGetLastError();
+        return "cudaDeviceCanAccessPeer failed";
+    }
+    if (!ab || !ba) return "the cards report no peer access";
+    int prev = 0;
+    cudaGetDevice(&prev);
+    const char* why = nullptr;
+    const int dev[2] = {a, b};
+    for (int k = 0; k < 2 && why == nullptr; ++k) {
+        cudaSetDevice(dev[k]);
+        const cudaError_t e = cudaDeviceEnablePeerAccess(dev[1 - k], 0);
+        if (e == cudaErrorPeerAccessAlreadyEnabled) cudaGetLastError();
+        else if (e != cudaSuccess) { cudaGetLastError(); why = "cudaDeviceEnablePeerAccess failed"; }
+    }
+    constexpr size_t kN = 1 << 14;   // floats
+    std::vector<float> h(kN), back(kN);
+    for (size_t i = 0; i < kN; ++i) h[i] = 1.0f + (float) ((i * 2654435761u) % 4093u);
+    float* d[2] = {nullptr, nullptr};
+    for (int k = 0; k < 2 && why == nullptr; ++k) {
+        cudaSetDevice(dev[k]);
+        if (cudaMalloc((void**) &d[k], kN * 4) != cudaSuccess) why = "test buffer allocation failed";
+    }
+    for (int from = 0; from < 2 && why == nullptr; ++from) {
+        const int to = 1 - from;
+        cudaSetDevice(dev[from]);
+        bool ok = cudaMemcpy(d[from], h.data(), kN * 4, cudaMemcpyHostToDevice) == cudaSuccess;
+        cudaSetDevice(dev[to]);
+        ok = ok && cudaMemset(d[to], 0, kN * 4) == cudaSuccess &&
+             cudaMemcpyPeer(d[to], dev[to], d[from], dev[from], kN * 4) == cudaSuccess &&
+             cudaMemcpy(back.data(), d[to], kN * 4, cudaMemcpyDeviceToHost) == cudaSuccess;
+        if (!ok) why = "a test copy between the cards failed";
+        else if (std::memcmp(back.data(), h.data(), kN * 4) != 0) why = "a test copy between the cards arrived wrong";
+    }
+    for (int k = 0; k < 2; ++k)
+        if (d[k] != nullptr) { cudaSetDevice(dev[k]); cudaFree(d[k]); }
+    if (why != nullptr)   // leave no half-working peer mapping behind for the other copies
+        for (int k = 0; k < 2; ++k) { cudaSetDevice(dev[k]); cudaDeviceDisablePeerAccess(dev[1 - k]); }
+    cudaGetLastError();
+    cudaSetDevice(prev);
+    return why;
+}
 bool split_help_env() {
     static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_HELP"); return e != nullptr && std::atoi(e) != 0; }();
     return v;
@@ -2488,6 +2541,12 @@ bool Prefill::set_stage_helper(Prefill* helper, std::string& err) {
     pp->peer = nullptr;   // stream-only: it holds no experts, it streams a share of this stage's
     pp->compact = true;
     pp->p2p = false;      // the mapped host route, whether or not the cards could reach each other (measured there)
+    if (split_help_p2p_env()) {   // opt-in: card to card instead (NVLink)
+        const char* why = split_help_p2p_fail(m.device, h.device);
+        pp->p2p = why == nullptr;
+        std::fprintf(stderr, "strata prefill: layer-split prompt help, CUDA%d -> CUDA%d: %s%s\n", h.device, m.device,
+                     why == nullptr ? "peer copies (STRATA_PREFILL_HELP_P2P)" : "the mapped host route: ", why ? why : "");
+    }
     pp->out_pipe = true;
     bool ok;
     {
