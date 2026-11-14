@@ -1164,6 +1164,7 @@ struct TpGroup {
         for (int r = 0; r < n; ++r) {
             th.emplace_back([&, r] {
                 std::string e;
+                if (r > 0) (void) strata::program::TpCpus::get().place_current();   // rank 0 keeps the host's CPU
                 if (whole) strata::core::tp_set_expert_ranks(r, n);
                 else if (!strata::core::tp_set_ranks(r, n, e)) { errs[(size_t) r] = e; return; }
                 strata::core::TpRuntime::install(rt[(size_t) r].get());
@@ -4862,6 +4863,14 @@ int main(int argc, char **argv) try {
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last ? "last" : "first");
         // the same facts in plain words, and whether each worker has a physical core of its own
         std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
+        if (o.tp > 0) {   // tensor parallel: the ranks' threads do not share the host's one CPU (see TpCpus)
+            strata::program::TpCpus& tc = strata::program::TpCpus::get();
+            tc.plan(ht.host_core, std::vector<int>(ht.worker_cores.begin(),
+                                                   ht.worker_cores.begin() + std::min<long>((long) ht.worker_cores.size(), pool.workers())));
+            if (tc.n_spare > 0)
+                std::fprintf(stderr, "strata generate: --tp %d: the other ranks' threads run on the %d CPUs that neither the "
+                                     "host thread nor a pool worker is pinned to\n", o.tp, tc.n_spare);
+        }
     }
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
@@ -11583,6 +11592,7 @@ int main(int argc, char **argv) try {
                     std::vector<std::thread> th;
                     for (size_t k = 0; k < tp_ranks.size(); ++k)
                         th.emplace_back([&, k] {
+                            (void) strata::program::TpCpus::get().place_current();   // (off the host's CPU)
                             strata::program::TpRank& rk = *tp_ranks[k];
                             const strata::core::OnDevice on(rk.dev);
                             oks[k] = rk.sp.run(ids.data() + q, r1 - q, q, errs[k]) ? 1 : 0;
@@ -11594,6 +11604,7 @@ int main(int argc, char **argv) try {
                     if (!ok0) return false;
                     for (size_t k = 0; k < tp_ranks.size(); ++k)
                         if (!oks[k]) { e = "rank " + std::to_string(k + 1) + "'s prompt path: " + errs[k]; return false; }
+                    if (!tp_bulk.healthy(e)) return false;
                     q = r1;
                 }
                 tp_bulk.restart();   // (STRATA_PREFILL_TIMING: prints the last chunk's reduce times)
@@ -11752,6 +11763,8 @@ int main(int argc, char **argv) try {
             const int64_t message_at = message_checkpoint && !multi_gpu && o.prompt_cache > 0
                 ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token) : -1;
             int64_t at = read_from;
+            // tensor parallel: a thread that inherited the host's one CPU (the runtime's own, a rank's helpers) leaves it
+            if (o.tp > 0) (void) strata::program::TpCpus::get().release_inheritors();
             for (const int64_t to : {reread_to, root_at, message_at, turn_at, n - 1}) {
                 if (to <= at) continue;
                 err.clear();

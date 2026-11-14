@@ -2332,6 +2332,10 @@ struct PfTimer {
     std::vector<int> ph;
     size_t used = 0;
     double ms[kPfCount] = {};
+    // the host's own clock between marks: the time this thread took to queue a phase (or waited inside it)
+    double host_ms[kPfCount] = {};
+    int host_ph = -1;
+    std::chrono::steady_clock::time_point host_t;
     // STRATA_PREFILL_SYNC=1 (debug): wait for the GPU at every mark and log the phase that just finished, so a hang
     // names the stage that never completes
     bool sync = std::getenv("STRATA_PREFILL_SYNC") != nullptr;
@@ -2345,6 +2349,12 @@ struct PfTimer {
                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         }
         if (!on) return;
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (host_ph >= 0) host_ms[host_ph] += std::chrono::duration<double, std::milli>(now - host_t).count();
+            host_ph = phase < kPfCount ? phase : -1;
+            host_t = now;
+        }
         if (used == ev.size()) {
             dpct::event_ptr e = nullptr;
             e = new sycl::event();
@@ -5211,6 +5221,15 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
         }
         std::fprintf(stderr, "strata prefill timing: %lld tokens, GPU timeline %.0f ms, wall %.0f ms, host staging %.0f ms:%s\n",
                      (long long) n, total, ms_since(t_start), stats_.ms_experts_host, line.c_str());
+        {
+            std::string hl;
+            for (int i = 0; i < kPfCount; ++i) {
+                if (pt.host_ms[i] < 0.5) continue;
+                std::snprintf(b, sizeof b, " %s %.0f", kPfNames[i], pt.host_ms[i]);
+                hl += b;
+            }
+            std::fprintf(stderr, "strata prefill timing: host thread, by the phase it was queuing:%s\n", hl.c_str());
+        }
         std::fprintf(stderr, "strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) %.0f ms, "
                              "waiting for each chunk %.0f ms, after each chunk (the draft layer, progress) %.0f ms, "
                              "PLE %.0f ms\n", host_setup_ms, host_sync_ms, host_chunk_ms, stats_.ms_ple);
