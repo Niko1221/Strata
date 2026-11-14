@@ -154,6 +154,11 @@ public:
     }
     // One request's fixed vocabulary bias. Empty clears it; copied only when changed, on the final stage's device.
     bool set_logit_bias(const std::vector<float>& bias, std::string& err);
+    /// A PER-ROW bias for the next window: `host` holds `rows` x n_vocab floats, row t the bias applied to token
+    /// row t (sets `sampling_.logit_bias_stride = n_vocab`).  `rows == 0` or a null `host` clears it.  The upload
+    /// is unconditional (the per-row mask changes with the drafts), and it invalidates set_logit_bias's
+    /// copy-on-change cache so the next broadcast re-uploads.
+    bool set_logit_bias_rows(const float* host, int rows, std::string& err);
 
     /// The penalty histories for `sampling_.penalty_last_n`: ONE ROW PER WINDOW ROW, T rows of `history_len`
     /// int32 slots at that stride (`strata::kernels::penalty_rows` builds them), most recent token LAST, unused
@@ -568,6 +573,7 @@ private:
 #endif
     std::vector<float> logit_bias_host_;
     float* logit_bias_device_ = nullptr;
+    size_t logit_bias_cap_ = 0;          ///< bytes the device buffer holds (set_logit_bias_rows may grow it)
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     unsigned long long* rr_stats_ = nullptr;   ///< STRATA_ROUTE_RESIDENT's counters on device_ (#1578); null: none
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows

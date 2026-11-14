@@ -64,22 +64,28 @@ public:
     bool initial_reasoning = false;     // the generation prompt opens <think> (thinking enabled)
 
     // --- state (mutable, per request) ---
+    // The mutable scan state, grouped so `window_masks` can walk a COPY of it over the drafted
+    // prefix without touching the canonical state (a rejected draft must leave it at the committed
+    // prefix).  `scanned` stays outside: it counts committed reply tokens fed to update().
+    struct Snapshot {
+        bool in_reasoning = false;      // inside <think> (or started there)
+        bool in_call = false;           // inside an unmatched <tool_call>
+        const Node* at = nullptr;       // the active name-trie node while a name is being written
+        std::vector<int32_t> buf;       // rolling tail for tag detection
+        size_t cap = 0;                 // the longest tag sequence, in tokens
+    };
     int64_t scanned = 0;                // reply tokens already fed to update()
-    bool in_reasoning = false;          // inside <think> (or started there)
-    bool in_call = false;               // inside an unmatched <tool_call>
-    const Node* at = nullptr;           // the active name-trie node while a name is being written
-    std::vector<int32_t> buf;           // rolling tail for tag detection
-    size_t cap = 0;                     // the longest tag sequence, in tokens
+    Snapshot st;                        // the canonical scan state
 
     bool valid() const { return !trigger.empty() && !call_open.empty() && !call_close.empty() && !root.next.empty(); }
 
     void reset_state() {
         scanned = 0;
-        in_reasoning = initial_reasoning;
-        in_call = false;
-        at = nullptr;
-        buf.clear();
-        cap = std::max({trigger.size(), think_open.size(), think_close.size(), call_open.size(), call_close.size()});
+        st.in_reasoning = initial_reasoning;
+        st.in_call = false;
+        st.at = nullptr;
+        st.buf.clear();
+        st.cap = std::max({trigger.size(), think_open.size(), think_close.size(), call_open.size(), call_close.size()});
     }
 
     /// Feed the reply committed so far (`tokens[0..n)`, generation order, the most recent token
@@ -96,40 +102,62 @@ public:
     std::vector<float> update(const int32_t* tokens, int64_t n, int32_t head, int vocab) {
         if (!valid() || vocab <= 0) return {};
         if (n < scanned) reset_state();          // the reply was rewound (defensive): re-derive from scratch
-        for (int64_t i = scanned; i < n; ++i) feed(tokens[i]);
+        for (int64_t i = scanned; i < n; ++i) feed(st, tokens[i]);
         scanned = n;
-        feed(head);                              // the token the sampler continues from (window[0])
+        feed(st, head);                          // the token the sampler continues from (window[0])
         ++scanned;                               // it lands in `tokens` next round: do not refeed
-        if (at == nullptr) return {};
+        if (st.at == nullptr) return {};
         std::vector<float> m((size_t) vocab, -std::numeric_limits<float>::infinity());
-        for (const auto& [id, child] : at->next) m[(size_t) id] = 0.0f;
+        for (const auto& [id, child] : st.at->next) m[(size_t) id] = 0.0f;
         return m;
     }
 
+    /// AFTER update() has fed the head (`window[0]`), the masks for a window's rows 0..T-1.
+    /// Row 0 is `head_mask` (what update() returned).  Rows 1.. are derived from a COPY of the
+    /// canonical state feeding `window[1..t]`, so a rejected draft leaves the state exactly at
+    /// the committed prefix and the next update() re-derives it from `consumed` alone.  An empty
+    /// mask means "no constraint on that row" (outside a call name).
+    std::vector<std::vector<float>> window_masks(const int32_t* window, int T, int vocab,
+                                                 const std::vector<float>& head_mask) const {
+        std::vector<std::vector<float>> out((size_t) (T > 0 ? T : 0));
+        if (T <= 0) return out;
+        out[0] = head_mask;
+        if (T == 1 || !valid() || vocab <= 0) return out;
+        Snapshot s = st;                         // already includes window[0] (the head, fed by update())
+        for (int t = 1; t < T; ++t) {
+            feed(s, window[t]);
+            if (s.at == nullptr) continue;       // not inside a name: the row is unconstrained
+            std::vector<float> m((size_t) vocab, -std::numeric_limits<float>::infinity());
+            for (const auto& [id, child] : s.at->next) m[(size_t) id] = 0.0f;
+            out[(size_t) t] = std::move(m);
+        }
+        return out;
+    }
+
 private:
-    void append(int32_t t) {
-        buf.push_back(t);
-        if (buf.size() > cap) buf.erase(buf.begin());
+    static void append(Snapshot& s, int32_t t) {
+        s.buf.push_back(t);
+        if (s.buf.size() > s.cap) s.buf.erase(s.buf.begin());
     }
 
-    bool ends_with(const std::vector<int32_t>& seq) const {
-        if (seq.empty() || buf.size() < seq.size()) return false;
-        return std::equal(seq.begin(), seq.end(), buf.end() - (int64_t) seq.size());
+    static bool ends_with(const Snapshot& s, const std::vector<int32_t>& seq) {
+        if (seq.empty() || s.buf.size() < seq.size()) return false;
+        return std::equal(seq.begin(), seq.end(), s.buf.end() - (int64_t) seq.size());
     }
 
-    void feed(int32_t t) {
-        append(t);
-        if (at != nullptr) {                     // inside a tool name: the token continues (or ends) it
-            auto it = at->next.find(t);
-            at = (it == at->next.end()) ? nullptr : it->second.get();
-            if (at != nullptr && at->terminal) at = nullptr;   // "name>" complete -> release
+    void feed(Snapshot& s, int32_t t) const {
+        append(s, t);
+        if (s.at != nullptr) {                     // inside a tool name: the token continues (or ends) it
+            auto it = s.at->next.find(t);
+            s.at = (it == s.at->next.end()) ? nullptr : it->second.get();
+            if (s.at != nullptr && s.at->terminal) s.at = nullptr;   // "name>" complete -> release
             return;
         }
-        if (ends_with(think_open))  in_reasoning = true;
-        if (ends_with(think_close)) in_reasoning = false;
-        if (ends_with(call_open))   in_call = true;
-        if (ends_with(call_close))  in_call = false;
-        if (in_call && !in_reasoning && ends_with(trigger)) at = &root;   // begin a tool name
+        if (ends_with(s, think_open))  s.in_reasoning = true;
+        if (ends_with(s, think_close)) s.in_reasoning = false;
+        if (ends_with(s, call_open))   s.in_call = true;
+        if (ends_with(s, call_close))  s.in_call = false;
+        if (s.in_call && !s.in_reasoning && ends_with(s, trigger)) s.at = &root;   // begin a tool name
     }
 };
 

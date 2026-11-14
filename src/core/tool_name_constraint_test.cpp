@@ -116,6 +116,66 @@ int main() {
         check(mask_allows(s.feed({2}), {10}));                      // completes
     }
 
+    // ---- window_masks: per-row masks equal sequential single-token update() ----
+    // A multi-token verify window feeds its drafts through a COPY of the scan state, so each row's mask is the
+    // mask that row actually needs (row t constrains the token after window[t] = the next draft).
+    {
+        strata::core::ToolNameConstraint c;
+        std::string e;
+        check(strata::core::parse_tool_name_constraint(CFG, 102, c, e));
+        std::vector<int32_t> consumed;
+        auto step = [&](std::initializer_list<int32_t> ts) {
+            for (int32_t t : ts) consumed.push_back(t);
+            const int32_t head = consumed.back();                   // the decode loop's head = last produced token
+            return c.update(consumed.data(), (int64_t) (consumed.size() - 1), head, 102);
+        };
+        step({4});                                                  // <tool_call> (reasoning)
+        step({3});                                                  // </think> ends reasoning
+        step({1});                                                  // <function= arms the trie
+        auto head_mask = step({10});                                // head 10 = first name token -> at = node(10)
+        check(mask_allows(head_mask, {100}));                       // only ">" (100) follows "10"
+
+        // window = [10, 100]: row 1 after ">" releases the name
+        std::vector<int32_t> window = {10, 100};
+        auto masks = c.window_masks(window.data(), 2, 102, head_mask);
+        check(masks.size() == 2 && masks[0] == head_mask);
+        check(masks[1].empty());                                    // ">" completes the name
+
+        // a hallucinated continuation: 999 is not ">" -> the row is off-path (released), so the verifier's
+        // unconstrained argmax will not equal 999 and the draft is rejected by the acceptance loop
+        std::vector<int32_t> w2 = {10, 999};
+        auto m2 = c.window_masks(w2.data(), 2, 102, head_mask);
+        check(m2.size() == 2 && m2[0] == head_mask);
+        check(m2[1].empty());
+    }
+    {
+        // The trigger's own mask constrains the FIRST name token across a multi-token window.
+        strata::core::ToolNameConstraint c;
+        std::string e;
+        check(strata::core::parse_tool_name_constraint(CFG, 102, c, e));
+        std::vector<int32_t> consumed;
+        auto step = [&](std::initializer_list<int32_t> ts) {
+            for (int32_t t : ts) consumed.push_back(t);
+            const int32_t head = consumed.back();
+            return c.update(consumed.data(), (int64_t) (consumed.size() - 1), head, 102);
+        };
+        step({4});                                                  // <tool_call> (reasoning)
+        step({3});                                                  // </think>
+        auto hm = step({1});                                        // head <function= -> at = root
+        check(mask_allows(hm, {10, 11, 12}));                       // first name token constrained
+
+        std::vector<int32_t> w3 = {1, 10, 100};                     // head <function=, drafts 10 ("name"), 100 (">")
+        auto m3 = c.window_masks(w3.data(), 3, 102, hm);
+        check(m3.size() == 3 && m3[0] == hm);
+        check(mask_allows(m3[1], {100}));                           // after "10": only ">"
+        check(m3[2].empty());                                       // after ">": released
+
+        std::vector<int32_t> w4 = {1, 999};                         // hallucinated first name token
+        auto m4 = c.window_masks(w4.data(), 2, 102, hm);
+        check(m4.size() == 2 && m4[0] == hm);
+        check(m4[1].empty());                                       // 999 off-path -> released
+    }
+
     std::puts("tool_name_constraint_test: passed");
     return 0;
 }

@@ -18985,24 +18985,21 @@ int main(int argc, char** argv) {
 #endif
             if (df2_trace != nullptr) std::fprintf(df2_trace, "# request prompt %lld df2 %d spec %d\n", (long long) n, req_df2 ? 1 : 0, S_mtp);
             std::vector<float> tnc_mask;   // the window's logit bias: the name-trie mask, or the request's static bias (or empty)
-            bool tnc_pin = false;          // force one-token windows (the reply is past the reasoning block: a call can start here)
+            std::vector<float> tnc_rows;   // a per-row T x n_vocab bias when a name is being written inside the window
             while (!pl_ran && !cancelled && produced_n < max_new) {
                 int T = 1;
                 // Tool-name constrained decoding (opt-in via the tool_name_constraint request key):
-                // the constraint is stateful per COMMITTED token, so a multi-token spec window can commit
-                // `<function` and the name together before the mask exists - the drafter (DFlash2, MTP or the
-                // suffix lookup) then hands a hallucinated name straight through.  Pin to one token a round
-                // while the reply is past the reasoning block (where a `<tool_call>` is written), so the
-                // `<function` trigger is always committed alone and the name is sampled under the mask.  The
-                // reasoning block keeps spec decoding (the bulk of the tokens); `tnc_active` still forces a
-                // single committed row below as a second guard (see tool_name_constraint.hpp).
+                // the constraint is stateful per COMMITTED token, but a multi-token spec window validates its
+                // drafts under a PER-ROW mask, so the drafter stays on through the whole reply.  Row 0's mask
+                // comes from update() (the committed head); rows 1.. come from window_masks() walking a COPY of
+                // the state over the drafted prefix, so a drafted `<function=NAME>` that no tool declares is
+                // simply not the verifier's argmax under its row's mask and the acceptance loop stops there.
                 const bool tnc_on = req_tnc.valid();
                 bool tnc_active = false;
                 if (tnc_on) {
                     tnc_mask = req_tnc.update(consumed.data() + pen_gen0,
                                               (int64_t) (consumed.size() - pen_gen0), x, (int) n_vocab);
                     tnc_active = !tnc_mask.empty();
-                    tnc_pin = !req_tnc.in_reasoning;   // the answer: <tool_call> and <function=NAME> are written here
                     if (tnc_active) {   // combine with a request's own static logit_bias: -inf bans, else the static value
                         for (size_t v = 0; v < tnc_mask.size(); ++v)
                             tnc_mask[v] = std::isinf(tnc_mask[v]) ? -std::numeric_limits<float>::infinity()
@@ -19010,7 +19007,7 @@ int main(int argc, char** argv) {
                     } else {
                         tnc_mask = req_bias;   // inactive: restore the request's static bias (or none)
                     }
-                    if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                    // (the bias is uploaded after `window[0..T)` is filled, once the per-row masks are known)
                 }
                 policy.set_context(p);
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
@@ -19112,7 +19109,6 @@ int main(int argc, char** argv) {
                         chain_n = std::max(0, t - T);
                     }
                 }
-                if (tnc_pin && !merged) { T = 1; chain_n = 0; from_sfx = false; }   // one token a round past the reasoning: the trigger is seen before the name
                 const int T_mtp = T;
                 T += chain_n;
                 const bool timed_round = !first_window;
@@ -19124,6 +19120,33 @@ int main(int argc, char** argv) {
                                          : from_sfx ? sbuf[(size_t) i - 1]
                                                     : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
+                if (tnc_on) {   // the window's logit bias: per-row when a name is being written inside it
+                    if (!merged && T > 1) {
+                        auto masks = req_tnc.window_masks(window.data(), T, (int) n_vocab, tnc_mask);
+                        bool any_row = false;
+                        for (int t = 1; t < T; ++t) if (!masks[(size_t) t].empty()) { any_row = true; break; }
+                        if (!any_row) {
+                            if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        } else {
+                            tnc_rows.resize((size_t) T * (size_t) n_vocab);
+                            for (int t = 0; t < T; ++t) {
+                                const std::vector<float>& m = masks[(size_t) t];
+                                float* dst = tnc_rows.data() + (size_t) t * (size_t) n_vocab;
+                                if (m.empty()) {
+                                    if (req_bias.empty()) std::fill(dst, dst + n_vocab, 0.0f);
+                                    else std::copy(req_bias.begin(), req_bias.end(), dst);
+                                } else {
+                                    for (int v = 0; v < n_vocab; ++v)
+                                        dst[v] = std::isinf(m[(size_t) v]) ? -std::numeric_limits<float>::infinity()
+                                                                           : (req_bias.empty() ? 0.0f : req_bias[v]);
+                                }
+                            }
+                            if (!ver.set_logit_bias_rows(tnc_rows.data(), T, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        }
+                    } else if (!ver.set_logit_bias(tnc_mask, err)) {
+                        std::printf("ERR %s\n", err.c_str()); return 1;
+                    }
+                }
                 if (!keep_sync()) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 drive.d.layers = 0;
                 drive.d.experts = 0;
@@ -19336,9 +19359,8 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
-                // Constrained tool names are decoded one token a round: a drafted row was sampled under
-                // row 0's (stale) mask, so it must never be committed.  Discard the drafts, keep row 0.
-                if (tnc_active && !merged) a = 0;
+                // Drafted rows were sampled under their OWN mask (per-row logit bias, see the window bias
+                // setup above), so a draft that hallucinates a name is already rejected by the acceptance loop.
                 if (fol != nullptr && fol_lp != nullptr) {   // rows 0..a have valid logits (their inputs are the accepted tokens)
                     std::vector<int32_t> fol_tg((size_t) a + 1, -1);
                     for (int i = 0; i <= a; ++i) {

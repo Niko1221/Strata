@@ -873,6 +873,37 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
     }
     logit_bias_host_ = bias;
     sampling_.logit_bias = bias.empty() ? nullptr : logit_bias_device_;
+    sampling_.logit_bias_stride = 0;   // a broadcast bias: one row for every token in the window
+    return true;
+}
+
+bool Verifier::set_logit_bias_rows(const float* host, int rows, std::string& err) {
+    if (next_ && !next_->set_logit_bias_rows(host, rows, err)) return false;
+    if (le_ >= 0 && le_ < g_->n_layers) return true;   // (the Metal window never sets le_: -1 = the last stage)
+    const OnDevice on_device(device_);
+    if (rows < 0 || (rows > 0 && host == nullptr)) { err = "set_logit_bias_rows: invalid rows/pointer"; return false; }
+    if (rows == 0) {
+        sampling_.logit_bias = nullptr;
+        sampling_.logit_bias_stride = 0;
+        return true;
+    }
+    const int64_t floats = (int64_t) rows * (int64_t) n_vocab_;
+    const size_t bytes = (size_t) floats * sizeof(float);
+    if (logit_bias_device_ == nullptr || logit_bias_cap_ < bytes) {
+        if (logit_bias_device_) cudaFree(logit_bias_device_);
+        logit_bias_device_ = nullptr;
+        logit_bias_cap_ = 0;
+        if (cudaMalloc((void**) &logit_bias_device_, bytes) != cudaSuccess) {
+            err = "cannot allocate per-row logit_bias"; return false;
+        }
+        logit_bias_cap_ = bytes;
+    }
+    if (cudaMemcpy(logit_bias_device_, host, bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+        err = "cannot upload per-row logit_bias"; return false;
+    }
+    logit_bias_host_.clear();   // the device now holds per-row data: force the next broadcast to re-upload
+    sampling_.logit_bias = logit_bias_device_;
+    sampling_.logit_bias_stride = (int) n_vocab_;
     return true;
 }
 
