@@ -172,6 +172,7 @@ OTHER_PROGRAMS = {
     "strata_control/profiles.py": 1,           # the person's editor
     "strata_control/recipes.py": 1,            # the person's editor
     "strata_control/split_engine.py": 1,       # nvidia-smi
+    "strata_control/gguf_preflight.py": 1,  # opt-in Rust strata-gguf-preflight binary
     "strata_control/time_skip.py": 3,          # the person's check commands
     "strata_control/tune_machine.py": 3,       # sysctl, vm_stat, a probe
     "strata_cli/bench_facts.py": 1,            # a tool for the facts
