@@ -489,6 +489,22 @@ const void* ar_debug_staging(int rank, int half) {
     return g_ar_debug == nullptr ? nullptr : g_ar_debug->host_staging(rank, half);
 }
 
+namespace {
+/// The collective's give-up bound.  The queue's own bound is 20,000 reads on an xe card (waits that are expected to
+/// expire), which is too short for a meeting: a rank that is late by more than that many reads of its peer's word
+/// makes the peer give up, and a give-up here ends the request.  Measured on 2x Arc Pro B60, --tp 2, replicated dense
+/// with the expert split (each rank reads about 7,900 experts from the host mirror, so the ranks drift further apart
+/// than with 4): 2 of 4 runs ended "rank 0 gave up waiting for its peer"; with 400,000 reads 4 of 4 ran.  So the
+/// bound is at least 400,000 reads here.  STRATA_TP_SPIN_MIN=<reads> sets another floor.
+uint32_t ar_spin_bound(const sycl::queue& q) {
+    static const uint32_t floor = [] {
+        const char* v = std::getenv("STRATA_TP_SPIN_MIN");
+        return v != nullptr && std::atol(v) > 0 ? (uint32_t) std::atol(v) : 400000u;
+    }();
+    return std::max(strata::spin_max(q), floor);
+}
+}  // namespace
+
 void ArPair::launch(int rank, float* x, int count, void* stream) {
     const int r = rank <= 0 ? 0 : (rank >= ranks_ ? ranks_ - 1 : rank);
     ++calls_[r];
@@ -510,7 +526,7 @@ void ArPair::launch(int rank, float* x, int count, void* stream) {
         }
         ar_reduce_kernel<float>(*q, x, r, ranks_, (float*) v.mine[parity], (float*) v.mine[1 - parity], peers0,
                                 peers1, pt, count, v.arrival[parity], pa, v.done[parity], v.peer_done[parity],
-                                v.token, v.timeout, v.progress, blocks_, kArThreads, strata::spin_max(*q));
+                                v.token, v.timeout, v.progress, blocks_, kArThreads, ar_spin_bound(*q));
     } else {
         const uint16_t* peers0[kArRanks] = {};
         const uint16_t* peers1[kArRanks] = {};
@@ -525,7 +541,7 @@ void ArPair::launch(int rank, float* x, int count, void* stream) {
         ar_reduce_kernel<uint16_t>(*q, x, r, ranks_, (uint16_t*) v.mine[parity], (uint16_t*) v.mine[1 - parity],
                                    peers0, peers1, pt, count, v.arrival[parity], pa, v.done[parity],
                                    v.peer_done[parity], v.token, v.timeout, v.progress, blocks_, kArThreads,
-                                   strata::spin_max(*q));
+                                   ar_spin_bound(*q));
     }
 }
 
