@@ -3744,6 +3744,7 @@ bool FileExpertSource::pin_cache_complement(
     const uint8_t* device = nullptr;
     bool pinned_ok = false;
     bool paced = false;         ///< #1250: the pages are taken in steps and page-locked afterwards
+    bool gtt_direct = false;    ///< GTT host memory: the paced path was skipped for a one-go allocation (refused: pace)
     uint64_t locked = 0;
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
@@ -3795,6 +3796,19 @@ bool FileExpertSource::pin_cache_complement(
         // STRATA_PIN_GUARD=0 pages-locks in one go as before, =2 always registers in steps (a test); STRATA_PIN_RESERVE_GIB
         // is the RAM that must stay above every step (default: the resident headroom, at least 2 GiB)
         // STRATA_NUMA_SPLIT placement forces the drop and the paced path whatever the guard (STRATA_PIN_GUARD=0 included)
+        // HSA_USERPTR_FOR_PAGED_MEM=0 (HIP, Linux): ROCr backs the allocation with GTT, which amdgpu fills with
+        // __GFP_RETRY_MAYFAIL (direct reclaim of other files' cache, a refusal instead of the OOM killer), while the paced
+        // path registers pageable memory, an MMU-notifier range that reclaim invalidates (KFD queue evictions) whatever
+        // that variable says.  So with it the complement is allocated in one go whenever the RAM *available* covers it and
+        // the reserve; a refused allocation still paces.  STRATA_PIN_GUARD=2 and NUMA placement still pace.
+#if defined(STRATA_USE_HIP)
+        static const bool gtt_host = [] {
+            const char* v = std::getenv("HSA_USERPTR_FOR_PAGED_MEM");
+            return v != nullptr && v[0] == '0';
+        }();
+#else
+        constexpr bool gtt_host = false;
+#endif
         const uint64_t pace_reserve = [&] {
             const char* v = std::getenv("STRATA_PIN_RESERVE_GIB");
             return v != nullptr && std::atof(v) > 0 ? (uint64_t) (std::atof(v) * 1073741824.0)
@@ -3837,6 +3851,18 @@ bool FileExpertSource::pin_cache_complement(
                                  (double) before / 1073741824.0, (double) bytes / 1073741824.0,
                                  (double) free_now / 1073741824.0);
                 paced = detail::pin_depends_on_reclaim(free_now, bytes, pace_reserve);
+                // Measured (RX 7900 XTX, 64 GB, other files' cache filling the RAM): paced, 60 s of kfd_evicted_ms in one
+                // benchmark run; one GTT allocation, 0.
+                uint64_t avail_now = 0;
+                if (paced && gtt_host && available_memory_bytes(avail_now) &&
+                    detail::pin_step_fits(avail_now, bytes, pace_reserve)) {
+                    paced = false;
+                    gtt_direct = true;
+                    std::fprintf(stderr, "FileExpertSource: GTT host memory (HSA_USERPTR_FOR_PAGED_MEM=0): %.2f GiB "
+                                         "available covers the complement and the reserve: one allocation, the driver "
+                                         "reclaims the cache\n",
+                                 (double) avail_now / 1073741824.0);
+                }
                 if (paced)
                     std::fprintf(stderr, "FileExpertSource: the rest comes from reclaimed cache of other files: "
                                          "page-locking it in steps, as far as the RAM allows (#1250)\n");
@@ -3861,6 +3887,7 @@ bool FileExpertSource::pin_cache_complement(
                     (void) cudaGetLastError();
                     (void) cudaFreeHost(arena);
                     arena = nullptr;
+                    paced = gtt_direct;   // the paced path was skipped for this allocation: take it now
                 }
             } else {
                 // Refused (the driver's page-locked limit): the same bytes in ordinary memory, locked in the working
@@ -3868,6 +3895,9 @@ bool FileExpertSource::pin_cache_complement(
                 note = std::string("page-locking refused (") + cudaGetErrorString(allocated) + ")";
                 (void) cudaGetLastError();
                 arena = nullptr;
+                // the paced path was skipped for this allocation (a TTM limit under the complement refuses it): take it
+                // now instead of an unregistered locked arena
+                paced = gtt_direct;
             }
         }
         if (arena == nullptr) {
