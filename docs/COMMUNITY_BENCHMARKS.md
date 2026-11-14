@@ -20,6 +20,16 @@ and their limits. Report what you actually measured and label estimates separate
 
 ## Community reports
 
+- [2026-11-14: Radeon RX 9060 XT 16 GB (gfx1200), Ryzen 7 5700, 62.7 GiB RAM](../bench/results/2026-11-14-community-rx9060xt/README.md):
+  first standard-protocol run on gfx1200: Strata 0.1.59.1 source build, Qwen3.8-Flash-Next IQ2_XS,
+  131,072-token context, `--vram-reserve-mib 3072` because the card also drives the desktop
+  (7.81 GiB expert cache, 5,830 slots). Decode **50.1 / 50.3 / 43.9 tok/s** and prompt
+  **709.6 / 924.2 tok/s** at short / 4K / 16K, sanity checks **12 of 12**. Reports the two
+  failed attempts that preceded it: 0.5 tok/s and `verify: timed out` at layer 33 whenever the
+  server is launched inside a supervising process tree, where the engine's RAM check reports a
+  4.00 GiB budget and falls back to `--mmap-experts`; started detached, the same build loads the
+  33 GiB arena and the symptom disappears.
+
 - [2026-09-30: RTX 5090, Core Ultra 9 285K, 64 GB RAM](../bench/results/2026-09-30-community-rtx-5090/README.md):
   Strata 0.1.29, original Flash-Next IQ2_XS, 131,072-token context; three runs
   each at 4,096, 32,768, and 128,000 prompt tokens, plus six recall checks.
