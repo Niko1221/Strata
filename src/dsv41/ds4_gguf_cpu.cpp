@@ -32,10 +32,14 @@
 #define MX_TARGET(s)
 #endif
 #define MX_AVX2 MX_TARGET("avx2,fma")
-// AVX-VNNI's intrinsics: GCC 11, Clang 12, MSVC 2022
+// AVX-VNNI's intrinsics: GCC 11, Clang 12, MSVC 2022.  The compiler alone is not enough: GCC 11 with binutils older
+// than 2.36 (the stock compiler of RHEL / Alma / Rocky 9) takes the intrinsics, but its assembler stops at vpdpbusd.
+// CMake's build check (STRATA_AVXVNNI, as for iq_avx2.cpp) decides where it is set; a build without it goes by version.
 #if defined(MX_X86) && (defined(_MSC_VER) || (defined(__clang__) && __clang_major__ >= 12) || \
                         (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 11))
+#if !defined(STRATA_AVXVNNI) || STRATA_AVXVNNI
 #define MX_AVXVNNI 1
+#endif
 #endif
 
 namespace strata::ds4::gguf {
