@@ -32,8 +32,12 @@ struct Sim {
         }
     }
     std::vector<float> feed(std::initializer_list<int32_t> ts) {
+        // Mirrors the decode loop: everything but the last token is the committed prefix, the
+        // last token is the head the sampler continues from, and update() returns the mask for
+        // the token AFTER that head.
         for (int32_t t : ts) reply.push_back(t);
-        return c.update(reply.data(), (int64_t) reply.size(), vocab);
+        const int32_t head = reply.back();
+        return c.update(reply.data(), (int64_t) (reply.size() - 1), head, vocab);
     }
 };
 

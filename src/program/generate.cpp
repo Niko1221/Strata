@@ -18984,8 +18984,34 @@ int main(int argc, char** argv) {
             auto draft_df2 = [&](int) -> bool { return false; };
 #endif
             if (df2_trace != nullptr) std::fprintf(df2_trace, "# request prompt %lld df2 %d spec %d\n", (long long) n, req_df2 ? 1 : 0, S_mtp);
+            std::vector<float> tnc_mask;   // the window's logit bias: the name-trie mask, or the request's static bias (or empty)
+            bool tnc_pin = false;          // force one-token windows (the reply is past the reasoning block: a call can start here)
             while (!pl_ran && !cancelled && produced_n < max_new) {
                 int T = 1;
+                // Tool-name constrained decoding (opt-in via the tool_name_constraint request key):
+                // the constraint is stateful per COMMITTED token, so a multi-token spec window can commit
+                // `<function` and the name together before the mask exists - the drafter (DFlash2, MTP or the
+                // suffix lookup) then hands a hallucinated name straight through.  Pin to one token a round
+                // while the reply is past the reasoning block (where a `<tool_call>` is written), so the
+                // `<function` trigger is always committed alone and the name is sampled under the mask.  The
+                // reasoning block keeps spec decoding (the bulk of the tokens); `tnc_active` still forces a
+                // single committed row below as a second guard (see tool_name_constraint.hpp).
+                const bool tnc_on = req_tnc.valid();
+                bool tnc_active = false;
+                if (tnc_on) {
+                    tnc_mask = req_tnc.update(consumed.data() + pen_gen0,
+                                              (int64_t) (consumed.size() - pen_gen0), x, (int) n_vocab);
+                    tnc_active = !tnc_mask.empty();
+                    tnc_pin = !req_tnc.in_reasoning;   // the answer: <tool_call> and <function=NAME> are written here
+                    if (tnc_active) {   // combine with a request's own static logit_bias: -inf bans, else the static value
+                        for (size_t v = 0; v < tnc_mask.size(); ++v)
+                            tnc_mask[v] = std::isinf(tnc_mask[v]) ? -std::numeric_limits<float>::infinity()
+                                                                  : (req_bias.empty() ? 0.0f : req_bias[v]);
+                    } else {
+                        tnc_mask = req_bias;   // inactive: restore the request's static bias (or none)
+                    }
+                    if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
                 policy.set_context(p);
                 const bool merged = first_window && merge_T > 0;   // the prompt's last tokens and the first token
                 bool from_sfx = false;
@@ -19086,6 +19112,7 @@ int main(int argc, char** argv) {
                         chain_n = std::max(0, t - T);
                     }
                 }
+                if (tnc_pin && !merged) { T = 1; chain_n = 0; from_sfx = false; }   // one token a round past the reasoning: the trigger is seen before the name
                 const int T_mtp = T;
                 T += chain_n;
                 const bool timed_round = !first_window;
@@ -19270,27 +19297,8 @@ int main(int argc, char** argv) {
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
                     return 1;
                 }
-                // Tool-name constrained decoding (opt-in via the tool_name_constraint request key):
-                // while the reply is inside a <tool_call> envelope, past the <think> reasoning block,
-                // and writing a <function=NAME>, ban every token that cannot continue a declared name.
-                // The mask rides the logit_bias slot (sampler.cu applies `l[v] + bias[v]`), so a banned
-                // id is `-inf`.  `tnc_active` also forces single-token windows below, so a stale
-                // per-window mask never mis-constrains a drafted row (see tool_name_constraint.hpp).
-                const bool tnc_on = req_tnc.valid();
-                bool tnc_active = false;
-                if (tnc_on) {
-                    std::vector<float> tnc_mask = req_tnc.update(consumed.data() + pen_gen0,
-                                                                 (int64_t) (consumed.size() - pen_gen0), (int) n_vocab);
-                    tnc_active = !tnc_mask.empty();
-                    if (tnc_active) {   // combine with a request's own static logit_bias: -inf bans, else the static value
-                        for (size_t v = 0; v < tnc_mask.size(); ++v)
-                            tnc_mask[v] = std::isinf(tnc_mask[v]) ? -std::numeric_limits<float>::infinity()
-                                                                  : (req_bias.empty() ? 0.0f : req_bias[v]);
-                    } else {
-                        tnc_mask = req_bias;   // inactive: restore the request's static bias (or none)
-                    }
-                    if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
-                }
+                // (the tool-name constraint's mask and its single-token pin were applied at the top of
+                // this window, right after `int T = 1` - see the comment there.)
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);

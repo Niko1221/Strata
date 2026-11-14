@@ -26,6 +26,15 @@
 // accepted tokens) and returns the mask for the next token.  Scanning is O(1) amortized per
 // token (a bounded rolling tail + a trie walk), so an enabled-but-idle constraint is as cheap
 // as the static logit_bias it rides.
+//
+// Spec decoding and a per-committed-token constraint do not mix: a multi-token window commits
+// `<function` and the name together, so the mask (which is derived from the *committed* tokens)
+// never existed for the name's first token and the drafter (DFlash2, MTP or the suffix lookup)
+// hands a hallucinated name straight through.  The decode loop therefore pins to one token a
+// round while the reply is past the reasoning block (`!in_reasoning`), where a `<tool_call>` is
+// written, so the trigger is always committed alone and the name is sampled under the mask; the
+// reasoning block — the bulk of the tokens — keeps spec decoding.  `at != nullptr` (a name being
+// written) additionally discards drafted rows as a second guard.
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -74,14 +83,23 @@ public:
     }
 
     /// Feed the reply committed so far (`tokens[0..n)`, generation order, the most recent token
-    /// last) and return the dense mask the sampler should apply for the next token: `vocab`
-    /// floats, `0` for the allowed continuation ids and `-inf` everywhere else.  Empty when the
-    /// constraint is not active (not inside a call's name right now).
-    std::vector<float> update(const int32_t* tokens, int64_t n, int vocab) {
+    /// last) plus the fed-back head `head` — the token the sampler is now continuing from — and
+    /// return the dense mask for the token AFTER `head`: `vocab` floats, `0` for the allowed
+    /// continuation ids and `-inf` everywhere else.  Empty when the constraint is not active
+    /// (not inside a call's name right now).
+    ///
+    /// `head` matters: the decode loop samples the token after `window[0]` (the head), which is
+    /// one token AHEAD of `consumed.back()`.  Feeding only `tokens` would make the mask lag the
+    /// sampler by one token, so `<function=NAME>` names got their first letter constrained one
+    /// step late (`B=ash` instead of `Bash`).  The head is fed here and counted in `scanned`, so
+    /// the next call (whose `tokens` then include it) does not feed it twice.
+    std::vector<float> update(const int32_t* tokens, int64_t n, int32_t head, int vocab) {
         if (!valid() || vocab <= 0) return {};
         if (n < scanned) reset_state();          // the reply was rewound (defensive): re-derive from scratch
         for (int64_t i = scanned; i < n; ++i) feed(tokens[i]);
         scanned = n;
+        feed(head);                              // the token the sampler continues from (window[0])
+        ++scanned;                               // it lands in `tokens` next round: do not refeed
         if (at == nullptr) return {};
         std::vector<float> m((size_t) vocab, -std::numeric_limits<float>::infinity());
         for (const auto& [id, child] : at->next) m[(size_t) id] = 0.0f;
