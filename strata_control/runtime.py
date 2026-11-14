@@ -891,6 +891,7 @@ class Host:
         self.probe_deadline = 0.0
         self.probe_key: tuple[int, str] | None = None
         self.probe_result: dict | None = None
+        self.last_drain_s: float | None = None   # what stopping this server actually took here (min_wait_s in the restart plan)
         self.rollback_snapshots: set[Path] = set()
 
     def _mark_child(self, phase: str, *, pid: int | None = None, ready: Path | None = None) -> None:
@@ -1123,6 +1124,7 @@ class Host:
             if self.ready_path is not None:
                 self.ready_path.unlink(missing_ok=True)
             return {"ok": True, "state": "stopped", "exit_code": child.returncode if child else 0}
+        drain_started = time.monotonic()
         if WINDOWS:
             self._close_owner_pipe()             # EOF on the server's stdin: it drains and stops (no SIGTERM here)
         else:
@@ -1130,10 +1132,14 @@ class Host:
         try:
             code = child.wait(timeout=self.shutdown_timeout + 8)
         except subprocess.TimeoutExpired:
+            # the wait-out itself is what this machine took: it is recorded like a clean drain,
+            # so a later plan says "teardown here runs to the ceiling" instead of guessing
+            self.last_drain_s = round(time.monotonic() - drain_started, 1)
             self._kill_child_tree()
             child.wait(timeout=10)
             self._close_owner_pipe()
             return {"ok": False, "state": "failed", "error": "server_stop_deadline_expired", "exit_code": 8}
+        self.last_drain_s = round(time.monotonic() - drain_started, 1)   # what a stop here actually cost
         self._close_owner_pipe()
         if self.ready_path is not None:
             self.ready_path.unlink(missing_ok=True)
@@ -1290,6 +1296,14 @@ class Host:
                 "changed": switched or migrated or self.args != candidate_args or
                            self.revision != plan["profile_revision"],
                 "shutdown_timeout": self.shutdown_timeout,
+                # min_wait_s: the minimum safe poll wait for a restart here, derived from this server's own
+                # teardown so no client ships a hardware constant. The host gives its child shutdown_timeout + 8 s
+                # before killing the tree (_stop_child), so no legitimate stop exceeds that; once this host has
+                # stopped a server, the measured duration plus 5 s of margin stands instead. It covers the teardown
+                # phase only - the model load is the caller's wait_s - so a client's floor is max(min_wait_s, its
+                # own wait_s + margin).
+                "min_wait_s": round((self.last_drain_s + 5.0) if self.last_drain_s is not None
+                                    else self.shutdown_timeout + 8.0, 1),
                 "would_drain": False, "would_start": False}
 
     def _handle(self, request: dict) -> dict:

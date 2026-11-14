@@ -963,6 +963,22 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(journal.list_runs("local")), count)
         self.assertEqual(runtime.status("local")["instance_id"], started["instance_id"])
 
+    def test_restart_plan_reports_min_wait_s_from_measured_teardown(self):
+        started = runtime.start("local", wait=60, shutdown_timeout=2)
+        self.assertTrue(started["ok"])
+        first = runtime.plan_restart("local")
+        self.assertTrue(first["ok"], first)
+        # nothing has stopped in this host yet: the ceiling it would itself use (the stop wait in
+        # _stop_child: shutdown_timeout + 8) is the floor it reports
+        self.assertEqual(first["min_wait_s"], 10.0)
+        restarted = runtime.restart("local", timeout=60, startup_wait=60)
+        self.assertTrue(restarted["ok"], restarted)
+        second = runtime.plan_restart("local")
+        self.assertTrue(second["ok"], second)
+        # the stub engine lets go quickly: the measured drain (plus 5 s of margin) replaced the ceiling
+        self.assertLess(second["min_wait_s"], first["min_wait_s"])
+        self.assertGreaterEqual(second["min_wait_s"], 5.0)
+
     def test_editable_recipe_previews_and_reruns_owned_instance(self):
         recipes.initialize("local")
         started = runtime.start("local", wait=60, shutdown_timeout=2)
