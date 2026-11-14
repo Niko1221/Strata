@@ -8,6 +8,7 @@
 #include "strata/kernels/dflash2.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/dma_batch.hpp"
+#include "strata/core/token_mask.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
 #endif
@@ -456,6 +457,8 @@ Verifier::~Verifier() try {
     }
     if (cs_) cs_->wait();
     if (slot_hist_d_ != nullptr && cs_) { try { sycl::free(slot_hist_d_, *cs_); } catch (...) {} slot_hist_d_ = nullptr; }
+    if (d_tmask_ != nullptr && cs_) { try { sycl::free(d_tmask_, *cs_); } catch (...) {} d_tmask_ = nullptr; }
+    if (d_tmask_ok_ != nullptr && cs_) { try { sycl::free(d_tmask_ok_, *cs_); } catch (...) {} d_tmask_ok_ = nullptr; }
     if (sh_cs_) sh_cs_->wait();
     for (auto& e : exec_)
         if (e) delete (e);
@@ -2161,6 +2164,87 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
     ++prof_windows_;
 }
 
+// ---- T4 (PR #3800): the device-side token mask.  mask_apply_row's device twin (token_mask.hpp): one work
+// item per (row, token) pair of the mask's rows.  A token outside the mask has kMaskedLogit written into its
+// head logit - the kernel never reads a logit, it only fills the masked slots - and an allowed token bumps
+// its row's count, the same number mask_apply_row returned, so the host keeps the "the token mask allows no
+// token" check on counts that ride the sampler's wait back.  The words are the MKN bitmap, the caller's rows
+// x words in row order (row t is words + t * n_words, the call site's comment): bit v of word t * n_words +
+// v / 32; a token at or past 32 * n_words is masked, exactly as the host loop masked it.
+namespace {
+
+struct strata_tmask_apply_kernel;
+struct strata_tmask_argmax_kernel;
+
+void tmask_apply_launch(dpct::queue_ptr q, float* logits, int64_t n_vocab, const uint32_t* words,
+                        int64_t n_words, int rows, int32_t* counts) {
+    q->submit([&](sycl::handler& cgh) {
+        cgh.parallel_for<strata_tmask_apply_kernel>(sycl::range<2>((size_t) rows, (size_t) n_vocab),
+                                                    [=](sycl::item<2> it) {
+            const int64_t t = (int64_t) it[0];
+            const int64_t v = (int64_t) it[1];
+            const int64_t w = v >> 5;
+            if (w < n_words && ((words[t * n_words + w] >> (v & 31)) & 1u))
+                dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(counts + t, 1);
+            else
+                logits[t * n_vocab + v] = strata::core::kMaskedLogit;
+        });
+    });
+}
+
+// mask_argmax's device twin: the allowed token with the highest logit of one masked row, a tie going to the
+// lower id (the host's loop keeps its first max).  One work group of 1024, block-contiguous ranges and a
+// local-memory tree that keeps the earlier (value, id) on a tie - the host's rule, reproduced in every order
+// (see the kernel).  Rarely launched: only when the sampler's inverse CDF fell outside the mask; the host
+// reads the 4-byte answer back.
+struct tmask_best {
+    float v;
+    int32_t i;
+};
+
+void tmask_argmax_launch(dpct::queue_ptr q, const float* row, int64_t n_vocab, const uint32_t* words,
+                         int64_t n_words, int32_t* out) {
+    q->submit([&](sycl::handler& cgh) {
+        sycl::local_accessor<tmask_best, 1> best_ct1(sycl::range(1024), cgh);
+        cgh.parallel_for<strata_tmask_argmax_kernel>(
+            sycl::nd_range<1>(sycl::range(1024), sycl::range(1024)), [=](sycl::nd_item<1> it) {
+                // DPC++ 2026.1's reduce_over_group takes scalar arithmetic, complex and vector types only,
+                // so the (value, id) tree runs in local memory.  The ranges are block-contiguous: a thread's
+                // ids stay below the next thread's, so the combine below (a later id wins only on a STRICTLY
+                // greater value) reproduces the host mask_argmax's first-max rule exactly - the smaller id
+                // keeps a tie, and a NaN the host's loop would keep this kernel keeps too, in every order.
+                const int lid = (int) it.get_local_id(0);
+                const int64_t chunk = (n_vocab + 1023) / 1024;
+                const int64_t lo = (int64_t) lid * chunk;
+                const int64_t hi = lo + chunk < n_vocab ? lo + chunk : n_vocab;
+                tmask_best me{-1e30f, -1};
+                for (int64_t v = lo; v < hi; ++v) {
+                    const int64_t w = v >> 5;
+                    if (w < n_words && ((words[w] >> (v & 31)) & 1u)) {
+                        const float x = row[v];
+                        if (me.i < 0 || x > me.v) {
+                            me.v = x;
+                            me.i = (int32_t) v;
+                        }
+                    }
+                }
+                best_ct1[lid] = me;
+                it.barrier(sycl::access::fence_space::local_space);
+                for (int s = 512; s > 0; s >>= 1) {
+                    if (lid < s) {
+                        const tmask_best a = best_ct1[lid];
+                        const tmask_best b = best_ct1[lid + s];
+                        if (b.i >= 0 && (a.i < 0 || b.v > a.v)) best_ct1[lid] = b;
+                    }
+                    it.barrier(sycl::access::fence_space::local_space);
+                }
+                if (lid == 0) *out = best_ct1[0].i;
+            });
+    });
+}
+
+}  // namespace
+
 bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
                    void *user, int32_t *out, std::string &err) try {
     using namespace strata::kernels;
@@ -2642,6 +2726,53 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
+    // ---- 4-1/4-2 (the CUDA side's shape, PR #3800) + T4: serve's token mask (token_mask.hpp), all of the
+    // window's mask rows, applied ON THE DEVICE: the mask's words (the MKN bitmap: 31 KB per row at a 248k
+    // vocabulary, against the 993 KB per row of logits the host round-trip moved) go up once, the apply
+    // kernel fills the masked slots with kMaskedLogit and counts the allowed tokens per row, and the counts
+    // ride the sampler's own wait below back to the host - no D2H/H2D of the logits, no extra sync.  Every
+    // reader of the head logits from here on sees the masked distribution: plain sampling and the greedy
+    // argmax directly, the CUDA side's semantics kept.
+    // tmask_ holds tmask_rows_ rows of tmask_words_ words (the MKN layout); row t is words + t * n_words.
+    const bool tmask_on = tmask_ != nullptr && head_logits_ != nullptr && n_vocab_ > 0;
+    const int tmask_rows = tmask_on ? std::min(tmask_rows_ > 0 ? tmask_rows_ : 1, T) : 0;   // 2-arg call: 1 row
+    if (tmask_on) {
+        if (tmask_words_ <= 0) {   // the host loop allowed no token of such a row; keep that error
+            err = "verify: the token mask allows no token (row 0)";
+            return false;
+        }
+        const int64_t need_words = (int64_t) tmask_rows * tmask_words_;
+        if (d_tmask_ok_ == nullptr &&
+            (d_tmask_ok_ = sycl::malloc_device<int32_t>((size_t) strata::kernels::kVerifyMaxT + 1, *cs_)) ==
+                nullptr) {
+            err = "verify: the token mask counter allocation failed";
+            return false;
+        }
+        if (d_tmask_cap_words_ < need_words) {
+            if (d_tmask_ != nullptr) sycl::free(d_tmask_, *cs_);
+            d_tmask_ = nullptr;
+            d_tmask_cap_words_ = 0;
+            if ((d_tmask_ = sycl::malloc_device<uint32_t>((size_t) need_words, *cs_)) == nullptr) {
+                err = "verify: the token mask upload allocation failed";
+                return false;
+            }
+            d_tmask_cap_words_ = need_words;
+        }
+        h_tmask_ok_.assign((size_t) tmask_rows, 0);
+        // one in-order queue: the memset, the upload, the kernel and the counts' read-back queue up in
+        // order, and the sampler's wait below waits for all of them - no wait here, that was the whole point.
+        if (DPCT_CHECK_ERROR(cs_->memset(d_tmask_ok_, 0, (size_t) tmask_rows * sizeof(int32_t))) != 0 ||
+            DPCT_CHECK_ERROR(cs_->memcpy(d_tmask_, tmask_, (size_t) need_words * sizeof(uint32_t))) != 0) {
+            err = "verify: uploading the token mask failed";
+            return false;
+        }
+        tmask_apply_launch(cs_, head_logits_, n_vocab_, d_tmask_, tmask_words_, tmask_rows, d_tmask_ok_);
+        if (DPCT_CHECK_ERROR(cs_->memcpy(h_tmask_ok_.data(), d_tmask_ok_, (size_t) tmask_rows * sizeof(int32_t)))
+            != 0) {
+            err = "verify: reading the token mask counts back failed";
+            return false;
+        }
+    }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr)) {
         SamplerParams sp = sampling_;
@@ -2651,6 +2782,49 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             0) { // m_out_ is the mapped h_out_: synced, it is readable
             err = "verify: the head sampling failed";
             return false;
+        }
+    } // <- head sampling ends here
+    if (tmask_on) {   // 4-2: the mask's rows read the masked logits above.  A sampled/penalized request was
+                      // already picked there; a greedy one (or a window whose head sampling is off) picks here,
+                      // with the request's own sampler - the masked argmax for greedy, exact per row.
+        if (!(head_sampling_ && (sampled || hist_d_ != nullptr))) {
+            SamplerParams msp = sampling_;
+            msp.counter = (uint64_t) pos0;
+            sample_tokens(head_logits_, tmask_rows, (int) n_vocab_, hist_d_, hist_len_, msp, m_out_, cs_);
+            if (DPCT_CHECK_ERROR(cs_->wait()) != 0) {
+                err = "verify: the masked head sampling failed";
+                return false;
+            }
+        }
+        {   // T4: the apply kernel's per-row counts - the numbers mask_apply_row used to return on the
+            // host - came back on the sampler's wait above.  A row that allows nothing ends the request
+            // exactly as the host-side check did (the sampler ran on all-masked logits, its pick is
+            // discarded with the error).
+            for (int t = 0; t < tmask_rows; ++t)
+                if (h_tmask_ok_[t] == 0) {
+                    err = "verify: the token mask allows no token (row " + std::to_string(t) + ")";
+                    return false;
+                }
+        }
+        {   // the sampler's inverse-CDF can fall past the allowed tokens on rounding: never emit a masked one
+            volatile int32_t* o = (volatile int32_t*) h_out_;
+            for (int t = 0; t < tmask_rows; ++t) {
+                if (mask_allows(tmask_ + (int64_t) t * tmask_words_, tmask_words_, o[t])) continue;
+                // T4: the masked row lives on the device now - the argmax over its allowed tokens runs
+                // there, the 4-byte answer read back on this rare path (a tie goes to the lower id, the
+                // host mask_argmax's first-max rule).  Slot kVerifyMaxT of the counter buffer is its scratch.
+                int32_t* res = d_tmask_ok_ + strata::kernels::kVerifyMaxT;
+                tmask_argmax_launch(cs_, head_logits_ + (size_t) t * n_vocab_, n_vocab_,
+                                    d_tmask_ + (int64_t) t * tmask_words_, tmask_words_, res);
+                int32_t best = -1;
+                if (DPCT_CHECK_ERROR(cs_->memcpy(&best, res, sizeof(int32_t)).wait()) != 0) {
+                    err = "verify: reading the masked argmax failed";
+                    return false;
+                }
+                static bool said = false;
+                if (!said) { said = true; std::fprintf(stderr, "strata serve: token mask: row %d: the sampler picked %d outside the mask; took %d (the best allowed)\n", t, (int) o[t], (int) best); }
+                o[t] = best;
+            }
         }
     }
     for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
