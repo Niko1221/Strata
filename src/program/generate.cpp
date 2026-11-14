@@ -3179,6 +3179,34 @@ static void prime_hw_queues() {
 }
 #endif
 
+// #3862 perf (STRATA_GRAMMAR_TIME=1): where a grammar request's host time goes.  Declared before the
+// ring so the mask upload helper can count its skips; the batch windows (the serve path) sum into
+// these globals, the solo loop keeps a per-request copy.  Timing only: no mask depends on it.
+struct GrammarTime {
+    double clone = 0, step = 0, upload = 0, advance = 0;
+    long long clones = 0, steps = 0, uploads = 0, advances = 0, skips = 0;
+};
+GrammarTime g_gram_time;
+
+bool grammar_time_on() {
+    static const bool on = [] {
+        char* v = nullptr;
+#if defined(_WIN32)
+        size_t n = 0;
+        if (_dupenv_s(&v, &n, "STRATA_GRAMMAR_TIME") == 0 && v) { const bool r = v[0] != '\0'; free(v); return r; }
+        return false;
+#else
+        v = getenv("STRATA_GRAMMAR_TIME");
+        return v && v[0] != '\0';
+#endif
+    }();
+    return on;
+}
+
+double grammar_ms(const std::chrono::steady_clock::time_point& t0) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
 // #3862: the device rows the grammar masks live in, in three bands.  Rows [0, kVerifyMaxT) are the
 // solo window's (row 0 the current state's mask, 1.. the drafted rows' chain); rows
 // [kVerifyMaxT, kVerifyMaxT + slots) are the batch slots' base masks (slot b at kVerifyMaxT + b);
@@ -3192,6 +3220,9 @@ struct GrammarRing {
     uint32_t* d = nullptr;
     int words = 0;
     int chain_base = 0;
+    // #3862 perf: bumped whenever the band is (re)allocated, so a mask the old band held is never
+    // assumed to be on the device now (see upload_slot_mask below)
+    unsigned long long epoch = 0;
     bool ensure(int row_words, int slots, std::string& err) {
         if (d && words >= row_words) return true;
         if (d) cudaFree(d);
@@ -3201,12 +3232,32 @@ struct GrammarRing {
         const size_t bytes = (size_t) rows * (size_t) row_words * sizeof(uint32_t);
         if (cudaMalloc((void**) &d, bytes) != cudaSuccess) { d = nullptr; err = "grammar: out of device memory"; return false; }
         words = row_words;
+        ++epoch;
         return true;
     }
     uint32_t* row(int r) const { return d + (size_t) r * (size_t) words; }             // the solo band
     uint32_t* slot_row(int b) const { return row(strata::kernels::kVerifyMaxT + b); }  // a batch slot's base mask
     uint32_t* chain_row(int t) const { return row(chain_base + t); }                   // a draft row's chain mask
 };
+
+// #3862 perf: most tokens of a grammar reply leave the mask byte-identical - the reasoning region's
+// exclusion automaton repeats the same state token after token - and re-sending a mask the device row
+// already holds costs a synchronising H2D copy on the window's critical path (measured: ~0.3 ms of
+// every 8 ms window, and a bubble around each copy).  Compare the staged mask with what the row was
+// last given and skip the copy when they match; the ring's epoch makes a reallocated band upload once.
+// Returns false only when the copy fails, so every existing error path stays as it was.
+bool upload_slot_mask(uint32_t* row, unsigned long long epoch, strata::grammar::SlotGrammar& sg) {
+    const size_t n = sg.mask.size();
+    if (sg.on_device_epoch == epoch && sg.on_device.size() == n && n != 0 &&
+        std::memcmp(sg.on_device.data(), sg.mask.data(), n * sizeof(uint32_t)) == 0) {
+        ++g_gram_time.skips;
+        return true;
+    }
+    if (cudaMemcpy(row, sg.mask.data(), n * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    sg.on_device = sg.mask;
+    sg.on_device_epoch = epoch;
+    return true;
+}
 
 // #3862: one-time accept of the env-gated grammar mask trace (STRATA_GRAMMAR_DEBUG=1): every accepted
 // token prints the mask it was sampled under - words, how many tokens stay open, the first open id.
@@ -14850,17 +14901,27 @@ int main(int argc, char** argv) {
                     const int b = active[a];
                     BSlot& sl = bs[(size_t) b];
                     if (!sl.grammar) continue;
+                    const auto gt_c0 = std::chrono::steady_clock::now();
                     std::shared_ptr<strata::grammar::grammar> scratch(
                         strata::grammar::grammar_clone(*sl.grammar->g),
                         [](strata::grammar::grammar* gp) { strata::grammar::grammar_free(gp); });
+                    g_gram_time.clone += grammar_ms(gt_c0);
+                    ++g_gram_time.clones;
                     std::vector<uint32_t> m;
-                    if (strata::grammar::grammar_chain_step(*sl.grammar, *scratch, tok[first[a] + 1], m)) {
+                    const auto gt_s0 = std::chrono::steady_clock::now();
+                    const bool g_stepped = strata::grammar::grammar_chain_step(*sl.grammar, *scratch, tok[first[a] + 1], m);
+                    g_gram_time.step += grammar_ms(gt_s0);
+                    ++g_gram_time.steps;
+                    if (g_stepped) {
+                        const auto gt_u0 = std::chrono::steady_clock::now();
                         if (cudaMemcpy(grammar_ring.chain_row(first[a] + 1), m.data(),
                                        (size_t) grammar_ring.words * sizeof(uint32_t),
                                        cudaMemcpyHostToDevice) != cudaSuccess) {
                             std::fprintf(stderr, "strata batch: grammar mask upload failed for slot %d\n", b);
                             return false;
                         }
+                        g_gram_time.upload += grammar_ms(gt_u0);
+                        ++g_gram_time.uploads;
                         row_gmask[first[a] + 1] = grammar_ring.chain_row(first[a] + 1);
                     }
                     // a refused draft stages nothing: the draft row keeps the slot's own mask, whose
@@ -14954,7 +15015,11 @@ int main(int argc, char** argv) {
                     // the slot (BDONE cancel) rather than spilling ungrammatical tokens.
                     if (sl.grammar) {
                         std::string g_err;
-                        if (!sl.grammar->advance(y, g_err)) {
+                        const auto gt_a0 = std::chrono::steady_clock::now();
+                        const bool g_ok = sl.grammar->advance(y, g_err);
+                        g_gram_time.advance += grammar_ms(gt_a0);
+                        ++g_gram_time.advances;
+                        if (!g_ok) {
                             const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
                             std::printf("BDONE %d %lld cancel %.1f\n", b, (long long) sl.produced, ms);
                             sl.active = false;
@@ -14963,11 +15028,13 @@ int main(int argc, char** argv) {
                             sl.grammar.reset();
                             break;
                         }
-                        if (cudaMemcpy(grammar_ring.slot_row(sl.grammar_mask_row), sl.grammar->mask.data(),
-                                       (size_t) grammar_ring.words * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+                        const auto gt_u0 = std::chrono::steady_clock::now();
+                        if (!upload_slot_mask(grammar_ring.slot_row(sl.grammar_mask_row), grammar_ring.epoch, *sl.grammar)) {
                             std::fprintf(stderr, "strata batch: grammar mask upload failed for slot %d\n", b);
                             return false;
                         }
+                        g_gram_time.upload += grammar_ms(gt_u0);
+                        ++g_gram_time.uploads;
                     }
                 }
 #if defined(STRATA_HAVE_DFLASH2)
@@ -15051,6 +15118,29 @@ int main(int argc, char** argv) {
             }
             strata::core::progress().busy.store(was_busy);
             report_batch_window(S, A, !batch_on(), w0);
+            if (grammar_time_on() && g_gram_time.advances + g_gram_time.steps > 0) {
+                // #3862 perf: the grammar work of the windows since the last line, next to the window's own ms/window
+                static std::chrono::steady_clock::time_point g_last = std::chrono::steady_clock::now();
+                static GrammarTime g_prev;
+                const auto g_now = std::chrono::steady_clock::now();
+                const double g_wall = grammar_ms(g_last);
+                if (g_wall >= 2000.0) {
+                    const double c = g_gram_time.clone - g_prev.clone, s = g_gram_time.step - g_prev.step;
+                    const double u = g_gram_time.upload - g_prev.upload, adv = g_gram_time.advance - g_prev.advance;
+                    const long long nc = g_gram_time.clones - g_prev.clones, ns = g_gram_time.steps - g_prev.steps;
+                    const long long nu = g_gram_time.uploads - g_prev.uploads, na = g_gram_time.advances - g_prev.advances;
+                    const long long nk = g_gram_time.skips - g_prev.skips;
+                    std::fprintf(stderr,
+                                 "strata batch grammar: %.1f s wall: clone %.1f ms (%lld), step %.1f ms (%lld rows, %.2f "
+                                 "ms/row), advance %.1f ms (%lld tokens, %.2f ms/token), mask upload %.1f ms (%lld, %.2f "
+                                 "ms each), skipped %lld = %.1f%% of the wall\n",
+                                 g_wall / 1000.0, c, nc, s, ns, ns ? s / (double) ns : 0.0, adv, na,
+                                 na ? adv / (double) na : 0.0, u, nu, nu ? u / (double) nu : 0.0, nk,
+                                 100.0 * (c + s + adv + u) / std::max(g_wall, 1e-9));
+                    g_last = g_now;
+                    g_prev = g_gram_time;
+                }
+            }
             pc.window(S, A);
             if (!batch_on() && bt_windows > 0) {
                 const double w = (double) bt_windows, wall = msd(bt_start, Clock::now());
@@ -15423,17 +15513,25 @@ int main(int argc, char** argv) {
                         sl.p += 1;
                         if (sl.grammar) {   // #3862: same hand-off as the plain batch path
                             std::string g_err;
-                            if (!sl.grammar->advance(y, g_err)) {
+                            const auto gt_a0 = std::chrono::steady_clock::now();
+                            const bool g_ok = sl.grammar->advance(y, g_err);
+                            g_gram_time.advance += grammar_ms(gt_a0);
+                            ++g_gram_time.advances;
+                            if (!g_ok) {
                                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
                                 std::printf("BDONE %d %lld cancel %.1f\n", gi * GS + t, (long long) sl.produced, ms);
                                 sl.active = false;
                                 sl.cached = false;
                                 sl.checks.clear();
                                 sl.grammar.reset();
-                            } else if (cudaMemcpy(grammar_ring.slot_row(sl.grammar_mask_row), sl.grammar->mask.data(),
-                                                  (size_t) grammar_ring.words * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
-                                std::fprintf(stderr, "strata batch: grammar mask upload failed for slot %d\n", gi * GS + t);
-                                return false;
+                            } else {
+                                const auto gt_u0 = std::chrono::steady_clock::now();
+                                if (!upload_slot_mask(grammar_ring.slot_row(sl.grammar_mask_row), grammar_ring.epoch, *sl.grammar)) {
+                                    std::fprintf(stderr, "strata batch: grammar mask upload failed for slot %d\n", gi * GS + t);
+                                    return false;
+                                }
+                                g_gram_time.upload += grammar_ms(gt_u0);
+                                ++g_gram_time.uploads;
                             }
                         }
                     }
@@ -18201,8 +18299,7 @@ int main(int argc, char** argv) {
                 }
                 req_sp.grammar_mask = grammar_ring.row(0);
                 req_sp.mask_stride_words = grammar_ring.words;
-                if (cudaMemcpy(grammar_ring.row(0), slot_grammar->mask.data(),
-                               (size_t) grammar_ring.words * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+                if (!upload_slot_mask(grammar_ring.row(0), grammar_ring.epoch, *slot_grammar)) {
                     std::printf("ERR grammar mask upload failed\n");
                     return 1;
                 }
@@ -18519,6 +18616,22 @@ int main(int argc, char** argv) {
             // #3862 phase 3 (STRATA_GRAMMAR_CHAIN_STATS=1): how often a drafted window broke the grammar chain, and at
             // which row - the ceiling a masked drafter can recover (gram_lost: rows discarded from the break on)
             int64_t gram_windows = 0, gram_short = 0, gram_lost = 0, gram_rows = 0, gram_break[9] = {};
+            // STRATA_GRAMMAR_TIME=1: where a grammar request's host time goes.  clone = the window's scratch
+            // clone, step = the chain's per-row accept + fold, upload = the 32 KB row copies to the device,
+            // advance = the per-token accept + fold after a window commits.  Timing only: every count here
+            // also rides the STRATA_GRAMMAR_CHAIN_STATS print, and nothing about the masks depends on it.
+            struct GrammarTime {
+                bool on = std::getenv("STRATA_GRAMMAR_TIME") != nullptr;
+                double clone_ms = 0, step_ms = 0, upload_ms = 0, advance_ms = 0, copy_ms = 0;
+                int64_t clones = 0, steps = 0, uploads = 0, advances = 0;
+                long long skips0 = 0;   // the mask uploads this request skipped (same as g_gram_time.skips delta)
+                size_t hits0 = 0, misses0 = 0;
+            } gt;
+            gt.skips0 = g_gram_time.skips;
+            if (slot_grammar) strata::grammar::grammar_mask_cache_counters(&gt.hits0, &gt.misses0);
+            const auto g_ms = [](const Clock::time_point& t0) {
+                return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            };
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
             int64_t dp_tested[8] = {}, dp_ok[8] = {};   // STRATA_SPEC_DEPTH=1: MTP drafts tested / accepted by depth
             std::vector<int32_t> cbuf((size_t) S, 0), ctail;
@@ -19579,23 +19692,33 @@ int main(int argc, char** argv) {
                 // at or before it, and every row from it on is discarded - their masks reuse the last
                 // good row's (copied on the device; never read for a token that goes out).
                 if (slot_grammar && T > 1) {
+                    const Clock::time_point gt_clone0 = Clock::now();
                     std::shared_ptr<strata::grammar::grammar> scratch(
                         strata::grammar::grammar_clone(*slot_grammar->g),
                         [](strata::grammar::grammar* gp) { strata::grammar::grammar_free(gp); });
+                    gt.clone_ms += g_ms(gt_clone0);
+                    ++gt.clones;
                     int chain_t = T;   // the first row the chain did not reach
                     for (int t = 1; t < T; ++t) {
                         std::vector<uint32_t> m;
-                        if (!strata::grammar::grammar_chain_step(*slot_grammar, *scratch, window[(size_t) t], m)) {
+                        const Clock::time_point gt_step0 = Clock::now();
+                        const bool stepped = strata::grammar::grammar_chain_step(*slot_grammar, *scratch, window[(size_t) t], m);
+                        gt.step_ms += g_ms(gt_step0);
+                        if (!stepped) {
                             chain_t = t;   // the draft is illegal here: rows t.. reuse the row before it
                             break;
                         }
+                        const Clock::time_point gt_up0 = Clock::now();
                         if (cudaMemcpy(grammar_ring.row(t), m.data(), (size_t) grammar_ring.words * sizeof(uint32_t),
                                        cudaMemcpyHostToDevice) != cudaSuccess) {
                             std::printf("ERR grammar mask upload failed\n");
                             return 1;
                         }
+                        gt.upload_ms += g_ms(gt_up0);
+                        ++gt.uploads;
                         if (grammar_debug_on()) std::fprintf(stderr, "gdbg draft t=%d tok=%d\n", t, (int) window[(size_t) t]);
                     }
+                    ++gt.steps;   // one chain walk per window, counted with the rows below
                     ++gram_windows;
                     gram_rows += T - 1;
                     if (chain_t < T) {   // a draft the grammar cannot take: rows chain_t.. are wasted
@@ -19603,6 +19726,7 @@ int main(int argc, char** argv) {
                         gram_lost += T - chain_t;
                         ++gram_break[std::min(chain_t, 8)];
                     }
+                    const Clock::time_point gt_copy0 = Clock::now();
                     for (int t = chain_t; t < T; ++t) {
                         if (cudaMemcpy(grammar_ring.row(t), grammar_ring.row(chain_t - 1),
                                        (size_t) grammar_ring.words * sizeof(uint32_t),
@@ -19611,6 +19735,7 @@ int main(int argc, char** argv) {
                             return 1;
                         }
                     }
+                    gt.copy_ms += g_ms(gt_copy0);
                 }
                 const Clock::time_point tw0 = Clock::now();
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
@@ -19738,17 +19863,21 @@ int main(int argc, char** argv) {
                     // ends the request (EOS is never pushed through the grammar: its stacks are empty).
                     if (slot_grammar && !eos) {
                         std::string g_err;
+                        const Clock::time_point gt_adv0 = Clock::now();
                         if (!slot_grammar->advance(outv[(size_t) i], g_err)) {
                             std::printf("ERR grammar: %s\n", g_err.c_str());   // the mask accepted an unacceptable token
                             eos = true;
                         } else {
+                            gt.advance_ms += g_ms(gt_adv0);
+                            ++gt.advances;
                             if (grammar_debug_on()) grammar_debug_mask(*slot_grammar, (int) outv[(size_t) i]);
-                            if (cudaMemcpy(grammar_ring.row(0), slot_grammar->mask.data(),
-                                           (size_t) grammar_ring.words * sizeof(uint32_t),
-                                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                            const Clock::time_point gt_up0 = Clock::now();
+                            if (!upload_slot_mask(grammar_ring.row(0), grammar_ring.epoch, *slot_grammar)) {
                                 std::printf("ERR grammar mask upload failed\n");
                                 eos = true;
                             }
+                            gt.upload_ms += g_ms(gt_up0);
+                            ++gt.uploads;
                         }
                     }
                 }
@@ -20121,8 +20250,7 @@ int main(int argc, char** argv) {
                     if (slot_grammar) {   // #3862: the batch slot inherits the grammar; its mask lives in its slot row
                         sl.grammar = slot_grammar;
                         sl.grammar_mask_row = admit_slot;
-                        if (cudaMemcpy(grammar_ring.slot_row(admit_slot), slot_grammar->mask.data(),
-                                       (size_t) grammar_ring.words * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+                        if (!upload_slot_mask(grammar_ring.slot_row(admit_slot), grammar_ring.epoch, *slot_grammar)) {
                             std::fprintf(stderr, "strata serve: batch admission: grammar mask upload failed\n");
                             sl.stop = true;
                         }
@@ -20411,6 +20539,20 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < 9; ++i)
                     if (gram_break[i] > 0) std::fprintf(stderr, " %d:%lld", i, (long long) gram_break[i]);
                 std::fprintf(stderr, "\n");
+            }
+            if (gt.on && (gt.advances + gt.steps + gt.clones) > 0) {
+                size_t g_hits_now = 0, g_misses_now = 0;
+                strata::grammar::grammar_mask_cache_counters(&g_hits_now, &g_misses_now);
+                const size_t g_hits = g_hits_now - gt.hits0;
+                const size_t g_misses = g_misses_now - gt.misses0;
+                std::fprintf(stderr, "strata serve: grammar time: %.1f ms clone (%lld), %.1f ms step (%lld rows, %.2f "
+                                     "ms/row), %.1f ms upload (%lld), %.1f ms advance (%lld tokens, %.2f ms/token), "
+                                     "%.1f ms row copies; mask rows built %zu, hit %zu, uploads skipped %lld\n",
+                             gt.clone_ms, (long long) gt.clones, gt.step_ms, (long long) gt.steps,
+                             gt.steps ? gt.step_ms / (double) gt.steps : 0.0, gt.upload_ms,
+                             (long long) gt.uploads, gt.advance_ms, (long long) gt.advances,
+                             gt.advances ? gt.advance_ms / (double) gt.advances : 0.0, gt.copy_ms,
+                             g_misses, g_hits, g_gram_time.skips - gt.skips0);
             }
             if (o.lookup_chain > 0)
                 std::fprintf(stderr, "strata serve: lookup chain: %lld of %lld windows, %lld of %lld chained drafts accepted\n",

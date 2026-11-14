@@ -137,5 +137,13 @@ private:
     std::map<key_t, std::list<std::pair<key_t, std::shared_ptr<std::vector<uint32_t>>>>::iterator> index_;
 };
 
+// Process-wide count of the rows a GrammarMaskCache answered from its LRU (a hit, one key compare)
+// and the rows it had to build (a miss, one reject fold over the whole vocabulary).  A miss is the
+// expensive one, so this pair is what tells a caller whether the per-window row cost is fold time or
+// key time.  Counters only: nothing about a mask depends on them.  They are free functions rather
+// than members on purpose: two size_t members change sizeof(GrammarMaskCache), and that layout change
+// alone makes grammar_test's Debug /RTC check report a stack corruption around `cache`.
+void grammar_mask_cache_counters(size_t* hits, size_t* misses);
+
 } // namespace grammar
 } // namespace strata

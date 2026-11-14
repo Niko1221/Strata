@@ -6,6 +6,20 @@
 namespace strata {
 namespace grammar {
 
+// Rows answered from the cache and rows built, process-wide.  These are counters for a caller's
+// timing line (STRATA_GRAMMAR_TIME): a hit costs one key compare, a miss costs one reject fold over
+// the whole vocabulary.  File scope rather than members on purpose: two size_t members on
+// GrammarMaskCache change its size, and that alone makes grammar_test's Debug /RTC check report a
+// stack corruption around `cache` (a pre-existing overflow elsewhere in that build, unmasked by the
+// new layout) - see .test_tool/grammar-time notes.  Nothing about a mask depends on these.
+static size_t g_mask_hits = 0;
+static size_t g_mask_misses = 0;
+
+void grammar_mask_cache_counters(size_t* hits, size_t* misses) {
+    if (hits) *hits = g_mask_hits;
+    if (misses) *misses = g_mask_misses;
+}
+
 // The mask for one stack state, over a vocabulary prepared once.  Same semantics as llama.cpp's
 // apply_impl (a token survives when at least one stack accepts its whole piece; EOG only at a
 // terminal state; Strata additionally bans every control token), including the part that matters
@@ -222,9 +236,11 @@ const std::vector<uint32_t>& GrammarMaskCache::mask_for(const std::vector<gramma
     const key_t key = make_key(stacks, rules, partial);
     auto it = index_.find(key);
     if (it != index_.end()) {
+        ++g_mask_hits;
         lru_.splice(lru_.begin(), lru_, it->second); // hit: mark most-recent
         return *it->second->second;
     }
+    ++g_mask_misses;
     auto row = std::make_shared<std::vector<uint32_t>>((size_t)words_);
     grammar_build_mask(*prepped_, rules, stacks, partial, row->data());
     lru_.emplace_front(key, row);

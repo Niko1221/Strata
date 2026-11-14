@@ -33,6 +33,14 @@ struct SlotGrammar {
     std::shared_ptr<const GrammarEntry> entry;
     std::shared_ptr<grammar> g;         // the clone; grammar_free deletes it
     std::vector<uint32_t> mask;         // the mask for g->stacks, staged for the engine
+    // #3862 perf: the mask the engine's device row for this grammar was last given, and the epoch of
+    // the ring it lives in.  A reply spends most of its tokens in a state whose mask repeats (the
+    // reasoning region's exclusion automaton), and re-sending an identical 32 KB row is a
+    // synchronising copy in the window's critical path.  The engine compares before it copies; the
+    // epoch (an opaque counter its ring bumps when the band is reallocated) makes a fresh band upload
+    // once.  Nothing outside the engine reads these two fields.
+    std::vector<uint32_t> on_device;
+    unsigned long long on_device_epoch = 0;
 
     explicit SlotGrammar(std::shared_ptr<const GrammarEntry> e);
 
