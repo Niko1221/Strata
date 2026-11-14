@@ -102,8 +102,26 @@ def real_model_file(path: Path) -> Path:
     return target
 
 
+
+def _rust_inspect_metadata(path: Path) -> dict | None:
+    import json, subprocess
+    exe_name = 'strata-gguf-preflight.exe' if os.name == 'nt' else 'strata-gguf-preflight'
+    candidates = [
+        os.environ.get('STRATA_GGUF_PREFLIGHT_BIN'),
+        str(Path(__file__).resolve().parent.parent / 'crates' / 'strata-gguf-preflight' / 'target' / 'release' / exe_name),
+    ]
+    exe = next((c for c in candidates if c and os.path.isfile(c)), None)
+    if exe is None:
+        return None
+    proc = subprocess.run([exe, str(path)], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ProfileError(proc.stderr.strip() or 'GGUF metadata could not be read', proc.returncode or 5)
+    return json.loads(proc.stdout)
+
 def inspect_metadata(path: Path) -> dict:
     """Return only bounded compatibility signals from one regular GGUF v3 shard (a link to one is followed)."""
+    if (rust_res := _rust_inspect_metadata(path)) is not None:
+        return rust_res
     try:
         path = real_model_file(Path(path))
         descriptor = os.open(path, os.O_RDONLY)
