@@ -772,7 +772,7 @@ Snapshots hold running state, checkpoints, used K/V pages and draft-layer K/V. T
 are evicted first. A new conversation that starts at a checkpoint inside a parked one (sub-agents that share a system prompt)
 restores that prefix and leaves the parked conversation in place (the log says "borrowed"). Oversized snapshots or host
 allocation failures fall back to ordinary prompt processing. With `--layer-split` a parked conversation holds one image per
-stage. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
+stage, and such a new conversation takes the parked one whole; `STRATA_SPLIT_BORROW=1` (opt-in) borrows there too. Parked snapshots are not kept across restarts; session files are. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables K/V
 retention for diagnostics. The Monitor tab's **Conversation cache** card shows parked, restored and evicted counts and the
 prompt tokens the cache gave back; `/metrics` has the same under `"conversation_cache"`.
 
