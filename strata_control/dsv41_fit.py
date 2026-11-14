@@ -19,10 +19,54 @@ setup.py, tools/strata_mcp.py and strata_cli/launch import it.  Recommend, never
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+import shutil
+import subprocess
 from strata_control import sysinfo
 import sys
 from typing import Any
+
+_RUST_BIN_CACHE: str | None | bool = False
+
+
+def _rust_dsv41_fit_bin() -> str | None:
+    global _RUST_BIN_CACHE
+    if os.environ.get("STRATA_NO_RUST_DSV41_FIT") == "1":
+        return None
+    if _RUST_BIN_CACHE is not False:
+        return _RUST_BIN_CACHE  # type: ignore[return-value]
+    exe = "strata-dsv41-fit.exe" if os.name == "nt" else "strata-dsv41-fit"
+    candidates = [
+        Path(__file__).resolve().parent.parent / "crates" / "strata-dsv41-fit" / "target" / "release" / exe,
+        Path(__file__).resolve().parent.parent / "crates" / "strata-dsv41-fit" / "target" / "debug" / exe,
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            _RUST_BIN_CACHE = str(cand)
+            return _RUST_BIN_CACHE
+    found = shutil.which(exe)
+    _RUST_BIN_CACHE = found
+    return found
+
+
+def _rust_split_layers(weights: list[float], layers: int) -> list[tuple[int, int]] | None:
+    exe = _rust_dsv41_fit_bin()
+    if not exe or not weights:
+        return None
+    arg = ",".join(repr(float(w)) for w in weights)
+    try:
+        res = subprocess.run([exe, "split-layers", arg, str(layers)], capture_output=True, text=True, timeout=10)
+    except OSError:
+        return None
+    if res.returncode != 0:
+        return None
+    try:
+        parsed = json.loads(res.stdout)
+        return [(int(a), int(b)) for a, b in parsed]
+    except (ValueError, TypeError):
+        return None
 
 from strata_control import gpu_fit
 
@@ -289,6 +333,9 @@ def _cap_gb(vram_gb: float) -> float:
 def split_layers(weights: list[float], layers: int = LAYERS) -> list[tuple[int, int]]:
     """The layer ranges (first, last) of consecutive cards, in proportion to `weights` (each card at least one layer).
     The engine balances its own split; on cards of one size this is what it picked (0-9, 10-19, 20-29, 30-39)."""
+    rust = _rust_split_layers(weights, layers)
+    if rust is not None:
+        return rust
     n = len(weights)
     if n <= 1:
         return [(0, layers - 1)]

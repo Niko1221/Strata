@@ -166,6 +166,7 @@ OTHER_PROGRAMS = {
     "serve/mcp.py": 2,                 # the person's MCP servers and taskkill
     "serve/telemetry.py": 2,           # sysctl, a Metal tool
     "strata_control/doctor.py": 1,
+    "strata_control/dsv41_fit.py": 1,          # strata-dsv41-fit
     "strata_control/engine_component.py": 4,   # nvidia-smi, powershell, lspci-style probes
     "strata_control/gpu_roles.py": 1,          # python -c
     "strata_control/procs.py": 3,              # ps, taskkill

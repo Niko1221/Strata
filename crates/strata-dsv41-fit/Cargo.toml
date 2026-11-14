@@ -1,0 +1,14 @@
+[package]
+name = "strata-dsv41-fit"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Opt-in DeepSeek-V4.1-Flash layer split and expert placement math"
+
+[lib]
+name = "strata_dsv41_fit"
+path = "src/lib.rs"
+
+[[bin]]
+name = "strata-dsv41-fit"
+path = "src/main.rs"
