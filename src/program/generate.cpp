@@ -1,4 +1,5 @@
 #include "strata/core/logit_bias.hpp"
+#include "strata/core/tool_name_constraint.hpp"
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -15855,6 +15856,8 @@ int main(int argc, char** argv) {
             long long req_pen_from = -1;   // pen_from=N: this request continues one that began at token N (the last token of the original prompt): the penalty window starts there
             std::string req_bias_text;
             bool req_bias_present = false;
+            std::string req_tnc_text;
+            bool req_tnc_present = false;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
             // logprobs=K (0..20): after each "T id" an "LP logprob id:logprob ..." line.
             // -1 (absent) = no LP lines, so a server that never asks sees today's output.
@@ -15900,6 +15903,7 @@ int main(int argc, char** argv) {
                     const std::string key = tok.substr(0, eq);
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
+                    else if (key == "tool_name_constraint") { req_tnc_text = tok.substr(eq + 1); req_tnc_present = true; }
                     else if (key == "pen_from") req_pen_from = std::atoll(tok.c_str() + eq + 1);
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
@@ -15952,6 +15956,12 @@ int main(int argc, char** argv) {
             std::string bias_error;
             if (req_bias_present && !strata::core::parse_logit_bias(req_bias_text, (int) n_vocab, req_bias, bias_error)) {
                 std::printf("ERR logit_bias: %s\n", bias_error.c_str());
+                continue;
+            }
+            strata::core::ToolNameConstraint req_tnc;
+            std::string tnc_error;
+            if (req_tnc_present && !strata::core::parse_tool_name_constraint(req_tnc_text, (int) n_vocab, req_tnc, tnc_error)) {
+                std::printf("ERR tool_name_constraint: %s\n", tnc_error.c_str());
                 continue;
             }
             std::string emb_path;
@@ -19260,6 +19270,27 @@ int main(int argc, char** argv) {
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
                     return 1;
                 }
+                // Tool-name constrained decoding (opt-in via the tool_name_constraint request key):
+                // while the reply is inside a <tool_call> envelope, past the <think> reasoning block,
+                // and writing a <function=NAME>, ban every token that cannot continue a declared name.
+                // The mask rides the logit_bias slot (sampler.cu applies `l[v] + bias[v]`), so a banned
+                // id is `-inf`.  `tnc_active` also forces single-token windows below, so a stale
+                // per-window mask never mis-constrains a drafted row (see tool_name_constraint.hpp).
+                const bool tnc_on = req_tnc.valid();
+                bool tnc_active = false;
+                if (tnc_on) {
+                    std::vector<float> tnc_mask = req_tnc.update(consumed.data() + pen_gen0,
+                                                                 (int64_t) (consumed.size() - pen_gen0), (int) n_vocab);
+                    tnc_active = !tnc_mask.empty();
+                    if (tnc_active) {   // combine with a request's own static logit_bias: -inf bans, else the static value
+                        for (size_t v = 0; v < tnc_mask.size(); ++v)
+                            tnc_mask[v] = std::isinf(tnc_mask[v]) ? -std::numeric_limits<float>::infinity()
+                                                                  : (req_bias.empty() ? 0.0f : req_bias[v]);
+                    } else {
+                        tnc_mask = req_bias;   // inactive: restore the request's static bias (or none)
+                    }
+                    if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                }
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
                 // STRATA_SPEC_PROB: the MTP drafts' distributions q, judged by rejection sampling (core/spec_prob.hpp);
@@ -19297,6 +19328,9 @@ int main(int argc, char** argv) {
                 }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                // Constrained tool names are decoded one token a round: a drafted row was sampled under
+                // row 0's (stale) mask, so it must never be committed.  Discard the drafts, keep row 0.
+                if (tnc_active && !merged) a = 0;
                 if (fol != nullptr && fol_lp != nullptr) {   // rows 0..a have valid logits (their inputs are the accepted tokens)
                     std::vector<int32_t> fol_tg((size_t) a + 1, -1);
                     for (int i = 0; i <= a; ++i) {

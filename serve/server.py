@@ -85,6 +85,7 @@ from serve import ready as ready_file  # noqa: E402
 from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
+from serve import tool_name_constraint as tnc_api  # noqa: E402
 from serve import lifeline  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
@@ -1730,6 +1731,9 @@ class StrataEngine:
             if ids:
                 # only these ids are printed; the engine's comma-separated list, renormalised below
                 keys += " allowed=" + ",".join(str(i) for i in ids)
+        tnc = sampling.get("_tool_name_constraint")          # built in Service._run from the declared tools
+        if isinstance(tnc, str) and tnc:
+            keys += " tool_name_constraint=" + tnc
         return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
 
     @staticmethod
@@ -6372,9 +6376,17 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = self.parser_cls(thinking=thinking, tools=with_history_tools(tools, sampling), stream_tools=True,
+        history_tools = with_history_tools(tools, sampling)
+        parser = self.parser_cls(thinking=thinking, tools=history_tools, stream_tools=True,
                                  recover=self.tool_call_recovery, declared_only=declared_only,
                                  deferred=deferred or self.undeclared_tool_calls == "call")   # #4622: opt-in, as for a deferred tool
+        # Engine-side constrained tool-name decoding (opt-in, per request): only the names the request
+        # declared (as the parser sees them) may follow <function= inside a <tool_call>.  Off when tools
+        # are deferred (the declared set is incomplete) or none are declared; absent the engine pays nothing.
+        if history_tools and not (deferred or self.undeclared_tool_calls == "call"):
+            tnc = tnc_api.build(self.tok, [t.get("name") for t in history_tools if isinstance(t, dict)], thinking)
+            if tnc:
+                sampling = {**(sampling or {}), "_tool_name_constraint": tnc}
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
