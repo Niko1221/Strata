@@ -27,8 +27,6 @@
 // logits.  Python wrote the manifest and already parses it correctly.
 #pragma once
 
-#include "strata/core/shard.hpp"
-
 #include <cstdint>
 #include <map>
 #include <set>
@@ -119,8 +117,7 @@ public:
     /// than halfway through a 5 GB upload.
     /// With `skip`, the size of the compacted arena that holds every tensor EXCEPT the named ones.
     static bool pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                           const std::set<std::string>* skip = nullptr,
-                           const ShardPlan* shard = nullptr);
+                           const std::set<std::string>* skip = nullptr);
 
     /// The `code_bits` field of one row of `<pack_dir>/index.txt`, readable WITHOUT loading anything (0 = the
     /// pack stores the tensor unquantized, e.g. a --compat-bf16 key; -1 = no such row).  #326: the loader has
@@ -135,7 +132,7 @@ public:
     /// With `skip`, the named tensors are not read: their rows keep their metadata with `data == nullptr` and
     /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
-              const std::set<std::string>* skip = nullptr, const ShardPlan* shard = nullptr);
+              const std::set<std::string>* skip = nullptr);
 
     /// A SKIPPED bf16 tensor's values read back from the pack file (the promoted-f32 and the raw 16-bit forms), for
     /// the host-side Q8_0 quantizer of STRATA_HC_Q8 (the tensor then has no copy in the arena).
@@ -150,15 +147,9 @@ public:
     static void hc_q8_names(int64_t n_layers, std::set<std::string>& out);
     const std::map<std::string, WeightRef>& all() const { return table_; }
     const LoadReport& report() const { return report_; }
-    /// The shard plan this table was loaded with (null on a single-card load).  `LayerView` reads it so a
-    /// contraction split knows this rank's slice without threading the plan through every layer signature.
-    /// The table keeps its OWN copy: a caller's plan is often a local that ends with the load call.
-    const ShardPlan* shard() const { return has_shard_ ? &shard_ : nullptr; }
 
 private:
     friend class NativeDense;
-    ShardPlan shard_;
-    bool has_shard_ = false;
     std::map<std::string, WeightRef> table_;
     LoadReport report_;
     std::string pack_dir_;

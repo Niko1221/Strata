@@ -16,7 +16,6 @@
 #pragma once
 
 #include "strata/core/geometry.hpp"
-#include "strata/core/shard.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/kernels/qsa.hpp"
 
@@ -47,39 +46,15 @@ inline strata::kernels::QsaShapes qsa_shapes(const ModelGeometry& g) {
 /// Holds a reference to the table; the table must outlive it.
 class LayerView {
 public:
-    /// `shard` is this rank's split table when the model was loaded tensor-parallel; null (the default) is the
-    /// single-card case, where every tensor is the whole tensor.
-    LayerView(const WeightTable& table, int64_t layer, const ShardPlan* shard = nullptr)
-        : table_(&table), layer_(layer), shard_(shard ? shard : table.shard()) {}
+    LayerView(const WeightTable& table, int64_t layer) : table_(&table), layer_(layer) {}
 
     int64_t layer() const { return layer_; }
     std::string name(const char* suffix) const;
     const WeightRef* get(const char* suffix) const { return table_->find(name(suffix)); }
-    /// This rank's ranges of a tensor, or null when there is no table or no entry for it.  The layer code
-    /// needs it to place its OUTPUT inside the full-width buffer: an `Output` split means this rank computes
-    /// rows [begin, end) of the full feature axis, so it passes `y + begin` and `end - begin` to the kernel.
-    const TensorShard* shard_of(const char* suffix) const {
-        if (shard_ == nullptr) return nullptr;
-        const auto it = shard_->find(name(suffix));
-        return it == shard_->end() ? nullptr : &it->second;
-    }
-    /// This rank's part of a tensor's OUTPUT axis, for a kernel that writes into a full-width buffer: pass
-    /// `y + begin` and `count` rows.  `full` is the UNSPLIT extent of that axis.  False when the split is not
-    /// one contiguous slice - the GDN `q|k|v` is three ranges - which the caller has to handle itself rather
-    /// than being handed the first range.
-    bool out_slice(const char* suffix, int64_t full, int64_t& begin, int64_t& count) const {
-        return shard_slice(shard_of(suffix), ShardAxis::Output, full, begin, count);
-    }
-    /// The same for the contraction axis: which part of the `full` columns this rank's copy covers, which is
-    /// what a partial-sum kernel reads.
-    bool k_slice(const char* suffix, int64_t full, int64_t& begin, int64_t& count) const {
-        return shard_slice(shard_of(suffix), ShardAxis::Input, full, begin, count);
-    }
 
 private:
     const WeightTable* table_;
     int64_t layer_;
-    const ShardPlan* shard_ = nullptr;
 };
 
 /// Every shape the kernels depend on, asserted for ONE layer.  Returns false and fills `err` with the first
@@ -88,16 +63,10 @@ private:
 /// This is deliberately a separate function from `LayerView`: a caller that only wants the pointers should
 /// not pay for the checks, and a caller that wants the checks should get ALL of them rather than the ones
 /// its own call site happens to touch.
-///
-/// With `shard`, the expected shape is the SHARDED one (`shard_shape`), so a tensor-parallel load is checked
-/// against what this rank should hold rather than against the full model - which is the only way this check
-/// stays useful under TP, where every split tensor is legitimately "the wrong shape".
-bool check_layer(const WeightTable& table, const ModelGeometry& g, int64_t layer, std::string& err,
-                 const ShardTable* shard = nullptr);
+bool check_layer(const WeightTable& table, const ModelGeometry& g, int64_t layer, std::string& err);
 
 /// `check_layer` over every layer, plus the cross-layer properties: exactly 12 QSA layers at the right
 /// indices, every GDN layer having the GDN set and no QSA tensor, and vice versa.  Returns the first failure.
-bool check_all(const WeightTable& table, const ModelGeometry& g, std::string& err,
-               const ShardTable* shard = nullptr);
+bool check_all(const WeightTable& table, const ModelGeometry& g, std::string& err);
 
 }  // namespace strata::core
