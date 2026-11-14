@@ -60,6 +60,10 @@ struct PinnedArena {
     uint64_t registered_bytes = 0;
     uint64_t slice_bytes = 0;
     int registered_slices = 0;
+    /// SYCL port, Windows: bytes from `base` imported for host-to-device copies (sycl_ext_oneapi_copy_optimize), so a
+    /// copy from the arena DMAs straight from it instead of through the stager's pinned buffers.  Kernels may not read
+    /// this memory, so it is kept apart from `registered_bytes`, which also hands out device aliases.  0: not imported.
+    uint64_t copy_registered_bytes = 0;
 
     PinnedArena() = default;
     /// `slice`: the piece size for the per-slice registration fallback (0 = none).

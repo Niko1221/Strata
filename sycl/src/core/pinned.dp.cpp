@@ -320,19 +320,7 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
-    int dev = 0;
-    cudaDeviceProp p{};
-    uint64_t budget = 0, usage = 0;
-    std::string err = "no CUDA device properties";
-    if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-        strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
-        limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
-        std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
-                      (double) budget / GiB, (double) usage / GiB);
-        why = buf;
-        return true;
-    }
-    (void) cudaGetLastError();
+    std::string err = "SYCL does not expose a DXGI adapter LUID";
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
@@ -368,6 +356,33 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
         mapping_base = base;
         mapping_bytes = bytes;
     }
+
+#ifdef _WIN32
+    // VirtualAlloc memory is not SYCL USM, even when VirtualLock succeeds.
+    if (base) {
+        note = "pageable SYCL arena; use --stream-experts for a USM mirror; " + note;
+        const char* env = std::getenv("STRATA_ARENA_LOCK");
+        if (backing != PageBacking::LargePages && (!env || std::string(env) != "0")) {
+            const auto lr = strata::platform::lock_resident(base, bytes);
+            locked_bytes = lr.locked_bytes;
+            note = lr.note + "; " + note;
+        }
+        // Without this every expert the prompt streams is first memcpy'd into a stager buffer: ~6 GB/s on an Arc Pro B60
+        // against 15-23 GB/s straight from the imported arena (4 GiB of 2 MiB blobs, driver 32.0.101.8976).
+        // STRATA_ARENA_COPY_REGISTER=0 keeps the stager path.
+        const char* reg = std::getenv("STRATA_ARENA_COPY_REGISTER");
+        if (!reg || std::string(reg) != "0") {
+            try {
+                sycl::ext::oneapi::experimental::prepare_for_device_copy(base, bytes, dpct::get_in_order_queue());
+                copy_registered_bytes = bytes;
+                note = "imported for device copies; " + note;
+            } catch (const sycl::exception& e) {
+                note = std::string("import for device copies refused (") + e.what() + "), copies go through the stager; " + note;
+            }
+        }
+    }
+    return;
+#endif
 
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
@@ -522,6 +537,11 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, De
 }
 
 void PinnedArena::register_slices(std::atomic<int> &ready) try {
+#ifdef _WIN32
+    note = "pageable SYCL arena; no host registration; " + note;
+    ready.store(INT_MAX, std::memory_order_release);
+    return;
+#endif
     const int n = (int) bounds_.size() - 1;
     int i = 0;
     for (; base != nullptr && i < n; ++i) {
@@ -568,6 +588,14 @@ catch (sycl::exception const &exc) {
 
 PinnedArena::~PinnedArena() {
     if (base) {
+        if (copy_registered_bytes) {
+            try {
+                sycl::ext::oneapi::experimental::release_from_device_copy(base, dpct::get_in_order_queue());
+            } catch (const sycl::exception&) {
+                // the process is releasing the arena either way; a failed release leaves nothing to undo
+            }
+            copy_registered_bytes = 0;
+        }
         if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
         if (slice_bytes) {
             /*

@@ -1,4 +1,4 @@
-// include/strata/core/gguf_expert_source.hpp - the SYCL port: experts read from the GGUF on demand, no host arena.
+﻿// include/strata/core/gguf_expert_source.hpp - the SYCL port: experts read from the GGUF on demand, no host arena.
 //
 // **WHY.** `ArenaExpertSource` keeps every expert as a resident host copy (R2.1): 23.4 GiB for the Coder, which
 // the CPU pool computes misses from. On a card that holds every expert (12,288 slots on a 32 GB Arc) nothing is
@@ -15,6 +15,7 @@
 #pragma once
 
 #include "strata/core/expert_source.hpp"
+#include "strata/positioned_file.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -57,11 +58,11 @@ public:
     uint64_t mirrored_bytes() const { return mirror_bytes_; }
 
 private:
-    int fd_of(int64_t layer, int role, std::string& err);
+    platform::PositionedHandle fd_of(int64_t layer, int role, std::string& err);
 
     std::string shard_;
     std::string dir_;
-    std::vector<int> fds_;              ///< per distinct file name, opened once
+    std::vector<platform::PositionedHandle> fds_;          ///< per distinct file name, opened once
     std::vector<std::string> names_;
     std::vector<int> layer_fd_;         ///< per layer and role (3 * layer + role): index into fds_
     std::vector<std::vector<uint8_t>> ring_;
@@ -79,3 +80,4 @@ private:
 };
 
 }  // namespace strata::core
+

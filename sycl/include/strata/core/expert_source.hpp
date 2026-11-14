@@ -142,6 +142,9 @@ public:
     /// Plan v0.3 P5: whether `blob(layer, expert)` lies in page-locked, CUDA-registered memory, so an
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
     virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// SYCL port: whether `blob(layer, expert)` lies in memory imported for host-to-device copies, so a copy can DMA it
+    /// directly.  Unlike `pinned`, it promises nothing to kernels: no device alias comes with it.
+    virtual bool copy_ready(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
 
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
@@ -729,6 +732,7 @@ public:
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     int64_t reads() const { return reads_; }
     bool pinned(int64_t layer, int64_t expert) const override;
+    bool copy_ready(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     void prefetch(int64_t layer, int64_t expert) override;
     uint64_t release(int64_t layer, int64_t expert) override;
@@ -752,6 +756,7 @@ private:
     uint64_t map_bytes_ = 0;
     std::vector<const uint8_t*> dev_slice_;   ///< device alias of each registered slice (or of the whole range)
     uint64_t slice_bytes_ = 0;
+    uint64_t copy_ready_bytes_ = 0;           ///< the arena's prefix imported for device copies (PinnedArena::copy_registered_bytes)
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
     int64_t n_expert_ = 0;

@@ -1,4 +1,4 @@
-"""Which OS and backend combinations the project commits to, and what this machine is.
+﻿"""Which OS and backend combinations the project commits to, and what this machine is.
 
 Pure and tiny on purpose: the engine resolver on the start path (engine_component.py) needs these answers, and the
 start path must not import the component fetcher (components.py) to get them.
@@ -19,7 +19,7 @@ class ComponentError(RuntimeError):
         self.code = code
 
 
-#: The OS × backend families the handoff commits to. A component may only be activated where its
+#: The OS Ã— backend families the handoff commits to. A component may only be activated where its
 #: family is listed here, so an unqualified combination is refused rather than attempted: the packet
 #: is explicit that Windows SYCL and Intel Macs are not supported rather than merely untested.
 BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
@@ -55,5 +55,6 @@ def backend_supported(backend: str, target: str | None = None) -> tuple[bool, st
         return True, ""
     return False, (f"{backend} is not a supported combination on {target}; it is supported on "
                    f"{', '.join(platforms)}. Unsupported combinations are not attempted.")
+
 
 

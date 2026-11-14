@@ -246,6 +246,20 @@ def other_gpus() -> tuple[list[dict], str | None]:
             driver = next((c.get("driver") for c in found if c.get("driver")), None)
         except Exception:                               # noqa: BLE001 - a report without the card's name is still a report
             pass
+        if not cards:
+            # an Intel card on Windows (the SYCL port): the registry knows it too, and a desktop lists its integrated
+            # adapter beside the dedicated one, so the 2 GiB-or-more entries win as they do for AMD above
+            try:
+                if str(ROOT) not in sys.path:
+                    sys.path.insert(0, str(ROOT))
+                from serve.telemetry import windows_display_adapters
+                found = windows_display_adapters("intel")
+                found = [c for c in found if (c.get("vram_bytes") or 0) >= 2 << 30] or found[:1]
+                cards = [{"device_index": i, "name": c["name"], "memory_bytes": c.get("vram_bytes") or None,
+                          "memory_kind": "dedicated", "power_limit_w": None} for i, c in enumerate(found)]
+                driver = next((c.get("driver") for c in found if c.get("driver")), None)
+            except Exception:                           # noqa: BLE001
+                pass
     elif os.name != "nt" and sys.platform != "darwin":      # (a Mac has no AMD card to ask for; its chip is read below)
         # ROCm 7 and newer ship amd-smi and no rocm-smi (verified on ROCm 10.1). Different grammar: `static --asic`
         # gives the marketing name, `static --driver` the kernel driver's version, and the PCI address only comes

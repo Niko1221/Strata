@@ -908,6 +908,47 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_ARENA_COPY_REGISTER",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/core/pinned.dp.cpp",
+     "line": 372,
+     "backend": "sycl",
+     "fn": "getenv"
+    },
+    {
+     "file": "sycl/src/core/pinned.dp.cpp",
+     "line": 373,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INTEL_ARC.md:339"
+   ],
+   "first_commit": "2974e104",
+   "first_date": "2026-11-13",
+   "since": null,
+   "last_commit": "2974e104",
+   "last_date": "2026-11-13",
+   "status": "default",
+   "owner": "core",
+   "note": "Windows SYCL: import the locked host arena for device copies (sycl_ext_oneapi_copy_optimize) so the prompt path DMAs experts instead of staging them; 0 keeps the stager path, and a refused import falls back with a note (Harshkamdar67, #3607).",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_ARENA_FALLBACK_RESIDENT",
    "backends": [
     "cuda-hip"
@@ -38386,6 +38427,42 @@
    "status": "research",
    "owner": "prefill",
    "note": "[auto] off unless set, not documented for users",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
+   "name": "STRATA_SYCL_ALLOW_NO_GRAPH_ASPECT",
+   "backends": [
+    "sycl"
+   ],
+   "reads": [
+    {
+     "file": "sycl/src/program/generate.cpp",
+     "line": 2194,
+     "backend": "sycl",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "flag",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/INTEL_ARC.md:327",
+    "docs/INTEL_ARC.md:406"
+   ],
+   "first_commit": "ddd1406015",
+   "first_date": "2026-11-08",
+   "since": null,
+   "last_commit": "ddd1406015",
+   "last_date": "2026-11-08",
+   "status": "opt-in",
+   "owner": "program",
+   "note": "An Alchemist does not advertise ext_oneapi_graph but runs command graphs, so 1 lets the engine use the card anyway; setup writes it for an A-series card (shenef, #3607).",
    "retire_after": "",
    "retired_in": ""
   },
