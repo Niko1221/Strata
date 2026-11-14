@@ -3295,13 +3295,18 @@ class Vision:
         self.cpu_note = None                            # why, in words for the person (strata_control/reader_room.py), when the card had no room
         self.proc = None
         self.stopped = True
-        self.lock = threading.Lock()
+        # Encoding and process lifecycle share this lock: CPU /tokenize may run beside engine generation, while
+        # unload/restart must not close or replace the reader pipe under an active encode.
+        self.lock = threading.RLock()
         self.cache: dict[str, tuple[Path, int]] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
         self.max_tokens = self.token_limit(cfg)
         self.elastic = cfg.get("elastic") is True
+        # A resident CPU reader has its own serialized encoder process and never changes GPU memory.
+        # GPU and elastic readers must still take the engine turn before encoding or changing residency.
+        self.requires_engine_turn = bool(cfg.get("gpu")) or self.elastic
         self.elastic_mib = int(cfg.get("elastic_mib") or 2048)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
@@ -3523,14 +3528,15 @@ class Vision:
 
     def restart(self):
         """Start the encoder again after an unload (or if it died); the cache of encoded images is kept."""
-        if self.proc is not None:
-            try:
-                self.proc.kill()
-            except OSError:
-                pass
-        self.proc = None
-        self.stopped = True
-        self._start()
+        with self.lock:
+            if self.proc is not None:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
+            self.proc = None
+            self.stopped = True
+            self._start()
 
     @staticmethod
     def load(source: str) -> bytes:
@@ -3674,30 +3680,32 @@ class Vision:
                   "tokens' from the reader's log with the report", flush=True)
 
     def close(self):
-        proc, self.proc = self.proc, None
-        if proc is None:
-            self.stopped = True
-            return
-        try:
-            proc.stdin.write("QUIT\n")
-            proc.stdin.flush()
-            proc.wait(timeout=10)
-        except Exception:
+        with self.lock:
+            proc, self.proc = self.proc, None
+            if proc is None:
+                self.stopped = True
+                return
             try:
-                proc.kill()
-            except OSError:
-                pass
-            try:
+                proc.stdin.write("QUIT\n")
+                proc.stdin.flush()
                 proc.wait(timeout=10)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-        self.stopped = True
+            except Exception:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            self.stopped = True
 
     def shutdown(self):
         """#914: close() for good: the server ends, so the encoder's directory (one ~10 MB .sve per image, on a tmpfs
         /tmp that is RAM) goes with it instead of piling up with every start.  unload() keeps it for the restart."""
-        self.close()
-        shutil.rmtree(self.dir, ignore_errors=True)
+        with self.lock:
+            self.close()
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 def gpu_list(cfg: dict) -> list[int]:
@@ -5922,7 +5930,7 @@ class Service:
             return src
         return [fetch(src) for src in images]
 
-    def expand_image_tokens(self, images, ids, cancel=None, fetched=None):
+    def expand_image_tokens(self, images, ids, cancel=None, fetched=None, count_only=False):
         """-> (ids, encoded).  The rendered prompt's ids with each image placeholder replaced by the run of image
         tokens its picture takes - the prompt a request's answer would read.  `encoded`: the encoder's
         (embeddings file, token count) pairs, which prepare() combines into the GENI file.  Shared by `prepare()`
@@ -5946,14 +5954,28 @@ class Service:
         # run on the GPU at the same time - an encode during a running request left that request stuck at
         # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
         # same FIFO as the requests.
-        with self._turn(cancel):
-            if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
-                self._vision_up()
-            try:
-                encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                           else [self.vision.encode(src) for src in images])
-            finally:
-                self.last_image_at = time.time()
+        encoded = None
+        # A cached CPU image count only needs the rows already in the reader cache. It can answer while the engine
+        # is generating, without touching the encoder process or its cache files. Keep the cache lock across the
+        # lookup and read so an engine turn cannot evict a path between them. New images and every generation request
+        # retain the FIFO turn, which also protects generation's temporary embedding inputs from cache eviction.
+        if count_only and not getattr(self.vision, "requires_engine_turn", True):
+            lock = getattr(self.vision, "lock", None)
+            cached = getattr(self.vision, "all_cached", None)
+            if lock is not None and cached is not None:
+                with lock:
+                    if cached(images):
+                        encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                                   else [self.vision.encode(src) for src in images])
+        if encoded is None:
+            with self._turn(cancel):
+                if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
+                    self._vision_up()
+                try:
+                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                               else [self.vision.encode(src) for src in images])
+                finally:
+                    self.last_image_at = time.time()
         # one placeholder per image -> one per image token.  Only the markers the template writes for an image
         # (right after the vision start) are images: the same text inside a message (an agent reading these docs,
         # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
@@ -8997,13 +9019,23 @@ def make_handler(svc: Service):
                     raise ValueError("prompt: a text")
                 ids = svc.tok.encode(prompt, parse_special=True)
             else:
+                # Match the OpenAI route's effective request settings. In particular, shared/config reasoning
+                # defaults change the rendered prompt, and a forced tool call with thinking disabled is written
+                # into the prompt before generation. Counting either request without these transformations gives
+                # clients a prompt length different from the one the engine reads.
+                req = svc.with_shared(req, "openai")
                 messages, tools, kw = openai_to_messages(req)
                 require_messages(messages)
+                if tool_choice_of(req.get("tool_choice"))[0] == "none":
+                    tools = None
+                force = svc.force_text(forced_call(req.get("tool_choice"), tools))
                 kw["add_generation_prompt"] = bool(req.get("add_generation_prompt", True))
                 ids = svc.encode_prompt(messages, tools, kw, store=False)
+                if force and kw.get("enable_thinking", True) is False:
+                    ids = ids + svc.tok.encode(force, parse_special=True)
                 images = images_of(messages)
                 if images:
-                    ids, _ = svc.expand_image_tokens(images, ids)
+                    ids, _ = svc.expand_image_tokens(images, ids, count_only=True)
             self._json(200, {"count": len(ids), "tokens": ids,
                              "max_model_len": svc.reported_ctx(), "token_strs": None})
 

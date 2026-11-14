@@ -99,6 +99,38 @@ class MaxTokens(unittest.TestCase):
         self.assertEqual(s2, 200)
         self.assertEqual(b["input_tokens"], n_in)
 
+    def test_tokenize_matches_chat_with_disabled_thinking_and_required_tool(self):
+        # The generation route writes the forced Qwen call prefix into the prompt when thinking is off.
+        # /tokenize must include those exact tokens so Semantic Router admission matches engine usage.
+        body = {"model": "m", "messages": [{"role": "user", "content": "read this"}],
+                "tools": [{"type": "function", "function": {"name": "lookup", "description": "look up",
+                                                              "parameters": {"type": "object", "properties": {}}}}],
+                "tool_choice": "required", "chat_template_kwargs": {"enable_thinking": False},
+                "max_tokens": 8}
+        status, counted = self.post("/tokenize", body)
+        self.assertEqual(status, 200, counted)
+        status, generated = self.post("/v1/chat/completions", body)
+        self.assertEqual(status, 200, generated)
+        self.assertEqual(counted["count"], generated["usage"]["prompt_tokens"])
+        status, counted_after = self.post("/tokenize", body)
+        self.assertEqual(status, 200, counted_after)
+        self.assertEqual(counted_after["count"], counted["count"])
+
+    def test_tokenize_honors_the_same_shared_effort_default_as_chat(self):
+        previous = self.svc.shared, self.svc.config_effort
+        try:
+            self.svc.shared = {}
+            self.svc.config_effort = "low"
+            body = {"model": "m", "messages": [{"role": "user", "content": "think carefully"}],
+                    "max_tokens": 8}
+            status, counted = self.post("/tokenize", body)
+            self.assertEqual(status, 200, counted)
+            status, generated = self.post("/v1/chat/completions", body)
+            self.assertEqual(status, 200, generated)
+            self.assertEqual(counted["count"], generated["usage"]["prompt_tokens"])
+        finally:
+            self.svc.shared, self.svc.config_effort = previous
+
     def test_request_line_parses_the_engine_summary(self):
         line = ("strata serve: prompt 1200 tokens = 1000 reused + 200 read in 50 ms (4000.0 tok/s), 30 generated in "
                 "300 ms (100.0 tok/s), drafts accepted 20 of 28, 2 checkpoints")
@@ -749,6 +781,73 @@ class TokenizeEndpoint(unittest.TestCase):
         s2, b2 = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}], "tools": [tool]})
         self.assertEqual(s2, 200, b2)
         self.assertGreater(b2["count"], b["count"])        # the tool's schema is part of the prompt
+
+    def test_cpu_image_count_does_not_wait_for_a_generation_turn(self):
+        self.svc.vision.requires_engine_turn = False
+        self.svc.vision.lock = threading.RLock()
+        self.svc.vision.all_cached = lambda images: True
+        finished = threading.Event()
+        result = []
+        messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
+        def count():
+            result.append(self.post("/tokenize", {"messages": messages}))
+            finished.set()
+        self.svc.fifo.acquire()
+        worker = threading.Thread(target=count)
+        try:
+            worker.start()
+            self.assertTrue(finished.wait(2), "resident CPU image tokenization must not queue behind GPU generation")
+        finally:
+            self.svc.fifo.release()
+            worker.join(5)
+            del self.svc.vision.requires_engine_turn
+            del self.svc.vision.lock
+            del self.svc.vision.all_cached
+        self.assertEqual(result[0][0], 200, result)
+
+    def test_gpu_image_count_keeps_the_generation_turn_guard(self):
+        self.svc.vision.requires_engine_turn = True
+        finished = threading.Event()
+        result = []
+        messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
+        def count():
+            result.append(self.post("/tokenize", {"messages": messages}))
+            finished.set()
+        self.svc.fifo.acquire()
+        worker = threading.Thread(target=count)
+        try:
+            worker.start()
+            self.assertFalse(finished.wait(0.1), "GPU image encoding must remain serialized with generation")
+        finally:
+            self.svc.fifo.release()
+            worker.join(5)
+            del self.svc.vision.requires_engine_turn
+        self.assertTrue(finished.is_set())
+        self.assertEqual(result[0][0], 200, result)
+
+    def test_cpu_image_cache_miss_keeps_the_generation_turn_guard(self):
+        self.svc.vision.requires_engine_turn = False
+        self.svc.vision.lock = threading.RLock()
+        self.svc.vision.all_cached = lambda images: False
+        finished = threading.Event()
+        result = []
+        messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]
+        def count():
+            result.append(self.post("/tokenize", {"messages": messages}))
+            finished.set()
+        self.svc.fifo.acquire()
+        worker = threading.Thread(target=count)
+        try:
+            worker.start()
+            self.assertFalse(finished.wait(0.1), "an uncached CPU image must keep the generation turn guard")
+        finally:
+            self.svc.fifo.release()
+            worker.join(5)
+            del self.svc.vision.requires_engine_turn
+            del self.svc.vision.lock
+            del self.svc.vision.all_cached
+        self.assertTrue(finished.is_set())
+        self.assertEqual(result[0][0], 200, result)
 
     def test_extraneous_fields_are_ignored(self):
         # the adapter sends the whole chat completion request: the sampling fields are ignored, not a 400
@@ -6327,6 +6426,36 @@ class LazyVision(unittest.TestCase):
 class VisionShutdown(unittest.TestCase):
     """#914: ending the server removes the encoder's scratch directory; unloading keeps it."""
 
+    def test_reader_lifecycle_waits_for_an_inflight_cpu_encode(self):
+        import serve.server as server
+
+        for operation in ("close", "restart"):
+            with self.subTest(operation=operation):
+                v = server.Vision.__new__(server.Vision)
+                v.lock = threading.RLock()
+                v.proc = None
+                v.stopped = True
+                attempting = threading.Event()
+                restarted = threading.Event()
+                finished = threading.Event()
+                if operation == "restart":
+                    v._start = restarted.set
+
+                def lifecycle():
+                    attempting.set()
+                    getattr(v, operation)()
+                    finished.set()
+
+                worker = threading.Thread(target=lifecycle)
+                with v.lock:
+                    worker.start()
+                    self.assertTrue(attempting.wait(2))
+                    self.assertFalse(finished.wait(0.1), f"{operation} must wait for the reader lock")
+                worker.join(2)
+                self.assertTrue(finished.is_set())
+                if operation == "restart":
+                    self.assertTrue(restarted.is_set())
+
     def test_shutdown_removes_the_work_dir_but_close_keeps_it(self):
         import serve.server as server
         with tempfile.TemporaryDirectory() as t:
@@ -6335,6 +6464,7 @@ class VisionShutdown(unittest.TestCase):
             (d / "k.sve").write_bytes(b"x")
             v = server.Vision.__new__(server.Vision)
             v.dir = d
+            v.lock = threading.RLock()
 
             class Proc:
                 stdin = io.StringIO()
