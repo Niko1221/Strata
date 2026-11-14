@@ -596,6 +596,37 @@ int main() {
         auto mixed = conversation_checkpoints_split(std::vector<ConversationCheckpoint>(original), 2);
         mixed.parts[0][0].ids = {9, 9};
         check(!conversation_checkpoints_merge(std::move(mixed), back) && back.empty(), "a part of another checkpoint is refused");
+        {   // a layer-split borrow: copies of the parked image's checkpoints up to the match, the image untouched
+            SavedConversation image;
+            auto parted = conversation_checkpoints_split(std::vector<ConversationCheckpoint>(original), 2);
+            image.checkpoints = std::move(parted.stage0);            // {1,2} and {1,2,3,4}
+            image.stage_images.resize(2);
+            for (size_t k = 0; k < 2; ++k) image.stage_images[k].checkpoints = std::move(parted.parts[k]);
+            const SavedConversation before = image;
+            std::vector<ConversationCheckpoint> got;
+            auto all = [](const ConversationCheckpoint&) { return true; };
+            check(conversation_checkpoints_borrow(image, 2, all, got) && got.size() == 1 && got[0].ids == original[0].ids &&
+                  got[0].gdn == original[0].gdn && got[0].stage_parts.size() == 2 &&
+                  got[0].stage_parts[0].gdn == original[0].stage_parts[0].gdn &&
+                  got[0].stage_parts[1].gdn == original[0].stage_parts[1].gdn,
+                  "borrow: the checkpoint at the match comes over with every stage's part");
+            check(got[0].gdn.data() != image.checkpoints[0].gdn.data() && image.checkpoints.size() == 2 &&
+                  image.checkpoints[1].gdn == before.checkpoints[1].gdn &&
+                  image.stage_images[1].checkpoints[1].gdn == before.stage_images[1].checkpoints[1].gdn,
+                  "borrow copies: the parked image keeps all its checkpoints");
+            check(conversation_checkpoints_borrow(image, 4, all, got) && got.size() == 2 && got[1].ids == original[2].ids &&
+                  got[1].stage_parts[1].gdn == original[2].stage_parts[1].gdn, "borrow: every checkpoint up to the match");
+            check(!conversation_checkpoints_borrow(image, 3, all, got) && got.empty(), "borrow: no checkpoint at the match is refused");
+            auto none = [](const ConversationCheckpoint& c) { return c.ids.size() != 2; };
+            check(conversation_checkpoints_borrow(image, 4, none, got) && got.size() == 1 && got[0].ids == original[2].ids,
+                  "borrow: a checkpoint off the prompt's path stays behind");
+            SavedConversation short_stage = image;
+            short_stage.stage_images[1].checkpoints.pop_back();
+            check(!conversation_checkpoints_borrow(short_stage, 2, all, got) && got.empty(), "borrow: a stage short of a part is refused");
+            SavedConversation other = image;
+            other.stage_images[0].checkpoints[0].ids = {9, 9};
+            check(!conversation_checkpoints_borrow(other, 2, all, got) && got.empty(), "borrow: a part of another checkpoint is refused");
+        }
         // a restored image: stage 0's checkpoints and each stage's, with no record of an incomplete one
         ConversationCheckpointSplit restored;
         restored.stage0.push_back(running({4, 5}, 11, 0));
