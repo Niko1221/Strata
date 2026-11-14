@@ -1,0 +1,9 @@
+[package]
+name = "strata-winproc"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+description = "Windows file-lock, process-identity, and atomic replace primitives for Strata."
+
+[dependencies]
