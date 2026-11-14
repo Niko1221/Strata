@@ -31,6 +31,21 @@ bool vmm_segment_unmap(uintptr_t va, uint64_t bytes, VmmChunk handle);
 VmmChunk vmm_chunk_new();
 void vmm_chunk_free(VmmChunk h);
 
+/// HIP only: checked owning-device scope. Negative device and other backends are no-ops.
+class VmmDeviceGuard {
+public:
+    explicit VmmDeviceGuard(int device);
+    ~VmmDeviceGuard();
+    VmmDeviceGuard(const VmmDeviceGuard&) = delete;
+    VmmDeviceGuard& operator=(const VmmDeviceGuard&) = delete;
+    bool ok() const { return ok_; }
+    bool enter();
+    bool finish(bool result);
+private:
+    int device_ = -1, previous_ = -1;
+    bool ok_ = true;
+};
+
 class VmmRange {
 public:
     VmmRange() = default;
@@ -59,29 +74,37 @@ private:
     /// chunk counts as mapped without access.
     bool commit_run(int64_t lo, int64_t hi);
     unsigned long long base_ = 0;
+    int device_ = -1;          // HIP range owner; captured by reserve, never taken from a later current device
+    uint64_t gran_ = 0;
     std::vector<VmmChunk> h_;   // per chunk: its physical chunk, 0 = unmapped
 };
 
 template <class Take> bool VmmRange::map_range(int64_t lo, int64_t hi, Take take) {
+    VmmDeviceGuard on(device_);
+    if (!on.ok()) return false;
     lo = lo < 0 ? 0 : lo;
     hi = hi > chunks() ? chunks() : hi;
     int64_t run = -1;   // access is set once per run of newly mapped chunks (it costs as much as the map)
     for (int64_t i = lo; i < hi; ++i) {
         if (mapped(i)) {
-            if (run >= 0 && !commit_run(run, i)) return false;
+            if (run >= 0 && !commit_run(run, i)) return on.finish(false);
             run = -1;
             continue;
         }
         VmmChunk h = take();
+        if (!on.enter()) {
+            if (h != 0) vmm_chunk_free(h);
+            return on.finish(false);
+        }
         if (h == 0) h = vmm_chunk_new();
         if (h == 0 || !map_one(i, h)) {
             if (h != 0) vmm_chunk_free(h);
             if (run >= 0) commit_run(run, i);
-            return false;
+            return on.finish(false);
         }
         if (run < 0) run = i;
     }
-    return run < 0 || commit_run(run, hi);
+    return on.finish(run < 0 || commit_run(run, hi));
 }
 
 }  // namespace strata::core

@@ -239,6 +239,23 @@ hipMemAllocationProp device_prop(int dev) {
 
 hipMemGenericAllocationHandle_t handle_of(VmmChunk h) { return (hipMemGenericAllocationHandle_t) (uintptr_t) h; }
 
+// Only chunks created here may be lent between Strata ranges. Keep their actual creation context,
+// rather than trusting HIP's allocation-property device (some runtimes report the requested device).
+struct ChunkOwner { int device; uint64_t bytes; };
+std::map<VmmChunk, ChunkOwner>& chunk_owners() {
+    static auto& owners = *new std::map<VmmChunk, ChunkOwner>;
+    return owners;
+}
+std::mutex& chunk_mutex() { static auto& mu = *new std::mutex; return mu; }
+bool chunk_owner(VmmChunk h, ChunkOwner& owner) {
+    std::lock_guard<std::mutex> lock(chunk_mutex());
+    const auto it = chunk_owners().find(h);
+    if (it == chunk_owners().end()) return false;
+    owner = it->second;
+    return true;
+}
+bool p_release(VmmChunk h);
+
 bool p_reserve(uint64_t bytes, uintptr_t& va) {
     void* p = nullptr;
     if (hipMemAddressReserve(&p, (size_t) bytes, 0, nullptr, 0) != hipSuccess) return failed();
@@ -251,14 +268,35 @@ void p_address_free(uintptr_t va, uint64_t bytes) {
 }
 
 bool p_create(int dev, uint64_t bytes, VmmChunk& h) {
+    VmmDeviceGuard on(dev);
+    if (!on.ok()) return false;
     const hipMemAllocationProp prop = device_prop(dev);
     hipMemGenericAllocationHandle_t x{};
     if (hipMemCreate(&x, (size_t) bytes, &prop, 0) != hipSuccess) return failed();
     h = (VmmChunk) (uintptr_t) x;
-    return true;
+    {
+        std::lock_guard<std::mutex> lock(chunk_mutex());
+        chunk_owners().emplace(h, ChunkOwner{dev, bytes});
+    }
+    if (on.finish(true)) return true;
+    p_release(h);
+    h = 0;
+    return false;
 }
 
-bool p_release(VmmChunk h) { return hipMemRelease(handle_of(h)) == hipSuccess || failed(); }
+bool p_release(VmmChunk h) {
+    ChunkOwner owner{};
+    if (!chunk_owner(h, owner)) return false;
+    VmmDeviceGuard on(owner.device);
+    if (!on.ok() || hipMemRelease(handle_of(h)) != hipSuccess) return failed();
+    {
+        std::lock_guard<std::mutex> lock(chunk_mutex());
+        chunk_owners().erase(h);
+    }
+    // The handle is already released. Do not make a caller retry it if restoring the context fails.
+    (void) on.finish(true);
+    return true;
+}
 
 bool p_map(uintptr_t va, uint64_t bytes, VmmChunk h) {
     return hipMemMap((void*) va, (size_t) bytes, 0, handle_of(h), 0) == hipSuccess || failed();
@@ -441,36 +479,45 @@ uint64_t vmm_granularity() { return api().ok ? api().gran : 0; }
 
 VmmChunk vmm_chunk_new() {
     const Api& a = api();
-    if (!a.ok) return 0;
-    const hipMemAllocationProp prop = alloc_prop(a.dev);
-    hipMemGenericAllocationHandle_t h = nullptr;
-    if (const hipError_t e = hipMemCreate(&h, (size_t) a.gran, &prop, 0); e != hipSuccess) { fail("hipMemCreate", e); return 0; }
-    return (VmmChunk) (uintptr_t) h;
+    VmmChunk h = 0;
+    return a.ok && p_create(a.dev, a.gran, h) ? h : 0;
 }
 
 void vmm_chunk_free(VmmChunk h) {
-    if (h != 0 && api().ok) (void) hipMemRelease((hipMemGenericAllocationHandle_t) (uintptr_t) h);
+    if (h != 0 && !p_release(h))
+        std::fprintf(stderr, "strata: HIP virtual memory: could not release an owned chunk\n");
 }
 
 bool VmmRange::reserve(uint64_t bytes) {
     release();
+    if (base_ != 0) return false; // failed owner entry/unmap: do not orphan the existing range
     const Api& a = api();
     if (!a.ok || bytes == 0) return false;
     const uint64_t n = (bytes + a.gran - 1) / a.gran;
     void* p = nullptr;
-    if (const hipError_t e = hipMemAddressReserve(&p, (size_t) (n * a.gran), 0, nullptr, 0); e != hipSuccess) { fail("hipMemAddressReserve", e); return false; }
+    if (const hipError_t e = hipMemAddressReserve(&p, (size_t) (n * a.gran), 0, nullptr, 0);
+        e != hipSuccess) { fail("hipMemAddressReserve", e); return false; }
     base_ = (unsigned long long) (uintptr_t) p;
+    device_ = a.dev;
+    gran_ = a.gran;
     h_.assign((size_t) n, 0);
     return true;
 }
 
 void VmmRange::release() {
     if (base_ == 0) return;
-    const Api& a = api();
+    VmmDeviceGuard on(device_);
+    if (!on.ok()) return;
     for (int64_t i = 0; i < chunks(); ++i) vmm_chunk_free(unmap(i));
-    (void) hipMemAddressFree((void*) (uintptr_t) base_, (size_t) ((uint64_t) h_.size() * a.gran));
+    if (mapped_count() != 0) return; // an unmap failed; keep the reservation for a later cleanup attempt
+    if (const hipError_t e = hipMemAddressFree((void*) (uintptr_t) base_,
+                                               (size_t) ((uint64_t) h_.size() * gran_));
+        e != hipSuccess) { fail("hipMemAddressFree", e); return; }
     base_ = 0;
     h_.clear();
+    gran_ = 0;
+    device_ = -1;
+    (void) on.finish(true);
 }
 
 int64_t VmmRange::mapped_count() const {
@@ -480,29 +527,21 @@ int64_t VmmRange::mapped_count() const {
 }
 
 bool VmmRange::map_one(int64_t i, VmmChunk h) {
-    const Api& a = api();
-    if (const hipError_t e = hipMemMap((void*) (uintptr_t) (base_ + (uint64_t) i * a.gran), (size_t) a.gran, 0,
-                                      (hipMemGenericAllocationHandle_t) (uintptr_t) h, 0);
-        e != hipSuccess) {
-        fail("hipMemMap", e);
+    ChunkOwner owner{};
+    if (!chunk_owner(h, owner) || owner.device != device_ || owner.bytes != gran_) {
+        std::fprintf(stderr, "strata: HIP virtual memory: a range refused a foreign or wrong-sized chunk\n");
         return false;
     }
+    if (const hipError_t e = hipMemMap((void*) (uintptr_t) (base_ + (uint64_t) i * gran_), (size_t) gran_, 0,
+                                      handle_of(h), 0);
+        e != hipSuccess) { fail("hipMemMap", e); return false; }
     h_[(size_t) i] = h;
     return true;
 }
 
 bool VmmRange::set_access(int64_t lo, int64_t hi) {
     if (hi <= lo) return true;
-    const Api& a = api();
-    hipMemAccessDesc d{};
-    d.location.type = hipMemLocationTypeDevice;
-    d.location.id = a.dev;
-    d.flags = hipMemAccessFlagsProtReadWrite;
-    const hipError_t e = hipMemSetAccess((void*) (uintptr_t) (base_ + (uint64_t) lo * a.gran), (size_t) ((uint64_t) (hi - lo) * a.gran),
-                                         &d, 1);
-    const bool ok = e == hipSuccess;
-    if (!ok) fail("hipMemSetAccess", e);
-    return ok;
+    return p_access(device_, (uintptr_t) base_ + (uint64_t) lo * gran_, (uint64_t) (hi - lo) * gran_);
 }
 
 bool VmmRange::commit_run(int64_t lo, int64_t hi) {
@@ -513,10 +552,13 @@ bool VmmRange::commit_run(int64_t lo, int64_t hi) {
 
 VmmChunk VmmRange::unmap(int64_t i) {
     if (!mapped(i)) return 0;
-    const Api& a = api();
+    VmmDeviceGuard on(device_);
+    if (!on.ok()) return 0;
     const VmmChunk h = h_[(size_t) i];
-    if (hipMemUnmap((void*) (uintptr_t) (base_ + (uint64_t) i * a.gran), (size_t) a.gran) != hipSuccess) { (void) hipGetLastError(); return 0; }
+    if (!p_unmap((uintptr_t) base_ + (uint64_t) i * gran_, gran_)) return 0;
     h_[(size_t) i] = 0;
+    // The detached handle remains tracked, so it can be freed or lent under its own device.
+    (void) on.finish(true);
     return h;
 }
 
@@ -566,3 +608,50 @@ bool vmm_segment_unmap(uintptr_t, uint64_t, VmmChunk) { return false; }
 
 #endif
 #endif
+
+
+namespace strata::core {
+VmmDeviceGuard::VmmDeviceGuard(int device) : device_(device) {
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+    if (device_ >= 0) {
+        if (hipGetDevice(&previous_) != hipSuccess) { (void) hipGetLastError(); ok_ = false; }
+        else ok_ = enter();
+    }
+#endif
+}
+
+bool VmmDeviceGuard::enter() {
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+    if (!ok_) return false;
+    if (device_ >= 0) {
+        int current = -1;
+        if (hipGetDevice(&current) != hipSuccess ||
+            (current != device_ && hipSetDevice(device_) != hipSuccess)) {
+            (void) hipGetLastError();
+            std::fprintf(stderr, "strata: HIP virtual memory: cannot enter device %d\n", device_);
+            ok_ = false;
+            return false;
+        }
+    }
+#endif
+    return ok_;
+}
+
+bool VmmDeviceGuard::finish(bool result) {
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906) && defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+    if (previous_ >= 0) {
+        int current = -1;
+        if (hipGetDevice(&current) != hipSuccess ||
+            (current != previous_ && hipSetDevice(previous_) != hipSuccess)) {
+            (void) hipGetLastError();
+            std::fprintf(stderr, "strata: HIP virtual memory: cannot restore device %d\n", previous_);
+            return false;
+        }
+        previous_ = -1;
+    }
+#endif
+    return result && ok_;
+}
+
+VmmDeviceGuard::~VmmDeviceGuard() { (void) finish(false); }
+} // namespace strata::core

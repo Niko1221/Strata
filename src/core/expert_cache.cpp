@@ -313,6 +313,14 @@ ExpertCache::~ExpertCache() { close(); }
 // unless a segment size was set.
 
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
+#if defined(STRATA_USE_HIP) && !defined(STRATA_HIP_GFX906)
+    if (cudaGetDevice(&seg_device_) != cudaSuccess) {
+        err = "cannot read the segmented cache's owning device";
+        return false;
+    }
+#endif
+    VmmDeviceGuard on(seg_device_);
+    if (!on.ok()) { err = "cannot enter the segmented cache's owning device"; return false; }
     if (!vmm_device_supported()) {
         err = "ExpertCache: --vram-elastic needs the driver's virtual memory management: " + vmm_off_reason();
         return false;
@@ -347,6 +355,7 @@ bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
         }
         mapped_segs_ = (int64_t) i + 1;
     }
+    if (!on.finish(true)) { err = "cannot restore the caller's device after cache open"; return false; }
     return true;
 }
 
@@ -357,6 +366,7 @@ void ExpertCache::release_segmented() {
         if (segs_[i] != 0)
             vmm_segment_unmap(va + (uintptr_t) ((uint64_t) i * (uint64_t) seg_), (uint64_t) seg_size_[i], segs_[i]);
     if (base_ != nullptr && reserved_ > 0) vmm_address_free(va, (uint64_t) reserved_);
+    seg_device_ = -1;
     segs_.clear();
     seg_size_.clear();
     mapped_segs_ = 0;
@@ -384,9 +394,11 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
         err = "the expert cache is not segmented (the engine needs --vram-elastic)";
         return false;
     }
+    VmmDeviceGuard on(seg_device_);
+    if (!on.ok()) { err = "cannot enter the segmented cache's owning device"; return false; }
     int64_t keep = 0, at = 0;   // the segments [0, keep) hold the first keep_bytes
     while (keep < (int64_t) segs_.size() && at < keep_bytes) at += seg_size_[(size_t) keep++];
-    if (keep >= mapped_segs_) return true;
+    if (keep >= mapped_segs_) return on.finish(true);
     if (cudaDeviceSynchronize() != cudaSuccess) {
         err = std::string("the device failed before the cache shrank: ") + cudaGetErrorString(cudaGetLastError());
         return false;
@@ -403,6 +415,7 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
         mapped_segs_ = i;
     }
     live_slots_ = slots_within(mapped_bytes());
+    if (!on.finish(true)) { err = "cannot restore the caller's device after cache resize"; return false; }
     return true;
 }
 
@@ -411,6 +424,8 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
         err = "the expert cache is not segmented (the engine needs --vram-elastic)";
         return false;
     }
+    VmmDeviceGuard on(seg_device_);
+    if (!on.ok()) { err = "cannot enter the segmented cache's owning device"; return false; }
     const uintptr_t va = reinterpret_cast<uintptr_t>(base_);
     int64_t at = mapped_bytes();
     while (mapped_segs_ < (int64_t) segs_.size() && at + seg_size_[(size_t) mapped_segs_] <= want_bytes) {
@@ -425,6 +440,7 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
         ++mapped_segs_;
     }
     live_slots_ = slots_within(mapped_bytes());
+    if (!on.finish(true)) { err = "cannot restore the caller's device after cache resize"; return false; }
     return true;
 }
 
@@ -453,6 +469,7 @@ void ExpertCache::set_vmm(bool enabled) { g_cache_vmm = enabled; }
 bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
                        std::string& err) {
     close();
+    if (base_ != nullptr) { err = "cannot close the cache on its owning device"; return false; }
     if (n_slots <= 0) {
         err = "ExpertCache: n_slots must be positive";
         return false;
@@ -583,6 +600,8 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 }
 
 void ExpertCache::close() {
+    VmmDeviceGuard on(seg_device_);
+    if (!on.ok()) return; // keep the cache intact when its owning device cannot be entered
 #if defined(STRATA_USE_HIP)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = nullptr;
