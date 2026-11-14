@@ -963,6 +963,36 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(journal.list_runs("local")), count)
         self.assertEqual(runtime.status("local")["instance_id"], started["instance_id"])
 
+    def test_system_status_answers_the_swap_question_with_engine_state_only(self):
+        started = runtime.start("local", wait=60)
+        self.assertTrue(started["ok"])
+        running = runtime.status("local")
+        self.assertEqual(running["state"], "ready")
+        answer = runtime.system_status("local")
+        self.assertTrue(answer["ok"], answer)
+        # the whole answer is engine state - no hardware figures, which come from nvidia-smi and /proc
+        self.assertEqual(set(answer), {"ok", "profile", "state", "profile_revision",
+                                      "instance_id", "model_state", "api_url"})
+        self.assertEqual(answer["state"], "ready")
+        self.assertEqual(answer["instance_id"], running["instance_id"])
+        self.assertEqual(answer["profile_revision"], running["profile_revision"])
+        self.assertIsNotNone(answer["api_url"])
+        code, cli = self._cli("system-status", "--profile", "local")
+        self.assertEqual((code, cli["ok"]), (0, True))
+        self.assertEqual(cli["instance_id"], started["instance_id"])
+        command = [sys.executable, "-m", "strata_control.management"]
+        request = {"schema_version": 1, "action": "runtime.system_status",
+                   "profile": "local", "params": {}}
+        completed = subprocess.run(command, input=json.dumps(request), text=True, capture_output=True,
+                                   cwd=Path(__file__).resolve().parents[2], env=os.environ.copy(), timeout=15)
+        protocol = json.loads(completed.stdout)
+        self.assertEqual((completed.returncode, protocol["ok"]), (0, True))
+        self.assertEqual(protocol["instance_id"], started["instance_id"])
+        self.assertTrue(runtime.stop("local", timeout=12)["ok"])
+        stopped = runtime.system_status("local")
+        self.assertEqual((stopped["ok"], stopped["state"]), (True, "stopped"))
+        self.assertIsNone(stopped["instance_id"])
+
     def test_editable_recipe_previews_and_reruns_owned_instance(self):
         recipes.initialize("local")
         started = runtime.start("local", wait=60, shutdown_timeout=2)

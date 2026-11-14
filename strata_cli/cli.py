@@ -214,6 +214,11 @@ def parser() -> argparse.ArgumentParser:
     runtime_status = runtime_sp.add_parser("status", help="inspect an owned local instance")
     runtime_status.add_argument("--profile", required=True)
     runtime_status.add_argument("--output", choices=("human", "json"), default="human")
+    runtime_system_status = runtime_sp.add_parser(
+        "system-status", help="the engine-state answer a swap gate needs (state, model, instance, address) from "
+                              "the owner host - owner-only; the hardware figures come from the OS directly")
+    runtime_system_status.add_argument("--profile", required=True)
+    runtime_system_status.add_argument("--output", choices=("human", "json"), default="human")
     runtime_verify = runtime_sp.add_parser("verify", help="recheck the owned API and one-token generation")
     runtime_verify.add_argument("--profile", required=True)
     runtime_verify.add_argument("--wait", type=float, default=300)
@@ -1351,7 +1356,7 @@ def _runtime(a: argparse.Namespace) -> int:
                    if result["unverifiable"] else ""))
         return 0 if result["ok"] else result["exit_code"]
     result = management.runtime_action(
-        a.runtime_command, a.profile, plan=getattr(a, "plan", False),
+        a.runtime_command.replace("-", "_"), a.profile, plan=getattr(a, "plan", False),
         die_with_pid=getattr(a, "die_with_pid", None),
         wait=getattr(a, "wait", 300),
         shutdown_timeout=getattr(a, "shutdown_timeout", 30),

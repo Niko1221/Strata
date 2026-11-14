@@ -55,6 +55,7 @@ _ACTIONS = {
     "runtime.start.plan": {"shutdown_timeout_s"},
     "runtime.start": {"wait_s", "shutdown_timeout_s", "if_profile_revision", "if_source_sha256"},
     "runtime.status": set(),
+    "runtime.system_status": set(),
     "runtime.verify.plan": {"load"},
     "runtime.verify": {"wait_s", "load", "if_owner_id", "if_instance_id"},
     "runtime.stop.plan": set(),
@@ -235,6 +236,10 @@ def runtime_action(action: str, profile: str, *, plan: bool = False,
         if plan:
             raise ProfileError("status has no plan")
         return runtime.status(profile)
+    elif action == "system_status":
+        if plan:
+            raise ProfileError("system_status has no plan")
+        return runtime.system_status(profile)
     elif action == "verify":
         load = _boolean(load, "load")
         if_owner_id = _optional_identity(if_owner_id, "if_owner_id")
@@ -538,6 +543,8 @@ def dispatch(request: object) -> dict:
                                 if_source_sha256=params["if_source_sha256"])
     elif action == "runtime.status":
         result = runtime_action("status", profile)
+    elif action == "runtime.system_status":
+        result = runtime_action("system_status", profile)
     elif action == "runtime.verify.plan":
         result = runtime_action("verify", profile, plan=True, load=params["load"])
     elif action == "runtime.verify":

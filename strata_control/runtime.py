@@ -468,6 +468,27 @@ def status(name: str) -> dict:
     return _rpc(name, "status")
 
 
+def system_status(name: str) -> dict:
+    """The engine's answer to "is a swap safe right now?": state, model_state, instance_id, api_url and the profile
+    revision, and nothing else. The management protocol reports the engine; the OS reports the hardware - nvidia-smi
+    and /proc are direct and world-readable, and re-reporting them here would give clients two sources, one worse.
+    Owner-gated: the answer comes from the owner host over its token authorisation, and that token lives in the
+    owner-private state file, so a process of another UID cannot ask (unlike the control surface, which is not gated)."""
+    state = _read_state(name)
+    if state is None:
+        return {"ok": True, "profile": name, "state": "stopped", "profile_revision": None,
+                "instance_id": None, "model_state": None, "api_url": None}
+    try:
+        active = _host_lease_active(name)
+    except FileNotFoundError:
+        return {"ok": True, "profile": name, "state": "stopped", "profile_revision": None,
+                "instance_id": None, "model_state": None, "api_url": None}
+    if not active:
+        return {"ok": False, "profile": name, "state": "stale", "error": "owner_host_lost",
+                "next_action": "runtime start will recover after the owned child exits", "exit_code": 6}
+    return _rpc(name, "system_status")
+
+
 def _start_candidate(name: str) -> tuple[dict, str]:
     from strata_cli.cli import _launch_plan
     plan, _ = _launch_plan(name)
@@ -1298,6 +1319,22 @@ class Host:
         command = request.get("command")
         if command == "status":
             return self._status()
+        if command == "system_status":
+            current = self._status()
+            api_url = current.get("api_url")
+            if api_url is None and self.ready_path is not None:
+                # the ready file carries the address from the moment the server writes it, ahead of the
+                # first-token probe; it is only trusted while it names this very instance
+                try:
+                    ready = json.loads(self.ready_path.read_text(encoding="utf-8"))
+                    if isinstance(ready, dict) and ready.get("instance_id") == current.get("instance_id"):
+                        api_url = ready.get("api_url")
+                except (OSError, ValueError):
+                    pass
+            return {"ok": current.get("ok", True), "profile": self.name, "state": current["state"],
+                    "profile_revision": current.get("profile_revision"),
+                    "instance_id": current.get("instance_id"), "model_state": current.get("model_state"),
+                    "api_url": api_url}
         if command == "verify":
             timeout, force_load = request.get("wait", 300), request.get("load", False)
             if type(timeout) not in (int, float) or not 1 <= timeout <= 600 or type(force_load) is not bool:
