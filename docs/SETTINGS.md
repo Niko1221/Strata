@@ -10,7 +10,7 @@ debugging and are kept in `data/settings-register.json`.
 A number or a word is set like any environment variable, for example `STRATA_KVA=1`. In the Terminal, `strata launch --set NAME=value`
 puts it in the model's run configuration.
 
-## Switches you can turn on (280)
+## Switches you can turn on (283)
 
 Off unless you set them. The last column says where each one is described.
 
@@ -221,7 +221,9 @@ Off unless you set them. The last column says where each one is described.
 | `STRATA_PREFILL_EQUAL` | on / off | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |
 | `STRATA_PREFILL_FIRST` | number | Intel Arc | [INTEL.md](INTEL.md) |
 | `STRATA_PREFILL_HELP` | number | NVIDIA and AMD, Intel Arc | [BATCHING.md](BATCHING.md), [GYRO.md](GYRO.md), [MULTI_GPU.md](MULTI_GPU.md) |
+| `STRATA_PREFILL_HELP_FIRST` | number | NVIDIA and AMD | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_PREFILL_HELP_FRAC` | number | NVIDIA and AMD, Intel Arc | [MULTI_GPU.md](MULTI_GPU.md) |
+| `STRATA_PREFILL_HELP_LAST` | number | NVIDIA and AMD | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_PREFILL_HELP_P2P` | number | NVIDIA and AMD | [MULTI_GPU.md](MULTI_GPU.md) |
 | `STRATA_PREFILL_HOST_PLAN` | on / off | NVIDIA and AMD | [DETAILS.md](DETAILS.md), [release-notes-0.2.0.md](release-notes-0.2.0.md) |
 | `STRATA_PREFILL_ISSUER` | number | NVIDIA and AMD, Intel Arc | [DETAILS.md](DETAILS.md) |

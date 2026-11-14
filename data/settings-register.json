@@ -29640,6 +29640,36 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PREFILL_HELP_FIRST",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 2457,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:148"
+   ],
+   "status": "opt-in",
+   "owner": "prefill",
+   "note": "[reviewed] Documented multi-GPU option: the layer split's prompt help also for the first stage's first chunk of a multi-chunk prompt. [docs/MULTI_GPU.md]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PREFILL_HELP_FRAC",
    "backends": [
     "cuda-hip",
@@ -29682,6 +29712,36 @@
    "retired_in": ""
   },
   {
+   "name": "STRATA_PREFILL_HELP_LAST",
+   "backends": [
+    "cuda-hip"
+   ],
+   "reads": [
+    {
+     "file": "src/prefill/prefill.cpp",
+     "line": 2450,
+     "backend": "cuda-hip",
+     "fn": "getenv"
+    }
+   ],
+   "parse": "int",
+   "default_state": null,
+   "code_default": null,
+   "engine_sets": [],
+   "engine_defaults": [],
+   "launch_files": [],
+   "launch_sets": [],
+   "launch_reads": [],
+   "doc_mentions": [
+    "docs/MULTI_GPU.md:148"
+   ],
+   "status": "opt-in",
+   "owner": "prefill",
+   "note": "[reviewed] Documented multi-GPU option: the layer split's prompt help also for the last stage's last chunk of a multi-chunk prompt. [docs/MULTI_GPU.md]",
+   "retire_after": "",
+   "retired_in": ""
+  },
+  {
    "name": "STRATA_PREFILL_HELP_P2P",
    "backends": [
     "cuda-hip"
@@ -29689,7 +29749,7 @@
    "reads": [
     {
      "file": "src/prefill/prefill.cpp",
-     "line": 2452,
+     "line": 2467,
      "backend": "cuda-hip",
      "fn": "getenv"
     }

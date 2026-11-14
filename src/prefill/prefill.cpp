@@ -2446,6 +2446,21 @@ bool split_help_env() {
     static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_HELP"); return e != nullptr && std::atoi(e) != 0; }();
     return v;
 }
+// STRATA_PREFILL_HELP_LAST=1 (opt-in, with STRATA_PREFILL_HELP=1): a later stage's LAST chunk of a prompt read in several
+// chunks is helped too (the last stage only, by the first). The first stage has handed every chunk on by then and waits in
+// drain_pipeline, so its GPU and prompt buffers are as free as during a one-chunk prompt's read; the share follows
+// split_help_frac for that chunk.
+bool split_help_last_env() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_HELP_LAST"); return e != nullptr && std::atoi(e) != 0; }();
+    return v;
+}
+// STRATA_PREFILL_HELP_FIRST=1 (opt-in, with STRATA_PREFILL_HELP=1): the first stage's FIRST chunk of a prompt read in
+// several chunks is helped by the next stage, which idles until that chunk is handed on; the help ends (its streams
+// settled, the buffers given back) before the hand-off, so the next stage reads its own chunk with its own buffers.
+bool split_help_first_env() {
+    static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_HELP_FIRST"); return e != nullptr && std::atoi(e) != 0; }();
+    return v;
+}
 // STRATA_PREFILL_HELP_P2P=1 (opt-in, with STRATA_PREFILL_HELP=1): the helped stage sends the chunk's activations to the
 // helper card and takes its rows back with peer copies (NVLink or another direct path) instead of the mapped host route,
 // which also leaves both cards' PCIe links to the streamed experts. Used only when both cards report peer access to each
@@ -3467,20 +3482,30 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // pool would decide which experts the CPU computed (other bits) - timing, where the chunks are a function of n
     const bool pipe_chunked = hand_in_ == nullptr ? (forced > 0 ? forced_planned : planned_C > 0 && C < std::min(n, m.T))
                                                   : pipe_chunked_;
-    const bool helped = single_chunk && bind_stage_helper(n);
+    // only the last stage: its helper is the first stage (set_stage_helper pairs stage i with i + 1, wrapping), which
+    // has handed everything on; a middle stage's helper may still be reading that stage's previous chunk
+    const bool last_of_many = hand_in_ != nullptr && next_ == nullptr && !single_chunk && last_chunk_ && split_help_last_env();
+    // the first stage's first chunk: its helper is the next stage (set_stage_helper pairs i with i + 1), idle until then
+    const bool first_of_many = hand_in_ == nullptr && next_ != nullptr && helper_ == next_ && !single_chunk &&
+                               split_help_first_env();
+    const bool helped = ((single_chunk || last_of_many) && bind_stage_helper(n)) ||
+                        (first_of_many && bind_stage_helper(std::min(C, n)));
     if (helped) std::swap(m.pp, m.help_pp);
     struct HelpScope {
         Impl& m;
         bool on;
-        ~HelpScope() {
+        void end() {
             if (!on) return;
+            on = false;
             const core::OnDevice d(m.pp->dev);   // its work is done before the stage hands over; settle its streams
             cudaStreamSynchronize(m.pp->s_cp);
             cudaStreamSynchronize(m.pp->s_out);
             cudaStreamSynchronize(m.pp->s);
             std::swap(m.pp, m.help_pp);
         }
+        ~HelpScope() { end(); }
     } help_scope{m, helped};
+    bool first_helped = helped && first_of_many;   // ended before the first hand-off (below)
     PfTimer pt;
     PeTimer pe;
     if (m.pp) pe.dev = m.pp->dev; else pe.on = false;
@@ -6336,6 +6361,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         core::progress_at("reading the prompt (batched): finishing the chunk from token", p0);
         pt.mark(kPfStart, cs);
         if (next_ != nullptr) {
+            if (first_helped) {   // STRATA_PREFILL_HELP_FIRST: the next stage gets its buffers back before its first chunk
+                if (pe.on) {      // STRATA_PREFILL_TIMING: fold the helper's marks now; m.pp is gone for the later chunks
+                    int pd = 0; cudaGetDevice(&pd); cudaSetDevice(pe.dev); cudaStreamSynchronize(m.pp->s); pe.fold(); cudaSetDevice(pd);
+                    pe.on = false;
+                }
+                help_scope.end();
+                first_helped = false;
+            }
             // The current hand-off slot was used two chunks ago.
             float* h = m.hand[hand_buf_];
             const int hp = m.hand_pieces;
@@ -6369,6 +6402,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             next_->hand_ev_ = hp > 0 ? static_cast<const void*>(m.hand_ev[hand_buf_]) : nullptr;
             next_->hand_pieces_ = hp;
             next_->single_chunk_ = single_chunk;
+            next_->last_chunk_ = c0 + T >= n;   // run() drains the later stages before this stage reads anything else
             next_->pipe_chunked_ = pipe_chunked;
             if (handoff_pipe_worker()) {
                 if (!m.hand_worker) m.hand_worker = std::make_unique<HandWorker>();
