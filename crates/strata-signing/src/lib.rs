@@ -268,6 +268,67 @@ pub fn minisign_verify(
     Ok(())
 }
 
+pub mod ffi {
+    use super::*;
+    use std::slice;
+
+    /// # Safety
+    /// `pub_ptr`, `msg_ptr`, and `sig_ptr` must be valid for reads of their respective byte lengths.
+    #[no_mangle]
+    pub unsafe extern "C" fn strata_verify_raw(
+        pub_ptr: *const u8,
+        pub_len: usize,
+        msg_ptr: *const u8,
+        msg_len: usize,
+        sig_ptr: *const u8,
+        sig_len: usize,
+    ) -> i32 {
+        if pub_ptr.is_null() || msg_ptr.is_null() || sig_ptr.is_null() {
+            return 0;
+        }
+        let pub_b = slice::from_raw_parts(pub_ptr, pub_len);
+        let msg_b = slice::from_raw_parts(msg_ptr, msg_len);
+        let sig_b = slice::from_raw_parts(sig_ptr, sig_len);
+        if verify_raw(pub_b, msg_b, sig_b) { 1 } else { 0 }
+    }
+
+    /// # Safety
+    /// `pub_ptr`, `sig_ptr`, and `data_ptr` must be valid for reads of their lengths; `err_buf` must be writable for `err_cap` bytes if non-null.
+    #[no_mangle]
+    pub unsafe extern "C" fn strata_minisign_verify(
+        pub_ptr: *const u8,
+        pub_len: usize,
+        sig_ptr: *const u8,
+        sig_len: usize,
+        data_ptr: *const u8,
+        data_len: usize,
+        err_buf: *mut u8,
+        err_cap: usize,
+    ) -> i32 {
+        if pub_ptr.is_null() || sig_ptr.is_null() || (data_len > 0 && data_ptr.is_null()) {
+            return -1;
+        }
+        let Ok(pub_str) = std::str::from_utf8(slice::from_raw_parts(pub_ptr, pub_len)) else {
+            return -1;
+        };
+        let Ok(sig_str) = std::str::from_utf8(slice::from_raw_parts(sig_ptr, sig_len)) else {
+            return -1;
+        };
+        let data = if data_len == 0 { &[] } else { slice::from_raw_parts(data_ptr, data_len) };
+        match minisign_verify(pub_str, sig_str, data) {
+            Ok(()) => 0,
+            Err(e) => {
+                if !err_buf.is_null() && err_cap > 0 {
+                    let bytes = e.0.as_bytes();
+                    let n = bytes.len().min(err_cap);
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), err_buf, n);
+                }
+                -1
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

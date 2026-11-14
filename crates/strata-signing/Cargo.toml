@@ -6,6 +6,9 @@ rust-version = "1.77"
 license = "MIT"
 description = "Ed25519 feed/component and Tauri minisign verification for Strata."
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
 base64 = "0.22"
 blake2 = "0.10"

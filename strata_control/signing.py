@@ -138,8 +138,26 @@ def sign_raw(seed: bytes, message: bytes) -> bytes:
     return big_r + int(s).to_bytes(32, "little")
 
 
+
+def _load_rust_signing():
+    import ctypes
+    dll_name = 'strata_signing.dll' if os.name == 'nt' else 'libstrata_signing.so'
+    dll = Path(__file__).resolve().parent.parent / 'crates' / 'strata-signing' / 'target' / 'release' / dll_name
+    if not dll.is_file():
+        return None
+    lib = ctypes.CDLL(str(dll))
+    lib.strata_verify_raw.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+    lib.strata_verify_raw.restype = ctypes.c_int
+    lib.strata_minisign_verify.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+    lib.strata_minisign_verify.restype = ctypes.c_int
+    return lib
+
+_RUST_SIGNING = _load_rust_signing()
+
 def verify_raw(public: bytes, message: bytes, signature: bytes) -> bool:
     """RFC 8032 verification (cofactorless; non-canonical encodings and s >= L are refused)."""
+    if _RUST_SIGNING is not None:
+        return bool(_RUST_SIGNING.strata_verify_raw(public, len(public), message, len(message), signature, len(signature)))
     if len(public) != 32 or len(signature) != 64:
         return False
     point_a = _decompress(public)
