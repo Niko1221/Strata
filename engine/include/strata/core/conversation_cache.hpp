@@ -241,6 +241,35 @@ struct SavedConversation {
     }
 };
 
+/// Layer-split borrow: the parked image's checkpoints of at most `upto` tokens that `on_path` accepts, COPIED into
+/// `out` as running checkpoints (each with its part of every later stage, as conversation_checkpoints_merge builds
+/// them).  The image is not changed: the parked conversation keeps its own.  false (and `out` empty) when the stage
+/// images do not line up with the first stage's checkpoints (another count, or a part with other ids), or when no
+/// checkpoint of exactly `upto` tokens is among the copies (the caller mounts that one).
+template<class OnPath>
+inline bool conversation_checkpoints_borrow(const SavedConversation& image, int64_t upto, OnPath&& on_path,
+                                            std::vector<ConversationCheckpoint>& out) {
+    out.clear();
+    for (const auto& s : image.stage_images) {
+        if (s.checkpoints.size() != image.checkpoints.size()) return false;
+        for (size_t j = 0; j < s.checkpoints.size(); ++j)
+            if (s.checkpoints[j].ids != image.checkpoints[j].ids) return false;
+    }
+    bool at_upto = false;
+    for (size_t j = 0; j < image.checkpoints.size(); ++j) {
+        const ConversationCheckpoint& c = image.checkpoints[j];
+        if ((int64_t) c.ids.size() > upto || !on_path(c)) continue;
+        ConversationCheckpoint cp = c;
+        cp.stage_parts.clear();
+        cp.stage_parts.reserve(image.stage_images.size());
+        for (const auto& s : image.stage_images) cp.stage_parts.push_back(s.checkpoints[j]);
+        at_upto = at_upto || (int64_t) c.ids.size() == upto;
+        out.push_back(std::move(cp));
+    }
+    if (!at_upto) out.clear();
+    return at_upto;
+}
+
 /// `c` holds the state `ids` (with `images`) describes, or a continuation of it: its tokens start with `ids` and
 /// its pictures below ids.size() are exactly `images`.  What an idle batch slot holds is then parked already (or
 /// a longer continuation is), so the slot need not park it again before an admission overwrites it.

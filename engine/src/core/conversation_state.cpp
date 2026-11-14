@@ -961,12 +961,14 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
 }
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
                                                           SessionState& ss, const ModelGeometry& g,
-                                                          const QsaState* draft, std::string& error) {
+                                                          const QsaState* draft, std::string& error,
+                                                          bool first_stage) {
     conversation_checkpoint_join(image.live.gdn.data());
     for (const auto& c : image.checkpoints) conversation_checkpoint_join(c.gdn.data());
     conversation_park_join_for(image);   // (STRATA_PARK_VRAM_MIB: no wait when the K/V comes from its slot)
-    // a layer split's image (stage images) is restored stage by stage, never in part
-    if (!image.stage_images.empty()) {
+    // a layer split's image (stage images) is restored stage by stage: only a caller that restores the later
+    // stages' prefixes from image.stage_images itself (first_stage, STRATA_SPLIT_BORROW) may pass one
+    if (!image.stage_images.empty() && !first_stage) {
         fail(error, "a layer split's image restored as a single session");
         return ConversationRestore::invalid;
     }
