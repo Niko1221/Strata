@@ -89,18 +89,18 @@ public:
         // (`kernels/allreduce.hpp`), so a count per rank is the cheapest way to see that premise hold.  Every
         // call is printed: the interesting event is the FIRST call whose count differs between the two ranks.
         {
-            static int calls[2] = {0, 0};
+            static std::atomic<int> calls_all[2] = {};   // (ranks 2.. count with rank 0, on their own threads)
             const int r = rank_ < 2 ? rank_ : 0;
-            ++calls[r];
+            const int calls_r = calls_all[r].fetch_add(1, std::memory_order_relaxed) + 1;
             // TPDIAG (STRATA_TP_DIAG_CALLS=1): the staging buffer is chosen by `(calls_[r] & 1)` on the HOST
             // (`allreduce.cu:337`), so the two ranks silently use different buffers from the first call where
             // their counts differ by an odd number.  Counting the calls per rank finds the call where they part.
             static const bool diag_calls = [] {
                 const char* v = std::getenv("STRATA_TP_DIAG_CALLS"); return v != nullptr && v[0] != (char) 48;
             }();
-            if (diag_calls && calls[r] <= 160)
-                std::fprintf(stderr, "TPDIAG rcall rank=%d n=%d n=%lld\n", r, calls[r], (long long) n);
-            if (diag_calls && calls[r] % 48 == 1) {
+            if (diag_calls && calls_r <= 160)
+                std::fprintf(stderr, "TPDIAG rcall rank=%d n=%d n=%lld\n", r, calls_r, (long long) n);
+            if (diag_calls && calls_r % 48 == 1) {
                 for (int q = 0; q < strata::kernels::kArRanks; ++q)
                     std::fprintf(stderr,
                                  "TPDIAG prog rank=%d peer=%d entered=%u staged=%u signalled=%u saw_peer=%u\n", r, q,
@@ -161,7 +161,7 @@ public:
                              pair_->peek_arrival(r, true, 0, 0), pair_->peek_arrival(r, false, 1, 0),
                              pair_->peek_arrival(r, true, 1, 0));
             }
-            static int calls2[2] = {0, 0};
+            static std::atomic<int> calls2[2] = {};
             const int r2 = rank_ < 2 ? rank_ : 0;
             std::fprintf(stderr, "TPDIAG TIMEOUT seen-by-rank=%d at its call=%d; ranks timed out: %d\n", r2,
                          ++calls2[r2], late);

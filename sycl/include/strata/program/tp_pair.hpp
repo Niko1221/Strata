@@ -122,6 +122,7 @@ struct TpBulkReduce {
     int n = 0;
     size_t cap = 0;   // floats
     std::vector<float*> part, sum;
+    bool one_sum = false;             // the cards share a context: one sum buffer, every rank copies up from it
     std::vector<uint32_t*> flag;      // per rank, host USM of its context: [0] the reduce the host has finished, [16] timed out
     std::vector<uint32_t> seq;        // per rank: the reduces queued so far
     std::vector<sycl::context> ctx;
@@ -161,14 +162,21 @@ struct TpBulkReduce {
         sum.assign((size_t) n, nullptr);
         flag.assign((size_t) n, nullptr);
         seq.assign((size_t) n, 0);
+        // The cards of one platform share a context (measured on 4x Arc Pro B60: a card reads another's host USM at
+        // the full 13.9 GB/s), so the sum is written once, not once per rank: adding four 84 MB partials into one
+        // buffer measured 5.2 ms on 16 threads, against 12.7 ms into four.  STRATA_TP_ONE_SUM=0: a sum per rank.
+        one_sum = n > 1;
+        for (int r = 1; r < n; ++r)
+            if (queues[(size_t) r]->get_context() != queues[0]->get_context()) one_sum = false;
+        if (const char* v = std::getenv("STRATA_TP_ONE_SUM"); v != nullptr && v[0] == '0') one_sum = false;
         for (int r = 0; r < n; ++r) {
             ctx.push_back(queues[(size_t) r]->get_context());
             part[(size_t) r] = (float*) sycl::aligned_alloc_host(64, bytes, ctx.back());
-            sum[(size_t) r] = (float*) sycl::aligned_alloc_host(64, bytes, ctx.back());
+            sum[(size_t) r] = one_sum && r > 0 ? sum[0] : (float*) sycl::aligned_alloc_host(64, bytes, ctx.back());
             flag[(size_t) r] = (uint32_t*) sycl::aligned_alloc_host(64, 128, ctx.back());
             if (part[(size_t) r] == nullptr || sum[(size_t) r] == nullptr || flag[(size_t) r] == nullptr) return false;
             std::memset(part[(size_t) r], 0, bytes);   // the pages are in before the first prompt
-            std::memset(sum[(size_t) r], 0, bytes);
+            if (!one_sum || r == 0) std::memset(sum[(size_t) r], 0, bytes);
             std::memset(flag[(size_t) r], 0, 128);
         }
         for (int r = 0; r < n; ++r) {
@@ -187,7 +195,7 @@ struct TpBulkReduce {
             if (w->th.joinable()) w->th.join();
         for (size_t r = 0; r < ctx.size(); ++r) {
             if (r < part.size() && part[r] != nullptr) sycl::free(part[r], ctx[r]);
-            if (r < sum.size() && sum[r] != nullptr) sycl::free(sum[r], ctx[r]);
+            if (r < sum.size() && sum[r] != nullptr && (!one_sum || r == 0)) sycl::free(sum[r], ctx[r]);
             if (r < flag.size() && flag[r] != nullptr) sycl::free(flag[r], ctx[r]);
         }
     }
@@ -313,7 +321,8 @@ struct TpBulkReduce {
                             const float* pk = part[(size_t) k] + at;
                             for (int64_t i = 0; i < m; ++i) tmp[i] += pk[i];
                         }
-                        for (int k = 0; k < n; ++k) std::memcpy(sum[(size_t) k] + at, tmp, (size_t) m * sizeof(float));
+                        for (int k = 0; k < (one_sum ? 1 : n); ++k)
+                            std::memcpy(sum[(size_t) k] + at, tmp, (size_t) m * sizeof(float));
                     }
                 };
                 constexpr int kSumThreads = 4;
