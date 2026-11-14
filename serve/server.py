@@ -37,6 +37,7 @@ import codecs
 import json
 import math
 import os
+import platform
 import queue
 import re
 import select
@@ -3354,7 +3355,7 @@ class Vision:
         load, the card is not in its build, the card is busy), the CPU reader is started instead, for good, with one log line
         and no question."""
         try:
-            self._start_reader()
+            self._start_gpu_reader()
         except (RuntimeError, OSError) as e:
             fallback = getattr(self, "fallback", None)
             if fallback is None:
@@ -3365,6 +3366,33 @@ class Vision:
             print(f"[strata] the GPU picture reader did not start ({why}); pictures are read on the CPU{again}", flush=True)
             self.spawn, self.fallback, self.on_cpu = fallback, None, True
             self._start_reader()
+
+    def _start_gpu_reader(self):
+        """`_start_reader`, tried again when the start failed in the GPU context itself on a Linux Arm machine with shared memory (DGX Spark; see
+        vision_reader.retry_gpu_start): a new spawn may start while less than CONTEXT_RETRY_BUDGET_S have passed since the first one started, at most CONTEXT_RETRIES
+        times, CONTEXT_RETRY_WAIT_S apart.  Every other start, and the last failure, are `_start_reader`'s as before (the CPU reader follows in `_start`).
+        STRATA_VIT_PROF=1 (the reader's diagnostic switch) prints the retry count and the time of a start that needed one."""
+        args, log, _env = self.spawn
+        retries = 0
+        first = time.monotonic()                      # the first spawn's start: a new spawn may start only within vision_reader.CONTEXT_RETRY_BUDGET_S of it
+        prof = bool(os.environ.get("STRATA_VIT_PROF"))
+        while True:
+            since = vision_log_size(log)
+            try:
+                res = self._start_reader()
+                if prof and retries:
+                    print(f"vit-prof: GPU reader started after {retries} retries, {time.monotonic() - first:.2f} s", flush=True)
+                return res
+            except (RuntimeError, OSError) as e:
+                text = str(e) + chr(10) + vision_log_tail(log, since=since)
+                if not vision_reader.retry_gpu_start(linux=sys.platform.startswith("linux"), arm=platform.machine().lower() in ("aarch64", "arm64"),
+                                                     hip="hip" in Path(str(args[0])).name.lower(), text=text, retries_done=retries,
+                                                     next_start_s=time.monotonic() - first + vision_reader.CONTEXT_RETRY_WAIT_S):
+                    if prof and retries:
+                        print(f"vit-prof: GPU reader did not start after {retries} retries, {time.monotonic() - first:.2f} s", flush=True)
+                    raise
+                retries += 1
+                time.sleep(vision_reader.CONTEXT_RETRY_WAIT_S)
 
     def no_room_note(self, room) -> str:
         """The sentence for the person when the card had no room for the reader and the processor reads instead: which card (as nvidia-smi numbers it), what
@@ -3883,6 +3911,20 @@ def drafting_vram_mib(cfg: dict, backend: str | None, archs) -> float | None:
         return None
 
 
+def own_path_context_warning(cfg: dict, args: list, vram_mib: float | None) -> str | None:
+    """The sentence for a Qwen3.6 start whose --max-context does not fit its one card (strata_control/own_path_fit.py, the rule setup's menu
+    uses); None for any other model, a context that fits, or a card that is not known.  Nothing about the start changes."""
+    try:
+        from strata_control import own_path_fit
+        fit = own_path_fit.from_model_name(cfg.get("model_name"))
+        if not fit or not vram_mib or "--max-context" not in args:
+            return None
+        ctx = int(args[args.index("--max-context") + 1])
+        return own_path_fit.warning(fit, float(vram_mib) / 1024, ctx, own_path_fit.MENU)
+    except Exception:                                        # noqa: BLE001 - an estimate that fails says nothing; the engine still says what does not fit
+        return None
+
+
 def mtp_retry_args(cfg: dict, exe: str | None, extra: list[str] | None = None) -> list[str] | None:
     """The arguments to start again with when an Auto start that picked DFlash2 ends before the engine is ready: the same start with the MTP (or no drafter, when
     the MTP layer is not on this computer). None when there is nothing to retry: the person named DFlash2 themselves (that start fails with its reason, as it
@@ -3957,6 +3999,10 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
         fit_parallel, fit_note = None, ""
     if fit_note and announce:                                # (announce=False builds the arguments without any line)
         print(f"[strata] {fit_note}", flush=True)
+    if announce:                                             # #5715: Qwen3.6 with a context its card cannot hold: said before the start, nothing changed
+        too_big = own_path_context_warning(cfg, args, drafting_vram_mib(cfg, backend, archs))
+        if too_big:
+            print(f"[strata] {too_big}", flush=True)
     if fit_parallel is not None:
         cfg = {**cfg, "parallel": fit_parallel}
     # "mtp": false (the Models settings, `strata launch --mtp off`, or by hand): no draft layer, whatever the args say.  A setup run
@@ -9881,6 +9927,8 @@ def vision_on_demand_by_default(cfg: dict) -> bool:
     name = re.split(r"[\\/:]", str(vis.get("exe") or ""))[-1].lower()      # a path or a "component:..." reference
     if backend == "hip":       # AMD: the HIP reader, with the CPU reader setup wrote beside it to read when the card has no room
         return VISION_ON_DEMAND_AMD_BY_DEFAULT and name in (vision_reader.GPU_READER, vision_reader.GPU_READER + ".exe") and bool(vis.get("cpu_exe"))
+    if vision_reader.shared_memory_nvidia_host():      # a DGX Spark: the reader stays loaded (owner 2026-11-11; vision_reader.shared_memory_nvidia_host)
+        return False
     return name in (vision_reader.CPU_READER, vision_reader.CPU_READER + ".exe")
 
 
