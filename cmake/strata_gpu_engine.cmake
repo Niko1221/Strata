@@ -491,6 +491,8 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(strata PRIVATE delayimp)
     target_link_options(strata PRIVATE "LINKER:/DELAYLOAD:hipblas.dll" "LINKER:/DELAYLOAD:libhipblaslt.dll" "LINKER:/DELAYLOAD:rocblas.dll")
   endif()
+  # --pipeline-windows: the new pipelined decode loop's scheduler (pl_sched, host code; its test is pl_sched_test)
+  target_sources(strata PRIVATE src/program/pl_sched.cpp)
 
   # NEW-MODELS-PLAN.md T1: Qwen3.6-35B-A3B's reference path (one GPU, the model resident, plain kernels), checked
   # against llama.cpp by tools/qwen35/; the engine itself does not run the family yet
@@ -695,6 +697,40 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     endif()
   endif()
 
+  # mtp_chain_parity: the draft chain at up to 11 outputs (MtpDrafter::kChainMax) checked against the code it replaced:
+  # src/core/mtp.cpp and include/strata/core/mtp.hpp as they were at STRATA_MTP_PARITY_BASE (the commit before the
+  # 11-output chain), copied out of git into the build directory with the class renamed (MtpDrafterBase), so one
+  # process runs the old and the new chain on the same model files.  Configured only when STRATA_MTP_PARITY_BASE is
+  # given, built only on request (--target mtp_chain_parity); skipped when git or the commit is missing.
+  set(STRATA_MTP_PARITY_BASE "" CACHE STRING "The commit mtp_chain_parity checks the draft chain against (empty: no target)")
+  if(STRATA_ENABLE_CUDA AND NOT STRATA_ENABLE_HIP AND NOT STRATA_MTP_PARITY_BASE STREQUAL "")
+    set(_mtp_base_dir "${CMAKE_CURRENT_BINARY_DIR}/mtp_parity_base")
+    set(_mtp_base_r1 1)
+    set(_mtp_base_r2 1)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+      execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}" show
+                              "${STRATA_MTP_PARITY_BASE}:src/core/mtp.cpp"
+                      OUTPUT_VARIABLE _mtp_base_cpp RESULT_VARIABLE _mtp_base_r1 ERROR_QUIET)
+      execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_CURRENT_SOURCE_DIR}" show
+                              "${STRATA_MTP_PARITY_BASE}:include/strata/core/mtp.hpp"
+                      OUTPUT_VARIABLE _mtp_base_hpp RESULT_VARIABLE _mtp_base_r2 ERROR_QUIET)
+    endif()
+    if(_mtp_base_r1 EQUAL 0 AND _mtp_base_r2 EQUAL 0)
+      string(REPLACE "#include \"strata/core/mtp.hpp\"" "#include \"mtp_base.hpp\"" _mtp_base_cpp "${_mtp_base_cpp}")
+      # written through configure_file so an unchanged copy keeps its timestamp (no rebuild on every configure)
+      file(WRITE "${_mtp_base_dir}/mtp_base.hpp.in" "${_mtp_base_hpp}")
+      file(WRITE "${_mtp_base_dir}/mtp_base.cpp.in"
+           "// generated: src/core/mtp.cpp at ${STRATA_MTP_PARITY_BASE}, class renamed\n#define MtpDrafter MtpDrafterBase\n${_mtp_base_cpp}")
+      configure_file("${_mtp_base_dir}/mtp_base.hpp.in" "${_mtp_base_dir}/mtp_base.hpp" COPYONLY)
+      configure_file("${_mtp_base_dir}/mtp_base.cpp.in" "${_mtp_base_dir}/mtp_base.cpp" COPYONLY)
+      add_executable(mtp_chain_parity EXCLUDE_FROM_ALL src/core/mtp_chain_parity.cpp "${_mtp_base_dir}/mtp_base.cpp")
+      target_include_directories(mtp_chain_parity PRIVATE "${_mtp_base_dir}" ${_strata_gpu_include_directories})
+      target_link_libraries(mtp_chain_parity PRIVATE strata_engine strata_prefill strata_spec ${_strata_gpu_runtime_target})
+    else()
+      message(STATUS "mtp_chain_parity: not configured (git show ${STRATA_MTP_PARITY_BASE} failed)")
+    endif()
+  endif()
   if(STRATA_ENABLE_HIP)
     enable_testing()
     set(_strata_hip_tests)
