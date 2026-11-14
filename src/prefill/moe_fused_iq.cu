@@ -1947,9 +1947,9 @@ bool q8d_f16_default(const DevInfo& d) {
 // (phaseA-tests/round0216/rdna4/q50-fused.patch).  The switch means the same on both: 1 on, 0 off, unset = the platform's default.
 bool q50_on(const DevInfo& d) {
 #if defined(__HIPCC__)
-    if (!d.w12 && !d.g1151) return false;
+    // gfx1100-gfx1102 have the F16 kernel gfx1151 uses here, as an opt-in: unset is off
     static const int env = [] { const char* v = std::getenv("STRATA_PF_FUSED_Q50"); return v == nullptr || v[0] == '\0' ? -1 : (v[0] == '1' ? 1 : 0); }();
-    if (env >= 0) return env == 1;
+    if (env >= 0 || (!d.w12 && !d.g1151)) return env == 1;
     if (d.w12) return false;   // gfx12: opt-in (default off)
 #if defined(_WIN32)
     const char* off = std::getenv("STRATA_GFX1151_DEFAULTS");
