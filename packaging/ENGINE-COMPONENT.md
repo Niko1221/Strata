@@ -40,7 +40,7 @@ A package folder is immutable: a new build is a new folder.
 Example (shortened):
 
 ```json
-{"schema_version": 2, "id": "strata-engine", "name": "strata-engine", "version": "0.1.50",
+{"schema_version": 2, "id": "strata-engine", "name": "strata-engine", "version": "0.1.59",
  "platform": "linux-x86_64", "backend": "cuda", "archs": ["sm_86"], "min_driver": {"nvidia": "580.65"},
  "build_id": "be885026f96a-cuda13.0", "entrypoint": "strata",
  "files": [{"path": "strata", "sha256": "<64 hex>", "bytes": 191000000}], "signature": null}
@@ -83,14 +83,16 @@ UTF-8). It contains every file hash, so one signature covers the whole package. 
 
 ## Building a package
 
-    python packaging/package_engine.py --src <build folder> --backend cuda --version 0.1.50 \
+    python packaging/package_engine.py --src <build folder> --backend cuda --version 0.1.59 \
         --out <components>/engine --arch sm_86 --arch compute_89 --min-driver nvidia=580.65 \
         [--build-id <id>] [--variant cuda13] [--platform linux-x86_64] [--include 'rocm/**' --include strata-vision.exe | --tree] [--require-dsv41]
     python packaging/package_engine.py --verify <package folder>       # full hash check
 
 Without `--include`/`--tree` it takes the entrypoint, the libraries beside it, `BUILD.json`, `LICENSE*`, the picture reader
 `strata-vision` when the build has one, and the DeepSeek engine `strata-dsv41[.exe]` when it sits beside `strata`.
-`--require-dsv41` refuses a package without `strata-dsv41`. The build id
+`--require-dsv41` refuses a package without `strata-dsv41`. `--shape q4_lite` makes the package of a Qwen4 model shape (the engine compiled with `-DSTRATA_GEOMETRY=q4_lite`): the
+manifest's `id` and `name` are `strata-q4-lite` and it has `"shape": "q4_lite"`, so it is never read as the Strata engine (and an older Control refuses it); it installs in
+`<components>/shapes/q4_lite/engine/`, beside `<components>/engine/` (`strata_control/shape_engine.py`, packaging/UPDATES.md). `--verify` reads either kind. The build id
 defaults to the checkout's commit (`-dirty` when the tree has changes). It prints the size, file count and the SHA-256 of
 the manifest file (which holds every file's hash), used as the package's digest in notes.
 
@@ -99,6 +101,7 @@ the manifest file (which holds every file's hash), used as the package's digest 
 Variants in the release: Windows `cuda13`, `cuda12`, `rx9070`, `rdna3`, `rdna2`; Linux `cuda13`, `cuda12`, `rx9070`, `rx7900`, `halo`, `rx6000`, plus
 the SYCL and Metal packages, and (0.2.7.1) Linux ARM64 `cuda13` for the NVIDIA DGX Spark. The packages that also carry `strata-dsv41` (DeepSeek V4.1-Flash, engine 0.1.50) are Windows `cuda13`, Linux `cuda13`
 and Linux `rx9070`. Build `strata-dsv41` with `packaging/build_dsv41_cuda.sh` or `packaging/build_dsv41_windows.bat` and copy it beside `strata` before packaging.
+The separate DeepSeek package (feed member `dsv41`) for Linux AMD is made by `packaging/build_dsv41_hip_linux.sh` (`VARIANT=rx9070`: gfx1200 gfx1201; `VARIANT=rx7900`: gfx1100 gfx1101 gfx1102, built and not run on a real RX 7000 card: the app and setup say so). The Qwen `rx7900` package carries no `strata-dsv41`.
 
 | Package | Built on | Contents | Notes |
 |---|---|---|---|

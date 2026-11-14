@@ -21,12 +21,14 @@ Nothing here touches the network itself; `strata_control.transfer` does.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 
-from strata_control import signing, transfer
+from strata_control import netpolicy, shape_engine, signing, transfer
 from strata_control.targets import BACKEND_MATRIX, host_platform
 
 SCHEMA_VERSION = 1
@@ -42,6 +44,7 @@ TAURI_TARGETS = {"windows-x86_64": "windows-x86_64", "linux-x86_64": "linux-x86_
                  "macos-arm64": "darwin-aarch64", "macos-x86_64": "darwin-x86_64"}
 _VERSION = re.compile(r"\d+\.\d+\.\d+(?:\.\d+)?")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_log = logging.getLogger("strata.feed")
 
 
 class FeedError(RuntimeError):
@@ -50,6 +53,10 @@ class FeedError(RuntimeError):
     def __init__(self, message: str, exit_code: int = 5):
         super().__init__(message)
         self.exit_code = exit_code
+
+
+class FeedUnreachable(FeedError):
+    """The feed's host did not answer, or this computer is offline (strata_control/netpolicy.py's words): a check that runs by itself stays silent."""
 
 
 class FeedDowngrade(FeedError):
@@ -105,6 +112,7 @@ class EnginePackage:
     manifest_sha256: str
     installed_bytes: int
     notes: str = ""
+    shape: str = ""                 # the engine of one model shape (feed member ``shape_engines``, strata_control/shape_engine.py): its compiled geometry's name; "" for the others
 
     @property
     def label(self) -> str:
@@ -114,7 +122,127 @@ class EnginePackage:
         return {"version": self.version, "platform": self.platform, "backend": self.backend, "variant": self.variant,
                 "archs": list(self.archs), "min_driver": dict(self.min_driver), "min_runtime": self.min_runtime,
                 "build_id": self.build_id, "size": self.size, "installed_bytes": self.installed_bytes,
-                "format": self.format, "url": self.url, "sha256": self.sha256, "manifest_sha256": self.manifest_sha256}
+                "format": self.format, "url": self.url, "sha256": self.sha256, "manifest_sha256": self.manifest_sha256,
+                **({"shape": self.shape} if self.shape else {})}
+
+
+@dataclass(frozen=True)
+class DrafterPackage:
+    """A DFlash2 drafter file Strata hosts (feed member ``drafters``): one pinned file, not an archive. ``backends`` are the engine families it was measured on
+    (``metal``); ``url`` is relative to the feed (flat release assets) or an https address; ``size`` and ``sha256`` are the file's. The code that fetches it
+    pins the same size and SHA-256 (strata_control/drafting.py), so the feed can move the file but never swap its bytes."""
+    name: str
+    version: str
+    url: str
+    size: int
+    sha256: str
+    backends: tuple[str, ...]
+    base: str = ""
+    licence: str = ""
+    notes: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"drafter {self.name} {self.version}"
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "version": self.version, "url": self.url, "size": self.size, "sha256": self.sha256,
+                "backends": list(self.backends), "base": self.base, "licence": self.licence, "notes": self.notes}
+
+
+#: Families a ``models`` entry may name that this Control knows how to install (GGUF architectures the engine runs: ``strata --families``). A model of another family
+#: is still listed, as "not available on this engine"; it is never offered to install.
+MODEL_FAMILIES_INSTALLABLE = ("qwen4exp", "qwen35moe")
+_MODEL_ID = re.compile(r"[a-z0-9][a-z0-9.-]{1,39}")
+_MODEL_FAMILY = re.compile(r"[a-z0-9_]{2,32}")
+_MODEL_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}")
+_MODEL_REVISION = re.compile(r"[0-9a-f]{40}")
+_MODEL_QUANT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
+MODEL_DRAFTERS = ("mtp", "none")
+
+
+@dataclass(frozen=True)
+class ModelFile:
+    """One pinned file of a feed model: ``path`` is its place in the Hugging Face repository (``name`` when it sits at the top), ``size`` and ``sha256`` are its exact bytes."""
+    name: str
+    size: int
+    sha256: str
+    path: str = ""
+
+    @property
+    def repo_path(self) -> str:
+        return self.path or self.name
+
+    def to_dict(self) -> dict:
+        out = {"name": self.name, "size": self.size, "sha256": self.sha256}
+        if self.path:
+            out["path"] = self.path
+        return out
+
+
+@dataclass(frozen=True)
+class ModelQuant:
+    """One size of a feed model: the files that make it, and the setup recommendation for it (``ram_gb`` the memory it wants; ``arena_gb`` the experts' share, 0: not given)."""
+    name: str
+    about: str
+    ram_gb: float
+    arena_gb: float
+    files: tuple[ModelFile, ...]
+
+    @property
+    def download_bytes(self) -> int:
+        return sum(f.size for f in self.files)
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "about": self.about, "ram_gb": self.ram_gb, "arena_gb": self.arena_gb, "files": [f.to_dict() for f in self.files]}
+
+
+@dataclass(frozen=True)
+class FeedModel:
+    """A model Strata lists after the built-in ones (feed member ``models``). Everything setup needs to install it is here and signed: the repository and the pinned revision,
+    each file's exact size and SHA-256 (setup checks them after the download, and a wrong file is kept as ``.bad``, exactly as for a built-in model), the engine family,
+    the licence and the first engine version that reads it."""
+    id: str
+    title: str
+    by: str
+    about: str
+    licence: str
+    licence_url: str
+    family: str
+    repo: str
+    revision: str
+    quants: tuple[ModelQuant, ...]
+    mmproj: ModelFile | None = None
+    pictures: bool = False
+    drafter: str = "none"
+    context: int = 0
+    min_engine: str = ""
+    kv_bytes_per_token: int = 0
+    mtp_drafts: int = 0
+    state_gb: float = 0.0
+
+    @property
+    def label(self) -> str:
+        return f"model {self.id}"
+
+    @property
+    def shape(self) -> str | None:
+        """The model shape whose own engine runs it (``q4_lite``), or None: it runs on the Strata engine."""
+        return shape_engine.shape_of_family(self.family)
+
+    def to_dict(self) -> dict:
+        out = {"id": self.id, "title": self.title, "by": self.by, "about": self.about, "licence": self.licence, "licence_url": self.licence_url,
+               "family": self.family, "repo": self.repo, "revision": self.revision, "quants": [q.to_dict() for q in self.quants],
+               "pictures": self.pictures, "drafter": self.drafter, "context": self.context, "min_engine": self.min_engine}
+        if self.mmproj:
+            out["mmproj"] = self.mmproj.to_dict()
+        if self.kv_bytes_per_token:
+            out["kv_bytes_per_token"] = self.kv_bytes_per_token
+        if self.mtp_drafts:
+            out["mtp_drafts"] = self.mtp_drafts
+        if self.state_gb:
+            out["state_gb"] = self.state_gb
+        return out
 
 
 @dataclass(frozen=True)
@@ -162,6 +290,17 @@ class Feed:
     #: entries this Control does not know how to use (a platform, a backend or an archive format added after it was built): left out, one plain line each.
     #: A feed with such an entry is still a feed; only an entry of a kind this Control knows and that is malformed refuses the feed.
     skipped: tuple[str, ...] = ()
+    #: the DFlash2 drafter files (feed member ``drafters``, DrafterPackage): fetched by setup, `strata drafting fetch` and Load for a set that has one. Older Controls ignore the member.
+    drafters: tuple[DrafterPackage, ...] = ()
+    #: the models Strata lists after the built-in ones (feed member ``models``, FeedModel). An entry that is malformed is left out of this tuple with one plain line in
+    #: ``models_dropped`` (and the log); the rest of the feed, and the other models, work. Older Controls ignore the member.
+    models: tuple[FeedModel, ...] = ()
+    models_dropped: tuple[str, ...] = ()
+    #: the detached signature that went with ``raw`` (fetch fills it for a feed that has models: the cache of the model list keeps both)
+    signature: bytes = b""
+    #: the engines of model shapes (feed member ``shape_engines``, EnginePackage with ``shape``): a separate component for each shape, fetched when a model of that shape is
+    #: chosen (strata_control/shape_engine.py). Kept out of ``engine`` so that `strata update` never picks one as THE engine. Older Controls ignore the member.
+    shape_engines: tuple[EnginePackage, ...] = ()
 
     def url(self, ref: str) -> str:
         return transfer.resolve_ref(transfer.base_of(self.source), ref)
@@ -223,6 +362,19 @@ def _engine_package(item: dict, skipped: list | None = None) -> EnginePackage | 
                          notes=str(item.get("notes") or ""))
 
 
+def _shape_engine_package(item: dict, skipped: list | None = None) -> EnginePackage | None:
+    """An entry of ``shape_engines``: an engine entry that names its model shape. An entry whose shape is not a name this Control accepts is left out like any entry of a kind it
+    does not know (a newer Strata may use it)."""
+    if not isinstance(item, dict):
+        raise FeedError("a shape engine entry in the feed is not an object")
+    shape = item.get("shape")
+    if not shape_engine.valid(shape):
+        _skipping(skipped, f"an engine for the model shape {shape!r}", "a shape name this Strata does not accept")
+        return None
+    pkg = _engine_package(item, skipped)
+    return dataclasses.replace(pkg, shape=shape) if pkg is not None else None
+
+
 def _control_package(item: dict, version: str, skipped: list | None = None) -> ControlPackage | None:
     where = "control entry"
     platform = _need(item, "platform", str, where)
@@ -239,6 +391,161 @@ def _control_package(item: dict, version: str, skipped: list | None = None) -> C
     return ControlPackage(version=version, platform=platform, url=_need(item, "url", str, where), format=fmt,
                           size=size, sha256=_hex(item.get("sha256"), where), installed_bytes=installed,
                           entry=str(item.get("entry") or "strata.py"))
+
+
+def _drafter_package(item: dict) -> DrafterPackage:
+    if not isinstance(item, dict):
+        raise FeedError("a drafter entry in the feed is not an object")
+    where = f"drafter entry {item.get('name')!r}"
+    name = _need(item, "name", str, where)
+    if "/" in name or "\\" in name or name.startswith("."):
+        raise FeedError(f"the feed's {where} has a name that is not a plain file name")
+    size = _need(item, "size", int, where)
+    if size <= 0:
+        raise FeedError(f"the feed's {where} declares a size that cannot be a real file")
+    backends = item.get("backends")
+    if not isinstance(backends, list) or not backends or not all(isinstance(b, str) and b for b in backends):
+        raise FeedError(f"the feed's {where} needs a list of backends")
+    return DrafterPackage(name=name, version=str(item.get("version") or ""), url=_need(item, "url", str, where), size=size,
+                          sha256=_hex(item.get("sha256"), where), backends=tuple(backends), base=str(item.get("base") or ""),
+                          licence=str(item.get("licence") or ""), notes=str(item.get("notes") or ""))
+
+
+def _model_text(item: dict, key: str, where: str, *, limit: int = 400, required: bool = True) -> str:
+    value = item.get(key)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str) or (required and not value.strip()) or len(value) > limit or any(ord(c) < 32 for c in value):
+        raise FeedError(f"{where} has no valid {key}")
+    return value.strip()
+
+
+def _model_file(item, where: str) -> ModelFile:
+    if not isinstance(item, dict):
+        raise FeedError(f"{where} lists a file that is not an object")
+    name = _need(item, "name", str, where)
+    if "/" in name or "\\" in name or name.startswith(".") or not name.lower().endswith(".gguf"):
+        raise FeedError(f"{where} has a file name that is not a plain .gguf name")
+    size = _need(item, "size", int, where)
+    if size <= 0:
+        raise FeedError(f"{where} declares a size that cannot be a real file")
+    path = item.get("path")
+    if path is not None:
+        if not isinstance(path, str) or not path or path.startswith(("/", ".")) or "\\" in path or ".." in path.split("/") or path.rsplit("/", 1)[-1] != name:
+            raise FeedError(f"{where} has a file path that does not end in the file's name")
+    return ModelFile(name=name, size=size, sha256=_hex(item.get("sha256"), where), path=path or "")
+
+
+def _number(value, low: float, high: float) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high
+
+
+def _model_entry(item) -> FeedModel:
+    """One ``models`` entry, strictly: any fault raises FeedError (the caller drops that entry and goes on with the next)."""
+    if not isinstance(item, dict):
+        raise FeedError("a model entry in the feed is not an object")
+    ident = item.get("id")
+    where = f"model entry {ident!r}"
+    if not isinstance(ident, str) or not _MODEL_ID.fullmatch(ident) or ident.endswith(("-", ".")):
+        raise FeedError(f"the feed's {where} has no valid id")
+    family = _need(item, "family", str, where)
+    if not _MODEL_FAMILY.fullmatch(family):
+        raise FeedError(f"the feed's {where} has no valid family")
+    if family.startswith(shape_engine.FAMILY_PREFIX) and shape_engine.shape_of_family(family) is None:
+        raise FeedError(f"the feed's {where} names a model shape that is not a valid name ({family[len(shape_engine.FAMILY_PREFIX):]!r})")
+    repo = _need(item, "repo", str, where)
+    revision = _need(item, "revision", str, where)
+    if not _MODEL_REPO.fullmatch(repo) or ".." in repo:
+        raise FeedError(f"the feed's {where} has no valid repo")
+    if not _MODEL_REVISION.fullmatch(revision):
+        raise FeedError(f"the feed's {where} needs the repository's pinned revision (40 hex digits)")
+    licence_url = _need(item, "licence_url", str, where)
+    if not licence_url.startswith("https://") or any(c.isspace() for c in licence_url):
+        raise FeedError(f"the feed's {where} needs an https licence_url")
+    drafter = item.get("drafter", "none")
+    if drafter not in MODEL_DRAFTERS:
+        raise FeedError(f"the feed's {where} has an unknown drafter {drafter!r}")
+    context = item.get("context", 0)
+    if not isinstance(context, int) or isinstance(context, bool) or context < 0 or context > 4194304:
+        raise FeedError(f"the feed's {where} has no valid context")
+    min_engine = item.get("min_engine", "")
+    if min_engine:
+        version_key(min_engine)
+    pictures = item.get("pictures", False)
+    if not isinstance(pictures, bool):
+        raise FeedError(f"the feed's {where} has no valid pictures flag")
+    mmproj = _model_file(item["mmproj"], f"the feed's {where}") if item.get("mmproj") is not None else None
+    if pictures and mmproj is None:
+        raise FeedError(f"the feed's {where} offers pictures but lists no mmproj file")
+    raw_quants = item.get("quants")
+    if not isinstance(raw_quants, list) or not raw_quants:
+        raise FeedError(f"the feed's {where} lists no quants")
+    quants, seen_q, seen_f = [], set(), set()
+    for q in raw_quants:
+        if not isinstance(q, dict):
+            raise FeedError(f"the feed's {where} has a quant that is not an object")
+        qname = q.get("name")
+        if not isinstance(qname, str) or not _MODEL_QUANT.fullmatch(qname) or qname in seen_q:
+            raise FeedError(f"the feed's {where} has a quant without a valid, unique name")
+        seen_q.add(qname)
+        qwhere = f"the feed's {where} quant {qname!r}"
+        files = q.get("files")
+        if not isinstance(files, list) or not files:
+            raise FeedError(f"{qwhere} lists no files")
+        parsed = tuple(_model_file(f, qwhere) for f in files)
+        if len({f.name for f in parsed}) != len(parsed):
+            raise FeedError(f"{qwhere} lists a file twice")
+        for f in parsed:
+            if f.name in seen_f:
+                raise FeedError(f"{qwhere} reuses the file name {f.name!r} of another quant")
+            seen_f.add(f.name)
+        if not _number(q.get("ram_gb"), 0.001, 4096) or not _number(q.get("arena_gb", 0), 0, 4096):
+            raise FeedError(f"{qwhere} has no valid ram_gb or arena_gb")
+        quants.append(ModelQuant(name=qname, about=_model_text(q, "about", qwhere, required=False), ram_gb=float(q["ram_gb"]),
+                                 arena_gb=float(q.get("arena_gb", 0)), files=parsed))
+    if mmproj is not None and mmproj.name in seen_f:
+        raise FeedError(f"the feed's {where} uses the mmproj file name for a model file")
+    kv = item.get("kv_bytes_per_token", 0)
+    drafts = item.get("mtp_drafts", 2 if drafter == "mtp" else 0)
+    state = item.get("state_gb", 0)
+    if not isinstance(kv, int) or isinstance(kv, bool) or kv < 0 or not isinstance(drafts, int) or isinstance(drafts, bool) or not 0 <= drafts <= 8 \
+            or not _number(state, 0, 64):
+        raise FeedError(f"the feed's {where} has an invalid kv_bytes_per_token, mtp_drafts or state_gb")
+    if family == "qwen35moe" and kv <= 0:
+        raise FeedError(f"the feed's {where} (family qwen35moe) needs kv_bytes_per_token")
+    here = f"the feed's {where}"
+    return FeedModel(id=ident, title=_model_text(item, "title", here, limit=80), by=_model_text(item, "by", here, limit=160),
+                     about=_model_text(item, "about", here, limit=400, required=False),
+                     licence=_model_text(item, "licence", here, limit=120), licence_url=licence_url, family=family, repo=repo,
+                     revision=revision, quants=tuple(quants), mmproj=mmproj, pictures=pictures, drafter=drafter, context=context, min_engine=min_engine,
+                     kv_bytes_per_token=kv, mtp_drafts=drafts, state_gb=float(state))
+
+
+def _models_member(raw) -> tuple[list[FeedModel], list[str]]:
+    """The ``models`` member, leniently by entry: (the models that are well-formed, one plain line for each entry left out). A member that is not the
+    expected shape is ignored whole, with a line. Nothing here refuses the feed."""
+    dropped: list[str] = []
+    if raw is None:
+        return [], dropped
+    if not isinstance(raw, dict) or not isinstance(raw.get("packages"), list):
+        dropped.append("The update feed's models member is not a list of models: ignored.")
+        _log.warning(dropped[-1])
+        return [], dropped
+    out: list[FeedModel] = []
+    for item in raw["packages"]:
+        try:
+            model = _model_entry(item)
+        except FeedError as exc:
+            label = item.get("id") if isinstance(item, dict) else None
+            dropped.append(f"The update feed lists a model ({label!r}) that is not well-formed, so it is skipped: {exc}")
+            _log.warning(dropped[-1])
+            continue
+        if any(m.id == model.id for m in out):
+            dropped.append(f"The update feed lists the model {model.id!r} twice: the second one is skipped.")
+            _log.warning(dropped[-1])
+            continue
+        out.append(model)
+    return out, dropped
 
 
 def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
@@ -315,9 +622,30 @@ def parse(payload: bytes, *, source: str, key_id: str) -> Feed:
             if ident in seen:
                 raise FeedError(f"the feed lists DeepSeek engine {pkg.label} twice")
             seen.add(ident)
+    shapes = []
+    raw_shapes = data.get("shape_engines")
+    if raw_shapes is not None:
+        if not isinstance(raw_shapes, dict) or not isinstance(raw_shapes.get("packages"), list):
+            raise FeedError("the feed's shape_engines member lists no packages")
+        shapes = [e for e in (_shape_engine_package(item, skipped) for item in raw_shapes["packages"]) if e is not None]
+        seen = set()
+        for pkg in shapes:
+            ident = (pkg.shape, pkg.version, pkg.platform, pkg.backend, pkg.variant)
+            if ident in seen:
+                raise FeedError(f"the feed lists the engine for {pkg.shape} {pkg.label} twice")
+            seen.add(ident)
+    drafters = []
+    raw_drafters = data.get("drafters")
+    if raw_drafters is not None:
+        if not isinstance(raw_drafters, dict) or not isinstance(raw_drafters.get("packages"), list):
+            raise FeedError("the feed's drafters member lists no packages")
+        drafters = [_drafter_package(item) for item in raw_drafters["packages"]]
+        if len({d.name for d in drafters}) != len(drafters):
+            raise FeedError("the feed lists a drafter twice")
+    models, models_dropped = _models_member(data.get("models"))
     return Feed(sequence=sequence, channel=channel, generated_at=generated, expires_at=expires, app=app,
                 control=tuple(control), engine=tuple(engine), source=source, key_id=key_id, raw=payload, dsv41=tuple(dsv41),
-                skipped=tuple(skipped))
+                skipped=tuple(skipped), drafters=tuple(drafters), models=tuple(models), models_dropped=tuple(models_dropped), shape_engines=tuple(shapes))
 
 
 def _expired_words(expires_at: str, now: dt.datetime, server_now: dt.datetime | None) -> str:
@@ -373,7 +701,7 @@ def feed_name(platform: str | None = None) -> str:
     return AARCH64_FEED_NAME if platform == "linux-aarch64" else FEED_NAME
 
 
-def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
+def fetch(source: str, trusted: dict[str, bytes], *, timeout: float = 30, say=None, **guards) -> Feed:
     """Read the feed and its signature from `source` (an https URL, a loopback http URL, a file URL or a folder/file path)."""
     if not trusted:
         raise FeedError("this build trusts no update key (update_keys.json is empty and STRATA_UPDATE_TRUSTED_KEYS is not set), "
@@ -388,12 +716,17 @@ def fetch(source: str, trusted: dict[str, bytes], **guards) -> Feed:
     elif transfer.kind_of(source) in ("http", "https") and not source.rsplit("/", 1)[-1].endswith(".json"):
         location = source.rstrip("/") + "/" + feed_name()
     try:
-        payload = transfer.read_small(location)
-        signature = transfer.read_small(location + SIGNATURE_SUFFIX)
+        payload = transfer.read_small(location, timeout=timeout, say=say)
+        signature = transfer.read_small(location + SIGNATURE_SUFFIX, timeout=timeout, say=say)
+    except transfer.Unreachable as exc:
+        f = exc.failure                                  # the network rule (W7 and its two companions): the host, and that nothing installed is lost
+        key = {"offline": "update_offline", "again": "update_again"}.get(f.kind, "update_no_answer")
+        raise FeedUnreachable(netpolicy.WORDS[key].format(host=f.host, seconds=max(1, int(round(f.seconds)))), 6) from None
     except transfer.TransferError as exc:
         raise FeedError(f"the update feed could not be read: {exc}", 6) from None
     guards.setdefault("server_now", transfer.server_date())
-    return verify_and_parse(payload, signature, source=location, trusted=trusted, **guards)
+    loaded = verify_and_parse(payload, signature, source=location, trusted=trusted, **guards)
+    return dataclasses.replace(loaded, signature=signature) if loaded.models else loaded
 
 
 # ---------------------------------------------------------------------------------------------- hardware and selection

@@ -20,7 +20,7 @@ setup.py, tools/strata_mcp.py and strata_cli/launch import it.  Recommend, never
 from __future__ import annotations
 
 import os
-import platform
+from strata_control import sysinfo
 import sys
 from typing import Any
 
@@ -51,7 +51,7 @@ MEASURED = ("4 x Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: prompts of 3,00
             "at 25-31 tokens a second (--tp 2); one answer at a time")
 
 
-# The two official IST-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, setup.py DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
+# The two official ISTA-DAS sets (ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF, setup.py DSV41_ISTA_FILES): 4 shards each (the experts as IQ1_M / IQ2 / IQ3 types, the
 # dense weights Q8_0 / Q5_K), plus ONE Engram (110.6 GB, IQ4_NL, shared by both sets, stays on the SSD) and the DSpark drafter (8.0 GB).
 # Measured 2026-10-23 (f-dsv41-rel): quality against the original model (final files, 4,995 positions: ppl +15.5% for 2.00 [code +8.6%, agent +5.3%], +7.3% for 2.25 [code +3.2%, agent +2.2%]
 # on 2.25); speed on the owner PC (RTX 5070 12 GB, 64 GB RAM, 3.6 GB/s NVMe): answers ~4.7 tokens a second, prompts 121 tokens a second at 4K and
@@ -62,31 +62,82 @@ ISTA_DSPARK_BYTES = 7_976_914_240
 # (the six-shard layout of the same sets, setup.py DSV41_ISTA6_FILES, is 74 KB larger: 2.00 138,238,967,104, 2.25 155,225,898,368, 1.75 120,721,194,336 bytes; the figures below are the pinned four-shard ones)
 ISTA_META_BYTES = 5_780_589          # the first shard of Unsloth's UD-Q8_K_XL: only the metadata --engram-meta reads
 ISTA_SETS = {
-    "IST-DAS-2.00bpw": {"title": "IST-DAS 2.00 bpw", "set_bytes": 138_238_893_056, "experts_gb": 132.07, "profile": "profile-2.00.bin",
+    "IST-DAS-2.00bpw": {"title": "ISTA-DAS 2.00 bpw", "set_bytes": 138_238_893_056, "experts_gb": 132.07, "profile": "profile-2.00.bin",
                         "ppl": "15.5%", "ram_ok_gb": 40.0, "ram_great_gb": 160.0, "disk_total": 257.0,
                         "quality": "about 15.5% above the original model's perplexity (code and agent work about 5-9% above)"},
     # IQ1_M (1.75 bpw): 120,721,120,256 bytes of shards; experts = the shards minus the 6.16 GB of dense weights.  RAM class from the experts' size against
     # the 2.00 set's measured 40 GB (not measured on a computer yet); quality: the H100's 4,995-position score (KL 0.217, ppl 3.80, +21%; code +8.9%, agent +10.2%, English prose +53%).
-    "IST-DAS-1.75bpw": {"title": "IST-DAS 1.75 bpw", "set_bytes": 120_721_120_256, "experts_gb": 114.56, "profile": "profile-2.00.bin",
+    "IST-DAS-1.75bpw": {"title": "ISTA-DAS 1.75 bpw", "set_bytes": 120_721_120_256, "experts_gb": 114.56, "profile": "profile-2.00.bin",
                         "ppl": "21%", "ram_ok_gb": 34.0, "disk_total": 239.0,
                         "quality": "about 21% above the original model's perplexity: the smallest, fine for code and agent work, noticeably weaker "
                                    "on plain prose; pick 2.00 if it fits"},
-    "IST-DAS-2.25bpw": {"title": "IST-DAS 2.25 bpw", "set_bytes": 155_225_824_256, "experts_gb": 149.06, "profile": "profile-2.25.bin",
+    "IST-DAS-2.25bpw": {"title": "ISTA-DAS 2.25 bpw", "set_bytes": 155_225_824_256, "experts_gb": 149.06, "profile": "profile-2.25.bin",
                         "ppl": "7.3%", "ram_ok_gb": 44.0, "ram_great_gb": 176.0, "disk_total": 274.0,
                         "quality": "about 7.3% above the original model's perplexity (code and agent work about 2-3% above), "
                                    "the better of the two, 17 GB more disk"},
 }
 # Unsloth's UD-IQ1_S / UD-IQ1_M (2026-10-30, unsloth/DeepSeek-V4.1-Flash-1017-GGUF; setup.py DSV41_UD_FILES): shard 1 = metadata, shards 2-4 = the model, shard 5 = the Engram
-# (the same IQ4_NL data as IST-DAS's file, so it is shared with them).  set_bytes = shards 1-4; "meta_bytes": 0 (their own shard 1 is the metadata).  The dense weights are
-# a little bigger than IST-DAS's (attention in Q6_K): 7.2 and 7.6 GB.  Quality is not measured on our side yet.
+# (the same IQ4_NL data as ISTA-DAS's file, so it is shared with them).  set_bytes = shards 1-4; "meta_bytes": 0 (their own shard 1 is the metadata).  The dense weights are
+# a little bigger than ISTA-DAS's (attention in Q6_K): 7.2 and 7.6 GB.  Quality is not measured on our side yet.
 ISTA_SETS["UD-IQ1_S"] = {"title": "Unsloth UD-IQ1_S", "set_bytes": 122_384_317_828, "experts_gb": 115.23, "profile": "profile-2.00.bin", "meta_bytes": 0,
                          "ppl": "?", "ram_ok_gb": 36.0, "disk_total": 241.0,
-                         "quality": "Unsloth's smallest dynamic version, the size of IST-DAS 1.75 bpw; not measured here yet"}
+                         "quality": "Unsloth's smallest dynamic version, the size of ISTA-DAS 1.75 bpw; not measured here yet"}
 ISTA_SETS["UD-IQ1_M"] = {"title": "Unsloth UD-IQ1_M", "set_bytes": 139_809_056_132, "experts_gb": 132.21, "profile": "profile-2.00.bin", "meta_bytes": 0,
                          "ppl": "?", "ram_ok_gb": 40.0, "disk_total": 258.0,
-                         "quality": "Unsloth's next dynamic version, the size of IST-DAS 2.00 bpw; not measured here yet"}
+                         "quality": "Unsloth's next dynamic version, the size of ISTA-DAS 2.00 bpw; not measured here yet"}
+# The ISTA-DAS Coder (2026-11-01): ISTA-DAS's coding variant, "the layout of the IQ2_XXS set with experts removed": 192 routed experts a layer instead of 384 (read from the header of its
+# shards: the experts, the router and the routing biases are half as wide; every other tensor is the 2.00 set's).  Where the repository, the commit and the files are is ONE
+# file, data/dsv41/coder-set.json (tools/dsv41/pin_coder.py writes it); the sizes here come from it.  Shard 1 = the metadata, shards 2-3 = the model, shard 4 = the Engram
+# (the same single IQ4_NL tensor as ISTA-DAS's Engram file, so it is shared with them).  The tensors' bytes (from their offsets): experts 66.04 GB (7,680 of 8.60 MB, exactly half
+# of 2.00's 132.07 GB), the other weights 6.08 GB.
+def coder_set() -> dict | None:
+    """data/dsv41/coder-set.json as a dict, None when this checkout or package does not have it (the set is then not offered)."""
+    import json
+    from pathlib import Path
+    try:
+        return json.loads((Path(__file__).resolve().parents[1] / "data" / "dsv41" / "coder-set.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+CODER = coder_set()
+CODER_MODEL = (CODER or {}).get("name", "ISTA-DAS-Coder")
+if CODER:
+    _coder_bytes = sum(int(CODER["files"][n][0]) for n in CODER["shards"])
+    ISTA_SETS[CODER_MODEL] = {
+        "title": CODER.get("label", "ISTA-DAS Coder"), "set_bytes": _coder_bytes, "experts_gb": 66.04, "dense_gb": 6.08, "profile": CODER.get("profile", "profile-coder.bin"),
+        "meta_bytes": 0, "experts_per_layer": int(CODER["experts_per_layer"]), "ppl": "48%", "ram_ok_gb": 24.0,
+        # measured 11-01 on r9700 (one Radeon AI PRO R9700, 251 GB RAM, this branch's engine, packaged Terminal, 128K context, 5 experts a word): the whole run in a user scope with MemoryMax
+        # and no swap; decode median of 3 prompts x 200 tokens, one run each: no cap 25.6 tok/s, 40 GB 20.9, 32 GB 18.5, 24 GB 15.0, 16 GB 8.0; four cards, no cap: 59.0 (all experts in graphics memory)
+        "measured": "one Radeon AI PRO R9700 (32 GB) with 251 GB of RAM: answers about 26 tokens a second, a 93,000-token prompt read in 78 s; four of them: about 59 tokens a second",
+        "tight_words": "reads the rest from the SSD. Measured on one R9700 with the RAM capped for the whole run: about 21 tokens a second with 40 GB, 18 with 32 GB, 15 with 24 GB (26 with all the RAM it wanted).",
+        "spill_words": "This computer has {ram:.0f} GB of RAM. This set was measured down to 16 GB (about 8 tokens a second on one R9700); with less, most experts come from the SSD while it answers: it works but is slower, and a word can take seconds. More RAM fixes it. It is still allowed.",
+        "tight_short": "tight: runs, with the experts RAM cannot hold read from the SSD (about 21 to 15 tokens a second measured with 40 to 24 GB of RAM on one R9700)",
+        "spill_short": "slow here: this computer has {ram:.0f} GB of RAM and the set was measured down to 16 GB (about 8 tokens a second on one R9700); it can still be installed",
+        "unproven_uma": "Not run on a Ryzen AI Max (Strix Halo) or a DGX Spark yet: the sizes above are exact, the speed is not measured on a shared-memory computer.",
+        "disk_total": round((_coder_bytes + ISTA_ENGRAM_BYTES + ISTA_DSPARK_BYTES) / GB),
+        "quality": "ISTA-DAS's coding version, half of the model's experts removed (192 of 384 in every layer); against the original model perplexity +48% and KL 0.40 (code and agent work: KL 0.23 and 0.20; 2.00 bpw 0.10 and 0.11)"}
 ISTA_DENSE_GB = 6.16                  # the dense weights in the shards (attention, router, shared experts, the head; the embedding stays on the CPU)
-ISTA_DENSE_ON_GPU_GB = 4.5            # what a card holds of them with a 12 GB card (measured on the 5070 / 3060: the engine places the rest itself)
+ISTA_DENSE_ON_GPU_GB = 4.5            # (the old plan's figure, kept for the Unsloth Q8 plan above; the official sets use the measured ones below)
+# What the engine really puts on a card, from its own startup line ("CUDA0 layers [0, 39] + head: weights 5.86 GB, experts 25.29 GB (2566 of 15360 in
+# VRAM), caches 0.02 GB, 576 MiB free") on f-042-maya-rc d93547aed, 11-01: the plan said 2,947 experts for one R9700 and the engine held 2,366-2,566;
+# 13,180 for four and it held 12,147-12,192.  The old plan took 4.5 GB of dense weights and 1.15 GB of reserve and forgot the rest of a card's
+# memory: the driver's context, the prompt path's buffers (they grow with the prompt chunk) and the dense weights each card repeats.
+#   dense weights on the cards = base + CARD_DENSE_REPEAT_GB for each card (2.25 bpw: 5.86 GB on one card, 6.57 on four -> 5.62 + 0.24 per card;
+#   boston's UD-IQ1_M: 7.61 on one and on two cards; p620's UD-IQ1_S: 6.58)
+#   the engine keeps ENGINE_FREE_GB free on each card (--reserve-mib 600 and the small caches)
+#   what is left over per card (the "other" of the accounting, measured against the card's nominal memory): AMD (HIP) 1.60 GB when the cards hold
+#   half of the experts or more (the prompt path works in chunks of 1024: 4 x R9700), 2.58 GB when they hold less (one R9700: the experts the
+#   card cannot hold are read in place and the prompt chunk is 32768 with the borrowed slots; the 8192 chunk of the older engine took 4.5 GB and
+#   the card held 2,366); NVIDIA and others 3.6 GB (2 x A6000 3.7, an A4000 3.5; not tied to the chunk)
+#   and the experts that stay on a card are a little bigger than the set's average (the hot ones: 9.86-10.0 MB against 9.70 for 2.25 bpw): x1.025
+# ISTA-DAS Coder: the engine's startup lines on r9700 with this branch at 128K context, 11-01: one R9700 weights 5.70 GB, experts 24.91 GB (2,859 of 7,680); four R9700 weights
+# 0.74 + 0.87 + 2.25 + 2.56 = 6.42 GB and all 7,680 experts in graphics memory -> base 5.46 + 0.24 for each card (5.70 on one, 6.42 on four).
+ISTA_DENSE_GPU_BASE_GB = {CODER_MODEL: 5.46, "IST-DAS-2.00bpw": 5.62, "IST-DAS-2.25bpw": 5.62, "IST-DAS-1.75bpw": 5.62, "UD-IQ1_S": 6.34, "UD-IQ1_M": 7.37}
+CARD_DENSE_REPEAT_GB = 0.24
+ENGINE_FREE_GB = 0.62
+CARD_OTHER_GB = {"amd": 1.60, "amd_low_share": 2.58, "other": 3.6}
+RESIDENT_EXPERT_FACTOR = 1.025
 ISTA_MEASURED = ("an RTX 5070 (12 GB) with 64 GB of RAM and a 3.6 GB/s NVMe drive: answers about 4.7 tokens a second, a 4,000-token prompt "
                  "read at 121 tokens a second; an RTX 3060 (12 GB) with 46 GB of RAM: about 7.2 tokens a second; four Radeon AI PRO R9700 cards: "
                  "about 31 tokens a second")
@@ -160,6 +211,26 @@ def run_cards(cards: list[dict] | None, vendor: str | None = None, *, windows: b
     keep = sorted(keep, key=lambda c: c.get("index", 0))
     return keep, ignored
 
+
+
+def _is_rdna4(card: dict) -> bool:
+    return str(card.get("vendor") or "").lower() == "amd" and str(card.get("arch") or "").lower().startswith(DSV41_HIP_ARCHS)
+
+
+def rdna4_faster(cards: list[dict] | None, model: str | None, vendor: str | None = None, named: bool = False) -> bool:
+    """Does the engine's `--experts auto` give 5 on these RDNA4 cards (src/dsv41/ds4_experts_rule.hpp)?  One card the run uses: yes (the CPU lane does most
+    of the experts: 1 x R9700 +16% decode, -24% agent loop, KL +0.004).  Two or more: yes when together they hold at least half of the experts, which is what
+    this plan says for the set (4 x R9700: 12,260 of 15,360; 2 x R9700: about 40% of the 2.25 set, so 6).  The same cards `run_cards` picks (on Windows one
+    AMD card).  False for anything else, so the screens never say Full quality where the engine runs 5, nor the reverse."""
+    keep, _ = run_cards(cards, vendor, named=named)
+    if not keep or not all(_is_rdna4(c) for c in keep):
+        return False
+    if len(keep) == 1:
+        return True
+    if not variant(model):
+        return False
+    p = plan(keep, None, None, model=model, vendor=vendor, named=True)
+    return p["experts_in_vram"] >= 0.5 * p["experts_total"]
 
 
 def uma_card(cards: list[dict] | None) -> dict | None:
@@ -242,7 +313,7 @@ def split_layers(weights: list[float], layers: int = LAYERS) -> list[tuple[int, 
 def tp_for(n_cards: int, cards: list[dict] | None = None) -> int:
     """--tp for this many cards.  Pairs of cards sharing each layer's matrices (--tp 2, the engine's default for two or more cards) were
     measured 2x faster for prompts than a plain layer split on the first rig; on four AMD Radeon AI PRO R9700 cards the plain layer split
-    (--tp 1) is faster for both: 8K prompt 370 against 196 tokens a second and 32 against 29 for answers (2026-10-23, r9700), so the IST-DAS plans give four
+    (--tp 1) is faster for both: 8K prompt 370 against 196 tokens a second and 32 against 29 for answers (2026-10-23, r9700), so the ISTA-DAS plans give four
     or more AMD cards 1 (cards passed); the Unsloth plan is unmeasured and keeps 2.  Two and three cards keep 2 (two R9700: prompts 220 against 140, answers slower; not changed).
     (The engine's own check refuses 4 - 576 is not a multiple of 128 - and drops to 2.)"""
     if n_cards >= 4 and cards and all(str(c.get("vendor") or "").lower() == "amd" for c in cards):
@@ -257,19 +328,23 @@ def _tp_args(n_cards: int, tp: int) -> list[str]:
 
 def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None, context: int,
                vendor: str | None, named: bool = False) -> dict[str, Any]:
-    """plan() for an official IST-DAS set (ISTA_SETS): the same keys, the measured speeds in plain words.  RAM classes: with RAM for every
+    """plan() for an official ISTA-DAS set (ISTA_SETS): the same keys, the measured speeds in plain words.  RAM classes: with RAM for every
     expert the CPU lane keeps ("fits"), with 40 GB or more the engine's RAM store keeps the hot experts and reads the rest from the SSD
     ("tight": measured 4.7 tokens a second on 64 GB, 7.2 on 46 GB), under 40 GB it is untested and slower ("spills").  Never a refusal."""
     v = variant(model)
+    epl = int(v.get("experts_per_layer", EXPERTS_PER_LAYER))     # a layer's routed experts (192 in the ISTA-DAS Coder)
+    n_experts = LAYERS * epl
+    dense_gb_v = float(v.get("dense_gb", ISTA_DENSE_GB))
+    measured_v = v.get("measured", ISTA_MEASURED)
     keep, ignored = run_cards(cards, vendor, named=named)
     n = len(keep)
-    expert_gb = v["experts_gb"] / EXPERTS
+    expert_gb = v["experts_gb"] / n_experts
     set_gb = v["set_bytes"] / GB
     download = ista_download_bytes(model) / GB
-    out: dict[str, Any] = {"variant": model, "cards": [], "experts_total": EXPERTS, "experts_in_vram": 0, "vram_experts_gb": 0.0,
+    out: dict[str, Any] = {"variant": model, "cards": [], "experts_total": n_experts, "experts_in_vram": 0, "vram_experts_gb": 0.0,
                            "cpu_experts_gb": v["experts_gb"], "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]),
-                           "dense_gb": _round1(ISTA_DENSE_GB), "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download),
-                           "tp": tp_for(n, keep), "args": [], "measured": ISTA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb,
+                           "dense_gb": _round1(dense_gb_v), "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download),
+                           "tp": tp_for(n, keep), "args": [], "measured": measured_v, "lines": [], "warnings": [], "ram_gb": ram_gb,
                            "context": context, "disk_total_gb": v["disk_total"]}
     need_disk = download + DISK_HEADROOM_GB
     out["disk_need_gb"] = _round1(need_disk)
@@ -278,31 +353,42 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
     lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, {ISTA_ENGRAM_BYTES / GB:.0f} GB "
                  f"n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
     lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
-                 "disk makes every word slower). The same table serves every IST-DAS set, so installing another one downloads it once.")
+                 "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
     if n == 0:
         out["verdict"] = "no_card"
         warns.append("No graphics card Strata can use was found: this model needs one or more cards (8 GB or more; 12 GB is what it was "
                      "measured with).")
     else:
-        per_dense = ISTA_DENSE_ON_GPU_GB / n
-        cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - RESERVE_GB) for c in keep]
-        vram_exp = min(v["experts_gb"], sum(cap))
+        amd = all(str(c.get("vendor") or vendor or "").lower() == "amd" for c in keep)
+        per_dense = (ISTA_DENSE_GPU_BASE_GB.get(model, ISTA_DENSE_GPU_BASE_GB["IST-DAS-2.25bpw"]) + CARD_DENSE_REPEAT_GB * n) / n
+        res_gb = expert_gb * RESIDENT_EXPERT_FACTOR     # what an expert that stays on a card takes
         ranges = split_layers([float(c.get("vram_gb") or 0) for c in keep])
+
+        def place(other: float):
+            cap = [max(0.0, _cap_gb(float(c.get("vram_gb") or 0)) - per_dense - ENGINE_FREE_GB - other) for c in keep]
+            vram_exp = min(v["experts_gb"] * RESIDENT_EXPERT_FACTOR, sum(cap))
+            counts = []
+            for room, (a, b) in zip(cap, ranges):
+                gb = min(room, vram_exp * (room / sum(cap))) if sum(cap) else 0.0
+                counts.append(min(int(gb / res_gb), (b - a + 1) * epl))
+            return cap, counts
+
+        cap, counts = place(CARD_OTHER_GB["amd"] if amd else CARD_OTHER_GB["other"])
+        if amd and sum(counts) < n_experts / 2:          # cards that hold under half of the experts: the engine's larger prompt buffers
+            cap, counts = place(CARD_OTHER_GB["amd_low_share"])
         in_vram = 0
-        for c, room, (a, b) in zip(keep, cap, ranges):
-            gb = min(room, vram_exp * (room / sum(cap))) if sum(cap) else 0.0
-            ne = min(int(gb / expert_gb), (b - a + 1) * EXPERTS_PER_LAYER)
+        for c, ne, (a, b) in zip(keep, counts, ranges):
             in_vram += ne
             out["cards"].append({"index": c.get("index"), "name": c.get("name"), "vram_gb": float(c.get("vram_gb") or 0), "layers": [a, b],
-                                 "dense_gb": _round1(per_dense), "experts_gb": _round1(ne * expert_gb), "experts": ne})
+                                 "dense_gb": _round1(per_dense), "experts_gb": _round1(ne * res_gb), "experts": ne})
         out["experts_in_vram"] = in_vram
-        out["vram_experts_gb"] = _round1(in_vram * expert_gb)
-        out["cpu_experts_gb"] = _round1(v["experts_gb"] - in_vram * expert_gb)
+        out["vram_experts_gb"] = _round1(in_vram * res_gb)
+        out["cpu_experts_gb"] = _round1(max(0.0, v["experts_gb"] - in_vram * res_gb))
         out["tp"] = tp_for(n, keep)
         out["args"] = _tp_args(n, out["tp"])
         names = " + ".join(f"{c['name'] or 'card ' + str(c['index'])} ({c['vram_gb']:.0f} GB)" for c in out["cards"])
-        lines.append(f"Graphics memory: {names}. About {in_vram:,} of the {EXPERTS:,} experts ({out['vram_experts_gb']:.0f} GB) stay on "
-                     f"the card{'s' if n > 1 else ''}; the other {EXPERTS - in_vram:,} ({out['cpu_experts_gb']:.0f} GB) are computed on the "
+        lines.append(f"Graphics memory: {names}. About {in_vram:,} of the {n_experts:,} experts ({out['vram_experts_gb']:.0f} GB) stay on "
+                     f"the card{'s' if n > 1 else ''}; the other {n_experts - in_vram:,} ({out['cpu_experts_gb']:.0f} GB) are computed on the "
                      "CPU from RAM, and the ones RAM cannot hold are read from the SSD when a word needs them.")
         if n >= 2 and out["tp"] == 2:
             lines.append("Two cards share each layer's matrices (--tp 2): measured about twice as fast at reading prompts.")
@@ -317,11 +403,12 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
             elif float(ram_gb) >= v["ram_ok_gb"]:
                 out["verdict"] = "tight"
                 lines.append(f"This computer has {ram_gb:.0f} GB of RAM: Strata keeps the experts you use most in RAM (it sizes this itself) and "
-                             "reads the rest from the SSD. Measured: about 4.7 tokens a second on 64 GB of RAM and a 12 GB card, about 7 on "
-                             "46 GB with a faster drive. More RAM or a faster NVMe drive makes it quicker.")
+                             + (v["tight_words"] if v.get("tight_words") else "reads the rest from the SSD. Measured: about 4.7 tokens a second on 64 GB of RAM and a 12 GB card, about 7 on "
+                             "46 GB with a faster drive. More RAM or a faster NVMe drive makes it quicker."))
             else:
                 out["verdict"] = "spills"
-                warns.append(f"This computer has {ram_gb:.0f} GB of RAM and this model was measured with 46 GB and 64 GB. With less, most "
+                warns.append(v["spill_words"].format(ram=ram_gb) if v.get("spill_words") else
+                             f"This computer has {ram_gb:.0f} GB of RAM and this model was measured with 46 GB and 64 GB. With less, most "
                              "experts come from the SSD while it answers: it works but is slow (a word can take seconds). More RAM fixes "
                              "it. It is still allowed.")
         else:
@@ -332,7 +419,10 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
                          f"({float(short[0].get('vram_gb') or 0):.0f} GB) has hardly that: the engine may stop at the start. It is still allowed.")
         if ignored:
             lines.append("Not used: " + "; ".join(f"{c.get('name') or 'a card'} ({c.get('why_ignored')})" for c in ignored) + ".")
-        lines.append("Measured on " + ISTA_MEASURED + ". Other computers are slower or faster by what their cards, RAM and drive can do.")
+        if measured_v:
+            lines.append("Measured on " + measured_v + ". Other computers are slower or faster by what their cards, RAM and drive can do.")
+        else:
+            lines.append("This version has not been timed on a computer like this one yet; the sizes above are exact.")
     if disk_free_gb is not None and disk_free_gb < need_disk:
         warns.append(f"The download needs about {need_disk:.0f} GB of free disk space and {disk_free_gb:.0f} GB are free where the files go. "
                      "Use --models-dir on a bigger drive, or --gguf-dir for files you already have.")
@@ -341,49 +431,57 @@ def _plan_ista(model: str, cards: list[dict] | None, ram_gb: float | None, disk_
 
 
 def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
-    """plan() for an official IST-DAS set on a unified-memory APU (Ryzen AI Max, gfx1151, Windows): the graphics memory is the RAM,
+    """plan() for an official ISTA-DAS set on a unified-memory APU (Ryzen AI Max, gfx1151, Windows): the graphics memory is the RAM,
     counted once.  The engine holds what fits beside the dense weights and the reserve and reads the rest from the SSD; the numbers in
     UMA_MEASURED are the measured 64 GB box.  Never a refusal."""
     v = ISTA_SETS[key]
+    epl = int(v.get("experts_per_layer", EXPERTS_PER_LAYER))     # a layer's routed experts (192 in the ISTA-DAS Coder)
+    n_experts = LAYERS * epl
+    dense_gb_v = float(v.get("dense_gb", ISTA_DENSE_GB))
+    measured_v = v.get("measured", ISTA_MEASURED)
     total = uma_total_gb(card, ram_gb)
-    expert_gb = v["experts_gb"] / EXPERTS
+    expert_gb = v["experts_gb"] / n_experts
     set_gb = v["set_bytes"] / GB
     download = ista_download_bytes(model) / GB
-    room = max(0.0, total - ISTA_DENSE_GB - UMA_RESERVE_GB)
+    room = max(0.0, total - dense_gb_v - UMA_RESERVE_GB)
     resident = min(float(v["experts_gb"]), room)
     streamed = max(0.0, float(v["experts_gb"]) - room)
     in_mem = int(resident / expert_gb)
     need_disk = download + DISK_HEADROOM_GB
     out: dict[str, Any] = {
         "variant": model, "cards": [{"index": card.get("index"), "name": card.get("name"), "vram_gb": _round1(total),
-                                     "layers": [0, LAYERS - 1], "dense_gb": _round1(ISTA_DENSE_GB),
+                                     "layers": [0, LAYERS - 1], "dense_gb": _round1(dense_gb_v),
                                      "experts_gb": _round1(resident), "experts": in_mem}],
-        "experts_total": EXPERTS, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
-        "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(ISTA_DENSE_GB),
+        "experts_total": n_experts, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
+        "weights_gb": _round1(set_gb), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(dense_gb_v),
         "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
-        "measured": UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
+        "measured": "" if v.get("unproven_uma") else UMA_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
         "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
         "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
         "uma": True, "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(total), "spill_gb": _round1(streamed),
-        "spare_ram_gb": _round1(max(0.0, total - ISTA_DENSE_GB - v["experts_gb"] - UMA_RESERVE_GB)),
+        "spare_ram_gb": _round1(max(0.0, total - dense_gb_v - v["experts_gb"] - UMA_RESERVE_GB)),
     }
     lines, warns = out["lines"], out["warnings"]
     lines.append(f"DeepSeek-V4.1-Flash, {v['title']}: a {download:.0f} GB download ({set_gb:.0f} GB of model, "
                  f"{ISTA_ENGRAM_BYTES / GB:.0f} GB n-gram table, {ISTA_DSPARK_BYTES / GB:.0f} GB drafter). Quality: {v['quality']}.")
     lines.append("The n-gram table stays on the SSD and is read a few rows for each word: use an NVMe drive for the model files (a slow "
-                 "disk makes every word slower). The same table serves every IST-DAS set, so installing another one downloads it once.")
+                 "disk makes every word slower). The same table serves every ISTA-DAS set, so installing another one downloads it once.")
     name = card.get("name") or "the built-in Radeon"
     if float(card.get("dedicated_gb") or 0.0) > 0 or "GB10" not in str(card.get("name") or ""):
         lines.append(f"{name} shares this PC's memory: the RAM and the GPU's BIOS carve-out are one pool of {total:.0f} GB. About "
-                     f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {ISTA_DENSE_GB:.1f} GB of "
+                     f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {dense_gb_v:.1f} GB of "
                      f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for Windows; the other {streamed:.0f} GB are read from the SSD while it answers.")
-        lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
+        if not v.get("unproven_uma"):                   # (these speeds are the 2.00 set's: a set not run there says so below instead)
+            lines.append(f"Measured on this kind of PC: {UMA_MEASURED}.")
     else:       # a DGX Spark's GB10: one memory for the CPU and the GPU, nothing set aside in a BIOS, Linux
         lines.append(f"{name} shares this computer's memory: the CPU and the GPU are one pool of {total:.0f} GB. About "
-                     f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {ISTA_DENSE_GB:.1f} GB of "
+                     f"{resident:.0f} GB of the {float(v['experts_gb']):.0f} GB of experts stay in it beside {dense_gb_v:.1f} GB of "
                      f"dense weights and {UMA_RESERVE_GB:.0f} GB kept for the system; the other {streamed:.0f} GB are read from the SSD while it answers.")
-        lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
-        out["measured"] = UMA_MEASURED_GB10
+        if not v.get("unproven_uma"):
+            lines.append(f"Measured on this kind of computer: {UMA_MEASURED_GB10}.")
+        out["measured"] = "" if v.get("unproven_uma") else UMA_MEASURED_GB10
+    if v.get("unproven_uma"):
+        lines.append(v["unproven_uma"])
     if streamed > 0.5:
         lines.append("Keep the model files on the NVMe drive and the machine otherwise idle while it answers: every word reads experts from it.")
     if streamed <= 0.5:
@@ -408,7 +506,7 @@ def _plan_uma(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
 def plan(cards: list[dict] | None, ram_gb: float | None, disk_free_gb: float | None = None, context: int = 8192,
          vendor: str | None = None, model: str | None = None, named: bool = False) -> dict[str, Any]:
     """Where the model goes on this computer.  `cards`: the graphics cards ({"index", "name", "vram_gb", ...}, as gpu_fit takes them),
-    `ram_gb` the RAM, `disk_free_gb` the free space where the files go (None: not checked).  `model`: an official IST-DAS set
+    `ram_gb` the RAM, `disk_free_gb` the free space where the files go (None: not checked).  `model`: an official ISTA-DAS set
     (ISTA_SETS: "IST-DAS-2.00bpw" / "IST-DAS-2.25bpw" / "IST-DAS-1.75bpw") gets its own numbers; None or "UD-Q8_K_XL" is Unsloth's 508 GB set.
 
     Keys: cards (per card: index, name, vram_gb, layers, dense_gb, experts_gb, experts), experts_in_vram, experts_total, vram_experts_gb,
@@ -566,6 +664,8 @@ MAC_PACKS: dict[str, dict[str, Any]] = {
     "IQ2_XS": {"name": "2.25 bpw (IQ2_XS), the quality one", "routed_gb": 149.06, "backbone_gb": 155.23, "bpw": 2.25},
     "UD-IQ1_S": {"name": "Unsloth UD-IQ1_S (1-bit experts)", "routed_gb": 115.23, "backbone_gb": 122.38, "bpw": 1.75},
     "UD-IQ1_M": {"name": "Unsloth UD-IQ1_M (1-bit experts)", "routed_gb": 132.21, "backbone_gb": 139.81, "bpw": 2.00},
+    **({CODER_MODEL: {"name": f"{CODER.get('label', 'ISTA-DAS Coder')} (half of the experts removed)", "routed_gb": 66.04,
+                      "backbone_gb": round(ISTA_SETS[CODER_MODEL]["set_bytes"] / GB, 2), "bpw": 2.00}} if CODER else {}),
 }
 MAC_ENGRAM_GB = 110.60          # the same Engram table for all three, read row by row off the SSD
 MAC_ENGINE_FOOTPRINT_GB = 12.0  # the process' anonymous memory after the load (Metal buffers, host buffers, the KV cache)
@@ -585,6 +685,8 @@ MAC_MEASURED_PACK = {
     "UD-IQ1_S": ("M5 Max, 128 GB, Unsloth UD-IQ1_S: 15-18 tokens/s for a short answer (16-18 after a 3,000-token prompt), a 3,000-token prompt at "
                  "about 230-310 tokens/s, 14,000 at about 520; the engine kept about 68 GB of the experts resident and the process used about 79 GB"),
     "UD-IQ1_M": "Not run on a Mac yet; UD-IQ1_S was. It keeps fewer experts in memory, so expect it to be slower.",
+    CODER_MODEL: ("M5 Max, 128 GB (Apple, 2026-11-02, the 0.2.9 Metal engine, official files): 19-22 tokens/s (plain answer 19, code 22, tool call 22), a 6,000-token prompt at "
+                  "about 300 tokens/s; all 7,680 experts (66 GB) stay in memory and the process peaked at about 74 GB"),
 }
 
 
@@ -664,7 +766,8 @@ def mac_plan(ram_gb: float, quant: str = "IQ2_XS", disk_free_gb: float | None = 
 # the 1.75 bpw set shares the 2.00 set's IQ1_M kernel but was never run there, so it is not offered on a Mac.
 
 
-MAC_SET_PACK = {"IST-DAS-2.00bpw": "IQ2_XXS", "IST-DAS-2.25bpw": "IQ2_XS", "UD-IQ1_S": "UD-IQ1_S", "UD-IQ1_M": "UD-IQ1_M"}
+MAC_SET_PACK = {"IST-DAS-2.00bpw": "IQ2_XXS", "IST-DAS-2.25bpw": "IQ2_XS", "UD-IQ1_S": "UD-IQ1_S", "UD-IQ1_M": "UD-IQ1_M",
+                **({CODER_MODEL: CODER_MODEL} if CODER else {})}
 # Unsloth's UD-IQ1_S was run on an M5 Max (f-039-mac-dsu).  UD-IQ1_M has the same kernels and was not run there; the owner chose to offer it anyway ("they
 # will tell if it works"), with a plain "not run yet" line in its plan.  The gate stays as a mechanism, empty: put a name here to keep a set off a Mac
 # (the model lists, setup, the launch and the "I already have the model" check all read it through not_here()).
@@ -678,10 +781,10 @@ AARCH64_NOT_YET_LINE = "Unsloth's 1-bit DeepSeek sets were not tested on a DGX S
 
 def not_here(model: str | None) -> str | None:
     """The plain line when `model` is not offered on THIS computer (a Mac: MAC_NOT_YET; linux-aarch64, the DGX Spark: AARCH64_NOT_YET), else None.
-    Read at call time from sys.platform and platform.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""
+    Read at call time from sys.platform and sysinfo.machine(), so one rule serves the model lists, setup, `strata launch` and the app's file check."""
     if sys.platform == "darwin" and model in MAC_NOT_YET:
         return MAC_NOT_YET_LINE
-    if sys.platform.startswith("linux") and platform.machine().lower() in ("aarch64", "arm64") and model in AARCH64_NOT_YET:
+    if sys.platform.startswith("linux") and sysinfo.machine().lower() in ("aarch64", "arm64") and model in AARCH64_NOT_YET:
         return AARCH64_NOT_YET_LINE
     return None
 MAC_SMALL_RAM_GB = 64.0     # below this the measured M5 Max numbers do not apply (nothing smaller than 32 GB was ever started)
@@ -693,13 +796,17 @@ def mac_card(cards: list[dict] | None) -> dict | None:
 
 
 def _plan_mac(key: str, model: str, card: dict, ram_gb: float | None, disk_free_gb: float | None, context: int) -> dict[str, Any]:
-    """plan() for an official IST-DAS set on an Apple Silicon Mac.  One pool of unified memory: the engine keeps the experts it can
+    """plan() for an official ISTA-DAS set on an Apple Silicon Mac.  One pool of unified memory: the engine keeps the experts it can
     beside the dense weights resident (mac_expert_cap_gb) and reads the rest from the SSD in place.  Never a refusal: a smaller Mac
     gets a plain warning, not a block."""
     v = ISTA_SETS[key]
+    epl = int(v.get("experts_per_layer", EXPERTS_PER_LAYER))     # a layer's routed experts (192 in the ISTA-DAS Coder)
+    n_experts = LAYERS * epl
+    dense_gb_v = float(v.get("dense_gb", ISTA_DENSE_GB))
+    measured_v = v.get("measured", ISTA_MEASURED)
     ram = float(ram_gb or card.get("unified_gb") or 0.0)
     mp = mac_plan(ram, MAC_SET_PACK[key], disk_free_gb)
-    expert_gb = v["experts_gb"] / EXPERTS
+    expert_gb = v["experts_gb"] / n_experts
     resident = float(mp["resident_gb"])
     streamed = float(mp["streaming_gb"])
     in_mem = int(resident / expert_gb)
@@ -709,15 +816,15 @@ def _plan_mac(key: str, model: str, card: dict, ram_gb: float | None, disk_free_
     out: dict[str, Any] = {
         "variant": model, "mac": True, "mac_verdict": mp["verdict"],
         "cards": [{"index": card.get("index", 0), "name": card.get("name") or "Apple Silicon", "vram_gb": _round1(ram),
-                   "layers": [0, LAYERS - 1], "dense_gb": _round1(ISTA_DENSE_GB), "experts_gb": _round1(resident), "experts": in_mem}],
-        "experts_total": EXPERTS, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
-        "weights_gb": _round1(v["set_bytes"] / GB), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(ISTA_DENSE_GB),
+                   "layers": [0, LAYERS - 1], "dense_gb": _round1(dense_gb_v), "experts_gb": _round1(resident), "experts": in_mem}],
+        "experts_total": n_experts, "experts_in_vram": in_mem, "vram_experts_gb": _round1(resident), "cpu_experts_gb": 0.0,
+        "weights_gb": _round1(v["set_bytes"] / GB), "experts_gb": _round1(v["experts_gb"]), "dense_gb": _round1(dense_gb_v),
         "engram_gb": _round1(ISTA_ENGRAM_BYTES / GB), "download_gb": _round1(download), "tp": 1, "args": [],
         "measured": MAC_MEASURED, "lines": [], "warnings": [], "ram_gb": ram_gb, "context": context,
         "disk_total_gb": v["disk_total"], "disk_need_gb": _round1(need_disk),
         "disk_ok": None if disk_free_gb is None else disk_free_gb >= need_disk,
-        "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(resident + ISTA_DENSE_GB + MAC_ENGINE_FOOTPRINT_GB),
-        "spill_gb": _round1(streamed), "spare_ram_gb": _round1(max(0.0, ram - resident - ISTA_DENSE_GB - MAC_ENGINE_FOOTPRINT_GB)),
+        "streamed_gb": _round1(streamed), "ram_needed_gb": _round1(resident + dense_gb_v + MAC_ENGINE_FOOTPRINT_GB),
+        "spill_gb": _round1(streamed), "spare_ram_gb": _round1(max(0.0, ram - resident - dense_gb_v - MAC_ENGINE_FOOTPRINT_GB)),
         "verdict": verdict,
     }
     lines, warns = out["lines"], out["warnings"]

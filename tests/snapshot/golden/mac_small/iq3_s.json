@@ -1,0 +1,307 @@
+{
+ "machine": "mac_small",
+ "set": "iq3_s",
+ "entries": {
+  "setup": {
+   "entry": "setup",
+   "command": "strata setup --family qwen --model IQ3_S --yes --no-start",
+   "not_driven": "Mac: setup.py hands over to metal/setup_mac.py (mac_setup) and, for DeepSeek, to mac_dsv41_setup(); they write their own configs; not behind a seam yet"
+  },
+  "launch": {
+   "entry": "launch",
+   "command": "strata launch --model IQ3_S --yes --no-tui --context 32768",
+   "fetches": [],
+   "setup_args": [
+    "--yes",
+    "--no-start",
+    "--family",
+    "qwen",
+    "--model",
+    "IQ3_S",
+    "--context",
+    "32768",
+    "--vision",
+    "gpu",
+    "--data-dir",
+    "<ROOT>/data"
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "32768",
+     "--kv",
+     "int8"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<ROOT>/<STATE>/launch/iq3_s-32k.engine.log",
+    "lib_dirs": [],
+    "port": 8080,
+    "backend": "metal",
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "engine_ready_s": 1008,
+    "args_derived": "=args",
+    "args_written": "=args"
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "32768",
+     "--kv",
+     "int8"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": []
+   }
+  },
+  "app_plain": {
+   "entry": "app_plain",
+   "command": "plain Load iq3_s",
+   "fetches": [],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "mtp",
+      "drafter": "mtp",
+      "gb": 0,
+      "line": "Drafting: MTP",
+      "note": "",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "32768",
+     "--kv",
+     "int8"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<ROOT>/install/strata-iq3_s.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "backend": "metal",
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "iq3_s"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "32768",
+     "--kv",
+     "int8"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": []
+   }
+  },
+  "app_models": {
+   "entry": "app_models",
+   "command": "Models screen: Load iq3_s with Drafting = Auto",
+   "fetches": [],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": "auto",
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "mtp",
+      "drafter": "mtp",
+      "gb": 0,
+      "line": "Drafting: MTP",
+      "note": "",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "32768",
+     "--kv",
+     "int8"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/iq3_s/tokenizer",
+    "model_name": "qwen3.8-flash-next-iq3_s",
+    "log": "<ROOT>/install/strata-iq3_s.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "backend": "metal",
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "drafting": "auto",
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "iq3_s"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/iq3_s",
+     "--native",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+     "--ple-gguf",
+     "<ROOT>/data/models/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "32768",
+     "--kv",
+     "int8"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": []
+   }
+  }
+ }
+}

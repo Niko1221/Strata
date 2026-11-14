@@ -2,6 +2,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/kernels/dequant_bf16.hpp"
 #if defined(STRATA_PREFILL_MMQ) && defined(__HIPCC__)
+#include "strata/prefill/mmq_ids_margin.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #endif
 
@@ -28,6 +29,8 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
+#include <initializer_list>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -56,6 +59,7 @@
 #endif
 #if defined(__HIPCC__) && defined(STRATA_ROCBLAS_AVAILABLE)
 #include "rocblas_tuning.hpp"
+#include "strata/core/amd_community.hpp"
 #include <hip/hip_runtime_api.h>
 #include <rocblas/rocblas.h>
 #include <filesystem>
@@ -271,10 +275,19 @@ std::string own_tuning_dir() {
 std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t workspace_bytes) {
     std::string path_own;
     const char* path = std::getenv("STRATA_HIPBLASLT_TUNING");
-    bool from_package = false;
+    bool from_package = false, table_forced = false;
     if (!path || !*path) {
-        const char* sw = std::getenv("STRATA_HIPBLASLT_TABLE");     // the launcher's switch: off / 0 / false = never the packaged table
-        if (sw != nullptr && (std::strcmp(sw, "off") == 0 || std::strcmp(sw, "0") == 0 || std::strcmp(sw, "false") == 0)) return nullptr;
+        const char* sw = std::getenv("STRATA_HIPBLASLT_TABLE");     // the launcher's switch (strata_control/hipblaslt_tuning.py): off / on / auto
+        std::string low = sw != nullptr ? sw : "";                   // trimmed and lower case, as the launcher reads it
+        while (!low.empty() && std::isspace((unsigned char) low.back())) low.pop_back();
+        while (!low.empty() && std::isspace((unsigned char) low.front())) low.erase(low.begin());
+        for (char& ch : low) ch = (char) std::tolower((unsigned char) ch);
+        const auto word = [&](std::initializer_list<const char*> ws) {
+            for (const char* w : ws) if (low == w) return true;
+            return false;
+        };
+        if (word({"off", "0", "no", "false", "none", "disable", "disabled"})) return nullptr;   // never the packaged table
+        table_forced = word({"on", "1", "yes", "true", "force", "enable", "enabled"});          // any card that has a table beside the engine
         from_package = true;                                          // the file is found below, once the card and the version are known
     }
 
@@ -302,6 +315,10 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     if (suffix != std::string::npos) arch.resize(suffix);
 
     if (from_package) {
+        // Unset or "auto": only Strix Halo (gfx1151) takes the packaged table by itself, the owner's decision of 2026-10-19 (the same
+        // rule as AUTO_ARCHS in strata_control/hipblaslt_tuning.py): on other cards the table changes the answers' last digits for ~1%
+        // (gfx1201), so they take it with STRATA_HIPBLASLT_TABLE=on only.
+        if (!table_forced && arch != "gfx1151") return nullptr;
         const std::string dir = own_tuning_dir();
         if (dir.empty()) return nullptr;
         path_own = dir + arch + "-hipblaslt-" + std::to_string(version) + ".txt";
@@ -495,6 +512,12 @@ std::unique_ptr<RocBlasState> create_rocblas_state(void* stream) {
         std::string tag(version);
         while (!tag.empty() && tag.back() == '.') tag.pop_back();
         file /= arch + "-rocblas-" + tag + ".txt";
+    }
+    // The community-made tables (strata/core/amd_community.hpp) load only with STRATA_AMD_COMMUNITY_TUNING on (the default).
+    if (!strata::amd_community::rocblas_table_allowed(arch, version)) {
+        std::fprintf(stderr, "prefill gemm: the rocBLAS table for %s / %s is community-made and STRATA_AMD_COMMUNITY_TUNING=0; "
+                             "rocBLAS's default kernels run\n", arch.c_str(), version);
+        return nullptr;
     }
     std::string error;
     if (!state->table.load(file.string(), arch, version, error)) {
@@ -1272,8 +1295,12 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
     if (ldy <= 0) ldy = N;
 
     const auto up = [](size_t v) { return (v + 255) & ~(size_t) 255; };
+    // The row table is read past its end by llama.cpp's MMQ (mul_mat_q: a whole J-column tile from the start of each tile, J up to 128; the stream-k fixup:
+    // up to roundup(max_rows, J) from the expert's first row): kRows + the margin of mmq_ids_margin.hpp (max_rows <= kRows), the identity written over all of it.
+    // Exact, with only the 256 bytes of the bounds after it, a tile of 112 columns on a full chunk read 384 bytes past the table, 128 past the allocation.
+    const size_t ids_rows = (size_t) mmq::mmq_ids_table_rows((uint64_t) kRows, (uint64_t) kRows);
     const size_t ident_off = up(mmq::q8_bytes(kRows, kMaxK));
-    const size_t bounds_off = ident_off + up((size_t) kRows * 4);
+    const size_t bounds_off = ident_off + up(ids_rows * 4);
     if (!mmq_buf_) {
         if (cudaMalloc(&mmq_buf_, bounds_off + 256) != cudaSuccess) {
             cudaGetLastError();
@@ -1281,7 +1308,7 @@ bool Gemm::native_mmq(const uint16_t* X, int type, const void* W, float* Y, int6
             return false;
         }
         mmq_ctx_ = new mmq::Context();
-        mmq::iota((int32_t*) ((uint8_t*) mmq_buf_ + ident_off), kRows, stream_);
+        mmq::iota((int32_t*) ((uint8_t*) mmq_buf_ + ident_off), (int64_t) ids_rows, stream_);
         std::fprintf(stderr, "prefill gemm: dense MMQ on (STRATA_DENSE_MMQ=1)\n");
     }
     void* xq = mmq_buf_;
@@ -1394,10 +1421,34 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     if (beta == 0.0f && (ldx == 0 || ldx == K) && native_mmq(X, ggml_type, W_blocks, Y, T, N, K, ldy)) return;
 #endif
 #ifndef STRATA_USE_HIP
-    // STRATA_PF_W16_CACHE_MIB=N: the FP16 weight kept on the device after its first dequant (same values, same product)
+    // The FP16 weight kept on the device after its first dequant.  NOT bit-exact against the uncached sliced form on every
+    // card (see the default below): off unless STRATA_PF_W16_CACHE_MIB is set.  When on it is sized by the card, never by the user.  It takes only VRAM nobody else holds: a weight is
+    // cached while the card keeps kW16AutoReserve free afterwards (the MTP prompt capture, the batch windows and a long
+    // prompt's buffers are allocated later, out of that room; a replica with 309 MiB free ran out of memory at 14K tokens),
+    // so a card whose expert cache fills it caches nothing and a card with room (all experts resident) caches what the
+    // prompt path uses (~6 GB for Qwen3.8).  STRATA_PF_W16_CACHE_MIB=N is an explicit budget (2 GiB kept free, as before),
+    // =0 turns it off.
     if (w16_budget_ < 0) {
         const char* v = std::getenv("STRATA_PF_W16_CACHE_MIB");
-        w16_budget_ = v ? (int64_t) std::atoll(v) * (1ll << 20) : 0;
+        if (v != nullptr && std::strcmp(v, "auto") == 0) {
+            // STRATA_PF_W16_CACHE_MIB=auto (tester switch, round0212 item 7): the automatic sizing - weights are cached while the card
+            // keeps kW16AutoReserve free afterwards, so a card whose expert cache fills it caches nothing.  Not bit-exact (see below),
+            // so it is not the default until the owner says yes.
+            w16_budget_ = 16ll << 30;
+            w16_reserve_ = kW16AutoReserve;
+        } else if (v != nullptr) {
+            w16_budget_ = (int64_t) std::atoll(v) * (1ll << 20);
+            w16_reserve_ = 2ll << 30;
+        } else {
+            // INT3 turned the default off (11-01) because gemm_dequant_side_parity failed with it on sm_86 / sm_120 / sm_121.  That test builds its Gemm
+            // with a 10.5 M-element scratch, smaller than four of its weights, so uncached those take the sliced path (several GEMMs) and cached they
+            // take one full-N GEMM: not the engine.  The engine's scratch is GEMM_SCRATCH = 32 M elements and every dense projection of Qwen3.8
+            // (largest attn_q, 31.5 M) fits it, so cached and uncached are the same GEMM on the same FP16 values (gemm_w16_parity: the engine's scratch,
+            // shapes and types, bitwise).  Round0212 item 7: on when the engine says so (set_w16_auto_default: Linux CUDA with batch slots), else off
+            // as in v0.2.9.  It takes only VRAM beyond kW16AutoReserve, so a card whose expert cache fills it caches nothing.  =0 turns it off.
+            w16_budget_ = w16_auto_default_().load() ? (16ll << 30) : 0;
+            w16_reserve_ = kW16AutoReserve;
+        }
     }
     if (w16_budget_ > 0 && !side_scratch_) {
         const int64_t bytes = N * K * 2;
@@ -1406,7 +1457,7 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             if (e.p == W_blocks && e.type == ggml_type && e.n == N && e.k == K) { cw = e.d; break; }
         if (cw == nullptr && w16_used_ + bytes <= w16_budget_) {
             size_t fb = 0, tb = 0;
-            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (2ull << 30) &&
+            if (cudaMemGetInfo(&fb, &tb) == cudaSuccess && fb > (size_t) bytes + (size_t) w16_reserve_ &&
                 cudaMalloc((void**) &cw, (size_t) bytes) == cudaSuccess) {
                 strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, cw, stream_);
                 w16_.push_back({W_blocks, ggml_type, N, K, cw});
@@ -1414,6 +1465,11 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
             } else {
                 (void) cudaGetLastError();
                 cw = nullptr;
+                if (w16_budget_ > 0 && !w16_logged_) {
+                    w16_logged_ = true;
+                    std::fprintf(stderr, "strata prefill: FP16 weight cache %lld MiB (the card keeps %lld MiB free; STRATA_PF_W16_CACHE_MIB=0 turns it off)\n",
+                                 (long long) (w16_used_ >> 20), (long long) (w16_reserve_ >> 20));
+                }
                 w16_budget_ = w16_used_ > 0 ? w16_used_ : 0;   // out of room: stop trying
             }
         }

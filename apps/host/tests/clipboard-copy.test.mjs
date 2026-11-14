@@ -28,3 +28,10 @@ test('the typed message keeps its line breaks (#3720) and the chat uses the shar
   const chat = await readFile(new URL('../src/screens/Chat.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(chat, /void navigator\.clipboard\.writeText/);
 });
+
+test('a copy that worked shows no corner popover: the control shows it; a failed copy still has its toast', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const hook = await readFile(new URL('../src/lib/use-copy.ts', import.meta.url), 'utf8');
+  assert.match(hook, /toast: \(tone, title, body\) => \{ if \(tone !== 'success'\) pushToast\(tone, title, body\); \}/);
+  assert.match(hook, /pushToast\('warn', 'Couldn’t copy'\)/);
+});

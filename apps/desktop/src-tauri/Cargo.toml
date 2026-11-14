@@ -1,6 +1,6 @@
 [package]
 name = "strata-desktop"
-version = "0.2.9"
+version = "0.2.13"
 description = "Strata Desktop — local AI, tuned to one model."
 edition = "2021"
 rust-version = "1.77"
@@ -10,6 +10,11 @@ license = "MIT"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 webkit2gtk = "2.0"
+
+# Windows: the shell listens for the page's renderer failing (WebView2 ProcessFailed, see hook_renderer_failures in main.rs); these are the versions wry itself uses.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

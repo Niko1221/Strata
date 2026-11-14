@@ -4,7 +4,7 @@
 # taken from ../src unless this directory carries a migrated copy: `src/X.cu` -> `sycl/src/X.dp.cpp`,
 # `src/X.cpp` -> `sycl/src/X.cpp` (only host files that called the CUDA runtime were migrated). Headers resolve
 # the same way through the include order. Upstream files are never edited, so the port is the content of this
-# directory plus the tool that produced it (../../sycl/migrate.sh).
+# directory plus the tool that produced it (../../sycl/tools/migrate.sh).
 #
 #   cmake -S sycl -B build-sycl -G Ninja -DCMAKE_CXX_COMPILER=icpx && cmake --build build-sycl
 #
@@ -20,6 +20,7 @@ else()
 endif()
 project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+include(${STRATA_ROOT}/cmake/strata_geometry.cmake)   # -DSTRATA_GEOMETRY=<name> (default flash_next, no flag added)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -29,6 +30,14 @@ endif()
 add_compile_definitions(STRATA_VERSION="${PROJECT_VERSION}")
 
 set(STRATA_SYCL_AOT "" CACHE STRING "AOT device for the GPU code, e.g. bmg-g31 (empty: SPIR-V, JIT at run time)")
+# PR #4185 (glorysdj): the packed Q2 / IQ4 lookup / IQ3_S sign arithmetic of the mixed-IQ3 decode kernels. Integer arithmetic with the
+# same results as the code it replaces (bit-exact, checked end to end on 2x Arc Pro B65), faster on Battlemage; ON by default in every
+# build, including the JIT release package. -DSTRATA_SYCL_IQ_DECODE_FAST=OFF builds the earlier helpers.
+option(STRATA_SYCL_IQ_DECODE_FAST "Packed IQ/Q2 decode helpers (bit-exact integer arithmetic, faster on Battlemage)" ON)
+if(STRATA_SYCL_IQ_DECODE_FAST)
+  add_compile_definitions(STRATA_Q2_WORD_FAST=1 STRATA_IQ4NL_LUT_SWAR=1 STRATA_IQ4XS_LUT_SWAR=1
+                         STRATA_IQ4_LUT_SWAR=1 STRATA_IQ3S_SIGN_FAST=1 STRATA_IQ3S_SIGN_APPLY_FAST=1)
+endif()
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
 # time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
 # bound for every device in this build.
@@ -175,31 +184,11 @@ option(STRATA_Q6K_EXPERTS "Build the Q6_K gate/up grouped expert kernels (UD-Q6_
 if(STRATA_Q6K_EXPERTS)
   add_compile_definitions(STRATA_Q6K_EXPERTS=1)
 endif()
-set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
+include(${STRATA_ROOT}/cmake/strata_ggml.cmake)        # -DSTRATA_GGML_DIR, or the vendored third_party/strata-ggml
+include(${STRATA_ROOT}/cmake/backends/sycl.cmake)
+strata_ggml_resolve("${STRATA_ROOT}")
 if(STRATA_NATIVE_EXPERTS)
-  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-  set(GGML_STATIC ON CACHE BOOL "" FORCE)
-  set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-  set(GGML_SYCL OFF CACHE BOOL "" FORCE)
-  set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-  set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
-  set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-  set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(GGML_NATIVE ON CACHE BOOL "" FORCE)
-  if(STRATA_GGML_DIR)
-    add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  else()
-    include(FetchContent)
-    FetchContent_Declare(strata_llamacpp
-      GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-      GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
-      GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(strata_llamacpp)
-    if(NOT strata_llamacpp_POPULATED)
-      FetchContent_Populate(strata_llamacpp)
-    endif()
-    add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  endif()
+  strata_sycl_ggml()
   strata_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
                              src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
                              src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp   # 0.1.42: AVX1 (no AVX2) Q2_0 / i-quant rows
@@ -238,7 +227,7 @@ set(_kernel_cu dequant_s2 s2_gemv s_gemv s2_gemv_quads s2_gemv_fast router_top10
     s2_expert_grouped shared_expert gr gdn qsa elementwise bf16_gemv native_mmvq native_bf16 native_gr_norm native_moe
     native_gdn native_gr_postops native_router native_gdn_preprocess native_qsa native_rope native_ple_postops
     native_flash_attn native_qsa_indexer native_qsa_score ple kv_q8 kv_stream kv_q4 fused_gr cvec qsa_decode_attn
-    qsa_prompt_attn fused_gdn dequant_bf16 qsa_select verify_kernels iq_kernels)
+    qsa_prompt_attn fused_gdn dequant_bf16 qsa_select verify_kernels iq_kernels dflash2)
 set(_kernel_files "")
 foreach(k IN LISTS _kernel_cu)
   list(APPEND _kernel_files src/kernels/cuda/${k}.cu)
@@ -258,6 +247,7 @@ strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_s
                        src/core/conversation_file.cpp
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
 add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/core/dflash2.cpp
             ${CMAKE_CURRENT_SOURCE_DIR}/src/core/copy_queue.cpp)   # 0.1.43: a queue on the copy engine
 target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/core)   # conversation_checked.hpp (#include "...")
 target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
@@ -401,11 +391,12 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
   set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
-  # the prompt-attention parity takes a context length, not --selftest, and needs the tensor-core kernel (not
-  # ported yet: it reports "refused the pools" here). Built, not registered.
+  # the prompt-attention parity takes a context length, not --selftest: the XMX prompt kernel (opt-in in the engine;
+  # it refuses Q4_0 pools) and the prompt path's per-cell kernel, both against the warp kernel and FP64
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)
   add_executable(qsa_prompt_attn_parity ${_src})
   target_link_libraries(qsa_prompt_attn_parity PRIVATE strata_kernels)
+  add_test(NAME qsa_prompt_attn_parity COMMAND qsa_prompt_attn_parity 8192 512 2)
   # the hybrid K8V4 KV test (upstream 0.1.27) passes its appends, gathers and attention here and fails only its
   # last step, the same tensor-core prompt kernel. Built, not registered, until that kernel is ported.
   strata_resolve(_src src/kernels/kv_hybrid_parity.cpp)
@@ -416,14 +407,28 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(dequant_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
+  add_executable(dflash2_ring_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/dflash2_ring_test.cpp)   # DF2-SYCL: the ring log: rebuilt K/V rows are the original ones
+  target_link_libraries(dflash2_ring_test PRIVATE strata_engine strata_prefill strata_spec)
+  add_executable(short_cache_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/short_cache_test.cpp)   # the sizing of a start short of VRAM (CPU, no model)
+  target_include_directories(short_cache_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME short_cache_test COMMAND short_cache_test)
+  add_executable(verify_refusal_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/verify_refusal_test.cpp)   # a refused start (no VRAM expert tier) ends cleanly: the verifiers leave the default queue alone
+  target_link_libraries(verify_refusal_test PRIVATE strata_engine strata_prefill strata_spec)
+  add_test(NAME verify_refusal_test COMMAND verify_refusal_test)   # needs one SYCL GPU
+  add_executable(dflash2_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dflash2_bench.cpp)   # DF2-SYCL: the DFlash2 Q4_0 drafter round on an Arc, kernel checks
+  target_link_libraries(dflash2_bench PRIVATE strata_kernels)
   add_executable(dense_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dense_bench.cpp)   # the decode window's dense GEMVs, graph, hash
   target_link_libraries(dense_bench PRIVATE strata_kernels)
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
+  add_executable(dq_dense_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dq_dense_parity.cpp)   # dense dequantizers + mmvq vs the CPU dequantizers, random blocks, no model
+  target_link_libraries(dq_dense_parity PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  add_executable(fused_gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/fused_gr_bench.cpp)
+  target_link_libraries(fused_gr_bench PRIVATE strata_kernels)
   add_executable(sycl_router_fast ${CMAKE_CURRENT_SOURCE_DIR}/probe/router_fast.cpp)
   target_link_libraries(sycl_router_fast PRIVATE strata_kernels)
   add_test(NAME sycl_router_fast COMMAND sycl_router_fast)
@@ -445,6 +450,9 @@ if(STRATA_SYCL_PARITY)
   add_executable(pipeline_auto_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/pipeline_auto_test.cpp)   # the default of --pipeline-windows (no GPU)
   target_include_directories(pipeline_auto_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME pipeline_auto_test COMMAND pipeline_auto_test)
+  add_executable(slot_history_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/slot_history_test.cpp)   # the penalty-history rows of a batch window, per slot (CPU, no model)
+  target_include_directories(slot_history_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME slot_history_test COMMAND slot_history_test)
   if(_i8_esimd)   # DPAS s8 8x16x32 (Xe2): not for an Alchemist / Xe-HPC AOT build, nor with STRATA_SYCL_I8_ESIMD=OFF
     add_executable(esimd_dpas_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_dpas_probe.cpp)   # ESIMD DPAS peak (registers only)
     add_executable(esimd_i8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_i8_bench.cpp)   # ESIMD int8 DPAS GEMM on pre-decoded weights
@@ -455,6 +463,13 @@ if(STRATA_SYCL_PARITY)
     add_executable(native_expert_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/native_expert_parity.cpp)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
+    # round 0214: every expert type pair of the new Unsloth Qwen3.8-Flash-Next sets (ggml-quantized random weights at 2560/640)
+    foreach(_g iq1_m iq2_xxs iq2_xs iq2_s q2_0 iq3_xxs iq4_xs)
+      foreach(_d q2_0 iq4_nl q5_0 q8_0)
+        add_test(NAME native_expert_parity_new_${_g}_${_d} COMMAND native_expert_parity --synthetic ${_g}/${_d})
+        set_tests_properties(native_expert_parity_new_${_g}_${_d} PROPERTIES TIMEOUT 600)
+      endforeach()
+    endforeach()
     # SYCL port: the same grouped native experts timed per mode on real GGUF rows at the decode window's shape
     # (G experts, T tokens), checked bit for bit against the reference mode.  The source was in the tree without a
     # target, so the numbers that decide the decode expert path could not be reproduced.

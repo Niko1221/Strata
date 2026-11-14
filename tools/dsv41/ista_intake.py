@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ista_intake.py - one command per IST-DAS commit (DEEPSEEK-ISTA-PLAN Phase 0).
+"""ista_intake.py - one command per ISTA-DAS commit (DEEPSEEK-ISTA-PLAN Phase 0).
 
 For a pinned HF commit and one or more of its sets it:
   1. lists the repo tree at that commit (path + size) and writes it to the report folder;
@@ -23,11 +23,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
-import os
 import pathlib
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -40,7 +37,7 @@ PY = "/data/dsv41/hfvenv/bin/python"
 HF = "/data/dsv41/hfvenv/bin/hf"
 TOOLS = PORT / "src/tools/dsv41"
 # the substitutions the published sets need today (HANDOVER.md §6; Phase 1 removes them)
-# the Engram every live pack uses: the reference MXFP8 tables (shards 8/9 of the UD set, 203 GB).  The IST-DAS IQ4_NL
+# the Engram every live pack uses: the reference MXFP8 tables (shards 8/9 of the UD set, 203 GB).  The ISTA-DAS IQ4_NL
 # Engram (110.6 GB) is a separate Phase 1.3 experiment, so the intake does not depend on it.
 ENGRAM_DIR = pathlib.Path("/home/niko/dsv41-c0/t2/Engram")
 DSPARK = pathlib.Path("/data/dsv41/source/dspark-DeepSeek-V4.1-Flash-1017-Q8_0.gguf")
@@ -225,7 +222,7 @@ def main() -> int:
     root = pathlib.Path(a.root)
     rep_dir = REPORTS / commit[:7]
     rep_dir.mkdir(parents=True, exist_ok=True)
-    report: list[str] = ["# IST-DAS intake, commit %s" % commit, "", "run %s" % time.strftime("%Y-%m-%dT%H:%M:%S%z"), ""]
+    report: list[str] = ["# ISTA-DAS intake, commit %s" % commit, "", "run %s" % time.strftime("%Y-%m-%dT%H:%M:%S%z"), ""]
 
     log("listing %s at %s" % (REPO, commit[:7]))
     try:

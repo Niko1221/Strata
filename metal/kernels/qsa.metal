@@ -19,14 +19,49 @@
 //
 // RoPE: cos/sin from a host table [pos][32] (double precision, as build_rope_table).
 
+// QH, QKV: query heads and kv heads of the model (Flash-Next 24 / 2); the host prelude (geo.h) defines GEO_QH / GEO_QKV for another shape
+#ifdef GEO_QH
+#define QH GEO_QH
+#else
 #define QH 24
+#endif
+#ifdef GEO_QKV
+#define QKV GEO_QKV
+#else
 #define QKV 2
+#endif
 #define QD 256
 #define QROT 64
 #define IH 4
 #define ID 128
+// the threadgroup of qsa_prep that does the indexer keys: after the q, k, v and indexer-q groups (Flash-Next 24 + 4 + 4)
+#if defined(GEO_QH) || defined(GEO_QKV)
+#define QSA_KEYS_ROW (QH + 2 * QKV + IH)
+#else
+#define QSA_KEYS_ROW 32
+#endif
+// QBUDGET: the selection budget in cells, indexer top_k + 3 (Flash-Next 2048 + 3); GEO_BUD from the host prelude for another top_k
+#ifdef GEO_BUD
+#define QBUDGET GEO_BUD
+#else
 #define QBUDGET 2051
+#endif
 #define QCH 64
+
+#ifndef STRATA_XH16_DECL
+#define STRATA_XH16_DECL
+// STRATA_METAL_F16 (function constant 25): the window's x also as half planes, after the float planes and S16:
+// [3][plane] halves - raw (IQ4_XS), x * 4^-(i % 4) (Q2_0), x * 2^-8 at odd i (the K-quants); idx = t * n + d, jj = d % 16
+constant bool XH16 [[function_constant(25)]];
+constant bool xh16 = is_function_constant_defined(XH16) && XH16;
+static inline void put_x16(device float* xp, uint plane, uint idx, uint jj, float v) {
+    device half* xh = (device half*)(xp + 4 * plane + plane / 16);
+    const float q2b[4] = {1.0f, 0.25f, 0.0625f, 0.015625f};
+    xh[idx] = half(v);
+    xh[plane + idx] = half(v * q2b[jj & 3]);
+    xh[2 * plane + idx] = half((jj & 1) ? v * 0.00390625f : v);
+}
+#endif
 
 constant int QSA_NTOK [[function_constant(3)]];
 // QSA_MROPE (function constant 24): interleaved M-RoPE (the vision path; strata/kernels/mrope.hpp, ggml IMROPE,
@@ -87,8 +122,8 @@ static inline float norm_rope(float x, float xhi_unused, device const float* g, 
     return o;
 }
 
-// grid (32 rows + 1, n_tok): rows 0..23 q heads, 24..25 k heads, 26..27 v heads, 28..31 indexer q heads;
-// threadgroup 32 (x = 32, y = 0) is the indexer-key threadgroup.  256 threads.
+// grid (QH + 2 QKV + IH + 1, n_tok): rows 0..QH-1 q heads, then the k heads, the v heads, the indexer q heads (Flash-Next: 24 / 2 / 2 / 4);
+// threadgroup QH + 2 QKV + IH (32; y = 0) is the indexer-key threadgroup.  256 threads.
 kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float* kcur [[buffer(1)]],
                      device const float* vcur [[buffer(2)]], device const float* iqraw [[buffer(3)]],
                      device const float* ikraw [[buffer(4)]], device const float* qn [[buffer(5)]],
@@ -106,7 +141,7 @@ kernel void qsa_prep(device const float* qfull [[buffer(0)]], device const float
     threadgroup float row[256];
     threadgroup float amax[8];
     const int r = int(tg.x);
-    if (r == 32) {
+    if (r == QSA_KEYS_ROW) {
         // the indexer keys, every window token in order (only threadgroup (32, 0) works)
         if (tg.y != 0) return;
         for (int t = 0; t < int(a.n_tok); ++t) {
@@ -399,6 +434,7 @@ kernel void qsa_merge(device const float* part [[buffer(0)]], device const float
     raw[plane] = y * q2s[j & 7];
     raw[2 * plane] = y * p4s[j & 3];
     raw[3 * plane] = (j & 1) ? y * 0.00390625f : y;
+    if (xh16) put_x16(xp, plane, uint(t) * n + d, j, y);
     msum[tid] = y;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (j == 0) {

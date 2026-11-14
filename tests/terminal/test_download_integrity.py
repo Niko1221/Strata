@@ -386,13 +386,14 @@ class Repair(DownloadCase):
         self.run_download(self.serve(Behavior(plan)))
         self.assertGood()
 
-    def test_a_server_that_keeps_serving_the_wrong_file_ends_with_the_file_deleted(self):
+    def test_a_server_that_keeps_serving_the_wrong_file_ends_with_the_file_kept_as_bad(self):
         wrong = bytearray(DATA)
         wrong[1000] ^= 0xFF
         url = self.serve(Behavior(data=bytes(wrong)))
         out = self.run_download(url, expect_exit=True)
-        self.assertIn("wrong SHA-256", out)
+        self.assertIn("does not match the pinned SHA-256", out)
         self.assertFalse(self.dst.exists())
+        self.assertTrue(self.dst.with_name(self.dst.name + ".bad").is_file())   # kept, not deleted (f-0216-dlsha)
         self.assertFalse(self.tmp.joinpath("model.gguf.done").exists())
 
     def test_the_repair_is_off_for_a_file_the_person_owns(self):

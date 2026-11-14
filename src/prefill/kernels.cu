@@ -18,11 +18,15 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "strata/core/geometry.hpp"
+
 namespace strata::prefill {
 namespace {
 
-constexpr int N = 2560, HC = 4, D = N * HC, LR = 320;
-constexpr int S = 128, HK = 16, HV = 48, C = 10240;
+constexpr int N = strata::core::kCompiledGeometry.n_embd, HC = strata::core::kCompiledGeometry.hc, D = N * HC, LR = strata::core::kCompiledGeometry.hc_lr;
+constexpr int KU = strata::core::kCompiledGeometry.n_expert_used;   // routed experts per token (10 for Flash-Next)
+constexpr int64_t FFC = strata::core::kCompiledGeometry.n_ff;   // the routed (and shared) expert width: 640 for Flash-Next
+constexpr int S = strata::core::kCompiledGeometry.ssm_state_size, HK = strata::core::kCompiledGeometry.ssm_k_heads, HV = strata::core::kCompiledGeometry.ssm_v_heads, C = strata::core::kCompiledGeometry.ssm_conv_channels;
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -1826,6 +1830,18 @@ constexpr int64_t kGdnWmmaMin = 64;   // STRATA_GDN_CHUNKED=1 takes prompt chunk
 // with the start at 64 measured +1.7% to +3.2% at 1-3K, +3.5% at 4K, +4.7% at 16K, +6.1% at 32K (20 pairs), KL 0.0025 mean /
 // 0.0381 max, 55 of 61 tasks, a 30-minute soak clean.  So gfx12 takes it from the same 64 tokens as gfx11.
 constexpr int64_t kGdnW12MinT = kGdnWmmaMin;
+// gfx12 (RDNA4) only, STRATA_GDN_CHUNKED unset (owner 11-06, "ok" to a length-gated default): the chunked scan takes prompt chunks of 30,000 tokens or more -
+// a long prompt (--prefill auto takes chunks up to 32,768 on gfx12, so a 32K prompt is one chunk of about 31,996-32,087 rows, which is why the line is 30,000 and not 32,000; +6.5% prompt speed at 32K, 3 of 3 rounds).  Shorter chunks keep the kernels they ran.
+// STRATA_GDN_CHUNKED=0 turns it off, =1 takes every chunk of 64 tokens or more (the old opt-in), STRATA_GDN_CHUNKED_MIN=N moves the line.
+inline int gdn_chunked_env() {   // -1 unset, else the number
+    static const int v = [] { const char* e = std::getenv("STRATA_GDN_CHUNKED"); return e == nullptr || e[0] == '\0' ? -1 : std::atoi(e); }();
+    return v;
+}
+inline bool gdn_chunked_auto(int64_t T) {   // unset: only on gfx12, only for long chunks (the caller has checked the device)
+    static const int64_t lo = [] { const char* e = std::getenv("STRATA_GDN_CHUNKED_MIN"); return e != nullptr && e[0] != '\0' ? (int64_t) std::atoll(e) : (int64_t) 30000; }();
+    static const bool gfx12_defaults = [] { const char* e = std::getenv("STRATA_GFX12_DEFAULTS"); return !(e != nullptr && e[0] == '0'); }();   // (the gfx12 defaults' one off switch)
+    return gdn_chunked_env() < 0 && gfx12_defaults && T >= lo;
+}
 typedef _Float16 gw_h16 __attribute__((ext_vector_type(16)));
 typedef _Float16 gw_h8 __attribute__((ext_vector_type(8)));
 typedef _Float16 gw_h2 __attribute__((ext_vector_type(2)));
@@ -2136,6 +2152,7 @@ bool gdn_rec_wmma(float* state, const float* h, const float* gate, const float* 
     }
     if (!gfx11 && !gfx12) return false;
     if (gfx12 && T < kGdnW12MinT) return false;
+    if (gdn_chunked_env() < 0 && !(gfx12 && gdn_chunked_auto(T))) return false;   // unset: gfx12, long chunks only
     const int64_t nch = (T + GW_CK - 1) / GW_CK;
     _Float16* tp = reinterpret_cast<_Float16*>(y);
     if (gfx12) {
@@ -2161,9 +2178,8 @@ bool gdn_fused_impl(float* history, const float* qkv, const float* conv_w, float
                     const float* beta, const float* z, const float* gamma, float eps, float l2eps, float* y, uint16_t* y16,
                     int64_t T, void* stream, int64_t ld16) {
     static const bool on = [] {
-        const char* c = std::getenv("STRATA_GDN_CHUNKED");
         const char* f = std::getenv("STRATA_GDN_FUSE");
-        return c != nullptr && std::atoi(c) != 0 && (f == nullptr || std::atoi(f) != 0);
+        return gdn_chunked_env() != 0 && (f == nullptr || std::atoi(f) != 0);   // (unset: the length gate below, gfx12 only)
     }();
     if (!on || T < kGdnWmmaMin) return false;
     if (ld16 <= 0) ld16 = (int64_t) HV * S;
@@ -2179,6 +2195,7 @@ bool gdn_fused_impl(float* history, const float* qkv, const float* conv_w, float
         last_device = dev;
     }
     if (!gfx12 || T < kGdnW12MinT) return false;
+    if (gdn_chunked_env() < 0 && !gdn_chunked_auto(T)) return false;   // unset: long chunks only
     cudaStream_t s = (cudaStream_t) stream;
     const int64_t nch = (T + GW_CK - 1) / GW_CK;
     _Float16* tp = reinterpret_cast<_Float16*>(y);
@@ -2235,7 +2252,7 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
 #pragma unroll
     for (int i = 0; i < REG; ++i) { v[i] *= rcp; if (isnan(v[i])) v[i] = -FLT_MAX; }
     float selected = 0.0f, selected_sum = 0.0f;
-    for (int rank = 0; rank < 10; ++rank) {
+    for (int rank = 0; rank < KU; ++rank) {
         float best = v[0];
         int ex = lane;
 #pragma unroll
@@ -2247,43 +2264,46 @@ __global__ void route_kernel(const float* __restrict__ logits, int32_t* __restri
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
         }
         if ((ex & 31) == lane) { v[ex / 32] = -INFINITY; selected_sum += best; }
-        if (lane == 0) ids[t * 10 + rank] = ex;
+        if (lane == 0) ids[t * KU + rank] = ex;
         if (rank == lane) selected = best;
     }
     selected_sum = fmaxf(warp_sum(selected_sum), 6.103515625e-5f);
-    if (lane < 10) wout[t * 10 + lane] = selected / selected_sum;
+    if (lane < KU) wout[t * KU + lane] = selected / selected_sum;
 }
-// Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
+// Strata blob: gate/up codes [2 F][E / 4 B], down codes [E][F / 4 B], gate/up scales [2 F][E / 64] f16, down scales [E][F / 64] f16
+// (E = N, F = FFC: the compiled geometry's; Flash-Next 2560 and 640: [1280][640 B], [2560][160 B], [1280][40], [2560][10])
+constexpr int BLOB_GU_ROWS = 2 * (int) FFC, BLOB_ROW_GU = N / 4, BLOB_ROW_D = (int) FFC / 4, BLOB_SC_GU = N / 64, BLOB_SC_D = (int) FFC / 64;
+static_assert(N % 64 == 0 && FFC % 64 == 0, "the Strata Q2 blob holds whole 64-weight blocks");
 template <bool HALF>
 __global__ void blob_dequant_kernel(const uint8_t* __restrict__ blob, uint16_t* __restrict__ gu16,
                                     uint16_t* __restrict__ d16) {
-    constexpr size_t O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
-                     O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
+    constexpr size_t O_D_CODES = (size_t) BLOB_GU_ROWS * BLOB_ROW_GU, O_GU_SC = O_D_CODES + (size_t) N * BLOB_ROW_D,
+                     O_D_SC = O_GU_SC + (size_t) BLOB_GU_ROWS * BLOB_SC_GU * 2;
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // one thread per 4 weights (one code byte)
-    const int64_t n_gu = 1280LL * 640, n_d = 2560LL * 160;
+    const int64_t n_gu = (int64_t) BLOB_GU_ROWS * BLOB_ROW_GU, n_d = (int64_t) N * BLOB_ROW_D;
     if (i < n_gu) {
-        const int64_t row = i / 640, byte = i % 640;
-        const uint8_t c = blob[row * 640 + byte];
-        const uint8_t* sp = blob + O_GU_SC + (size_t) (row * 40 + (byte * 4) / 64) * 2;
+        const int64_t row = i / BLOB_ROW_GU, byte = i % BLOB_ROW_GU;
+        const uint8_t c = blob[row * BLOB_ROW_GU + byte];
+        const uint8_t* sp = blob + O_GU_SC + (size_t) (row * BLOB_SC_GU + (byte * 4) / 64) * 2;
         const float d = __half2float(__ushort_as_half((uint16_t) (sp[0] | (sp[1] << 8))));
-        uint16_t* o = gu16 + row * 2560 + byte * 4;
+        uint16_t* o = gu16 + row * N + byte * 4;
 #pragma unroll
         for (int k = 0; k < 4; ++k) { const float v = (float) (((c >> (2 * k)) & 3) - 1) * d; o[k] = HALF ? hf(v) : bf(v); }
     } else if (i < n_gu + n_d) {
-        const int64_t j = i - n_gu, row = j / 160, byte = j % 160;
-        const uint8_t c = blob[O_D_CODES + row * 160 + byte];
-        const uint8_t* sp = blob + O_D_SC + (size_t) (row * 10 + (byte * 4) / 64) * 2;
+        const int64_t j = i - n_gu, row = j / BLOB_ROW_D, byte = j % BLOB_ROW_D;
+        const uint8_t c = blob[O_D_CODES + row * BLOB_ROW_D + byte];
+        const uint8_t* sp = blob + O_D_SC + (size_t) (row * BLOB_SC_D + (byte * 4) / 64) * 2;
         const float d = __half2float(__ushort_as_half((uint16_t) (sp[0] | (sp[1] << 8))));
-        uint16_t* o = d16 + row * 640 + byte * 4;
+        uint16_t* o = d16 + row * FFC + byte * 4;
 #pragma unroll
         for (int k = 0; k < 4; ++k) { const float v = (float) (((c >> (2 * k)) & 3) - 1) * d; o[k] = HALF ? hf(v) : bf(v); }
     }
 }
 __global__ void swiglu_il_kernel(const float* __restrict__ gu, uint16_t* __restrict__ h16, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * 640) return;
-    const int64_t r = i / 640, k = i % 640;
-    const float g = gu[r * 1280 + 2 * k], u = gu[r * 1280 + 2 * k + 1];
+    if (i >= n * FFC) return;
+    const int64_t r = i / FFC, k = i % FFC;
+    const float g = gu[r * (2 * FFC) + 2 * k], u = gu[r * (2 * FFC) + 2 * k + 1];
     h16[i] = hf_sat(g / (1.0f + __expf(-g)) * u);
 }
 // The Volta prompt experts (gemm_iq_f16_grouped): SwiGLU of the gate/up product's rows (gate 0..n_ff, up n_ff..2 n_ff,
@@ -2300,7 +2320,7 @@ __global__ void swiglu_split_f16_kernel(const float* __restrict__ gu, uint16_t* 
 __global__ void swiglu_pair_kernel(const float* __restrict__ g, const float* __restrict__ u, uint16_t* __restrict__ h16,
                                    int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n * 640) return;
+    if (i >= n * FFC) return;
     const float a = g[i];
     h16[i] = hf_sat(a / (1.0f + __expf(-a)) * u[i]);
 }
@@ -2321,10 +2341,10 @@ __global__ void moe_combine_kernel(const float* __restrict__ Dm, const int32_t* 
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int64_t r = slot[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        const int64_t r = slot[t * KU + k];
         const float v = row_sd ? Dm[r * N + d] * row_sd[r] : Dm[r * N + d];   // the product scale_down_rows stored
-        s = fmaf(w[t * 10 + k], v, s);
+        s = fmaf(w[t * KU + k], v, s);
     }
     bo[i] = s + shared[i] * sigm(sg[t]);
 }
@@ -2339,12 +2359,12 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
     if (i >= T * (N / 4)) return;
     const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
     float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-    float4 v[10];
-    float ww[10];
+    float4 v[KU];
+    float ww[KU];
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        ww[k] = w[t * 10 + k];
-        const int64_t r = slot[t * 10 + k];
+    for (int k = 0; k < KU; ++k) {
+        ww[k] = w[t * KU + k];
+        const int64_t r = slot[t * KU + k];
         v[k] = *reinterpret_cast<const float4*>(Dm + r * N + d);
         if (row_sd) {   // NVFP4 in MMQ: the row's s_down, as moe_combine_kernel applies it
             const float sd = row_sd[r];
@@ -2352,9 +2372,38 @@ __global__ void moe_combine4_kernel(const float* __restrict__ Dm, const int32_t*
         }
     }
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
+    for (int k = 0; k < KU; ++k) {
         s.x = fmaf(ww[k], v[k].x, s.x); s.y = fmaf(ww[k], v[k].y, s.y);
         s.z = fmaf(ww[k], v[k].z, s.z); s.w = fmaf(ww[k], v[k].w, s.w);
+    }
+    const float g = sigm(sg[t]);
+    const float4 sh = shared[i];
+    bo[i] = make_float4(s.x + sh.x * g, s.y + sh.y * g, s.z + sh.z * g, s.w + sh.w * g);
+}
+
+// moe_combine4_kernel with the expert rows as FP16 (fused::dm_f16_used(): the down kernels wrote 2,560 halves a row): the same fmaf order, the rows
+// widened to FP32 first.  Half the bytes of the layer's rows, read once.  (Round 0215, from the Strix dm16 patch.)
+__global__ void moe_combine16_kernel(const uint16_t* __restrict__ Dm, const int32_t* __restrict__ slot,
+                                     const float* __restrict__ w, const float4* __restrict__ shared,
+                                     const float* __restrict__ sg, float4* __restrict__ bo, int64_t T) {
+    const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // float4 index
+    if (i >= T * (N / 4)) return;
+    const int64_t t = i / (N / 4), d = (i % (N / 4)) * 4;
+    uint2 raw[KU];
+    float ww[KU];
+#pragma unroll
+    for (int k = 0; k < KU; ++k) {
+        ww[k] = w[t * KU + k];
+        const int64_t r = slot[t * KU + k];
+        raw[k] = *reinterpret_cast<const uint2*>(Dm + r * N + d);
+    }
+    float4 s = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+#pragma unroll
+    for (int k = 0; k < KU; ++k) {
+        const float a = __half2float(__ushort_as_half((unsigned short) (raw[k].x & 0xffffu))), b = __half2float(__ushort_as_half((unsigned short) (raw[k].x >> 16)));
+        const float c = __half2float(__ushort_as_half((unsigned short) (raw[k].y & 0xffffu))), e = __half2float(__ushort_as_half((unsigned short) (raw[k].y >> 16)));
+        s.x = fmaf(ww[k], a, s.x); s.y = fmaf(ww[k], b, s.y);
+        s.z = fmaf(ww[k], c, s.z); s.w = fmaf(ww[k], e, s.w);
     }
     const float g = sigm(sg[t]);
     const float4 sh = shared[i];
@@ -2412,6 +2461,57 @@ __global__ void rope_kernel(float* __restrict__ x, int64_t heads, int64_t dim, i
     const float a = p[pair], b = p[pair + 32];
     p[pair] = a * c - b * s;
     p[pair + 32] = a * s + b * c;
+}
+// STRATA_QSA_FUSE_NR (default on, =0 runs the chain below as before): rms_rows_kernel + rope_kernel (+ split_q_kernel for
+// the query) in ONE pass over a head's row.  The same arithmetic in the same order as the pair: the sum of squares goes
+// through the same block_sum, the scaled value is (s * x) * w as a float (the pair stored it and reloaded it), and a
+// rotated pair is rotated with rope_kernel's own expressions.  What changes is the traffic: the q chain read and wrote
+// the 24 heads' rows four times (split, norm read, norm write, rope read/write), this reads the source once and writes
+// the result once, and the rope runs in the block that already holds the row instead of 32-thread blocks.
+// Idea: halo-box/strix-llama.cpp #213 ("fused RMS norm + multi-section RoPE", MIT, The ggml authors); the kernel is ours.
+// in[t * in_ts + h * in_hs + d] -> out[t * out_ts + h * dim + d]; in and out may be the same buffer (a block reads its whole
+// row before it writes).  dim <= 256 and >= 64; the first 64 dims are rotated (pair, pair + 32).
+template <bool TAB>
+__global__ void __launch_bounds__(256) rms_rope_rows_kernel(const float* in, int64_t in_ts, int64_t in_hs, float* out,
+                                                            int64_t out_ts, const float* __restrict__ w, int64_t heads,
+                                                            int64_t dim, float eps, int64_t pos0, float theta_scale,
+                                                            float freq_scale, float corr_low, float corr_high,
+                                                            float ext_factor, float mscale, const int32_t* __restrict__ mtab,
+                                                            strata::kernels::RopeTab rt) {
+    __shared__ float sh[32];
+    __shared__ float sv[256];
+    const int64_t row = blockIdx.x;             // t * heads + h
+    const int64_t t = row / heads, h = row % heads;
+    const int tid = threadIdx.x;
+    const float x = tid < dim ? in[t * in_ts + h * in_hs + tid] : 0.0f;
+    // rms_rows_kernel: ss += r[c] * r[c] from 0, one column a thread (dim <= 256) = the rounded square.  The empty asm makes the
+    // square a value the compiler cannot fold into the first add of block_sum's butterfly (it did: fma(x, x, other lane's
+    // square) is another rounding than the sum of two rounded squares; hip_qsa_nr_parity found it on gfx1151, and __fmul_rn
+    // does not stop it: it compiles to the same v_fmac).
+    float ss = x * x;
+#if defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" : "+v"(ss));
+#endif
+    const float sc = rsqrtf(block_sum(ss, sh) / (float) dim + eps);
+    if (tid < dim) sv[tid] = sc * x * w[tid];
+    __syncthreads();
+    float* o = out + t * out_ts + h * dim;
+    if (tid < 32) {                             // rope_kernel: one thread a (pair, pair + 32)
+        const int pair = tid;
+        float c, s;
+        if (!(TAB && strata::kernels::rope_tab_cs(rt, strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair), pair, c,
+                                                  s))) {
+            const float theta_extrap =
+                (float) strata::kernels::mrope_pos(mtab, (int) (pos0 + t), pair) * powf(theta_scale, (float) pair);
+            strata::kernels::rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale,
+                                               pair, c, s);
+        }
+        const float a = sv[pair], b = sv[pair + 32];
+        o[pair] = a * c - b * s;
+        o[pair + 32] = a * s + b * c;
+    } else if (tid >= 64 && tid < dim) {
+        o[tid] = sv[tid];
+    }
 }
 __global__ void split_q_kernel(const float* __restrict__ qf, float* __restrict__ q, int64_t T) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
@@ -2884,7 +2984,7 @@ static void gdn_recurrence_impl(int variant, float* state, const float* h, const
     if (variant == 0 || variant == 1) {
         // STRATA_GDN_CHUNKED=1 (opt-in): the chunked recurrence on the gfx11 matrix cores, FP16 operands (other bits;
         // a shorter chunk or another part takes the kernels below)
-        static const bool chunked = [] { const char* v = std::getenv("STRATA_GDN_CHUNKED"); return v != nullptr && std::atoi(v) != 0; }();
+        static const bool chunked = gdn_chunked_env() != 0;   // (unset: gdn_rec_wmma applies the gfx12 length gate)
         if (chunked && !serial && gdn_rec_wmma(state, h, gate, beta, z, gamma, eps, y, y16, T, (cudaStream_t) stream, ld16)) {
             check("gdn_recurrence (chunked, WMMA)");
             return;
@@ -3111,20 +3211,20 @@ void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t
     else if (n_expert == 256)
         route_kernel<8><<<(unsigned) ((T + 7) / 8), 256, 0, (cudaStream_t) stream>>>(logits, ids, weights, T);
     else
-        strata::kernels::router_top10(logits, (int) T, (int) n_expert, 10, ids, weights, stream);
+        strata::kernels::router_top10(logits, (int) T, (int) n_expert, KU, ids, weights, stream);
     check("route");
 }
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
-    blob_dequant_kernel<false><<<blocks_for(1280LL * 640 + 2560LL * 160), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
+    blob_dequant_kernel<false><<<blocks_for((int64_t) BLOB_GU_ROWS * BLOB_ROW_GU + (int64_t) N * BLOB_ROW_D), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
     check("blob_dequant");
 }
 void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream) {
-    blob_dequant_kernel<true><<<blocks_for(1280LL * 640 + 2560LL * 160), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
+    blob_dequant_kernel<true><<<blocks_for((int64_t) BLOB_GU_ROWS * BLOB_ROW_GU + (int64_t) N * BLOB_ROW_D), 256, 0, (cudaStream_t) stream>>>(blob, gu16, down16);
     check("blob_dequant_f16");
 }
 void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream) {
     if (n <= 0) return;
-    swiglu_il_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(gu, h16, n);
+    swiglu_il_kernel<<<blocks_for(n * FFC), 256, 0, (cudaStream_t) stream>>>(gu, h16, n);
     check("swiglu_interleaved");
 }
 void swiglu_split_f16(const float* gu, uint16_t* h16, int64_t rows, int n_ff, bool interleaved, void* stream) {
@@ -3133,7 +3233,7 @@ void swiglu_split_f16(const float* gu, uint16_t* h16, int64_t rows, int n_ff, bo
     check("swiglu_split_f16");
 }
 void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream) {
-    swiglu_pair_kernel<<<blocks_for(n * 640), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n);
+    swiglu_pair_kernel<<<blocks_for(n * FFC), 256, 0, (cudaStream_t) stream>>>(g, u, h16, n);
     check("swiglu_pair");
 }
 namespace {
@@ -3176,9 +3276,9 @@ __global__ void moe_combine_peer_kernel(const float* __restrict__ Dm, const int3
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int32_t r = slot[t * 10 + k];
-        if (r < rows_local) s = fmaf(w[t * 10 + k], Dm[(int64_t) r * N + d], s);
+    for (int k = 0; k < KU; ++k) {
+        const int32_t r = slot[t * KU + k];
+        if (r < rows_local) s = fmaf(w[t * KU + k], Dm[(int64_t) r * N + d], s);
     }
     bo[i] = (s + peer[i]) + shared[i] * sigm(sg[t]);
 }
@@ -3188,7 +3288,7 @@ __global__ void peer_scatter_add_kernel(float* __restrict__ sum, const float* __
     if (i >= n * N) return;
     const int64_t r = i / N, d = i % N;
     const int32_t p = pair[r];
-    float* o = sum + (int64_t) (p / 10) * N + d;
+    float* o = sum + (int64_t) (p / KU) * N + d;
     *o = fmaf(wk[p], rows[i], *o);
 }
 __global__ void moe_combine_peer16_kernel(const float* __restrict__ Dm, const int32_t* __restrict__ slot,
@@ -3200,9 +3300,9 @@ __global__ void moe_combine_peer16_kernel(const float* __restrict__ Dm, const in
     const int64_t t = i / N, d = i % N;
     float s = 0.0f;
 #pragma unroll
-    for (int k = 0; k < 10; ++k) {
-        const int32_t r = slot[t * 10 + k];
-        if (r < rows_local) s = fmaf(w[t * 10 + k], Dm[(int64_t) r * N + d], s);
+    for (int k = 0; k < KU; ++k) {
+        const int32_t r = slot[t * KU + k];
+        if (r < rows_local) s = fmaf(w[t * KU + k], Dm[(int64_t) r * N + d], s);
     }
     bo[i] = (s + __half2float(__ushort_as_half(peer16[i]))) + shared[i] * sigm(sg[t]);
 }
@@ -3283,6 +3383,13 @@ void moe_combine(const float* Dm, const int32_t* slot, const float* w, const flo
     moe_combine_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(Dm, slot, w, shared, sg, bo, T, row_sd);
     check("moe_combine");
 }
+void moe_combine16(const uint16_t* Dm16, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo, int64_t T,
+                   void* stream) {
+    if (T <= 0) return;
+    moe_combine16_kernel<<<blocks_for(T * (N / 4)), 256, 0, (cudaStream_t) stream>>>(
+        Dm16, slot, w, reinterpret_cast<const float4*>(shared), sg, reinterpret_cast<float4*>(bo), T);
+    check("moe_combine16");
+}
 void moe_shared_init(const float* shared, const float* sg, float* acc, int64_t T, void* stream) {
     if (T <= 0) return;
     moe_shared_init_kernel<<<blocks_for(T * N), 256, 0, (cudaStream_t) stream>>>(shared, sg, acc, T);
@@ -3320,6 +3427,31 @@ void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t p
             x, heads, dim, ld, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor,
             strata::kernels::mrope_table(), rt);
     check("rope");
+}
+void rms_rope_rows(const float* in, int64_t in_ts, int64_t in_hs, float* out, int64_t out_ts, const float* w, int64_t T,
+                   int64_t heads, int64_t dim, float eps, int64_t pos0, const strata::kernels::RopeScaling& scaling,
+                   void* stream) {
+    if (T <= 0) return;
+    if (dim < 64 || dim > 256) {
+        std::fprintf(stderr, "prefill rms_rope_rows: dim %lld is outside 64..256\n", (long long) dim);
+        std::exit(1);
+    }
+    if (const char* why = strata::kernels::rope_scaling_invalid(scaling)) {
+        std::fprintf(stderr, "prefill rope: invalid rope scaling: %s\n", why);
+        std::exit(1);
+    }
+    const float theta_scale = powf((float) scaling.freq_base, -2.0f / 64.0f);
+    const strata::kernels::RopeKernelArgs k = scaling.kernel_args(64);
+    const strata::kernels::RopeTab rt = strata::kernels::rope_table_for(scaling);
+    if (rt.cos != nullptr)
+        rms_rope_rows_kernel<true><<<(unsigned) (T * heads), 256, 0, (cudaStream_t) stream>>>(
+            in, in_ts, in_hs, out, out_ts, w, heads, dim, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high,
+            k.ext_factor, k.attn_factor, strata::kernels::mrope_table(), rt);
+    else
+        rms_rope_rows_kernel<false><<<(unsigned) (T * heads), 256, 0, (cudaStream_t) stream>>>(
+            in, in_ts, in_hs, out, out_ts, w, heads, dim, eps, pos0, theta_scale, k.freq_scale, k.corr_low, k.corr_high,
+            k.ext_factor, k.attn_factor, strata::kernels::mrope_table(), rt);
+    check("rms_rope_rows");
 }
 void split_q(const float* q_full, float* q, int64_t T, void* stream) {
     split_q_kernel<<<blocks_for(T * 24 * 256), 256, 0, (cudaStream_t) stream>>>(q_full, q, T);

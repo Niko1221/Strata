@@ -1,0 +1,381 @@
+{
+ "machine": "mac_large",
+ "set": "ud_iq4_xs_v31",
+ "entries": {
+  "setup": {
+   "entry": "setup",
+   "command": "strata setup --family unsloth --model UD-IQ4_XS-v31 --yes --no-start",
+   "not_driven": "Mac: setup.py hands over to metal/setup_mac.py (mac_setup) and, for DeepSeek, to mac_dsv41_setup(); they write their own configs; not behind a seam yet"
+  },
+  "launch": {
+   "entry": "launch",
+   "command": "strata launch --model UD-IQ4_XS-v31 --yes --no-tui --context 131072",
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "metal",
+     "gb": 0.34
+    }
+   ],
+   "setup_args": [
+    "--yes",
+    "--no-start",
+    "--family",
+    "unsloth",
+    "--model",
+    "UD-IQ4_XS-v31",
+    "--context",
+    "131072",
+    "--vision",
+    "gpu",
+    "--data-dir",
+    "<ROOT>/data"
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_iq4_xs_v31",
+     "--native",
+     "<ROOT>/data/models/UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--resident-budget-gib",
+     "48"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31",
+    "log": "<ROOT>/<STATE>/launch/ud-iq4_xs-v31-128k.engine.log",
+    "lib_dirs": [],
+    "port": 8080,
+    "backend": "metal",
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "engine_ready_s": 1089,
+    "args_derived": "=args",
+    "args_written": "=args"
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_iq4_xs_v31",
+     "--native",
+     "<ROOT>/data/models/UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--resident-budget-gib",
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.7"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.7)"
+    ]
+   }
+  },
+  "app_plain": {
+   "entry": "app_plain",
+   "command": "plain Load unsloth-ud-iq4_xs-v31",
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "metal",
+     "gb": 0.34
+    }
+   ],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": true,
+      "choice": "dflash2",
+      "drafter": "mtp",
+      "gb": 0.34,
+      "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
+      "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "draftingPlan",
+     "mode": null,
+     "noSplit": false,
+     "result": {
+      "needed": false,
+      "choice": "dflash2",
+      "drafter": "dflash2",
+      "gb": 0,
+      "line": "Drafting: DFlash2",
+      "note": "",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_iq4_xs_v31",
+     "--native",
+     "<ROOT>/data/models/UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--resident-budget-gib",
+     "48"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31",
+    "log": "<ROOT>/install/strata-unsloth-ud-iq4_xs-v31.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "backend": "metal",
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "unsloth-ud-iq4_xs-v31"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_iq4_xs_v31",
+     "--native",
+     "<ROOT>/data/models/UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--resident-budget-gib",
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.7"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.7)"
+    ]
+   }
+  },
+  "app_models": {
+   "entry": "app_models",
+   "command": "Models screen: Load unsloth-ud-iq4_xs-v31 with Drafting = Auto",
+   "fetches": [
+    {
+     "call": "ensure_tuned",
+     "file": "qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "variant": "selq4",
+     "backend": "metal",
+     "gb": 0.34
+    }
+   ],
+   "control_calls": [
+    {
+     "call": "draftingPlan",
+     "mode": "auto",
+     "noSplit": false,
+     "result": {
+      "needed": true,
+      "choice": "dflash2",
+      "drafter": "mtp",
+      "gb": 0.34,
+      "line": "Drafting: MTP (the DFlash2 drafter isn't downloaded yet)",
+      "note": "the DFlash2 drafter isn't downloaded yet",
+      "split": false,
+      "mtp_needed": false,
+      "mtp_here": true
+     }
+    },
+    {
+     "call": "draftingFetch",
+     "mode": "auto",
+     "noSplit": false
+    },
+    {
+     "call": "saveProfile"
+    },
+    {
+     "call": "start"
+    }
+   ],
+   "config_file": {
+    "exe": "<ROOT>/engine/strata",
+    "args": [
+     "--pack",
+     "<ROOT>/data/packs/ud_iq4_xs_v31",
+     "--native",
+     "<ROOT>/data/models/UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--spec",
+     "4",
+     "--spec-min-p",
+     "0.5",
+     "--mtp",
+     "<ROOT>/data/mtp/rt",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--resident-budget-gib",
+     "48"
+    ],
+    "cwd": "<REPO>",
+    "tokenizer": "<ROOT>/data/packs/ud_iq4_xs_v31/tokenizer",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-iq4_xs-v31",
+    "log": "<ROOT>/install/strata-unsloth-ud-iq4_xs-v31.log",
+    "lib_dirs": [],
+    "port": 18500,
+    "backend": "metal",
+    "host": "127.0.0.1",
+    "open_browser": false,
+    "drafting": "auto",
+    "mcp": {},
+    "fit_max_tokens": true,
+    "aliases": [
+     "unsloth-ud-iq4_xs-v31"
+    ],
+    "api_key": "<KEY>",
+    "engine_ready_s": 946
+   },
+   "engine": {
+    "exe": "<ROOT>/engine/strata",
+    "argv": [
+     "--pack",
+     "<ROOT>/data/packs/ud_iq4_xs_v31",
+     "--native",
+     "<ROOT>/data/models/UD-IQ4_XS-v31/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00004.gguf",
+     "--expert-profile",
+     "<REPO>/data/expert-profile.bin",
+     "--expert-cache",
+     "auto",
+     "--prefill",
+     "auto",
+     "--max-context",
+     "131072",
+     "--kv",
+     "int8",
+     "--resident-budget-gib",
+     "48",
+     "--draft",
+     "dflash2",
+     "--draft-model",
+     "<ROOT>/data/dflash2/qwen3.8-flash-next-dflash2.strata1.q4_0-selq4.pack",
+     "--draft-fallback",
+     "none",
+     "--mtp-draft-vocab",
+     "<ROOT>/data/mtp/rt/draft_vocab.bin",
+     "--spec",
+     "6",
+     "--draft-conf",
+     "0.7"
+    ],
+    "env_set": {
+     "GGML_NO_BACKTRACE": "1"
+    },
+    "notes": [
+     "[strata] drafting: DFlash2 alone (--draft dflash2, --draft-conf 0.7)"
+    ]
+   }
+  }
+ }
+}
