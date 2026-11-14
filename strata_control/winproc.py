@@ -21,6 +21,27 @@ WINDOWS = os.name == "nt"
 LOCK_OFFSET = 1 << 16
 
 if WINDOWS:
+    
+    def _load_rust_winproc():
+        import ctypes
+        from pathlib import Path
+        dll = Path(__file__).resolve().parent.parent / 'crates' / 'strata-winproc' / 'target' / 'release' / 'strata_winproc.dll'
+        if not dll.is_file():
+            return None
+        lib = ctypes.CDLL(str(dll))
+        lib.strata_try_lock.argtypes = [ctypes.c_ssize_t, ctypes.c_int]
+        lib.strata_try_lock.restype = ctypes.c_int
+        lib.strata_unlock.argtypes = [ctypes.c_ssize_t]
+        lib.strata_unlock.restype = ctypes.c_int
+        lib.strata_process_started.argtypes = [ctypes.c_uint32]
+        lib.strata_process_started.restype = ctypes.c_uint64
+        lib.strata_pid_alive.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint64]
+        lib.strata_pid_alive.restype = ctypes.c_int
+        lib.strata_process_image.argtypes = [ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_uint32]
+        lib.strata_process_image.restype = ctypes.c_int
+        return lib
+    
+    _RUST_WINPROC = _load_rust_winproc() if WINDOWS else None
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -65,6 +86,10 @@ if WINDOWS:
 
     def try_lock(fd: int, *, exclusive: bool) -> bool:
         """Take the lock without waiting. False when another holder has it."""
+        if _RUST_WINPROC is not None:
+            rc = _RUST_WINPROC.strata_try_lock(msvcrt.get_osfhandle(fd), 1 if exclusive else 0)
+            if rc >= 0:
+                return bool(rc)
         handle = msvcrt.get_osfhandle(fd)
         flags = _LOCKFILE_FAIL_IMMEDIATELY | (_LOCKFILE_EXCLUSIVE_LOCK if exclusive else 0)
         if _k32.LockFileEx(handle, flags, 0, 1, 0, ctypes.byref(_overlapped())):
@@ -75,6 +100,9 @@ if WINDOWS:
         raise ctypes.WinError(code, "LockFileEx")
 
     def unlock(fd: int) -> None:
+        if _RUST_WINPROC is not None:
+            if _RUST_WINPROC.strata_unlock(msvcrt.get_osfhandle(fd)) == 0:
+                return
         _k32.UnlockFileEx(msvcrt.get_osfhandle(fd), 0, 1, 0, ctypes.byref(_overlapped()))
 
     def process_started(pid: int) -> int | None:
@@ -82,6 +110,9 @@ if WINDOWS:
         process, it has exited, or its times cannot be read."""
         if type(pid) is not int or pid <= 0:
             return None
+        if _RUST_WINPROC is not None:
+            t = _RUST_WINPROC.strata_process_started(pid)
+            return t or None
         handle = _k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return None

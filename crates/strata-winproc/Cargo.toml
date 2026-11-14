@@ -6,4 +6,7 @@ rust-version = "1.77"
 license = "MIT"
 description = "Windows file-lock, process-identity, and atomic replace primitives for Strata."
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]

@@ -256,6 +256,103 @@ pub mod winproc {
     pub use imp::{pid_alive, process_image, process_started, try_lock, unlock};
 }
 
+pub mod ffi {
+    use super::*;
+    use std::path::PathBuf;
+    use std::slice;
+    use std::time::Duration;
+
+    /// # Safety
+    /// `raw_handle` must be a valid open Windows file handle that remains valid for the call.
+    #[cfg(windows)]
+    #[no_mangle]
+    pub unsafe extern "C" fn strata_try_lock(raw_handle: isize, exclusive: i32) -> i32 {
+        use std::fs::File;
+        use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
+        let file = File::from_raw_handle(raw_handle as RawHandle);
+        let res = winproc::try_lock(&file, exclusive != 0);
+        let _ = file.into_raw_handle();
+        match res {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// # Safety
+    /// `raw_handle` must be a valid open Windows file handle that remains valid for the call.
+    #[cfg(windows)]
+    #[no_mangle]
+    pub unsafe extern "C" fn strata_unlock(raw_handle: isize) -> i32 {
+        use std::fs::File;
+        use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
+        let file = File::from_raw_handle(raw_handle as RawHandle);
+        let res = winproc::unlock(&file);
+        let _ = file.into_raw_handle();
+        if res.is_ok() { 0 } else { -1 }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn strata_process_started(pid: u32) -> u64 {
+        winproc::process_started(pid).unwrap_or(0)
+    }
+
+    #[no_mangle]
+    pub extern "C" fn strata_pid_alive(pid: u32, has_started: i32, started: u64) -> i32 {
+        let s = if has_started != 0 { Some(started) } else { None };
+        match winproc::pid_alive(pid, s) {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(_) => -1,
+        }
+    }
+
+    /// # Safety
+    /// `buf` must be either null or writable for at least `cap` UTF-16 code units.
+    #[no_mangle]
+    pub unsafe extern "C" fn strata_process_image(pid: u32, buf: *mut u16, cap: u32) -> i32 {
+        let Some(img) = winproc::process_image(pid) else {
+            return -1;
+        };
+        let utf16: Vec<u16> = img.encode_utf16().collect();
+        if buf.is_null() || (cap as usize) < utf16.len() {
+            return -1;
+        }
+        std::ptr::copy_nonoverlapping(utf16.as_ptr(), buf, utf16.len());
+        utf16.len() as i32
+    }
+
+    /// # Safety
+    /// `src_ptr` and `dst_ptr` must be valid for reads of `src_len` and `dst_len` bytes respectively.
+    #[no_mangle]
+    pub unsafe extern "C" fn strata_atomic_replace(
+        src_ptr: *const u8,
+        src_len: usize,
+        dst_ptr: *const u8,
+        dst_len: usize,
+        patience_ms: u64,
+    ) -> i32 {
+        if src_ptr.is_null() || dst_ptr.is_null() {
+            return -1;
+        }
+        let Ok(src) = std::str::from_utf8(slice::from_raw_parts(src_ptr, src_len)) else {
+            return -1;
+        };
+        let Ok(dst) = std::str::from_utf8(slice::from_raw_parts(dst_ptr, dst_len)) else {
+            return -1;
+        };
+        match atomic::replace_with_patience(
+            &PathBuf::from(src),
+            &PathBuf::from(dst),
+            Duration::from_millis(patience_ms),
+        ) {
+            Ok(()) => 0,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => 1,
+            Err(_) => -1,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
