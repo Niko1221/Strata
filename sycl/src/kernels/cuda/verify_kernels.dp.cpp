@@ -2225,7 +2225,11 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
             }
         }
     }
-    const bool is_first = (tid < n && first_j == tid && (slot >= 0 || maddr != 0));
+    // TENSOR PARALLEL, EXPERT SPLIT (opt-in): a mirror entry of 1 means "another rank owns this expert".  The entry
+    // joins no group and gets no row here, so its row in the parts stays zero and the owner's rank adds it in the
+    // all-reduce after the combine.  No table holds a 1 unless the split is on, so the plan is unchanged without it.
+    const bool not_mine = (slot < 0 && maddr == 1ull);
+    const bool is_first = (tid < n && first_j == tid && (slot >= 0 || maddr != 0) && !not_mine);
     const int my_cnt = is_first ? count_same : 0;
     const int my_pack = (my_cnt << 16) | (is_first ? 1 : 0);
     const int lane = tid & 31;
@@ -2275,7 +2279,7 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
                                  : maddr;
         start[grp_idx] = ent_start;
     }
-    if (tid < n) {
+    if (tid < n && !not_mine) {
         const int fj_warp = first_j >> 5;
         int fj_tot = s_excl[first_j];
 #pragma unroll
@@ -2289,11 +2293,12 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     if (tid == 0) {
         int groups = 0;
         for (int w = 0; w < n_warps; ++w) groups += s_wsum[w];
+        const int mine = groups >> 16;   // the entries this rank computes: n when no entry is another rank's
         groups &= 0xffff;
-        start[groups] = n;
-        start2[0] = n;
+        start[groups] = mine;
+        start2[0] = mine;
         counts[0] = groups;
-        counts[1] = n;
+        counts[1] = mine;
         counts[2] = 0;
         if (skip != nullptr) {
             /*
@@ -2451,11 +2456,30 @@ bool in_mirror_table(const int32_t* res_layer) {
     return g_mirror_entries <= 0 || res_layer - g_mirror_res < g_mirror_entries;
 }
 }
+namespace {
+// --tp: every further rank's own residency table and its own device copy of the mirror table (the addresses are
+// the same pinned host memory; the table itself has to live on the card whose kernel reads it)
+struct ExtraMirror { const int32_t* res; const unsigned long long* table; long long entries; };
+ExtraMirror g_extra_mirror[8] = {};
+int g_extra_mirrors = 0;
+const unsigned long long* extra_mirror_of(const int32_t* res_layer) {
+    for (int i = 0; i < g_extra_mirrors; ++i) {
+        const ExtraMirror& m = g_extra_mirror[i];
+        if (res_layer >= m.res && res_layer - m.res < m.entries) return m.table + (res_layer - m.res);
+    }
+    return nullptr;
+}
+}
 void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, int32_t* usage, long long entries) {
     g_mirror_entries = entries;
     g_usage = usage;
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
+}
+bool resident_plan_add_mirror(const int32_t* d_res, const unsigned long long* mirror_table, long long entries) {
+    if (d_res == nullptr || mirror_table == nullptr || entries <= 0 || g_extra_mirrors >= 8) return false;
+    g_extra_mirror[g_extra_mirrors++] = ExtraMirror{d_res, mirror_table, entries};
+    return true;
 }
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
@@ -2463,6 +2487,7 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
     int32_t* use = nullptr;                    // the layer's slice of the device routing counts, if on
     if (g_mirror_table != nullptr && in_mirror_table(res_layer)) mir = g_mirror_table + (res_layer - g_mirror_res);
+    if (mir == nullptr) mir = extra_mirror_of(res_layer);
     if (g_usage != nullptr && in_mirror_table(res_layer)) use = g_usage + (res_layer - g_mirror_res);
     static const bool compact = strata::bm_default_on("STRATA_RESIDENT_PLAN_COMPACT", strata::q_of(stream)->get_device(), false);
     const int threads = compact ? std::max(32, ((n_entries + 31) / 32) * 32) : kResidentPlanMax;

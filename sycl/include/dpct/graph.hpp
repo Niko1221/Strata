@@ -10,6 +10,7 @@
 
 #include <sycl/ext/oneapi/experimental/graph.hpp>
 #include <sycl/sycl.hpp>
+#include <mutex>
 #include <unordered_map>
 
 namespace dpct {
@@ -39,7 +40,12 @@ public:
     return instance;
   }
 
+  // STRATA: every method takes `mu_`.  The maps are process-wide, and under tensor parallelism each rank's thread
+  // records its own decode windows at the same time; unlocked, the concurrent inserts and erases corrupted the heap
+  // (4x Arc Pro B60, --tp 4: 3 of 10 runs died in the first decode windows with "malloc(): unaligned tcache chunk
+  // detected" or a segfault, once the ranks' threads no longer shared one CPU).
   void begin_recording(sycl::queue *queue_ptr) {
+    std::lock_guard<std::mutex> lk(mu_);
     // Calling begin_recording on an already recording queue is a no-op in SYCL
     if (queue_graph_map.find(queue_ptr) != queue_graph_map.end()) {
       return;
@@ -57,6 +63,7 @@ public:
 
   void end_recording(sycl::queue *queue_ptr,
                      dpct::experimental::command_graph_ptr *graph) {
+    std::lock_guard<std::mutex> lk(mu_);
     auto it = queue_graph_map.find(queue_ptr);
     if (it == queue_graph_map.end()) {
       return;
@@ -69,6 +76,7 @@ public:
   void get_nodes(dpct::experimental::command_graph_ptr graph,
                  dpct::experimental::node_ptr *nodesArray,
                  std::size_t *numberOfNodes) {
+    std::lock_guard<std::mutex> lk(mu_);
     auto nodes = graph->get_nodes();
     nodes_map[graph] = nodes;
     *numberOfNodes = nodes.size();
@@ -83,6 +91,7 @@ public:
   void get_root_nodes(dpct::experimental::command_graph_ptr graph,
                       dpct::experimental::node_ptr *nodesArray,
                       std::size_t *numberOfNodes) {
+    std::lock_guard<std::mutex> lk(mu_);
     auto root_nodes = graph->get_root_nodes();
     root_nodes_map[graph] = root_nodes;
     *numberOfNodes = root_nodes.size();
@@ -95,6 +104,7 @@ public:
   }
 
 private:
+  std::mutex mu_;
   std::unordered_map<sycl::queue *, command_graph_ptr> queue_graph_map;
   std::unordered_map<dpct::experimental::command_graph_ptr,
                      std::vector<sycl::ext::oneapi::experimental::node>>

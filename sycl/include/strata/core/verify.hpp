@@ -421,6 +421,7 @@ private:
     int32_t last_tokens_[8] = {};
     int64_t n_vocab_ = 0;
     dpct::queue_ptr cs_ = &dpct::get_in_order_queue();
+    float* tp_zero_shared_ = nullptr;   ///< expert split, ranks 1..N-1: zero rows in the shared expert's place
     float* dbgR_ = nullptr;   ///< SYCL port debug: R (token 0) after every layer, n_layers x n_embd
     float* dbgM_ = nullptr;   ///< SYCL port debug: mixed_ (token 0) after every layer
     dpct::queue_ptr sh_cs_ = &dpct::get_in_order_queue();

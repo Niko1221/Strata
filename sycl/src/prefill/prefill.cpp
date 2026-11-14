@@ -2332,6 +2332,10 @@ struct PfTimer {
     std::vector<int> ph;
     size_t used = 0;
     double ms[kPfCount] = {};
+    // the host's own clock between marks: the time this thread took to queue a phase (or waited inside it)
+    double host_ms[kPfCount] = {};
+    int host_ph = -1;
+    std::chrono::steady_clock::time_point host_t;
     // STRATA_PREFILL_SYNC=1 (debug): wait for the GPU at every mark and log the phase that just finished, so a hang
     // names the stage that never completes
     bool sync = std::getenv("STRATA_PREFILL_SYNC") != nullptr;
@@ -2345,6 +2349,12 @@ struct PfTimer {
                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         }
         if (!on) return;
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (host_ph >= 0) host_ms[host_ph] += std::chrono::duration<double, std::milli>(now - host_t).count();
+            host_ph = phase < kPfCount ? phase : -1;
+            host_t = now;
+        }
         if (used == ev.size()) {
             dpct::event_ptr e = nullptr;
             e = new sycl::event();
@@ -2891,6 +2901,7 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                 for (int32_t e = 0; e < m.g->n_expert; ++e) {
                     if (m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0) continue;
                     if (m.pp && m.pp->peer && m.pp->peer->has(l, e)) continue;   // multi-GPU: computed on (or read from) the peer
+                    if (owner_ != nullptr && !owner_[(size_t) l * m.g->n_expert + e]) continue;   // expert split: another rank's
                     int job = -1;
                     const uint8_t* b = nullptr;
                     if (gsrc != nullptr) {   // read by the stager's thread when its turn comes (see Stager::Job)
@@ -3683,6 +3694,13 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                               "'s expert path at a chunk of " + std::to_string(T) + " tokens";
                         return false;
                     }
+                    if (owner_ != nullptr && fused_l) {
+                        err = "prefill: the expert split is not wired for the fused int8 expert path (layer " +
+                              std::to_string(l) + ")";
+                        return false;
+                    }
+                    int64_t zero_row = -1;                // expert split: the Dm row every pair of another rank's expert reads
+                    double split_rows_per_expert = 0.0;   // expert split: the layer's routed rows per routed expert, all ranks'
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false;                // multi-GPU: the peer computed rows of this layer (MMQ path only)
                     if (fused_l) {
@@ -3787,9 +3805,25 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 pe.fold(); dpct::select_device(pd);
                         }
                         std::fill(m.cnt.begin(), m.cnt.end(), 0);
+                        if (owner_ != nullptr) {
+                            // THE INT8 / FP16 CHOICE MUST NOT DEPEND ON WHICH RANK HOLDS WHAT.  `auto` picks per group of
+                            // experts from the group's rows per expert, and a rank's groups are made of its own experts:
+                            // the ranks then mixed the two chains differently from a single card, and the prompt's state
+                            // drifted from it (measured: layer 0 within 0.5% a row, the tokens after the prompt differed).
+                            // Under the split the choice is per LAYER, from every rank's routed rows.
+                            std::vector<char> routed((size_t) m.g->n_expert, 0);
+                            int64_t n_routed = 0;
+                            for (int64_t i = 0; i < T * K; ++i) {
+                                const int32_t e = ids_h[(size_t) i];
+                                if (e >= 0 && e < m.g->n_expert && !routed[(size_t) e]) { routed[(size_t) e] = 1; ++n_routed; }
+                            }
+                            split_rows_per_expert = n_routed > 0 ? (double) (T * K) / (double) n_routed : 0.0;
+                        }
                         for (int64_t i = 0; i < T * K; ++i) {
                             const int32_t e = ids_h[(size_t) i];
                             if (e < 0 || e >= m.g->n_expert) { err = "prefill: routed id out of range"; return false; }
+                            // expert split: another rank's expert gets no rows here (its count stays 0)
+                            if (owner_ != nullptr && !owner_[(size_t) l * m.g->n_expert + e]) continue;
                             ++m.cnt[(size_t) e];
                         }
                         // multi-GPU: the rows of the experts the peer computes go last, as one block [rows_local, T*K)
@@ -3825,8 +3859,20 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             m.off[(size_t) m.g->n_expert] = r;
                         }
                         std::vector<int32_t> fill(m.off.begin(), m.off.end() - 1);
+                        if (owner_ != nullptr) {
+                            // EXPERT SPLIT: this rank's rows are [0, rows_local); every pair of another rank's expert
+                            // reads row `rows_local`, which is zeroed before the combine, so it adds nothing here and
+                            // the owner's rank adds it in the reduce after the combine.
+                            rows_local = m.off[(size_t) m.g->n_expert];
+                            if (rows_local < T * K) zero_row = rows_local;
+                            for (int64_t p = rows_local; p < T * K; ++p) src_h[(size_t) p] = 0;
+                        }
                         for (int64_t i = 0; i < T * K; ++i) {
                             const int32_t e = ids_h[(size_t) i];
+                            if (owner_ != nullptr && !owner_[(size_t) l * m.g->n_expert + e]) {
+                                slot_h[(size_t) i] = (int32_t) rows_local;
+                                continue;
+                            }
                             const int32_t p = fill[(size_t) e]++;
                             slot_h[(size_t) i] = p;
                             src_h[(size_t) p] = (int32_t) (i / K);
@@ -4436,9 +4482,12 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 bool use_i8 = true;
                                 if (i8m == 2) {
                                     static std::map<std::tuple<const void*, int, int>, I8Cross> xover;   // per queue (a layer split has a card per queue)
+                                    // (tensor parallel: every rank's thread comes through here with its own queue)
+                                    static std::mutex xover_mu;
+                                    std::lock_guard<std::mutex> xover_lk(xover_mu);
                                     auto it = xover.find({(const void*) m.cs, f.gu_type, f.d_type});
                                     if (it == xover.end()) it = xover.emplace(std::make_tuple((const void*) m.cs, f.gu_type, f.d_type), i8_calibrate(m, f)).first;
-                                    use_i8 = (double) nr / xg_n < it->second.rows;
+                                    use_i8 = (owner_ != nullptr ? split_rows_per_expert : (double) nr / xg_n) < it->second.rows;
                                     static long groups_i8 = 0, groups_fp = 0;
                                     (use_i8 ? groups_i8 : groups_fp) += 1;
                                     if (static bool said_n = false; !said_n && groups_i8 + groups_fp >= 500) {
@@ -4765,13 +4814,59 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             give_back(consumed);
                         }
                     }
+                    // TPDIAG (STRATA_TP_DIAG_EXPERTS=<layer>): every owned expert's output rows at one layer of the first
+                    // chunk, as a checksum.  Two runs that own the experts differently (STRATA_TP_PREFILL_OWNER) name the
+                    // experts whose arithmetic depends on the rank that computes them.
+                    if (static const char* de = std::getenv("STRATA_TP_DIAG_EXPERTS"); de != nullptr && owner_ != nullptr &&
+                        l <= std::atoll(de) && !m.off.empty() && !m.cnt.empty()) {
+                        static std::atomic<int> printed{0};
+                        if (printed.fetch_add(1) < 64) {
+                            m.cs->wait();
+                            {   // the experts' input and the routing, as this rank sees them (exact: integer sums)
+                                std::vector<float> hx((size_t) T * (size_t) N);
+                                std::vector<int32_t> hi((size_t) T * (size_t) K);
+                                m.cs->memcpy(hx.data(), m.mixed, hx.size() * sizeof(float)).wait();
+                                m.cs->memcpy(hi.data(), m.ids, hi.size() * sizeof(int32_t)).wait();
+                                // (STRATA_TP_DIAG_MIXED_DUMP=<file>: rank 0's input at the named layer, raw floats)
+                                if (const char* dp = std::getenv("STRATA_TP_DIAG_MIXED_DUMP"); dp != nullptr && own_shared_ && l == std::atoll(de))
+                                    if (std::FILE* f = std::fopen(dp, "wb")) { std::fwrite(hx.data(), sizeof(float), hx.size(), f); std::fclose(f); }
+                                uint64_t cx = 0, ci = 0;
+                                for (float v : hx) { uint32_t u; std::memcpy(&u, &v, 4); cx = cx * 1099511628211ull + u; }
+                                for (int32_t v : hi) ci = ci * 1099511628211ull + (uint32_t) v;
+                                std::fprintf(stderr, "TPDIAG ffn-in layer=%lld rank0=%d queue=%p mixed=%016llx ids=%016llx\n", (long long) l,
+                                             (int) own_shared_, (void*) m.cs, (unsigned long long) cx, (unsigned long long) ci);
+                            }
+                            const int64_t rows = m.off[(size_t) m.g->n_expert];
+                            std::vector<float> h((size_t) rows * (size_t) N);
+                            if (rows > 0) m.cs->memcpy(h.data(), m.Dm, h.size() * sizeof(float)).wait();
+                            std::string out;
+                            char b[160];
+                            for (int64_t e = 0; e < m.g->n_expert; ++e) {
+                                const int64_t c = m.cnt[(size_t) e];
+                                if (c <= 0) continue;
+                                double a1 = 0.0, a2 = 0.0;
+                                const float* r0 = h.data() + (size_t) m.off[(size_t) e] * (size_t) N;
+                                for (int64_t i = 0; i < c * N; ++i) { a1 += (double) r0[i]; a2 += (double) r0[i] * (double) r0[i]; }
+                                std::snprintf(b, sizeof b, "TPDIAG expert layer=%lld e=%lld rows=%lld sum=%.9g sumsq=%.9g\n",
+                                              (long long) l, (long long) e, (long long) c, a1, a2);
+                                out += b;
+                            }
+                            std::fputs(out.c_str(), stderr);
+                        }
+                    }
                     pt.mark(kPfCombine, cs);
                     if (peer_now) {   // multi-GPU: the peer's rows are in Dm (or, without P2P, in host memory)
                         (m.cs)->ext_oneapi_submit_barrier({*m.pp->ev_done});
                         if (!m.pp->p2p)
                             copy_f32_wide(m.Dm + (size_t) m.pp->back_at * N, m.pp->host_rows, m.pp->back_rows * N, m.cs);
                     }
+                    if (owner_ != nullptr) {   // expert split: the zero row, and the shared expert on its one rank
+                        if (zero_row >= 0) m.cs->memset(m.Dm + (size_t) zero_row * N, 0, (size_t) N * sizeof(float));
+                        // (the rows, not the gate: the combine multiplies by sigmoid(gate), which is 0.5 at 0)
+                        if (!own_shared_) m.cs->memset(m.shared, 0, (size_t) T * (size_t) N * sizeof(float));
+                    }
                     moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
+                    if (on_ffn && !on_ffn(m.bo, T, l, (void*) m.cs, err)) return false;
                     // debug: STRATA_DBG_NAN=1 reports the first layer of a chunk whose MoE produced non-finite values
                     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {
                         m.cs->wait();
@@ -5169,6 +5264,15 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
         }
         std::fprintf(stderr, "strata prefill timing: %lld tokens, GPU timeline %.0f ms, wall %.0f ms, host staging %.0f ms:%s\n",
                      (long long) n, total, ms_since(t_start), stats_.ms_experts_host, line.c_str());
+        {
+            std::string hl;
+            for (int i = 0; i < kPfCount; ++i) {
+                if (pt.host_ms[i] < 0.5) continue;
+                std::snprintf(b, sizeof b, " %s %.0f", kPfNames[i], pt.host_ms[i]);
+                hl += b;
+            }
+            std::fprintf(stderr, "strata prefill timing: host thread, by the phase it was queuing:%s\n", hl.c_str());
+        }
         std::fprintf(stderr, "strata prefill timing: host: chunk setup (PLE rows, the expert stream plan) %.0f ms, "
                              "waiting for each chunk %.0f ms, after each chunk (the draft layer, progress) %.0f ms, "
                              "PLE %.0f ms\n", host_setup_ms, host_sync_ms, host_chunk_ms, stats_.ms_ple);

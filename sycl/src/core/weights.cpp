@@ -63,6 +63,59 @@ struct Seg {
     Conv conv = Conv::Copy;
 };
 
+/// One index row's footing for THIS rank: whether to read it at all, how much of each plane, and the shape the
+/// arena will hold.  Every division here is CHECKED, because a plane that is not uniform per unit of the split
+/// axis would size the arena one row short - and an arena one row short decodes to plausible weights.
+struct RowShard {
+    bool keep = true;
+    ShardAxis axis = ShardAxis::Replicated;
+    int ranges = 0;
+    ShardRange range[kShardMaxRanges] = {};
+    int64_t units = 0;                                     ///< the split axis's full extent; 0 = not split
+    uint64_t codes = 0, scales = 0, offset = 0, dst = 0;    ///< the SHARDED plane sizes
+    int64_t ne0 = 0, ne1 = 0;                               ///< the SHARDED shape the row reports
+};
+
+bool row_shard(const IndexRow& r, const TensorShard* ts, RowShard& out, std::string& err) {
+    out = RowShard{};
+    out.ne0 = r.ne0;
+    out.ne1 = r.ne1;
+    if (ts != nullptr && !ts->keep) {
+        out.keep = false;
+        return true;
+    }
+    const bool split = ts != nullptr && (ts->axis == ShardAxis::Output || ts->axis == ShardAxis::Input);
+    // A QUANTIZED contraction split keeps the same block range inside EVERY row, so this row's three planes
+    // become one source run per row instead of three contiguous runs.  The sizing below already says so -
+    // `shard_bytes(plane, units = ne0, kept)` is `plane / ne0 * kept`, which is the same bytes whether they
+    // are gathered per row or taken as a block - and the segment builder's `emit` does the per-row block
+    // arithmetic.  The one thing that cannot be checked here is the FORMAT's block size (it is not in the
+    // index), so `emit` refuses a range that is not a whole number of blocks.
+    if (!split) {
+        out.codes = r.codes_bytes;
+        out.scales = r.scales_bytes;
+        out.offset = r.offset_bytes;
+        out.dst = r.dst_bytes;
+        return true;
+    }
+    out.axis = ts->axis;
+    out.ranges = ts->ranges;
+    for (int i = 0; i < ts->ranges; ++i) out.range[i] = ts->range[i];
+    out.units = out.axis == ShardAxis::Output ? r.ne1 : r.ne0;
+    const int64_t kept = ts->kept();
+    if (kept <= 0) {
+        err = r.name + ": a split tensor with no kept range";
+        return false;
+    }
+    if (!shard_bytes(r.codes_bytes, out.units, kept, out.codes, r.name + " (codes)", err)) return false;
+    if (!shard_bytes(r.scales_bytes, out.units, kept, out.scales, r.name + " (scales)", err)) return false;
+    if (!shard_bytes(r.offset_bytes, out.units, kept, out.offset, r.name + " (offset)", err)) return false;
+    if (!shard_bytes(r.dst_bytes, out.units, kept, out.dst, r.name + " (total)", err)) return false;
+    out.ne0 = out.axis == ShardAxis::Input ? kept : r.ne0;
+    out.ne1 = out.axis == ShardAxis::Output ? kept : r.ne1;
+    return true;
+}
+
 const char* file_name(int id) {
     switch (id) {
         case 0: return "dense.bin";
@@ -89,7 +142,7 @@ bool read_at(std::FILE* f, uint64_t off, void* dst, size_t n, std::string& err, 
 }  // namespace
 
 bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::string& err,
-                             const std::set<std::string>* skip) {
+                             const std::set<std::string>* skip, const ShardPlan* shard) {
     const std::string path = pack_dir + "/index.txt";
     std::FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "cannot open " + path; return false; }
@@ -104,19 +157,40 @@ bool WeightTable::pool_bytes(const std::string& pack_dir, uint64_t& out, std::st
             if (std::sscanf(line, "# align %d pool %llu tensors %d", &a, &p, &tensors) == 3) { pool = p; align = a; }
             continue;
         }
-        if (skip == nullptr) continue;
+        if (skip == nullptr && shard == nullptr) continue;
+        // The shape is parsed here as well as the bytes: a sharded row's size is a fraction of the whole, and
+        // which fraction depends on whether the split axis is ne0 or ne1.
         char name[256] = {0};
-        unsigned long long dst_bytes = 0, dummy = 0;
-        int i1 = 0, i2 = 0;
-        if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu", name, &i1, &i2, &dummy, &dummy, &dummy, &dst_bytes) != 7)
+        unsigned long long src_off = 0, src_bytes = 0, dst_off = 0, dst_bytes = 0;
+        long long ne0 = 0, ne1 = 0;
+        int file = 0, kind = 0;
+        if (std::sscanf(line, "%255s %d %d %llu %llu %llu %llu %lld %lld", name, &file, &kind, &src_off,
+                        &src_bytes, &dst_off, &dst_bytes, &ne0, &ne1) != 9)
             continue;
-        if (skip->count(name)) continue;
+        if (skip != nullptr && skip->count(name)) continue;
+        uint64_t bytes = dst_bytes;
+        if (shard != nullptr) {
+            const auto it = shard->find(name);
+            if (it != shard->end()) {
+                const TensorShard& ts = it->second;
+                if (!ts.keep) continue;                     // a `Rank0` tensor on the rank that does not hold it
+                if (ts.axis == ShardAxis::Output || ts.axis == ShardAxis::Input) {
+                    const int64_t total = ts.axis == ShardAxis::Output ? ne1 : ne0;
+                    std::string e;
+                    if (!shard_bytes(dst_bytes, total, ts.kept(), bytes, name, e)) {
+                        err = "pool_bytes: " + e;
+                        std::fclose(f);
+                        return false;
+                    }
+                }
+            }
+        }
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
-        compact += (dst_bytes + a - 1) / a * a;
+        compact += (bytes + a - 1) / a * a;
     }
     std::fclose(f);
     if (pool == 0) { err = "no '# align ... pool ...' header in " + path; return false; }
-    out = skip ? compact : pool;
+    out = (skip != nullptr || shard != nullptr) ? compact : pool;
     return true;
 }
 
@@ -145,7 +219,9 @@ bool WeightTable::index_code_bits(const std::string& pack_dir, const std::string
 
 bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                        uint64_t arena_bytes, std::string &err,
-                       const std::set<std::string> *skip) try {
+                       const std::set<std::string> *skip, const ShardPlan *shard) try {
+    has_shard_ = shard != nullptr;
+    if (has_shard_) shard_ = *shard; else shard_.clear();
     const std::string path = pack_dir + "/index.txt";
     std::FILE* idx = std::fopen(path.c_str(), "rb");
     if (!idx) { err = "cannot open " + path + " (run tools/pack_index.py)"; return false; }
@@ -192,16 +268,36 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
     std::fclose(idx);
 
     if (pool == 0 || rows.empty()) { err = "index.txt has no header or no rows"; return false; }
+
+    // ---- this rank's footing for every row, worked out BEFORE anything is read ------------------------
+    // Whether it holds any bytes, how much of each plane, and the shape it will report.  Doing it here and not
+    // inside the copy loop is what lets the compacted arena's offsets be assigned from the SHARDED sizes: a
+    // sharded tensor is smaller, so every later row's offset moves up.
+    std::vector<RowShard> rsh(rows.size());
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const TensorShard* ts = nullptr;
+        if (shard != nullptr) {
+            const auto it = shard->find(rows[i].name);
+            if (it != shard->end()) ts = &it->second;
+        }
+        if (!row_shard(rows[i], ts, rsh[i], err)) return false;
+    }
+
     // Plan v0.3 P1: a skip set compacts the arena.  Kept rows are re-placed in index order at the index's
-    // alignment; skipped rows keep their metadata and get no bytes.
+    // alignment; skipped rows keep their metadata and get no bytes.  A shard plan compacts for the same
+    // reason - the rows it cuts are not the size the index records - so both go through this one path.
     std::vector<bool> skipped(rows.size(), false);
-    if (skip != nullptr) {
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (skip != nullptr && skip->count(rows[i].name)) skipped[i] = true;
+        if (!rsh[i].keep) skipped[i] = true;
+    }
+    if (skip != nullptr || shard != nullptr) {
         const uint64_t a = align > 0 ? (uint64_t) align : 256;
         uint64_t at = 0;
         for (size_t i = 0; i < rows.size(); ++i) {
-            if (skip->count(rows[i].name)) { skipped[i] = true; continue; }
+            if (skipped[i]) { rows[i].dst_off = 0; continue; }
             rows[i].dst_off = at;
-            at += (rows[i].dst_bytes + a - 1) / a * a;
+            at += (rsh[i].dst + a - 1) / a * a;
         }
         pool = at;
     }
@@ -257,21 +353,22 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
         const IndexRow& r = rows[row_i];
         if (skipped[row_i]) {
             WeightRef wr;
+            const RowShard& rs = rsh[row_i];
             wr.data = nullptr;
             wr.resident = false;
-            wr.bytes = r.dst_bytes;
-            wr.ne0 = r.ne0;
-            wr.ne1 = r.ne1;
-            wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1);
+            wr.bytes = rs.dst;
+            wr.ne0 = rs.ne0;
+            wr.ne1 = rs.ne1;
+            wr.elements = rs.ne0 * (rs.ne1 > 0 ? rs.ne1 : 1);
             wr.kind = r.kind;
             wr.code_bits = r.code_bits;
             wr.code_bias = r.code_bias;
             wr.group_elems = r.group_elems;
             wr.codebook_iq4nl = r.codebook != 0;
             wr.has_offset = r.has_offset != 0;
-            wr.codes_bytes = r.codes_bytes;
-            wr.scales_bytes = r.scales_bytes;
-            wr.offset_bytes = r.offset_bytes;
+            wr.codes_bytes = rs.codes;
+            wr.scales_bytes = rs.scales;
+            wr.offset_bytes = rs.offset;
             wr.src_off = r.src_off;
             wr.src_bytes = r.src_bytes;
             wr.file_id = r.file;
@@ -309,27 +406,98 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
         }
 
         // ---- the segment list: what this tensor's bytes are, plane by plane, in both forms
-        Seg segs[3];
-        int n_segs = 0;
+        //
+        // PLANE-MAJOR IN THE DESTINATION.  `LayerView`'s plane pointers are prefix sums of
+        // codes/scales/offset, so all of a tensor's codes must land before any of its scales.  A sharded row
+        // with several ranges (the GDN q|k|v) therefore emits its ranges PLANE BY PLANE and not range by
+        // range - the one ordering this list cannot get wrong silently.
+        //
+        // The byte arithmetic is `plane_bytes / ne1 * rows_kept` per plane, and every division in it was
+        // already checked by `row_shard`, which refused a plane that is not uniform per row.
+        const RowShard& rs = rsh[row_i];
+        std::vector<Seg> segs;
+        uint64_t dst_at = 0;
         bool bad = false;
         uint64_t sum_src = 0, sum_dst = 0;
+        auto push = [&](uint64_t src_off, uint64_t src_bytes, uint64_t dst_bytes, Conv c) {
+            segs.push_back(Seg{src_off, src_bytes, dst_at, dst_bytes, c});
+            dst_at += dst_bytes;
+            sum_src += src_bytes;
+            sum_dst += dst_bytes;
+        };
+        // The row's source planes, in the order pack_index.py writes them.
+        const uint64_t src_scales = r.scales_fp16 ? r.scales_bytes / 2 : r.scales_bytes;
+        if (r.codes_bytes != 0 && r.scales_fp16 && (r.scales_bytes % 2 || src_scales * 2 != r.scales_bytes)) {
+            err = r.name + ": an fp16 scale plane of an odd byte count";
+            bad = true;
+        }
+        // This rank's ranges, or the single whole-range "range" of an unsharded tensor.
+        ShardRange ranges[kShardMaxRanges];
+        int n_ranges = 1;
+        ranges[0] = ShardRange{0, r.ne1 > 0 ? r.ne1 : 1};
+        const bool input_axis = !bad && rs.axis == ShardAxis::Input;
+        if (!bad && (rs.axis == ShardAxis::Output || rs.axis == ShardAxis::Input)) {
+            n_ranges = rs.ranges;
+            for (int i = 0; i < rs.ranges; ++i) ranges[i] = rs.range[i];
+        }
+        const uint64_t codes_per_row = r.ne1 > 0 ? r.codes_bytes / (uint64_t) r.ne1 : r.codes_bytes;
+        const uint64_t src_scales_per_row = r.ne1 > 0 ? src_scales / (uint64_t) r.ne1 : src_scales;
+        const uint64_t dst_scales_per_row = r.ne1 > 0 ? r.scales_bytes / (uint64_t) r.ne1 : r.scales_bytes;
+        const uint64_t offset_per_row = r.ne1 > 0 ? r.offset_bytes / (uint64_t) r.ne1 : r.offset_bytes;
+        // A CONTRACTION split keeps part of every row, so its runs are per row and its offsets are per unit of
+        // the contraction axis.  `group_elems` is the format's block (0 on a plain tensor, which makes every
+        // division below degenerate to one element and the range check to a no-op) - so one `emit` serves the
+        // quantized planes and the single plain run alike.
+        const int64_t units = r.group_elems > 0 ? r.group_elems : 1;
+        const int64_t rows_full = r.ne1 > 0 ? r.ne1 : 1;
+        const int64_t blocks_full = r.ne0 > 0 ? r.ne0 / units : 0;
+        auto emit = [&](uint64_t plane_src, uint64_t src_per_row, uint64_t dst_per_row, uint64_t src_block,
+                        uint64_t dst_block, Conv c) -> bool {
+            if (!input_axis) {
+                for (int i = 0; i < n_ranges; ++i)
+                    push(plane_src + (uint64_t) ranges[i].begin * src_per_row,
+                         (uint64_t) ranges[i].count() * src_per_row,
+                         (uint64_t) ranges[i].count() * dst_per_row, c);
+                return true;
+            }
+            if (blocks_full <= 0 || src_block == 0 || (dst_block == 0 && dst_per_row != 0)) {
+                err = r.name + ": a contraction split of a plane whose block size is not whole";
+                return false;
+            }
+            for (int64_t row = 0; row < rows_full; ++row) {
+                for (int i = 0; i < n_ranges; ++i) {
+                    const ShardRange& rr = ranges[i];
+                    if (rr.count() <= 0 || rr.begin < 0 || rr.end > r.ne0 || rr.begin % units != 0 ||
+                        rr.count() % units != 0) {
+                        err = r.name + ": a kept contraction range that is not a whole number of " +
+                              std::to_string(units) + "-element units inside " + std::to_string(r.ne0);
+                        return false;
+                    }
+                    const uint64_t b0 = (uint64_t) (rr.begin / units);
+                    const uint64_t nb = (uint64_t) (rr.count() / units);
+                    push(plane_src + (uint64_t) row * src_per_row + b0 * src_block, nb * src_block,
+                         nb * dst_block, c);
+                }
+            }
+            return true;
+        };
+
         if (r.codes_bytes != 0) {
             // A quantized tensor: codes, then scales, then the optional offset plane, each contiguous in the
             // source span in that order (pack_index.py verifies the contiguity and refuses otherwise).
-            segs[n_segs++] = Seg{0, r.codes_bytes, 0, r.codes_bytes, Conv::Copy};
-            if (r.scales_bytes) {
-                const uint64_t src_scale_bytes = r.scales_fp16 ? r.scales_bytes / 2 : r.scales_bytes;
-                if (r.scales_fp16 && (r.scales_bytes % 2 || src_scale_bytes * 2 != r.scales_bytes)) {
-                    err = r.name + ": an fp16 scale plane of an odd byte count";
-                    bad = true;
-                }
-                segs[n_segs++] = Seg{r.codes_bytes, src_scale_bytes, r.codes_bytes, r.scales_bytes,
-                                     r.scales_fp16 ? Conv::WidenF16 : Conv::Copy};
+            // `row_shard` has already refused a QUANTIZED contraction split, so `input_axis` cannot be set
+            // here; the block arithmetic below is what a future version of that case would reuse.
+            const uint64_t codes_block = blocks_full > 0 ? codes_per_row / (uint64_t) blocks_full : 0;
+            if (!bad) bad = !emit(0, codes_per_row, codes_per_row, codes_block, codes_block, Conv::Copy);
+            if (!bad && r.scales_bytes) {
+                const uint64_t sb = blocks_full > 0 ? src_scales_per_row / (uint64_t) blocks_full : 0;
+                const uint64_t db = blocks_full > 0 ? dst_scales_per_row / (uint64_t) blocks_full : 0;
+                bad = !emit(r.codes_bytes, src_scales_per_row, dst_scales_per_row, sb, db,
+                            r.scales_fp16 ? Conv::WidenF16 : Conv::Copy);
             }
-            if (r.offset_bytes) {
-                const uint64_t after = r.codes_bytes + (r.scales_fp16 ? r.scales_bytes / 2 : r.scales_bytes);
-                segs[n_segs++] = Seg{after, r.offset_bytes, r.codes_bytes + r.scales_bytes, r.offset_bytes,
-                                     Conv::Copy};
+            if (!bad && r.offset_bytes) {
+                const uint64_t ob = blocks_full > 0 ? offset_per_row / (uint64_t) blocks_full : 0;
+                bad = !emit(r.codes_bytes + src_scales, offset_per_row, offset_per_row, ob, ob, Conv::Copy);
             }
         } else {
             // Everything else is one run whose transform is the row's kind.  The two promoted types shrink
@@ -340,9 +508,7 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
             else if (r.kind == WeightKind::F16InF32) c = Conv::ToF16;
             const uint64_t elems = (uint64_t) r.ne0 * (uint64_t) (r.ne1 > 0 ? r.ne1 : 1);
             if (c != Conv::Copy && (r.src_bytes != elems * 4 || r.dst_bytes != elems * 2)) {
-                // A promoted type is 4 B/elem in and 2 B/elem out, and nothing else.  If those two numbers do
-                // not say so, the shape and the byte counts disagree and the element count this loop would
-                // use to walk the source is not the element count the pack wrote.
+                // A promoted type is 4 B/elem in and 2 B/elem out, and nothing else.
                 char buf[320];
                 std::snprintf(buf, sizeof buf,
                               "%s: a promoted tensor of %llu elements is %llu B in and %llu B out, not %llu/%llu",
@@ -352,29 +518,30 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                 err = buf;
                 bad = true;
             }
-            segs[n_segs++] = Seg{0, r.src_bytes, 0, r.dst_bytes, c};
+            const uint64_t src_per_row = r.ne1 > 0 ? r.src_bytes / (uint64_t) r.ne1 : r.src_bytes;
+            const uint64_t dst_per_row = r.ne1 > 0 ? r.dst_bytes / (uint64_t) r.ne1 : r.dst_bytes;
+            // A plain tensor has no quant block (`units` is 1 and `blocks_full` is ne0), so a contraction split
+            // of it is one run per row at element granularity - which for a 1-D vector (`ssm_a`, `ssm_dt.bias`)
+            // is simply the first half of the bytes.
+            const uint64_t src_unit = blocks_full > 0 ? src_per_row / (uint64_t) blocks_full : 0;
+            const uint64_t dst_unit = blocks_full > 0 ? dst_per_row / (uint64_t) blocks_full : 0;
+            if (!bad) bad = !emit(0, src_per_row, dst_per_row, src_unit, dst_unit, c);
         }
-        for (int i = 0; i < n_segs; ++i) { sum_src += segs[i].src_bytes; sum_dst += segs[i].dst_bytes; }
         // The segment list is this loop's own idea of the layout, and it is the ONLY thing standing between a
-        // mis-sized plane and a wrong byte offset.  It is checked against both recorded totals, not trusted.
-        if (!bad && (sum_src != r.src_bytes || sum_dst != r.dst_bytes)) {
-            char buf[360];
+        // mis-sized plane and a wrong byte offset.  It is checked against the totals, not trusted: a sharded
+        // row's destination total is what `row_shard` sized the arena for, and its source runs have to stay
+        // inside the span the index records.
+        if (!bad && (sum_dst != rs.dst || sum_src > r.src_bytes)) {
+            char buf[420];
             std::snprintf(buf, sizeof buf,
-                          "%s: the segments cover %llu/%llu B but the index says %llu/%llu - the plane layout "
-                          "this loader built is not the one the index describes",
-                          r.name.c_str(), (unsigned long long) sum_src, (unsigned long long) sum_dst,
-                          (unsigned long long) r.src_bytes, (unsigned long long) r.dst_bytes);
+                          "%s: the segments cover %llu B of a %llu B destination (and %llu B of a %llu B source) "
+                          "- the layout this loader built is not the one the index describes",
+                          r.name.c_str(), (unsigned long long) sum_dst, (unsigned long long) rs.dst,
+                          (unsigned long long) sum_src, (unsigned long long) r.src_bytes);
             err = buf;
             bad = true;
         }
-        if (bad) {
-            sycl::free(stage_in, dpct::get_in_order_queue());
-            sycl::free(stage_out, dpct::get_in_order_queue());
-            return false;
-        }
-
-        for (int si = 0; si < n_segs; ++si) {
-            const Seg& s = segs[si];
+        for (const Seg& s : segs) {
             const bool widening = (s.conv == Conv::WidenF16);
             if (widening && (s.src_bytes & 1ull)) {
                 err = r.name + ": an fp16 plane with an odd source byte count";
@@ -481,19 +648,19 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
 
         WeightRef wr;
         wr.data = dst_base + r.dst_off;
-        wr.bytes = r.dst_bytes;
-        wr.ne0 = r.ne0;
-        wr.ne1 = r.ne1;
-        wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1);
+        wr.bytes = rs.dst;
+        wr.ne0 = rs.ne0;
+        wr.ne1 = rs.ne1;
+        wr.elements = rs.ne0 * (rs.ne1 > 0 ? rs.ne1 : 1);
         wr.kind = r.kind;
         wr.code_bits = r.code_bits;
         wr.code_bias = r.code_bias;
         wr.group_elems = r.group_elems;
         wr.codebook_iq4nl = r.codebook != 0;
         wr.has_offset = r.has_offset != 0;
-        wr.codes_bytes = r.codes_bytes;
-        wr.scales_bytes = r.scales_bytes;
-        wr.offset_bytes = r.offset_bytes;
+        wr.codes_bytes = rs.codes;
+        wr.scales_bytes = rs.scales;
+        wr.offset_bytes = rs.offset;
         wr.src_off = r.src_off;
         wr.src_bytes = r.src_bytes;
         wr.file_id = r.file;
@@ -502,7 +669,8 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
         table_[r.name] = wr;
 
         ++report_.tensors;
-        if ((r.kind == WeightKind::Bf16InF32 || r.kind == WeightKind::F16InF32) && !r.raw16) {
+        if ((r.kind == WeightKind::Bf16InF32 || r.kind == WeightKind::F16InF32) && !r.raw16 &&
+            rs.axis == ShardAxis::Replicated) {
             ++report_.re_rounded;
             report_.bytes_saved += r.src_bytes - r.dst_bytes;
         }

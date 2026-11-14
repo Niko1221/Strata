@@ -13,6 +13,7 @@
 #include "strata/kernels/s2_expert_grouped.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/kernels/ngram.hpp"
+#include "strata/tp/dims.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -31,6 +32,7 @@
 #endif
 
 namespace strata::core {
+using strata::tp::qsa_shapes_rank;
 namespace {
 
 constexpr uint64_t SESSION_STATE_ALIGN = 256;
@@ -41,8 +43,9 @@ uint64_t align_up(uint64_t n, uint64_t a) { return (n + a - 1) / a * a; }
 /// `GdnBuffers::state`/`conv_state` point INTO that carve, so a session with 36 GDN layers has to give each one
 /// its own - they cannot share, because the recurrence is the whole point.
 uint64_t gdn_state_floats(const ModelGeometry& g) {
-    return (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
-           (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+    // TENSOR PARALLEL: this rank's GDN state is its own head range, exactly as `gdn_buffers_bytes` carves it.
+    return (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size +
+           (uint64_t) strata::tp::gdn_channels_rank(g) * (g.ssm_d_conv - 1);
 }
 
 }  // namespace
@@ -177,13 +180,13 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
     int64_t gdn_index = 0;
     for (int64_t l = 0; l < layer; ++l) if (!is_qsa_layer(g, l)) ++gdn_index;
     s.gdn.state = s.gdn_state + (size_t) (gdn_index - s.gdn_ord0) * gdn_state_floats(g);
-    s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+    s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size;
 }
 
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
 void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
-    const strata::kernels::QsaShapes sh = qsa_shapes(g);
+    const strata::kernels::QsaShapes sh = qsa_shapes_rank(g);
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);
@@ -1157,7 +1160,7 @@ bool session_token(const WeightTable &tables, const ModelGeometry &g,
         // every layer start from the previous layer's recurrence, which produces a perfectly finite answer.
         if (!is_qsa_layer(g, l)) {
             s.gdn.state = s.gdn_state + (size_t) gdn_index * gdn_state_floats(g);
-            s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+            s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * strata::tp::gdn_v_heads_rank(g) * g.ssm_state_size;
             ++gdn_index;
         }
 

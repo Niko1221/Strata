@@ -72,6 +72,8 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/program/adapt_decay.hpp"
 #include "strata/program/split_rules.hpp"
+#include "strata/program/tp_pair.hpp"
+#include "strata/program/tp_rules.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
@@ -688,6 +690,13 @@ struct Options {
     /// the later stages' devices "D1,D2,.." (default: the next visible GPUs; "0" with one K: both stages on this
     /// GPU, sharing everything - the bit-exact A/B of the hand-off)
     std::string split_device;
+    /// --tp N (opt-in): TENSOR parallelism - every rank runs every layer and each dense tensor's output axis is
+    /// cut across the ranks, with the ranks meeting on an all-reduce twice per layer.  The value is 2..4: the
+    /// shard table decides whether a geometry can use a given count (KV heads replicate when there are fewer of
+    /// them than ranks).  Mutually exclusive with --layer-split.
+    int tp = 0;
+    /// --tp-device D1[,D2..]: the later ranks' GPUs (default: the next visible ones).
+    std::string tp_device;
     /// --split-skip-if-fits (opt-in; the server passes it for a config's "split_skip_if_fits"): with
     /// --layer-split auto, run on CUDA0 alone when it holds every profiled expert pair plus the whole session (KV),
     /// the drafter and the reserve - a split then only adds hand-offs (two RDNA4 cards: 1,384 vs 1,794 tok/s at 4K)
@@ -1072,12 +1081,24 @@ void drive_pool(void* user, const float* x_f, const int32_t* ids, const float* w
 }
 
 /// Plan v0.3 P6: the pool for a verify window.
+// TENSOR PARALLEL: the ranks share the expert machinery.  `ExpertDispatch` holds POINTERS - the pool,
+// the cache, the source, the lookahead, the remote tiers - and a per-rank `Drive` copy duplicates only the
+// struct, so both ranks dispatch into the SAME pool and cache at the same time.  Dispatched concurrently they
+// race, and then the ranks compute with different experts; this serialises the dispatch while a TP group is
+// installed.  Correctness first: the experts are replicated, not split.
+static bool g_tp_pool_serialise = false;
+static std::mutex g_tp_pool_mutex;
+
 void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                       int64_t layer) {
     Drive* t = (Drive*) user;
     t->d.layers = layer;
     const Clock::time_point a = Clock::now();
-    strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+    {
+        std::unique_lock<std::mutex> lock(g_tp_pool_mutex, std::defer_lock);
+        if (g_tp_pool_serialise) lock.lock();
+        strata::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+    }
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
     // the routing trace for the serve path: the same record format drive_pool writes (layer, k, ids, weights),
@@ -1119,6 +1140,79 @@ void drive_pool_split(void* user, const float* x_f, const int32_t* ids, int64_t 
     d.d.pcie_num = s->pcie_num[st];
     drive_pool_multi(s->base, x_f, ids, n_tok, k, out, layer);
 }
+
+/// A tensor-parallel group: rank 0 is the engine's own verifier/session; ranks 1..n-1 are `TpRank`s.  Every
+/// window runs on every rank in lockstep, each rank's `TpHostRuntime` installed around its `Verifier::run`, and
+/// the expert pool dispatch is serialised (see `g_tp_pool_serialise`).  Rank 0's output is the answer; the
+/// other ranks' logits are discarded.
+struct TpGroup {
+    int n = 0;
+    bool whole = false;   // STRATA_TP_DENSE=replicated: the ranks hold the whole dense model, the experts are split
+    strata::core::Verifier* ver0 = nullptr;
+    std::vector<strata::program::TpRank*> ranks;      // rank 1..n-1
+    std::vector<Drive> drives;                        // per-rank Drive copies (rank 0 uses drives[0])
+    strata::kernels::ArPair* pair = nullptr;
+    std::vector<std::unique_ptr<strata::core::TpHostRuntime>> rt;
+
+    bool run(int T, const int32_t* tokens, int64_t pos, strata::core::PoolMultiFn pool, void* user,
+             int32_t* out0, std::string& err) {
+        if (n <= 0 || ver0 == nullptr) { err = "tensor parallel: no group"; return false; }
+        std::vector<std::string> errs((size_t) n);
+        std::vector<int32_t> outs((size_t) n * (size_t) T);
+        std::vector<std::thread> th;
+        th.reserve((size_t) n);
+        for (int r = 0; r < n; ++r) {
+            th.emplace_back([&, r] {
+                std::string e;
+                if (r > 0) (void) strata::program::TpCpus::get().place_current();   // rank 0 keeps the host's CPU
+                if (whole) strata::core::tp_set_expert_ranks(r, n);
+                else if (!strata::core::tp_set_ranks(r, n, e)) { errs[(size_t) r] = e; return; }
+                strata::core::TpRuntime::install(rt[(size_t) r].get());
+                strata::core::Verifier* v = r == 0 ? ver0 : &ranks[(size_t) r - 1]->ver;
+                int32_t* out = r == 0 ? out0 : outs.data() + (size_t) r * (size_t) T;
+                if (!v->run(T, tokens, pos, pool, &drives[(size_t) r], out, e)) errs[(size_t) r] = e;
+                strata::core::TpRuntime::install(nullptr);
+            });
+        }
+        for (auto& t : th) t.join();
+        for (int r = 0; r < n; ++r) {
+            if (!errs[(size_t) r].empty()) { err = "rank " + std::to_string(r) + ": " + errs[(size_t) r]; return false; }
+            if (drives[(size_t) r].d.failed) {
+                err = "rank " + std::to_string(r) + ": the expert pool failed at layer " +
+                      std::to_string((long long) drives[(size_t) r].d.fail_layer) + " expert " +
+                      std::to_string((long long) drives[(size_t) r].d.fail_expert) + ": " +
+                      (drives[(size_t) r].d.fail ? drives[(size_t) r].d.fail : "(no message)");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool commit(int n_keep, std::string& err) {
+        if (!ver0->commit(n_keep, err)) return false;
+        for (auto* rk : ranks)
+            if (!rk->ver.commit(n_keep, err)) return false;
+        // TPDIAG (STRATA_TP_DIAG_STATE=1): a checksum of the start of every rank's first GDN state after the
+        // commit.  A rank whose line stops changing from one commit to the next is not advancing its session.
+        static const bool diag = std::getenv("STRATA_TP_DIAG_STATE") != nullptr;
+        if (diag && ss0 != nullptr) {
+            static int n_commit = 0;
+            ++n_commit;
+            for (int r = 0; r < n; ++r) {
+                const strata::core::SessionState* s = r == 0 ? ss0 : &ranks[(size_t) r - 1]->ss;
+                sycl::queue* q = r == 0 ? strata::q_of((void*) ver0->stream()) : strata::q_of((void*) ranks[(size_t) r - 1]->stream);
+                std::vector<float> h(4096);
+                q->wait();
+                q->memcpy(h.data(), s->gdn_state, h.size() * sizeof(float)).wait();
+                double a1 = 0.0, a2 = 0.0;
+                for (float v : h) { a1 += (double) v; a2 += (double) v * (double) v; }
+                std::fprintf(stderr, "TPDIAG state commit=%d keep=%d rank=%d sum=%.9g sumsq=%.9g\n", n_commit, n_keep, r, a1, a2);
+            }
+        }
+        return true;
+    }
+    const strata::core::SessionState* ss0 = nullptr;
+};
 
 /// Layer split across GPUs: a later stage on its own device, with its own copy of the dense weights, a session, an
 /// expert cache for its layers, a verify window and a prompt path; the last one also holds the head (the drafter
@@ -1993,6 +2087,8 @@ int main(int argc, char **argv) try {
         else if (a == "--spec-split") o.spec_split = true;
         else if (a == "--layer-split") o.layer_split = next("--layer-split");
         else if (a == "--split-device") o.split_device = next("--split-device");
+        else if (a == "--tp") o.tp = std::atoi(next("--tp"));
+        else if (a == "--tp-device") o.tp_device = next("--tp-device");
         else if (a == "--split-skip-if-fits") o.split_skip_if_fits = true;
         else if (a == "--pcie-mode") o.pcie_mode = next("--pcie-mode");
         else if (a == "--serve") o.serve = true;
@@ -2254,6 +2350,35 @@ int main(int argc, char **argv) try {
                                  "FIRST LAYER of each later GPU, not a count of layers per card: \"24,36,42\" for 4 "
                                  "GPUs, not \"24,12,6,6\" (got \"%s\")\n", n_dev - 1, o.layer_split.c_str());
             return 2;
+        }
+    }
+    // ---- --tp: tensor parallelism.  Every rule lives in `program/tp_rules.hpp`, where it is tested without a
+    // GPU, a model or a command line; here the engine's own parsed flags are handed to it and the one line it
+    // returns is printed.  A refusal then continues on one card.
+    if (o.tp > 0) {
+        strata::program::tp_rules::Options tpo;
+        tpo.tp = o.tp;
+        tpo.serve = o.serve;
+        tpo.layer_split = !o.layer_split.empty();
+        tpo.gpus = (int) strata::core::device_count();
+        tpo.second_device = -1;
+        tpo.same_backend = true;
+        tpo.weakest_cc_major = strata::program::tp_rules::kMinCcMajor;
+        tpo.weakest_cc_minor = strata::program::tp_rules::kMinCcMinor;
+        tpo.batch = o.batch > 0;
+        tpo.pipeline_windows = o.pipeline_windows > 0;
+        tpo.peer_device = o.peer_device >= 1;
+        tpo.remote_experts = o.remote_expert_opt || o.expert_cache_remote[0] > 0 ||
+                             o.expert_cache_remote[1] > 0 || o.expert_cache_remote[2] > 0;
+        tpo.vision = o.vision;
+        tpo.mmap_experts = o.mmap_experts;
+        tpo.kv_resident = o.kv_resident > 0;
+        tpo.prompt_cache_every = false;
+        tpo.session_files = false;
+        const std::string tp_why = strata::program::tp_rules::refusal(tpo);
+        if (!tp_why.empty()) {
+            std::fprintf(stderr, "strata generate: --tp %d is off: %s\n", o.tp, tp_why.c_str());
+            o.tp = 0;
         }
     }
     bool multi_gpu = !split_devs.empty() && !split_same;   // cleared by --split-skip-if-fits before any stage loads
@@ -3051,7 +3176,36 @@ int main(int argc, char **argv) try {
                      (long long) split_at[0] - 1);
     }
     uint64_t pool_bytes = 0;
-    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    // ---- --tp: this rank's split plan, built BEFORE the arena is sized ---------------------------------
+    strata::core::ShardTable shard_table;
+    strata::core::ShardPlan shard_plan;
+    const strata::core::ShardPlan* shard_arg = nullptr;
+    // STRATA_TP_DENSE=replicated (opt-in, with STRATA_TP_EXPERT_SPLIT=1): every rank holds the whole dense model
+    // and only the experts are split, so rank 0 loads exactly what a single card loads.
+    const bool tp_whole = o.tp > 0 && [] {
+        const char* d = std::getenv("STRATA_TP_DENSE");
+        const char* s = std::getenv("STRATA_TP_EXPERT_SPLIT");
+        return d != nullptr && std::strcmp(d, "replicated") == 0 && s != nullptr && std::atoi(s) != 0;
+    }();
+    if (tp_whole) {
+        strata::core::tp_dense_replicated_flag().store(true);
+        std::fprintf(stderr, "strata generate: --tp %d: every rank holds the whole dense model; only the experts "
+                             "are split (STRATA_TP_DENSE=replicated)\n", o.tp);
+    }
+    if (o.tp > 0 && !tp_whole) {
+        if (!strata::core::shard_table_n(g, 0, o.tp, shard_table, err)) {
+            std::fprintf(stderr, "strata generate: --tp %d: %s\n", o.tp, err.c_str());
+            return 2;
+        }
+        if (!strata::core::shard_plan_layers(shard_table, g, 0, shard_plan, err)) {
+            std::fprintf(stderr, "strata generate: --tp %d: %s\n", o.tp, err.c_str());
+            return 2;
+        }
+        shard_arg = &shard_plan;
+        std::fprintf(stderr, "strata generate: --tp %d: rank 0 holds its own share of the dense tensors the "
+                             "plan cuts (see core/shard.hpp)\n", o.tp);
+    }
+    if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip, shard_arg)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -3107,7 +3261,7 @@ int main(int argc, char **argv) try {
         return s;
     };
     strata::core::WeightTable wt;
-    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
+    if (!wt.load(o.pack, arena, pool_bytes, err, skip.empty() ? nullptr : &skip, shard_arg)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
         return 1;
     }
@@ -3118,7 +3272,7 @@ int main(int argc, char **argv) try {
 
     strata::core::NativeDense native_dense;
     if (!o.native_dense_gguf.empty()) {
-        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key)) {
+        if (!native_dense.load(o.native_dense_gguf, wt, err, o.native_ple_key, 0, -1, shard_arg)) {
             std::fprintf(stderr, "strata generate: native dense projections: %s\n", err.c_str());
             return 1;
         }
@@ -4709,6 +4863,14 @@ int main(int argc, char **argv) try {
                      strata::kernels::cpu::host_core_setting() == strata::kernels::cpu::HostCore::Last ? "last" : "first");
         // the same facts in plain words, and whether each worker has a physical core of its own
         std::fprintf(stderr, "strata generate: %s\n", pool.placement_line().c_str());
+        if (o.tp > 0) {   // tensor parallel: the ranks' threads do not share the host's one CPU (see TpCpus)
+            strata::program::TpCpus& tc = strata::program::TpCpus::get();
+            tc.plan(ht.host_core, std::vector<int>(ht.worker_cores.begin(),
+                                                   ht.worker_cores.begin() + std::min<long>((long) ht.worker_cores.size(), pool.workers())));
+            if (tc.n_spare > 0)
+                std::fprintf(stderr, "strata generate: --tp %d: the other ranks' threads run on the %d CPUs that neither the "
+                                     "host thread nor a pool worker is pinned to\n", o.tp, tc.n_spare);
+        }
     }
     if (o.no_ple_prefetch) strata::kernels::ple_prefetch_enable(false);
     // ---- R4's slot storage.  Allocated AFTER the weights and the session, so `cudaMemGetInfo` inside `open`
@@ -7677,6 +7839,14 @@ int main(int argc, char **argv) try {
         ver.set_remote_expert_opt(remote_opt.get());
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
+        // TENSOR PARALLEL: this verifier is rank 0, and it has to SAY SO before `ver.init` carves its state and
+        // computes its head ranges - both derive from `tp_rank_current()`/`tp_ranks_current()`, whose default is
+        // "one rank holds the whole model".  Left at that default, this rank sizes a FULL geometry against tensors
+        // the loader has already cut: a deterministic wrong answer.
+        if (o.tp > 0 && !tp_whole && !strata::core::tp_set_ranks(0, o.tp, err)) {
+            std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
+            return 1;
+        }
         if (!ver.init(wt, g, ss, vh, native_head.loaded() ? &native_head : nullptr,
                       batch_mtp ? strata::kernels::kVerifyMaxT : std::max(o.spec, o.batch), err) ||
             (use_mtp && !mtp.bind(last_st ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
@@ -7684,6 +7854,386 @@ int main(int argc, char **argv) try {
             print_start_refusal("strata serve", err);
             return 1;
         }
+        // ---- TENSOR PARALLEL, ranks 1..N-1 ---------------------------------------------------------------
+        // Rank 0 IS this context (`wt`/`ss`/`vh`/`ver` above were loaded from rank 0's plan when --tp asked for
+        // one).  Every later rank gets its own shards, session, expert tier and verifier, and the ranks meet on
+        // `tp_pair`'s collective from inside every window (`TpGroup::run` below).
+        std::vector<std::unique_ptr<strata::program::TpRank>> tp_ranks;
+        strata::kernels::ArPair tp_pair;
+        TpGroup tp_group;
+        // These MUST outlive the serve loop: the rank verifiers and sessions hold raw pointers into them.
+        std::vector<std::unique_ptr<strata::core::NativeHead>> tp_heads;
+        std::vector<std::unique_ptr<strata::kernels::PleTable>> tp_ple_tables;
+        std::vector<std::vector<float>> tp_ple_host;
+        // Replicated dense: the parallel prompt path's owner tables (one per rank) and its host reduce.
+        std::vector<std::vector<uint8_t>> tp_owned;
+        strata::program::TpBulkReduce tp_bulk;
+        bool tp_prefill_par = false;
+        if (o.tp > 0) {
+            g_tp_pool_serialise = true;
+            // the later ranks' devices: --tp-device D1[,D2..] or the next visible ones
+            std::vector<int> ordinals((size_t) o.tp, 0);
+            ordinals[0] = 0;
+            if (!o.tp_device.empty()) {
+                size_t a = 0;
+                int k = 1;
+                while (a < o.tp_device.size() && k < o.tp) {
+                    size_t b = o.tp_device.find(',', a);
+                    if (b == std::string::npos) b = o.tp_device.size();
+                    ordinals[(size_t) k++] = std::atoi(o.tp_device.substr(a, b - a).c_str());
+                    a = b + 1;
+                }
+                if (k != o.tp) {
+                    std::fprintf(stderr, "strata serve: --tp-device needs %d comma-separated cards\n", o.tp - 1);
+                    return 1;
+                }
+            } else {
+                for (int r = 1; r < o.tp; ++r) ordinals[(size_t) r] = r;
+            }
+            const int64_t max_floats = (int64_t) strata::kernels::kVerifyMaxT * g.n_embd;
+            // STRATA_TP_WIRE=f32: the ranks' partial sums cross as FP32, not rounded to bf16 (twice the bytes a reduce)
+            const strata::kernels::ArWire tp_wire = [] {
+                const char* v = std::getenv("STRATA_TP_WIRE");
+                return v != nullptr && std::string(v) == "f32" ? strata::kernels::ArWire::F32 : strata::kernels::ArWire::Bf16;
+            }();
+            if (tp_wire == strata::kernels::ArWire::F32)
+                std::fprintf(stderr, "strata serve: --tp %d: the reduce carries FP32 (STRATA_TP_WIRE=f32)\n", o.tp);
+            if (!tp_pair.init(ordinals.data(), o.tp, max_floats, tp_wire,
+                              strata::kernels::kArBlocks, err)) {
+                std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
+                return 1;
+            }
+            tp_group.n = o.tp;
+            tp_group.whole = tp_whole;
+            tp_group.ver0 = &ver;
+            tp_group.ss0 = &ss;
+            tp_group.pair = &tp_pair;
+            tp_group.drives.resize((size_t) o.tp);
+            for (int r = 0; r < o.tp; ++r) {
+                tp_group.drives[(size_t) r] = drive;
+                // NO CACHE ADMISSION UNDER TP.  The expert cache is REPLICATED on every rank, and the pool
+                // dispatch would admit a miss into rank 0's cache only - the replicas would then hold different
+                // residents and the ranks would compute different experts.  The hit path still uses each rank's
+                // replica; the pool computes the misses without admitting them.
+                tp_group.drives[(size_t) r].d.cache = nullptr;
+            }
+            // NO ADAPTIVE SWAPS: a swap changes rank 0's cache and not the replicas, for the same reason.
+            o.adapt_every = 1000000;
+            tp_group.rt.resize((size_t) o.tp);
+            for (int r = 0; r < o.tp; ++r)
+                tp_group.rt[(size_t) r] = std::make_unique<strata::core::TpHostRuntime>(&tp_pair, r);
+            std::set<std::string> tp_skip = skip;
+            tp_skip.erase("output.weight");
+            // THE HEAD IS PER RANK.  The shard table keeps the head on rank 0, so ranks 1..N-1 have no
+            // `output.weight` in their arena; handing the verifier a null head makes it fall back to the
+            // canonical head, which dereferences the skipped tensor and faults.  Each rank loads its own copy
+            // on its own device, exactly as the CUDA TP prototype does.
+            if (native_head.loaded()) {
+                for (int r = 1; r < o.tp; ++r) {
+                    auto h = std::make_unique<strata::core::NativeHead>();
+                    const strata::core::OnDevice on_head(ordinals[(size_t) r]);
+                    if (!h->load(o.native_head_shards, g.n_embd, n_vocab, err)) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's own head: %s\n", o.tp, r, err.c_str());
+                        return 1;
+                    }
+                    tp_heads.push_back(std::move(h));
+                }
+            }
+            // THE EXPERT SPLIT (opt-in, STRATA_TP_EXPERT_SPLIT=1).  Without it every rank holds a copy of rank 0's
+            // cache and computes every routed expert, most of them over PCIe from the host mirror.  With it rank 0
+            // keeps the experts in its cache, the mirrored ones are dealt to ranks 1..N-1 until their caches are
+            // full (STRATA_TP_RANK_CACHE_MIB, default rank 0's cache size), and what is left over is owned round
+            // robin and read from the mirror by its owner alone.  `tp_owner` is the owning rank of each expert.
+            std::vector<std::vector<strata::program::TpOwnedExpert>> tp_own((size_t) o.tp);
+            std::vector<int8_t> tp_owner;
+            std::vector<unsigned long long> tp_tab;
+            {
+                const char* sv = std::getenv("STRATA_TP_EXPERT_SPLIT");
+                const char* nh = std::getenv("STRATA_VERIFY_NO_HOST");
+                const char* dp = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
+                const bool want = sv != nullptr && std::atoi(sv) != 0;
+                const bool lean_env = nh != nullptr && std::atoi(nh) != 0 && dp != nullptr && std::atoi(dp) != 0;
+                if (want && (mirror_table_d == nullptr || !xcache.valid() || !lean_env)) {
+                    std::fprintf(stderr, "strata serve: --tp %d: STRATA_TP_EXPERT_SPLIT needs the host mirror and "
+                                         "STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1; the experts stay replicated\n", o.tp);
+                } else if (want) {
+                    const size_t n_tab = (size_t) (g.n_layers * g.n_expert);
+                    tp_tab.resize(n_tab);
+                    dpct::get_in_order_queue().memcpy(tp_tab.data(), mirror_table_d, n_tab * sizeof(unsigned long long)).wait();
+                    tp_owner.assign(n_tab, 0);
+                    const char* cm = std::getenv("STRATA_TP_RANK_CACHE_MIB");
+                    const uint64_t cap = cm != nullptr ? (uint64_t) std::atoll(cm) << 20 : (uint64_t) xcache.bytes();
+                    std::vector<uint64_t> used((size_t) o.tp, 0);
+                    std::vector<uint8_t> seen(n_tab, 0);
+                    size_t rr = 0, left = 0, n_missing = 0;
+                    const auto& xlay = strata::kernels::cpu::expert_layout();
+                    auto deal = [&](int64_t l, int64_t e) {
+                        const size_t i = (size_t) (l * g.n_expert + e);
+                        if (l < 0 || l >= g.n_layers || e < 0 || e >= g.n_expert || seen[i]) return;
+                        seen[i] = 1;
+                        if (xcache.slot_of(l, e) != strata::core::kNotResident) return;   // rank 0 holds it
+                        if (tp_tab[i] == 0) { ++n_missing; return; }
+                        const uint64_t b = ((uint64_t) xlay.blob_bytes(l) + 255) / 256 * 256;
+                        for (int t = 0; t < o.tp - 1; ++t) {
+                            const int r = 1 + (int) ((rr + (size_t) t) % (size_t) (o.tp - 1));
+                            if (used[(size_t) r] + b > cap) continue;
+                            used[(size_t) r] += b;
+                            tp_own[(size_t) r].push_back({(int32_t) l, (int32_t) e, (const uint8_t*) tp_tab[i],
+                                                          (int64_t) xlay.blob_bytes(l)});
+                            tp_owner[i] = (int8_t) r;
+                            ++rr;
+                            return;
+                        }
+                        tp_owner[i] = (int8_t) (left++ % (size_t) o.tp);   // no cache has room: its owner reads the mirror
+                    };
+                    for (const auto& pr : profile) deal(pr.first, pr.second);   // the most routed first
+                    for (int64_t l = 0; l < g.n_layers; ++l)
+                        for (int64_t e = 0; e < g.n_expert; ++e) deal(l, e);
+                    bool every = n_missing == 0;
+                    for (int r = 1; r < o.tp; ++r) every = every && !tp_own[(size_t) r].empty();
+                    if (!every) {
+                        std::fprintf(stderr, "strata serve: --tp %d: STRATA_TP_EXPERT_SPLIT: %zu experts are in no cache and "
+                                             "not mirrored, or a rank got none; the experts stay replicated\n", o.tp, n_missing);
+                        tp_owner.clear();
+                        for (auto& v : tp_own) v.clear();
+                    } else {
+                        strata::core::tp_expert_split_flag().store(true);
+                        std::fprintf(stderr, "strata serve: --tp %d: expert split on: rank 0 holds %lld experts", o.tp,
+                                     (long long) xcache.slots());
+                        for (int r = 1; r < o.tp; ++r)
+                            std::fprintf(stderr, ", rank %d %zu (%.2f GiB)", r, tp_own[(size_t) r].size(),
+                                         (double) used[(size_t) r] / 1073741824.0);
+                        std::fprintf(stderr, "; %zu stay in the host mirror\n", left);
+                    }
+                }
+            }
+            if (tp_whole && tp_owner.empty()) {   // whole ranks that all computed every expert would count them N times
+                std::fprintf(stderr, "strata serve: --tp %d: STRATA_TP_DENSE=replicated needs the expert split, which "
+                                     "did not turn on (see above)\n", o.tp);
+                return 1;
+            }
+            for (int r = 1; r < o.tp; ++r) {
+                auto rk = std::make_unique<strata::program::TpRank>();
+                // (a whole rank skips what the engine itself skips: it has no plan that keeps the head off it)
+                if (!rk->build(o.pack, o.native_shards, tp_whole ? &skip : &tp_skip, g, o.max_context, ss.k, ordinals[(size_t) r], r,
+                               o.tp, tp_heads.empty() ? nullptr : tp_heads[(size_t) r - 1].get(),
+                               std::max(o.spec, o.batch), err, &vh,
+                               xcache.valid() ? xcache.bytes() : 0, &sized_slots,
+                               tp_owner.empty() ? nullptr : &tp_own[(size_t) r], tp_whole)) {
+                    std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
+                    return 1;
+                }
+                tp_ranks.push_back(std::move(rk));
+                tp_group.ranks.push_back(tp_ranks.back().get());
+            }
+            // RANK 1..N-1'S MIRROR TABLE.  With STRATA_VERIFY_NO_HOST the experts that are not in VRAM are read
+            // from pinned host memory through a device table of their addresses, found from the residency table's
+            // pointer.  Only rank 0's was registered, so on every other rank a window with one such expert had no
+            // plan and its routed experts' rows were zeros (measured: rank 1's expert outputs all zero, TP=2).
+            if (mirror_table_d != nullptr) {
+                const size_t n_tab = (size_t) (g.n_layers * g.n_expert);
+                std::vector<unsigned long long> tab(n_tab);
+                dpct::get_in_order_queue().memcpy(tab.data(), mirror_table_d, n_tab * sizeof(unsigned long long)).wait();
+                if (!tp_owner.empty()) {   // expert split: 1 = "another rank owns this expert" in rank 0's table
+                    std::vector<unsigned long long> t0 = tab;
+                    for (size_t i = 0; i < n_tab; ++i)
+                        if (tp_owner[i] != 0) t0[i] = 1ull;
+                    dpct::get_in_order_queue().memcpy(mirror_table_d, t0.data(), n_tab * sizeof(unsigned long long)).wait();
+                }
+                const std::vector<unsigned long long> tab_all = tab;
+                for (int r = 1; r < o.tp; ++r) {
+                    if (!tp_owner.empty())   // this rank's view: its own experts' addresses, 1 for everyone else's
+                        for (size_t i = 0; i < n_tab; ++i) tab[i] = tp_owner[i] == (int8_t) r ? tab_all[i] : 1ull;
+                    strata::program::TpRank& rk = *tp_ranks[(size_t) r - 1];
+                    const strata::core::OnDevice on_mir(ordinals[(size_t) r]);
+                    unsigned long long* t = sycl::malloc_device<unsigned long long>(n_tab, dpct::get_in_order_queue());
+                    if (t == nullptr || rk.residency == nullptr) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's mirror table failed\n", o.tp, r);
+                        return 1;
+                    }
+                    dpct::get_in_order_queue().memcpy(t, tab.data(), n_tab * sizeof(unsigned long long)).wait();
+                    if (!strata::kernels::resident_plan_add_mirror(rk.residency, t, (long long) n_tab)) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's mirror table was refused\n", o.tp, r);
+                        return 1;
+                    }
+                }
+            }
+            // RANK 1..N-1'S PLE.  The engine wires its own above; each rank's `ss.ple` was left empty, so
+            // `ple.ready()` would be false and the whole per-layer embedding would be silently skipped on that
+            // rank - the ranks would run different models.  Same tensors, looked up in each rank's table and
+            // allocated on each rank's card; the file reader is per rank (it holds prefetch tickets, a row cache
+            // and an IO worker, and one reader cannot serve two ranks).
+            if (ss.ple.table != nullptr) {
+                for (int r = 1; r < o.tp; ++r) {
+                    strata::core::SessionState& s1 = tp_ranks[(size_t) r - 1]->ss;
+                    const strata::core::OnDevice on_ple(ordinals[(size_t) r]);
+                    strata::kernels::PleIoOptions pio1;
+                    pio1.mode = o.ple_io == "mmap" || o.ple_io == "ram" ? strata::kernels::PleIo::Mmap
+                                                                       : strata::kernels::PleIo::Direct;
+                    pio1.lock = o.ple_io == "ram";
+                    pio1.max_inflight = (uint32_t) o.ple_inflight;
+                    pio1.cache_rows = (uint64_t) o.ple_row_cache;
+                    pio1.io_thread = !o.ple_sync_submit;
+                    pio1.keepalive_ms = 0;
+                    pio1.keepalive_window_s = 60.0;
+                    auto tbl = std::make_unique<strata::kernels::PleTable>();
+                    if (!tbl->open(o.ple_gguf, err, pio1)) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's PLE reader: %s\n", o.tp, r, err.c_str());
+                        return 1;
+                    }
+                    tp_ple_host.emplace_back((size_t) strata::kernels::NG_N_EMBD);
+                    const strata::core::WeightRef* wk = tp_ranks[(size_t) r - 1]->wt.find("blk.1.ple_key.weight");
+                    const strata::core::WeightRef* wv = tp_ranks[(size_t) r - 1]->wt.find("blk.1.ple_value.weight");
+                    const strata::core::WeightRef* wnk = tp_ranks[(size_t) r - 1]->wt.find("blk.1.ple_norm_key.weight");
+                    const strata::core::WeightRef* wnq = tp_ranks[(size_t) r - 1]->wt.find("blk.1.ple_norm_query.weight");
+                    const strata::core::WeightRef* wnc = tp_ranks[(size_t) r - 1]->wt.find("blk.1.ple_norm_conv.weight");
+                    const strata::core::WeightRef* wc = tp_ranks[(size_t) r - 1]->wt.find("blk.1.ple_conv1d.weight");
+                    if (wk == nullptr || wv == nullptr || wnk == nullptr || wnq == nullptr || wnc == nullptr ||
+                        wc == nullptr) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's PLE weights are missing\n", o.tp, r);
+                        return 1;
+                    }
+                    if (!wk->quantized()) s1.ple.w.key_bf16 = (const uint16_t*) wk->data;
+                    else if (wk->data != nullptr) {
+                        s1.ple.w.key_codes = (const uint8_t*) wk->data;
+                        s1.ple.w.key_scales = (const float*) ((const uint8_t*) wk->data + wk->codes_bytes);
+                    }
+                    if (wk->native_data != nullptr) {
+                        s1.ple.w.key_native_data = wk->native_data;
+                        s1.ple.w.key_native_type = wk->native_type;
+                        s1.ple.w.key_native_q8_1 = wk->native_q8_1;
+                    }
+                    s1.ple.w.value_bf16 = (const uint16_t*) wv->data;
+                    s1.ple.w.norm_key = (const float*) wnk->data;
+                    s1.ple.w.norm_query = (const float*) wnq->data;
+                    s1.ple.w.norm_conv = (const float*) wnc->data;
+                    s1.ple.w.conv1d_f16 = (const uint16_t*) wc->data;
+                    s1.ple.consts = ss.ple.consts;
+                    s1.ple.table = tbl.get();
+                    s1.ple.token = &s1.ple_token;
+                    s1.ple.prev = s1.ple_prev;
+                    s1.ple.emb_host = tp_ple_host.back().data();
+                    void* e1 = sycl::malloc_device<float>((size_t) strata::kernels::NG_N_EMBD, dpct::get_in_order_queue());
+                    void* sb1 = sycl::malloc_device<uint8_t>(strata::core::ple_run_scratch_bytes(), dpct::get_in_order_queue());
+                    if (e1 == nullptr || sb1 == nullptr) {
+                        std::fprintf(stderr, "strata serve: --tp %d: rank %d's PLE buffers failed\n", o.tp, r);
+                        return 1;
+                    }
+                    s1.ple.emb_dev = (float*) e1;
+                    s1.ple.scratch = (float*) sb1;
+                    s1.ple.hist = s1.ple_hist;
+                    tp_ple_tables.push_back(std::move(tbl));
+                    std::fprintf(stderr, "strata serve: --tp %d: rank %d's PLE wired (ready=%d)\n", o.tp, r,
+                                 (int) s1.ple.ready());
+                }
+            }
+            // THE PARALLEL PROMPT PATH (replicated dense; STRATA_TP_PREFILL=rank0 keeps the prompt on rank 0 alone).
+            // Every rank reads the prompt on its own batched path, computing only the experts it owns, and the ranks'
+            // layer outputs are added on the host after every combine (`TpBulkReduce`).  No rank streams another
+            // rank's experts, and no state is copied afterwards: every rank's session advanced by itself.
+            if (tp_whole && !tp_owner.empty() && o.prefill_chunk > 0 && srcp != nullptr) {
+                const char* pm = std::getenv("STRATA_TP_PREFILL");
+                const bool want = pm == nullptr || std::strcmp(pm, "rank0") != 0;
+                const size_t n_tab = tp_owner.size();
+                tp_owned.assign((size_t) o.tp, std::vector<uint8_t>(n_tab, 0));
+                for (size_t i = 0; i < n_tab; ++i) tp_owned[(size_t) tp_owner[i]][i] = 1;
+                bool ok = want;
+                int64_t rank_chunk = 0;
+                static constexpr int64_t kRankChunks[] = {8192, 6144, 4096, 3072, 2048, 1536, 1024, 512};
+                for (int r = 1; ok && r < o.tp; ++r) {
+                    strata::program::TpRank& rk = *tp_ranks[(size_t) r - 1];
+                    const strata::core::OnDevice on_sp(ordinals[(size_t) r]);
+                    bool up = false;
+                    for (const int64_t c : kRankChunks) {
+                        if (c > o.prefill_chunk || (rank_chunk > 0 && c > rank_chunk)) continue;
+                        std::string e2;
+                        if (rk.sp.init(rk.wt, g, rk.ss, srcp, &rk.xcache, rk.h_res_own.data(), c, (void*) rk.stream, e2)) {
+                            up = true;
+                            rank_chunk = c;
+                            break;
+                        }
+                        rk.sp.reset();
+                        if (e2.find("do not fit") == std::string::npos) {
+                            std::fprintf(stderr, "strata serve: --tp %d: rank %d's prompt path: %s\n", o.tp, r, e2.c_str());
+                            break;
+                        }
+                    }
+                    rk.sp_ready = up;
+                    ok = up;
+                }
+                if (ok) {
+                    std::vector<sycl::queue*> qs;
+                    for (int r = 0; r < o.tp; ++r) {
+                        const strata::core::OnDevice on_q(ordinals[(size_t) r]);
+                        qs.push_back(&dpct::get_in_order_queue());
+                    }
+                    if (!tp_bulk.init(qs, (size_t) o.prefill_chunk * (size_t) g.n_embd)) ok = false;
+                }
+                // TPDIAG (STRATA_TP_PREFILL_OWNER=<r>): rank r owns every expert on the prompt path and the other ranks
+                // add zeros - the plumbing (lockstep, reduce, the ranks' dense paths) without the ownership filter.
+                if (const char* ow = std::getenv("STRATA_TP_PREFILL_OWNER"); ok && ow != nullptr)
+                    for (int r = 0; r < o.tp; ++r)
+                        std::fill(tp_owned[(size_t) r].begin(), tp_owned[(size_t) r].end(), r == std::atoi(ow) ? 1 : 0);
+                if (ok) {
+                    for (int r = 0; r < o.tp; ++r) {
+                        strata::prefill::Prefill& p = r == 0 ? sp : tp_ranks[(size_t) r - 1]->sp;
+                        p.set_expert_owner(tp_owned[(size_t) r].data(), r == 0);
+                        p.on_ffn = [&tp_bulk, r, &g](float* bo, int64_t T, int64_t l, void* stream, std::string& e) -> bool {
+                            return tp_bulk.reduce(r, bo, T * g.n_embd, *strata::q_of(stream), e, l);
+                        };
+                    }
+                    tp_prefill_par = true;
+                    std::fprintf(stderr, "strata serve: --tp %d: every rank reads the prompt on its own batched path "
+                                         "(chunks of up to %lld tokens on ranks 1..%d)\n", o.tp, (long long) rank_chunk,
+                                 o.tp - 1);
+                } else if (want) {
+                    for (auto& rk : tp_ranks)
+                        if (rk->sp_ready) { const strata::core::OnDevice on_sp(rk->dev); rk->sp.reset(); rk->sp_ready = false; }
+                    std::fprintf(stderr, "strata serve: --tp %d: the ranks' own prompt paths did not come up; rank 0 reads "
+                                         "the prompt and its state is copied to the others\n", o.tp);
+                }
+            }
+            std::fprintf(stderr, "strata serve: --tp %d: %d ranks on devices", o.tp, o.tp);
+            for (int r = 0; r < o.tp; ++r) std::fprintf(stderr, " %d", ordinals[(size_t) r]);
+            std::fprintf(stderr, ", every rank runs every layer\n");
+        }
+        // The serve loop's window and commit seams: rank 0 alone when TP is off, every rank in lockstep when it
+        // is on.  A lambda rather than a branch at every call site, so no site can forget one of the ranks.
+        auto tp_run = [&](int T, const int32_t* tok, int64_t pos, strata::core::PoolMultiFn pool, void* user,
+                          int32_t* out, std::string& e) -> bool {
+            const bool ok = o.tp > 0 ? tp_group.run(T, tok, pos, pool, user, out, e)
+                                     : ver.run(T, tok, pos, pool, user, out, e);
+            // TPDIAG (STRATA_TP_DIAG_FINAL=1): a checksum of every rank's final hidden rows after the window.
+            // The ranks of a correct group hold the same residual, and it is the single card's for the same
+            // window (read the prompt through the windows there too: --short-read 100000).
+            static const bool diag = std::getenv("STRATA_TP_DIAG_FINAL") != nullptr;
+            static int n_win = 0;
+            if (diag && ok && ++n_win <= 12) {
+                const int nr = o.tp > 0 ? o.tp : 1;
+                for (int r = 0; r < nr; ++r) {
+                    strata::core::Verifier& v = r == 0 ? ver : tp_group.ranks[(size_t) r - 1]->ver;
+                    sycl::queue* q = strata::q_of((void*) v.stream());
+                    std::vector<float> h((size_t) g.n_embd);
+                    q->wait();
+                    q->memcpy(h.data(), v.final_R_all(), h.size() * sizeof(float)).wait();
+                    double a1 = 0.0, a2 = 0.0;
+                    for (float x : h) { a1 += (double) x; a2 += (double) x * (double) x; }
+                    std::fprintf(stderr, "TPDIAG final win=%d T=%d pos=%lld rank=%d sum=%.9g sumsq=%.9g x0=%.7g x1=%.7g out0=%d\n",
+                                 n_win, T, (long long) pos, r, a1, a2, (double) h[0], (double) h[1], r == 0 ? out[0] : -1);
+                }
+            }
+            return ok;
+        };
+        auto tp_commit = [&](int n_keep, std::string& e) -> bool {
+            return o.tp > 0 ? tp_group.commit(n_keep, e) : ver.commit(n_keep, e);
+        };
+        auto tp_wait_commit = [&](std::string& e) -> bool {
+            if (!ver.wait_commit(e)) return false;
+            if (o.tp > 0)
+                for (auto* rk : tp_group.ranks)
+                    if (!rk->ver.wait_commit(e)) return false;
+            return true;
+        };
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
         if (use_df2) {   // DFlash2 in the serve loop: one card, one request at a time; no MTP to draft instead, so anything it cannot do ends the start
             std::string why_not;
@@ -9217,7 +9767,7 @@ int main(int argc, char **argv) try {
             if (peer.valid()) { e = "VRAM: not with --peer-device"; return false; }
             for (const PfPart& p : pf_parts)
                 if (!p.lent.empty()) { e = "VRAM: a prompt's loan is still out"; return false; }
-            if (!ver.wait_commit(e)) return false;
+            if (!tp_wait_commit(e)) return false;
             apply_pending(true);                     // the adaptive tier's swaps in flight land first
             if (DPCT_CHECK_ERROR(
                     dpct::get_current_device().queues_wait_and_throw()) != 0) {
@@ -10378,7 +10928,8 @@ int main(int argc, char **argv) try {
             if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
-                    if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
+                    if (o.tp == 0 &&   // --tp: a checkpoint holds rank 0's session only; the live session is every rank's
+                        (int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
                         resume = (int64_t) c.ids.size();
                         from_live = false;
                     }
@@ -10586,6 +11137,11 @@ int main(int argc, char **argv) try {
                     strata::core::session_zero(st->ss, g, nullptr, (void*) st->stream);
                     st->stream->wait();
                 }
+                for (auto* rk : tp_group.ranks) {   // --tp: every rank starts the sequence from the same empty state
+                    const strata::core::OnDevice on(rk->dev);
+                    strata::core::session_zero(rk->ss, g, nullptr, (void*) rk->stream);
+                    if (rk->stream != nullptr) rk->stream->wait();
+                }
                 checks.clear();
             } else if (!from_live) {
                 ConvCheckpoint* c = nullptr;
@@ -10665,6 +11221,11 @@ int main(int argc, char **argv) try {
             static const bool no_short = std::getenv("STRATA_CKPT_REREAD") != nullptr;
             int64_t req_short_read = o.short_read;   // STRATA_PIPELINE_SWITCH may set it per request (short_read=)
             auto windows_ok = [&](int64_t a, int64_t b) -> bool {
+                // TENSOR PARALLEL: the prompt must be read through the same verify windows on every rank.  The
+                // batched path is not wired for a group, and a rank that took it would skip the collective.
+                // (STRATA_TP_DENSE=replicated: rank 0 is a whole model, so it reads a long prompt on the batched
+                // path and its state is copied to the other ranks - `tp_broadcast` below)
+                if (o.tp > 0 && !tp_whole) return true;
                 if (no_short || b - a > req_short_read) return false;
                 if (sp.embd_rows != nullptr)
                     for (int64_t i = a; i < b; ++i)
@@ -10819,7 +11380,7 @@ int main(int argc, char **argv) try {
                     drive.d.layers = 0;
                     drive.d.experts = 0;
                     drive.d.failed = false;
-                    if (!ver.run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
+                    if (!tp_run(T, win.data(), q, win_pool_fn, win_pool_user, outw.data(), e) || drive.d.failed) {
                         if (drive.d.failed && drive.d.fail) e = drive.d.fail;
                         return false;
                     }
@@ -10837,7 +11398,7 @@ int main(int argc, char **argv) try {
                     }();
                     if (logpos != nullptr && !ver.window_logprobs(nxt.data(), T, q, logpos_extra, logpos, e))
                         return false;
-                    if (!ver.commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
+                    if (!tp_commit(T, e) || (use_mtp && !mtp.prefill(ver.final_R_all(), nxt.data(), T, q, e))) return false;
                     if (use_df2) {
                         if (!df2.context(ver.tap_dev(), T, q, e)) return false;
                         df2.note_rows(win.data(), T, q);
@@ -10846,7 +11407,7 @@ int main(int argc, char **argv) try {
                     pp_reached = q;   // #471
                 }
                 // the batched prompt path (other streams), checkpoints and snapshots may follow: the last commit first
-                if (!ver.wait_commit(e)) return false;
+                if (!tp_wait_commit(e)) return false;
                 const double ms = std::chrono::duration<double, std::milli>(Clock::now() - pp_t0).count();
                 std::printf("PP %lld %lld %.0f %.1f\n", (long long) b, (long long) pp_total, ms,
                             ms > 0.0 ? 1000.0 * (double) (b - pp_from) / ms : 0.0);
@@ -10991,6 +11552,71 @@ int main(int argc, char **argv) try {
             // far is copied into <slot> (this admission's own, or a free one the server reserved for a solo request),
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
+            // REPLICATED DENSE: RANK 0'S STATE TO EVERY OTHER RANK.  Rank 0 read the prompt up to `upto` on the batched
+            // path; the other ranks hold whole sessions carved alike, so the conversation snapshot - the same image a
+            // parked conversation is - is saved once from rank 0 and restored into each of them.
+            auto tp_broadcast = [&](int64_t upto, std::string& e) -> bool {
+                if (!tp_whole || tp_ranks.empty() || upto <= 0) return true;
+                const auto tb0 = Clock::now();
+                dpct::get_current_device().queues_wait_and_throw();
+                std::vector<int32_t> pre((size_t) upto);
+                for (int64_t i = 0; i < upto; ++i) pre[(size_t) i] = (int32_t) ids[(size_t) i];
+                const std::vector<strata::core::ConversationImageKey> no_imgs;
+                const std::vector<strata::core::ConversationCheckpoint> no_checks;
+                const strata::core::ConversationView view{pre, no_imgs, no_checks, false};
+                strata::core::SavedConversation image;
+                if (!strata::core::conversation_snapshot_save(image, view, ss, g, (const strata::core::QsaState*) nullptr, e))
+                    return false;
+                // (the background park and checkpoint copies are CUDA-only options: the image is whole here)
+                const double save_ms = std::chrono::duration<double, std::milli>(Clock::now() - tb0).count();
+                for (auto& rk : tp_ranks) {
+                    const strata::core::OnDevice on(rk->dev);
+                    dpct::get_current_device().queues_wait_and_throw();
+                    if (strata::core::conversation_snapshot_restore(image, rk->ss, g, (const strata::core::QsaState*) nullptr,
+                                                                    e) != strata::core::ConversationRestore::restored) {
+                        e = "tensor parallel: rank " + std::to_string(rk->rank) + " could not take rank 0's prompt state: " + e;
+                        return false;
+                    }
+                    dpct::get_current_device().queues_wait_and_throw();
+                }
+                std::fprintf(stderr, "strata serve: --tp %d: %lld prompt tokens' state copied to the other ranks in %.0f ms "
+                                     "(saved in %.0f ms, %zu MiB)\n", o.tp, (long long) upto,
+                             std::chrono::duration<double, std::milli>(Clock::now() - tb0).count(), save_ms,
+                             image.bytes() >> 20);
+                return true;
+            };
+            // THE PARALLEL PROMPT PATH: every rank's own `Prefill` over the same chunk at the same time.  The ranks meet
+            // on the host after every layer's combine (`tp_bulk`), so a chunk is the same tokens on every rank; the chunk
+            // is the smallest any rank's buffers hold.  Rank 0 runs on this thread (its draft layer and loan are here).
+            auto read_part_tp = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
+                int64_t C = std::max<int64_t>(sp.chunk(), 1);
+                for (auto& rk : tp_ranks) C = std::min<int64_t>(C, std::max<int64_t>(rk->sp.chunk(), 1));
+                for (int64_t q = a0; q < b0;) {
+                    const int64_t r1 = std::min(b0, q + C);
+                    tp_bulk.restart();
+                    std::vector<std::string> errs(tp_ranks.size());
+                    std::vector<char> oks(tp_ranks.size(), 0);
+                    std::vector<std::thread> th;
+                    for (size_t k = 0; k < tp_ranks.size(); ++k)
+                        th.emplace_back([&, k] {
+                            (void) strata::program::TpCpus::get().place_current();   // (off the host's CPU)
+                            strata::program::TpRank& rk = *tp_ranks[k];
+                            const strata::core::OnDevice on(rk.dev);
+                            oks[k] = rk.sp.run(ids.data() + q, r1 - q, q, errs[k]) ? 1 : 0;
+                            if (!oks[k]) tp_bulk.fail();
+                        });
+                    const bool ok0 = sp.run(ids.data() + q, r1 - q, q, e);
+                    if (!ok0) tp_bulk.fail();
+                    for (auto& t : th) t.join();
+                    if (!ok0) return false;
+                    for (size_t k = 0; k < tp_ranks.size(); ++k)
+                        if (!oks[k]) { e = "rank " + std::to_string(k + 1) + "'s prompt path: " + errs[k]; return false; }
+                    if (!tp_bulk.healthy(e)) return false;
+                    q = r1;
+                }
+                tp_bulk.restart();   // (STRATA_PREFILL_TIMING: prints the last chunk's reduce times)
+                return true;
+            };
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
                 // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
                 if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
@@ -11144,6 +11770,8 @@ int main(int argc, char **argv) try {
             const int64_t message_at = message_checkpoint && !multi_gpu && o.prompt_cache > 0
                 ? strata::program::message_checkpoint_boundary(ids, resume, turn_at, o.turn_token) : -1;
             int64_t at = read_from;
+            // tensor parallel: a thread that inherited the host's one CPU (the runtime's own, a rank's helpers) leaves it
+            if (o.tp > 0) (void) strata::program::TpCpus::get().release_inheritors();
             for (const int64_t to : {reread_to, root_at, message_at, turn_at, n - 1}) {
                 if (to <= at) continue;
                 err.clear();
@@ -11157,7 +11785,9 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 const auto tsp = Clock::now();
-                const bool sp_ok = win ? read_windows(at, to, err) : read_part(at, to, err);
+                const bool sp_ok = win ? read_windows(at, to, err)
+                                   : tp_prefill_par ? read_part_tp(at, to, err)
+                                       : (read_part(at, to, err) && tp_broadcast(to, err));
                 if (trace) {
                     std::fprintf(stderr, "strata trace: read %lld tokens (%s) in %.1f ms\n", (long long) (to - at),
                                  win ? "windows" : "batched",
@@ -12138,7 +12768,7 @@ int main(int argc, char **argv) try {
                 }
                 tr("window", p, T);
                 const Clock::time_point tw0 = Clock::now();
-                if (!ver.run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
+                if (!tp_run(T, window.data(), p, win_pool_fn, win_pool_user, outv.data(), err) || drive.d.failed) {
                     std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                     return 1;
                 }
@@ -12168,7 +12798,7 @@ int main(int argc, char **argv) try {
                 // (--adapt-async 1: the asynchronous tier above instead, ticked before the window)
                 if (!drive.d.usage.empty() && !ajob && ((rounds + 1) % o.adapt_every) == 0)
                     adapt_thr = std::thread([&] { adapt_ok = adapt(); });
-                if (!ver.commit(a + 1, err)) {
+                if (!tp_commit(a + 1, err)) {   // every rank: a rank that kept its old state replays the same context
                     if (adapt_thr.joinable()) adapt_thr.join();
                     std::printf("ERR %s\n", err.c_str());
                     return 1;
