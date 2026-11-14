@@ -2168,8 +2168,9 @@ void Verifier::accumulate_profile(const unsigned long long* stamps) {
 // item per (row, token) pair of the mask's rows.  A token outside the mask has kMaskedLogit written into its
 // head logit - the kernel never reads a logit, it only fills the masked slots - and an allowed token bumps
 // its row's count, the same number mask_apply_row returned, so the host keeps the "the token mask allows no
-// token" check on counts that ride the sampler's wait back.  The words are the MKN bitmap: bit v of
-// words[v / 32]; a token at or past 32 * n_words is masked, exactly as the host loop masked it.
+// token" check on counts that ride the sampler's wait back.  The words are the MKN bitmap, the caller's rows
+// x words in row order (row t is words + t * n_words, the call site's comment): bit v of word t * n_words +
+// v / 32; a token at or past 32 * n_words is masked, exactly as the host loop masked it.
 namespace {
 
 struct strata_tmask_apply_kernel;
@@ -2183,7 +2184,7 @@ void tmask_apply_launch(dpct::queue_ptr q, float* logits, int64_t n_vocab, const
             const int64_t t = (int64_t) it[0];
             const int64_t v = (int64_t) it[1];
             const int64_t w = v >> 5;
-            if (w < n_words && ((words[w] >> (v & 31)) & 1u))
+            if (w < n_words && ((words[t * n_words + w] >> (v & 31)) & 1u))
                 dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(counts + t, 1);
             else
                 logits[t * n_vocab + v] = strata::core::kMaskedLogit;
