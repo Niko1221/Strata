@@ -24,8 +24,11 @@
 // the oldest checkpoint leaves - the previous behaviour, one slot = the newest point only.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <numeric>
+#include <vector>
 
 namespace strata::program::conv_cache {
 
@@ -112,6 +115,38 @@ inline size_t spread_victim(const int64_t* lens, const uint64_t* stamps, size_t 
             if (!candidate(i)) continue;
             const double gap = double(lens[i + 1] - lens[i - 1]) / double(lens[n - 1] - lens[i - 1]);
             if (v == n || gap < best) { v = i; best = gap; }
+        }
+        if (v != n) return v;
+    }
+    return eviction_victim(stamps, n, cap, tail, pinned);
+}
+
+/// --prompt-cache-uniform (opt-in): the item whose removal leaves the smallest gap in TOKENS (len[next] - len[prev], the
+/// chain in length order), so the kept points stay evenly spaced over the whole conversation and a request that
+/// branches anywhere in it - a client's summary of its first N turns, a rewrite far back - reads about one spacing
+/// (the conversation over cap - recent) again, where least recent use (only the newest points) reads back to the root
+/// and spread_victim's geometric thinning to a point about as far back again.  Never the root (the shortest), the newest
+/// (the longest), the `recent` items just before the newest (an edit of the last few turns resumes as it does under
+/// least recent use) or a pinned item; the tail rule first, as above.  Ties: the shorter item.  Without a candidate,
+/// the plain policy.
+inline size_t uniform_victim(const int64_t* lens, const uint64_t* stamps, size_t n, int64_t cap, int64_t recent,
+                             const bool* tail, const bool* pinned) {
+    if (n >= 3 && cap >= 2) {
+        // the chain is built in length order; sorted here anyway, so the victim does not depend on how it was built
+        std::vector<size_t> by(n);
+        std::iota(by.begin(), by.end(), size_t(0));
+        std::stable_sort(by.begin(), by.end(), [&](size_t a, size_t b) { return lens[a] < lens[b]; });
+        auto candidate = [&](size_t i) { return !(pinned && pinned[i]); };
+        if (tail != nullptr)
+            for (size_t k = 1; k + 1 < n; ++k)
+                if (tail[by[k]] && candidate(by[k])) return by[k];
+        const size_t keep = (size_t) std::max<int64_t>(recent, 0);   // positions n-1-keep .. n-1 stay
+        size_t v = n;
+        int64_t best = 0;
+        for (size_t k = 1; k + 1 + keep < n; ++k) {
+            if (!candidate(by[k])) continue;
+            const int64_t gap = lens[by[k + 1]] - lens[by[k - 1]];
+            if (v == n || gap < best) { v = by[k]; best = gap; }
         }
         if (v != n) return v;
     }

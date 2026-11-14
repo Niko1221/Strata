@@ -22,6 +22,7 @@
 using strata::program::conv_cache::eviction_victim;
 using strata::program::conv_cache::restore_fits;
 using strata::program::conv_cache::spread_victim;
+using strata::program::conv_cache::uniform_victim;
 
 namespace {
 int g_fail = 0;
@@ -32,16 +33,19 @@ void check(bool ok, const char* what) {
 }  // namespace
 
 // a conversation of `turns` turns of `turn` tokens each after a `root`-token system prompt, a checkpoint at every turn's
-// end and at most `cap` kept; returns how many tokens a request whose prompt differs `back` tokens before the end reuses
-int64_t reuse_after_edit(bool spread, int64_t root, int64_t turn, int turns, int64_t cap, int64_t back) {
+// end and at most `cap` kept (policy 0 least recent use, 1 spread, 2 uniform keeping the `recent` before the newest);
+// returns how many tokens a request whose prompt differs `back` tokens before the end reuses
+int64_t reuse_after_edit(int policy, int64_t root, int64_t turn, int turns, int64_t cap, int64_t back, int64_t recent = 4) {
     std::vector<int64_t> lens = {root};
     std::vector<uint64_t> stamps = {1};
     for (int t = 1; t <= turns; ++t) {
         lens.push_back(root + t * turn);
         stamps.push_back(uint64_t(t + 1));
         while ((int64_t) lens.size() > cap) {
-            const size_t v = spread ? spread_victim(lens.data(), stamps.data(), lens.size(), cap, nullptr, nullptr)
-                                    : eviction_victim(stamps.data(), stamps.size(), cap);
+            const size_t v =
+                policy == 1 ? spread_victim(lens.data(), stamps.data(), lens.size(), cap, nullptr, nullptr)
+                : policy == 2 ? uniform_victim(lens.data(), stamps.data(), lens.size(), cap, recent, nullptr, nullptr)
+                              : eviction_victim(stamps.data(), stamps.size(), cap);
             lens.erase(lens.begin() + (std::ptrdiff_t) v);
             stamps.erase(stamps.begin() + (std::ptrdiff_t) v);
         }
@@ -57,15 +61,59 @@ int main() {
     std::printf("conv_cache_test\n");
     {   // --prompt-cache-spread: 200 turns of 1,000 tokens after a 9,525-token system prompt, 6 checkpoints
         const int64_t end = 9525 + 200 * 1000;
-        const int64_t lru6 = reuse_after_edit(false, 9525, 1000, 200, 6, 6000);
-        const int64_t spread6 = reuse_after_edit(true, 9525, 1000, 200, 6, 6000);
+        const int64_t lru6 = reuse_after_edit(0, 9525, 1000, 200, 6, 6000);
+        const int64_t spread6 = reuse_after_edit(1, 9525, 1000, 200, 6, 6000);
         std::printf("  an edit 6K before the end: least recent use reuses %lld, spread %lld of %lld\n", (long long) lru6,
                     (long long) spread6, (long long) end);
         check(lru6 == 9525, "least recent use: an edit 6K back falls through to the root");
         check(end - spread6 < 4 * 6000, "spread: an edit 6K back reads less than 24K again");
-        const int64_t spread42 = reuse_after_edit(true, 9525, 1000, 200, 6, 42000);
+        const int64_t spread42 = reuse_after_edit(1, 9525, 1000, 200, 6, 42000);
         check(end - spread42 < 4 * 42000, "spread: an edit 42K back reads less than 168K again");
-        check(reuse_after_edit(true, 9525, 1000, 200, 6, 500) == end - 1000, "spread: the turn before is still kept");
+        check(reuse_after_edit(1, 9525, 1000, 200, 6, 500) == end - 1000, "spread: the turn before is still kept");
+    }
+    {   // --prompt-cache-uniform: 400 turns of 1,000 tokens after an 8,750-token system prompt (a compaction-sized
+        // conversation), 24 checkpoints, the 4 before the newest kept; a branch anywhere reads about one spacing again
+        const int64_t root = 8750, end = root + 400 * 1000, cap = 24, recent = 4;
+        const int64_t spacing = (end - root) / (cap - 1 - recent);   // ~21K
+        bool all = true;
+        int64_t worst = 0;
+        for (int64_t back = 2000; back < end - root; back += 7000) {
+            const int64_t reread = end - back - reuse_after_edit(2, root, 1000, 400, cap, back, recent);
+            worst = std::max(worst, reread);
+            all = all && reread <= 2 * spacing;
+        }
+        std::printf("  uniform 24: the worst branch over the conversation reads %lld again (spacing %lld; least recent use: "
+                    "%lld for a branch 300K back)\n", (long long) worst, (long long) spacing,
+                    (long long) (end - 300000 - reuse_after_edit(0, root, 1000, 400, cap, 300000)));
+        check(all, "uniform: a branch anywhere in the conversation reads at most two spacings again");
+        check(end - 300000 - reuse_after_edit(0, root, 1000, 400, cap, 300000) > 90000,
+              "least recent use (24 items): a branch 300K back falls through to the root");
+        bool recent_kept = true;   // an edit inside one of the last `recent` turns resumes at that turn's start
+        for (int64_t k = 1; k <= recent; ++k)
+            recent_kept = recent_kept && reuse_after_edit(2, root, 1000, 400, cap, k * 1000 - 500, recent) == end - k * 1000;
+        check(recent_kept, "uniform: the 4 turn checkpoints before the newest are kept");
+    }
+    {   // uniform_victim: the smallest absolute gap goes; never root, newest, the recent ones, a pinned one; tail first
+        const std::vector<int64_t> lens = {100, 500, 900, 1300, 1350, 1400};
+        const std::vector<uint64_t> st = {1, 2, 3, 4, 5, 6};
+        check(uniform_victim(lens.data(), st.data(), 6, 5, 0, nullptr, nullptr) == 4,
+              "uniform: the item whose removal leaves the smallest gap (1350: 1300 -> 1400)");
+        check(uniform_victim(lens.data(), st.data(), 6, 5, 1, nullptr, nullptr) == 3,
+              "uniform: one recent item kept (1350): 1300 goes (900 -> 1350)");
+        check(uniform_victim(lens.data(), st.data(), 6, 5, 2, nullptr, nullptr) == 1,
+              "uniform: two recent items kept: of two equal gaps the shorter item goes");
+        check(uniform_victim(lens.data(), st.data(), 6, 5, 4, nullptr, nullptr) == eviction_victim(st.data(), 6, 5),
+              "uniform: no candidate left - the plain policy");
+        const bool pin4[6] = {false, false, false, false, true, false};
+        check(uniform_victim(lens.data(), st.data(), 6, 5, 0, nullptr, pin4) == 3,
+              "uniform: a pinned item is not the victim (the next smallest gap goes)");
+        const bool tail2[6] = {false, false, true, false, false, false};
+        check(uniform_victim(lens.data(), st.data(), 6, 5, 0, tail2, nullptr) == 2, "uniform: the tail checkpoint goes first");
+        const std::vector<int64_t> shuffled = {1300, 100, 1400, 900, 1350, 500};   // the same chain, out of order
+        const std::vector<uint64_t> st2 = {4, 1, 6, 3, 5, 2};
+        check(uniform_victim(shuffled.data(), st2.data(), 6, 5, 0, nullptr, nullptr) == 4,
+              "uniform: the order the chain was built in does not matter");
+        check(uniform_victim(lens.data(), st.data(), 2, 1, 0, nullptr, nullptr) == 0, "uniform: two items, one slot - the plain policy");
     }
     {
         const std::vector<int64_t> lens = {100, 200, 300, 400};
