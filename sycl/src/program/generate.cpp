@@ -7891,7 +7891,14 @@ int main(int argc, char **argv) try {
                 for (int r = 1; r < o.tp; ++r) ordinals[(size_t) r] = r;
             }
             const int64_t max_floats = (int64_t) strata::kernels::kVerifyMaxT * g.n_embd;
-            if (!tp_pair.init(ordinals.data(), o.tp, max_floats, strata::kernels::ArWire::Bf16,
+            // STRATA_TP_WIRE=f32: the ranks' partial sums cross as FP32, not rounded to bf16 (twice the bytes a reduce)
+            const strata::kernels::ArWire tp_wire = [] {
+                const char* v = std::getenv("STRATA_TP_WIRE");
+                return v != nullptr && std::string(v) == "f32" ? strata::kernels::ArWire::F32 : strata::kernels::ArWire::Bf16;
+            }();
+            if (tp_wire == strata::kernels::ArWire::F32)
+                std::fprintf(stderr, "strata serve: --tp %d: the reduce carries FP32 (STRATA_TP_WIRE=f32)\n", o.tp);
+            if (!tp_pair.init(ordinals.data(), o.tp, max_floats, tp_wire,
                               strata::kernels::kArBlocks, err)) {
                 std::fprintf(stderr, "strata serve: --tp %d: %s\n", o.tp, err.c_str());
                 return 1;

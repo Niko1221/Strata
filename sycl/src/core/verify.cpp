@@ -2807,7 +2807,9 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     // STRATA_LOGITS_DUMP=<path> (debug tap, off by default; src/core/verify.cpp's, for the gate-2 judge of the Qwen4 shapes): the window's
     // logits as the sampler saw them, written AFTER the window (synchronised above).  One record is
     // {int32 magic, int32 T, int32 n_vocab, int32 record, int64 position}, then T * n_vocab FP32 rows; row 0 is the window's first position.
-    if (const char* logits_path = std::getenv("STRATA_LOGITS_DUMP")) {
+    // (tensor parallel: rank 0's only - the ranks' threads would interleave their records in the one file)
+    if (const char* logits_path = std::getenv("STRATA_LOGITS_DUMP");
+        logits_path != nullptr && strata::core::tp_rank_current() == 0 && strata::core::tp_expert_rank() == 0) {
         static std::FILE* lf = std::fopen(logits_path, "wb");
         static int32_t lrec = 0;
         if (lf != nullptr) {

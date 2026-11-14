@@ -4482,6 +4482,9 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                                 bool use_i8 = true;
                                 if (i8m == 2) {
                                     static std::map<std::tuple<const void*, int, int>, I8Cross> xover;   // per queue (a layer split has a card per queue)
+                                    // (tensor parallel: every rank's thread comes through here with its own queue)
+                                    static std::mutex xover_mu;
+                                    std::lock_guard<std::mutex> xover_lk(xover_mu);
                                     auto it = xover.find({(const void*) m.cs, f.gu_type, f.d_type});
                                     if (it == xover.end()) it = xover.emplace(std::make_tuple((const void*) m.cs, f.gu_type, f.d_type), i8_calibrate(m, f)).first;
                                     use_i8 = (owner_ != nullptr ? split_rows_per_expert : (double) nr / xg_n) < it->second.rows;
@@ -4809,6 +4812,46 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
                             release_to(m.g->n_expert);
                             xflush();
                             give_back(consumed);
+                        }
+                    }
+                    // TPDIAG (STRATA_TP_DIAG_EXPERTS=<layer>): every owned expert's output rows at one layer of the first
+                    // chunk, as a checksum.  Two runs that own the experts differently (STRATA_TP_PREFILL_OWNER) name the
+                    // experts whose arithmetic depends on the rank that computes them.
+                    if (static const char* de = std::getenv("STRATA_TP_DIAG_EXPERTS"); de != nullptr && owner_ != nullptr &&
+                        l <= std::atoll(de) && !m.off.empty() && !m.cnt.empty()) {
+                        static std::atomic<int> printed{0};
+                        if (printed.fetch_add(1) < 64) {
+                            m.cs->wait();
+                            {   // the experts' input and the routing, as this rank sees them (exact: integer sums)
+                                std::vector<float> hx((size_t) T * (size_t) N);
+                                std::vector<int32_t> hi((size_t) T * (size_t) K);
+                                m.cs->memcpy(hx.data(), m.mixed, hx.size() * sizeof(float)).wait();
+                                m.cs->memcpy(hi.data(), m.ids, hi.size() * sizeof(int32_t)).wait();
+                                // (STRATA_TP_DIAG_MIXED_DUMP=<file>: rank 0's input at the named layer, raw floats)
+                                if (const char* dp = std::getenv("STRATA_TP_DIAG_MIXED_DUMP"); dp != nullptr && own_shared_ && l == std::atoll(de))
+                                    if (std::FILE* f = std::fopen(dp, "wb")) { std::fwrite(hx.data(), sizeof(float), hx.size(), f); std::fclose(f); }
+                                uint64_t cx = 0, ci = 0;
+                                for (float v : hx) { uint32_t u; std::memcpy(&u, &v, 4); cx = cx * 1099511628211ull + u; }
+                                for (int32_t v : hi) ci = ci * 1099511628211ull + (uint32_t) v;
+                                std::fprintf(stderr, "TPDIAG ffn-in layer=%lld rank0=%d queue=%p mixed=%016llx ids=%016llx\n", (long long) l,
+                                             (int) own_shared_, (void*) m.cs, (unsigned long long) cx, (unsigned long long) ci);
+                            }
+                            const int64_t rows = m.off[(size_t) m.g->n_expert];
+                            std::vector<float> h((size_t) rows * (size_t) N);
+                            if (rows > 0) m.cs->memcpy(h.data(), m.Dm, h.size() * sizeof(float)).wait();
+                            std::string out;
+                            char b[160];
+                            for (int64_t e = 0; e < m.g->n_expert; ++e) {
+                                const int64_t c = m.cnt[(size_t) e];
+                                if (c <= 0) continue;
+                                double a1 = 0.0, a2 = 0.0;
+                                const float* r0 = h.data() + (size_t) m.off[(size_t) e] * (size_t) N;
+                                for (int64_t i = 0; i < c * N; ++i) { a1 += (double) r0[i]; a2 += (double) r0[i] * (double) r0[i]; }
+                                std::snprintf(b, sizeof b, "TPDIAG expert layer=%lld e=%lld rows=%lld sum=%.9g sumsq=%.9g\n",
+                                              (long long) l, (long long) e, (long long) c, a1, a2);
+                                out += b;
+                            }
+                            std::fputs(out.c_str(), stderr);
                         }
                     }
                     pt.mark(kPfCombine, cs);
