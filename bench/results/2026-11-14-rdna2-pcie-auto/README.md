@@ -24,7 +24,7 @@ A third machine, from the issue (kulight, RX 6700 XT gfx1031, Ryzen 7 5800X, PCI
 
 | | Windows | Linux |
 | --- | --- | --- |
-| Card | RX 6900 XT 16 GB, PCIe 4.0 x8 (probe 12.6 GB/s), display on the iGPU | RX 6900 XT 16 GB, PCIe 4.0 x8 (probe 14.1 GB/s), one of two cards (`gpu: [1]`) |
+| Card | RX 6900 XT 16 GB, PCIe 3.0 x16 (probe 12.6 GB/s), display on the iGPU | RX 6900 XT 16 GB, PCIe 4.0 x8 (probe 14.1 GB/s), one of two cards (`gpu: [1]`) |
 | Host | i9-10900K, 64 GB DDR4-3600, Windows 11 | Ryzen 5 5600X, 128 GB DDR4-3200, Ubuntu 26.04, kernel 7.0 |
 | Engine | release 0.2.13 package `windows-x86_64-hip-rdna2`, engine 0.1.59, unmodified (installed by `strata update`) | main 13eedf552 built from source (gfx1030, PREFILL_MMQ / Q6K_EXPERTS / MMQ_KQUANTS on), ROCm 10.0 |
 | Server | `serve/server.py` from v0.2.13 | `serve/server.py` from 13eedf552 |

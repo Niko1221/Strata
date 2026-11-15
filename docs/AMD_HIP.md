@@ -520,13 +520,13 @@ kernels for FP16-in / FP16-out GEMMs only; the prompt path's FP16-in / FP32-out 
 | `STRATA_FILE_CACHE_OLD_RULE` | gfx906 keeps the old file-tier cache rule; `=1` forces it on any Linux build, `=0` the current one |
 
 **Decode: the miss split follows the CPU pool (PcieAuto) by default (#4007).** The start-up share only looks at the link
-(0.35-0.39 on a x8 PCIe 4 card, 0.55 on x16), which is too high when the CPU pool is fast. On a discrete gfx103x card the
+(0.35 on PCIe 3.0 x16, 0.39 on PCIe 4.0 x8, 0.55 on PCIe 4.0 x16), which is too high when the CPU pool is fast. On a discrete gfx103x card the
 share is now refined in the first decode windows from the pool's time per missed expert, as on gfx12 and CUDA. Engine 0.1.59
 (release 0.2.13), unset against `STRATA_PCIE_FRAC_DEFAULT=auto`, ten interleaved pairs each, prompt speed unchanged in every run:
 
 | Machine | Share | 4K decode | 32K decode |
 | --- | --- | ---: | ---: |
-| RX 6900 XT, Windows 11, i9-10900K, PCIe 4.0 x8 probe 12.6 GB/s | 0.35 -> 0.20 (one start 0.25) | 38.0 -> 43.8 (**+15.1%**, 10/10) | 39.0 -> 44.1 (**+13.3%**, 10/10) |
+| RX 6900 XT, Windows 11, i9-10900K, PCIe 3.0 x16 probe 12.6 GB/s | 0.35 -> 0.20 (one start 0.25) | 38.0 -> 43.8 (**+15.1%**, 10/10) | 39.0 -> 44.1 (**+13.3%**, 10/10) |
 | RX 6900 XT, Linux, Ryzen 5 5600X, PCIe 4.0 x8 probe 14.1 GB/s | 0.39 -> 0.25 | 45.0 -> 47.1 (**+4.9%**, 10/10) | 47.7 -> 48.1 (**+1.0%**, 10/10) |
 | RX 6700 XT (gfx1031), Linux, Ryzen 7 5800X, x16 probe 28.1 GB/s ([#4007](https://github.com/Niko1221/Strata/issues/4007#issuecomment-6879926995)) | 0.55 -> 0.35 | 41.6 -> 44.0 (**+4.9%**, 9/10) | 42.7 -> 44.0 (**+3.4%**, 10/10) |
 
