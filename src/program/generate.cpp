@@ -7575,7 +7575,8 @@ int main(int argc, char** argv) {
         else if (o.kv_grow) why = "not with --kv-grow (the elastic K/V moves the same slots)";
         else if (o.peer_device >= 1) why = "not with --peer-device";
         else if (nib::any_on()) why = "not with STRATA_EXPERT_NIBBLE=1 (its 4-bit slots are not GGUF blobs a grow can refill)";
-        // --expert-cache 0 means auto here (see the profile block above), so it is not a reason to refuse.
+        else if (o.expert_cache == 0 && o.expert_profile.empty())
+            why = "it needs an expert cache (--expert-cache > 0, or --expert-cache auto with --expert-profile)";
         else if (!strata::core::ExpertCache::segmented_supported())
             why = "the driver or this GPU offers no virtual memory management (the segmented expert cache)";
         else if (!o.vram_elastic) {
@@ -15217,7 +15218,7 @@ int main(int argc, char** argv) {
                         (long long) o.prefill_chunk, sp.stage_count(),
                         (long long) strata::prefill::Prefill::stream_all_min_tokens(),
                         strata::prefill::Prefill::pipe_setting(),
-                        o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) + " slot_sessions=" + std::to_string(slot_reserved) +
+                        o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) + (o.parallel_recycle_after > 0 ? " slot_sessions=" + std::to_string(slot_reserved) : "") +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
                                        (o.parallel_recycle_after > 0
@@ -15550,6 +15551,65 @@ int main(int argc, char** argv) {
             p.first = (int32_t) std::max<int64_t>(0, live - part_slots(p, c));
             p.first_now = -1;   // laid out again at the next loan
         };
+        // One refill for every path that grows the cache back (the VRAM command, the idle shrink, a failed
+        // grow's rollback): fill each evicted slot that now fits, keep the rest evicted, and let the device's
+        // residency table follow.  A copy (or its sync) that fails puts the touched entries back as CPU misses.
+        auto refill_evicted = [&](std::string& err) -> bool {
+            const int64_t live = xcache.slots();
+            std::vector<std::pair<int32_t, int32_t>> keep_out, refilled;
+            const size_t n_ev = vram_evicted.size();
+            for (size_t e = 0; e < n_ev; ++e) {
+                const auto [i, slot] = vram_evicted[e];
+                if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
+                const int64_t layer = i / g.n_expert;
+                int64_t pick = i;
+                if (host_res[(size_t) i] >= 0) {   // back already (the adaptive tier): the layer's most-routed miss
+                    pick = -1;
+                    float best = -1.0f;
+                    for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                        const size_t j = (size_t) (layer * g.n_expert + ex);
+                        if (host_res[j] >= 0) continue;
+                        const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
+                        if (u > best) { best = u; pick = (int64_t) j; }
+                    }
+                }
+                if (pick < 0) continue;
+                const uint8_t* bl = srcp->blob_stable(layer, pick % g.n_expert);
+                if (bl == nullptr || !xcache.fill_slot_queued(slot, bl, err,
+                        (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
+                    // keep the failed one and everything still waiting: the next grow retries them
+                    keep_out.emplace_back(i, slot);
+                    for (size_t r = e + 1; r < n_ev; ++r) keep_out.push_back(vram_evicted[r]);
+                    vram_evicted.swap(keep_out);
+                    return false;
+                }
+                srcp->note_async_read(bl, nullptr);
+                xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
+                host_res[(size_t) pick] = slot;
+                refilled.emplace_back((int32_t) pick, (int32_t) slot);
+            }
+            vram_evicted.swap(keep_out);
+            if (!xcache.sync_queued(err)) {
+                for (const auto& [rank, slot] : refilled) {
+                    xcache.forget_resident((int64_t) rank / g.n_expert, (int64_t) rank % g.n_expert);
+                    host_res[(size_t) rank] = strata::core::kNotResident;
+                    vram_evicted.emplace_back(rank, slot);   // not resident: a later grow retries it
+                }
+                return false;
+            }
+            res_upload();
+            return true;
+        };
+        // A shrink the driver refused part way has given segments back too: the slots past what stays mapped hold
+        // nothing either way, so the residency table and the evicted list follow what is left before its error goes
+        // out (and the caller's prompt loan follows on the failure path).
+        auto cleanup_after_shrink = [&](int64_t live, size_t evicted_before) {
+            strata::core::evict_slots_past(host_res, live, vram_evicted);
+            for (size_t n = evicted_before; n < vram_evicted.size(); ++n)
+                xcache.forget_resident((int64_t) vram_evicted[n].first / g.n_expert,
+                                       (int64_t) vram_evicted[n].first % g.n_expert);
+            res_upload();
+        };
         auto vram_command = [&](const std::string& cmd, std::string& e) -> bool {
             // `VRAM` alone: the reserve the engine started with (--vram-reserve-mib)
             char* end = nullptr;
@@ -15589,17 +15649,11 @@ int main(int argc, char** argv) {
                     keep = floor_b;
                     note = " (the cache keeps its smallest size: the prompt path's buffers)";
                 }
-                // a shrink the driver refused part way has given segments back too: the slots past what stays mapped
-                // hold nothing either way, so the tables and the loan follow what is left before the error goes out
+                // a shrink the driver refused part way has given segments back too: the slots past what stays
+                // mapped hold nothing either way, so the tables and the loan follow what is left before the error
                 const bool shrunk = xcache.shrink(keep, e);
                 const size_t evicted_before = vram_evicted.size();
-                strata::core::evict_slots_past(host_res, xcache.slots(), vram_evicted);
-                // the entries evict_slots_past just cleared named slots that are no longer mapped: the cache's table
-                // must not keep them either (a later admit would hand out a zero page)
-                for (size_t n = evicted_before; n < vram_evicted.size(); ++n)
-                    xcache.forget_resident((int64_t) vram_evicted[n].first / g.n_expert,
-                                           (int64_t) vram_evicted[n].first % g.n_expert);
-                res_upload();
+                cleanup_after_shrink(xcache.slots(), evicted_before);
                 if (!shrunk) {
                     relend();
                     return false;
@@ -15607,37 +15661,8 @@ int main(int argc, char** argv) {
             } else if (mapped < xcache.full_bytes()) {
                 std::string gerr;
                 if (!xcache.grow(mapped + ((int64_t) free_b - want_free), gerr)) note = " (" + gerr + ")";
-                const int64_t live = xcache.slots();
                 std::string ferr;
-                std::vector<std::pair<int32_t, int32_t>> keep_out;
-                for (const auto& [i, slot] : vram_evicted) {
-                    if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
-                    const int64_t layer = i / g.n_expert;
-                    int64_t pick = i;
-                    if (host_res[(size_t) i] >= 0) {   // back already (the adaptive tier): the layer's most-routed miss
-                        pick = -1;
-                        float best = -1.0f;
-                        for (int64_t ex = 0; ex < g.n_expert; ++ex) {
-                            const size_t j = (size_t) (layer * g.n_expert + ex);
-                            if (host_res[j] >= 0) continue;
-                            const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
-                            if (u > best) { best = u; pick = (int64_t) j; }
-                        }
-                    }
-                    if (pick < 0) continue;
-                    const uint8_t* b = srcp->blob_stable(layer, pick % g.n_expert);
-                    if (b == nullptr || !xcache.fill_slot_queued(slot, b, ferr,
-                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
-                        e = "VRAM: refilling the cache failed: " + ferr;
-                        return false;
-                    }
-                    srcp->note_async_read(b, nullptr);   // #1237: the queued copy reads a stage buffer; it is not recycled under it
-                    xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
-                    host_res[(size_t) pick] = slot;
-                }
-                vram_evicted.swap(keep_out);
-                if (!xcache.sync_queued(ferr)) { e = "VRAM: " + ferr; return false; }
-                res_upload();
+                if (!refill_evicted(ferr)) { e = "VRAM: refilling the cache failed: " + ferr; return false; }
             }
             relend();
             cudaMemGetInfo(&free_b, &total_b);
@@ -15744,65 +15769,17 @@ int main(int argc, char** argv) {
                 }
                 slot_reserved = (int) n;
                 if (freed > 0 && xcache.mapped_bytes() < xcache.full_bytes()) {
-                    // Grow back only as far as the VRAM reserve allows: a `VRAM <reserve>` command asked the cache
-                    // to leave that much free, and the idle shrink must not take it back.  The sessions' arena and
-                    // the verifier's batch buffers freed here count too, so the room is MEASURED, not assumed.
-                    // The segments are rounded to the allocation granularity, so mapped + segment can land a little
-                    // above full_bytes(); grow()'s "mapped + segment <= want" rule would then leave the last
-                    // (partial) segment unmapped for good (measured: 5637 of 5837 slots after 4 -> 1).  When the
-                    // whole cache fits in the room, ask for every remaining segment; otherwise keep `want` exact so
-                    // the reserve is not eaten into.
-                    // Grow back only as far as the measured room allows: a `VRAM <reserve>` command keeps that
-                    // much free, and segment rounding can leave the last segment unmapped when the room is just
-                    // under one segment (measured: 6349 of 6593 slots after 4 -> 0; harmless, the next BGEN grow
-                    // still works).  Asking for INT64_MAX here was tried and the idle shrink could take the
-                    // engine down, so this path stays measured and conservative.
+                    // Grow the cache back only into the room the measured free VRAM minus the reserve leaves;
+                    // segment rounding can leave the last segment unmapped (harmless: the next BGEN grow fills it).
                     size_t fb = 0, tb = 0;
                     cudaMemGetInfo(&fb, &tb);
                     const int64_t room = (int64_t) fb - (vram_reserve_mib_now << 20);
                     const int64_t want_exact = xcache.mapped_bytes() + std::max<int64_t>(room, 0);
                     const int64_t want = want_exact >= xcache.full_bytes() ? std::numeric_limits<int64_t>::max() : want_exact;
-                    std::string gerr;
+                    std::string gerr, ferr;
                     if (!xcache.grow(want, gerr)) std::fprintf(stderr, "strata serve: adaptive slots: %s\n", gerr.c_str());
-                    const int64_t live = xcache.slots();
-                    std::string ferr;
-                    std::vector<std::pair<int32_t, int32_t>> keep_out;
-                    std::vector<std::pair<int32_t, int32_t>> refilled;
-                    for (const auto& [i, slot] : vram_evicted) {
-                        if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
-                        const int64_t layer = i / g.n_expert;
-                        int64_t pick = i;
-                        if (host_res[(size_t) i] >= 0) {   // back already: the layer's most-routed missing expert
-                            pick = -1;
-                            float best = -1.0f;
-                            for (int64_t ex = 0; ex < g.n_expert; ++ex) {
-                                const size_t j = (size_t) (layer * g.n_expert + ex);
-                                if (host_res[j] >= 0) continue;
-                                const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
-                                if (u > best) { best = u; pick = (int64_t) j; }
-                            }
-                        }
-                        if (pick < 0) continue;
-                        const uint8_t* bl = srcp->blob_stable(layer, pick % g.n_expert);
-                        if (bl == nullptr || !xcache.fill_slot_queued(slot, bl, ferr,
-                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
-                            std::fprintf(stderr, "strata serve: adaptive slots: refilling the cache failed: %s\n", ferr.c_str());
-                            break;
-                        }
-                        srcp->note_async_read(bl, nullptr);
-                        xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
-                        host_res[(size_t) pick] = slot;
-                        refilled.emplace_back((int32_t) pick, (int32_t) slot);
-                    }
-                    vram_evicted.swap(keep_out);
-                    if (!xcache.sync_queued(ferr)) {
-                        for (const auto& [rank, slot] : refilled) {
-                            xcache.forget_resident((int64_t) rank / g.n_expert, (int64_t) rank % g.n_expert);
-                            host_res[(size_t) rank] = strata::core::kNotResident;
-                        }
+                    if (!refill_evicted(ferr))
                         std::fprintf(stderr, "strata serve: adaptive slots: refilling the cache failed: %s\n", ferr.c_str());
-                    }
-                    res_upload();
                 }
                 relend();
             } else if (n > slot_reserved) {
@@ -15811,47 +15788,10 @@ int main(int argc, char** argv) {
                 // back into its slot - the same refill the VRAM command and the idle shrink do - so no slot the
                 // residency table names can stay a zero page.  A slot the rollback could not map stays evicted and
                 // already forgotten in the cache's table, so it is a CPU miss, not a silent wrong answer.
-                auto refill_evicted = [&]() {
-                    const int64_t live = xcache.slots();
+                auto refill_after_rollback = [&]() {
                     std::string ferr;
-                    std::vector<std::pair<int32_t, int32_t>> keep_out;
-                    std::vector<std::pair<int32_t, int32_t>> refilled;
-                    for (const auto& [i, slot] : vram_evicted) {
-                        if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
-                        const int64_t layer = i / g.n_expert;
-                        int64_t pick = i;
-                        if (host_res[(size_t) i] >= 0) {   // back already: the layer's most-routed missing expert
-                            pick = -1;
-                            float best = -1.0f;
-                            for (int64_t ex = 0; ex < g.n_expert; ++ex) {
-                                const size_t j = (size_t) (layer * g.n_expert + ex);
-                                if (host_res[j] >= 0) continue;
-                                const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
-                                if (u > best) { best = u; pick = (int64_t) j; }
-                            }
-                        }
-                        if (pick < 0) continue;
-                        const uint8_t* bl = srcp->blob_stable(layer, pick % g.n_expert);
-                        if (bl == nullptr || !xcache.fill_slot_queued(slot, bl, ferr,
-                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
-                            std::fprintf(stderr, "strata serve: adaptive slots: refilling the rolled-back cache failed: %s\n",
-                                         ferr.c_str());
-                            break;
-                        }
-                        srcp->note_async_read(bl, nullptr);
-                        xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
-                        host_res[(size_t) pick] = slot;
-                        refilled.emplace_back((int32_t) pick, (int32_t) slot);
-                    }
-                    vram_evicted.swap(keep_out);
-                    if (!xcache.sync_queued(ferr)) {
-                        for (const auto& [rank, slot] : refilled) {
-                            xcache.forget_resident((int64_t) rank / g.n_expert, (int64_t) rank % g.n_expert);
-                            host_res[(size_t) rank] = strata::core::kNotResident;
-                        }
-                        std::fprintf(stderr, "strata serve: adaptive slots: refilling the cache failed: %s\n", ferr.c_str());
-                    }
-                    res_upload();
+                    if (!refill_evicted(ferr))
+                        std::fprintf(stderr, "strata serve: adaptive slots: refilling the rolled-back cache failed: %s\n", ferr.c_str());
                 };
                 const int64_t need = (bslot_bytes0 + (int64_t) (64 << 20)) * (int64_t) (n - slot_reserved);   // session + verifier batch arena
                 const int64_t floor_slots = std::min<int64_t>(xcache.full_slots(),
@@ -15867,16 +15807,10 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 // v0.2.14's shrink can give back some segments and then fail (a release the driver refuses):
-                // the slots past what stays mapped hold nothing either way, so the tables follow what is left
-                // before the error goes out, exactly like the VRAM command does after its shrink.
+                // clean the tables for what it did unmap before the error goes out (the VRAM command does the same).
                 const bool shrunk = xcache.shrink(keep, e);
-                const int64_t live = xcache.slots();
                 const size_t evicted_before = vram_evicted.size();
-                strata::core::evict_slots_past(host_res, live, vram_evicted);
-                for (size_t n = evicted_before; n < vram_evicted.size(); ++n)
-                    xcache.forget_resident((int64_t) vram_evicted[n].first / g.n_expert,
-                                           (int64_t) vram_evicted[n].first % g.n_expert);
-                res_upload();
+                cleanup_after_shrink(xcache.slots(), evicted_before);
                 if (!shrunk) { relend(); return false; }
                 bool ok = true;
                 for (int b = slot_reserved; b < (int) n && ok; ++b) {
@@ -15901,7 +15835,7 @@ int main(int argc, char** argv) {
                     bslot_bufs[0].resize((size_t) slot_reserved);
                     std::string gerr;
                     (void) xcache.grow(std::min<int64_t>(xcache.full_bytes(), xcache.mapped_bytes() + need), gerr);
-                    refill_evicted();
+                    refill_after_rollback();
                     e = "adaptive slots: a new slot session does not fit";
                     return false;
                 }
@@ -15917,7 +15851,7 @@ int main(int argc, char** argv) {
                     verifier_restore_or_stop(old, "a failed grow");
                     std::string gerr;
                     (void) xcache.grow(std::min<int64_t>(xcache.full_bytes(), xcache.mapped_bytes() + need), gerr);
-                    refill_evicted();
+                    refill_after_rollback();
                     return false;
                 }
                 slot_reserved = (int) n;

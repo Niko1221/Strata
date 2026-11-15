@@ -771,36 +771,20 @@ On top of `GEN` / `GENI`:
 `tools/batch_test.py` drives the engine directly: the same prompts alone, then together, compared token by token,
 and the aggregate rate.
 
-## Adaptive slots (`--parallel-recycle-after S`, prototype)
+## Adaptive slots (`--parallel-recycle-after S`)
 
-`--serve`, one NVIDIA GPU, `--batch N` (2..8), no `--batch-mtp`/slot DFlash2, no `--batch-groups`, no
-`--kv-grow`, no `--peer-device`. `S` is the idle time in seconds: 0 (or absent) = off, `S>0` turns it on. The
-elastic cache it needs is **implied**: `--parallel-recycle-after S>0` without `--vram-elastic` turns that on with
-512 MiB segments (`--vram-segment-mib` changes them) and says so; a start that `--vram-elastic` cannot work in
-(layer split, helper caches, HIP, `--vram-segment-mib` below 64), or a start without the driver's virtual memory management, still refuses the adaptive feature.
-(`--expert-cache 0` means *auto* here, so it does not disable the cache and is no reason to refuse.) With it,
-`--batch N` is only a **cap**: at start the engine allocates **NO batch slot session** (the whole VRAM the slots
-would take stays in the expert cache, which is sized as for a single request), grows the reserved count on
-demand, and shrinks back to **zero batch sessions** after `S` seconds without a request. A single request uses
-the solo path and never needs a batch session, so an idle engine has exactly the cache and the speed of a
-static one-request start. The policy lives in the engine; the server needs no change beyond passing the option.
+`--serve`, one NVIDIA GPU, `--batch N` (2..8), no `--batch-mtp`/slot DFlash2/`--batch-groups`/`--kv-grow`/
+`--peer-device`. `S` is the idle time in seconds: `0` (default) = off. The elastic cache it needs is implied:
+`--parallel-recycle-after S>0` turns `--vram-elastic` on with 512 MiB segments (`--vram-segment-mib` changes
+them); a start where that cannot work (layer split, helper caches, HIP, segment < 64 MiB, no driver VMM) refuses
+the feature and says why. (`--expert-cache 0` is auto only with `--expert-profile`; without a profile it means no cache, and the feature is refused.)
 
-- Growing: a `BGEN <slot>` for a slot above the current reserve takes the VRAM from the expert cache, allocates
-  and zeroes the sessions for this request, for the `BGEN` lines already queued behind it and for the `BCO`
-  co-reads waiting for it (one resize per burst, not one per slot), and re-inits the verifier; a failed resize
-  rolls back to the previous count and refills every expert its cache shrink evicted (a slot it cannot map back
-  stays a CPU miss, never a zero page), and if even that layout cannot be rebuilt the engine stops instead of
-  running with slot sessions the verifier does not know.
-- Shrinking: with no slot decoding and no request for `S` seconds, the engine frees all batch slot sessions
-  (their device arena, the QSA pinned staging and a streamed KV's pinned host copy), releases the verifier's
-  batch buffers and captured batch graphs, and grows the expert cache back - but only as far as a `VRAM
-  <reserve_mib>` command leaves room for, so the reserve survives the idle shrink. A queued `BCO` whose slot
-  was freed is dropped (its `BGEN` grows for it again and reads it normally).
-- A slot that stays across a grow or a shrink keeps its own sampling, penalties and `logit_bias`: only the
-  request that admitted it sets those, once.
-- No command or server change is needed: the engine decides on its own (it grows inside the `BGEN` that needs
-  the slot, and its idle timeout shrinks back to zero).
-- `INFO` carries `parallel_recycle_after=<S>` in the same line's `batch_slots=` group (only when it is on).
-- A start whose canary cannot carve **two** slot sessions falls back to a normal (no `--parallel-recycle-after`,
-  no implied `--vram-elastic`) start and says why: one slot alone cannot serve a concurrent request.
-- Off (the default, or `0`): nothing changes.
+With it, `--batch N` is only a cap: the engine starts with **no batch slot session** (the VRAM the slots would take
+stays in the expert cache), grows the reserve on demand for a `BGEN` above it (one resize per burst, covering
+queued `BGEN`s and waiting `BCO` co-reads; a failed resize rolls back, a rollback that cannot rebuild the layout
+stops the engine), and drops back to zero sessions after `S` idle seconds. A queued `BCO` whose slot was freed is
+dropped; its `BGEN` grows for it again. A slot that survives a resize keeps its sampling, penalties and
+`logit_bias`. A single request uses the solo path, so an idle engine has the cache and the speed of a static
+one-request start. The policy lives in the engine: no server or command change. `INFO` carries
+`parallel_recycle_after=<S>` (with `batch_slots=` the cap and `slot_sessions=` the live count) when it is on; a
+start whose canary cannot carve two sessions falls back to a normal start. Off (`0`): nothing changes.
