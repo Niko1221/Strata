@@ -145,21 +145,32 @@ inline void spin_host_waits_expected(bool on) { if (on) spin_host_waits_flag() =
 // constructor finds non-resident experts, and a launch of an earlier component (prefill, a warm-up) on the same device used to
 // freeze the short 20,000-read bound for the rest of the process (a --layer-split run: stage 1's waits on the host expired at
 // --max-context 65536 although the flag was set by then). A change of the bound for a device is logged once.
+// The choice itself, a pure function of what it depends on (spin_bound_test.cpp tests it without a queue or a device):
+//   env_override  STRATA_SPIN_MAX when it is a positive number, else 0
+//   driver        intel_gpu_driver(): "xe", "i915" or "" (no sysfs driver: Windows, OpenCL)
+//   battlemage    the device is a B-series card (only asked when there is no driver name)
+//   host_waits    spin_host_waits_flag(): a stage waits for the host (CPU-served experts, device plan with non-resident experts)
+//   long_drafts   spin_long_drafts_flag(): a --spec run without the MTP layer
+inline uint32_t spin_bound_for(long env_override, const std::string& driver, bool battlemage, bool host_waits, bool long_drafts) {
+    if (env_override > 0) return (uint32_t) env_override;
+#ifdef STRATA_SYCL_SPIN_MAX
+    (void) driver; (void) battlemage; (void) host_waits; (void) long_drafts;
+    return STRATA_SYCL_SPIN_MAX;
+#else
+    if (driver == "xe") return host_waits ? 1000000u : 20000u;
+    if (driver.empty() && battlemage) return long_drafts ? 2000000u : 20000u;
+    return 2000000u;
+#endif
+}
 inline uint32_t spin_max(const sycl::queue& q) {
     static std::mutex mu;
     static std::unordered_map<sycl::device, uint32_t> cache;   // the last bound handed out, for the log line only
     const sycl::device d = q.get_device();
     std::lock_guard<std::mutex> lk(mu);
-    uint32_t v;
-    if (const char* e = std::getenv("STRATA_SPIN_MAX"); e && std::atol(e) > 0) v = (uint32_t) std::atol(e);
-#ifdef STRATA_SYCL_SPIN_MAX
-    else v = STRATA_SYCL_SPIN_MAX;
-#else
-    else if (intel_gpu_driver() == "xe") v = spin_host_waits_flag().load() ? 1000000u : 20000u;
-    else if (intel_gpu_driver().empty() && intel_gpu_gen(d) == IntelGpuGen::Battlemage)
-        v = spin_long_drafts_flag().load() ? 2000000u : 20000u;
-    else v = 2000000u;
-#endif
+    const char* e = std::getenv("STRATA_SPIN_MAX");
+    const std::string drv = intel_gpu_driver();
+    const uint32_t v = spin_bound_for(e ? std::atol(e) : 0, drv, drv.empty() && intel_gpu_gen(d) == IntelGpuGen::Battlemage,
+                                      spin_host_waits_flag().load(), spin_long_drafts_flag().load());
     auto it = cache.find(d);
     if (it == cache.end() || it->second != v) {
         if (it != cache.end() || std::getenv("STRATA_SPIN_LOG") != nullptr)

@@ -413,6 +413,9 @@ if(STRATA_SYCL_PARITY)
   add_executable(short_cache_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/short_cache_test.cpp)   # the sizing of a start short of VRAM (CPU, no model)
   target_include_directories(short_cache_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   add_test(NAME short_cache_test COMMAND short_cache_test)
+  add_executable(spin_bound_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/spin_bound_test.cpp)   # the choice of the device-spin bound (CPU, no device)
+  target_include_directories(spin_bound_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  add_test(NAME spin_bound_test COMMAND spin_bound_test)
   add_executable(verify_refusal_test ${CMAKE_CURRENT_SOURCE_DIR}/src/core/verify_refusal_test.cpp)   # a refused start (no VRAM expert tier) ends cleanly: the verifiers leave the default queue alone
   target_link_libraries(verify_refusal_test PRIVATE strata_engine strata_prefill strata_spec)
   add_test(NAME verify_refusal_test COMMAND verify_refusal_test)   # needs one SYCL GPU

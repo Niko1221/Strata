@@ -154,6 +154,35 @@ def spin_bound_at_run_time(s):
     return s.replace("strata::kSpinMax", "spin_max")
 edit("src/kernels/cuda/elementwise.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
 edit("src/kernels/cuda/verify_kernels.dp.cpp", lambda s: spin_bound_at_run_time(doorbell(s)))
+# 7c''. A bounded wait that runs out has NOT seen its flag (sycl_doorbell.hpp, spin_mark_expired): each of the three waiting kernels
+#       takes a `volatile uint32_t *expired` argument (after `spin_max`), writes its site in it when the loop ends with the flag
+#       still short, and its launcher passes strata::spin_expired_word(*strata::q_of(stream)); the verifier reads the word when a
+#       window completes and discards the window. Idempotent: a kernel that already takes `expired` is left alone. Runs after 7c'.
+def spin_expiry_word(s):
+    for kernel, launcher, site in (("doorbell_wait_kernel", "doorbell_wait", "kSpinExpiredDoorbell"),
+                                   ("wait_flag_ge_or_kernel", "wait_flag_ge_or", "kSpinExpiredOr"),
+                                   ("wait_flag_ge_kernel", "wait_flag_ge", "kSpinExpiredPlan")):
+        sig = re.compile(r"(__dpct_inline__ void " + kernel + r"\([^)]*?uint32_t spin_max)\)(\s*\{)")
+        m = sig.search(s)
+        if not m:
+            continue                                          # the bound is not a run-time argument here (7c' did not apply)
+        if "expired" not in m.group(1):
+            s = s[:m.start()] + m.group(1) + ", volatile uint32_t *expired)" + m.group(2) + s[m.end():]
+            # the kernel's loop: the expiry test is the loop's own condition, taken verbatim
+            body = s[m.start():]
+            loop = re.search(r"^( *)for \(uint32_t spin = 0; spin < spin_max && (.+?); \+\+spin\)[^\n]*\n", body, re.M)
+            if loop and "spin_mark_expired" not in body[loop.end():loop.end() + 200]:
+                at = m.start() + loop.end()
+                s = s[:at] + f"{loop.group(1)}if ({loop.group(2)}) strata::spin_mark_expired(expired, strata::{site});\n" + s[at:]
+        call = re.compile(r"(\b" + kernel + r"\((?:[^()]|\([^()]*\))*?spin_max)\);")
+        s = call.sub(lambda c: c.group(1) + ", expired);", s)
+        head = re.compile(r"^(void " + launcher + r"\([^)]*\)(?: try)? \{\n(?:    if \([^\n]*\) return;\n)?    const uint32_t spin_max = strata::spin_max\([^\n]*\);\n)", re.M)
+        h = head.search(s)
+        if h and "spin_expired_word(" not in s[h.end():h.end() + 200]:
+            s = s[:h.end()] + "    volatile uint32_t* const expired = strata::spin_expired_word(*strata::q_of(stream));\n" + s[h.end():]
+    return s
+edit("src/kernels/cuda/elementwise.dp.cpp", spin_expiry_word)
+edit("src/kernels/cuda/verify_kernels.dp.cpp", spin_expiry_word)
 
 # 7d. cudaMemcpy / cudaMemset are synchronous; dpct emitted `get_in_order_queue().memcpy(...)` with no wait where
 #     the source was pageable ("call wait() if needed"). The streaming expert source hands out ring-buffer blobs,
