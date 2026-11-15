@@ -19125,7 +19125,13 @@ int main(int argc, char** argv) {
                         auto masks = req_tnc.window_masks(window.data(), T, (int) n_vocab, tnc_mask);
                         bool any_row = false;
                         for (int t = 1; t < T; ++t) if (!masks[(size_t) t].empty()) { any_row = true; break; }
-                        if (!any_row) {
+                        // Broadcast row 0's bias to every row only when the head is NOT inside a name (tnc_mask is
+                        // then the request's static bias or empty, so it is position-independent).  When tnc_active
+                        // is set, tnc_mask is the name-trie mask: if the draft completes the name in window[1] the
+                        // later rows are empty, and broadcasting it would force the post-name (parameter) rows to the
+                        // name terminator.  In that case the per-row path below already fills empty rows with the
+                        // static bias / zeros, so it is correct for every tnc_active window.
+                        if (!tnc_active && !any_row) {
                             if (!ver.set_logit_bias(tnc_mask, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                         } else {
                             tnc_rows.resize((size_t) T * (size_t) n_vocab);
