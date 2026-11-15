@@ -5,7 +5,7 @@
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
 //   strata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
+//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto] [--no-warmup]
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
 // Resident: prints "READY <n_embd>", then per stdin line
@@ -90,6 +90,7 @@ int main(int argc, char** argv) {
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool fa_given = false;
+    bool no_warmup = false;   // --no-warmup: the server started this reader on demand into VRAM it freed for it
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string {
@@ -99,6 +100,7 @@ int main(int argc, char** argv) {
         if (a == "--mmproj") mmproj = next();
         else if (a == "--model") model = next();
         else if (a == "--gpu") gpu = true;
+        else if (a == "--no-warmup") no_warmup = true;
         else if (a == "--version") {
 #ifdef STRATA_VISION_HIP
             std::printf("strata-vision hip (GPU architectures: %s)\n", STRATA_VISION_HIP_ARCHS);
@@ -124,7 +126,7 @@ int main(int argc, char** argv) {
     }
     if (mmproj.empty() || model.empty()) {
         std::fprintf(stderr, "usage: strata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
-                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
+                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto] [--no-warmup]\n");
         return 2;
     }
     // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
@@ -246,6 +248,10 @@ int main(int argc, char** argv) {
         if (gg) gguf_free(gg);
     }
     if (n_embd <= 0) { std::printf("ERR the vision encoder has no projection_dim\n"); std::fflush(stdout); return 1; }
+    // --no-warmup (the server's on-demand "elastic" start): the engine was already running and the server shrank its
+    // expert cache by elastic_mib before starting this reader, so the work buffers can come with the first real picture
+    // inside that room; encoding the largest dummy picture first would only delay that picture.  The dummy is still
+    // tokenized (no encode), so the #3690 token-limit check below keeps working.
     // Warm up at the LARGEST picture before READY: the encoder's GPU work buffers are allocated now, not at the first
     // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
     // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
@@ -266,11 +272,12 @@ int main(int argc, char** argv) {
         if (bm && mtmd_tokenize(ctx, chunks, &txt, bms, 1) == 0) {
             for (size_t c = 0; c < mtmd_input_chunks_size(chunks); ++c) {
                 const mtmd_input_chunk* ch = mtmd_input_chunks_get(chunks, c);
-                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE && mtmd_encode_chunk(ctx, ch) == 0)
+                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE && (no_warmup || mtmd_encode_chunk(ctx, ch) == 0))
                     warm_tokens = (int) mtmd_input_chunk_get_n_tokens(ch);
             }
         }
-        std::fprintf(stderr, "strata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens,
+        std::fprintf(stderr, no_warmup ? "strata-vision: warmed up at %d image tokens in %.1f s (tokenized only, no encode: --no-warmup)\n"
+                                       : "strata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens,
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_t0).count());
         // I7 (#3690): a picture that became 93,700 image tokens under --max-tokens 1024. The limit is not applied by this build of mtmd for
         // this model, and the log line above is the evidence to ask for.

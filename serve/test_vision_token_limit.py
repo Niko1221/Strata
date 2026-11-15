@@ -34,6 +34,14 @@ class TokenLimit(unittest.TestCase):
     def test_an_unreadable_value_falls_back_to_the_default(self):
         self.assertEqual(limit_of({**BASE, "gpu": True, "max_tokens": "lots"}), 1024)
 
+    def test_no_warmup_only_for_an_elastic_gpu_reader_that_asks(self):
+        on = {**BASE, "gpu": True, "elastic": True, "elastic_no_warmup": True}
+        self.assertIn("--no-warmup", server.Vision.reader_args(on))
+        self.assertNotIn("--no-warmup", server.Vision.reader_args({**on, "elastic_no_warmup": False}))
+        self.assertNotIn("--no-warmup", server.Vision.reader_args({**on, "elastic": False}))   # resident: warm up before the engine sizes
+        self.assertNotIn("--no-warmup", server.Vision.reader_args({**on, "gpu": False}))       # the CPU reader never warms up
+        self.assertNotIn("--no-warmup", server.Vision.reader_args({**BASE, "gpu": True, "elastic": True}))
+
     def test_min_tokens_is_unchanged(self):
         args = server.Vision.reader_args({**BASE, "gpu": True, "min_tokens": 768})
         self.assertEqual(args[args.index("--min-tokens") + 1], "768")
