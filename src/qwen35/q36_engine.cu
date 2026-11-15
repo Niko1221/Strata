@@ -32,6 +32,7 @@
 #include "strata/qwen35/bounded_experts.hpp"
 #include "strata/qwen35/hotspot_trace.hpp"
 #include "strata/qwen35/startup_trace.hpp"
+#include "strata/qwen35/phase_trace.hpp"
 #include "q36_kernels.cuh"
 #include "q36_kv_cache.cuh"
 #if defined(STRATA_Q36_CPU_POOL)
@@ -1256,6 +1257,7 @@ struct Engine {
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
     double hy_cpu_ms = 0;
+    uint64_t phase_requests = 0;
     // STRATA_Q36_HOTSPOT_PROFILE=1: diagnostic host+event timings (may sync). Default path leaves these at 0.
     bool hotspot_on = false;
     long long hs_layers_gdn = 0, hs_layers_attn = 0;
@@ -2370,7 +2372,10 @@ struct Engine {
                 std::fprintf(stderr, "strata-q36: file staging requires the bounded expert transfer pool\n");
                 std::exit(1);
             }
-            if (n) CK(cudaMemcpyAsync(dst, src, n, cudaMemcpyHostToDevice, stream));
+            if (n) {
+                CK(cudaMemcpyAsync(dst, src, n, cudaMemcpyHostToDevice, stream));
+                strata::qwen35::q36_phase_h2d(n);
+            }
             return;
         }
         static const bool pipeline = std::getenv("STRATA_Q36_PIN_PIPELINE") != nullptr;
@@ -2399,6 +2404,7 @@ struct Engine {
                     std::exit(1);
                 }
                 CK(cudaMemcpyAsync((uint8_t*) dst + off, pool->data(slot), chunk, cudaMemcpyHostToDevice, stream));
+                strata::qwen35::q36_phase_h2d(chunk);
                 CK(cudaEventRecord(pin_transfers.done[slot], stream));
                 pin_transfers.startup_bytes[slot] = startup ? chunk : 0;
                 pin_transfers.busy.push_back(slot);
@@ -2420,6 +2426,7 @@ struct Engine {
                 }
                 CK(cudaMemcpyAsync((uint8_t*) dst + off, (const uint8_t*) src + off, n - off, cudaMemcpyHostToDevice,
                                    stream));
+                strata::qwen35::q36_phase_h2d(n - off);
                 return;
             }
             const size_t chunk = std::min(n - off, (size_t) pool->slot_bytes());
@@ -2432,9 +2439,11 @@ struct Engine {
                 }
                 CK(cudaMemcpyAsync((uint8_t*) dst + off, (const uint8_t*) src + off, n - off, cudaMemcpyHostToDevice,
                                    stream));
+                strata::qwen35::q36_phase_h2d(n - off);
                 return;
             }
             CK(cudaMemcpyAsync((uint8_t*) dst + off, pool->data(s), chunk, cudaMemcpyHostToDevice, stream));
+            strata::qwen35::q36_phase_h2d(chunk);
             CK(cudaStreamSynchronize(stream));
             complete(chunk);
             pool->release(s);
@@ -2447,6 +2456,7 @@ struct Engine {
         for (int i = 0; i < 2 && i < (int) seq.size(); ++i) stream_kick(i);
     }
     void stream_kick(int i) {   // the i-th layer of the sequence into staging buffer i % 2, after its last reader
+        strata::qwen35::Q36PhaseLayer phase_layer(stream_seq[(size_t) i]);
         const int b = i % 2;
         const Layer& L = layer_at(stream_seq[(size_t) i]);
         CK(cudaStreamWaitEvent(cst, ev_used[b], 0));
@@ -2475,6 +2485,7 @@ struct Engine {
                 if (dev) {
                     CK(cudaMemcpyAsync(stage[b] + (size_t) x * L.stride, L.blobs + (size_t) H.slot_of[(size_t) x] * L.stride,
                                        n, cudaMemcpyDeviceToDevice, cst));
+                    strata::qwen35::q36_phase_d2d(n);
                     if (hotspot_on) hs_stream_d2d += (long long) n;
                 } else {
                     h2d_from_host(stage[b] + (size_t) x * L.stride, L.hblobs + (size_t) x * L.stride, n, cst);
@@ -2528,6 +2539,9 @@ struct Engine {
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T) {
 #if defined(STRATA_Q36_CPU_POOL)
+        strata::qwen35::Q36PhaseLayer phase_layer((int) li);
+        auto* phase = strata::qwen35::q36_active_phase;
+        const auto route_start = phase ? Clock::now() : Clock::time_point{};
         namespace C = strata::kernels::cpu;
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k;
@@ -2536,6 +2550,7 @@ struct Engine {
         const Layer& L = layer_at((int) li);
         while (cudaEventQuery(ev_route) == cudaErrorNotReady) {
         }
+        if (phase) phase->counters().route_wait_ms += ms_since(route_start);
         const auto t0 = Clock::now();
         // the missed entries per expert (up to MAXT tokens per job)
         jobs.clear();
@@ -2582,14 +2597,18 @@ struct Engine {
                            m->expert_pack->read_mapped(src, dst, bytes);
                 },
                 [&](C::ExpertJobMulti* wave, size_t count) {
+                    const auto compute_start = phase ? Clock::now() : Clock::time_point{};
                     pool->run_split_multi_native(H.fmt, wave, (int) count);
+                    if (phase) { phase->counters().cpu_compute_ms += ms_since(compute_start); phase->counters().cpu_jobs += count; }
                 });
             if (!ok) {
                 std::fprintf(stderr, "strata-q36: bounded CPU expert staging failed; outputs not merged: %s\n", err.c_str());
                 std::exit(1);
             }
         } else {
+            const auto compute_start = phase ? Clock::now() : Clock::time_point{};
             pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
+            if (phase) { phase->counters().cpu_compute_ms += ms_since(compute_start); phase->counters().cpu_jobs += jobs.size(); }
         }
         hy_cpu_ms += ms_since(t0);
         CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
@@ -4098,6 +4117,12 @@ struct Serve {
         const auto t0 = Clock::now();
         const int64_t fresh = (int64_t) (ids.size() - reuse);
         bool cancelled = false;
+        // Batch scheduling interleaves work from other requests, so these
+        // single-request counters deliberately stay disabled for that mode.
+        const bool phase_metrics = E.n_sess == 1 && strata::qwen35::q36_phase_metrics_enabled();
+        const uint64_t phase_request = ++E.phase_requests;
+        strata::qwen35::Q36PhaseTrace prefill_phase(strata::qwen35::Q36Phase::prefill, phase_request, phase_metrics);
+        prefill_phase.input_tokens = ids.size(); prefill_phase.reused_tokens = reuse;
         const int64_t got = E.process(ids.data() + reuse, fresh, [&](int64_t done) -> bool {
             std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) fresh, ms_since(t0),
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
@@ -4114,6 +4139,8 @@ struct Serve {
             if (stop.load()) { cancelled = true; return false; }
             return true;
         });
+        prefill_phase.processed_tokens = (uint64_t) got;
+        prefill_phase.finish(cancelled ? "cancelled" : "complete");
         ss.live.insert(ss.live.end(), ids.begin() + (long) reuse, ids.begin() + (long) reuse + (long) got);
         ss.imgs.clear();
         bool cut = false;
@@ -4128,7 +4155,9 @@ struct Serve {
         E.sess[(size_t) E.cur].pos = E.pos;
         const double prompt_ms = ms_since(t0);
         if (cancelled) {
+            strata::qwen35::Q36PhaseTrace cancel_phase(strata::qwen35::Q36Phase::cancel, phase_request, phase_metrics);
             private_request.clear();
+            cancel_phase.finish();
             std::printf("DONE 0 %zu %.1f 0.0 cancel 0 0 %zu 0 0 0 0 0.0 %lld 0\n", ids.size(), prompt_ms, reuse, (long long) got);
             if (adm) std::printf("BADM %d 0\n", slot);
             std::fflush(stdout);
@@ -4140,6 +4169,7 @@ struct Serve {
         static const bool pen_prompt = strata::kernels::penalty_counts_prompt(std::getenv("STRATA_PENALTY_PROMPT"));
         std::vector<int32_t> hist = strata::qwen35::penalty_history_start(ids, pen_prompt);
         const auto d0 = Clock::now();
+        strata::qwen35::Q36PhaseTrace decode_phase(strata::qwen35::Q36Phase::decode, phase_request, phase_metrics);
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
         // greedy requests alone with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
@@ -4227,8 +4257,15 @@ struct Serve {
         }
         E.sess[(size_t) E.cur].pos = E.pos;
         const double decode_ms = ms_since(d0);
+        decode_phase.committed_tokens = (uint64_t) produced;
+        decode_phase.finish(std::strcmp(finish, "cancel") == 0 ? "cancelled" : "complete");
         private_request.retain = scoped_request && std::string(finish) != "cancel";
-        if (!private_request.retain) private_request.clear();
+        if (!private_request.retain) {
+            strata::qwen35::Q36PhaseTrace cleanup_phase(strata::qwen35::Q36Phase::cancel, phase_request,
+                                                     phase_metrics && std::strcmp(finish, "cancel") == 0);
+            private_request.clear();
+            cleanup_phase.finish();
+        }
         std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
         std::fflush(stdout);
@@ -4471,6 +4508,7 @@ int strata::qwen35::run(int argc, char** argv) {
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "strata-q36: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 0 || chunk > 4096 || ctx < 256) { std::fprintf(stderr, "strata-q36: bad --chunk / --max-context\n"); return 2; }
+    strata::qwen35::Q36PhaseTrace load_phase(strata::qwen35::Q36Phase::load);
     Model m;
     m.bounded_experts = bounded_experts;
     std::string err;
@@ -4571,8 +4609,11 @@ int strata::qwen35::run(int argc, char** argv) {
     E.bmtp = (batch_mtp || (std::getenv("STRATA_BATCH_MTP") != nullptr && std::string(std::getenv("STRATA_BATCH_MTP")) != "0")) && E.n_sess > 1 && E.mtp_d > 0;
     if (batch_mtp && !E.bmtp) std::fprintf(stderr, "strata-q36: --batch-mtp needs --batch N (2 or more) and --mtp N: ignored\n");
     E.startup_effective(warm ? "pending" : "off", expert_store.c_str(), true, graph);
+    load_phase.finish();
     if (warm) {
+        strata::qwen35::Q36PhaseTrace warmup_phase(strata::qwen35::Q36Phase::warmup);
         E.warmup();
+        warmup_phase.finish();
         E.startup_effective("complete", expert_store.c_str(), true, graph);
     }
     if (serve_mode) return serve(E);

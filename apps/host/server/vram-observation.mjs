@@ -13,6 +13,8 @@ const numberOrNull = value => {
 };
 
 const bytesToMib = bytes => {
+  if ((typeof bytes !== 'number' && typeof bytes !== 'string')
+    || (typeof bytes === 'string' && bytes.trim() === '')) return null;
   const n = Number(bytes);
   return Number.isFinite(n) && n >= 0 ? Math.round(n / 1024 / 1024) : null;
 };

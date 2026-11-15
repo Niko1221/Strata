@@ -2,6 +2,7 @@
 #include "strata/qwen35/bounded_experts.hpp"
 
 #include "strata/qwen35/startup_trace.hpp"
+#include "strata/qwen35/phase_trace.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -517,6 +518,13 @@ struct MappedView {
     // process working set on Windows. Bounded buffered reads leave room for the
     // engine and the resident experts, while still checking every byte.
     bool read(uint64_t offset, uint8_t* dst, size_t n) {
+        Q36ReadTrace trace(n);
+        const bool success = read_impl(offset, dst, n);
+        trace.complete(success);
+        return success;
+    }
+
+    bool read_impl(uint64_t offset, uint8_t* dst, size_t n) {
         if (offset > size || n > size - offset || (n && !dst)) return false;
 #if defined(_WIN32)
         if (bounded_io) {

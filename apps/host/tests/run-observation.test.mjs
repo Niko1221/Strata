@@ -120,6 +120,18 @@ test('Windows GPU adapter memory keeps DedicatedUsage and SharedUsage apart', ()
   assert.notEqual(rows[1].dedicated.usedMib, rows[1].shared.usedMib);
 });
 
+test('Windows missing, invalid and blank memory counters stay unavailable; measured zero survives', () => {
+  for (const value of [null, undefined, '', ' ', false, true, [], {}, -1, 'NaN', 'Infinity']) {
+    const [row] = parseWindowsGpuAdapterMemory({Name:'fixture',DedicatedUsage:value,SharedUsage:value,TotalCommitted:value});
+    assert.equal(row.dedicated.usedMib,null,String(value));
+    assert.equal(row.shared.usedMib,null,String(value));
+    assert.equal(row.totalCommittedMib,null,String(value));
+  }
+  const [zero] = parseWindowsGpuAdapterMemory({Name:'fixture',DedicatedUsage:0,SharedUsage:'0'});
+  assert.equal(zero.dedicated.usedMib,0);
+  assert.equal(zero.shared.usedMib,0);
+});
+
 test('mergeVramObservation never coerces missing fields to 0', () => {
   const merged = mergeVramObservation({
     nvidia: [{

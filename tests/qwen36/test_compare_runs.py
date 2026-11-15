@@ -28,6 +28,13 @@ def receipt():
         "status": "PASS",
         "child_exit_code": 0,
         "startup_generation": "generation-A",
+        "instrumentation": dict(
+            mode="off",
+            hotspot_sync=False,
+            phase_counters=False,
+            startup_detail=False,
+            kernel_verify=False,
+        ),
         "guard": dict(
             contained_before_resume=True, termination_confirmed=True, exit_code=0
         ),
@@ -92,6 +99,15 @@ def test_synthetic_identical_and_independent_request_bindings():
     result = compare(a, b)
     assert result["cases"][0]["wall_delta_s"] == 0
     assert result["qualification"] == "NOT_RUN"
+
+
+def test_sync_profile_and_instrumentation_mismatch_block_comparison():
+    a, b = receipt(), receipt()
+    a["instrumentation"].update(mode="host_counters", phase_counters=True)
+    assert any("instrumentation" in why for why in validate_pair(a, b))
+    a["instrumentation"].update(mode="diagnostic_sync", hotspot_sync=True)
+    b["instrumentation"] = deepcopy(a["instrumentation"])
+    assert any("diagnostic only" in why for why in validate_pair(a, b))
 
 
 @pytest.mark.parametrize(

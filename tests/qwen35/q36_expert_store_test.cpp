@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "strata/qwen35/expert_store.hpp"
 #include "strata/qwen35/bounded_experts.hpp"
+#include "strata/qwen35/phase_trace.hpp"
 
 #include <cstdint>
 #include <atomic>
@@ -201,7 +202,17 @@ int main() {
         CHECK(std::memcmp(got.data(), expect.data(), expect.size()) == 0);
         CHECK(!fs::exists(fs::path(pack->path() + ".partial")));
         std::vector<uint8_t> staged(expect.size() + 16, 0xcd);
-        CHECK(pack->read_mapped(pack->layer_data(0), staged.data() + 8, expect.size()));
+        FILE* metrics = std::tmpfile();
+        CHECK(metrics != nullptr);
+        if (metrics) {
+            strata::qwen35::Q36PhaseTrace phase(strata::qwen35::Q36Phase::prefill, 1, true, metrics);
+            CHECK(pack->read_mapped(pack->layer_data(0), staged.data() + 8, expect.size()));
+            CHECK(phase.total().read_calls == 1);
+            CHECK(phase.total().read_requested_bytes == expect.size());
+            CHECK(phase.total().read_completed_bytes == expect.size());
+            phase.finish();
+            std::fclose(metrics);
+        }
         CHECK(std::memcmp(staged.data() + 8, expect.data(), expect.size()) == 0);
         CHECK(staged.front() == 0xcd && staged.back() == 0xcd);
         const uint8_t* end = pack->layer_data(1) + pack->layer_bytes(1);

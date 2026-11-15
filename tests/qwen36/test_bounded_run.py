@@ -22,21 +22,33 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows Job integration
 def fixture_volume(tmp_path, monkeypatch):
     # These CPU processes exercise the real Windows Job guard in pytest's
     # private scratch volume. Production keeps the explicit H: admission rule.
-    monkeypatch.setattr(runner, 'OUTPUT_VOLUME', tmp_path.resolve().drive.upper())
+    monkeypatch.setattr(runner, "OUTPUT_VOLUME", tmp_path.resolve().drive.upper())
     from perf131k import windows_job
-    monkeypatch.setattr(windows_job, 'BOUNDED_STDIN_VOLUME', tmp_path.resolve().drive.upper())
+
+    monkeypatch.setattr(
+        windows_job, "BOUNDED_STDIN_VOLUME", tmp_path.resolve().drive.upper()
+    )
 
 
 def test_owned_stdin_volume_policy_is_still_enforced(tmp_path, monkeypatch):
     from perf131k import windows_job
-    monkeypatch.setattr(windows_job, 'BOUNDED_STDIN_VOLUME', 'Z:' if tmp_path.drive.upper() != 'Z:' else 'Y:')
-    with pytest.raises(ValueError, match='bounded stdin file inside owned H run directory required'):
+
+    monkeypatch.setattr(
+        windows_job,
+        "BOUNDED_STDIN_VOLUME",
+        "Z:" if tmp_path.drive.upper() != "Z:" else "Y:",
+    )
+    with pytest.raises(
+        ValueError, match="bounded stdin file inside owned H run directory required"
+    ):
         runner.run_bounded(spec_for(tmp_path))
 
 
 def test_production_volume_policy_is_still_enforced(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, 'OUTPUT_VOLUME', 'Z:' if tmp_path.drive.upper() != 'Z:' else 'Y:')
-    with pytest.raises(ValueError, match='existing_guard_requires_H_volume_output'):
+    monkeypatch.setattr(
+        runner, "OUTPUT_VOLUME", "Z:" if tmp_path.drive.upper() != "Z:" else "Y:"
+    )
+    with pytest.raises(ValueError, match="existing_guard_requires_H_volume_output"):
         runner.validate_spec(spec_for(tmp_path))
 
 
@@ -117,6 +129,85 @@ def test_complete_raw_timing_and_unknown_consumption(tmp_path):
     assert (tmp_path / "run/stdout.log").read_text().startswith("READY")
     assert "Q36_EFFECTIVE" in (tmp_path / "run/stderr.log").read_text()
     assert (tmp_path / "run/memory.jsonl").stat().st_size > 0
+
+
+@pytest.mark.parametrize("hotspot", [None, "0", "1"])
+def test_opt_in_phase_artifacts_from_owned_process(tmp_path, monkeypatch, hotspot):
+    if hotspot is None:
+        monkeypatch.delenv("STRATA_Q36_HOTSPOT_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("STRATA_Q36_HOTSPOT_PROFILE", hotspot)
+    spec = spec_for(tmp_path)
+    spec["observation"] = dict(
+        schema_version=1,
+        family="qwen36",
+        source_sha="a" * 40,
+        binary_source_sha=None,
+        environment_manifest=None,
+        identity_files={},
+    )
+    result = runner.run_bounded(spec)
+    assert result["status"] == "PASS", result
+    assert result["instrumentation"]["mode"] == (
+        "host_counters" if hotspot is None else "diagnostic_sync"
+    )
+    assert 0 <= result["engine_start_to_ready_s"] < result["ready_s"]
+    manifest = json.loads((tmp_path / "run/run_manifest.json").read_text())
+    assert manifest["status"] == "PASS" and manifest["performance_eligible"] is False
+    assert manifest["identities"]["engine_sha256"] == spec["engine_sha256"]
+    assert (tmp_path / "run/report.md").exists()
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "run/phase_metrics.jsonl").read_text().splitlines()
+    ]
+    assert any(
+        row["phase"] == "request" and row["committed_tokens"] == 2 for row in rows
+    )
+    assert any(row["phase"] == "unload" and row["value"] is None for row in rows)
+
+
+def test_preflight_hashing_does_not_spend_engine_ready_deadline(tmp_path, monkeypatch):
+    spec = spec_for(tmp_path)
+    spec.update(ready_timeout_s=1, total_timeout_s=8)
+    original = runner.digest
+
+    def delayed(path, check=lambda: None):
+        if Path(path) == Path(spec["model_path"]):
+            time.sleep(1.5)
+        return original(path, check)
+
+    monkeypatch.setattr(runner, "digest", delayed)
+    result = runner.run_bounded(spec)
+    assert result["status"] == "PASS", result
+    assert result["preflight_s"] >= 1.5
+    assert result["engine_start_to_ready_s"] < 1
+
+
+def test_observation_artifacts_survive_preflight_pressure(tmp_path, monkeypatch):
+    spec = spec_for(tmp_path)
+    spec["observation"] = dict(
+        schema_version=1,
+        family="qwen36",
+        source_sha="a" * 40,
+        binary_source_sha=None,
+        environment_manifest=None,
+        identity_files={},
+    )
+    monkeypatch.setattr(
+        runner,
+        "available_memory",
+        lambda: dict(
+            available_physical_bytes=2 * runner.GIB,
+            available_commit_bytes=8 * runner.GIB,
+        ),
+    )
+    result = runner.run_bounded(spec)
+    assert (
+        result["status"] == "ABORTED" and result["reason"] == "physical_memory_pressure"
+    )
+    assert "owned_engine_pid" not in result
+    for name in ("run_manifest.json", "phase_metrics.jsonl", "report.md"):
+        assert (tmp_path / "run" / name).exists()
 
 
 @pytest.mark.parametrize(

@@ -32,6 +32,20 @@ import threading
 import time
 from types import SimpleNamespace
 from typing import Callable
+from uuid import uuid4
+
+try:
+    from .q36_phase_metrics import (
+        validate_observation_spec,
+        verify_observation_inputs,
+        write_artifacts,
+    )
+except ImportError:
+    from q36_phase_metrics import (
+        validate_observation_spec,
+        verify_observation_inputs,
+        write_artifacts,
+    )
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -109,7 +123,7 @@ def sha(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-OUTPUT_VOLUME = 'H:'
+OUTPUT_VOLUME = "H:"
 
 
 def validate_spec(spec: dict) -> None:
@@ -137,6 +151,8 @@ def validate_spec(spec: dict) -> None:
         raise ValueError("missing_spec_fields")
     if spec.get("schema_version") != 1:
         raise ValueError("schema_version")
+    if "observation" in spec:
+        validate_observation_spec(spec["observation"])
     if not isinstance(spec["run_id"], str) or not re.fullmatch(
         r"[A-Za-z0-9_-]{1,80}", spec["run_id"]
     ):
@@ -302,14 +318,41 @@ def _worker(spec: dict) -> int:
     failure: list[str] = []
     lock = threading.Lock()
     written = 0
+    child_env = dict(os.environ)
+    if "observation" in spec:
+        child_env["STRATA_Q36_PHASE_METRICS"] = "1"
+        child_env["STRATA_Q36_STARTUP_GENERATION"] = spec["observation_generation"]
+    # The native switches are presence-based: even the string '0' enables
+    # hotspot/verification synchronization in the existing executable.
+    hotspot = "STRATA_Q36_HOTSPOT_PROFILE" in child_env
+    verify = "STRATA_Q36_VERIFY" in child_env
+    counters = child_env.get("STRATA_Q36_PHASE_METRICS") == "1"
+    _emit(
+        {
+            "event": "instrumentation",
+            "value": {
+                "mode": (
+                    "diagnostic_sync"
+                    if hotspot or verify
+                    else "host_counters" if counters else "off"
+                ),
+                "hotspot_sync": hotspot,
+                "phase_counters": counters,
+                "kernel_verify": verify,
+                "startup_detail": child_env.get("STRATA_Q36_STARTUP_DETAIL") == "1",
+            },
+        }
+    )
+    spawned_at = time.monotonic()
     proc = subprocess.Popen(
         [spec["engine_path"], *spec["argv"]],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         creationflags=subprocess.CREATE_NO_WINDOW,
+        env=child_env,
     )
-    _emit({"event": "child", "pid": proc.pid})
+    _emit({"event": "child", "pid": proc.pid, "at": spawned_at})
 
     def pump(stream, name: str) -> None:
         nonlocal written
@@ -487,6 +530,8 @@ def run_bounded(spec: dict) -> dict:
         output.mkdir()
         with (output / "result.json").open("x", encoding="utf-8") as target:
             json.dump(result, target, indent=2)
+        if "observation" in spec:
+            write_artifacts(output, result, spec)
         return result
 
     try:
@@ -494,6 +539,10 @@ def run_bounded(spec: dict) -> dict:
     except (RuntimeError, OSError, ValueError) as error:
         return abort_preflight(error)
     try:
+        if "observation" in spec:
+            verify_observation_inputs(
+                spec["observation"], lambda path: digest(path, resources)
+            )
         for kind in ("engine", "model", "prompt_fixture", "pack"):
             if (
                 kind + "_path" in spec
@@ -526,6 +575,7 @@ def run_bounded(spec: dict) -> dict:
         "requested_settings",
         "experiment",
         "toolchain_sha256",
+        "observation",
     }
     allowed |= {
         kind + suffix
@@ -536,6 +586,8 @@ def run_bounded(spec: dict) -> dict:
         raise ValueError("unknown_spec_fields")
     output.mkdir()
     worker_spec = dict(spec, cases=cases)
+    if "observation" in spec:
+        worker_spec["observation_generation"] = uuid4().hex
     if len(json.dumps(worker_spec).encode()) > MAX_JSON:
         raise ValueError("worker_spec_size_limit")
     with (output / "spec.json").open("x", encoding="utf-8") as target:
@@ -549,6 +601,7 @@ def run_bounded(spec: dict) -> dict:
         "last_stage": "preflight",
         "child_exit_code": None,
         "initial_resources": initial,
+        "preflight_s": time.monotonic() - start,
         "gpu_memory_observation": None,
         "gpu_memory_reason": "GPU observation is outside this CPU resource harness",
         "execution_argv": spec["argv"],
@@ -559,6 +612,7 @@ def run_bounded(spec: dict) -> dict:
         "experiment": spec["experiment"],
         "effective_settings": {},
         "startup_generation": None,
+        "instrumentation": None,
         "cases": [],
         "expected_case_ids": [case["prompt_id"] for case in cases],
         "qualification": "NOT_RUN",
@@ -569,6 +623,7 @@ def run_bounded(spec: dict) -> dict:
         guard_sha256=digest(ROOT / "tools/perf131k/windows_job.py"),
         resource_guard_sha256=digest(ROOT / "tools/native_model_resource_guard.py"),
         worker_interpreter_sha256=digest(Path(sys.executable)),
+        phase_metrics_sha256=digest(Path(__file__).with_name("q36_phase_metrics.py")),
     )
     for i, case in enumerate(cases):
         result["cases"].append(
@@ -611,8 +666,38 @@ def run_bounded(spec: dict) -> dict:
                 ready = True
                 result["last_stage"] = "ready"
                 result["ready_s"] = event["at"] - start
+                result["engine_start_to_ready_s"] = (
+                    event["at"] - result["engine_started_at"]
+                )
+            elif kind == "instrumentation":
+                value = event["value"]
+                if (
+                    not isinstance(value, dict)
+                    or set(value)
+                    != {
+                        "mode",
+                        "hotspot_sync",
+                        "phase_counters",
+                        "startup_detail",
+                        "kernel_verify",
+                    }
+                    or value["mode"] not in ("off", "host_counters", "diagnostic_sync")
+                    or any(
+                        type(value[k]) is not bool
+                        for k in (
+                            "hotspot_sync",
+                            "phase_counters",
+                            "startup_detail",
+                            "kernel_verify",
+                        )
+                    )
+                ):
+                    raise ValueError("instrumentation_schema")
+                result["instrumentation"] = value
             elif kind == "child":
                 result["owned_engine_pid"] = event["pid"]
+                result["engine_started_at"] = event["at"]
+                result["preflight_and_worker_start_s"] = event["at"] - start
             elif kind == "effective":
                 fields = event["fields"]
                 if fields.get("schema") != "1":
@@ -708,10 +793,14 @@ def run_bounded(spec: dict) -> dict:
         def tick() -> str | None:
             if abort_reason:
                 return abort_reason
-            if not ready and time.monotonic() - start >= spec["ready_timeout_s"]:
+            # Large model/pack hashing is preflight, not engine startup. The
+            # unchanged total deadline still covers preflight and the full run.
+            ready_origin = result.get("engine_started_at", launch_started)
+            if not ready and time.monotonic() - ready_origin >= spec["ready_timeout_s"]:
                 return "ready_deadline"
             return None
 
+        launch_started = time.monotonic()
         budget = SimpleNamespace(
             timeout_s=max(0.001, spec["total_timeout_s"] - (time.monotonic() - start)),
             job_commit_bytes=spec.get("job_commit_bytes"),
@@ -736,6 +825,7 @@ def run_bounded(spec: dict) -> dict:
             stdin_path=output / "handshake.txt",
             on_output=on_output,
             on_tick=tick,
+            memory_diagnostics="observation" in spec,
         )
     guard = result["guard"]
     success = (
@@ -772,6 +862,8 @@ def run_bounded(spec: dict) -> dict:
     )
     with (output / "result.json").open("x", encoding="utf-8") as target:
         json.dump(result, target, indent=2, allow_nan=False)
+    if "observation" in spec:
+        write_artifacts(output, result, spec)
     return result
 
 

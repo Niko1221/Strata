@@ -46,6 +46,30 @@ def _validate(run: dict) -> list[str]:
         errors.append("run did not pass schema/protocol execution")
     if not isinstance(run.get("run_id"), str) or not run["run_id"]:
         errors.append("missing run identity")
+    instrumentation = run.get("instrumentation")
+    if (
+        not isinstance(instrumentation, dict)
+        or set(instrumentation)
+        != {"mode", "hotspot_sync", "phase_counters", "startup_detail", "kernel_verify"}
+        or instrumentation.get("mode")
+        not in ("off", "host_counters", "diagnostic_sync")
+        or any(
+            type(instrumentation.get(k)) is not bool
+            for k in (
+                "hotspot_sync",
+                "phase_counters",
+                "startup_detail",
+                "kernel_verify",
+            )
+        )
+    ):
+        errors.append("missing/invalid observed instrumentation")
+    elif instrumentation["mode"] != (
+        "diagnostic_sync"
+        if instrumentation["hotspot_sync"] or instrumentation["kernel_verify"]
+        else "host_counters" if instrumentation["phase_counters"] else "off"
+    ):
+        errors.append("inconsistent observed instrumentation")
     identities = run.get("identities", {})
     if (
         not isinstance(identities, dict)
@@ -227,6 +251,13 @@ def validate_pair(a: dict, b: dict) -> list[str]:
         errors.append("independent run identities required")
     if a["experiment"] != b["experiment"]:
         errors.append("frozen experiments differ")
+    # Receipts without instrumentation remain readable but cannot establish
+    # comparability. A sync-enabled diagnostic run never supplies speed evidence.
+    if a.get("instrumentation") != b.get("instrumentation"):
+        errors.append("instrumentation differs or is unobserved in one run")
+    for run in (a, b):
+        if (run.get("instrumentation") or {}).get("mode") == "diagnostic_sync":
+            errors.append("sync-enabled hotspot runs are diagnostic only")
     dims = set(a["experiment"]["dimensions"])
     allowed_identity = {"engine_sha256", "toolchain_sha256"} if dims else set()
     for key in set(a["identities"]) | set(b["identities"]):
