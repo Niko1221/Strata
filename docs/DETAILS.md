@@ -1288,8 +1288,11 @@ your own prompts. The Monitor marks every request ESP or stock.
 
 The engine log then says `control vector mode = project, dir = per-layer, layers 4..44 (41 steered)`. A loaded vector is on for
 every request unless it says otherwise: Chat settings has a switch, and the API takes `"experimental_speed_projection": false`
-(config default: `"sampling": {"experimental_speed_projection": false}`). Switching drops the conversation cache once. Switched
-off, the output is token for token the stock model's.
+(config default: `"sampling": {"experimental_speed_projection": false}`). A request reuses only what was read with its own
+setting, so a conversation that switches reads its prompt again once. With the conversation cache on, the conversation read
+with the other setting stays parked, so clients with the vector on and clients with it off can take turns on one server and
+each finds its own conversation again ([measured on a two-card layer split](#history--older-measurements)). Switched off, the
+output is token for token the stock model's.
 
 ---
 
@@ -1558,6 +1561,7 @@ with `--batch 2` at 262,144 context saw 538 MiB at the free line become 395 MiB 
 | not stated | 2x RTX 3080 20 GB, UD-Q4_K_XL, 90 GiB container, resident RAM mode, 2 slots, 308 requests | `--memory-limit-mib 101376`: 135 parks, 0 skips. With 78000 the container sat above the cap and all 8 parking attempts were skipped while requests were served normally (median of 6 decodes 79.6 tok/s) |
 | not stated | 4-GPU split | A 9,276-token conversation restored in 51 ms and decoded exactly the tokens it does when the conversation never left (`tools/parking_test.py`) |
 | not stated | 2x CMP 50HX layer split, IQ3_XXS, pi coding agent | `--prompt-cache-spread`: a 210,528-token prompt that matched the session for 204,349 tokens resumed at 9,525 and read 201,003 again (100 s); with the flag, an 82,593-token conversation with a turn ~6 steps back rewritten resumed at 73,610 tokens (10.2 s against 40.0 s) |
+| 0.1.57, a fork build | 2x Tesla P100 16 GB (sm_60, layer split 24, 150 W each), 2x Xeon E5-2696 v3, a Q4_K_XL / IQ4_NL pack at 262K, 16 parked conversations | Experimental speed projection loaded with the config default off: against an engine without the vector, five greedy requests up to 12,602 tokens gave the same logprobs to 6 decimals (`--adapt-every 0`). Two agents of 9.8K to 18K tokens taking turns, one with the vector on and one off: every return reused its own parked conversation and read its new turn (2,385 to 2,798 tokens); the same 17,397-token prompt asked with the other setting was read whole, and on the way back 5 tokens. A 400-token reply: 42.6 and 43.0 tok/s off, 43.2 and 42.4 on |
 | not stated | RTX 5070 Ti Laptop, Swift 1.5 IQ3_XXS, a new opencode session in a second folder | `env_to_user`: first request 14,073 tokens with 13,693 from the cache, 1.1 s, against 14,753 read, 11.9 s |
 | 0.1.40.2 | Tesla P100 | A question after a long document re-reads up to 16K tokens (55 s at 262K) without `strata_prefix` |
 | not stated | Codex CLI 0.160.0, Q2_0, RTX 5070 | First prompt 9,443 tokens in 10 s; later tool-loop turns reused about 96% from the cache and read the new part in 1-2 s. Compaction after an 85,000-token conversation reused 84,895 of 84,997 tokens with `codex_compaction_cache` and 41 of 80,683 without |
