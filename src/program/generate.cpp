@@ -15217,7 +15217,7 @@ int main(int argc, char** argv) {
                         (long long) o.prefill_chunk, sp.stage_count(),
                         (long long) strata::prefill::Prefill::stream_all_min_tokens(),
                         strata::prefill::Prefill::pipe_setting(),
-                        o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
+                        o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) + " slot_sessions=" + std::to_string(slot_reserved) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups) +
                                        (o.parallel_recycle_after > 0
@@ -15528,7 +15528,6 @@ int main(int argc, char** argv) {
         // most-routed missing expert of the same layer); the adaptive tier carries on from there.
         std::vector<std::pair<int32_t, int32_t>> vram_evicted;   // (residency index, slot) the shrinks took
         int64_t vram_reserve_mib_now = o.vram_reserve_mib;       // #533: what `VRAM <reserve>` last asked to keep free (the idle shrink honours it)
-        bool vram_reserve_commanded = false;                     // a `VRAM <n>` with an explicit n was applied; bare VRAM (start reserve) clears it
         const int64_t chunk_full = o.prefill_chunk;              // the loan's chunk with the whole cache
         auto relend = [&]() {   // the prompt path's loan: the end of the slots left, its chunk as large as fits
             if (pf_parts.empty() || pf_parts[0].first < 0) return;
@@ -15649,7 +15648,6 @@ int main(int argc, char** argv) {
                          (long long) (free_b >> 20), (long long) o.prefill_chunk,
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), note.c_str());
             vram_reserve_mib_now = (int64_t) reserve;   // applied: the idle shrink grows the cache back only as far as this leaves room
-            vram_reserve_commanded = !bare;            // an explicit reserve is respected by the idle shrink; a bare `VRAM` restores the start's
             std::printf("VRAM reserve_mib=%lld expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
                         "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve,
                         (long long) xcache.slots(), (long long) xcache.full_slots(),
@@ -15769,6 +15767,7 @@ int main(int argc, char** argv) {
                     const int64_t live = xcache.slots();
                     std::string ferr;
                     std::vector<std::pair<int32_t, int32_t>> keep_out;
+                    std::vector<std::pair<int32_t, int32_t>> refilled;
                     for (const auto& [i, slot] : vram_evicted) {
                         if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
                         const int64_t layer = i / g.n_expert;
@@ -15793,9 +15792,16 @@ int main(int argc, char** argv) {
                         srcp->note_async_read(bl, nullptr);
                         xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
                         host_res[(size_t) pick] = slot;
+                        refilled.emplace_back((int32_t) pick, (int32_t) slot);
                     }
                     vram_evicted.swap(keep_out);
-                    (void) xcache.sync_queued(ferr);
+                    if (!xcache.sync_queued(ferr)) {
+                        for (const auto& [rank, slot] : refilled) {
+                            xcache.forget_resident((int64_t) rank / g.n_expert, (int64_t) rank % g.n_expert);
+                            host_res[(size_t) rank] = strata::core::kNotResident;
+                        }
+                        std::fprintf(stderr, "strata serve: adaptive slots: refilling the cache failed: %s\n", ferr.c_str());
+                    }
                     res_upload();
                 }
                 relend();
@@ -15809,6 +15815,7 @@ int main(int argc, char** argv) {
                     const int64_t live = xcache.slots();
                     std::string ferr;
                     std::vector<std::pair<int32_t, int32_t>> keep_out;
+                    std::vector<std::pair<int32_t, int32_t>> refilled;
                     for (const auto& [i, slot] : vram_evicted) {
                         if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
                         const int64_t layer = i / g.n_expert;
@@ -15834,9 +15841,16 @@ int main(int argc, char** argv) {
                         srcp->note_async_read(bl, nullptr);
                         xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
                         host_res[(size_t) pick] = slot;
+                        refilled.emplace_back((int32_t) pick, (int32_t) slot);
                     }
                     vram_evicted.swap(keep_out);
-                    (void) xcache.sync_queued(ferr);
+                    if (!xcache.sync_queued(ferr)) {
+                        for (const auto& [rank, slot] : refilled) {
+                            xcache.forget_resident((int64_t) rank / g.n_expert, (int64_t) rank % g.n_expert);
+                            host_res[(size_t) rank] = strata::core::kNotResident;
+                        }
+                        std::fprintf(stderr, "strata serve: adaptive slots: refilling the cache failed: %s\n", ferr.c_str());
+                    }
                     res_upload();
                 };
                 const int64_t need = (bslot_bytes0 + (int64_t) (64 << 20)) * (int64_t) (n - slot_reserved);   // session + verifier batch arena
@@ -15852,15 +15866,18 @@ int main(int argc, char** argv) {
                     e = b;
                     return false;
                 }
-                if (!xcache.shrink(keep, e)) return false;
+                // v0.2.14's shrink can give back some segments and then fail (a release the driver refuses):
+                // the slots past what stays mapped hold nothing either way, so the tables follow what is left
+                // before the error goes out, exactly like the VRAM command does after its shrink.
+                const bool shrunk = xcache.shrink(keep, e);
                 const int64_t live = xcache.slots();
-                for (size_t i = 0; i < host_res.size(); ++i)
-                    if (host_res[i] >= live) {
-                        vram_evicted.emplace_back((int32_t) i, host_res[i]);
-                        xcache.forget_resident((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // the slot is unmapped: the table must not name it
-                        host_res[i] = strata::core::kNotResident;
-                    }
+                const size_t evicted_before = vram_evicted.size();
+                strata::core::evict_slots_past(host_res, live, vram_evicted);
+                for (size_t n = evicted_before; n < vram_evicted.size(); ++n)
+                    xcache.forget_resident((int64_t) vram_evicted[n].first / g.n_expert,
+                                           (int64_t) vram_evicted[n].first % g.n_expert);
                 res_upload();
+                if (!shrunk) { relend(); return false; }
                 bool ok = true;
                 for (int b = slot_reserved; b < (int) n && ok; ++b) {
                     auto u = std::make_unique<strata::core::SessionState>();
@@ -17064,6 +17081,7 @@ int main(int argc, char** argv) {
         Clock::time_point adaptive_idle_t0 = Clock::now();   // --parallel-recycle-after: when the engine went idle
         bool adaptive_idle_armed = false;
         bool adaptive_shrink_failing = false;                // an idle shrink failed: back off S seconds and say it once
+        Clock::time_point adaptive_next_shrink = Clock::time_point::min();  // the idle shrink may run again
         for (;;) {
             line_drain_ms = 0.0;
             strata::core::manifest::instance().flush_if_dirty("request");   // STRATA_MANIFEST: what the last request added (a no-op when off)
@@ -17102,7 +17120,7 @@ int main(int argc, char** argv) {
                 if (ar < 0) break;
                 if (ar == 0) {
                     const auto idle_s = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - adaptive_idle_t0).count();
-                    if (slot_reserved > 0 && !batch_on() && idle_s >= o.parallel_recycle_after) {
+                    if (slot_reserved > 0 && !batch_on() && idle_s >= o.parallel_recycle_after && Clock::now() >= adaptive_next_shrink) {
                         std::string aerr;
                         if (!adaptive_resize(0, aerr) && !aerr.empty()) {
                             // A failed shrink used to retry every 500 ms, re-running the whole resize and filling the
@@ -17112,7 +17130,7 @@ int main(int argc, char** argv) {
                                 std::fprintf(stderr, "strata serve: adaptive idle shrink: %s (retrying in %d s)\n",
                                              aerr.c_str(), o.parallel_recycle_after);
                             adaptive_shrink_failing = true;
-                            adaptive_idle_t0 = Clock::now() + std::chrono::seconds(o.parallel_recycle_after);
+                            adaptive_next_shrink = Clock::now() + std::chrono::seconds(o.parallel_recycle_after);
                         } else {
                             // every slot session is gone: a BCO that named one of them must not be co-read (the
                             // prompt's BGEN grows for it again and reads it normally).  co_set is last request's.
@@ -17120,6 +17138,7 @@ int main(int argc, char** argv) {
                             co_set.clear();
                             adaptive_idle_armed = false;
                             adaptive_shrink_failing = false;
+                            adaptive_next_shrink = Clock::time_point::min();
                         }
                     }
                     continue;

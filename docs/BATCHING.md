@@ -777,8 +777,8 @@ and the aggregate rate.
 `--kv-grow`, no `--peer-device`. `S` is the idle time in seconds: 0 (or absent) = off, `S>0` turns it on. The
 elastic cache it needs is **implied**: `--parallel-recycle-after S>0` without `--vram-elastic` turns that on with
 512 MiB segments (`--vram-segment-mib` changes them) and says so; a start that `--vram-elastic` cannot work in
-(layer split, helper caches, HIP, `--vram-segment-mib` below 64), or a start without an expert cache (`--expert-cache 0`)
-or without the driver's virtual memory management, still refuses the adaptive feature. With it,
+(layer split, helper caches, HIP, `--vram-segment-mib` below 64), or a start without the driver's virtual memory management, still refuses the adaptive feature.
+(`--expert-cache 0` means *auto* here, so it does not disable the cache and is no reason to refuse.) With it,
 `--batch N` is only a **cap**: at start the engine allocates **NO batch slot session** (the whole VRAM the slots
 would take stays in the expert cache, which is sized as for a single request), grows the reserved count on
 demand, and shrinks back to **zero batch sessions** after `S` seconds without a request. A single request uses
