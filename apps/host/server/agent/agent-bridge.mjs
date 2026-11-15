@@ -20,6 +20,7 @@ import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { GatewayClient } from './gateway-client.mjs';
+import { SOFT_CUT_PATCH, SteeringStore, ParentSteering, STEERING_UNAVAILABLE, isSteeringDelivery } from './steering.mjs';
 import { HarnessProcess, resolveHarness, redact, stopStaleAgent } from './harness-runtime.mjs';
 import { StatusReporter } from './status.mjs';
 import { buildProfile, routeFor, MODE_PRESETS, modeOf, effortOf, localOutputBudget, compactionHeadroom } from './profile.mjs';
@@ -122,11 +123,13 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
  * @param {string} [options.nodePath]                   the Node runtime that runs the Harness
  * @param {(line:string)=>void} [options.log]
  */
-export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
+export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = null, gate = true, localInstances, connections, tools = () => undefined, defaultLocalId = () => null, skillsDir = () => null, onGoal = () => {}, onPlan = () => {}, onQueue = () => {}, onSteering = () => {}, proxyBase = null, searchMock = null, expertSampling = () => null, engineProgress = () => null, engineGraceMs = 30 * 60_000, stallMs = 4 * 60_000, stallToolMs = 20 * 60_000, env = process.env, nodePath = process.execPath, log = () => {}, startTimeoutMs = 120_000, sessionReadyMs = 60_000, sessionRetryMs = 1_500 }) {
   const root = join(dataDir, 'agent');
   const home = join(root, 'home');
   const sessionsFile = join(root, 'sessions.json');
   mkdirSync(root, { recursive: true });
+  const steering = new SteeringStore(join(root, 'steering.json'), onSteering);
+  const steeringCalls = new Map();
   /** Which chat's file tools wrote which file, for chats that share a folder (#5008). */
   const folderClaims = new FolderClaims();
 
@@ -189,6 +192,12 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
   const llmTarget = key => shapeTargets[key] ?? null;
 
   function harnessInfo() { return resolveHarness({ env, componentsDir, bundledDir }); }
+  function canSteer() {
+    const h = harnessInfo();
+    if (!h.ok) return false;
+    try { return JSON.parse(readFileSync(join(h.dir, 'BUNDLE.json'), 'utf8')).patches?.some(p => p.id === SOFT_CUT_PATCH) === true; }
+    catch { return false; }
+  }
   /** Where the agent component is (the browser tool server lives inside it), or null. */
   const harnessDir = () => { const h = harnessInfo(); return h.ok ? h.dir : null; };
 
@@ -201,7 +210,7 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       state: rt?.hp.running ? 'ready' : starting ? 'starting' : lastError ? 'error' : 'idle',
       reason: lastError ? plainAgentFailure(lastError) === lastError ? 'The coding assistant could not start. Try again.' : plainAgentFailure(lastError) : null,
       detail: lastError ?? null,
-      harness: { version: h.version },
+      harness: { version: h.version, softCut: canSteer() },
       runtime: rt?.hp.running ? { pid: rt.hp.pid, generation: rt.generation } : null,
       routes: profile.routes.map(({ route, kind, modelId, name, contextWindow }) => ({ route, kind, modelId, name, contextWindow })),
       // tool servers that could not be wired (a name the rule does not allow, no program or address): the chat says so
@@ -460,7 +469,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     projector.onStatus = update => { if (!turn?.parentOpen && turn?.children.size && [...turn.children.values()].some(h => !h.done) && update.phase === 'waiting') return; reporter.set(update); };
     const turn = {
       sessionId, projector, route, requestId, live: false, lastSeq: -1,
-      ended: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
+      parentSteering: new ParentSteering(), steeringSynced: false, softCutSupported: canSteer(),
+      ended: deferred(), admitted: deferred(), follow: null, snapshot: deferred(), finished: false, prompted: false, stopBeforePrompt: false,
       abortFromRuntime: reason => finishTurn(reason), finish: failure => finishTurn(failure),
       // Helper agents (subagents) the Harness started for this chat, and the state of the run around them.
       children: new Map(), subagentCalls: new Map(), parentOpen: false, stopping: false, settleTimer: null, mode: appliedMode,
@@ -468,6 +478,11 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       research: researchTopic ? { phase: 'gather', nudged: false, waitingStart: false } : null,
     };
     c.turn = turn;
+    turn.publishSteering = (force = false) => {
+      const available = turn.softCutSupported && turn.live && turn.steeringSynced && turn.parentSteering.turn !== null && !turn.finished && !turn.stopping;
+      if (force || available !== turn.steeringPublished) { turn.steeringPublished = available; emit({ type: 'steering-availability', available }); }
+    };
+    turn.publishSteering();
     if (workspacePath) folderClaims.begin(workspacePath, chatId);
     /**
      * A page that comes back (a reload, a new window) takes the running turn over again. Everything that was said while no page was there is
@@ -481,6 +496,8 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
       raw({ type: 'resync', content: hideDeltas ? '' : written.all, reasoning: written.reasoning });
       for (const t of projector.tools.values()) if (t.card) raw({ type: 'agent-tool', tool: t.card });
       for (const q of questions.values()) if (q.sessionId === sessionId) raw({ type: 'agent-question', callId: q.callId, questions: q.items });
+      // A new page resets its local eligibility before taking over this already-running Host turn.
+      turn.publishSteering(true);
     };
     /**
      * A turn must always end. If the Harness sends nothing at all for a while (a tool that never returns, a model server that went
@@ -510,6 +527,9 @@ export function createAgentBridge({ dataDir, componentsDir = null, bundledDir = 
     async function finishTurn(failure) {
       if (turn.finished) return;
       turn.finished = true;
+      turn.publishSteering();
+      turn.admitted.resolve(false);
+      for (const item of steering.list(chatId)) if (item.turnId === requestId && item.state !== 'delivered') steering.update(chatId, item.id, { state: 'failed', error: 'Delivery was not confirmed before the run ended.' });
       for (const [k, v] of questions) if (v.sessionId === turn.sessionId) questions.delete(k);
       clearTimeout(turn.settleTimer);
       clearInterval(turn.watchdog);
@@ -562,13 +582,17 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
     turn.follow = runtime.gw.openStream('session/follow', { request: { address: { kind: 'session', sessionId }, assistantStream: true } }, {
       onItem: item => {
         if (item.type === 'snapshot') {
+          for (const r of item.records ?? []) if (r.type === 'event') turn.parentSteering.observe(r.event);
+          turn.steeringSynced = true;
           if (turn.lastSeq < 0) turn.lastSeq = item.cursor;
           else for (const r of item.records ?? []) if (r.type === 'event' && r.event.seq > turn.lastSeq) handle({ type: 'event', event: r.event });
           turn.snapshot.resolve();
+          turn.publishSteering();
           return;
         }
         handle(item);
       },
+      onDisconnect: () => { turn.steeringSynced = false; turn.publishSteering(); },
       onError: e => finishTurn(`The agent lost the session stream: ${e.message}`),
     });
 
@@ -588,13 +612,29 @@ ${note.text}`, key: note.key, values: note.values, noteReason: 'cut' });
         const e = item.event;
         if (e.seq <= turn.lastSeq) return;
         turn.lastSeq = e.seq;
+        turn.parentSteering.observe(e);
         // The turn is ours from the user message that carries our request id. Until then an older,
         // detached turn on the same session may still be finishing; its events are not ours.
         if (!turn.live) {
           if (e.type === 'user/message' && e.data?.source?.rpcId === requestId) turn.live = true;
+          turn.publishSteering();
           return;
         }
       } else if (!turn.live) return;
+      if (item.type === 'event') turn.publishSteering();
+      if (item.type === 'event') {
+        const event = item.event;
+        const id = event.type === 'user/message' ? event.data?.source?.rpcId : null;
+        const instruction = id ? steering.get(chatId, id) : null;
+        if (isSteeringDelivery(instruction, event, sessionId, requestId)) {
+          const delivered = steering.update(chatId, id, { state: 'delivered', accepted: true, error: null });
+          emit({ type: 'steering', message: delivered });
+        }
+        if ((event.type === 'assistant/attempt' || event.type === 'assistant/message' && event.data?.interrupted) && !turn.stopping && steering.list(chatId).some(p => p.turnId === requestId && p.state === 'pending')) {
+          for (const frame of projector.clearCut()) emit(frame);
+          emit({ type: 'steering-cut' });
+        }
+      }
       for (const f of projector.consume(item)) emit(f);
       if (guard && projector.contextTokens != null) trip(guard.context(projector.contextTokens));
       if (item.type === 'event') watchParent(item.event);
@@ -906,6 +946,7 @@ ${note.text}
     }
     if (!goal) reporter.set({ phase: 'waiting', code: 'reading-prompt', text: 'Reading your message…' });
     turn.prompted = true;
+    turn.admitted.resolve(true);
     if (turn.stopBeforePrompt) {
       // Stop landed in the instant between 'prompt sent' and 'prompt accepted'. A cancel before the turn
       // starts arms nothing, so wait for the turn to be ours, then cancel it.
@@ -1226,6 +1267,43 @@ ${note.text}
     return { message, queue: queueView(chatId) };
   }
 
+  /** A separate operation from Stop: only the current model attempt may be cut. */
+  async function steer({ chatId, id, text }) {
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || typeof text !== 'string' || !text.trim() || text.length > 8000) throw new AgentUnavailable('Steering needs an ID and up to 8000 characters of text.', 'steer-invalid');
+    text = text.trim();
+    const previous = steering.get(chatId, id);
+    if (previous && previous.text !== text) throw new AgentUnavailable('This message ID already belongs to different text.', 'steer-invalid');
+    if (previous?.accepted || previous?.state === 'delivered') return previous;
+    if (!canSteer()) throw new AgentUnavailable('This Harness does not support same-turn steering. Install a component built with the soft-cut source patch.', 'steer-unsupported');
+    const turn = chats.get(chatId)?.turn;
+    if (!rt || !turn || turn.finished || turn.stopping || previous && previous.turnId !== turn.requestId) throw new AgentUnavailable('There is no active agent run to steer in this chat.', 'steer-idle');
+    const runtime = rt;
+    const parentTurn = turn.parentSteering.turn;
+    if (!turn.live || !turn.steeringSynced || parentTurn === null || previous && previous.parentTurn !== parentTurn) throw new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
+    steering.add({ chatId, sessionId: turn.sessionId, turnId: turn.requestId, parentTurn, id, text });
+    const before = steeringCalls.get(chatId) ?? Promise.resolve();
+    const call = before.catch(() => {}).then(async () => {
+      if (!await turn.admitted.promise || turn.finished || turn.stopping || chats.get(chatId)?.turn !== turn || rt !== runtime) throw new AgentUnavailable('The run ended before this instruction could be delivered.', 'steer-idle');
+      if (steering.get(chatId, id)?.accepted) return steering.get(chatId, id);
+      if (!turn.steeringSynced || turn.parentSteering.turn !== parentTurn) throw new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
+      const receipt = await runtime.gw.rpc('session/prompt', { request: { requestId: id, sessionId: turn.sessionId, mode: 'soft-cut', expectedTurn: parentTurn, content: [{ type: 'text', text }] } }, { signal: AbortSignal.timeout(15000) });
+      if (receipt?.accepted !== true || receipt.turn !== parentTurn) throw new AgentUnavailable('The agent did not confirm the expected parent turn. Your correction is kept.', 'steer-ack');
+      return steering.update(chatId, id, { accepted: true, state: turn.finished ? 'failed' : 'pending', error: turn.finished ? 'Delivery was not confirmed before the run ended.' : null });
+    }).catch(error => {
+      if (error.code === 'session/turn-mismatch' || error.code === 'session/agent-busy' && /cannot soft-cut (without an active turn|a different turn)/.test(String(error.details?.reason))) {
+        turn.parentSteering.reject(parentTurn);
+        turn.publishSteering();
+        error = new AgentUnavailable(STEERING_UNAVAILABLE, 'steer-idle');
+      }
+      steering.update(chatId, id, { state: 'failed', error: error.code === 'steer-idle' ? error.message : 'Delivery could not be confirmed. Retry uses the same message ID.' });
+      throw error;
+    });
+    steeringCalls.set(chatId, call);
+    try { return await call; } finally { if (steeringCalls.get(chatId) === call) steeringCalls.delete(chatId); }
+  }
+
+  const steeringState = chatId => steering.list(chatId);
+
   /** Take a queued message back (the x on it). A message already being delivered cannot be taken back. */
   function cancelQueued({ chatId, id }) {
     const list = queues.get(chatId) ?? [];
@@ -1412,6 +1490,7 @@ ${note.text}
       if (early) return { stopped: true, ended: early.reason?.kind ?? 'aborted', ms: Date.now() - t0 };
     }
     turn.stopping = true;
+    turn.publishSteering();
     await pauseGoal(rt, turn.sessionId, chatId);
     // Helpers first: a helper still working would otherwise report back and wake the parent again.
     await Promise.allSettled([...turn.children.values()].filter(h => !h.done).map(h => rt.gw.rpc('subagents/interruptByParent', { childSessionId: h.id, parentSessionId: turn.sessionId, mode: 'continuable' })));
@@ -1473,7 +1552,7 @@ ${note.text}
   /** Let go of a chat's Harness session mapping (a task starts every run in a session of its own). */
   function forget(chatId) { if (chats.get(chatId)?.turn) return; delete sessionMap[chatId]; chats.delete(chatId); persist(); }
 
-  return { compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
+  return { steer, steeringState, compactCommand, messageHelper, answerQuestion, goalState, goalControl, harnessDir, status, turnOf, runningTurns, attach, runTurn, goalCommand, planCommand, researchCommand, llmTarget, setPlanBriefing, resetSession, reopenPlan, skipStep, planGoal, planControl, planState, queueMessage, cancelQueued, takeQueue, forget, approve, setMode, stop, pendingFor, pendingAll, close, sessionOf: chatId => sessionMap[chatId]?.sessionId ?? null, workingFolder: chatId => sessionMap[chatId]?.cwd ?? null, isRunning: chatId => !!chats.get(chatId)?.turn, _debug: () => ({ rt, sessionMap }) };
 }
 
 /** A goal that stopped by itself, in words. */
