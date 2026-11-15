@@ -5396,9 +5396,12 @@ class Service:
         if not self.fifo.acquire(blocking=False):
             return "busy"
         try:
+            was_gpu = v.alive() and not getattr(v, "on_cpu", False)
             v.unload()
             back = ""
             if self.vision_held and hasattr(self.engine, "vram") and self.loaded():
+                if was_gpu:
+                    time.sleep(0.2)      # the driver's free-VRAM counter shows the encoder's release a moment later
                 if self._is_replica_engine():
                     parts = []
                     for k in sorted(self.vision_held_replicas):
