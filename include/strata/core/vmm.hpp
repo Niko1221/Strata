@@ -4,6 +4,7 @@
 // expert cache gives up, and neither moves: every captured graph and stored pointer stays valid.  The driver calls
 // are reached through the runtime's entry-point query, so nothing links the driver library.  Not under HIP.
 
+#include <cstddef>   // std::size_t (CUDA 13 no longer pulls it in transitively)
 #include <cstdint>
 #include <vector>
 
