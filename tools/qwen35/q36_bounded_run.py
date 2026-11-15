@@ -18,6 +18,7 @@ native consumed-input receipts are unavailable and deliberately remain unknown.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 import json
 import math
@@ -205,9 +206,11 @@ def validate_spec(spec: dict) -> None:
     settings = spec.get("requested_settings")
     if not isinstance(settings, dict) or set(settings) != set(SETTINGS):
         raise ValueError("requested_settings")
-    for key in ("context", "prefill", "parallel", "router_top_k"):
+    for key in ("context", "parallel", "router_top_k"):
         if not integer(settings[key], 1, 262144):
             raise ValueError(key)
+    if settings["prefill"] != "auto" and not integer(settings["prefill"], 1, 262144):
+        raise ValueError("prefill")
     if settings["parallel"] != 1 or not integer(settings["mtp"], 0, 64):
         raise ValueError("single_session_and_mtp")
     if any(
@@ -353,6 +356,23 @@ def _worker(spec: dict) -> int:
         env=child_env,
     )
     _emit({"event": "child", "pid": proc.pid, "at": spawned_at})
+    # The retained native handle cannot follow a recycled PID. Reuse the same
+    # pointer-width-safe reader as the outer Job, but keep its scope separate.
+    native_reader = None
+    if "observation" in spec:
+        from perf131k.windows_job import process_memory_reader
+
+        native_reader = process_memory_reader()
+    last_native_sample = -1.0
+
+    def sample_native() -> None:
+        nonlocal last_native_sample
+        stamp = time.monotonic()
+        if native_reader is None or stamp - last_native_sample < 0.25:
+            return
+        last_native_sample = stamp
+        value = native_reader(int(proc._handle))
+        _emit({"event": "native_memory", "pid": proc.pid, "at": stamp, **value})
 
     def pump(stream, name: str) -> None:
         nonlocal written
@@ -390,6 +410,7 @@ def _worker(spec: dict) -> int:
 
     def line() -> tuple[str, float]:
         while True:
+            sample_native()
             if failure:
                 raise RuntimeError(failure[0])
             try:
@@ -487,6 +508,7 @@ def run_bounded(spec: dict) -> dict:
 
     output = Path(spec["output_dir"]).resolve()
     start = time.monotonic()
+    initial = None
     policy = PressurePolicy(
         physical_floor_bytes=spec["min_available_ram_bytes"],
         commit_floor_bytes=spec.get("min_commit_headroom_bytes", 4 * GIB),
@@ -506,14 +528,17 @@ def run_bounded(spec: dict) -> dict:
             raise ResourceAbort("total_deadline", sample)
         return sample
 
-    def abort_preflight(error: Exception) -> dict:
+    def abort_preflight(
+        error: Exception, *, status: str = "ABORTED", reason: str | None = None
+    ) -> dict:
         # Admission failure has no owned process. Keep a small receipt when the
         # destination is writable; an unwritable disk still surfaces its OSError.
         result = {
             "schema_version": 1,
             "run_id": spec["run_id"],
-            "status": "ABORTED",
-            "reason": (
+            "status": status,
+            "reason": reason
+            or (
                 str(error)
                 if isinstance(error, RuntimeError)
                 else "resource_observer_failure"
@@ -524,7 +549,7 @@ def run_bounded(spec: dict) -> dict:
             "cases": [],
             "qualification": "NOT_RUN",
             "initial_resources": (
-                error.sample if isinstance(error, ResourceAbort) else None
+                error.sample if isinstance(error, ResourceAbort) else initial
             ),
         }
         output.mkdir()
@@ -554,6 +579,10 @@ def run_bounded(spec: dict) -> dict:
         # Only resource/deadline failures become abort receipts. Invalid artifacts
         # remain distinct validation errors and never start an owned process.
         return abort_preflight(error)
+    except OSError as error:
+        # A deleted/unreadable input is distinct from resource admission. Retain
+        # the failed run without copying arbitrary OS paths into public fields.
+        return abort_preflight(error, status="FAILED", reason="artifact_unavailable")
     cases = load_cases(
         Path(spec["prompt_fixture_path"]),
         spec["requested_settings"]["context"],
@@ -613,6 +642,15 @@ def run_bounded(spec: dict) -> dict:
         "effective_settings": {},
         "startup_generation": None,
         "instrumentation": None,
+        "native_process_memory": {
+            "scope": "held_native_process_handle_sampled_not_exact_peak",
+            "samples": 0,
+            "failed_samples": 0,
+            "sampled_max_private_bytes": None,
+            "sampled_max_working_set_bytes": None,
+            "last_error_code": None,
+            "status": "NOT_OBSERVED",
+        },
         "cases": [],
         "expected_case_ids": [case["prompt_id"] for case in cases],
         "qualification": "NOT_RUN",
@@ -651,6 +689,7 @@ def run_bounded(spec: dict) -> dict:
     active = None
     ready = False
     last_sample = -1.0
+    native_memory = None
 
     def consume_output(block: bytes) -> None:
         nonlocal abort_reason, active, ready
@@ -698,6 +737,53 @@ def run_bounded(spec: dict) -> dict:
                 result["owned_engine_pid"] = event["pid"]
                 result["engine_started_at"] = event["at"]
                 result["preflight_and_worker_start_s"] = event["at"] - start
+            elif kind == "native_memory":
+                if event.get("pid") != result.get("owned_engine_pid"):
+                    raise ValueError("native_memory_handle_binding")
+                for key in ("private_bytes", "working_set_bytes", "error_code"):
+                    if event.get(key) is not None and not integer(
+                        event[key], 0, 2**64 - 1
+                    ):
+                        raise ValueError("native_memory_counter")
+                if type(event.get("at")) not in (float, int) or not math.isfinite(
+                    event["at"]
+                ):
+                    raise ValueError("native_memory_time")
+                aggregate = result["native_process_memory"]
+                aggregate["samples"] += 1
+                if event["private_bytes"] is None or event["working_set_bytes"] is None:
+                    aggregate["failed_samples"] += 1
+                    aggregate["last_error_code"] = event["error_code"]
+                else:
+                    for key in ("private_bytes", "working_set_bytes"):
+                        name = "sampled_max_" + key
+                        old = aggregate[name]
+                        aggregate[name] = (
+                            event[key] if old is None else max(old, event[key])
+                        )
+                failures, count = aggregate["failed_samples"], aggregate["samples"]
+                aggregate["status"] = (
+                    "AVAILABLE"
+                    if not failures
+                    else "UNKNOWN" if failures == count else "PARTIAL"
+                )
+                if native_memory is not None:
+                    native_memory.write(
+                        json.dumps(
+                            {
+                                "engine_pid": event["pid"],
+                                "elapsed_s": event["at"] - start,
+                                "engine_elapsed_s": event["at"]
+                                - result["engine_started_at"],
+                                "private_bytes": event["private_bytes"],
+                                "working_set_bytes": event["working_set_bytes"],
+                                "error_code": event["error_code"],
+                                "scope": aggregate["scope"],
+                            }
+                        )
+                        + "\n"
+                    )
+                    native_memory.flush()
             elif kind == "effective":
                 fields = event["fields"]
                 if fields.get("schema") != "1":
@@ -750,7 +836,13 @@ def run_bounded(spec: dict) -> dict:
             abort_reason = "event_observer_failure"
             raise
 
-    with (output / "memory.jsonl").open("x", encoding="utf-8") as memory:
+    with (output / "memory.jsonl").open(
+        "x", encoding="utf-8"
+    ) as memory, ExitStack() as extra:
+        if "observation" in spec:
+            native_memory = extra.enter_context(
+                (output / "native-process-memory.jsonl").open("x", encoding="utf-8")
+            )
 
         def sample(_: Path) -> dict:
             nonlocal abort_reason, last_sample

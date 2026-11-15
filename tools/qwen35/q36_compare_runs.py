@@ -114,9 +114,10 @@ def _validate(run: dict) -> list[str]:
     if not isinstance(requested, dict) or set(requested) != set(SETTINGS):
         errors.append("missing requested settings")
     elif (
-        any(
-            not integer(requested[k], 1, 262144)
-            for k in ("context", "prefill", "router_top_k")
+        any(not integer(requested[k], 1, 262144) for k in ("context", "router_top_k"))
+        or (
+            requested["prefill"] != "auto"
+            and not integer(requested["prefill"], 1, 262144)
         )
         or not integer(requested["parallel"], 1, 1)
         or not integer(requested["mtp"], 0, 64)
@@ -132,10 +133,17 @@ def _validate(run: dict) -> list[str]:
         effective.get(k) is None for k in SETTINGS
     ):
         errors.append("missing effective observations")
-    elif effective != requested or any(
-        type(effective.get(k)) is not type(requested.get(k)) for k in SETTINGS
-    ):
-        errors.append("requested/effective settings mismatch")
+    elif isinstance(requested, dict):
+        expected_settings = dict(requested)
+        if requested.get("prefill") == "auto":
+            if not integer(effective.get("prefill"), 1, 262144):
+                errors.append("missing/invalid observed auto prefill")
+            expected_settings["prefill"] = effective.get("prefill")
+        if effective != expected_settings or any(
+            type(effective.get(k)) is not type(expected_settings.get(k))
+            for k in SETTINGS
+        ):
+            errors.append("requested/effective settings mismatch")
     generation = run.get("startup_generation")
     if not isinstance(generation, str) or not generation:
         errors.append("missing startup generation")

@@ -110,6 +110,18 @@ def test_sync_profile_and_instrumentation_mismatch_block_comparison():
     assert any("diagnostic only" in why for why in validate_pair(a, b))
 
 
+def test_auto_prefill_still_requires_same_observed_numeric_chunk():
+    a, b = receipt(), receipt()
+    a["requested_settings"]["prefill"] = b["requested_settings"]["prefill"] = "auto"
+    assert validate_pair(a, b) == []
+    b["effective_settings"]["prefill"] = 512
+    assert any(
+        "effective setting differs: prefill" in why for why in validate_pair(a, b)
+    )
+    b["effective_settings"]["prefill"] = "auto"
+    assert any("observed auto prefill" in why for why in validate_pair(a, b))
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

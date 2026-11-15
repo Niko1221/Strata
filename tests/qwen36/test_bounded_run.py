@@ -164,6 +164,21 @@ def test_opt_in_phase_artifacts_from_owned_process(tmp_path, monkeypatch, hotspo
         row["phase"] == "request" and row["committed_tokens"] == 2 for row in rows
     )
     assert any(row["phase"] == "unload" and row["value"] is None for row in rows)
+    native = result["native_process_memory"]
+    assert native["samples"] > 0
+    assert native["status"] in {"AVAILABLE", "PARTIAL"}
+    assert native["sampled_max_private_bytes"] > 0
+    assert native["sampled_max_working_set_bytes"] > 0
+    samples = [
+        json.loads(line)
+        for line in (tmp_path / "run/native-process-memory.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert samples and all(
+        row["engine_pid"] == result["owned_engine_pid"] for row in samples
+    )
+    assert all(row["engine_elapsed_s"] >= 0 for row in samples)
 
 
 def test_preflight_hashing_does_not_spend_engine_ready_deadline(tmp_path, monkeypatch):
@@ -181,6 +196,15 @@ def test_preflight_hashing_does_not_spend_engine_ready_deadline(tmp_path, monkey
     assert result["status"] == "PASS", result
     assert result["preflight_s"] >= 1.5
     assert result["engine_start_to_ready_s"] < 1
+
+
+def test_auto_prefill_is_recorded_without_overriding_engine_choice(tmp_path):
+    spec = spec_for(tmp_path)
+    spec["requested_settings"]["prefill"] = "auto"
+    result = runner.run_bounded(spec)
+    assert result["status"] == "PASS", result
+    assert result["requested_settings"]["prefill"] == "auto"
+    assert result["effective_settings"]["prefill"] == 256
 
 
 def test_observation_artifacts_survive_preflight_pressure(tmp_path, monkeypatch):
@@ -589,6 +613,36 @@ def test_hash_preflight_abort_after_healthy_admission(tmp_path, monkeypatch, cau
     assert sample["disk_free_bytes"] >= runner.GIB
     assert json.loads((tmp_path / "run/result.json").read_text()) == result
     assert not (tmp_path / "run/events.jsonl").exists()
+
+
+def test_missing_artifact_retains_failure_without_launch(tmp_path, monkeypatch):
+    from perf131k import windows_job
+
+    spec = spec_for(tmp_path)
+    spec["observation"] = dict(
+        schema_version=1,
+        family="qwen36",
+        source_sha="a" * 40,
+        binary_source_sha=None,
+        environment_manifest=None,
+        identity_files={},
+    )
+    Path(spec["model_path"]).unlink()
+
+    def must_not_launch(*args, **kwargs):
+        pytest.fail("missing artifacts must not start a child")
+
+    monkeypatch.setattr(windows_job, "run_owned", must_not_launch)
+    result = runner.run_bounded(spec)
+    assert result["status"] == "FAILED"
+    assert result["reason"] == "artifact_unavailable"
+    assert result["requests_status"] == "NOT_RUN"
+    assert result["child_exit_code"] is None
+    assert result["qualification"] == "NOT_RUN"
+    manifest = json.loads((tmp_path / "run/run_manifest.json").read_text())
+    assert manifest["status"] == "FAILED"
+    assert manifest["identities"] == {}
+    assert not manifest["performance_eligible"]
 
 
 def test_preflight_digest_mismatch_remains_distinct(tmp_path, monkeypatch):

@@ -279,6 +279,7 @@ def build_artifacts(
                 "peak_job_commit_bytes"
             ),
             "job_scope": "worker_and_engine_including_observer_overhead",
+            "native_process_memory": result.get("native_process_memory"),
         },
         "case_statuses": [
             {"prompt_id": c["prompt_id"], "status": c["status"]}
@@ -363,7 +364,13 @@ def write_artifacts(output: Path, result: dict, spec: dict) -> None:
     manifest, metrics, report = build_artifacts(result, spec, lines)
     # These hashes bind private raw evidence without copying its contents.
     manifest["artifact_sha256"] = {}
-    for name in ("result.json", "stdout.log", "stderr.log", "memory.jsonl"):
+    for name in (
+        "result.json",
+        "stdout.log",
+        "stderr.log",
+        "memory.jsonl",
+        "native-process-memory.jsonl",
+    ):
         path = output / name
         if path.is_file():
             with path.open("rb") as stream:
