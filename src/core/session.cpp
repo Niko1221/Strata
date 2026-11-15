@@ -110,8 +110,17 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // attention read null host pointers at the first request ("illegal memory access"), so the session fails here
     for (int64_t j = 0; j < s.qsa_alloc; ++j)
         if (qsa_state_init(g, max_cells, qp + (j == 0 ? 0 : first + (uint64_t) (j - 1) * rest),
-                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? nullptr : &s.qsa_states[s.qsa_ord0]) == 0)
+                           s.qsa_states[s.qsa_ord0 + j], j == 0 ? nullptr : &s.qsa_states[s.qsa_ord0]) == 0) {
+            // A half-built session must not leak what the states before this one already pinned (a grow can fail
+            // here and be retried): the caller only frees the DEVICE arena, so every host allocation and the array go.
+            // The RoPE registration goes FIRST: its table lives in that arena and the kernel registry would dangle.
+            session_release(s);
+            for (int64_t i = 0; i < s.qsa_alloc; ++i) qsa_state_free_host(g, s.qsa_states[s.qsa_ord0 + i]);
+            delete[] s.qsa_states;
+            s.qsa_states = nullptr;
+            s.qsa_alloc = 0;
             return 0;
+        }
     qsa_buffers_init(g, max_cells, s.qsa_buf_arena, s.qsa_bufs);
 
     s.moe_arena = take(moe_buffers_bytes(g, k));
@@ -127,9 +136,9 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 
 void session_release(SessionState& s) {
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
-        if (s.qsa_states[j].owns_rope) {
-            strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
-            s.qsa_states[j].owns_rope = false;
+        if (s.qsa_states[s.qsa_ord0 + j].owns_rope) {
+            strata::kernels::rope_table_release(s.qsa_states[s.qsa_ord0 + j].cos_tab);
+            s.qsa_states[s.qsa_ord0 + j].owns_rope = false;
         }
 }
 
@@ -140,6 +149,24 @@ void window_reset(const strata::core::SessionState* ss);   // metal/src/engine/w
 }  // namespace strata::metal_engine
 namespace strata::core {
 #endif
+
+void session_free(const ModelGeometry& g, SessionState& s, void* base) {
+    session_release(s);                       // the rope table's registration (#280) first
+    for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
+        strata::core::qsa_state_free_host(g, s.qsa_states[s.qsa_ord0 + j]);
+    delete[] s.qsa_states;
+    s.qsa_states = nullptr;
+    s.qsa_alloc = 0;
+    // the pointers into the device arena stay (it is `base`, freed right here); the state must not be used after this
+    if (base != nullptr) (void) cudaFree(base);
+}
+
+void session_register_rope(const ModelGeometry& g, const SessionState& s) {
+    if (s.qsa_states == nullptr || s.qsa_alloc <= 0) return;
+    const QsaState& st = s.qsa_states[s.qsa_ord0];
+    if (!st.owns_rope || st.cos_tab == nullptr || qsa_shapes(g).n_rot != 64) return;
+    strata::kernels::rope_table_set(st.cos_tab, st.sin_tab, (int) st.max_cells, strata::kernels::rope_scaling());
+}
 
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
 #if defined(STRATA_GPU_METAL)

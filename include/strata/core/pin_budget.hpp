@@ -116,6 +116,15 @@ inline cudaError_t pin_unregister(void* p) {
     return cudaHostUnregister(p);
 }
 
+/// cudaFreeHost of a block that went through host_alloc_guarded: it hands the (test) budget back too, so a
+/// session freed and grown again is not charged twice and the peak stays honest.
+inline void pin_free(void* p) {
+    if (p == nullptr) return;
+    auto& s = pin_detail::st();
+    std::lock_guard<std::mutex> g(s.mu);
+    pin_detail::free_locked(s, p);
+}
+
 /// Take the reserves (call before the expert arena pins).  Never fails.
 inline void pin_reserve_take() {
     auto& s = pin_detail::st();
