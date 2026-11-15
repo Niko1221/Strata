@@ -248,6 +248,33 @@ class SeveralCards(unittest.TestCase):
         self.assertEqual(overview.build(m)["gpu"]["pcie_width_max"], 16.0)
         self.assertIn("Gen5 x4 of x16", draw(overview.build(m)))              # the tile says the gap too
 
+    def test_the_cards_strip_link_shrinks_whole_as_the_terminal_narrows(self):
+        """The strip's line is cropped, not wrapped, so a long link gets cut mid-word ("Gen5 x8 o" on an 80-column
+        terminal).  The column steps down a number at a time - the ceiling, then the generation, then nothing - so
+        whatever is left fits whole.  The widths are what this machine's Monitor gives: 110, and 78 for an 80-column
+        terminal less the shell's padding; the same card reads x8 in a x16 slot."""
+        m = three_cards()
+        for c in m["hardware"]["gpus"]:
+            c.update({"pcie_gen": 5, "pcie_gen_max": 5, "pcie_width": 8, "pcie_width_max": 16})
+
+        def strip(width):
+            return [ln for ln in draw(overview.build(m), width=width).splitlines() if ln.startswith("GPU ")]
+
+        self.assertIn("Gen5 x8 of x16", strip(110)[0])                              # room: both numbers
+        at80 = strip(80)
+        self.assertIn("Gen5 x8", at80[0])
+        self.assertNotIn("of x16", at80[0])                                         # the ceiling goes first, whole
+        self.assertNotIn("x8 o", at80[0])                                           # never mid-word
+        at76 = strip(76)
+        self.assertIn(" x8", at76[0])
+        self.assertNotIn("Gen", at76[0])                                            # then the generation
+        at70 = strip(70)
+        self.assertNotIn("x8", at70[0])
+        self.assertNotIn("Gen", at70[0])                                            # then no column: the old line
+        for width in (110, 80, 76, 70):
+            for line in strip(width):
+                self.assertLessEqual(len(line), width + 2)                          # nothing past the terminal here
+
     def test_a_card_with_no_cap_reported_stays_one_number(self):
         """An old server, or a driver that answers only the negotiated width: the strip and the tile say exactly what
         they said before, with no invented cap."""

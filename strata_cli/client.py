@@ -181,13 +181,14 @@ def _rows(value: Any, fields: tuple[str, ...], limit: int) -> list[dict]:
     return out
 
 
-def card_link(row: Any, gap: bool = True) -> str:
+def card_link(row: Any, gap: bool = True, show_gen: bool = True) -> str:
     """One graphics card's own PCIe link as the Terminal words it ("Gen5 x8"); "" when the server does not report it.
     The generation is the one the card runs at now, or the highest it can reach when it reports no current one (NVML
     reports a lower link while the card is idle).  A card that runs narrower than it could - capped to x8 in a x16
     slot, or trained down to x4 by the board - gets both numbers ("Gen5 x8 of x16"), because the narrow one alone
-    reads as a card someone chose; `gap=False` leaves the second number out for a column too narrow for it.  An old
-    server, or a card whose link is not readable, gives ""."""
+    reads as a card someone chose; `gap=False` leaves the second number out for a column too narrow for it, and
+    `show_gen=False` leaves only the width ("x8") for a column too narrow even for the link.  An old server, or a
+    card whose link is not readable, gives ""."""
     if not isinstance(row, dict):
         return ""
     gen = _number(row.get("pcie_gen"))
@@ -196,6 +197,8 @@ def card_link(row: Any, gap: bool = True) -> str:
     if gen is None:
         return ""
     width, cap = _number(row.get("pcie_width")), _number(row.get("pcie_width_max"))
+    if not show_gen:
+        return f"x{int(width)}" if width else ""
     return (f"Gen{int(gen)}" + (f" x{int(width)}" if width else "")
             + (f" of x{int(cap)}" if gap and width and cap and cap > width else ""))
 

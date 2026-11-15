@@ -321,7 +321,7 @@ def _tile(title: str, big: str, sub: str, series: str, width: int, *, accent: st
                  border_style="dim")
 
 
-def _cards_strip(cards: list[dict], glyphs: str, accent: str, ascii_mode: bool) -> Text:
+def _cards_strip(cards: list[dict], glyphs: str, accent: str, ascii_mode: bool, width: int = 110) -> Text:
     """One line per card (up to 4): a small load bar, load %, memory, temperature, power and that card's own PCIe link
     (the server reports it per card; the tile above shows only the weakest); "+ N more cards" beyond that."""
     t = Text(no_wrap=True, overflow="crop")
@@ -329,17 +329,28 @@ def _cards_strip(cards: list[dict], glyphs: str, accent: str, ascii_mode: bool) 
     shown = cards[:4]
     names = [short_gpu(c.get("name")) for c in shown]
     pad = min(16, max(len(n) for n in names))
-    links = [card_link(c) for c in shown]          # "" for a card whose link the server does not report
-    col = max((len(x) for x in links), default=0)  # no column at all when no server reports one: the line stays as it was
-    for c, name, link in zip(shown, names, links):
-        util = c["util"]
-        used, total = c["mem_used"], c["mem_total"]
-        t.append(f"GPU {c['index'] if c['index'] is not None else '?'}  {name[:pad]:<{pad}}  ")
-        t.append_text(bar((util / 100.0) if util is not None else None, 10, glyphs, accent))
+    heads, tails = [], []
+    for c, name in zip(shown, names):                          # the line's two text runs, the bar goes between them
+        util, used, total = c["util"], c["mem_used"], c["mem_total"]
+        heads.append(f"GPU {c['index'] if c['index'] is not None else '?'}  {name[:pad]:<{pad}}  ")
         mem = f"{fmt(used, 1)} / {fmt(total, 0)} GB" if used is not None and total is not None else "-- GB"
         temp = f"{fmt(c['temp'])} {'C' if ascii_mode else '°C'}"
-        t.append(f"  {fmt(util):>3} %   {mem:<14}  {temp:>6}   {fmt(c['power']):>4} W" +
-                 (f"  {link:>{col}}" if col else "") + chr(10))
+        tails.append(f"  {fmt(util):>3} %   {mem:<14}  {temp:>6}   {fmt(c['power']):>4} W")
+    links = [card_link(c) for c in shown]          # "" for a card whose link the server does not report
+    col = max((len(x) for x in links), default=0)  # no column at all when no server reports one: the line stays as it was
+    # the strip's line is cropped, never wrapped, so a link too long for the terminal gets cut mid-word ("Gen5 x8 o"):
+    # the column steps down a number at a time - the ceiling, then the generation, then nothing - so whatever is left
+    # fits whole.  Read on this machine at 110, at 78 (an 80-column terminal less the shell's padding) and narrower.
+    room = width - max(len(h) + 10 + len(x) for h, x in zip(heads, tails)) - 2              # 10: the load bar
+    for form in ({"gap": False}, {"gap": False, "show_gen": False}, None):
+        if not col or col <= room:
+            break
+        links = [card_link(c, **form) if form is not None else "" for c in shown]
+        col = max((len(x) for x in links), default=0)
+    for c, name, head, tail, link in zip(shown, names, heads, tails, links):
+        t.append(head)
+        t.append_text(bar((c["util"] / 100.0) if c["util"] is not None else None, 10, glyphs, accent))
+        t.append(tail + (f"  {link:>{col}}" if col else "") + chr(10))
     if len(cards) > 4:
         t.append(f"+ {len(cards) - 4} more cards: press 5" + chr(10), style="dim")
     return t
@@ -501,6 +512,6 @@ def render(model: dict, *, width: int, height: int, connection: str, connection_
     hint = Text(f"{nav.keys(connect)} views" + "   / filter   Space freeze   r refresh   t theme   b open in browser   ? help   q quit", style="dim")
     parts: list[Any] = [head, tabs, rule, st, state_bar, Text(""), row(tiles1), row(tiles2)]
     if ncards:
-        parts += [Text(""), _cards_strip(cards, glyphs, accent, ascii_mode)]
+        parts += [Text(""), _cards_strip(cards, glyphs, accent, ascii_mode, width)]
     parts += [bottom, Text(""), hint]
     return Group(*parts)
