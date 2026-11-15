@@ -849,6 +849,51 @@ class TokenizeEndpoint(unittest.TestCase):
         self.assertTrue(finished.is_set())
         self.assertEqual(result[0][0], 200, result)
 
+    MSGS = [{"role": "user", "content": "hi"}]
+    SCHEMA = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"], "additionalProperties": False}
+    TOOL = {"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}
+
+    def test_response_format_is_counted_as_chat_reads_it(self):
+        plain = self.post("/tokenize", {"messages": self.MSGS, "reasoning_effort": "none"})[1]["count"]
+        previous = self.svc.engine
+        self.svc.engine = MockEngine(self.tok, '{"a": "x"}', max_context=CTX)       # a reply the format accepts
+        try:
+            for fmt in ({"type": "json_object"},
+                        {"type": "json_schema", "json_schema": {"name": "s", "schema": self.SCHEMA}}):
+                with self.subTest(fmt=fmt["type"]):
+                    body = {"model": "m", "messages": self.MSGS, "response_format": fmt, "reasoning_effort": "none"}
+                    s, counted = self.post("/tokenize", body)
+                    self.assertEqual(s, 200, counted)
+                    s, chat = self.post("/v1/chat/completions", {**body, "max_tokens": 64})   # a byte tokenizer: a token a byte
+                    self.assertEqual(s, 200, chat)
+                    self.assertEqual(counted["count"], chat["usage"]["prompt_tokens"])
+                    self.assertGreater(counted["count"], plain)         # the schema directive is part of the prompt
+        finally:
+            self.svc.engine = previous
+
+    def test_response_format_with_tools_is_refused_as_chat_refuses_it(self):
+        body = {"model": "m", "messages": self.MSGS, "tools": [self.TOOL], "response_format": {"type": "json_object"}}
+        self.assertEqual(self.post("/tokenize", body)[0], 400)
+        self.assertEqual(self.post("/v1/chat/completions", {**body, "max_tokens": 8})[0], 400)
+        self.assertEqual(self.post("/tokenize", {**body, "tool_choice": "none"})[0], 200)   # no tools are offered then
+
+    def test_a_bad_response_format_is_a_400(self):
+        s, b = self.post("/tokenize", {"model": "m", "messages": self.MSGS, "response_format": {"type": "bogus"}})
+        self.assertEqual(s, 400, b)
+
+    def test_strata_mcp_is_refused_only_where_chat_would_add_tools(self):
+        body = {"model": "m", "messages": self.MSGS, "strata_mcp": True}
+        s, b = self.post("/tokenize", body)                    # no MCP servers: chat ignores the field, so the count is exact
+        self.assertEqual(s, 200, b)
+        self.assertEqual(b["count"], self.post("/tokenize", {"messages": self.MSGS})[1]["count"])
+        previous = self.svc.mcp
+        self.svc.mcp = object()                                # MCP is on: chat would add its tools, which are not counted
+        try:
+            s, b = self.post("/tokenize", body)
+        finally:
+            self.svc.mcp = previous
+        self.assertEqual(s, 400, b)
+
     def test_extraneous_fields_are_ignored(self):
         # the adapter sends the whole chat completion request: the sampling fields are ignored, not a 400
         s, b = self.post("/tokenize", {"model": "m", "messages": [{"role": "user", "content": "hi"}],

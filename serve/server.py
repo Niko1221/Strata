@@ -9007,8 +9007,10 @@ def make_handler(svc: Service):
             vLLM's /tokenize shape: a 'prompt' (plain text) or a chat 'messages' conversation, and the token ids,
             their count and the context length.  A chat request is read as /v1/chat/completions would read it
             (openai_to_messages: the same template, the same tools and thinking level), so the count a client
-            plans from here is the count its request would take.  The request's `model` is accepted like the other
-            routes accept it: this server has one model, and every name reaches it (the client's own deployment id)."""
+            plans from here is the count its request would take, `response_format`'s schema directive included.  The
+            web app's `strata_mcp` is refused: the MCP tools it adds are not counted here, so the figure would be low.
+            The request's `model` is accepted like the other routes accept it: this server has one model, and every
+            name reaches it (the client's own deployment id)."""
             if bool("prompt" in req) == bool("messages" in req):
                 raise ValueError("send a 'prompt' (a plain text) or a chat 'messages' conversation - not both, not neither")
             if req.get("continue_final_message"):
@@ -9026,9 +9028,15 @@ def make_handler(svc: Service):
                 req = svc.with_shared(req, "openai")
                 messages, tools, kw = openai_to_messages(req)
                 require_messages(messages)
+                if req.get("strata_mcp") is True and svc.mcp is not None:
+                    raise ValueError("strata_mcp is not counted: the MCP tools a chat request adds are not part of this "
+                                     "count; send the request without it")
                 if tool_choice_of(req.get("tool_choice"))[0] == "none":
                     tools = None
                 force = svc.force_text(forced_call(req.get("tool_choice"), tools))
+                messages, validator = prepare_format(req.get("response_format"), messages)   # its schema is written into the prompt
+                if validator is not None and (tools or req.get("strata_mcp")):
+                    raise ValueError("structured response_format with tools/MCP is not supported")
                 kw["add_generation_prompt"] = bool(req.get("add_generation_prompt", True))
                 ids = svc.encode_prompt(messages, tools, kw, store=False)
                 if force and kw.get("enable_thinking", True) is False:
