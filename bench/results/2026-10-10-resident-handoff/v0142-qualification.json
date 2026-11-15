@@ -1,0 +1,153 @@
+{
+  "status": "passed",
+  "source_frozen_runtime": "candidate-runtime-05",
+  "native_sha256": "d39a23a174d668cf3a7f0983457741b080b52c6797323cbd614fd16b774a52f9",
+  "server_sha256": "e291fd6b7e5179a6bb212628d1173342e85fa454782bc446aa3f60130e13799a",
+  "routing_costs_sha256": "329c0c82255bddc8761144c9d96f9a4a5e068fa7b4c42e277b5429079497206a",
+  "harness_sha256": "b0370b771970fd99b2903a2bdafc34351601c4b560b3cd01b8f969b2162f1482",
+  "rows": [
+    {
+      "case": "candidate05-auto",
+      "status": "passed",
+      "engine": "0.1.42",
+      "action": "none",
+      "first_http_s": 15.73399999999674,
+      "admission_s": 0.4370000000053551,
+      "compiler_s": 2.4219999999913853,
+      "return_http_s": 4.719000000011874,
+      "cycle_s": 23.562999999994645,
+      "min_ram_gib": 9.179145812988281,
+      "min_native_free_mib": 324,
+      "compiler_check": "PASS 2096 deterministic cases\n",
+      "first_answer_pass": true,
+      "return_answer_pass": true,
+      "return_cached_tokens": 1124,
+      "same_model_identities": true,
+      "return_fallback": null,
+      "compiler_survivors": [],
+      "owned_survivors": [],
+      "manifest_sha256": "0e60d15f96100284f49fcd2a1f3c85dd8c3c62c982f4d2b100b75c5a007fecd4",
+      "result_sha256": "60990af3ff33ca5768f4d89e84d715600deb42125b31f93de8187a91d60a60e6",
+      "harness_sha256": "b0370b771970fd99b2903a2bdafc34351601c4b560b3cd01b8f969b2162f1482",
+      "admission_total_ram_headroom_gib": 6.0,
+      "admission_total_vram_headroom_mib": 250.0,
+      "execution_ram_floor_gib": 3.0,
+      "execution_vram_floor_mib": 250.0,
+      "resume_vram_working_mib": 0.0,
+      "resume_vram_working_mib_source": "explicit_override",
+      "resume_ram_working_gib": 2,
+      "startup_s": 43.812999999994645
+    },
+    {
+      "case": "candidate05-return-fallback",
+      "status": "passed",
+      "engine": "0.1.42",
+      "action": "none",
+      "first_http_s": 24.155999999988126,
+      "admission_s": 1.1089999999967404,
+      "compiler_s": 2.4219999999913853,
+      "return_http_s": 70.75,
+      "cycle_s": 98.67199999999139,
+      "min_ram_gib": 9.399784088134766,
+      "min_native_free_mib": 340,
+      "compiler_check": "PASS 2096 deterministic cases\n",
+      "first_answer_pass": true,
+      "return_answer_pass": true,
+      "return_cached_tokens": 0,
+      "same_model_identities": false,
+      "return_fallback": {
+        "reason": "resident_return_auto_unload",
+        "observed_states": [
+          "admitting",
+          "ready",
+          "reloading",
+          "unloading"
+        ],
+        "final_state": "ready"
+      },
+      "compiler_survivors": [],
+      "owned_survivors": [],
+      "manifest_sha256": "9b6b4a3d873c5233da4e2add0f703a65cb4ddc220f34f763520374bf5a8b043c",
+      "result_sha256": "ca6f1189dd6de8709c8e7c699ede5d46ac8b2bf0eb957cad60fc60883c5751a1",
+      "harness_sha256": "b0370b771970fd99b2903a2bdafc34351601c4b560b3cd01b8f969b2162f1482",
+      "admission_total_ram_headroom_gib": 6.0,
+      "admission_total_vram_headroom_mib": 250.0,
+      "execution_ram_floor_gib": 3.0,
+      "execution_vram_floor_mib": 250.0,
+      "resume_vram_working_mib": 256,
+      "resume_vram_working_mib_source": "default",
+      "resume_ram_working_gib": 2,
+      "startup_s": 44.280999999988126
+    }
+  ],
+  "qualification": [
+    "Configured 65,536 context; occupied component prompt has 1,129 tokens. Both requests use high reasoning.",
+    "Tail skipping disabled, PLE I/O explicitly direct and PCIe fraction fixed at 0.37 for a controlled update qualification.",
+    "The resident case explicitly uses zero additional return VRAM allowance for a bounded allocated workspace; base reserve and sampled guard remain.",
+    "The default case uses 256 MiB extra return allowance and verifies full unload/reload when resident return capacity is insufficient.",
+    "Known-correct four-job C++ fixture with 2,096 checks; no model-authored code. CPU vision loaded but not called in these component arms.",
+    "Configured spec 4 resolves to native mtp_max 4, lookup 3 and a six-row verification window, not six MTP draft tokens.",
+    "Configured KV residency 16,384 resolves to the native 20,480 floor; actual context remains 65,536 with int8 KV.",
+    "All owned processes confirmed dead at cleanup. No deliberate out-of-memory stress was used.",
+    "Superseded candidate04 was prepared but never executed."
+  ],
+  "source_revision": "1cb95593f5dd10954ba4ade6c957589ef820267b",
+  "fixed_settings": {
+    "route_tail_skip": 0,
+    "ple_io": "direct",
+    "pcie_frac": 0.37,
+    "configured_context": 65536,
+    "actual_context": 65536,
+    "reasoning": "high",
+    "configured_spec": 4,
+    "actual_reported_spec": 6,
+    "configured_kv": "int8",
+    "actual_kv": "int8",
+    "configured_kv_resident": 16384,
+    "actual_kv_resident": 20480,
+    "resident_ram_cap_gib": 32,
+    "startup_vram_reserve_mib": 448,
+    "policy_vram_floor_mib": 320,
+    "actual_vram_guard_mib": 250,
+    "physical_ram_guard_gib": 3,
+    "vision": "CPU encoder enabled; no image request in these component cases"
+  },
+  "availability_not_reservation": true,
+  "scope": "Two v0.1.42 component qualifications, not a repeated release-speed comparison or an autonomous coding benchmark.",
+  "source_validation": {
+    "python": {
+      "run": 1128,
+      "passed": 1119,
+      "expected_skips": 9,
+      "failed": 0,
+      "resource_or_unraisable_warnings": 0
+    },
+    "broker": {
+      "passed": 54,
+      "failed": 0
+    },
+    "cuda_selected_tests": {
+      "passed": 14,
+      "failed": 0,
+      "skipped": 0
+    },
+    "cpu_selected_tests": {
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0
+    },
+    "additional_cuda_reference_pairs": [
+      "IQ3_S / IQ4_NL",
+      "IQ3_S / Q2_0"
+    ],
+    "toolchain": {
+      "cxx": "MSVC 19.51.36260.0",
+      "cuda": "13.4.59",
+      "cuda_arch": "sm89"
+    },
+    "limitations": [
+      "Selected native tests only; no HIP/SYCL build or hardware qualification.",
+      "Python counts overlap focused suites and must not be added together."
+    ]
+  }
+}

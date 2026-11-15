@@ -129,6 +129,8 @@ class TestWinJob(unittest.TestCase):
             for held in (child, grandchild):
                 if held is not None:
                     held.end()
+            parent.wait(10)
+            parent.stdout.close()
 
     def test_elsewhere_or_without_a_process_it_is_a_no_op(self):
         from serve.winjob import contain

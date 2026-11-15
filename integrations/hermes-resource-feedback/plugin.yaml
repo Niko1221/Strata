@@ -1,0 +1,4 @@
+name: resource-feedback
+version: 0.1.0
+description: Supervisor-owned resource handoffs for bounded local tools.
+author: Strata contributors

@@ -2446,8 +2446,13 @@ struct PeTimer {
 }  // namespace
 
 bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
-                       std::string &err) try {
+                       std::string &err, const std::function<bool()>* yield,
+                       int64_t* progress_out) try {
     err.clear();
+    if (yield != nullptr || progress_out != nullptr) {
+        err = "cooperative prefill is not supported by the SYCL backend";
+        return false;
+    }
     strata::kprof::phase("prompt");
     Impl& m = *impl_;
     const core::OnDevice on_device(m.device);

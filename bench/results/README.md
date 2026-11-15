@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../../docs/README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../../docs/BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 142 folders and 3 loose files, 2185 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 153 folders and 3 loose files, 2217 files in all.
 
 
 ## 2026-09
@@ -95,6 +95,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-05-community-rtx5080-9900x3d](2026-10-05-community-rtx5080-9900x3d/) | Community benchmark on RTX 5080 + Ryzen 9 9900X3D | 14 |
 | [2026-10-05-community-rx-6700-xt](2026-10-05-community-rx-6700-xt/) | Community benchmark: AMD Radeon RX 6700 XT 12 GB (gfx1031), Ryzen 7 5700G | 16 |
 | [2026-10-05-community-v100-sxm2](2026-10-05-community-v100-sxm2/) | Community benchmark: Tesla V100-SXM2-32GB on Windows (CUDA 12.6, MSVC), three quantizations | 2 |
+| [2026-10-05-live-memory-integration](2026-10-05-live-memory-integration/) | RTX 5080: current fork and pristine upstream 0.1.39 | 2 |
 | [2026-10-05-rdna2-rocblas-table](2026-10-05-rdna2-rocblas-table/) | RX 6900 XT (gfx1030): rocBLAS's kernel choice for the FP16 prompt GEMMs, and a solution table (2026-10-05) | 4 |
 | [2026-10-06-community-2x-p100](2026-10-06-community-2x-p100/) | Community benchmark: 2x Tesla P100 PCIe 16GB, Xeon E5-2699 v4 | 12 |
 | [2026-10-06-community-2x-rtx-pro-4500-engine-0.1.40.1](2026-10-06-community-2x-rtx-pro-4500-engine-0.1.40.1/) | Community benchmark on 2x RTX PRO 4500 Blackwell, Swift IQ3_XXS, engine 0.1.40.1 | 19 |
@@ -124,6 +125,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-07-rdna2-qsa-select-simt](2026-10-07-rdna2-qsa-select-simt/) | RX 6900 XT (gfx1030): the FP32 tiled QSA block scorer on HIP (2026-10-07) | 1 |
 | [2026-10-07-v100-decode-kernels](2026-10-07-v100-decode-kernels/) | V100 (sm_70): three decode kernels that were built for other cards (2026-10-07) | 3 |
 | [2026-10-07-v100-prompt-experts](2026-10-07-v100-prompt-experts/) | V100 (sm_70): the prompt's experts on FP16 tensor cores (2026-10-07) | 2 |
+| [2026-10-08-adaptive-background](2026-10-08-adaptive-background/) | Adaptive background control: bounded Windows acceptance | 8 |
 | [2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool](2026-10-08-community-2x-rtx3080-20gb-ud-q4-k-xl-512k-pool/) | Community benchmark: 2x RTX 3080 20 GB, Xeon E5-2696 v4, UD-Q4_K_XL, 512k-token shared KV pool | 32 |
 | [2026-10-08-community-2x-titan-rtx-0.1.40.3](2026-10-08-community-2x-titan-rtx-0.1.40.3/) | Community benchmark: 2x TITAN RTX (sm_75, NVLink), Xeon E5-2696 v4 | 10 |
 | [2026-10-08-community-r9700-linux](2026-10-08-community-r9700-linux/) | Single R9700 Flash Next speed and short prefill measurements | 30 |
@@ -133,6 +135,7 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-08-community-rtx4090-iq3xxs-200k-ru](2026-10-08-community-rtx4090-iq3xxs-200k-ru/) | Community benchmark: NVIDIA GeForce RTX 4090 (Russian prompts) | 8 |
 | [2026-10-08-community-v100-sm70-table](2026-10-08-community-v100-sm70-table/) | Community benchmark on Tesla V100-SXM2-32GB (sm_70): the opt-in Volta decode kernels | 3 |
 | [2026-10-08-gfx906-qsa-query-swizzle](2026-10-08-gfx906-qsa-query-swizzle/) | QSA query LDS swizzle qualification | 3 |
+| [2026-10-08-idle-pressure](2026-10-08-idle-pressure/) | Pressure-triggered idle unloading: bounded Windows acceptance | 2 |
 | [2026-10-09-community-2x-rx-6900xt-0.1.41](2026-10-09-community-2x-rx-6900xt-0.1.41/) | Community benchmark: 2x AMD Radeon RX 6900 XT 16 GB (gfx1030), Ryzen 5 5600X, 128 GB RAM - Strata 0.1.41: one card, layer split, expert helper, and... | 47 |
 | [2026-10-09-community-4x-rx-7900-xt](2026-10-09-community-4x-rx-7900-xt/) | Community benchmark on 4x AMD Radeon RX 7900 XT | 14 |
 | [2026-10-09-community-gfx1151-ud-iq4xs-0.1.41](2026-10-09-community-gfx1151-ud-iq4xs-0.1.41/) | Community benchmark: EVO-X2, Ryzen AI Max+ 395 / Radeon 8060S (gfx1151), 128 GB UMA | 51 |
@@ -146,18 +149,31 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-09-community-rtx5090-9800x3d-swift-1m](2026-10-09-community-rtx5090-9800x3d-swift-1m/) | Community benchmark: RTX 5090 / 9800X3D, Swift IQ3_XXS, 1M context | 67 |
 | [2026-10-09-community-strix-halo-laptop-70w](2026-10-09-community-strix-halo-laptop-70w/) | Community benchmark on Radeon 8060S (Strix Halo laptop, 70 W) | 2 |
 | [2026-10-09-rope-yarn-long-context](2026-10-09-rope-yarn-long-context/) | Existing RoPE and YaRN at 512K and 1M | 6 |
+| [2026-10-09-supervisor-handoff](2026-10-09-supervisor-handoff/) | v0.1.41 adaptive merge and supervisor handoff qualification | 2 |
 | [2026-10-10-community-2x-p40-iq3_s](2026-10-10-community-2x-p40-iq3_s/) | 2026-10-10 — community 2× Tesla P40, Qwen3.8-Flash-Next IQ3_S, 131K context | 2 |
 | [2026-10-10-community-rx-9060-xt](2026-10-10-community-rx-9060-xt/) | Community benchmark on RX 9060 XT with IQ2_XS and IQ3_XXS | 70 |
 | [2026-10-10-community-rx-9070](2026-10-10-community-rx-9070/) | Community benchmark on AMD Radeon RX 9070 16 GB (gfx1201), Windows 11, Ryzen 7 5800X3D | 8 |
+| [2026-10-10-pressure-prefill](2026-10-10-pressure-prefill/) | (no Markdown page) | 2 |
+| [2026-10-10-resident-handoff](2026-10-10-resident-handoff/) | Resident supervisor handoff: bounded Windows qualification | 9 |
 | [2026-10-11-community-rtx3090-5600x-arena-async](2026-10-11-community-rtx3090-5600x-arena-async/) | --adapt-async 1 in the arena mode — community report, RTX 3090 + Ryzen 5 5600X (Windows 11) | 7 |
 | [2026-10-11-community-rtx3090-5600x-arena-pin-by-need](2026-10-11-community-rtx3090-5600x-arena-pin-by-need/) | Pin by need (STRATA_PIN_BY_NEED=1) — community report, RTX 3090 + Ryzen 5 5600X (Windows 11) | 8 |
 | [2026-10-11-gfx1100-qsa-scores](2026-10-11-gfx1100-qsa-scores/) | Exact gfx1100 QSA scorer: measured prefill benefit, opt-in only | 7 |
+| [2026-10-11-hermes-media](2026-10-11-hermes-media/) | Experimental Hermes image-to-video resource handoff | 1 |
 | [2026-10-11-rtx-5090-callback-affinity](2026-10-11-rtx-5090-callback-affinity/) | RTX 5090: adaptive-overlap callback affinity (#1975) | 1 |
 | [2026-10-12-community-gfx1103](2026-10-12-community-gfx1103/) | Radeon 780M (gfx1103) on ROCm 10.1: dot4 + WMMA + a hipBLASLt table (2026-10-12) | 23 |
 | [2026-10-12-hc-persist-gfx1030](2026-10-12-hc-persist-gfx1030/) | STRATA_HC_PERSIST=1: the verifier's hyper-connection read as one persistent kernel (gfx1030) | 2 |
 | [2026-10-12-p40-sm61-kernels](2026-10-12-p40-sm61-kernels/) | Tesla P40 (sm_61): wide dequantization, the dense GEMMs as cublasSgemm (opt-in), expert mode 8 and a matvec table (2026-10-12) | 16 |
+| [2026-10-13-adaptive-history-repair](2026-10-13-adaptive-history-repair/) | Adaptive feature history repair: source qualification | 1 |
+| [2026-10-18-adaptive-0145](2026-10-18-adaptive-0145/) | Adaptive draft integration with Strata 0.1.45 | 2 |
 | [2026-10-20-0.2.1-bench](2026-10-20-0.2.1-bench/) | First real strata bench run on the released 0.2.1 (terminal 0.2.1, engine 0.1.46 cuda12 Linux packages) | 43 |
 | [2026-10-20-0.2.1-idle-gpu](2026-10-20-0.2.1-idle-gpu/) | The idle GPUs (proposal 2507-0): what the existing switches do on NVIDIA | 15 |
+| [2026-10-23-adaptive-022](2026-10-23-adaptive-022/) | Adaptive public candidate: v0.2.2 and v0.2.3.1 qualification | 2 |
+
+## 2026-11
+
+| Folder | What | Files |
+| --- | --- | ---: |
+| [2026-11-09-adaptive-0213](2026-11-09-adaptive-0213/) | Adaptive draft: upstream 0.2.13 compatibility | 1 |
 
 ## Loose files
 

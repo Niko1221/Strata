@@ -1,0 +1,95 @@
+{
+  "scope": "One actual Hermes supervisor and sequential worker qualification using a supplied correct C++ fixture; not model-authored code or a speed comparison.",
+  "status": "passed",
+  "revisions": {
+    "strata_base_release": "0.1.41",
+    "strata_source_commit": "efb21996fea649622cb84fdedd5765f425dbbe5f",
+    "hermes_source_commit": "c09e4cacedd04733d94f3d3c7af341367bb6ac26",
+    "runtime_sha256": {
+      "server": "e74f5089357abe13252e51934c9006b758f7f2da45f3a51951224ae25042fca9",
+      "native": "ba91a455f3498753a176bd54b8f7c5c4b62cf68d7195cfd61ae3f51181de82a0",
+      "broker": "e7a753d65c436e021bead6a8a92d9c61f09e8fde9dbfa3952423f46e136a576c",
+      "vision": "a4a8488a45a19bdf10f0c550a4fddd980572ac9c355456f0412a06cfd57b4f75"
+    },
+    "raw_result_sha256": "b80a007626bdb6985a59d4a5d208668d4c1752f30224a37763772602eef50cc9"
+  },
+  "settings": {
+    "model": "ISTA-DASLab Qwen3.8-Flash-Next GSQ-RCO IQ3_S",
+    "context_limit": 65536,
+    "reasoning_effort": "high",
+    "vision": "enabled, CPU",
+    "max_concurrent_children": 1,
+    "lease_mode": "auto",
+    "admission_ram_headroom_gib": 6.0,
+    "admission_vram_headroom_mib": 250.0,
+    "execution_ram_floor_gib": 3.0,
+    "execution_vram_floor_mib": 250.0,
+    "resume_ram_working_gib": 2,
+    "resume_vram_working_mib": 0.0,
+    "resume_timeout_seconds": 30,
+    "effective_base_free_vram_mib": 320,
+    "sampled_vram_guard_mib": 250
+  },
+  "observed": {
+    "selected_action": "none",
+    "supervisor_plans": 1,
+    "sequential_workers": 1,
+    "compiler_commands": 1,
+    "renewals": 1,
+    "native_and_vision_process_identities_retained": true,
+    "execution_hold_and_owner_start_verified": true,
+    "compiler_descendants_dead_before_release": true,
+    "credential_absent_from_real_terminal_child": true,
+    "tool_bearing_high_reasoning_requests": 6,
+    "supervisor_received_actual_tool_feedback": true,
+    "normal_completion_below_turn_cap": true
+  },
+  "acceptance": {
+    "compiler_jobs": 4,
+    "test_shards": 8,
+    "fixture_cases_passed": 2096,
+    "independent_cases_passed": 104,
+    "lifecycle_checks_passed": 17,
+    "final_feedback_checks_passed": 12,
+    "vision_before_agent": {
+      "passed": true,
+      "criterion": "exact normalized red square"
+    },
+    "function_continuation_after_agent": {
+      "passed": true,
+      "criterion": "actual add(17, 25) tool result followed by final answer 42"
+    }
+  },
+  "timings_seconds": {
+    "agent_cli": 217.40611696243286,
+    "whole_harness_including_startup_checks_cleanup": 291.9677278995514,
+    "compiler_fixture": 2.109828600019682,
+    "foreground_wrapper": 17.59599232673645,
+    "declared_foreground_hold": 15,
+    "lease_acquire_to_start": 0.9240841865539551,
+    "vision_before_agent": 13.95133376121521,
+    "function_continuation_after_agent": 12.747016668319702,
+    "independent_code_check": 1.1276418000052217
+  },
+  "resources": {
+    "minimum_sampled_available_ram_gib": 8.228717803955078,
+    "minimum_sampled_actual_native_free_vram_mib": 322
+  },
+  "cleanup": {
+    "all_owned_processes_confirmed_dead": true,
+    "errors": [],
+    "production_configuration_unchanged": true
+  },
+  "deviations": [],
+  "limits": [
+    "The supplied fixture was already correct; this qualifies tool orchestration rather than autonomous implementation or repair.",
+    "Vision ran before the agent workflow. The same vision process survived, but no post-build image request is claimed.",
+    "The function tool request and result continuation ran after the compiler and supervisor workflow.",
+    "The foreground wrapper deliberately held for 15 seconds to exercise lease renewal; it is not compiler work.",
+    "AUTO selected none. Pressure-forced relieve and unload have separate component evidence.",
+    "Zero additional return-VRAM allowance qualifies this known allocated workspace only; the base 320 MiB reserve and 250 MiB sampled guard remain.",
+    "Configured 64K does not mean 64K occupied context was tested.",
+    "One bounded success does not prove a speedup, general autonomous success, arbitrary subprocess cleanup or never-OOM behavior.",
+    "These results do not qualify the separate v0.1.42 source integration."
+  ]
+}

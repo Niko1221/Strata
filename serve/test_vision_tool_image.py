@@ -11,7 +11,7 @@ from unittest import mock
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, Vision
+from serve.server import ByteTokenizer, EngineDied, EngineStuck, ModelBusy, RequestParkCancelled, Service, Vision
 from serve.test_vision_elastic import ElasticVision
 from serve.test_vram import VramEngine
 
@@ -53,6 +53,19 @@ class ToolImage(unittest.TestCase):
         self.assertEqual(part["type"], "text")
         self.assertIn("[image omitted:", part["text"])
         self.assertIn("did not start", part["text"])
+
+    def test_model_ownership_and_uncertain_encoder_errors_are_not_omitted(self):
+        for kind in (EngineDied, EngineStuck, ModelBusy, RequestParkCancelled):
+            with self.subTest(kind=kind.__name__):
+                vision = ElasticVision(tempfile.mkdtemp())
+                error = kind("model or encoder ownership is not released")
+                vision.restart = mock.Mock(side_effect=error)
+                svc = self.service(vision)
+                messages = tool_turn()
+                with self.assertRaises(kind) as caught:
+                    svc._note_unreadable_tool_images(messages)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(messages[1]["content"][0]["type"], "image")
 
     def test_prepare_survives_a_tool_picture_with_an_elastic_encoder(self):
         vision = ElasticVision(tempfile.mkdtemp())

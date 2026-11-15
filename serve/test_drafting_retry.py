@@ -3,6 +3,7 @@ named DFlash2 for fails with the engine's own reason. A real process and a real 
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -129,6 +130,23 @@ class AutoRetriesWithTheMtp(unittest.TestCase):
         with self.assertRaises(EngineDied):
             StrataEngine(str(self.script), self.first, log=self.log, retry_args=list(self.first))
         self.assertEqual(len(self.started()), 1)
+
+    def test_guarded_start_returns_to_admission_before_drafter_fallback(self):
+        with self.assertRaises(EngineDied):
+            StrataEngine(str(self.script), self.first, log=self.log,
+                         retry_args=self.mtp, startup_cancel=threading.Event())
+        self.assertEqual(len(self.started()), 1)
+        self.assertNotIn("starting it again with the MTP", Path(self.log).read_text(encoding="utf-8"))
+
+    def test_guarded_start_returns_to_admission_before_no_drafter_fallback(self):
+        first = [a for a in self.first if a != "--die-on-draft"] + ["--die-short"]
+        nodraft = ["--pack", "/d/packs/g", "--starts", str(self.starts), "--die-short"]
+        with self.assertRaises(EngineDied):
+            StrataEngine(str(self.script), first, log=self.log,
+                         retry_args=self.mtp, retry_vram_args=nodraft,
+                         startup_cancel=threading.Event())
+        self.assertEqual(len(self.started()), 1)
+        self.assertNotIn("starting it again without a drafter", Path(self.log).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,699 @@
+{
+  "schema": 1,
+  "date": "2026-10-05",
+  "hardware": {
+    "gpu": "RTX5080 16GB",
+    "cpu": "Ryzen7 9700X",
+    "ram_installed_gb": 64
+  },
+  "model": "Huihui-Qwen3.8-Flash-Next-IQ3_S-IQ4_NL",
+  "source": {
+    "daily": "b3dc0f4d3c31c9a60604e2af80929faf3731ca99",
+    "previous": "fa16a6a01bf5fb857496761ac3d5b1503bbf4944",
+    "upstream": "6f32ec070f23ced9f50e704d854d775da52591ab"
+  },
+  "artifacts": {
+    "daily_binary_sha256": "b8198db9c84b53ca2ae7ea40e2093a4a7612f155973d479426ad9d59de05f856",
+    "previous_binary_sha256": "32f9ba252df2ffee50355017e620122d6f69103beaee41261b0a1161d128b826",
+    "pure_upstream_binary_sha256": "35a6be5c7692382053e7f7ed3a6440b523780e264a2f6a3357864f8aa39967a0",
+    "config_sha256": "f97820ccf08cddf88b7c804268ae44396149a6014a3f12e3a4f155714ffc955b",
+    "frozen_profile_sha256": "da72b00c17afbcec2eac1af5c7ccd663025958e24829c629567437be71970656"
+  },
+  "fixture": {
+    "context": 65536,
+    "kv": "int8",
+    "resident_cap_gib": 35,
+    "actual_arena_mib": 35837,
+    "expert_slots": 2088,
+    "prefill": "auto",
+    "spec": 4,
+    "spec_min_p": 0.5,
+    "coupled_default": false,
+    "reserve_mib": 1536,
+    "thinking": false,
+    "sampler": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20,
+      "seed": 7421
+    },
+    "warmup_outputs": 512,
+    "fresh_outputs": 1536,
+    "continuation_outputs": 256
+  },
+  "daily": {
+    "pass": true,
+    "weighted_decode_tps": 46.65511763508773,
+    "runs": [
+      {
+        "phase": "warmup",
+        "wall_s": 62.613177799998084,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 6764,
+          "prompt_ms": 5909.8,
+          "prompt_per_token_ms": 0.874,
+          "prompt_per_second": 1144.5,
+          "predicted_n": 512,
+          "predicted_ms": 13372.1,
+          "predicted_per_token_ms": 26.117,
+          "predicted_per_second": 38.3,
+          "draft_n": 392,
+          "draft_n_accepted": 203
+        },
+        "arena_mib": 36995,
+        "expert_slots": 2448,
+        "policy_reason": "load_budget"
+      },
+      {
+        "phase": "fresh-1",
+        "wall_s": 34.49217370000406,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 6765,
+          "prompt_ms": 4941.4,
+          "prompt_per_token_ms": 0.73,
+          "prompt_per_second": 1369.0,
+          "predicted_n": 1536,
+          "predicted_ms": 29526.3,
+          "predicted_per_token_ms": 19.223,
+          "predicted_per_second": 52.0,
+          "draft_n": 1148,
+          "draft_n_accepted": 667
+        },
+        "arena_mib": 36995,
+        "expert_slots": 2448,
+        "policy_reason": "load_budget"
+      },
+      {
+        "phase": "fresh-2",
+        "wall_s": 41.6426277999999,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 6764,
+          "prompt_ms": 4823.2,
+          "prompt_per_token_ms": 0.713,
+          "prompt_per_second": 1402.4,
+          "predicted_n": 1536,
+          "predicted_ms": 36794.9,
+          "predicted_per_token_ms": 23.955,
+          "predicted_per_second": 41.7,
+          "draft_n": 1227,
+          "draft_n_accepted": 645
+        },
+        "arena_mib": 34711,
+        "expert_slots": 2246,
+        "policy_reason": "sustained_pressure"
+      },
+      {
+        "phase": "fresh-3",
+        "wall_s": 38.0887745,
+        "timings": {
+          "cache_n": 0,
+          "prompt_n": 6764,
+          "prompt_ms": 5618.7,
+          "prompt_per_token_ms": 0.831,
+          "prompt_per_second": 1203.8,
+          "predicted_n": 1536,
+          "predicted_ms": 32446.1,
+          "predicted_per_token_ms": 21.124,
+          "predicted_per_second": 47.3,
+          "draft_n": 1189,
+          "draft_n_accepted": 640
+        },
+        "arena_mib": 34711,
+        "expert_slots": 2246,
+        "policy_reason": "sustained_pressure"
+      }
+    ]
+  },
+  "previous_vs_deployed": {
+    "pass": true,
+    "old_decode_tps": 54.987837162971275,
+    "new_decode_tps": 54.57578519312047,
+    "relative_change": -0.00749351113100849,
+    "old_old_variation": 0.004057122563843052,
+    "new_new_variation": 0.03937176189268521
+  },
+  "previous_vs_deployed_arms": [
+    {
+      "name": "old-1",
+      "decode_tps": 54.87674169346195,
+      "prefill_tps": 1252.213858755811
+    },
+    {
+      "name": "new-1",
+      "decode_tps": 55.6501576029854,
+      "prefill_tps": 1243.6101797394601
+    },
+    {
+      "name": "new-2",
+      "decode_tps": 53.54211038180126,
+      "prefill_tps": 1244.3967769435967
+    },
+    {
+      "name": "old-2",
+      "decode_tps": 55.09938336041669,
+      "prefill_tps": 1247.4728910126814
+    }
+  ],
+  "pure_upstream": {
+    "decode_tps": 50.012413562936764,
+    "prefill_tps": 1075.9591492194838,
+    "repeat_spread": 0.004403669126021192
+  },
+  "fork_live": {
+    "decode_tps": 56.99792380609574,
+    "prefill_tps": 1258.8618775820578,
+    "repeat_spread": 0.0040417937086338895
+  },
+  "fork_relative_decode_change": 0.13967552744416656,
+  "fork_relative_prefill_change": 0.1699904020475631,
+  "upstream_vs_fork_arms": [
+    {
+      "name": "upstream-1",
+      "live": false,
+      "decode_tps": 50.122532623699215,
+      "prefill_tps": 1057.5147818364533,
+      "functional_pass": false,
+      "measurement_complete": true,
+      "initial_arena_mib": 35837,
+      "initial_expert_slots": 2088,
+      "measurements": [
+        {
+          "phase": "warmup",
+          "input_tokens": 6787,
+          "requested_outputs": 512,
+          "outputs": 512,
+          "input_ids_sha256": "a8582bd021a310abeacc7bc14ccc85283636919db24b6e76f8c5d1a2d7cbf55a",
+          "output_ids_sha256": "4e53b5ca68506382b092e95a2f6dd5a3b2f1df45ba271ccac446a4026a1ca167",
+          "wall_s": 16.68805009999778,
+          "ttft_s": 6.947069899993949,
+          "raw": {
+            "generated": 512,
+            "prompt_tokens": 6787,
+            "prompt_ms": 6900.5,
+            "decode_ms": 9784.9,
+            "finish": "length",
+            "drafts_accepted": 214,
+            "drafts_offered": 373,
+            "reused": 0,
+            "hits": 219484,
+            "lookups": 280847,
+            "ram_blobs": 88285,
+            "file_blobs": 4619,
+            "file_mb": 4454.2,
+            "prompt_read": 6787,
+            "offloaded": 42193
+          }
+        },
+        {
+          "phase": "fresh-1",
+          "input_tokens": 6788,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "17d3532382b381734680141b30c0d995b4f2c9281bb5ea8e06179ba39e9f4179",
+          "output_ids_sha256": "7fa117991b100d3eb77d51692917bbe156f32286e8e672e0b674627541463085",
+          "wall_s": 36.98124000000098,
+          "ttft_s": 6.629106100001081,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6788,
+            "prompt_ms": 6595.2,
+            "decode_ms": 30383.4,
+            "finish": "length",
+            "drafts_accepted": 659,
+            "drafts_offered": 1246,
+            "reused": 0,
+            "hits": 718103,
+            "lookups": 897885,
+            "ram_blobs": 254039,
+            "file_blobs": 18446,
+            "file_mb": 18254.7,
+            "prompt_read": 6788,
+            "offloaded": 121155
+          }
+        },
+        {
+          "phase": "fresh-2",
+          "input_tokens": 6787,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "a9c9f19034fb85ce13be8a864786000dbafaf10f1d0bd3bc3ad9369282815f27",
+          "output_ids_sha256": "4695953ac6d250a04a4e010154309c856be8cf62de5d34f09217411bc9530483",
+          "wall_s": 37.15105610000319,
+          "ttft_s": 6.283487100001366,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6787,
+            "prompt_ms": 6241.5,
+            "decode_ms": 30906.4,
+            "finish": "length",
+            "drafts_accepted": 661,
+            "drafts_offered": 1230,
+            "reused": 0,
+            "hits": 703944,
+            "lookups": 887647,
+            "ram_blobs": 256364,
+            "file_blobs": 20038,
+            "file_mb": 19969.3,
+            "prompt_read": 6787,
+            "offloaded": 123233
+          }
+        },
+        {
+          "phase": "reuse",
+          "input_tokens": 8323,
+          "requested_outputs": 256,
+          "outputs": 256,
+          "input_ids_sha256": "e20ca75c86652acd7b0c1fe4fa1b282ce5f2dfafdc62ea38b2a2326f034d6c9d",
+          "output_ids_sha256": "d4799029c48ec5ab0d93278432e73e21dca462df91319a72e4144c64067e961f",
+          "wall_s": 13.76928880000196,
+          "ttft_s": 8.199589099996956,
+          "raw": {
+            "generated": 256,
+            "prompt_tokens": 8323,
+            "prompt_ms": 8167.4,
+            "decode_ms": 5598.7,
+            "finish": "length",
+            "drafts_accepted": 112,
+            "drafts_offered": 212,
+            "reused": 0,
+            "hits": 119312,
+            "lookups": 150340,
+            "ram_blobs": 42739,
+            "file_blobs": 3996,
+            "file_mb": 4382.0,
+            "prompt_read": 8323,
+            "offloaded": 20540
+          }
+        }
+      ]
+    },
+    {
+      "name": "fork-1",
+      "live": true,
+      "decode_tps": 56.88320056883201,
+      "prefill_tps": 1255.8862439981126,
+      "functional_pass": true,
+      "measurement_complete": true,
+      "initial_arena_mib": 35837,
+      "initial_expert_slots": 2088,
+      "measurements": [
+        {
+          "phase": "warmup",
+          "input_tokens": 6787,
+          "requested_outputs": 512,
+          "outputs": 512,
+          "input_ids_sha256": "a8582bd021a310abeacc7bc14ccc85283636919db24b6e76f8c5d1a2d7cbf55a",
+          "output_ids_sha256": "4aaf745f983444fbce7e92e0d12cb3b37ad02a5abedf374c837405c79906b538",
+          "wall_s": 15.55740739999601,
+          "ttft_s": 6.069949099997757,
+          "raw": {
+            "generated": 512,
+            "prompt_tokens": 6787,
+            "prompt_ms": 6016.1,
+            "decode_ms": 9538.6,
+            "finish": "length",
+            "drafts_accepted": 225,
+            "drafts_offered": 414,
+            "reused": 0,
+            "hits": 229684,
+            "lookups": 293118,
+            "ram_blobs": 88801,
+            "file_blobs": 5448,
+            "file_mb": 6590.4,
+            "prompt_read": 6787,
+            "offloaded": 43362
+          }
+        },
+        {
+          "phase": "fresh-1",
+          "input_tokens": 6788,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "17d3532382b381734680141b30c0d995b4f2c9281bb5ea8e06179ba39e9f4179",
+          "output_ids_sha256": "75db3c3a5718c7eb7d1bd17de7884380f33233349f6573f7aa165c5cfe5eff85",
+          "wall_s": 32.97333660000004,
+          "ttft_s": 5.553145999998378,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6788,
+            "prompt_ms": 5521.3,
+            "decode_ms": 27449.3,
+            "finish": "length",
+            "drafts_accepted": 632,
+            "drafts_offered": 1180,
+            "reused": 0,
+            "hits": 712987,
+            "lookups": 882974,
+            "ram_blobs": 250961,
+            "file_blobs": 11029,
+            "file_mb": 15135.4,
+            "prompt_read": 6788,
+            "offloaded": 117346
+          }
+        },
+        {
+          "phase": "fresh-2",
+          "input_tokens": 6787,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "a9c9f19034fb85ce13be8a864786000dbafaf10f1d0bd3bc3ad9369282815f27",
+          "output_ids_sha256": "d78b7fa69b5cdf25144630f0fca18c29af4dc73602120ee34895ff50f25ee42f",
+          "wall_s": 31.846505699999398,
+          "ttft_s": 5.319084800001292,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6787,
+            "prompt_ms": 5287.8,
+            "decode_ms": 26556.1,
+            "finish": "length",
+            "drafts_accepted": 670,
+            "drafts_offered": 1202,
+            "reused": 0,
+            "hits": 707368,
+            "lookups": 874525,
+            "ram_blobs": 250479,
+            "file_blobs": 9376,
+            "file_mb": 13891.4,
+            "prompt_read": 6787,
+            "offloaded": 118115
+          }
+        },
+        {
+          "phase": "reuse",
+          "input_tokens": 8323,
+          "requested_outputs": 256,
+          "outputs": 256,
+          "input_ids_sha256": "a3511f11de1d580cd5632e80accd627bec1ab307bdab9f8902bb59a44636ad16",
+          "output_ids_sha256": "da977a6923d1831d459b3e77f8c87c61ccbd007dd880777ee0f3834b8320a845",
+          "wall_s": 4.393553499998234,
+          "ttft_s": 0.02613040000142064,
+          "raw": {
+            "generated": 256,
+            "prompt_tokens": 8323,
+            "prompt_ms": 0.0,
+            "decode_ms": 4390.5,
+            "finish": "length",
+            "drafts_accepted": 118,
+            "drafts_offered": 207,
+            "reused": 8322,
+            "hits": 118998,
+            "lookups": 146249,
+            "ram_blobs": 40765,
+            "file_blobs": 1693,
+            "file_mb": 2509.0,
+            "prompt_read": 1,
+            "offloaded": 19351
+          }
+        }
+      ]
+    },
+    {
+      "name": "fork-2",
+      "live": true,
+      "decode_tps": 57.113110731018075,
+      "prefill_tps": 1261.8516452872282,
+      "functional_pass": true,
+      "measurement_complete": true,
+      "initial_arena_mib": 35837,
+      "initial_expert_slots": 2088,
+      "measurements": [
+        {
+          "phase": "warmup",
+          "input_tokens": 6787,
+          "requested_outputs": 512,
+          "outputs": 512,
+          "input_ids_sha256": "a8582bd021a310abeacc7bc14ccc85283636919db24b6e76f8c5d1a2d7cbf55a",
+          "output_ids_sha256": "4aaf745f983444fbce7e92e0d12cb3b37ad02a5abedf374c837405c79906b538",
+          "wall_s": 15.575188900002104,
+          "ttft_s": 5.988061899995955,
+          "raw": {
+            "generated": 512,
+            "prompt_tokens": 6787,
+            "prompt_ms": 5942.1,
+            "decode_ms": 9630.2,
+            "finish": "length",
+            "drafts_accepted": 225,
+            "drafts_offered": 414,
+            "reused": 0,
+            "hits": 229684,
+            "lookups": 293118,
+            "ram_blobs": 88801,
+            "file_blobs": 5448,
+            "file_mb": 6590.4,
+            "prompt_read": 6787,
+            "offloaded": 43362
+          }
+        },
+        {
+          "phase": "fresh-1",
+          "input_tokens": 6788,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "17d3532382b381734680141b30c0d995b4f2c9281bb5ea8e06179ba39e9f4179",
+          "output_ids_sha256": "75db3c3a5718c7eb7d1bd17de7884380f33233349f6573f7aa165c5cfe5eff85",
+          "wall_s": 32.73817379999673,
+          "ttft_s": 5.54598519999854,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6788,
+            "prompt_ms": 5508.0,
+            "decode_ms": 27227.2,
+            "finish": "length",
+            "drafts_accepted": 632,
+            "drafts_offered": 1180,
+            "reused": 0,
+            "hits": 712987,
+            "lookups": 882974,
+            "ram_blobs": 250961,
+            "file_blobs": 11029,
+            "file_mb": 15135.4,
+            "prompt_read": 6788,
+            "offloaded": 117346
+          }
+        },
+        {
+          "phase": "fresh-2",
+          "input_tokens": 6787,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "a9c9f19034fb85ce13be8a864786000dbafaf10f1d0bd3bc3ad9369282815f27",
+          "output_ids_sha256": "d78b7fa69b5cdf25144630f0fca18c29af4dc73602120ee34895ff50f25ee42f",
+          "wall_s": 31.81374749999668,
+          "ttft_s": 5.282295500001055,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6787,
+            "prompt_ms": 5250.0,
+            "decode_ms": 26560.8,
+            "finish": "length",
+            "drafts_accepted": 670,
+            "drafts_offered": 1202,
+            "reused": 0,
+            "hits": 707368,
+            "lookups": 874525,
+            "ram_blobs": 250479,
+            "file_blobs": 9376,
+            "file_mb": 13891.4,
+            "prompt_read": 6787,
+            "offloaded": 118115
+          }
+        },
+        {
+          "phase": "reuse",
+          "input_tokens": 8323,
+          "requested_outputs": 256,
+          "outputs": 256,
+          "input_ids_sha256": "a3511f11de1d580cd5632e80accd627bec1ab307bdab9f8902bb59a44636ad16",
+          "output_ids_sha256": "da977a6923d1831d459b3e77f8c87c61ccbd007dd880777ee0f3834b8320a845",
+          "wall_s": 4.368499000003794,
+          "ttft_s": 0.026057000002765562,
+          "raw": {
+            "generated": 256,
+            "prompt_tokens": 8323,
+            "prompt_ms": 0.0,
+            "decode_ms": 4365.4,
+            "finish": "length",
+            "drafts_accepted": 118,
+            "drafts_offered": 207,
+            "reused": 8322,
+            "hits": 118998,
+            "lookups": 146249,
+            "ram_blobs": 40765,
+            "file_blobs": 1693,
+            "file_mb": 2509.0,
+            "prompt_read": 1,
+            "offloaded": 19351
+          }
+        }
+      ]
+    },
+    {
+      "name": "upstream-2",
+      "live": false,
+      "decode_tps": 49.90277730398296,
+      "prefill_tps": 1095.0583224432505,
+      "functional_pass": false,
+      "measurement_complete": true,
+      "initial_arena_mib": 35837,
+      "initial_expert_slots": 2088,
+      "measurements": [
+        {
+          "phase": "warmup",
+          "input_tokens": 6787,
+          "requested_outputs": 512,
+          "outputs": 512,
+          "input_ids_sha256": "a8582bd021a310abeacc7bc14ccc85283636919db24b6e76f8c5d1a2d7cbf55a",
+          "output_ids_sha256": "4e53b5ca68506382b092e95a2f6dd5a3b2f1df45ba271ccac446a4026a1ca167",
+          "wall_s": 16.446116600003734,
+          "ttft_s": 6.645410500001162,
+          "raw": {
+            "generated": 512,
+            "prompt_tokens": 6787,
+            "prompt_ms": 6601.4,
+            "decode_ms": 9842.3,
+            "finish": "length",
+            "drafts_accepted": 214,
+            "drafts_offered": 373,
+            "reused": 0,
+            "hits": 219484,
+            "lookups": 280847,
+            "ram_blobs": 88285,
+            "file_blobs": 4619,
+            "file_mb": 4454.2,
+            "prompt_read": 6787,
+            "offloaded": 42193
+          }
+        },
+        {
+          "phase": "fresh-1",
+          "input_tokens": 6788,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "17d3532382b381734680141b30c0d995b4f2c9281bb5ea8e06179ba39e9f4179",
+          "output_ids_sha256": "7fa117991b100d3eb77d51692917bbe156f32286e8e672e0b674627541463085",
+          "wall_s": 36.832965599998715,
+          "ttft_s": 6.2901884999955655,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6788,
+            "prompt_ms": 6251.9,
+            "decode_ms": 30578.4,
+            "finish": "length",
+            "drafts_accepted": 659,
+            "drafts_offered": 1246,
+            "reused": 0,
+            "hits": 718103,
+            "lookups": 897885,
+            "ram_blobs": 254039,
+            "file_blobs": 18446,
+            "file_mb": 18254.7,
+            "prompt_read": 6788,
+            "offloaded": 121155
+          }
+        },
+        {
+          "phase": "fresh-2",
+          "input_tokens": 6787,
+          "requested_outputs": 1536,
+          "outputs": 1536,
+          "input_ids_sha256": "a9c9f19034fb85ce13be8a864786000dbafaf10f1d0bd3bc3ad9369282815f27",
+          "output_ids_sha256": "4695953ac6d250a04a4e010154309c856be8cf62de5d34f09217411bc9530483",
+          "wall_s": 37.12901060000149,
+          "ttft_s": 6.185414999999921,
+          "raw": {
+            "generated": 1536,
+            "prompt_tokens": 6787,
+            "prompt_ms": 6144.7,
+            "decode_ms": 30981.3,
+            "finish": "length",
+            "drafts_accepted": 661,
+            "drafts_offered": 1230,
+            "reused": 0,
+            "hits": 703944,
+            "lookups": 887647,
+            "ram_blobs": 256364,
+            "file_blobs": 20038,
+            "file_mb": 19969.3,
+            "prompt_read": 6787,
+            "offloaded": 123233
+          }
+        },
+        {
+          "phase": "reuse",
+          "input_tokens": 8323,
+          "requested_outputs": 256,
+          "outputs": 256,
+          "input_ids_sha256": "e20ca75c86652acd7b0c1fe4fa1b282ce5f2dfafdc62ea38b2a2326f034d6c9d",
+          "output_ids_sha256": "d4799029c48ec5ab0d93278432e73e21dca462df91319a72e4144c64067e961f",
+          "wall_s": 13.607869699997536,
+          "ttft_s": 8.087759699999879,
+          "raw": {
+            "generated": 256,
+            "prompt_tokens": 8323,
+            "prompt_ms": 8053.7,
+            "decode_ms": 5550.8,
+            "finish": "length",
+            "drafts_accepted": 112,
+            "drafts_offered": 212,
+            "reused": 0,
+            "hits": 119312,
+            "lookups": 150340,
+            "ram_blobs": 42739,
+            "file_blobs": 3996,
+            "file_mb": 4382.0,
+            "prompt_read": 8323,
+            "offloaded": 20540
+          }
+        }
+      ]
+    }
+  ],
+  "coupled_tuning": {
+    "pass": false,
+    "measurement_complete": true,
+    "default_tps": 54.57578519312047,
+    "coupled_tps": 52.43895777571421,
+    "relative_change": -0.039153397607472606,
+    "all_parity": false,
+    "rejection": "Keep default: output parity or reproducible5% throughput gain was not established."
+  },
+  "restore": {
+    "pass": true,
+    "config_preserved": true,
+    "binary_preserved": true,
+    "context": 65536,
+    "policy": "auto + live",
+    "idle_unload_seconds": 300,
+    "archive_integrity": "ok",
+    "archive_counts": {
+      "sessions": 7,
+      "messages": 285,
+      "meta": 2
+    },
+    "sessions_equal_backup": true,
+    "build_metadata_version": "0.1.39"
+  },
+  "limitations": [
+    "Neutral prose throughput, not coding/quality evaluation",
+    "Sampled trajectories differ; no output or quality parity claim",
+    "Daily auto and fixed native fixtures differ",
+    "Native controlled comparison excludes archive/MCP/vision encoder/profile writes",
+    "Pure upstream has no fork live protocol; no dynamic-resize equivalence claim",
+    "No statistical/universal speed guarantee",
+    "Exact-prefix native continuation is not complete multi-turn chat UI acceptance"
+  ],
+  "checks_reused": {
+    "backend_ran": 389,
+    "backend_skipped": 5,
+    "frontend_passed": 31,
+    "native_passed": 12
+  },
+  "pure_upstream_build": {
+    "build_steps": 142,
+    "cpu_tests_passed": 5,
+    "matching_compile_settings": true
+  }
+}
