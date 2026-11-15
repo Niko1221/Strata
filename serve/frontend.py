@@ -789,6 +789,42 @@ _PREFIX_BARE_OPEN = re.compile(r"<tool_call>\s*<function=\s*(tools|functions|def
 _MISSPELT_OPEN = re.compile(r"<tool-?call>(\s*)<function=(\s*[^<>\s]+\s*)>")
 _MISSPELT_PART = re.compile(r"<tool-?call>\s*<function=[^<>]{0,80}$|<tool-?call>\s*(?:<(?:f(?:u(?:n(?:c(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?)?)?$")
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
+# Claude's call dialect inside the wrapper: `<tool_call><invoke name="NAME"><parameter name="K">V</parameter></invoke>`.  A Qwen
+# model that has seen it writes it instead of `<function=NAME>`; the engine's tool-name constraint arms on `<function=`, so it
+# never sees this form and the call used to leak into the answer as text (finish_reason stop).
+_INVOKE_OPEN = re.compile(r'<invoke\s+name\s*=\s*"([^"<>\s]+)"\s*>')
+_INVOKE_PART = re.compile(r'<invoke(?:\s+(?:n(?:a(?:m(?:e(?:\s*(?:=\s*"?[^"<>\s]*"?)?)?)?)?)?)?)?\s*$')
+_INVOKE_PARAM = re.compile(r'\s*<parameter\s+name\s*=\s*"([^"<>]*)"\s*>')
+INVOKE_END = "</invoke>"
+FCALLS_START = "<function_calls>"
+FCALLS_END = "</function_calls>"
+_FCALLS_OPEN = re.compile(r'<function_calls>(\s*)(<invoke\s+name\s*=\s*"([^"<>\s]+)"\s*>)')
+
+
+def invoke_to_function(name: str, body: str) -> str:
+    """The body of a Claude-dialect call (what follows its `<invoke name="NAME">`, up to `</invoke>`) -> the template's
+    `<function=NAME>\\n<parameter=K>\\nV\\n</parameter>...</function>`, which parse_tool_call reads.  A value ends at the
+    `</parameter>` that is followed by the next `<parameter name=` or by the end of the body, so a value may itself hold
+    `</parameter>`, `</invoke>` or a parameter tag (the structural walk call_end does for the template's own form)."""
+    out, pos = [f"{FUNC_START}{name}>"], 0
+    while True:
+        m = _INVOKE_PARAM.match(body, pos)
+        if not m:
+            break
+        j = m.end()
+        while True:
+            e = body.find(PARAM_END, j)
+            if e < 0:                                           # the closer was left out: the value runs to the end
+                end, pos = len(body), len(body)
+                break
+            rest = body[e + len(PARAM_END):]
+            if not rest.strip() or _INVOKE_PARAM.match(rest):
+                end, pos = e, e + len(PARAM_END)
+                break
+            j = e + 1
+        out.append(f"<parameter={m.group(1)}>\n{body[m.end():end]}\n{PARAM_END}")
+    out.append(FUNC_END)
+    return "\n".join(out)
 
 
 # a quoted call's opener in a value: `<function=NAME>` and its first parameter or close; a bare FUNC_START is text
@@ -845,6 +881,13 @@ def param_end(text: str, final: bool = False, name: str | None = None, hold: boo
                     return at if final else -2
                 if name is None or after[len(PARAM_START):gt].strip() != name:
                     return at
+            elif after.startswith("<parameter"):                  # the attribute spelling: `<parameter name="k">`
+                m = PARAM_NAMED.match(after)
+                if m is None:
+                    if ">" not in after:
+                        return at if final else -2                # the tag is still arriving
+                elif name is None or m.group(1).strip() != name:
+                    return at
             elif after.startswith((FUNC_END, CALL_END)):          # #4427: the model left out its `</function>`
                 verdict = _close_verdict(after, final) if hold else "end"      # hold=False: a call inside the reasoning keeps its old rule
                 if verdict == "end":
@@ -881,6 +924,12 @@ def call_end(text: str, final: bool = False, hold: bool = True) -> int:
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
+        elif s.startswith("<parameter") and PARAM_NAMED.match(s):
+            m = PARAM_NAMED.match(s)
+            end = param_end(s[m.end():], final, m.group(1).strip(), hold)
+            if end < 0:
+                return -1
+            pos += m.end() + end + len(PARAM_END)
         elif s.startswith(FUNC_END):
             rest = text[pos + len(FUNC_END):]
             s = rest.lstrip()
@@ -938,6 +987,7 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 
 
 PARAM_START = "<parameter="
+PARAM_NAMED = re.compile(r'<parameter\s+name\s*=\s*"([^"<>]*)"\s*>')      # the same tag in Anthropic's spelling
 
 
 def function_end(text: str) -> int:
@@ -963,6 +1013,18 @@ def function_end(text: str) -> int:
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
+        elif s.startswith("<parameter") and PARAM_NAMED.match(s):
+            m = PARAM_NAMED.match(s)
+            end = param_end(s[m.end():], name=m.group(1).strip(), hold=False)
+            if end < 0:
+                return -1
+            pos += m.end() + end + len(PARAM_END)
+        elif s.startswith("{") and "{" not in text[gt + 1:pos]:     # Llama/Groq: one JSON object as the whole body
+            try:
+                _obj, used = json.JSONDecoder().raw_decode(s)
+            except ValueError:
+                return -1
+            pos += used
         elif s.startswith(FUNC_END):
             return pos + len(FUNC_END)
         else:
@@ -1152,6 +1214,10 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
     rest = body[body.index(">") + 1:]
     props = ((schema or {}).get("parameters") or {}).get("properties") or {}
     args = {}
+    whole = rest
+    if PARAM_START not in rest and "<parameter" in rest:
+        # Anthropic's attribute spelling inside the Qwen tag: `<function=T><parameter name="k">v</parameter>`
+        rest = PARAM_NAMED.sub(lambda m: PARAM_START + m.group(1) + ">", rest)
     while "<parameter=" in rest:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
         pname = rest[:rest.index(">")]
@@ -1164,6 +1230,21 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
         if value.endswith("\n"):
             value = value[:-1]
         args[pname] = coerce_value(value, (props.get(pname) or {}).get("type"), notes)
+    if not args:
+        tail = whole.strip()
+        if tail.endswith(FUNC_END):
+            tail = tail[:-len(FUNC_END)].strip()
+        if tail.startswith("{"):
+            # Llama/Groq spelling: `<function=T>{"k": "v"}</function>`
+            try:
+                obj = json.loads(tail)
+            except ValueError:
+                obj = None
+            if isinstance(obj, dict):
+                args = obj
+        if not args and tail and notes is not None:
+            # a body that is not empty but gave no argument: the call goes out empty, so say why
+            notes.append(f"{name}: arguments in an unreadable form were dropped ({tail[:60]!r})")
     return ToolCall(name=name, arguments=args)
 
 
@@ -1243,6 +1324,9 @@ class OutputParser:
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
         self.recover = recover
+        self.invoke = ("", "")       # the Claude-dialect call being read: (its declared name, the opener as the model wrote it)
+        self.fwrap = ""              # `<function_calls>` rewritten to `<tool_call>` and not yet read by the invoke branch
+        self.iwrap = CALL_START      # the wrapper of the Claude-dialect call being read, as the model wrote it
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._final = False          # #4701: the turn has ended: a call held for what might follow it is decided now
@@ -1297,6 +1381,17 @@ class OutputParser:
             if any(k.startswith(bare) for k in list(self.schemas) + list(self.aliases) if isinstance(k, str)):
                 return "wait"
         return None
+
+    def _invoke_open(self, after: str):
+        """recover: `after` (text after a `<tool_call>`, whitespace dropped) opens a Claude-dialect call of a declared tool ->
+        (declared name, the opener's text); "wait" while it may still become one; None otherwise."""
+        m = _INVOKE_OPEN.match(after)
+        if m:
+            name = self.aliases.get(m.group(1), m.group(1))
+            return (name, m.group(0)) if name in self.schemas or self.deferred else None
+        if "\n" in after or ">" in after or len(after) >= 160:
+            return None
+        return "wait" if "<invoke".startswith(after) or _INVOKE_PART.match(after) else None
 
     def _follower(self, after: str) -> str:
         """recover: what a `<tool_call>` followed (after whitespace) by `after` opens: "call" (`<function=`), "param"
@@ -1524,11 +1619,17 @@ class OutputParser:
             elif self.ss == "between":
                 stripped = rest.lstrip()
                 self.sp += len(rest) - len(stripped)
-                if stripped.startswith("<parameter="):
-                    b = stripped.find(">")
-                    if b < 0:
-                        return out
-                    pname = stripped[11:b]
+                named = PARAM_NAMED.match(stripped) if stripped.startswith("<parameter") and not stripped.startswith(PARAM_START) else None
+                if stripped.startswith("<parameter") and not stripped.startswith(PARAM_START) and not named:
+                    return out          # `<parameter name="k">` still arriving
+                if stripped.startswith(PARAM_START) or named:
+                    if named:
+                        b, pname = named.end() - 1, named.group(1)
+                    else:
+                        b = stripped.find(">")
+                        if b < 0:
+                            return out
+                        pname = stripped[11:b]
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
@@ -1541,6 +1642,19 @@ class OutputParser:
                 elif stripped.startswith("</function>"):
                     self.sp += len("</function>")
                     self.ss = "function_done"
+                elif stripped.startswith("{") and self.sfirst:
+                    # Llama/Groq spelling `<function=T>{"k": "v"}</function>`: the object is one piece, streamed when whole
+                    try:
+                        obj, used = json.JSONDecoder().raw_decode(stripped)
+                    except ValueError:
+                        return out
+                    if not isinstance(obj, dict):
+                        return out
+                    inner = json.dumps(obj, ensure_ascii=False)[1:-1]
+                    if inner:
+                        args(inner)
+                        self.sfirst = False
+                    self.sp += used
                 else:
                     return out          # a tag still arriving (or trailing text): wait
             elif self.ss == "str":
@@ -1627,7 +1741,7 @@ class OutputParser:
         delta.  Only a declared name is ever the result; with none, or with two that fit, the text is left as it was.
         `fresh`: the length of the text just added; only the end of the buffer (that and a little before it) can hold a new match,
         so a long call is not scanned again with every token."""
-        held = self._opener(fresh)
+        held = self._opener(fresh) or self._fcalls(fresh)
         start = max(0, len(self.buf) - fresh - _PREFIX_LOOKBACK)
         buf = self.buf[start:]
         if "<function=" in buf:
@@ -1679,6 +1793,40 @@ class OutputParser:
                     break
         if tail:
             held, buf = tail, buf[:len(buf) - len(tail)]
+        self.buf = buf
+        return held
+
+    def _fcalls(self, fresh: int) -> str:
+        """recover: Anthropic's `<function_calls>` wrapper directly before `<invoke name="DECLARED">` is `<tool_call>` (the
+        `<invoke>` branch of the content state then reads the call, and takes the wrapper's `</function_calls>` as its
+        closer).  Any other follower leaves the text as it was.  Returns the tail of a wrapper still arriving."""
+        if not self.recover or self.state != "content":
+            return ""
+        start = max(0, len(self.buf) - fresh - _PREFIX_LOOKBACK)
+        if "<f" not in self.buf[start:]:
+            return ""
+        buf = self.buf
+        pos, out = start, []
+        for m in _FCALLS_OPEN.finditer(buf, start):
+            name = self.aliases.get(m.group(3), m.group(3))
+            if (name in self.schemas or self.deferred) and self._opens_at(m.start()):
+                out.append(buf[pos:m.start()] + CALL_START + m.group(1) + m.group(2))
+                pos = m.end()
+        buf = buf[:start] + "".join(out) + buf[pos:] if out else buf
+        if out:
+            self.fwrap = FCALLS_START
+        held = ""
+        k = buf.rfind("<f", start)
+        if k >= 0:
+            cand = buf[k:]
+            if FCALLS_START.startswith(cand):
+                held = cand
+            elif cand.startswith(FCALLS_START) and len(cand) < 200:
+                rest = cand[len(FCALLS_START):].lstrip()
+                if self._invoke_open(rest) == "wait":
+                    held = cand
+        if held:
+            buf = buf[:len(buf) - len(held)]
         self.buf = buf
         return held
 
@@ -1858,6 +2006,25 @@ class OutputParser:
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
+                if self.recover and self.schemas and not after.startswith(FUNC_START):
+                    inv = self._invoke_open(after)
+                    if inv == "wait":                    # may still become `<invoke name="NAME">`: held like a partial tag
+                        j = i
+                        while j > 0 and self.buf[j - 1] == "\n":
+                            j -= 1
+                        if j > 0:
+                            out.append(Event("content", self._track(self.buf[:j])))
+                            self.buf = self.buf[j:]
+                        return out
+                    if inv:                              # the call is read whole, to its </invoke> (state "invoke")
+                        if i and self.buf[:i].strip():
+                            out.append(Event("content", self._track(self.buf[:i].rstrip("\n"))))
+                        rest = self.buf[i + len(CALL_START):]
+                        at = len(rest) - len(after)                      # the whitespace between the wrapper and the opener
+                        self.invoke = (inv[0], rest[:at + len(inv[1])])  # kept: a call that is not one goes back as the text it was
+                        self.iwrap, self.fwrap = self.fwrap or CALL_START, ""
+                        self.buf, self.state = rest[at + len(inv[1]):], "invoke"
+                        continue
                 if self.schemas and not after.startswith(FUNC_START):
                     loose = self._loose_open(after)
                     if loose == "wait":                  # may still become one: held like a partial tag
@@ -1944,6 +2111,50 @@ class OutputParser:
                     out.append(Event("tool_call", call=call))
                 self.buf = self.buf[i + len(CALL_END):]
                 self.state, self.lead = "content", call is not None
+            elif self.state == "invoke":
+                # recover: `<invoke name="NAME">...</invoke>` (Claude's dialect) inside the wrapper, held whole.  Its `</invoke>`
+                # is the end where what follows is nothing (the turn's end: the model stops right after it), the wrapper's
+                # closer or another call; a `</invoke>` followed by anything else is part of a value.
+                name, opener = self.invoke
+                head = self.buf.lstrip()
+                if not head:
+                    return out
+                if not head.startswith(("<parameter", INVOKE_END)) and not "<parameter".startswith(head) \
+                        and not INVOKE_END.startswith(head):
+                    # not a call: the opener is prose that names the format ("write <invoke name="X"> to call it")
+                    out.append(Event("content", self._track(self.iwrap + opener)))
+                    self.invoke, self.state = ("", ""), "content"
+                    continue
+                end, pos = -1, self.buf.find(INVOKE_END)
+                while pos >= 0:
+                    tail = self.buf[pos + len(INVOKE_END):].lstrip()
+                    if tail.startswith((CALL_END, FCALLS_END, CALL_START, "<invoke")) or (not tail and self._final):
+                        end = pos
+                        break
+                    if not tail or any(w.startswith(tail) for w in (CALL_END, FCALLS_END, CALL_START, "<invoke")):
+                        return out                       # more may follow it: wait
+                    pos = self.buf.find(INVOKE_END, pos + 1)
+                if end < 0 and self._final:
+                    end = self.buf.rfind(INVOKE_END)     # the turn ended: the last one closes the call, text after it is the answer's
+                if end < 0:
+                    return out
+                tail = self.buf[end + len(INVOKE_END):]
+                closer = next((c for c in (CALL_END, FCALLS_END) if tail.lstrip().startswith(c)), "")   # the wrapper's own closer is dropped, one left out is no loss
+                drop = len(INVOKE_END) + (len(tail) - len(tail.lstrip()) + len(closer) if closer else 0)
+                body, self.buf = self.buf[:end], self.buf[end + drop:]
+                if not closer and self.buf.lstrip().startswith("<invoke"):
+                    self.buf = CALL_START + self.buf        # the next call of the batch: read as a wrapped call of its own
+                self.invoke = ("", "")
+                try:
+                    call = parse_tool_call(invoke_to_function(name, body), self.schemas.get(name), self.notes)
+                    call.name = name
+                except ValueError:
+                    call = None
+                if call is None:
+                    out.append(Event("content", self._track(self.iwrap + opener + body + INVOKE_END + closer)))
+                else:
+                    out.append(Event("tool_call", call=call))
+                self.state, self.lead = "content", call is not None
             else:
                 drop = None
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
@@ -1996,7 +2207,7 @@ class OutputParser:
         out = []
         if self._held:
             self.buf, self._held = self.buf + self._held, ""
-        if self.buf and self.state in ("call", "rcall"):
+        if self.buf and self.state in ("call", "rcall", "invoke"):
             self._final = True                  # #4701: a call held after its closing tags (could a file's text go on?) is whole now
             out += self.feed("")
         if self.state == "rcall" and reason in (None, "stop"):
@@ -2043,10 +2254,12 @@ class OutputParser:
             return out
         if self.state == "reasoning" and self.buf == THINK_END:   # the output ends on a held `</think>`: its end
             self.buf, self.state = "", "content"
-        if self.buf:
+        if self.buf or self.state == "invoke":
             # an unfinished call inside the reasoning (#804) is reasoning text, never a call
             kind = {"reasoning": "reasoning", "rcall": "reasoning", "content": "content"}.get(self.state, "content")
             text = CALL_START + self.buf if self.state in ("call", "json") and not self.bare else self.buf
+            if self.state == "invoke":          # the output ended inside a dialect call: the text it was
+                text, self.invoke = self.iwrap + self.invoke[1] + self.buf, ("", "")
             out.append(Event(kind, text))
             self.buf = ""
         return out
