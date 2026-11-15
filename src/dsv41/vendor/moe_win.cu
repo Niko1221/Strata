@@ -14,7 +14,7 @@ constexpr int kWinEnt = kMaxWinTokens * 8;
 // the entries grouped by expert slot (in order of first appearance), each group's members in entry order (t * 8 + i)
 // (the tables in shared memory: as locals they were a 2.6 KB stack a thread, which the driver reserves for every thread
 // the device can hold - ~420 MB on a V100 - and a launch failed "out of memory" once the expert pool had the rest)
-__global__ void moe_win_group_kernel(const __grid_constant__ MoeWin w) {
+__global__ void moe_win_group_kernel(const MoeWin w) {
     __shared__ unsigned long long gp[kWinEnt];
     __shared__ int cnt[kWinEnt], gof[kWinEnt], fill[kWinEnt + 1];
     if (threadIdx.x != 0) return;
