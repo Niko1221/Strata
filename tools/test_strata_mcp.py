@@ -61,7 +61,7 @@ if __name__ == "__main__":
 '''
 
 FAKE_SERVER = r'''
-import json, os, signal, sys, time
+import json, os, signal, socketserver, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 a = sys.argv
@@ -114,7 +114,13 @@ class H(BaseHTTPRequestHandler):
                           "timings": {"predicted_per_second": 61.5, "prompt_per_second": 400.0}})
         else:
             self.js(404, {})
-httpd = ThreadingHTTPServer(("127.0.0.1", port), H)
+class Srv(ThreadingHTTPServer):
+    # http.server's server_bind asks socket.getfqdn("127.0.0.1") for a name nothing here uses; on GitHub's macOS runner a fresh
+    # process waited longer for that answer than the tests wait for the server
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+httpd = Srv(("127.0.0.1", port), H)
 def term(*_):
     print("[strata] stopped (fake)", flush=True)
     os._exit(0)
@@ -645,6 +651,12 @@ class Helpers(unittest.TestCase):
         self.assertEqual(by["UD-Q4_K_XL"]["download_gb"], 22.9)
         self.assertTrue(all(x["images"] and x["engine_min"] == "0.1.45" and x["gpu_options"] is None for x in by.values()))
         self.assertEqual({x["on_this_pc"] for x in by.values()}, {"fits"})
+        # #5715: the app's context estimate reads Qwen3.6's own figures from the row (strata_control/own_path_fit.py); other models have none
+        from strata_control import own_path_fit
+        self.assertEqual({m: x["context_fit"] for m, x in by.items()}, {m: own_path_fit.inputs("qwen3.6-35b-a3b", m) for m in by})
+        self.assertEqual(by["UD-Q4_K_XL"]["context_fit"]["bytes_per_token"], 47104)
+        others = [x for f in s.model_table({"ram_gb": 63.7, "gpus": []}) if f["family"] != "qwen36" for x in f["sizes"]]
+        self.assertTrue(others and not any("context_fit" in x for x in others))
         small = next(f for f in s.model_table({"ram_gb": 16, "gpus": []}) if f["family"] == "qwen36")
         self.assertEqual({x["on_this_pc"] for x in small["sizes"]}, {"may run slower"})        # 16 GB, no card: 21 to 36 GB of weights
         self.assertEqual(s.sizes_of(s.tables()[0], "unsloth")[:5], ["UD-IQ4_XS", "UD-Q4_K_XL", "UD-Q5_K_XL", "UD-Q6_K_XL", "Q8_0"])      # the Unsloth Flash-Next sizes are untouched (round 0214 adds sizes after them)
@@ -662,6 +674,13 @@ class Helpers(unittest.TestCase):
             self.assertNotIn(flag, args)
         plan, _a = M.Tools(s).install_plan("qwen36", None, 32768, "no", None, None, None, None, None, None, None)
         self.assertEqual(plan["model"], "UD-Q4_K_XL")
+        # #5715: no context given: the size that fits the 12 GB card (32K), not 128K; a 16 GB card keeps 128K
+        _p, args = M.Tools(s).install_plan("qwen36", "UD-Q4_K_XL", None, "no", None, None, None, None, None, None, None)
+        self.assertEqual(args[args.index("--context") + 1], "32768")
+        s.hardware = lambda fresh=False: {"ram_gb": 64.0, "gpus": [{"index": 0, "name": "x", "vram_gb": 15.93, "usable": True, "vendor": "nvidia"}],
+                                          "cpu": {"avx2": True}}
+        _p, args = M.Tools(s).install_plan("qwen36", "UD-Q4_K_XL", None, "no", None, None, None, None, None, None, None)
+        self.assertEqual(args[args.index("--context") + 1], "131072")
         with self.assertRaises(M.ToolError):
             M.Tools(s).install_plan("qwen36", "IQ3_S", 32768, "no", None, None, None, None, None, None, None)
 
