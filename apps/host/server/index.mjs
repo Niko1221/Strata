@@ -459,7 +459,8 @@ const execFileAsync = promisify(execFile);
    single opaque total. */
 const SYSTEM_PROMPT = `You are Strata, a local inference assistant running entirely on this computer.
 Answer plainly and briefly. Use only tools actually offered to you. Ask for file content when no file tool is available.
-Say when you do not know. Never claim to have done something you have not done.`;
+Say when you do not know. Never claim to have done something you have not done.
+Always reply in the language of the user's latest message (for example, reply in Hebrew when the user writes in Hebrew), even though these instructions are in English. Keep code, commands, file paths and identifiers exactly as they are.`;
 
 /**
  * Files a tool proposal could plausibly name.
@@ -592,7 +593,7 @@ async function runRemoteTurn({ selection, message, history, images = [], thinkin
     const appliedSkills = selectSkills(skillState, message, workspaceId);
     entry = serving.open({ client: 'Strata chat', endpoint: connection.protocol === 'anthropic' ? '/messages' : connection.protocol === 'openai-responses' ? '/responses' : '/chat/completions', model: `${connection.name} · ${model.name}`, cancel: () => controller.abort(new DOMException('Cancelled by the user', 'AbortError')) });
     serving.mark(entry.id, { state: 'generating' });
-    const result = await modelProviders.stream({ selection, message, history, images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation.', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
+    const result = await modelProviders.stream({ selection, message, history, images, thinking, signal: requestSignal, systemPrompt: ['You are Strata, a helpful assistant. Answer clearly. Do not claim to have read files or performed actions unless their results are included in the conversation. Always reply in the language of the user\'s latest message (for example Hebrew when the user writes in Hebrew).', skillInstructions(appliedSkills)].filter(Boolean).join('\n\n'), onFrame: frame => {
       if (frame.type === 'start') noteSkillUse(appliedSkills);
       if (frame.type === 'done') serving.mark(entry.id, { tokensIn: frame.tokensIn, tokensOut: frame.tokensOut, usageSource: frame.usageSource });
       onFrame({ ...frame, requestId: entry.id, model: model.name, contextMax: model.contextMax, remoteModel: true, ...(frame.type === 'start' ? { skills: appliedSkills.map(s => s.name) } : {}) });
