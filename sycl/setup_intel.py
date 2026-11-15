@@ -388,6 +388,24 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict, vram_gb: float = 0.0, 
     return out
 
 
+def pcie_counters_readable():
+    """True when this user can read Intel PMT telemetry, False when the nodes exist but are not readable, None when
+    there are none.  Level Zero sysman takes the card's PCIe traffic from those nodes, and the kernel creates
+    /sys/class/intel_pmt/telem*/telem as 0440 root:root, so the Monitor's PCIe graph is empty for a normal user
+    until a udev rule hands them to a group the server is in (docs/INTEL.md, "Things that matter on this GPU")."""
+    import glob
+    nodes = sorted(glob.glob("/sys/class/intel_pmt/telem*/telem"))
+    if not nodes:
+        return None
+    for p in nodes:
+        try:
+            with open(p, "rb"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def install(argv) -> None:
     intel = [] if S.WIN else intel_gpus()
     if not intel:
@@ -395,6 +413,11 @@ def install(argv) -> None:
     exe, why = sycl_engine()
     if exe is None:
         S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
+    if pcie_counters_readable() is False:      # one line, never a refusal: everything except PCIe traffic still works
+        S.say("  the Monitor's PCIe graph will stay empty: /sys/class/intel_pmt/telem*/telem is not readable by this "
+              "user, and Level Zero takes the card's bus counters from it. Load, VRAM, temperature and power are "
+              "unaffected. To turn it on, grant the node to a group you are in (docs/INTEL.md, \"Things that matter "
+              "on this GPU\")")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
                  "write_run_script", "start", "say", "main"):
         if not callable(getattr(S, name, None)):

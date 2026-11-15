@@ -156,9 +156,12 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
   memory. Every allocation of 32 MiB or more goes through `strata::malloc_device_guarded`, which checks the range and allocates
   again behind a spacer until it is clean (a warning names each retry; under 0.5 s at startup; `STRATA_ARENA_ALIAS_CHECK=0`
   skips it). `STRATA_VERIFY_ALL_SLOTS=1` reads every filled cache slot back and compares it with the GGUF.
-- **Monitor tab.** `server_intel.py` plugs `sycl/serve/xe_telemetry.py` into the Monitor (temperature, power, PCIe link from
-  sysfs). Load and VRAM come from `/run/gpustat.json`, written by a small root sampler (`sycl/tools/gpustat.py`, installed with
-  `gpustat.service`), because `xe` reports them per client in `/proc/*/fdinfo`, which only root can read. A run config may name
+- **Monitor tab.** `server_intel.py` plugs `sycl/serve/xe_telemetry.py` into the Monitor, and every reading is taken inside
+  the server process: temperature, power and the PCIe link from sysfs, VRAM through Level Zero's management API (sysman,
+  `libze_loader.so.1`, through ctypes), and load from the DRM clients the process can see in `/proc/<pid>/fdinfo` (xe counts
+  engine cycles per client). None of it needs root and none of it needs a helper service: `xpu-smi stats` reads the same
+  sysman API as a normal user. The load is the engine's own, not the card's share across other users' processes, which would
+  need root to read; a reading no source can give shows as a dash rather than a zero. A run config may name
   a `model_switcher`; the web app's header then gets a Model menu.
 - **Logprobs.** `/v1/chat/completions` takes `"logprobs": true` and `"top_logprobs": 0..20` through `server_intel.py`, streamed
   or not. Not on `/v1/completions` or the Anthropic endpoint.
