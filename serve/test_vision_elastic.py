@@ -370,5 +370,162 @@ class OnDemandByDefault(unittest.TestCase):
         self.assertEqual(apply_vision_defaults(c)["args"], self.BASE["args"])   # already asked for: untouched
 
 
+class ReplicaElasticVision(unittest.TestCase):
+    """Under replicas, an elastic GPU image encoder shrinks, pauses, and restores only the replica(s) on its GPU."""
+
+    def _setup(self, *, elastic0=True, elastic1=True, cuda_device=None, spawn_env=None, groups=None,
+               vision_gpu=True):
+        from serve.replicas import ReplicaEngine
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.img = d / "pic.png"
+        self.img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        self.tok = ByteTokenizer()
+        self.r0 = VramEngine(self.tok, elastic=elastic0)
+        self.r1 = VramEngine(self.tok, elastic=elastic1)
+        self.r0.restart()
+        self.r1.restart()
+        self.eng = ReplicaEngine([self.r0, self.r1])
+        self.v = ElasticVision(d, elastic=True)
+        self.v.gpu = vision_gpu
+        if cuda_device is not None:
+            self.v.cuda_device = cuda_device
+        if spawn_env is not None:
+            self.v.spawn = (["strata-vision"], None, dict(spawn_env))
+        self.svc = Service(self.eng, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"),
+                           vision=self.v)
+        if groups is not None:
+            self.svc.replica_gpu_groups = list(groups)
+        self.svc.free_vram_mib = lambda *a: None
+        return self.svc
+
+    def _msg(self):
+        return [{"role": "user", "content": [
+            {"type": "image", "source": str(self.img)},
+            {"type": "text", "text": "describe"},
+        ]}]
+
+    def tearDown(self):
+        emb = getattr(getattr(self, "svc", None), "embeddings", None)
+        if getattr(emb, "path", None):
+            Path(emb.path).unlink(missing_ok=True)
+        if getattr(self, "tmp", None):
+            self.tmp.cleanup()
+
+    def test_elastic_vision_shrinks_and_restores_only_replica_0_by_default(self):
+        svc = self._setup(groups=[[0], [1]])
+        svc.prepare(self._msg(), None, {})
+        self.assertTrue(self.v.alive())
+        self.assertEqual(self.v.starts, 1)
+        self.assertEqual(self.r0.calls, [2048])
+        self.assertEqual(self.r1.calls, [])
+        self.assertEqual(svc.vision_held_replicas, {0})
+        self.assertTrue(svc.vision_held)
+
+        self.assertEqual(svc._vision_idle_down(force=True), "down")
+        self.assertFalse(self.v.alive())
+        self.assertEqual(self.r0.calls, [2048, 0])
+        self.assertEqual(self.r1.calls, [])
+        self.assertEqual(svc.vision_held_replicas, set())
+        self.assertFalse(svc.vision_held)
+
+    def test_elastic_vision_on_gpu_1_shrinks_and_restores_only_replica_1(self):
+        for label, kw in (("cuda_device", {"cuda_device": 1}),
+                          ("env", {"spawn_env": {"CUDA_VISIBLE_DEVICES": "1"}})):
+            with self.subTest(source=label):
+                svc = self._setup(groups=[[0], [1]], **kw)
+                try:
+                    svc.prepare(self._msg(), None, {})
+                    self.assertEqual(self.r0.calls, [])
+                    self.assertEqual(self.r1.calls, [2048])
+                    self.assertEqual(svc.vision_held_replicas, {1})
+
+                    self.assertEqual(svc._vision_idle_down(force=True), "down")
+                    self.assertEqual(self.r0.calls, [])
+                    self.assertEqual(self.r1.calls, [2048, 0])
+                    self.assertEqual(svc.vision_held_replicas, set())
+                finally:
+                    self.tearDown()
+                    self.tmp = None
+
+    def test_post_vram_stacks_on_vision_replica_and_not_on_other_replica(self):
+        svc = self._setup(groups=[[0], [1]])
+        svc.prepare(self._msg(), None, {})
+        self.assertEqual(self.r0.calls, [2048])
+
+        out0 = svc.vram(1000, replica=0)
+        self.assertEqual(out0["status"], "ok")
+        self.assertEqual(self.r0.calls, [2048, 3048])
+
+        out1 = svc.vram(500, replica=1)
+        self.assertEqual(out1["status"], "ok")
+        self.assertEqual(self.r1.calls, [500])
+
+        self.assertEqual(svc._vision_idle_down(force=True), "down")
+        self.assertEqual(self.r0.calls, [2048, 3048, 1000])
+        self.assertEqual(self.r1.calls, [500])
+
+    def test_cpu_fallback_immediately_gives_back_target_replica_vram(self):
+        svc = self._setup(groups=[[0], [1]])
+        real_restart = self.v.restart
+
+        def cpu_restart():
+            real_restart()
+            self.v.on_cpu = True
+
+        self.v.restart = cpu_restart
+        svc.prepare(self._msg(), None, {})
+        self.assertEqual(self.r0.calls, [2048, 0])
+        self.assertEqual(self.r1.calls, [])
+        self.assertFalse(svc.vision_held)
+        self.assertEqual(svc.vision_held_replicas, set())
+
+    def test_vision_turn_pauses_only_vision_replica_and_skips_pause_for_cpu_vision(self):
+        svc = self._setup(groups=[[0], [1]])
+        seen_paused = []
+        real_encode = self.v.encode
+
+        def spy_encode(source):
+            seen_paused.append(set(self.eng.paused.keys()))
+            return real_encode(source)
+
+        self.v.encode = spy_encode
+        svc.prepare(self._msg(), None, {})
+        self.assertEqual(seen_paused, [{0}])
+        self.assertEqual(self.eng.paused, {})
+        self.tearDown()
+        self.tmp = None
+
+        # CPU vision (gpu=False) requires no GPU shrink and no replica pause
+        svc2 = self._setup(groups=[[0], [1]], vision_gpu=False)
+        seen_cpu_paused = []
+        real_encode2 = self.v.encode
+
+        def spy_encode2(source):
+            seen_cpu_paused.append(set(self.eng.paused.keys()))
+            return real_encode2(source)
+
+        self.v.encode = spy_encode2
+        svc2.prepare(self._msg(), None, {})
+        self.assertEqual(seen_cpu_paused, [set()])
+        self.assertEqual(self.r0.calls, [])
+        self.assertEqual(self.r1.calls, [])
+
+    def test_vision_replicas_matches_list_of_int_groups_and_csv_strings(self):
+        for groups, cuda_dev, want in (
+            ([[0], [1]], 0, [0]),
+            ([[0], [1]], 1, [1]),
+            ([[0, 2], [1, 3]], 2, [0]),
+            (["0,1", "2,3"], 3, [1]),
+        ):
+            with self.subTest(groups=groups, cuda_dev=cuda_dev):
+                svc = self._setup(groups=groups, cuda_device=cuda_dev)
+                try:
+                    self.assertEqual(svc._vision_replicas(), want)
+                finally:
+                    self.tearDown()
+                    self.tmp = None
+
+
 if __name__ == "__main__":
     unittest.main()
