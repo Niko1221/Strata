@@ -394,7 +394,7 @@ class VisionPipeTests(unittest.TestCase):
         v.dir = Path(tempfile.gettempdir())
         proc.wait.side_effect = subprocess.TimeoutExpired('encoder', 10)
         with mock.patch.object(server, 'popen', return_value=proc), \
-                mock.patch.object(v, '_readline', return_value='ERR startup failed'):
+                mock.patch.object(v, '_await_ready', return_value='ERR startup failed'):
             with self.assertRaises(server.EngineStuck):
                 v._start_reader()
         self.assertIs(v.proc, proc)

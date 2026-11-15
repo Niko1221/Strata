@@ -513,7 +513,9 @@ def _download(ctx: Context, state_name: str, url_ref: str, size: int, sha256: st
 
     ctx.say("download", f"Downloading {label} ({megabytes(size)} MB)", component=state_name)
     try:
-        return transfer.download(feed.url(url_ref), partial, size=size, sha256=sha256, progress=progress, cancel=ctx.cancel)
+        what = label if label.lower().startswith("the ") else "the " + label          # "the engine 0.1.59 (cuda)", in the network rule's sentences
+        return transfer.download(feed.url(url_ref), partial, size=size, sha256=sha256, progress=progress, cancel=ctx.cancel, what=what,
+                                 say=lambda line: ctx.say("download", line, component=state_name))
     except transfer.Cancelled:
         raise UpdateError("the update was stopped; the partial download is kept and the next update resumes it", 130) from None
     except transfer.ChecksumMismatch as exc:
@@ -1004,6 +1006,9 @@ def default_test_start(stage_root: Path, component: ec.EngineComponent, ctx: Con
     sandbox = Path(tempfile.mkdtemp(prefix="t-", dir=stage_root))
     try:
         cfg = json.loads(source.read_text(encoding="utf-8-sig"))
+        # paths setup wrote inside a Control folder that is gone (an AppImage's /tmp/.mount_<random>, a moved install): this Control's own files (QAGUI-LIN 0213)
+        from strata_control import control_paths
+        cfg = control_paths.repoint(cfg)
         cfg["exe"] = ec.REFERENCE_PREFIX + ec.COMPONENT_ID
         cfg["backend"] = component.backend
         cfg.pop("lib_dirs", None)

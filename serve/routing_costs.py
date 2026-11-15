@@ -11,10 +11,11 @@ import hashlib
 import json
 import math
 import os
-import platform
 import struct
 from pathlib import Path
 from statistics import median
+
+from strata_control import sysinfo
 
 
 def finite(value):
@@ -105,7 +106,7 @@ def runtime_key(engine, *, for_parking=False):
     gpu = _Nvml(int(visible)).name()
     if not gpu:
         raise ValueError("routing calibration requires readable GPU identity")
-    hardware = [gpu, _cpu_name(), os.cpu_count(), platform.platform()]
+    hardware = [gpu, _cpu_name(), os.cpu_count(), sysinfo.platform_string()]
     identity = [binary, clean, cwd, settings, assets, hardware]
     if cpus is not None:
         identity.append({"cpus": list(cpus)})

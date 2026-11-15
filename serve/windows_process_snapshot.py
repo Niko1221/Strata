@@ -17,10 +17,11 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 import os
-import platform
 import struct
 import time
 from types import SimpleNamespace
+
+from strata_control import sysinfo
 
 HEADER_BYTES = 256
 MAX_BUFFER_BYTES = 16 * 1024 * 1024
@@ -79,7 +80,7 @@ def decode_process_snapshot(raw: bytes, base: int, max_processes: int = 4096) ->
 class WindowsProcessSnapshot:
     def __init__(self):
         if (os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8
-                or platform.machine().lower() not in ("amd64", "x86_64")):
+                or sysinfo.machine().lower() not in ("amd64", "x86_64")):
             raise OSError("Windows x64 process snapshot unavailable")
         query = ctypes.WinDLL("ntdll").NtQuerySystemInformation
         query.argtypes = [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
