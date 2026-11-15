@@ -304,10 +304,14 @@ the GPU reader.
 
 - **CPU reader:** `strata-vision` (llama.cpp's mtmd). Setup compiles it into `engine-sycl/`, the server runs it on the host, and
   the engine in the container reads the embeddings from the host's `/dev/shm`, which `strata-sycl.sh` shares
-  (`STRATA_SYCL_SHM=0` keeps a private one).
+  (`STRATA_SYCL_SHM=0` keeps a private one). The release package carries it beside `strata`: `packaging/build_sycl_linux.sh`
+  builds and stages it (and records it in `BUILD.json`'s `vision_cpu`), so a Control install has the reader without compiling it.
 - **SYCL reader:** `strata-vision-sycl`, the same program on llama.cpp's SYCL backend. `setup --backend sycl --vision gpu`
   compiles it on the host when the oneAPI compiler (`icx`, `icpx`, `intel-oneapi-mkl-devel`) is installed; otherwise setup says so
-  and keeps the CPU reader. It needs the PC's oneAPI runtime, not the container. If it does not start, the server falls back to
+  and keeps the CPU reader. The release package also carries it beside `strata` (`packaging/build_sycl_linux.sh`, `BUILD.json`'s
+  `vision_gpu`), so `--vision gpu` works on a Control install where the package was built with oneAPI — no host compile.
+  It needs the PC's oneAPI runtime, which the package bundles (`libsycl`, the Unified Runtime adapters, the MKL SYCL libraries);
+  the Level Zero loader and the Intel compute runtime stay the PC's own. If it does not start, the server falls back to
   the CPU reader with one log line. It takes VRAM the experts would use, which is why the rule gives it to 24 GB cards only. Nobody
   has run it on a card of 24 GB or more.
 - **Known risk on Battlemage.** The first picture on the Arc Pro B70 (engine 0.1.45, IQ3_S, CPU reader) logged an xe engine

@@ -28,7 +28,9 @@ build=${BUILD:-$repo/build-sycl}
 py=${PYTHON:-python3}
 jobs=${JOBS:-$(nproc)}
 command -v patchelf >/dev/null || { echo "build_sycl_linux.sh: patchelf is not on PATH" >&2; exit 2; }
-# setvars.sh is not written for `set -u`
+# setvars.sh is not written for `set -u`, and it returns 3 when it has already been run in this shell
+# (`SETVARS_COMPLETED=1`); clearing that makes it initialize normally either way
+unset SETVARS_COMPLETED 2>/dev/null || true
 set +u
 # shellcheck disable=SC1091
 . "$oneapi/setvars.sh" >/dev/null 2>&1 || { echo "build_sycl_linux.sh: $oneapi/setvars.sh not found or failed" >&2; exit 2; }
@@ -50,21 +52,41 @@ cmake -S sycl -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER
     -DSTRATA_SYCL_PARITY=OFF -DSTRATA_SYCL_IQ_DECODE_FAST=${IQ_DECODE_FAST:-ON} ${aot:+"-DSTRATA_SYCL_AOT=$aot"} $ggml ${STRATA_CMAKE_EXTRA:-} $shape_cmake   # STRATA_CMAKE_EXTRA: e.g. -DSTRATA_GEOMETRY_FILE=/abs/path/geometry.hpp
 cmake --build "$build" --target strata -j "$jobs"
 
+# the picture readers: the portable CPU one (any PC's fallback) and the SYCL one (llama.cpp's SYCL backend on the Intel GPU).
+# They ride in the package beside strata, so a Control install has them in the engine folder the run config points at
+# (without them the SYCL package answers text only; setup.py's local build compiled them itself).
+llama=${LLAMA_CPP:-${STRATA_LLAMA_DIR:-$repo/third_party/strata-llama}}
+vision_build=${VISION_BUILD:-$repo/build-vision}
+cmake -G Ninja -S tools/vision -B "$vision_build" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$llama" \
+    -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=ON
+cmake --build "$vision_build" --target strata-vision -j "$jobs"
+[ -x "$vision_build/bin/strata-vision" ] || { echo "build_sycl_linux.sh: no strata-vision" >&2; exit 1; }
+sycl_build=${VISION_SYCL_BUILD:-$repo/build-vision-sycl}
+cmake -G Ninja -S tools/vision -B "$sycl_build" -DCMAKE_BUILD_TYPE=Release -DLLAMA_DIR="$llama" \
+    -DSTRATA_VISION_SYCL=ON -DSTRATA_PORTABLE=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
+cmake --build "$sycl_build" --target strata-vision -j "$jobs"
+[ -x "$sycl_build/bin/strata-vision-sycl" ] || { echo "build_sycl_linux.sh: no strata-vision-sycl" >&2; exit 1; }
+
 ver=$(sed -n 's/^[[:space:]]*project([^)]*VERSION[[:space:]]*\([0-9][0-9.]*\).*/\1/p' CMakeLists.txt | head -1)
 commit=${COMMIT:-$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}   # a git archive has no .git: pass COMMIT=
 stage=$(mktemp -d "${TMPDIR:-/tmp}/strata-sycl-stage.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 cp "$build/strata" "$stage/"
+cp "$vision_build/bin/strata-vision" "$sycl_build/bin/strata-vision-sycl" "$stage/"
 code=${aot:+AOT $aot}; code=${code:-JIT from SPIR-V}
-echo "{\"version\": \"$ver\", \"source\": \"packaging/build_sycl_linux.sh\", \"sycl\": \"oneAPI DPC++ $iccver ($code)\", \"portable\": false}" > "$stage/BUILD.json"
-# libsycl and the MKL SYCL libraries come through ldd; the Unified Runtime adapters (level zero, opencl) are dlopen'd, so they are named
+archs=${aot:-intel-arc}
+echo "{\"version\": \"$ver\", \"source\": \"packaging/build_sycl_linux.sh\", \"sycl\": \"oneAPI DPC++ $iccver ($code)\", \"portable\": false, \"archs\": \"$archs\", \"vision\": \"gpu\", \"vision_cpu\": \"strata-vision\", \"vision_gpu\": \"strata-vision-sycl\", \"vision_archs\": \"$archs\"}" > "$stage/BUILD.json"
+# libsycl and the MKL SYCL libraries come through ldd; the Unified Runtime adapters (level zero, opencl) are dlopen'd, so they are named.
+# The engine and the SYCL reader load them; the CPU reader needs only the system's
 "$py" packaging/collect_libs.py --binary "$build/strata" --search "$oneapi/compiler/latest/lib" --search "$oneapi/mkl/latest/lib" \
     --also 'libur_adapter_level_zero*.so*' --also 'libur_adapter_opencl*.so*' --out "$stage"
-# RUNPATH $ORIGIN on the engine and on every bundled library (the same way packaging/build_hip_linux.sh does it)
-for f in "$stage/strata" "$stage"/*.so "$stage"/*.so.*; do
+"$py" packaging/collect_libs.py --binary "$sycl_build/bin/strata-vision-sycl" --search "$oneapi/compiler/latest/lib" --search "$oneapi/mkl/latest/lib" \
+    --also 'libur_adapter_level_zero*.so*' --also 'libur_adapter_opencl*.so*' --out "$stage"
+# RUNPATH $ORIGIN on the engine, both readers and every bundled library (the same way packaging/build_hip_linux.sh does it)
+for f in "$stage/strata" "$stage/strata-vision" "$stage/strata-vision-sycl" "$stage"/*.so "$stage"/*.so.*; do
   [ -f "$f" ] && [ ! -L "$f" ] && patchelf --set-rpath '$ORIGIN' "$f"
 done
-for f in "$stage/strata" "$stage"/*.so "$stage"/*.so.*; do
+for f in "$stage/strata" "$stage/strata-vision" "$stage/strata-vision-sycl" "$stage"/*.so "$stage"/*.so.*; do
   [ -f "$f" ] && [ ! -L "$f" ] && { readelf -d "$f" | grep -q 'RUNPATH.*\[\$ORIGIN\]' || { echo "build_sycl_linux.sh: $(basename "$f") has no RUNPATH \$ORIGIN" >&2; exit 1; }; }
 done
 shape_check "$stage/strata"

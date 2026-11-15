@@ -56,7 +56,8 @@ def sha256(path: Path) -> str:
 def wanted(path: Path) -> bool:
     name = path.name.lower()
     return (name.endswith((".dll", ".so", ".dylib", ".metallib")) or ".so." in name or name == "build.json"
-            or name.startswith("license") or name in ("strata-vision", "strata-vision.exe", "strata-vision-hip", "strata-vision-hip.exe"))   # the picture readers (CPU, AMD GPU) beside the engine
+            or name.startswith("license") or name in ("strata-vision", "strata-vision.exe", "strata-vision-hip", "strata-vision-hip.exe",
+                                                       "strata-vision-sycl", "strata-vision-sycl.exe"))   # the picture readers (CPU, AMD GPU, Intel GPU) beside the engine
 
 
 READER_NAMES = ("strata-vision", "strata-vision.exe")
@@ -95,6 +96,16 @@ def check_picture_reader(src: Path, backend: str, target: str, archs: tuple[str,
             notes.append("no picture reader in this macOS package: pictures are off for it")
         return notes
     if backend != "cuda":
+        if backend == "sycl":
+            # an Intel Arc package's pictures come from the readers in its folder (strata-vision, strata-vision-sycl);
+            # without them Control installs the engine text-only, and `strata launch --vision on` says the engine has no reader
+            have_cpu = (src / "strata-vision").is_file()
+            have_gpu = (src / "strata-vision-sycl").is_file()
+            if not have_cpu:
+                notes.append("no picture reader in this SYCL package: pictures are off for it (build_sycl_linux.sh stages "
+                             "strata-vision and strata-vision-sycl)")
+            elif not have_gpu:
+                notes.append("this SYCL package carries the CPU reader only: --vision gpu needs strata-vision-sycl in it")
         return notes
     if reader is None:
         notes.append("no picture reader in this CUDA package: the engine answers text only (the app says pictures need the reader)")
@@ -222,7 +233,7 @@ def build(src: Path, backend: str, version: str, target: str, out: Path, *, entr
             manifest["notes"] = notes
         (staging / ec.MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
         if os.name != "nt":
-            for exe_name in (entrypoint, "strata-vision", "strata-vision-hip"):      # the programs setup starts: executable in the tar
+            for exe_name in (entrypoint, "strata-vision", "strata-vision-hip", "strata-vision-sycl"):      # the programs setup starts: executable in the tar
                 if (staging / exe_name).is_file():
                     (staging / exe_name).chmod(0o755)
         ec.verify(ec.read_manifest(staging, component_id), full=True)

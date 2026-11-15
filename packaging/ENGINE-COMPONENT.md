@@ -112,7 +112,7 @@ the SYCL and Metal packages, and (0.2.7.1) Linux ARM64 `cuda13` for the NVIDIA D
 | `linux-x86_64` hip | a box with ROCm (the Python wheels are enough) | `strata`, the HIP runtime, hipBLAS/hipBLASLt/rocBLAS, comgr + libLLVM, `rocblas/library` and `hipblaslt/library` for the listed gfx archs; `packaging/build_hip_linux.sh` builds it with both picture readers |
 | `linux-x86_64` hip, variant `rx6000` (RX 6000, gfx1030 / gfx1031) | `VARIANT=rx6000 packaging/build_hip_linux.sh` in the jammy chroot, ROCm 7.13.0a20260515 `gfx103X-all` wheels | the same set as the other HIP packages, with `rocblas/library` for gfx1030 / gfx1031; no `hipblaslt/library` kernels exist for them and no `tuning/` table | built, not tested on a real RX 6000 card (the manifest notes say so). `windows-x86_64` hip, variant `rdna2`: the same archs from `tools/hip/build_windows.bat` with `STRATA_HIP_ARCHS=gfx1030;gfx1031`, packaged with `--variant rdna2`. A PC with an RX 7000 / 9000 card beside an RX 6000 one never takes it (`engine_component.hip_preference`) |
 | `linux-x86_64` hip, gfx1103 (Radeon 780M / Phoenix iGPU) | `packaging/build_hip_gfx1103.sh` on the mini PC (TheRock gfx110X-all SDK) | the same set as the gfx1200/1201 package, with `rocblas/library` and `hipblaslt/library` for gfx1103 (600 MiB) | experimental, unvalidated: the iGPU resets now and then (MES REMOVE_QUEUE); never kill the engine mid-request; run configs set `STRATA_NO_ARENA_THP=1`. `engine_component.resolve` picks a HIP package only when its `archs` list a gfx target the Linux kfd topology reports |
-| `linux-x86_64` sycl, `archs` `intel-arc` | a Linux box with oneAPI DPC++ 2026.1 and `patchelf`, `packaging/build_sycl_linux.sh` (JIT from SPIR-V; ocloc cannot build the Alchemist FP64 kernels ahead of time, so one JIT package serves A-series and B-series) | `strata`, libsycl, the Unified Runtime adapters, the oneMKL SYCL libraries, libimf / libsvml / libirng / libintlc (about 650 MiB); every ELF file has RUNPATH `$ORIGIN` (Intel's libraries ship without it), so `env -i ./strata --version` runs | the Level Zero loader and compute runtime are the PC's driver; the user must be in the `render` group (`strata doctor` warns). No Windows package: `BACKEND_MATRIX` allows sycl on `linux-x86_64` only |
+| `linux-x86_64` sycl, `archs` `intel-arc` | a Linux box with oneAPI DPC++ 2026.1 and `patchelf`, `packaging/build_sycl_linux.sh` (JIT from SPIR-V; ocloc cannot build the Alchemist FP64 kernels ahead of time, so one JIT package serves A-series and B-series) | `strata`, `strata-vision`, `strata-vision-sycl`, libsycl, the Unified Runtime adapters, the oneMKL SYCL libraries, libimf / libsvml / libirng / libintlc (about 650 MiB); every ELF file has RUNPATH `$ORIGIN` (Intel's libraries ship without it), so `env -i ./strata --version` runs | the Level Zero loader and compute runtime are the PC's driver; the user must be in the `render` group (`strata doctor` warns). No Windows package: `BACKEND_MATRIX` allows sycl on `linux-x86_64` only |
 | `macos-arm64` metal | an Apple Silicon Mac | `strata`, `strata-vision` (`packaging/build_vision_mac.sh`; `package_engine.py` refuses a macOS package without it), `metal/kernels/*.metal`, `metal/engine-msl/*.metal`, `metal/strata-quant-common.h` (the quant header's text; the same text also as `metal/ggml-common.h` for two releases), `metal/data/*.bin` | the Metal engine compiles its kernel sources when it starts; it finds them beside the executable (`metal/src/resource_path.h`: environment variable, then `<exe dir>/metal/`, then the compiled-in source path) |
 
 `packaging/collect_libs.py` gathers the Linux libraries (an `ldd` closure with the dlopen'd extras named, kernel data filtered by
@@ -152,6 +152,16 @@ and the CPU reader as `vision.cpu_exe`, and the GPU reader does not start (the c
 busy) the server starts the CPU reader by itself and prints one line. Both programs have RUNPATH `$ORIGIN` on Linux; on Windows the
 ROCm DLLs they import sit beside the programs or in `rocm/bin` (the engine's PATH entry, `lib_dirs`). `strata_control/vision_reader.py`
 holds the choice; `tools/test_vision_reader.py` the tests.
+
+## Picture readers in a SYCL package
+
+A SYCL package carries both readers beside `strata`: `strata-vision` (the CPU one, llama.cpp's mtmd, or main's own tower where it is chosen)
+and `strata-vision-sycl` (the same program on llama.cpp's SYCL backend, built for the package's `archs`; BUILD.json `vision_archs`).
+`packaging/build_sycl_linux.sh` builds and stages both, so a Control install has them in the engine folder without compiling anything;
+without them `strata_control/vision_reader.find()` sees no reader and `strata launch --vision on` says the engine has no picture reader.
+The SYCL reader needs `libsycl`, the Unified Runtime adapters and the oneMKL SYCL libraries, which the package bundles; the Level Zero
+loader and the compute runtime stay the PC's. The run config's `vision` section names the GPU reader (`exe`) and the CPU one
+(`cpu_exe`); when the GPU reader cannot start the server falls back to the CPU reader with one log line.
 
 ## History / older measurements
 
