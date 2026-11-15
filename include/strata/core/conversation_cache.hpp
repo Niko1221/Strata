@@ -371,16 +371,17 @@ public:
         bytes_ -= out.bytes();
         const bool spilled = index < files_.size() && !files_[index].empty();
         const std::string path = spilled ? files_[index] : std::string();
-        erase(index);   // removes a spilled file: the read below happens before it goes
         if (spilled) {
             std::string verr;
             if (!conversation_cache_disk_read(path, out, verr)) {
                 std::fprintf(stderr, "strata conv cache: disk restore failed (%s): the prompt is read again\n",
                              verr.c_str());
                 out = {};
+            } else {
+                ++disk_reads_;   // only restores that actually returned a conversation
             }
-            ++disk_reads_;
         }
+        erase(index);   // removes the spilled file only now: the read above consumed it
         return out;
     }
 
