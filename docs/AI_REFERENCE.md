@@ -96,6 +96,8 @@ Default local server address: `http://127.0.0.1:8080`. The configured port and a
 | OpenAI Chat Completions | `http://127.0.0.1:8080/v1` | `POST /v1/chat/completions` |
 | OpenAI Responses | `http://127.0.0.1:8080/v1` | `POST /v1/responses` |
 | Anthropic Messages | `http://127.0.0.1:8080` | `POST /v1/messages` |
+| OpenAI text completions (raw prompt; `suffix` for fill-in-the-middle) | `http://127.0.0.1:8080/v1` | `POST /v1/completions` |
+| llama.cpp completion and infill (raw prompt; code completion) | `http://127.0.0.1:8080` | `POST /completion`, `POST /infill` |
 
 Use the actual configured API key when authentication is enabled. See [API details](DETAILS.md#using-it).
 The [connection registry](../strata_cli/launch/harness.py) supplies these adapters:

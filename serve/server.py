@@ -5,6 +5,8 @@
 
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
 non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
+Raw prompts, no chat template (code completion in an editor, fill-in-the-middle): POST /v1/completions (OpenAI's legacy
+text completions; `suffix` makes it a FIM prompt), POST /completion and POST /infill (llama.cpp's native shapes).
 Image generation (optional, when the config has an "images" section): POST /v1/images/generations (OpenAI's shape,
 plus seed and steps) runs stable-diffusion.cpp's sd-cli for Qwen-Image-2.1-Turbo, one job at a time on the GPU the
 text engine uses (serve/images.py).
@@ -4713,6 +4715,7 @@ class Detokenizer:
 
 
 OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`
+RAW_MAX_STOP = 16                                    # the raw-prompt routes': a FIM client sends more (Qwen's has 9)
 
 
 #: What a request may ask for that the all-cards split engine cannot do (its GEN parser has no such keys): answered with a 400 before anything is sent, not with an error in
@@ -4761,8 +4764,8 @@ def batch_slots_on(engine) -> bool:
 NO_LINE = object()                                   # StrataEngine.generate: no line held after a token
 
 
-def stop_strings(req: dict) -> list[str]:
-    """The request's stop strings: OpenAI's `stop` (a string or a list of up to 4) or Anthropic's `stop_sequences`
+def stop_strings(req: dict, limit: int = OPENAI_MAX_STOP) -> list[str]:
+    """The request's stop strings: OpenAI's `stop` (a string or a list of up to `limit`) or Anthropic's `stop_sequences`
     (a list).  Empty strings are left out.  A bad value is a ValueError, so a 400 before anything is generated."""
     req = req or {}
     if req.get("stop") is not None:
@@ -4770,8 +4773,8 @@ def stop_strings(req: dict) -> list[str]:
         stop = [stop] if isinstance(stop, str) else stop
         if not isinstance(stop, list) or not all(isinstance(x, str) for x in stop):
             raise ValueError("stop must be a string or a list of strings")
-        if len(stop) > OPENAI_MAX_STOP:
-            raise ValueError(f"stop takes at most {OPENAI_MAX_STOP} strings")
+        if len(stop) > limit:
+            raise ValueError(f"stop takes at most {limit} strings")
     elif req.get("stop_sequences") is not None:
         stop = req["stop_sequences"]
         if not isinstance(stop, list) or not all(isinstance(x, str) for x in stop):
@@ -5888,7 +5891,8 @@ class Service:
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0)))},
-            "dialects": ["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"],
+            "dialects": ["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/completion",
+                         "/infill"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             "activity": {"requests": totals["requests"] + running,
@@ -5993,6 +5997,40 @@ class Service:
             self.prompts.forget(ids)
 
 
+    def fit_max_new(self, prompt_len, max_new):
+        """-> the max tokens a prompt of `prompt_len` tokens gets: an unset or non-positive max_new is the rest of the
+        context, one past the room is shortened to it ("fit_max_tokens", the default) or a ContextOverflow.  A prompt
+        that leaves no room is a ContextOverflow: requests are never truncated.  Chat (prepare) and the raw-prompt
+        routes alike."""
+        ctx = self.engine.max_context
+        if ctx <= 0:
+            if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
+                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            # a failed restart leaves max_context 0: check against the last known context, so the request reaches
+            # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
+            ctx = getattr(self.engine, "known_ctx", 0)
+            if ctx <= 0:
+                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+        room = ctx - CTX_SLACK - prompt_len
+        if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
+            if room < 1:
+                raise ContextOverflow("request exceeds the context window: "
+                                      f"prompt ({prompt_len} tokens) leaves no room to answer in the context "
+                                      f"({ctx}); requests are never truncated", prompt=prompt_len, context=ctx)
+            max_new = room
+        elif max_new > room:
+            if not self.fit_max_tokens:
+                raise ContextOverflow("request exceeds the context window: "
+                                      f"prompt ({prompt_len} tokens) + max tokens ({max_new}) exceeds the context "
+                                      f"({ctx}); requests are never truncated. Send a smaller "
+                                      f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
+                                      "model's strata-<model>.json to shorten it to the room left (#545)",
+                                      prompt=prompt_len, context=ctx, max_new=max_new)
+            print(f"[strata] max_tokens {max_new} shortened to {max(1, room)}: the prompt ({prompt_len} tokens) leaves that much "
+                  f"of the context ({ctx}); \"fit_max_tokens\": false answers 400 instead", flush=True)
+            max_new = max(1, room)          # a shorter completion beats a 400 (the default)
+        return max_new
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
@@ -6072,37 +6110,13 @@ class Service:
             if k != len(encoded):
                 raise ValueError("the prompt and its images do not match")
             ids = out
-        ctx = self.engine.max_context
-        if ctx <= 0:
-            if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            # a failed restart leaves max_context 0: check against the last known context, so the request reaches
-            # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
-            ctx = getattr(self.engine, "known_ctx", 0)
-            if ctx <= 0:
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-        room = ctx - CTX_SLACK - len(ids)
-        if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
-            if room < 1:
-                # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
-                # other refusals (engine starting, images) keep it: the same prompt comes back and its encode is reused.
-                self.forget_prompt(encoded_ids)
-                raise ContextOverflow("request exceeds the context window: "
-                                      f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                                      f"({ctx}); requests are never truncated", prompt=len(ids), context=ctx)
-            max_new = room
-        elif max_new > room:
-            if not self.fit_max_tokens:
-                self.forget_prompt(encoded_ids)
-                raise ContextOverflow("request exceeds the context window: "
-                                      f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                      f"({ctx}); requests are never truncated. Send a smaller "
-                                      f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
-                                      "model's strata-<model>.json to shorten it to the room left (#545)",
-                                      prompt=len(ids), context=ctx, max_new=max_new)
-            print(f"[strata] max_tokens {max_new} shortened to {max(1, room)}: the prompt ({len(ids)} tokens) leaves that much "
-                  f"of the context ({ctx}); \"fit_max_tokens\": false answers 400 instead", flush=True)
-            max_new = max(1, room)          # a shorter completion beats a 400 (the default)
+        try:
+            max_new = self.fit_max_new(len(ids), max_new)
+        except ContextOverflow:
+            # A prompt refused for the context is not kept (#567): the client cannot resend it unchanged.  The
+            # other refusals (engine starting, images) keep it: the same prompt comes back and its encode is reused.
+            self.forget_prompt(encoded_ids)
+            raise
         if images:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
@@ -6240,26 +6254,30 @@ class Service:
         return now
 
     def run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-            declared_only=False, deferred=False, *, raw=False) -> Iterator[tuple[str, object]]:
+            declared_only=False, deferred=False, *, raw=False, own_sampling=False) -> Iterator[tuple[str, object]]:
         """The request's events (see _run); with "prevent_sleep" in the config, the PC stays awake while it runs or waits."""
         ka = self.keep_awake
         if ka is not None:
             ka.acquire()
         try:
-            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred, raw=raw)
+            yield from self._run(ids, thinking, tools, max_new, sampling, cancel, force, declared_only, deferred, raw=raw,
+                                 own_sampling=own_sampling)
         finally:
             if ka is not None:
                 ka.release()
 
     def _run(self, ids, thinking, tools, max_new, sampling, cancel, force=None,
-             declared_only=False, deferred=False, *, raw=False) -> Iterator[tuple[str, object]]:
+             declared_only=False, deferred=False, *, raw=False, own_sampling=False) -> Iterator[tuple[str, object]]:
         """Yields ("event", Event) as text arrives, then ("done", {"finish": .., "completion_tokens": ..}).
-        `force` (forced_call): the opening of the call the reply must make - see prepare()."""
+        `force` (forced_call): the opening of the call the reply must make - see prepare().  `raw`: a raw-prompt route's
+        text, passed through as written (RawCompletionParser), up to RAW_MAX_STOP stop strings and llama.cpp's
+        t_max_predict_ms; `own_sampling` (/completion, /infill): the request's sampling alone, none of the defaults below."""
         # the model card's sampling for this thinking state, then the config's block, then the Chat settings shared with
         # apps; the request's own fields win over all of them
         raw_budget = (self.reasoning_budget(sampling)
                       if raw and thinking and (sampling or {}).get("reasoning_budget_tokens") is not None else None)
-        defaults = {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults, **self.shared}
+        defaults = {} if own_sampling else {**model_card_sampling(self.model_arch, thinking), **self.sampling_defaults,
+                                            **self.shared}
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
@@ -6289,8 +6307,13 @@ class Service:
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
-        stop_list = stop_strings(sampling)
+        stop_list = stop_strings(sampling, RAW_MAX_STOP if raw else OPENAI_MAX_STOP)
         stops = StopMatcher(stop_list) if stop_list else None
+        # llama.cpp's t_max_predict_ms (raw routes only): once this long has passed since the first generated token, the
+        # reply ends at the next piece with a newline in it, as "length" (an editor's completion that runs on)
+        t_max = (sampling or {}).get("t_max_predict_ms") if raw else None
+        t_max = t_max if isinstance(t_max, (int, float)) and not isinstance(t_max, bool) and t_max > 0 else None
+        generating_at = None                            # the first generated token's time (t_max_predict_ms)
 
         def cut(evs):
             """The events with the answer's text cut at a stop string (OpenAI stop, Anthropic stop_sequences)."""
@@ -6467,6 +6490,8 @@ class Service:
                                     yield "ping", None
                                     continue
                                 n += 1
+                                if generating_at is None:
+                                    generating_at = time.perf_counter()
                                 if first_engine_token_s is None:
                                     first_engine_token_s = round(time.perf_counter() - waiting, 3)
                                     with self.status_lock:
@@ -6511,6 +6536,11 @@ class Service:
                                 if stops is not None and stops.hit is not None:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
+                                if (t_max is not None and any("\n" in (ev.text or "") for ev in evs if ev.kind == "content")
+                                        and (time.perf_counter() - generating_at) * 1000 > t_max):
+                                    print(f"[strata] t_max_predict_ms ({t_max:g}) passed: the reply ends at this newline "
+                                          "(\"length\")", flush=True)
+                                    break                   # finish stays "length", as llama.cpp's stop_type "limit"
                                 if (not raw and self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
                                         and n >= next_loop_check and not parser.buf and not parser.pending
                                         and not detok.pending()):
@@ -7352,6 +7382,189 @@ def openai_collect(chunks) -> dict:
     if last.get("strata_rejected_tool_calls"):
         out["strata_rejected_tool_calls"] = last["strata_rejected_tool_calls"]
     return out
+
+
+# ------------------------------------------------------------------------------------------------ raw-prompt routes
+# POST /completion and POST /infill (llama.cpp's native routes) and the `suffix` of POST /v1/completions: a prompt the
+# client wrote itself (no chat template), for code completion in an editor (fill-in-the-middle, FIM).
+FIM_MARKERS = ("<|fim_prefix|>", "<|fim_suffix|>", "<|fim_middle|>", "<|repo_name|>", "<|file_sep|>")
+#: the sampling fields /completion's generation_settings repeats back (llama.cpp's names where the request used them)
+RAW_SAMPLING_FIELDS = ("temperature", "top_k", "top_p", "min_p", "seed", "repeat_penalty", "repeat_last_n",
+                       "repetition_penalty", "presence_penalty", "frequency_penalty", "t_max_predict_ms")
+
+
+def fim_markers(tok) -> dict[str, int]:
+    """The FIM markers this vocabulary has, each by its text as ONE token (never a hard-coded id: another family has
+    other ids or none).  A ValueError (a 400) when <|fim_prefix|>, <|fim_suffix|> or <|fim_middle|> is missing
+    (DeepSeek-V4.1); <|repo_name|> and <|file_sep|> are optional (/infill's layout without them)."""
+    found = {}
+    for marker in FIM_MARKERS:
+        got = tok.encode(marker, parse_special=True)
+        if len(got) == 1:
+            found[marker] = int(got[0])
+    if any(m not in found for m in FIM_MARKERS[:3]):
+        raise ValueError("this model has no fill-in-the-middle tokens (<|fim_prefix|>, <|fim_suffix|>, <|fim_middle|>)")
+    return found
+
+
+def vocab_size(tok) -> int | None:
+    """The number of token ids: the pack's tokenizer lists its tokens; ByteTokenizer (--engine mock, the tests) is
+    256 bytes and its specials.  None when neither says."""
+    n = len(getattr(tok, "tokens", ()) or ())
+    if n:
+        return n
+    specials = getattr(tok, "SPECIALS", None)
+    return 256 + len(specials) if specials is not None else None
+
+
+def raw_prompt_ids(tok, prompt) -> list[int]:
+    """/completion's `prompt`: a string (special tokens parsed, as llama.cpp parses them; no BOS is added), a list
+    holding one string, or a list of token ids (each in the vocabulary).  Anything else is a ValueError (a 400)."""
+    if isinstance(prompt, list) and len(prompt) == 1 and isinstance(prompt[0], str):
+        prompt = prompt[0]
+    if isinstance(prompt, str):
+        ids = tok.encode(prompt, parse_special=True)
+    elif isinstance(prompt, list) and prompt and all(isinstance(t, int) and not isinstance(t, bool) for t in prompt):
+        n_vocab = vocab_size(tok)
+        bad = [t for t in prompt if t < 0 or (n_vocab is not None and t >= n_vocab)]
+        if bad:
+            raise ValueError(f"prompt: token id {bad[0]} is outside the vocabulary"
+                             + (f" (0..{n_vocab - 1})" if n_vocab is not None else ""))
+        ids = list(prompt)
+    elif isinstance(prompt, list) and len(prompt) > 1 and all(isinstance(p, (str, list)) for p in prompt):
+        raise ValueError("one prompt per request")
+    else:
+        raise ValueError("prompt must be a string or a list of token ids")
+    if not ids:
+        raise ValueError("prompt is empty")
+    return ids
+
+
+def infill_ids(tok, markers, prefix, suffix, extra, prompt_ids) -> tuple[list[int], int]:
+    """/infill's prompt, laid out as llama.cpp's format_prompt_infill lays it out (tools/server/server-common.cpp), and
+    the index just past its <|fim_prefix|> (where input_prefix starts, for strata_prefix's "chars").  With <|repo_name|>
+    and <|file_sep|>, the repo-level layout: <|repo_name|>myproject, each extra chunk as <|file_sep|>{filename} and
+    its text, <|file_sep|>filename; without <|file_sep|> each chunk follows a "--- snippet ---" line.  Then
+    <|fim_prefix|>{input_prefix}{prompt}<|fim_suffix|>{input_suffix}<|fim_middle|>.  The client's text is encoded
+    without parse_special, so a marker written in the code stays text; `prompt_ids` (the request's "prompt") is
+    parsed, as llama.cpp parses it.  Unlike llama.cpp nothing is trimmed to a batch: Strata never truncates."""
+    def text(s):
+        return tok.encode(s, parse_special=False)
+    out = []
+    if "<|repo_name|>" in markers:
+        out += [markers["<|repo_name|>"]] + text("myproject\n")
+    sep = markers.get("<|file_sep|>")
+    for chunk in extra:
+        name = chunk.get("filename")
+        if sep is not None:
+            out += [sep] + text(("tmp" if name is None else name) + "\n")
+        else:
+            out += text("\n\n--- snippet ---\n\n")
+        out += text(chunk["text"])
+    if sep is not None:
+        out += [sep] + text("filename\n")
+    out.append(markers["<|fim_prefix|>"])
+    start = len(out)
+    out += text(prefix) + list(prompt_ids) + [markers["<|fim_suffix|>"]] + text(suffix) + [markers["<|fim_middle|>"]]
+    return out, start
+
+
+def raw_prefix(spec, ids, head) -> dict:
+    """`strata_prefix` on the raw-prompt routes: {"tokens": N}, or {"chars": N}: the ids `head(N)` gives for the first
+    N characters of the prompt's text (None: it has no N characters), cut to their common start with `ids` as
+    Service.resolve_prefix cuts it.  -> {"tokens": n} for sampling_keys' pin=n, or {} when that leaves no usable
+    prefix (said in the log; the request still runs).  A malformed field is a ValueError (a 400)."""
+    if not isinstance(spec, dict) or len(spec) != 1 or not set(spec) <= {"tokens", "chars"}:
+        raise ValueError('strata_prefix: {"tokens": N} or {"chars": N} (the first N characters of the prompt) on this route')
+    (key, n), = spec.items()
+    if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+        raise ValueError(f"strata_prefix.{key}: a whole number (1 or more)")
+    if key == "chars":
+        got = head(n)
+        if got is None:
+            print(f"[strata] strata_prefix ignored: the prompt has no text of {n} characters", flush=True)
+            return {}
+        n = 0
+        for x, y in zip(got, ids):
+            if x != y:
+                break
+            n += 1
+    if n < 1 or n >= len(ids) - 1:
+        print(f"[strata] strata_prefix {key}={spec[key]} ignored: it leaves no usable prefix of the {len(ids)}-token "
+              f"prompt (common start {n})", flush=True)
+        return {}
+    return {"tokens": n}
+
+
+def check_raw_request(req: dict, svc) -> None:
+    """The raw-prompt routes' 400s, before anything runs: logprobs and n_probs are not there yet (refused, never
+    dropped), a stop list of up to RAW_MAX_STOP, t_max_predict_ms a number, the sampling fields' types."""
+    if req.get("logprobs") not in (None, False):
+        raise ValueError("logprobs: not supported on this route yet")
+    n_probs = req.get("n_probs")
+    if n_probs is not None and (isinstance(n_probs, bool) or not isinstance(n_probs, (int, float))):
+        raise ValueError("n_probs: a number")
+    if n_probs is not None and n_probs > 0:
+        raise ValueError("n_probs: not supported on this route yet")
+    t_max = req.get("t_max_predict_ms")
+    if t_max is not None and (isinstance(t_max, bool) or not isinstance(t_max, (int, float))):
+        raise ValueError("t_max_predict_ms: a number of milliseconds")
+    stop_strings(req, RAW_MAX_STOP)
+    check_request_sampling(req)
+    bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
+
+
+def raw_max_new(req: dict, *keys) -> int:
+    """The first of `keys` the request sets, as max tokens (0 when none: the rest of the context, as on chat).  A value
+    that is not a whole number is a 400 (true, 1.5 and "8" are not quietly read as a number)."""
+    for key in keys:
+        value = req.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key}: a whole number")
+        return value
+    return 0
+
+
+def llama_items(svc, req: dict, ids, max_new, cancel):
+    """/completion and /infill in llama.cpp's native shape: an item {"content": piece, "stop": false, ...} for each
+    piece of the answer, None for a keep-alive (a {"prompt_progress": ...} item with "return_progress"), and last the
+    whole answer's numbers with "stop": true and "content": "" (the non-streamed answer joins the pieces into it).
+    stop_type: "eos" for an end token, "word" for a stop string, "limit" for n_predict or t_max_predict_ms."""
+    model = svc.model_for(req)
+    want_progress = bool(req.get("return_progress"))
+    settings = {"n_ctx": svc.engine.max_context or getattr(svc.engine, "known_ctx", 0), "n_predict": max_new,
+                **{k: req[k] for k in RAW_SAMPLING_FIELDS if req.get(k) is not None},
+                "stop": stop_strings(req, RAW_MAX_STOP)}
+    answered_done = False
+    born = getattr(svc.engine, "gen", None)
+    for kind, x in svc.run(ids, False, None, max_new, req, cancel, raw=True, own_sampling=True):
+        born = getattr(svc.engine, "gen", born)
+        if kind == "ping":
+            pp = prompt_progress(svc) if want_progress else None
+            yield None if pp is None else {"content": "", "tokens": [], "stop": False, "id_slot": 0, "prompt_progress": pp}
+        elif kind == "event":
+            if x.kind == "content" and x.text:
+                yield {"content": x.text, "tokens": [], "stop": False, "id_slot": 0}
+        else:
+            answered_done = True
+            word = x.get("stop_sequence") or ""
+            last = {"content": "", "tokens": [], "id_slot": 0, "stop": True, "model": model,
+                    "tokens_predicted": x["completion_tokens"], "tokens_evaluated": len(ids),
+                    "tokens_cached": x.get("reused") or 0,
+                    "stop_type": {"stop": "word" if word else "eos", "length": "limit"}.get(x["finish"], "none"),
+                    "stopping_word": word, "truncated": False, "generation_settings": settings}
+            if x.get("timings"):
+                last["timings"] = x["timings"]
+            yield last
+    if not answered_done and not cancel.is_set():
+        # as openai_chunks (#3961): a run that ended without its "done" event is an error, not an empty answer
+        print("[strata] a request ended without an answer and without a finish reason; it is answered as an error", flush=True)
+        ended = svc.end_engine_if_unchanged(born)
+        lost = EngineDied("the engine ended the request without an answer")
+        lost.restarts = bool(ended)
+        raise lost
 
 
 def logprob_span(text: str, part: str, entries: list):
@@ -8257,7 +8470,7 @@ def make_handler(svc: Service):
                 return
             path = self.path.split("?")[0].rstrip("/")   # issue #55: Claude Code posts /v1/messages?beta=true
             path = V1_V1_ALIASES.get(path, path)         # an Anthropic client given ".../v1" as its base posts /v1/v1/messages
-            if path.startswith("/v1/") and self._foreign_page():
+            if (path.startswith("/v1/") or path in ("/completion", "/infill")) and self._foreign_page():
                 return
             if path == "/settings":
                 self._settings()
@@ -8294,7 +8507,8 @@ def make_handler(svc: Service):
                 return
             reserved = False
             try:
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/completion",
+                            "/infill"):
                     reserved = svc.reserve_inference()
                     if reserved is None:
                         error = {"type": "server_error", "code": "server_draining",
@@ -8354,7 +8568,8 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                if path in ("/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/completion",
+                            "/infill"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -8371,6 +8586,8 @@ def make_handler(svc: Service):
                     self._openai(req)
                 elif path == "/v1/completions":
                     self._completions(req)
+                elif path in ("/completion", "/infill"):
+                    self._llama(req, path)
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
@@ -8662,7 +8879,13 @@ def make_handler(svc: Service):
                             usage, timings = item.get("usage"), item.get("timings")
                         elif api == "completions":
                             content, reasoning = item["choices"][0]["text"], ""
-                            usage, timings = item.get("usage"), None
+                            usage, timings = item.get("usage"), item.get("timings")
+                        elif api == "llama":                 # /completion, /infill: the last item has the numbers
+                            content, reasoning = item.get("content") or "", ""
+                            usage = {"prompt_tokens": item["tokens_evaluated"], "completion_tokens": item["tokens_predicted"],
+                                     "total_tokens": item["tokens_evaluated"] + item["tokens_predicted"]} \
+                                if item.get("stop") else None
+                            timings = item.get("timings")
                         elif api == "responses":
                             kind = item["type"]
                             content = item["delta"] if kind == "response.output_text.delta" else ""
@@ -8800,8 +9023,14 @@ def make_handler(svc: Service):
                 value = req.get(key, 1)
                 if value != 1:
                     raise ValueError(f"{key} must be 1 (the server generates one sequence at a time)")
-            if req.get("suffix") not in (None, ""):
-                raise ValueError("suffix is not supported")
+            suffix = req.get("suffix")
+            if suffix is not None and not isinstance(suffix, str):
+                raise ValueError("suffix must be a string")
+            fim = None
+            if suffix:                                       # fill-in-the-middle (an empty suffix is none, as in vLLM)
+                if req.get("echo"):
+                    raise ValueError("echo is not supported with suffix")
+                fim = fim_markers(svc.tok)                   # a model without the markers: 400
             if req.get("logprobs") is not None:
                 raise ValueError("logprobs are not supported")
             stream_options = req.get("stream_options")
@@ -8818,38 +9047,36 @@ def make_handler(svc: Service):
             if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "disabled":
                 thinking = False
             # Raw clients may be resuming content after an already closed reasoning block.
-            thinking = thinking and prompt.rfind("<think>") > prompt.rfind(THINK_END)
-            bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            ids = svc.tok.encode(prompt, parse_special=True)
+            thinking = thinking and not fim and prompt.rfind("<think>") > prompt.rfind(THINK_END)
+            check_raw_request(req, svc)                      # logit_bias, up to RAW_MAX_STOP stops, sampling types
+            if fim:
+                # <|fim_prefix|>{prompt}<|fim_suffix|>{suffix}<|fim_middle|>: the markers as their ids, the code as text
+                # (encoded without parse_special, so a marker written in it stays text)
+                ids = ([fim["<|fim_prefix|>"]] + svc.tok.encode(prompt, parse_special=False) + [fim["<|fim_suffix|>"]]
+                       + svc.tok.encode(suffix, parse_special=False) + [fim["<|fim_middle|>"]])
+            else:
+                ids = svc.tok.encode(prompt, parse_special=True)
+            if req.get("strata_prefix") is not None:
+
+                def head(n):                                 # "chars": of prompt, after <|fim_prefix|> with a suffix
+                    if n > len(prompt):
+                        return None
+                    return ids[:1] + svc.tok.encode(prompt[:n], parse_special=False) if fim \
+                        else svc.tok.encode(prompt[:n], parse_special=True)
+                req["strata_prefix"] = raw_prefix(req["strata_prefix"], ids, head)   # sampling_keys sends pin=N
             try:
                 max_new = int(req.get("max_tokens") or 0)
             except (TypeError, ValueError):
                 raise ValueError("max_tokens must be a whole number")
             bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
             svc.reasoning_budget(req)
-            stop_strings(req)
-            check_request_sampling(req)
             cancel = threading.Event()
             self._watch_client(cancel)
             svc.load()
             model = svc.model_for(req)
             cid, created = "cmpl-" + uuid.uuid4().hex[:24], int(time.time())
-            max_new = max_new if max_new > 0 else None
-            ctx = svc.engine.max_context
-            if ctx <= 0:
-                ctx = getattr(svc.engine, "known_ctx", 0)
-            if ctx <= 0:
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            room = ctx - CTX_SLACK - len(ids)
-            if room < 1:
-                raise ValueError("request exceeds the context window: prompt leaves no room to answer")
-            if max_new is None:
-                max_new = room
-            elif max_new > room:
-                if not svc.fit_max_tokens:
-                    raise ValueError(f"request exceeds the context window: prompt + max_tokens exceeds context "
-                                     f"(at most {room} tokens here)")
-                max_new = room
+            max_new = svc.fit_max_new(len(ids), max_new)     # never truncated: a prompt that does not fit is a 400
+            want_progress = bool(req.get("return_progress"))
 
             def chunks():
                 try:
@@ -8858,7 +9085,11 @@ def make_handler(svc: Service):
                                "choices": [{"text": prompt, "index": 0, "logprobs": None, "finish_reason": None}]}
                     for kind, value in svc.run(ids, thinking, None, max_new, req, cancel, raw=True):
                         if kind == "ping":
-                            yield None
+                            pp = prompt_progress(svc) if want_progress else None
+                            yield None if pp is None else {
+                                "id": cid, "object": "text_completion", "created": created, "model": model,
+                                "choices": [{"text": "", "index": 0, "logprobs": None, "finish_reason": None}],
+                                "prompt_progress": pp}
                         elif kind == "event":
                             if value.kind in ("content", "reasoning") and value.text:
                                 yield {"id": cid, "object": "text_completion", "created": created, "model": model,
@@ -8866,11 +9097,16 @@ def make_handler(svc: Service):
                                                     "finish_reason": None}]}
                         elif kind == "done":
                             completion_tokens = value["completion_tokens"]
-                            yield {"id": cid, "object": "text_completion", "created": created, "model": model,
-                                   "choices": [{"text": "", "index": 0, "logprobs": None,
-                                                "finish_reason": {"cancel": "stop"}.get(value["finish"], value["finish"])}],
-                                   "usage": {"prompt_tokens": len(ids), "completion_tokens": completion_tokens,
-                                             "total_tokens": len(ids) + completion_tokens}}
+                            last = {"id": cid, "object": "text_completion", "created": created, "model": model,
+                                    "choices": [{"text": "", "index": 0, "logprobs": None,
+                                                 "finish_reason": {"cancel": "stop"}.get(value["finish"], value["finish"])}],
+                                    "usage": {"prompt_tokens": len(ids), "completion_tokens": completion_tokens,
+                                              "total_tokens": len(ids) + completion_tokens,
+                                              # the part of the prompt the conversation cache already held, as on chat
+                                              "prompt_tokens_details": {"cached_tokens": value.get("reused") or 0}}}
+                            if value.get("timings"):
+                                last["timings"] = value["timings"]       # llama.cpp's field, as on chat
+                            yield last
                 finally:
                     cancel.set() if self.watch_done is None else None
 
@@ -8902,10 +9138,10 @@ def make_handler(svc: Service):
                 self.wfile.write(b"data: [DONE]\n\n")
             except OSError:
                 self._note(outcome="disconnected")
-                cancel.set()
+                svc.note_client_disconnect(cancel)           # client went away: stop the engine
                 stream_chunks.close()
             except (EngineDied, EngineStuck) as e:           # mid-stream: say so, then end the stream properly
-                err = {"error": {"type": "server_error", "message": f"{e}; the next request restarts it"}}
+                err = {"error": {"type": "server_error", "message": died_note(e)}}
                 self._note(error=err["error"])
                 try:
                     self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
@@ -8916,6 +9152,84 @@ def make_handler(svc: Service):
                 self._note(error=err["error"])
                 try:
                     self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\ndata: [DONE]\n\n")
+                except OSError:
+                    self._note(outcome="disconnected")
+
+        def _llama(self, req, path):
+            """POST /completion and POST /infill: llama.cpp's native routes over a raw prompt (no chat template), for
+            code completion.  The sampling is the request's own (no model-card or shared defaults: unset fields are the
+            engine's, greedy and no penalties), the text comes back as the model wrote it, and a stream ends with its
+            last item ("stop": true) - no "data: [DONE]", which llama.cpp sends on its OpenAI-shaped routes only."""
+            tok = svc.tok
+            if path == "/infill":
+                markers = fim_markers(tok)                   # a model without them: 400 before anything else
+                for key in ("input_prefix", "input_suffix"):
+                    if not isinstance(req.get(key), str):
+                        raise ValueError(f"{key} is required (a string)")
+                prompt = req.get("prompt")
+                if prompt is not None and not isinstance(prompt, str):
+                    raise ValueError("prompt must be a string")
+                extra = req.get("input_extra")
+                extra = [] if extra is None else extra
+                if not isinstance(extra, list) or not all(
+                        isinstance(c, dict) and isinstance(c.get("text"), str)
+                        and (c.get("filename") is None or isinstance(c.get("filename"), str)) for c in extra):
+                    raise ValueError('input_extra must be a list of {"filename": string, "text": string}')
+                ids, start = infill_ids(tok, markers, req["input_prefix"], req["input_suffix"], extra,
+                                        tok.encode(prompt or "", parse_special=True))
+                text = req["input_prefix"]                   # strata_prefix "chars": of input_prefix, after the extra context
+
+                def head(n):
+                    return ids[:start] + tok.encode(text[:n], parse_special=False) if n <= len(text) else None
+            else:
+                ids = raw_prompt_ids(tok, req.get("prompt"))
+                prompt = req.get("prompt")
+                text = prompt[0] if isinstance(prompt, list) and prompt and isinstance(prompt[0], str) else prompt
+
+                def head(n):
+                    return tok.encode(text[:n], parse_special=True) if isinstance(text, str) and n <= len(text) else None
+            check_raw_request(req, svc)
+            max_new = raw_max_new(req, "n_predict", "max_tokens")
+            if req.get("strata_prefix") is not None:
+                req["strata_prefix"] = raw_prefix(req["strata_prefix"], ids, head)   # sampling_keys sends pin=N
+            svc.load()
+            bias_api.validate_request(req, svc.engine, len(getattr(svc.tok, "tokens", ())) or None)
+            cancel = threading.Event()
+            self._watch_client(cancel)                       # #430 #431
+            max_new = svc.fit_max_new(len(ids), max_new)     # never truncated: a prompt that does not fit is a 400
+            items = self._capture(llama_items(svc, req, ids, max_new, cancel), "llama")
+            if not req.get("stream"):
+                pieces, last = [], None
+                for item in items:
+                    if item is None or "prompt_progress" in item:
+                        continue
+                    if item["stop"]:
+                        last = item
+                    else:
+                        pieces.append(item["content"])
+                if last is None:                             # cancelled before its end: the client has gone
+                    return
+                return self._json(200, {**last, "content": "".join(pieces)})
+            self._sse()
+            try:
+                for item in items:
+                    if item is None:
+                        self.wfile.write(b": keep-alive\n\n")
+                    else:
+                        self.wfile.write(b"data: " + json.dumps(item, ensure_ascii=False).encode() + b"\n\n")
+                    self.wfile.flush()
+            except OSError:
+                self._note(outcome="disconnected")
+                svc.note_client_disconnect(cancel)           # client went away: stop the engine
+                items.close()
+            except (EngineDied, EngineStuck, GpuBusy, EngineStarting, QueueWaitExpired, ValueError) as e:
+                # mid-stream (the headers are sent): one error item, and no [DONE] on these routes
+                err = {"error": {"type": "rate_limit_error", "code": "queue_wait_timeout", "message": str(e)}
+                       if isinstance(e, QueueWaitExpired) else
+                       {"type": "server_error", "message": died_note(e) if isinstance(e, EngineDied) else str(e)}}
+                self._note(error=err["error"])
+                try:
+                    self.wfile.write(b"data: " + json.dumps(err).encode() + b"\n\n")
                 except OSError:
                     self._note(outcome="disconnected")
 

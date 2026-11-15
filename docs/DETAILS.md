@@ -425,7 +425,9 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | API | Endpoint |
 | --- | --- |
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
-| OpenAI text completions (stream and non-stream, raw prompt) | `POST /v1/completions` |
+| OpenAI text completions (stream and non-stream, raw prompt; `suffix` for [code completion](#raw-completions-and-code-completion-fim)) | `POST /v1/completions` |
+| llama.cpp completion (stream and non-stream, raw prompt, [below](#raw-completions-and-code-completion-fim)) | `POST /completion` |
+| llama.cpp infill: code completion at the cursor ([below](#raw-completions-and-code-completion-fim)) | `POST /infill` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
 | Model list and health | `GET /v1/models`, `GET /models`, `GET /health` |
@@ -468,6 +470,48 @@ print(r.choices[0].message.content)
   feature is `false`. `supports_tools`, `supports_tool_calls`, `supports_parallel_tool_calls`, `supports_system_role` and
   `supports_preserve_reasoning` are hints for clients, not a promise that the model follows a request. Zed's llama.cpp provider
   reads this object to offer tools.
+
+### Raw completions and code completion (FIM)
+
+Three routes take a prompt the client wrote itself, with no chat template. They are for editor plugins that complete code at
+the cursor (fill-in-the-middle, FIM) and for scripts that build their own prompt.
+
+| Route | The request | The answer |
+| --- | --- | --- |
+| `POST /v1/completions` | OpenAI's legacy shape: `prompt`, `suffix`, `max_tokens`, `stop`, ... | `choices[0].text`. A stream ends with `data: [DONE]`. |
+| `POST /completion` | llama.cpp's shape: `prompt` (a string or a list of token ids), `n_predict`, `stop`, ... | `content`, `stop_type`, `stopping_word`, `tokens_predicted`, `tokens_evaluated`, `tokens_cached`, `timings`. A stream sends `{"content": ...}` items and ends with the item that has `"stop": true`. It sends no `[DONE]`, as llama.cpp does not on this route. |
+| `POST /infill` | `input_prefix`, `input_suffix`, `input_extra` (`[{"filename": ..., "text": ...}]`), `prompt`, and every `/completion` field | As `/completion`. |
+
+- **The prompt.** A string `prompt` on `/completion` and `/v1/completions` is read with its special tokens, so `<|im_start|>`
+  in it is that token. No BOS is added. With `suffix`, `/v1/completions` sends `<|fim_prefix|>`, `prompt`, `<|fim_suffix|>`,
+  `suffix`, `<|fim_middle|>`. `/infill` lays the prompt out as llama.cpp does. When the vocabulary has `<|repo_name|>` and
+  `<|file_sep|>`, it starts with `<|repo_name|>myproject` and each `input_extra` file after `<|file_sep|>` and its name, then
+  `<|file_sep|>filename`. After that come `<|fim_prefix|>`, `input_prefix` and `prompt`, `<|fim_suffix|>`, `input_suffix` and
+  `<|fim_middle|>`. The markers are the model's own tokens, and the same text inside the code stays plain text. A model
+  without `<|fim_prefix|>`, `<|fim_suffix|>` and `<|fim_middle|>` (DeepSeek-V4.1) answers 400.
+- **The answer** is the text the model wrote, byte for byte. Nothing in it is read as thinking or as a tool call.
+- **Sampling.** `/completion` and `/infill` use only what the request sends. The model card's settings, the config's
+  `sampling` block and the web page's Chat settings are not added. A field left out is the engine's own default: no
+  `temperature` is greedy, and no penalty applies. `/v1/completions` adds the defaults as chat does. A FIM client there gets
+  Qwen3.8-Flash-Next's non-thinking set (temperature 0.7, `presence_penalty` 1.5) unless it sends its own values.
+- **Stop strings:** up to 16 on these routes, because a FIM client sends more than OpenAI's 4 (chat keeps 4). `stop_type` is
+  `eos` for an end token, `word` for a stop string, and `limit` for `n_predict` or `t_max_predict_ms`. On `/v1/completions`
+  these are `finish_reason` `stop`, `stop` and `length`.
+- **`t_max_predict_ms`** (llama.cpp's): once this many milliseconds have passed since the first generated token, the answer
+  ends at the next piece that holds a newline.
+- **Never truncated.** llama.cpp cuts `/infill`'s prefix, suffix and extra files to fit a batch. Strata does not: a prompt that
+  does not fit the context is a 400. `n_predict` and `max_tokens` follow [the chat rules](#context-and-limits).
+- **Accepted, with no effect:** `cache_prompt` (Strata always reuses its cache), `id_slot`, `n_keep`, `n_indent`, `samplers`,
+  `typical_p`, `dry_*`, `mirostat*`, `xtc_*`, `t_max_prompt_ms`, `response_fields`, `timings_per_token`, `user` and
+  `stream_options`. `logprobs` and an `n_probs` above 0 are a 400 on `/completion` and `/infill` (not supported there yet).
+- **Keystrokes: `strata_prefix`.** A FIM prompt has no `<|im_start|>`, so the [conversation cache](#conversation-cache) takes
+  no turn checkpoint inside it. A keystroke changes the prompt in the middle, so the next request reads again from the last
+  checkpoint the cache has before that point (one every 16K tokens), or from the start. Pin the part that stays the same,
+  such as the extra files and the start of the file, and the cache keeps a checkpoint there: `"strata_prefix": {"chars": N}` (the first N
+  characters of `prompt`; on `/infill`, of `input_prefix`, counted after the extra files) or `{"tokens": N}`. There is one
+  pinned prefix per engine, so a FIM client and a chat client that both pin replace each other's pin. How much time this
+  saves has not been measured.
+- How well Qwen3.8-Flash-Next fills in the middle has not been measured. Its model card does not describe FIM.
 
 ### Thinking levels: none, low, medium, high
 
@@ -735,7 +779,7 @@ system prompt with a billing header that changes on every request; the server pi
 | `--prompt-cache-every N`, `--prompt-cache-root N`, `--turn-token ID` | Checkpoint interval, the system-prompt checkpoint (`0` = none) and the turn token. The interval is not a piece-size setting: [what it does](PROMPT_CACHE_TAIL.md#--prompt-cache-every-does-not-set-the-size-of-the-pieces-a-prompt-is-read-in). |
 | `--prompt-cache-spread` (opt-in) | The checkpoint that leaves is the one whose removal leaves the smallest gap, so the kept points thin out geometrically back from the end. An agent that rewrites its history a few thousand tokens back then resumes near the edit instead of at the system prompt. Same RAM. |
 | `"strata_checkpoint": false` (per request) | A one-shot request that no later request continues saves no checkpoints and keeps no session. |
-| `"strata_prefix": {"messages": 1}` (per request, opt-in) | One long document, many questions. Marks where the document ends: `{"messages": 1}`, `{"message": 0, "chars": 210000}` or `{"tokens": 12345}`. The checkpoint at the boundary is pinned, so 20 questions cost one read of the document. One pinned prefix at a time per engine; needs `--prompt-cache 3` or more; a malformed field is a 400. See [RESEARCH_RUNS.md](RESEARCH_RUNS.md). |
+| `"strata_prefix": {"messages": 1}` (per request, opt-in) | One long document, many questions. Marks where the document ends: `{"messages": 1}`, `{"message": 0, "chars": 210000}` or `{"tokens": 12345}`. The checkpoint at the boundary is pinned, so 20 questions cost one read of the document. One pinned prefix at a time per engine; needs `--prompt-cache 3` or more; a malformed field is a 400. See [RESEARCH_RUNS.md](RESEARCH_RUNS.md). The raw-prompt routes take `{"chars": N}` or `{"tokens": N}` ([code completion](#raw-completions-and-code-completion-fim)). |
 | `--conversation-cache-mib N`, `--conversation-cache-slots N` | Park conversations in a bounded host-RAM cache so alternating requests (controller and worker histories, sub-agents) reuse their prompts. Without `--conversation-cache-mib` the budget is 40% of the RAM left above `--conversation-cache-min-free-mib` once the model is loaded, at most 8192 MiB in steps of 256, off when under 1024; the engine log says which. `0` turns it off. It preserves histories; it does not run requests at once. |
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
