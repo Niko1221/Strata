@@ -304,9 +304,12 @@ library inside the finished image. A package that fails any of these stops the b
 engine inside Docker, makes the package and puts it in the same kind of image (`--build-arg CUDA_ARCHITECTURES=89` for one card only,
 much faster). `.git` is not copied into the build, so the commit comes in as `STRATA_COMMIT`; without it the Terminal stage stops.
 For a GTX 10, P100 or V100 build the CUDA 12 variant: `docker build -t strata:src-cuda12 --build-arg STRATA_COMMIT=$(git rev-parse HEAD)
---build-arg CUDA_IMAGE=nvidia/cuda:12.9.1-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" --build-arg BUILD_VISION=0 .`
+--build-arg CUDA_IMAGE=nvidia/cuda:12.9.2-devel-ubuntu24.04 --build-arg CUDA_ARCHITECTURES="60;61;70;75;80;86;89" .`
 (the build turns on the Pascal / Volta code by itself when an architecture below 75 is listed, and names the package `cuda12` with
-driver 575.51). For AMD and Intel builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result
+driver 575.51). The picture reader comes with it: it is built for the same architectures as the engine (native `sm_60` / `sm_61` code, not
+only PTX), and `--build-arg BUILD_VISION=0` leaves it out for a text-only package. The CUDA 12 reader was checked on a Tesla P40 (sm_61,
+driver 580.178.04) on 2026-11-15: with `--tower own` it loaded on the card and read one 1,024-token picture in 12.6 s. For AMD and Intel
+builds from source see [AMD_HIP.md](AMD_HIP.md) and [INTEL.md](INTEL.md); then package the result
 with `packaging/package_engine.py` and use `docker/build.sh`.
 
 ## Publishing the images (for maintainers)
