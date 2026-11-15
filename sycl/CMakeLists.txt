@@ -39,8 +39,9 @@ if(STRATA_SYCL_IQ_DECODE_FAST)
                          STRATA_IQ4_LUT_SWAR=1 STRATA_IQ3S_SIGN_FAST=1 STRATA_IQ3S_SIGN_APPLY_FAST=1)
 endif()
 # The device spins on host flags are bounded (include/strata/sycl_doorbell.hpp). The bound is chosen per device at run
-# time (20,000 reads on a B-series card, 2,000,000 elsewhere; STRATA_SPIN_MAX overrides). STRATA_SYCL_SPIN_MAX fixes one
-# bound for every device in this build.
+# time (20,000 reads on a B-series card, 1,000,000 when the CPU serves experts and the host is waited for, 2,000,000
+# elsewhere; STRATA_SPIN_MAX overrides). A wait that runs out is an error for the window, not a silent continue.
+# STRATA_SYCL_SPIN_MAX fixes one bound for every device in this build.
 set(STRATA_SYCL_SPIN_MAX "" CACHE STRING "fixed bound of the device's spins on host flags, in reads (empty: chosen per device at run time)")
 if(STRATA_SYCL_SPIN_MAX)
   add_compile_definitions(STRATA_SYCL_SPIN_MAX=${STRATA_SYCL_SPIN_MAX}u)

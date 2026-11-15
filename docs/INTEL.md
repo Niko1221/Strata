@@ -148,7 +148,8 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
 - **`/health` says 503 while loading;** the server polls `/props` instead.
 - **Bounded spins.** A device spin that never sees its flag makes the `xe` driver time out the queue and reset the GT, and the
   card can stay wedged until a reboot. Every spin is capped. The cap is the build option `STRATA_SYCL_SPIN_MAX` (2,000,000
-  reads, a few seconds, unless the build is an AOT build for a `bmg` card, which keeps 20,000).
+  reads, a few seconds, unless the build is an AOT build for a `bmg` card, which keeps 20,000 until some stage has experts the
+  host may serve, when it is 1,000,000). A wait that runs out is an error for the window, not a silent continue (`STRATA_SPIN_MAX`, below).
 - **JIT builds** add `-ze-opt-greater-than-4GB-buffer-required` so kernels keep 64-bit addresses past 4 GiB into an allocation.
   oneMKL's own precompiled kernels do not get it; the GEMM stages an operand past 4 GiB (`STRATA_SYCL_GEMM_STAGE=1` forces
   that on Battlemage).
@@ -402,6 +403,8 @@ All are environment variables for the engine. Put them in the config's `"env"` b
 | `STRATA_SYCL_GEMM_STAGE=1` | Off on Battlemage | Stage GEMM operands past 4 GiB |
 | `STRATA_I8_NO_ESIMD` | n/a | Compile-time: stubs for the int8 ESIMD kernels (set for a device without them) |
 | `STRATA_DBG_NAN=1` | Off | Report non-finite values, including the experts' FP16 inputs |
+| `STRATA_SPIN_MAX=<reads>` | per device (xe: 20,000, or 1,000,000 as soon as any stage has a host table of experts, i.e. the host may be asked) | Bound of the GPU's waits on host flags. A wait that runs out is now an error for the window (below), not a silent continue |
+| `STRATA_SPIN_EXPIRY=warn` | error | Only report a GPU wait that ran out and accept the window (the pre-fix behaviour: the window ran on the previous layer's plan, gave NaN logits and a poisoned state, so the request ended as `!!!!!`). Default: the window is discarded with an error |
 
 ## History / older measurements
 

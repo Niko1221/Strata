@@ -2129,8 +2129,9 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 
 namespace {
 __dpct_inline__ void wait_flag_ge_kernel(const volatile uint32_t *flag,
-                                         uint32_t value, uint32_t spin_max) {
+                                         uint32_t value, uint32_t spin_max, volatile uint32_t *expired) {
     for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    if (strata::sys_load(flag) < value) strata::spin_mark_expired(expired, strata::kSpinExpiredPlan);   // the host has not published: say so
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2399,9 +2400,10 @@ auto &s_id = *sycl::ext::oneapi::group_local_memory_for_overwrite<int32_t[128]>(
 }
 __dpct_inline__ void wait_flag_ge_or_kernel(const volatile uint32_t *flag,
                                             uint32_t value,
-                                            const volatile uint32_t *skip, uint32_t spin_max) {
+                                            const volatile uint32_t *skip, uint32_t spin_max, volatile uint32_t *expired) {
     if (strata::sys_load(skip) == value) return;
     for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    if (strata::sys_load(flag) < value) strata::spin_mark_expired(expired, strata::kSpinExpiredOr);
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2486,6 +2488,7 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
     const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
+    volatile uint32_t* const expired = strata::spin_expired_word(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2495,7 +2498,7 @@ void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip,
                 dpct_kernel_name<class wait_flag_ge_or_kernel_2b2de3>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_or_kernel(flag, value, skip, spin_max);
+                    wait_flag_ge_or_kernel(flag, value, skip, spin_max, expired);
                 });
     }
     check("wait_flag_ge_or");
@@ -2545,6 +2548,7 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
+    volatile uint32_t* const expired = strata::spin_expired_word(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -2553,7 +2557,7 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
             ->template parallel_for<dpct_kernel_name<class wait_flag_ge_kernel_d7debf>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_kernel(flag, value, spin_max);
+                    wait_flag_ge_kernel(flag, value, spin_max, expired);
                 });
     }
     check("wait_flag_ge");

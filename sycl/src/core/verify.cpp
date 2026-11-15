@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_doorbell.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kprof.hpp"
 #include "strata/core/verify.hpp"
@@ -795,6 +796,14 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         // (not with set_always_publish: the device table may lag the host's while windows are in flight)
         device_plan_ = !all_resident_ && !always_publish_ && (v != nullptr && std::atoi(v) != 0);
     }
+    // a window the host serves waits for it: with CPU-served experts (no device plan), with the device plan and non-resident
+    // experts, and ALSO a stage that starts 100% resident: refresh_ar() runs its windows on the doorbell graph whenever a prompt
+    // loan, a VRAM shrink or a swap takes an expert out of VRAM, and that graph asks the host at every layer (measured:
+    // --layer-split 26, --max-context 65536, "100% VRAM resident" stages, a wait expired at 20,000 reads under 4 concurrent
+    // extractions). None of these is the xe "every expert resident, the wait only spins in a failure" case the short bound is
+    // sized for, so the bound goes up whenever the host can be asked (h_res_ present) or must be (not all resident). The flag is
+    // process-wide (a stage of a --layer-split run raises it for every device) and spin_max() no longer freezes its answer.
+    if (!all_resident_ || h_res_ != nullptr) strata::spin_host_waits_expected(true);
     // (halo's STRATA_VERIFY_RESIDENT=1 is this window's all_resident_ graph above, which 0.1.39 has on by default)
     if (g_qfuse()) {   // S26: the HC read's q8_1 group counters, zeroed once (each launch leaves them zero)
         if (DPCT_CHECK_ERROR(qcnt_ = sycl::malloc_device<unsigned int>(
@@ -2544,6 +2553,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         err = std::string("verify: ") + dpct::get_error_string_dummy(se);
         return false;
     }
+    if (!spin_ok(err)) return false;   // a wait that ran out: the window's results are not to be accepted
     if (no_host && std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
         const int Gd = groups_[T] > 0 ? groups_[T] : 1;
         std::vector<uint32_t> sk((size_t) Gd, 0);
@@ -3512,6 +3522,7 @@ bool Verifier::run_slot_rows(const int *rows, int S, const int32_t *tokens,
       return false;
     }
     copy_->wait();
+    if (!spin_ok(err)) return false;
     if (prof_on_) collect_profile();
     ++windows;
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
@@ -3803,6 +3814,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void *user, std::string &err) try {
     to rewrite this code.
     */
     if (qc == 1) return 0;
+    if (!spin_ok(err)) { b_running_ = false; return -1; }
     if (prof_on_) collect_profile();
     if (last_stage()) {
         if (!sample_rows(S, err)) { b_running_ = false; return -1; }
@@ -4167,6 +4179,7 @@ bool Verifier::pl_finish(int32_t *out, std::string &err) try {
     const OnDevice on_device(device_);
     const ModelGeometry& g = *g_;
     fl_active_ = false;
+    if (!spin_ok(err)) return false;   // a wait that ran out: this window's results are not to be accepted
     if (fl_prof_) accumulate_profile(prof_pin_);
     ++windows;
     trace_ev("DONE (pipelined)", -1, -1, (int64_t) (now_ms() - fl_launch_ms_));
@@ -4191,6 +4204,20 @@ catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
             << ", line:" << __LINE__ << std::endl;
   std::exit(1);
+}
+
+bool Verifier::spin_ok(std::string& err) {
+    const uint32_t mask = strata::spin_expired_take(*cs_);
+    if (mask == 0) return true;
+    const bool warn = strata::spin_expiry_warn_only();
+    std::fprintf(stderr, "strata verify: a GPU wait expired before the host published (%s%s%s) on device %d, layers [%d,%d): %s\n",
+                 (mask & strata::kSpinExpiredPlan) ? "plan/CPU rows " : "", (mask & strata::kSpinExpiredOr) ? "device-plan wait " : "",
+                 (mask & strata::kSpinExpiredDoorbell) ? "doorbell " : "", (int) device_, (int) lb_, (int) le_,
+                 warn ? "reported only (STRATA_SPIN_EXPIRY=warn)" : "window discarded");
+    if (warn) return true;
+    err = "verify: a GPU wait expired before the host published its plan / CPU rows (the host was too slow; the window was discarded). "
+          "STRATA_SPIN_MAX raises the bound";
+    return false;
 }
 
 bool Verifier::pl_commit_async(int n_keep, std::string &err) try {

@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_doorbell.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/mrope.hpp"
@@ -1134,6 +1135,14 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     }
     if (DPCT_CHECK_ERROR(cs->wait()) != 0) {
         err = "session_loop: final sync"; return false;
+    }
+    if (const uint32_t expired = strata::spin_expired_take(*cs); expired != 0) {   // a GPU wait for the host ran out: this token's layers ran on data the host never published
+        std::fprintf(stderr, "strata session: a GPU wait expired before the host published (mask %u)%s\n", (unsigned) expired,
+                     strata::spin_expiry_warn_only() ? " - reported only (STRATA_SPIN_EXPIRY=warn)" : "");
+        if (!strata::spin_expiry_warn_only()) {
+            err = "session_loop: a GPU wait expired before the host published (the host was too slow); STRATA_SPIN_MAX raises the bound";
+            return false;
+        }
     }
     return true;
 }

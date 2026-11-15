@@ -76,6 +76,10 @@ public:
     /// paths that give up on the engine (a timed-out window, the serve watchdog): the window then ran on whatever
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
+    /// A bounded GPU wait for the host's plan / CPU rows that ran out is recorded by the kernel (sycl_doorbell.hpp); the
+    /// window that contained it was computed from data the host never published.  Called when a window completes: false
+    /// (err set) discards the window; STRATA_SPIN_EXPIRY=warn only reports it.
+    bool spin_ok(std::string& err);
 
     /// DFlash2 taps (the CUDA verifier's contract): before init(), the zero-based layers whose completed output the drafter reads.  Each window then leaves
     /// tap_dev() = [max_t][n_taps][n_embd] floats (the mean of the hc streams after the layer's FFN write), valid until the next window.  Single-stage only.

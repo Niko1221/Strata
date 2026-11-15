@@ -11,7 +11,9 @@
 #include <sycl/ext/intel/experimental/cache_control_properties.hpp>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <atomic>
+#include <stdexcept>
 #include <unordered_map>
 #include <mutex>
 #include <string>
@@ -114,7 +116,7 @@ inline bool doorbell_plain_payload() {
 // Every device spin is bounded. An unbounded spin that never sees its flag is not a hang of one process: the
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
 // stays wedged until a reboot - measured twice. With a bound the failure is a wrong window instead, which the
-// verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency.
+// verifier's checks catch (spin_mark_expired below). ~2 M host-memory reads is a few seconds at PCIe latency.
 // The bound is per device, chosen at run time (spin_max below): 20,000 reads on a card under the xe driver (the B-series
 // on Linux), whose device-plan windows only spin in a failure and where a longer spin is what makes the driver reset the
 // GT; 2,000,000 (a few seconds) elsewhere. A B-series card with no sysfs driver (Windows / OpenCL) gets 20,000 too (#1473,
@@ -128,27 +130,73 @@ inline bool doorbell_plain_payload() {
 // its window waits are the xe kind (expected to expire, so 20,000 reads), EXCEPT in a run that drafts without the MTP
 // layer (--spec N, no --mtp): the suffix drafter's own waits have to complete there, and 20,000 reads left it empty-handed
 // (0 drafts, 21.8 vs 68.8 tok/s, #1473). generate calls spin_drafts_need_long_bound(true) for such a run, before any
-// launch. A Linux xe card keeps 20,000 in every mode (unchanged).
+// launch. A Linux xe card keeps 20,000 only while the host is never asked: see spin_host_waits_expected below (1,000,000 as soon as
+// a stage has experts the device plan reads from host memory or the CPU serves).
 inline std::atomic<bool>& spin_long_drafts_flag() { static std::atomic<bool> f{false}; return f; }
 inline void spin_drafts_need_long_bound(bool on) { spin_long_drafts_flag() = on; }
+// The short xe bound above assumes the card never waits on the host (every expert resident, or the device plans the layer:
+// the wait only spins in a failure).  A verify window that does ask the host for its plan and the CPU's rows - experts
+// served by the CPU pool, no device plan - waits for them at every layer, and a host that is a few tens of ms late (a
+// multi-row MTP window, few resident experts, a busy CPU) outlasts 20,000 reads: the GPU then went on with the previous
+// layer's plan (see spin_mark_expired below).  The verifier says so before its first launch, and xe gets 1,000,000 reads.
+inline std::atomic<bool>& spin_host_waits_flag() { static std::atomic<bool> f{false}; return f; }
+inline void spin_host_waits_expected(bool on) { if (on) spin_host_waits_flag() = true; }
+// The bound is NOT cached for the xe/Battlemage cases that depend on a process-wide flag: the verifier raises the flag when its
+// constructor finds non-resident experts, and a launch of an earlier component (prefill, a warm-up) on the same device used to
+// freeze the short 20,000-read bound for the rest of the process (a --layer-split run: stage 1's waits on the host expired at
+// --max-context 65536 although the flag was set by then). A change of the bound for a device is logged once.
 inline uint32_t spin_max(const sycl::queue& q) {
     static std::mutex mu;
-    static std::unordered_map<sycl::device, uint32_t> cache;
+    static std::unordered_map<sycl::device, uint32_t> cache;   // the last bound handed out, for the log line only
     const sycl::device d = q.get_device();
     std::lock_guard<std::mutex> lk(mu);
-    auto it = cache.find(d);
-    if (it != cache.end()) return it->second;
     uint32_t v;
     if (const char* e = std::getenv("STRATA_SPIN_MAX"); e && std::atol(e) > 0) v = (uint32_t) std::atol(e);
 #ifdef STRATA_SYCL_SPIN_MAX
     else v = STRATA_SYCL_SPIN_MAX;
 #else
-    else if (intel_gpu_driver() == "xe") v = 20000u;
+    else if (intel_gpu_driver() == "xe") v = spin_host_waits_flag().load() ? 1000000u : 20000u;
     else if (intel_gpu_driver().empty() && intel_gpu_gen(d) == IntelGpuGen::Battlemage)
         v = spin_long_drafts_flag().load() ? 2000000u : 20000u;
     else v = 2000000u;
 #endif
-    cache.emplace(d, v);
+    auto it = cache.find(d);
+    if (it == cache.end() || it->second != v) {
+        if (it != cache.end() || std::getenv("STRATA_SPIN_LOG") != nullptr)
+            std::fprintf(stderr, "strata: GPU wait bound %u reads on a device%s\n", v, it == cache.end() ? "" : " (changed)");
+        cache[d] = v;
+    }
     return v;
+}
+
+// A bounded device wait that runs out has NOT seen its flag: what the kernels after it do is computed from data the host
+// never published (the previous layer's plan, the CPU rows of another layer).  Letting the window go on gave a NaN in the
+// experts' output, token 0 ("!!!!!") for the rest of the request and a poisoned GDN state.  The wait records which one
+// expired in a word of host memory (one per device, written with the same uncached store as the flags); the verifier
+// reads and clears it when the window completes, and discards the window.
+enum : uint32_t { kSpinExpiredPlan = 1u, kSpinExpiredOr = 2u, kSpinExpiredDoorbell = 4u };
+inline volatile uint32_t* spin_expired_word(const sycl::queue& q) {
+    static std::mutex mu;
+    static std::unordered_map<sycl::device, uint32_t*> words;
+    std::lock_guard<std::mutex> lk(mu);
+    auto it = words.find(q.get_device());
+    if (it != words.end()) return it->second;
+    uint32_t* w = sycl::malloc_host<uint32_t>(1, q);
+    if (w == nullptr) throw std::runtime_error("spin_expired_word: host allocation failed");
+    *w = 0;
+    words.emplace(q.get_device(), w);
+    return w;
+}
+/// Device side: the wait `site` expired.
+inline void spin_mark_expired(volatile uint32_t* w, uint32_t site) { sys_store(w, sys_load(w) | site); }
+/// STRATA_SPIN_EXPIRY=warn: report an expiry in the log but accept the window (the old behaviour), to measure how often it happens.
+inline bool spin_expiry_warn_only() {
+    static const bool w = [] { const char* v = std::getenv("STRATA_SPIN_EXPIRY"); return v != nullptr && std::string(v) == "warn"; }();
+    return w;
+}
+/// Host side: the expiries recorded since the last call (a mask of the sites above), cleared.
+inline uint32_t spin_expired_take(const sycl::queue& q) {
+    // read and clear in one atomic step: a mark the device writes between a separate load and the clearing store would be lost
+    return __atomic_exchange_n(const_cast<uint32_t*>(spin_expired_word(q)), 0u, __ATOMIC_SEQ_CST);
 }
 }  // namespace strata

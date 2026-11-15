@@ -384,9 +384,10 @@ __dpct_inline__ void doorbell_ring_kernel(uint32_t *seq) {
 }
 
 __dpct_inline__ void doorbell_wait_kernel(const volatile uint32_t *flag,
-                                          const volatile uint32_t *seq, uint32_t spin_max) {
+                                          const volatile uint32_t *seq, uint32_t spin_max, volatile uint32_t *expired) {
     const uint32_t want = strata::sys_load(seq);
     for (uint32_t spin = 0; spin < spin_max && strata::sys_load(flag) != want; ++spin) strata_spin_pause();
+    if (strata::sys_load(flag) != want) strata::spin_mark_expired(expired, strata::kSpinExpiredDoorbell);
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -398,6 +399,7 @@ __dpct_inline__ void doorbell_wait_kernel(const volatile uint32_t *flag,
 void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) {
     if (d_flag == nullptr || d_seq == nullptr) return;
     const uint32_t spin_max = strata::spin_max(*strata::q_of(stream));
+    volatile uint32_t* const expired = strata::spin_expired_word(*strata::q_of(stream));
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -406,7 +408,7 @@ void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) 
             ->template parallel_for<dpct_kernel_name<class doorbell_wait_kernel_47b360>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    doorbell_wait_kernel(d_flag, d_seq, spin_max);
+                    doorbell_wait_kernel(d_flag, d_seq, spin_max, expired);
                 });
     }
     check_launch("doorbell_wait");
