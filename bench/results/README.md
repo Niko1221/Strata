@@ -4,7 +4,7 @@ Raw results and short reports from measurement runs, one folder per run, named b
 the Strata version, hardware and method of its own day, and none is a statement about a later release. Current numbers are in the
 [docs](../../docs/README.md) and the [README](../../README.md); how to measure is in [BENCHMARK_PROTOCOL.md](../../docs/BENCHMARK_PROTOCOL.md).
 
-This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 142 folders and 3 loose files, 2185 files in all.
+This page is built by `python tools/bench_results_index.py` (`--check` fails when a folder is missing from it). 145 folders and 3 loose files, 2206 files in all.
 
 
 ## 2026-09
@@ -158,6 +158,14 @@ This page is built by `python tools/bench_results_index.py` (`--check` fails whe
 | [2026-10-12-p40-sm61-kernels](2026-10-12-p40-sm61-kernels/) | Tesla P40 (sm_61): wide dequantization, the dense GEMMs as cublasSgemm (opt-in), expert mode 8 and a matvec table (2026-10-12) | 16 |
 | [2026-10-20-0.2.1-bench](2026-10-20-0.2.1-bench/) | First real strata bench run on the released 0.2.1 (terminal 0.2.1, engine 0.1.46 cuda12 Linux packages) | 43 |
 | [2026-10-20-0.2.1-idle-gpu](2026-10-20-0.2.1-idle-gpu/) | The idle GPUs (proposal 2507-0): what the existing switches do on NVIDIA | 15 |
+
+## 2026-11
+
+| Folder | What | Files |
+| --- | --- | ---: |
+| [2026-11-15-standard-1x-rx-6900xt-e407aa13](2026-11-15-standard-1x-rx-6900xt-e407aa13/) | Strata standard benchmark: AMD Radeon RX 6900 XT | 7 |
+| [2026-11-15-standard-1x-rx-6900xt-windows-09509c93](2026-11-15-standard-1x-rx-6900xt-windows-09509c93/) | Strata standard benchmark: AMD Radeon RX 6900 XT | 7 |
+| [2026-11-15-standard-2x-rx-6900xt-42ba8641](2026-11-15-standard-2x-rx-6900xt-42ba8641/) | Strata standard benchmark: AMD Radeon RX 6900 XT | 7 |
 
 ## Loose files
 
