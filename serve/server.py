@@ -1563,7 +1563,7 @@ class StrataEngine:
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
                     out[k] = int(v) if v.lstrip("-").isdigit() else v
-                self.info.update({k: out[k] for k in ("expert_slots", "vram_free_mib") if k in out})
+                self.info.update({k: out[k] for k in ("expert_slots", "expert_cache_mib", "vram_free_mib") if k in out})
                 self.info["vram"] = out
                 return out
             if time.time() > deadline:
@@ -4952,7 +4952,9 @@ class Service:
         self.before_load_strict = False                  # #1997: refuse (503) whenever it fails
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
         self.vram_reserve_asked = False                  # a POST /v1/vram was made (vram_reserve None is then asked)
+        self.vram_reserve_by_replica = {}                # per-replica POST /v1/vram reserves (replica -> int | None)
         self.vision_held = False                         # an elastic encoder holds VRAM the expert cache gave it
+        self.vision_held_replicas = set()                # replicas shrunk for the running elastic vision encoder
         self.vision_no_shrink = False                    # the engine said its cache never shrinks (no --vram-elastic)
         self.vision_no_shrink_said = False
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
@@ -5456,21 +5458,56 @@ class Service:
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
-        if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
-            try:
-                self.engine.vram(self.vram_reserve)
-            except (ValueError, EngineDied) as e:
-                print(f"[strata] the VRAM reserve ({self.vram_reserve} MiB) was not applied: {e}", flush=True)
+        if not self._is_replica_engine():
+            if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
+                try:
+                    self.engine.vram(self.vram_reserve)
+                except (ValueError, EngineDied) as e:
+                    print(f"[strata] the VRAM reserve ({self.vram_reserve} MiB) was not applied: {e}", flush=True)
 
     vram_wait_s = 300.0                                  # #533: how long POST /v1/vram waits for a running request
 
-    def vram(self, reserve_mib: int | None) -> dict:
+    def _is_replica_engine(self) -> bool:
+        engines = getattr(self.engine, "engines", None)
+        return isinstance(engines, (list, tuple)) and len(engines) > 1
+
+    def vram_reserve_for(self, replica: int) -> int | None:
+        """The VRAM reserve to keep outside an elastic encoder's turn for one replica (None: start's, 0: full)."""
+        return self.vram_reserve_by_replica[replica] if replica in self.vram_reserve_by_replica else 0
+
+    def vram(self, reserve_mib: int | None, replica=None) -> dict:
         """#533, POST /v1/vram: keep `reserve_mib` of VRAM free for other programs (None: the reserve the engine
         started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
         engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
-        An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+        An unloaded engine applies it when it loads.  Under replicas, `replica` selects one index, a list, or all
+        (None).  -> {"status": ..., and the engine's figures}."""
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
+        if self._is_replica_engine():
+            targets = self.engine.normalize_replicas(replica)
+            vision_mib = self.vision.elastic_mib if self.vision is not None else 0
+            eff = {
+                k: (reserve_mib or 0) + vision_mib if k in self.vision_held_replicas else reserve_mib
+                for k in targets
+            }
+            if not self.fifo.acquire(timeout=self.vram_wait_s):
+                raise ModelBusy("a request is still running; try again when it has finished")
+            try:
+                out = self.engine.vram(eff, replica=targets, wait_s=self.vram_wait_s)
+                for k in targets:
+                    self.vram_reserve_by_replica[k] = reserve_mib
+                if out.get("status") == "ok":
+                    for row in out.get("replicas") or ():
+                        if row.get("status") == "ok":
+                            print(f"[strata] replica {row.get('replica')} VRAM: {row.get('vram_free_mib')} MiB free, "
+                                  f"expert cache {row.get('expert_cache_mib')} of {row.get('expert_cache_full_mib')} MiB "
+                                  f"({row.get('expert_slots')} experts)", flush=True)
+                return out
+            finally:
+                self.fifo.release()
+
+        if replica is not None:
+            raise ValueError("replica: this server is not running with replicas")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
             raise ModelBusy("a request is still running; try again when it has finished")
         # parallel requests do not hold the fifo: the engine's control lines (a prompt being admitted) are taken too,
@@ -5588,6 +5625,14 @@ class Service:
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
             self.vision_held = False
+            if self._is_replica_engine():
+                self.vision_held_replicas.clear()
+                reserves = getattr(self.engine, "reserves", None)
+                asked = getattr(self.engine, "reserves_asked", None)
+                if isinstance(reserves, list) and isinstance(asked, list):
+                    for k in range(len(reserves)):
+                        asked[k] = k in self.vram_reserve_by_replica
+                        reserves[k] = self.vram_reserve_by_replica.get(k)
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
@@ -5779,6 +5824,8 @@ class Service:
             live["split_serve"] = self.engine.split_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
+        if self._is_replica_engine() and hasattr(self.engine, "vram_view"):
+            engine["vram_replicas"] = self.engine.vram_view()
         if getattr(self.vision, "cpu_note", None):         # the card had no room for the picture reader: the Terminal says so in its summary
             engine["vision_note"] = self.vision.cpu_note
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
@@ -5864,8 +5911,10 @@ class Service:
                          "in_flight": running + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
-            "vram": dict((getattr(self.engine, "info", {}) or {}).get("vram") or {},
-                         elastic=bool((getattr(self.engine, "info", {}) or {}).get("vram_elastic"))),
+            "vram": (self.engine.vram_summary()
+                     if self._is_replica_engine() and hasattr(self.engine, "vram_summary")
+                     else dict((getattr(self.engine, "info", {}) or {}).get("vram") or {},
+                               elastic=bool((getattr(self.engine, "info", {}) or {}).get("vram_elastic")))),
             "machine": {
                 "at": int(time.time()),
                 "gpu": {"name": static.get("gpu_name"), "used_mib": scaled(hw.get("gpu_mem_used"), 2 ** 20),
@@ -8316,7 +8365,8 @@ def make_handler(svc: Service):
                     if r is not None and (isinstance(r, bool) or not isinstance(r, int) or r < 0):
                         raise ValueError("reserve_mib: a whole number of MiB (0 or more), or null for the start's")
                     try:
-                        self._json(200, svc.vram(r))
+                        out = svc.vram(r, replica=req["replica"]) if "replica" in req else svc.vram(r)
+                        self._json(200, out)
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
