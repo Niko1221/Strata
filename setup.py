@@ -64,6 +64,7 @@ from pathlib import Path
 
 from strata_control import acquisition
 from strata_control import tls
+from strata_control import netpolicy
 
 tls.install()      # #3722: HTTPS checks the server against the operating system's certificates (what Chrome and curl.exe do)
 from strata_control import atomic
@@ -238,7 +239,6 @@ def ms_meta(repo: str, path: str):
 
 HF = hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF")
 LLAMA_CPP_COMMIT = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
-LLAMA_CPP_ZIP = f"https://github.com/ggml-org/llama.cpp/archive/{LLAMA_CPP_COMMIT}.zip"
 
 # The ready-made engine: <PREBUILT_URL><asset>, a zip with strata(.exe), strata-vision(.exe) and BUILD.json, built
 # by tools/make_release.py.  Set this to the GitHub release download folder when publishing, e.g.
@@ -268,7 +268,7 @@ CUDA12_WHEELS = ["nvidia-cublas-cu12==12.9.1.4", "nvidia-cuda-runtime-cu12==12.9
 # (575.51 / 576.02), which `strata update` enforces.  cuda12_min_driver() reads that from the package or the feed (#4247 #4188).
 CUDA12_COMPAT_DRIVER = 528 if WIN else 525
 ENGINE12_DIR = "engine-cuda12"
-MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
+MIN_ENGINE = (0, 1, 46)                # versions compare all numbers; v0.1.60: engine changes since v0.2.13.1 (git log 628f74955..HEAD); v0.1.59: engine changes since v0.2.12 (git log 146df3c46..HEAD); v0.1.58: engine rounds 0215-0217 (tuned drafters, the file-tier re-check, prefill and Q5_0 fixes; git log c3b3f5035..HEAD); v0.1.46: the 0.2 release engine (UPDATE.bat and setup fetch it from the signed feed, #3469 #3437); v0.1.45: Qwen3.6 parallel requests and pictures, fixes #2346 #2372 #2396; v0.1.44.1: CPUs without AVX2 start again (#2324: an illegal instruction before main in the NVFP4 CPU rows), the CUDA 12.0/12.1 toolkits build (#2322), a crashed engine start is named instead of retried as a GPU runtime start, Mac M2 (#2323); v0.1.44: UD-Q4/Q5/Q6_K_XL and Q8_0 Unsloth files in setup (K-quant experts, MMQ prompt library strata_kq), NVFP4 packs, Qwen3.6-35B-A3B, Intel Arc A-series kernels, the pipelined-decode and latency work; v0.1.43.1: the adaptive overlap no longer collapses decode on pinned-host desktops (#1964 #1975), Windows PLE mmap stall (#1984), pinned prompt uploads (#1996), the I/O watchdog allowance; v0.1.43: adaptive-tier copies overlap on CUDA, P100 (sm_60) kernel tables, RDNA4 (gfx1200/gfx1201) defaults (route tail skip, measured PCIe share, 16K prompt chunks, fused IQ3 prompt experts); v0.1.42.1: the GGUF-in-place file tier on Windows unmaps every shard, dual-socket starts judge each NUMA node and STRATA_DROP_CACHE_ON_EXIT, tools/strata_bench.py; v0.1.42: STRATA_ROUTE_TAIL_SKIP=7 default on CUDA (+13-16% decode), the AMD 2-GPU checkpoint fix (H13), Phase 2 fixes and opt-ins; v0.1.41.1 (folded into 0.1.42): the #1576 card order, #1616 stage size, #1595 CPU share, #1630/#1607 Windows HIP chunk cap and commit-limit warning, #1603 parallel-request bookkeeping; v0.1.41: CPU prefill share on by default (NVIDIA, chunks < 1024), --batch-groups auto, the file tier read in batches on Windows, Pascal decode fix, per-arch tables; v0.1.40.3: the #1357 MTP router guard, the #1376 Windows HIP cache floor, #461 runtime DLLs, Intel A750 first-request fix; v0.1.40.2: F4 verify windows, the Linux file tier (#1194), the stager wait (#1057), #1264/#1201/#1139 fixes, opt-in CPU share (#1282), Intel Arc; v0.1.40: --resident-experts on a layer split with the split+resident variant (#848), --kv k8v4 with KV streaming (#711); v0.1.39: the #577 file-tier regression fixed, the OpenAI Responses API (#451, Codex), a reply stuck on one token ended (#606), the head before the arena (#620), effort_position (#458), --vram-reserve hot resize opt-in (#533), PR batch; v0.1.38: prompts faster (one gather per expert group #372, the first chunk's PLE rows beside layer 0 #374, DeltaNet three heads per thread #413), --kv q4_0 prompts on tensor cores (#452), Q5_0 experts on the GPU (#473), IQ4_XS on AVX-2 (#415), unbuffered expert loading on Windows (#357 #362), --peer-device (#531), a 6 GB card starts (#496), PR batch; v0.1.37: a silent engine is restarted (#481), Windows AMD counts the desktop's VRAM (#380 #377 #497), a steadier PCIe probe (#485), fixes #496 #495 #498 #505 #493; v0.1.36: a cancelled prompt logged as read so far (#471), the draft-head hint (#474), UPDATE.bat (#475), --expert-profile-save (#477); v0.1.35: Windows AMD uses its bundled HIP runtime (#468 #461), the low-RAM resident mode on Windows 32 GB (#467), fixes #460 #459 #446 #447 #457 #448 #444; v0.1.34: AMD on Windows (a ready-made HIP engine), an MCP server for AI assistants (tools/strata_mcp.py), a shorter README; v0.1.33: a portable image encoder again (#411 #412), setup recommends instead of forcing (#406 #403 #364 #384), fixes #352 #365 #369 #371 #375 #393 #408 #414; v0.1.32: split prompts faster (#340), AMD router +12%, Unsloth Q4 in setup, faster Q4 prompts, #326/#327/#342/#344 fixes, PR batch; v0.1.31: Unsloth UD-Q4_K_XL (experimental), GGUF-in-place low-RAM mode, Windows GGUF load 2x, server race + tokenizer fixes, AMD intrinsics; v0.1.30: short prompts faster (streaming from 1024 tokens), resident low-RAM variant, multi-GPU session carve, RDNA4; v0.1.29: sampled answers faster (split top-k), #154 correctness fixes; v0.1.28: the expert cache reserves the draft head, a cancelled request no longer fails the next; v0.1.27: RTX 20 (sm_75) in the ready-made engine, the HIP build without CUDA headers; v0.1.26: the draft layer's prompt pass in batches; v0.1.25: faster prompts (grouping off the copy engine, fused hyper-connection kernels), AMD HIP backend, --kv k8v4; v0.1.24: long prompts faster (QSA select on tensor cores); v0.1.23: image requests honor sampling, 8 GB cards start, batched verify window; v0.1.22: faster prompts (tensor-core attention), multi-GPU across images/steering/KV streaming; v0.1.21: multi-GPU layer split (--gpus); v0.1.20: system-prompt checkpoint, PCIe probe, hit rate; v0.1.19: penalties
 # KV bytes per context token and attention layer: 8-bit 1056, rotated 4-bit 576, hybrid K8V4 (8-bit K, 4-bit V) 816
 KV_CELL_BYTES = {"q4_0": 576, "k8v4": 816}
 PY_PACKAGES = ["numpy", "jinja2", "regex", "pyyaml", "tqdm", "requests", "pillow", "psutil"]
@@ -1124,8 +1124,8 @@ class _PreserveHeadRedirect(urllib.request.HTTPRedirectHandler):
 
 def _network_open(req, timeout=None):
     if isinstance(req, urllib.request.Request) and req.get_method() == "HEAD":
-        return urllib.request.build_opener(_PreserveHeadRedirect()).open(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout)
+        return netpolicy.build_opener(_PreserveHeadRedirect()).open(req, timeout=timeout)
+    return netpolicy.urlopen(req, timeout=timeout)
 
 
 def _urlopen(req, timeout=None):
@@ -1140,6 +1140,20 @@ def _urlopen(req, timeout=None):
         raise
 
 
+def _open_net(req, check_memory: bool = True):
+    """One request under the network rule (strata_control/netpolicy.py): 12 s, then one retry with 30 s, a line naming the host after
+    5 s, and a host that did not answer is not asked again in this run. Raises netpolicy.NetFailure, HTTPError or CertificateProblem."""
+    return netpolicy.open_url(_urlopen, req, say=lambda line: say(f"  {line} ..."), check_memory=check_memory)
+
+
+def net_fail(e: "netpolicy.NetFailure", url: str, what=None):
+    """setup's stop for a host that cannot be reached: the plain sentence, the one next step, then the proxy and ModelScope hints."""
+    extra = "".join(" " + h[2:3].upper() + h[3:] + "." for h in (proxy_hint(), source_hint(url)) if h)
+    if e.detail():
+        say(f"  ({e.host}: {e.detail()})")             # the raw reason, for the log
+    fail(e.headline(netpolicy.what_words(what)), e.next_step() + extra)
+
+
 def run(cmd, cwd=None, env=None, check=True, quiet=False):
     """An install, build or preparation step (pip, cmake, a package manager, tools/*.py): never part of a start."""
     acquisition.require("an install or build step (" + Path(str(cmd[0])).name + ")")
@@ -1149,9 +1163,6 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
                 Path(argv[1]).resolve().parent not in ((ROOT / "tools").resolve(), (ROOT / "tools" / "dsv41").resolve(), (ROOT / "metal" / "tools").resolve()):
             raise acquisition.AcquisitionRefused("the desktop app's installer only runs its bundled preparation tools; "
                                                  + " ".join(argv[:2]))
-    gguf_py = (env or {}).get("STRATA_GGUF_PY")
-    if gguf_py and not Path(gguf_py).is_dir() and Path(gguf_py).parent == home() / "third_party" / "llama.cpp":
-        get_llama_cpp()                                # the preparation tools read GGUF files with it: fetched now (the one place github.com is needed)
     say("  > " + " ".join(str(c) for c in cmd))
     env = dict(os.environ if env is None else env)
     env.setdefault("STRATA_EXIT_WITH_PARENT", "1")     # tools/mtp_fetch.py ends when setup ends (#3257: a cancel left it writing)
@@ -1170,11 +1181,24 @@ def fetch_mtp(mtp: Path, env: dict, tries: int = 3):
     it is run again, and each run continues where the last one stopped.  The progress lines it prints are what the app shows."""
     cmd = [sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "fetch", "--out", str(mtp)]
     env = {**env, "STRATA_SOURCE": model_source()}
+    def on_disk() -> int:
+        try:
+            return sum(f.stat().st_size for f in Path(mtp).rglob("*") if f.is_file())
+        except OSError:
+            return 0
     for n in range(1, tries + 1):
+        before = on_disk()
         r = run(cmd, env=env, check=False)
         rc = 0 if r is None else r.returncode              # (a test double answers None)
         if rc == 0:
-            return
+            return True
+        if rc == 5:                                        # tools/mtp_fetch.py OFFLINE: its [X] lines above say so; the model is set up and starts without the layer,
+            return False                                   # and the next launch with a connection fetches it (offline users: never a stop)
+        if rc == 4:                                       # tools/mtp_fetch.py NO_ANSWER: its [X] lines above name the host and the next step
+            say("\nSetup stopped. Fix the item above and run it again - everything already done is kept and skipped.")
+            sys.exit(1)
+        if r is not None and on_disk() <= before:          # the network rule: run again only when the last run moved bytes
+            break
         if n < tries:
             warn(f"the draft layer's download stopped (exit {rc}); trying again, it continues where it stopped "
                  f"({n + 1} of {tries})")
@@ -1202,6 +1226,75 @@ def _kept_mark(path: Path) -> Path | None:
     return ROOT / "marks" / (hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:24] + ".done")
 
 
+def _change_time_ns(path: Path, st: os.stat_result) -> int:
+    """The time of the file's last change of content or metadata, in ns.  It moves on every write and on every setting of the modification time,
+    so a file rewritten in place that keeps its size and modification time still shows a new value.  Linux and Mac: st_ctime_ns.  Windows: os.stat's
+    ctime is the creation time there (an in-place rewrite keeps it), so the file system's own ChangeTime is read (GetFileInformationByHandleEx,
+    FileBasicInfo); if that cannot be read, st_ctime_ns is used."""
+    if os.name != "nt":
+        return st.st_ctime_ns
+    try:
+        from ctypes import wintypes
+
+        class _BasicInfo(ctypes.Structure):
+            _fields_ = [("CreationTime", ctypes.c_longlong), ("LastAccessTime", ctypes.c_longlong), ("LastWriteTime", ctypes.c_longlong),
+                        ("ChangeTime", ctypes.c_longlong), ("FileAttributes", wintypes.DWORD)]
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = wintypes.HANDLE
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                    wintypes.HANDLE]
+        k32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        # FILE_READ_ATTRIBUTES, share read / write / delete, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS (a folder opens too)
+        h = k32.CreateFileW(str(path), 0x80, 0x7, None, 3, 0x02000000, None)
+        if h is None or h == ctypes.c_void_p(-1).value:
+            return st.st_ctime_ns
+        try:
+            info = _BasicInfo()
+            if not k32.GetFileInformationByHandleEx(h, 0, ctypes.byref(info), ctypes.sizeof(info)):      # 0 = FileBasicInfo
+                return st.st_ctime_ns
+            return int(info.ChangeTime) * 100                    # 100 ns steps since 1601; only compared, never shown
+        finally:
+            k32.CloseHandle(h)
+    except (OSError, AttributeError, ValueError):
+        return st.st_ctime_ns
+
+
+def _alt_reader_mark(path: Path) -> Path | None:
+    """The mark that remembers the SHA-256 of an alternative picture reader (accepted_alt_reader).  Its own key: the real path, size, modification
+    time AND change time (_change_time_ns), so a file rewritten in place with its size and modification time kept is hashed again.  Only this
+    mark has the change time in its key: every other kept mark (_kept_mark, a 110 GB Engram's too) keeps its key and stays valid."""
+    try:
+        real = path.resolve()
+        st = real.stat()
+        key = f"alt-reader|{real}|{st.st_size}|{st.st_mtime_ns}|{_change_time_ns(real, st)}"
+    except OSError:
+        return None
+    return ROOT / "marks" / (hashlib.sha1(key.encode("utf-8", "replace")).hexdigest()[:24] + ".done")
+
+
+_OWN_DIRS: list = []                                   # --gguf-dir: folders of the person's own model files (a Hugging Face cache, a share)
+
+
+def own_files_in(folder) -> None:
+    """Strata writes nothing beside the person's own model files (lane NET item 5): their finish marks are kept in marks/ (_kept_mark)."""
+    try:
+        _OWN_DIRS.append(Path(folder).expanduser().resolve())
+    except OSError:
+        _OWN_DIRS.append(Path(folder).expanduser())
+
+
+def _is_own_file(path: Path) -> bool:
+    if not _OWN_DIRS:
+        return False
+    try:
+        parent = Path(path).expanduser().absolute().parent.resolve()
+    except OSError:
+        return False
+    return any(parent == d for d in _OWN_DIRS)
+
+
 def mark_text(path: Path) -> str | None:
     """The text of the finish mark of `path` (beside it, else the kept one), or None when it has none."""
     for m in (path.with_name(path.name + ".done"), _kept_mark(path)):
@@ -1223,11 +1316,13 @@ def mark(path: Path, text=""):
     in Strata's own folder instead (marks/), so a 110 GB Engram is hashed once, not on every launch; only when that cannot be written either
     does setup say so and go on (the step is repeated on the next run), it does not stop."""
     text = text or time.strftime("%Y-%m-%d %H:%M")
-    try:
-        path.with_name(path.name + ".done").write_text(text, encoding="utf-8")
-        return
-    except OSError as e:
-        beside = e
+    beside: BaseException | str = "a folder of the person's own model files"
+    if not _is_own_file(path):
+        try:
+            path.with_name(path.name + ".done").write_text(text, encoding="utf-8")
+            return
+        except OSError as e:
+            beside = e
     kept = _kept_mark(path)
     try:
         if kept is not None:
@@ -1264,14 +1359,29 @@ def ram_gb():
             return int(value) / 2**30
         except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return 0.0
+    total = 0.0
     try:
         with open("/proc/meminfo") as stream:
             for line in stream:
                 if line.startswith("MemTotal"):
-                    return int(line.split()[1]) * 1024 / 2**30
+                    total = int(line.split()[1]) * 1024 / 2**30
+                    break
     except (OSError, ValueError):
         pass
-    return 0.0
+    if total <= 0.0:
+        return 0.0
+    # In a container /proc/meminfo is the host's: the container's own limit is the RAM the engine gets.
+    limit = _cgroup_memory_limit()
+    if limit is not None and limit / 2**30 < total:
+        return limit / 2**30
+    return total
+
+
+def _cgroup_memory_limit(self_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
+    """The smallest memory limit (bytes) on this process's cgroup and its ancestors, as the engine's memory guard reads
+    it (strata_control/cgroup_memory.py). None when no level sets a limit or the files cannot be read."""
+    from strata_control import cgroup_memory
+    return cgroup_memory.memory_limit(self_cgroup, root)
 
 
 _MM_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
@@ -2685,7 +2795,7 @@ DL_RUN = 4                      # pieces one request asks for (4 x 32 MiB): a ne
                                 # in TCP slow start (measured: 8 connections 66 MB/s with a request per piece, 73 with 128 MiB)
 DL_MIN_PARALLEL = 256 << 20     # smaller files are one stream
 DL_CHUNK_TRIES = 5              # tries per request (1, 2, 4, 8 s apart) before the round is given up and run again
-DL_ROUNDS = 30                  # rounds (10 s apart) before the download is given up, like the 30 tries of one stream
+DL_ROUNDS = 30                  # rounds in a row without a new byte (10 s apart) before the download is given up; and 5 minutes without one (netpolicy)
 DL_BACKOFF = 1.0                # seconds before the second try of a request, doubled each time (tests set 0)
 DL_SAVE_EVERY = 5.0             # seconds between writes of the progress file
 
@@ -2800,7 +2910,7 @@ class _Source:
             if stale is not None and self.final is not None and self.final != stale:
                 return self.final                        # another connection already got a fresh address
             req = urllib.request.Request(self.url, headers={"User-Agent": "strata-setup", "Range": "bytes=0-0"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 cr = (r.headers.get("Content-Range") or "").strip()
                 if r.status != 206 or cr != f"bytes 0-0/{self.total}":
                     raise _NoRange(f"HTTP {r.status}, Content-Range {cr!r}")
@@ -2993,7 +3103,7 @@ def _fetch_run(src: _Source, st: _Pieces, f, run: list):
         try:
             url = src.get()
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={pos}-{end}"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 _check_ranged(r, pos, end, st.total, src.etag)
                 while pos <= end:
                     if st.stop.is_set():
@@ -3087,15 +3197,48 @@ class StallNote:
                 "and run the same command again: the download continues where it stopped")
 
 
+DL_PROBE_WAITS = (1.0, 3.0)                     # seconds before the 2nd and the 3rd range probe
+
+
+def _probe_retryable(exc: BaseException) -> bool:
+    """Is a failed range probe worth one more try?  A hiccup is (a timeout, a reset or dropped connection, a busy server: 429/5xx); no internet
+    is not (no DNS answer, no route, refused): that fails at once, with no wait and no message (offline users, owner 11-01)."""
+    import errno
+    import socket
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 500, 502, 503, 504)
+    if isinstance(exc, urllib.error.URLError):
+        if not isinstance(exc.reason, BaseException):
+            return False
+        exc = exc.reason
+    if isinstance(exc, (socket.gaierror, ConnectionRefusedError)):
+        return False
+    if isinstance(exc, OSError) and exc.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN):
+        return False
+    return isinstance(exc, (TimeoutError, socket.timeout, ConnectionResetError, ConnectionAbortedError, BrokenPipeError, http.client.HTTPException))
+
+
+def _probe_ranges(src: "_Source", waits=DL_PROBE_WAITS, sleep=time.sleep) -> bool:
+    """The first range request of a parallel download, tried up to len(waits)+1 times when it fails by a hiccup: one failed probe used to make a
+    50-100 GB download a single stream.  False: the server does not do ranges, or the probe failed (the caller then reads one stream)."""
+    for attempt in range(len(waits) + 1):
+        try:
+            src.resolve()
+            return True
+        except _NoRange:
+            return False
+        except (OSError, http.client.HTTPException) as exc:
+            if attempt >= len(waits) or not _probe_retryable(exc):
+                return False
+            sleep(waits[attempt])
+    return False
+
+
 def parallel_download(url: str, part: Path, total: int, label: str, conns: int, name: str) -> bool:
     """Fill `part` (total bytes) over `conns` ranged connections.  True when every byte is there; False when the server
     does not do ranges (the caller reads the file in one stream)."""
     src = _Source(url, total)
-    try:
-        src.resolve()
-    except _NoRange:
-        return False
-    except (OSError, http.client.HTTPException):
+    if not _probe_ranges(src):
         return False                                    # the one-stream path has its own retries and messages
     part.parent.mkdir(parents=True, exist_ok=True)
     _claim_part(part, url, src.etag)                    # a .part from another address or version is dropped here
@@ -3123,10 +3266,20 @@ def parallel_download(url: str, part: Path, total: int, label: str, conns: int, 
             last_save = now
             _save_pieces(part, total, st.snapshot())
 
+    # the network rule: rounds go on while bytes keep coming (no cap on how many); DL_ROUNDS rounds in a row without a new byte, or 5 minutes
+    # without one, end it
+    clock = netpolicy.StallClock()
+    idle_rounds, before = 0, -1
     try:
-        for rnd in range(DL_ROUNDS):
+        while True:
             todo = [i for i in range(st.n) if i not in st.done]
             if not todo:
+                break
+            now_have = st.have()
+            clock.progress(now_have)
+            idle_rounds = 0 if now_have > before else idle_rounds + 1
+            before = now_have
+            if clock.expired() or idle_rounds >= DL_ROUNDS:
                 break
             st.abort_round.clear()
             st.errors.clear()
@@ -3166,6 +3319,8 @@ def parallel_download(url: str, part: Path, total: int, label: str, conns: int, 
     if len(st.done) < st.n:
         _save_pieces(part, total, st.snapshot())
         have = st.have()
+        if clock.expired():                             # no new byte for 5 minutes (W6)
+            fail(*clock.words(netpolicy.what_words(label), have, total))
         fail(f"could not finish downloading {name}: {have:,} of {total:,} bytes",
              "check your internet connection and run it again (the download resumes where it stopped)")
     try:
@@ -3191,7 +3346,7 @@ def _repair_piece(src: _Source, st: _Pieces, f, i: int, stats: dict):
         try:
             url = src.get()
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={pos}-{end}"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 _check_ranged(r, pos, end, st.total, src.etag)
                 while pos <= end:
                     if st.stop.is_set():
@@ -3296,13 +3451,22 @@ def download_single(url: str, part: Path, total: int, label: str):
     """One stream with a Range resume from the size of `part` (the way every download worked before parallel pieces).
     A resumed answer is used only when it is a 206 that starts at the byte asked for; anything else starts the file over."""
     _single_ready(part)
-    for attempt in range(30):
+    # the network rule: tried again while bytes keep coming (no cap on how often); 30 tries in a row without a new byte, or 5 minutes without one, end it
+    clock = netpolicy.StallClock()
+    idle, before = 0, -1
+    while True:
         have = part.stat().st_size if part.exists() else 0
+        clock.progress(have)
+        idle, before = (0 if have > before else idle + 1), have
+        if clock.expired():
+            fail(*clock.words(netpolicy.what_words(label), have, total))
+        if idle >= 30:
+            break
         if total and have >= total:                    # stopped after the last byte, before the rename: nothing to
             break                                      # ask for (a range past the end is a 416, retried 30 times)
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
-            with _urlopen(req, timeout=60) as r:
+            with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
                 if have:
                     m = _CONTENT_RANGE.match(r.headers.get("Content-Range") or "")
                     if r.status != 206 or not m or int(m.group(1)) != have or (total and int(m.group(3)) != total):
@@ -3344,7 +3508,7 @@ def range_total(url: str) -> int:
     (ModelScope's: #1915); 0 when it does not say.  With the length known the file comes over several connections."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": "bytes=0-0"})
-        with _urlopen(req, timeout=60) as r:
+        with _urlopen(req, timeout=netpolicy.RETRY_CONNECT_S) as r:
             m = re.match(r"\s*bytes 0-0/(\d+)\s*$", r.headers.get("Content-Range") or "")
             return int(m.group(1)) if r.status == 206 and m else 0
     except (OSError, http.client.HTTPException):
@@ -3386,7 +3550,7 @@ def download(url, dst: Path, what=None):
         return
     ms = ms_file(url) if model_source() == "modelscope" else None
     if ms is not None:
-        if reachable(ms_url(*ms), timeout=30):
+        if reachable(ms_url(*ms), timeout=netpolicy.FIRST_CONNECT_S):
             url = ms_url(*ms)
         else:
             warn(f"{what or dst.name}: ModelScope does not answer; downloading it from {hf_endpoint()}")
@@ -3395,10 +3559,11 @@ def download(url, dst: Path, what=None):
     total = 0
     # the file's pinned size and SHA-256, when it has them (ModelScope's copy is checked against the same pin)
     pin = REPO_PINS.get(ms[0], {}).get(ms[1].rsplit("/", 1)[-1]) if ms is not None else file_pin(url)
-    for attempt in range(5):
+    for _unpinned in range(2):                         # the size: one request under the network rule (no more 5 x 60 s in silence)
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
-            total = int(_urlopen(req, timeout=60).headers.get("Content-Length", 0))
+            with _open_net(req) as r:
+                total = int(r.headers.get("Content-Length", 0) or 0)
             break
         except urllib.error.HTTPError as e:
             if e.code == 404 and hf_unpinned(url) != url:  # the pinned revision is gone from the repository
@@ -3410,17 +3575,15 @@ def download(url, dst: Path, what=None):
                 url = hf_unpinned(url)
                 pin = None
                 continue
-            if attempt == 4:
-                fail(f"cannot reach {url.split('/')[2]} ({e})",
-                     "check your internet connection and run it again" + proxy_hint() + source_hint(url))
-            time.sleep(5)
-        except tls.CertificateProblem as e:           # the same answer five times: no retry
+            fail(f"cannot reach {url.split('/')[2]} ({e})",
+                 "check your internet connection and run it again" + proxy_hint() + source_hint(url))
+        except tls.CertificateProblem as e:           # the same answer every time: no retry
             fail(f"cannot download from {url.split('/')[2]}: its security certificate was not accepted", str(e))
-        except OSError as e:
-            if attempt == 4:
-                fail(f"cannot reach {url.split('/')[2]} ({e})",
-                     "check your internet connection and run it again" + proxy_hint() + source_hint(url))
-            time.sleep(5)
+        except netpolicy.NetFailure as e:
+            net_fail(e, url, what)
+        except (OSError, http.client.HTTPException) as e:
+            fail(f"cannot reach {url.split('/')[2]} ({e})",
+                 "check your internet connection and run it again" + proxy_hint() + source_hint(url))
     if not total:
         total = range_total(url)
     meta = ms_meta(*ms) if ms is not None else None
@@ -3945,56 +4108,57 @@ def check_shards(shards):
                  f"delete {s.name} and its .done mark and run setup again")
 
 
+#: gguf-py and llama.cpp's HF converter, vendored at the llama.cpp pin (third_party/strata-gguf-py/UPSTREAM.md): the preparation tools import
+#: them, so no llama.cpp download is needed to pack a model. The Terminal and Control packages carry this folder (packaging/package_terminal.py).
+VENDORED_GGUF_PY = ROOT / "third_party" / "strata-gguf-py"
+#: the llama.cpp sources strata-vision builds (llama, mtmd, the whole ggml), vendored at the same pin (third_party/strata-llama/UPSTREAM.md); phase 3 deletes it
+VENDORED_LLAMA = ROOT / "third_party" / "strata-llama"
+
+
+def gguf_py_dir() -> Path:
+    """The folder that holds llama.cpp's `gguf` package: STRATA_GGUF_PY=<folder> (an override, kept for two releases), else the vendored copy.
+    The preparation tools read and write GGUF with their own tools/strata_gguf.py and no longer need it; only llama.cpp's HF converter
+    (NVFP4-local) imports it, and tools/_paths.py finds the vendored copy for that."""
+    own = os.environ.get("STRATA_GGUF_PY")
+    if own and (Path(own) / "gguf").is_dir():
+        return Path(own)
+    return VENDORED_GGUF_PY
+
+
+def gguf_py_env() -> dict:
+    """The environment the preparation tools get for the GGUF library: STRATA_GGUF_PY only when the user named a gguf-py folder (then the tools
+    use llama.cpp's gguf-py instead of tools/strata_gguf.py); empty by default, so the tools use their own."""
+    own = os.environ.get("STRATA_GGUF_PY")
+    return {"STRATA_GGUF_PY": str(gguf_py_dir())} if own and (Path(own) / "gguf").is_dir() else {}
+
+
+def llama_override():
+    """A llama.cpp checkout named by STRATA_GGML_DIR (an override of the vendored ggml, kept for two releases), else None: the engine then builds
+    from third_party/strata-ggml and nothing is downloaded."""
+    own = os.environ.get("STRATA_GGML_DIR")
+    return Path(own) if own and (Path(own) / "ggml" / "CMakeLists.txt").exists() else None
+
+
+def ggml_defs(llama) -> list:
+    """The CMake definition that points an engine build at a llama.cpp checkout: only for the override; the vendored tree is the default."""
+    return [f"-DSTRATA_GGML_DIR={llama}"] if llama else []
+
+
+def vision_llama(llama) -> Path:
+    """The llama.cpp tree strata-vision builds from: the override (STRATA_GGML_DIR), else the vendored third_party/strata-llama."""
+    return Path(llama) if llama else VENDORED_LLAMA
+
+
 def llama_cpp_if_here():
-    """The llama.cpp source folder, fetched only when a model has to be prepared (run() fetches it then): a PC with every file and no internet
-    starts a model that is already prepared without reaching github.com."""
-    llama = home() / "third_party" / "llama.cpp"
-    if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
+    """The llama.cpp override tree (None by default). The preparation tools have their own GGUF code, so nothing is fetched to prepare a model."""
+    if (gguf_py_dir() / "gguf").is_dir():
         ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py for the preparation tools)")
-    else:
-        say("  llama.cpp source: only needed to prepare a model; it is downloaded then, if that is needed")
-    return llama
+    return llama_override()
 
 
 def get_llama_cpp():
-    """llama.cpp at the pinned commit (ggml for the build, gguf-py for the tools, mtmd for images), as a zip: no git."""
-    llama = home() / "third_party" / "llama.cpp"
-    if (llama / "ggml" / "CMakeLists.txt").exists() and (llama / "gguf-py").is_dir():
-        return llama
-    z = home() / "third_party" / f"llama.cpp-{LLAMA_CPP_COMMIT[:7]}.zip"
-    download(LLAMA_CPP_ZIP, z, "llama.cpp source")
-    tmp = home() / "third_party" / "_unpack"
-    shutil.rmtree(tmp, ignore_errors=True)
-    try:
-        with zipfile.ZipFile(z) as f:
-            # llama.cpp's own web UI (tools/ui) is not used, and its deep paths passed Windows' 260-character limit in a
-            # folder like Downloads\Strata-main\Strata-main (#206)
-            f.extractall(tmp, [m for m in f.namelist() if "/tools/ui/" not in m])
-    except zipfile.BadZipFile:
-        # #1797: do not let the .done mark make every later run reuse a damaged source archive.
-        try:
-            drop_archive(z)
-        except OSError as e:
-            warn(f"cannot remove damaged {z.name} ({e}): delete it and its .done mark before running setup again")
-        raise
-    top = next(tmp.iterdir())
-    shutil.rmtree(llama, ignore_errors=True)
-    # PR #63: on Windows a rename can fail with PermissionError while an antivirus scanner still holds a file of the
-    # fresh unpack; shutil.move falls back to copy-and-delete, and a few retries let the scanner finish.  The target
-    # is `llama` itself - moving into its parent would keep the zip's `llama.cpp-<sha>` folder name.
-    for attempt in range(5):
-        try:
-            shutil.move(str(top), str(llama))
-            break
-        except PermissionError:
-            if attempt == 4:
-                raise
-            shutil.rmtree(llama, ignore_errors=True)   # a partial copy from the failed attempt
-            time.sleep(2)
-    shutil.rmtree(tmp, ignore_errors=True)
-    z.unlink(missing_ok=True)
-    z.with_name(z.name + ".done").unlink(missing_ok=True)
-    return llama
+    """Kept for callers that still name it: the llama.cpp override tree (STRATA_GGML_DIR) or None. Nothing is downloaded any more."""
+    return llama_override()
 
 
 def req_name(line: str) -> str:
@@ -5325,10 +5489,11 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     cmake_build(ROOT, ROOT / "build-hip", "strata",
                 ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
                  "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+                 "-DSTRATA_MMQ=OFF",   # without llama.cpp's MMQ, also in a build folder configured before (its cache says ON)
                  f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
                  "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                  f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
-                 f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
+                 *ggml_defs(llama), *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
     if stale_binary(ROOT / "build-hip" / EXE):            # #2054: no stamp for a binary of another version
         fail(f"the engine build finished without a new engine ({EXE} is version "
              f"{binary_engine_version(ROOT / 'build-hip' / EXE)}, this source is {source_version()}): "
@@ -5398,7 +5563,7 @@ def build_vision_hip(eng: Path, stamp: Path, meta: dict, llama, vsrc, archs: lis
     say("  Compiling the picture reader for your AMD GPU (a few minutes, once) ...")
     try:
         cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision-hip", "strata-vision",
-                    [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_HIP=ON", "-DSTRATA_VISION_HIP_ARCHS=" + ";".join(archs),
+                    [f"-DLLAMA_DIR={vision_llama(llama)}", "-DSTRATA_VISION_HIP=ON", "-DSTRATA_VISION_HIP_ARCHS=" + ";".join(archs),
                      "-DSTRATA_PORTABLE=OFF", f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}",
                      f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}", "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
                      f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}"], None, "")
@@ -5418,7 +5583,7 @@ def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
     if not ((eng / VEXE).exists() and meta.get("vision_src") == vsrc):
         say("  Compiling the image encoder (for the CPU) ...")
         cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision", "strata-vision",
-                    [f"-DLLAMA_DIR={llama}", "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"],
+                    [f"-DLLAMA_DIR={vision_llama(llama)}", "-DSTRATA_VISION_CUDA=OFF", "-DSTRATA_PORTABLE=OFF"],
                     find_vcvars() if WIN else None,
                     "build-vision-cpu.bat" if WIN else "")   # #881: MSVC's environment on Windows, as the CUDA path has
         shutil.copy2(ROOT / "build-vision" / "bin" / VEXE, eng / VEXE)
@@ -5505,14 +5670,38 @@ def apply_native_runner(src: Path) -> None:
     mod.apply(src)
 
 
-def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
-    """Compile sd-cli for `backend` into engine-image/ (again only when the pins or the backend changed) -> (its path,
-    the library folders it runs with)."""
+def apply_noise_generator(src: Path) -> None:
+    """OWN-5 step 1: tools/image/sdcpp_noise's noise generator into the stable-diffusion.cpp source (idempotent; any
+    backend; sd-cli uses it only with --model-args strata_noise=1)."""
+    import importlib.util
+    QI = _qimage()
+    spec = importlib.util.spec_from_file_location("strata_sdcpp_noise_apply", QI.NOISE_DIR / "apply.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.apply(src)
+
+
+def apply_vae_decoder(src: Path) -> None:
+    """OWN-5 step 2: Strata's VAE decoder (src/image/vae via tools/image/sdcpp_vae) into the stable-diffusion.cpp
+    source (idempotent; CUDA / HIP builds; sd-cli uses it only with --model-args strata_vae=1)."""
+    import importlib.util
+    QI = _qimage()
+    spec = importlib.util.spec_from_file_location("strata_sdcpp_vae_apply", QI.VAE_DIR / "apply.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.apply(src)
+
+
+def build_image_engine(backend: str, gpu: dict, noise: bool = False, vae: bool = False) -> tuple[Path, list[str]]:
+    """Compile sd-cli for `backend` into engine-image/ (again only when the pins or the backend changed, or, with
+    `noise`, the noise generator's sources) -> (its path, the library folders it runs with).  `noise`: Strata's noise
+    generator is patched in (images "noise": "strata"); off, the build and its stamp are what they always were."""
     QI = _qimage()
     IMAGE_ENGINE.mkdir(exist_ok=True)
     exe, stamp = IMAGE_ENGINE / QI.SD_EXE, IMAGE_ENGINE / "BUILD.json"
     arch = gpu.get("arch") if backend in ("cuda", "hip") else None
-    want = QI.build_stamp(backend, arch)
+    vae = vae and backend in QI.VAE_BACKENDS
+    want = QI.build_stamp(backend, arch, noise, vae)
     meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
     lib_dirs = [d for d in meta.get("lib_dirs") or [] if Path(d).is_dir()]
     if exe.exists() and {k: meta.get(k) for k in want} == want:
@@ -5521,6 +5710,10 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
     src = get_sd_cpp()
     if backend in QI.NATIVE_BACKENDS:                 # Strata's DiT runner (inert unless the config asks for it)
         apply_native_runner(src)
+    if noise:                                          # Strata's noise generator (inert unless the config asks for it)
+        apply_noise_generator(src)
+    if vae:                                            # Strata's VAE decoder (inert unless the config asks for it)
+        apply_vae_decoder(src)
     vcvars, lib_dirs = None, []
     if backend == "cuda":
         nvcc, cuda_v = find_nvcc()
@@ -5596,14 +5789,21 @@ def setup_images(a, gpu: dict, hip: bool, models_dir: Path) -> dict | None:
     models_dir.mkdir(parents=True, exist_ok=True)
     if free_gb(models_dir) < need + 5:
         warn(f"less than {need + 5:.0f} GB free for the image model: the download may run out of disk space")
-    exe, lib_dirs = build_image_engine(backend, gpu or {})
+    noise = getattr(a, "image_noise", None) == "on"
+    vae = getattr(a, "image_vae", None) == "on"
+    if vae and backend not in QI.VAE_BACKENDS:         # the owner's wording, 11-11
+        warn(f"Strata's own picture decoder runs with CUDA or ROCm only; image generation on {backend} keeps "
+             "stable-diffusion.cpp's decoder")
+        vae = False
+    exe, lib_dirs = build_image_engine(backend, gpu or {}, noise, vae)
     for name in (quant, "vae", "llm"):
         repo, path, size, sha = QI.FILES[name]
         dst = QI.local_path(models_dir, name)
         download(QI.file_url(name, hf_endpoint()), dst, f"image model: {Path(path).name}")
         verify_sha256(dst, size, sha)
     cfg = QI.image_config(backend, quant, exe, models_dir, uma=QI.is_apu(gpu), lib_dirs=lib_dirs,
-                          policy=a.image_gpu_policy or "auto", native=getattr(a, "image_native", None) == "on")
+                          policy=a.image_gpu_policy or "auto", native=getattr(a, "image_native", None) == "on",
+                          noise=noise, vae=vae)
     ok(f"image generation: {quant} on {backend}, GPU policy {cfg['gpu_policy']}")
     return cfg
 
@@ -6060,7 +6260,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
                     raise RuntimeError("no supported AMD GPU found")
                 # every architecture it was built for (a layer split across two families keeps both)
                 build_engine_hip({**g, "archs": [x for x in arch_names(meta.get("archs")) if x in AMD_ARCHS] or [g["arch"]]},
-                                 get_llama_cpp(), meta.get("vision") or "none")
+                                 llama_override(), meta.get("vision") or "none")
             except (Exception, SystemExit) as e:
                 warn(f"could not compile the updated engine{'' if isinstance(e, SystemExit) else f' ({e})'}: "
                      "starting the installed one")
@@ -6090,7 +6290,7 @@ def update_installed_engine(url_base, toolkit=None) -> None:
             gpu = {**gpu, "archs": sorted({int(gpu["arch"]), *arch_numbers(meta.get("archs"))})}
             if int(toolkit) == 12:                     # the cards it was compiled for (the main GPU may be newer)
                 gpu["archs"] = sorted(arch_numbers(meta.get("archs"))) or gpu["archs"]
-            build_engine(gpu, vision, False, get_llama_cpp(), toolkit=toolkit)
+            build_engine(gpu, vision, False, llama_override(), toolkit=toolkit)
         except (Exception, SystemExit) as e:
             warn(f"could not compile the updated engine{'' if isinstance(e, SystemExit) else f' ({e})'}: starting the installed one")
         return
@@ -6301,12 +6501,52 @@ def fresh_if_other_generator(bdir: Path, generator: str = "Ninja") -> bool:
     return True
 
 
+def cmake_cache_entries(bdir: Path) -> dict:
+    """The entries of a build folder's CMakeCache.txt as {name: value} (the type dropped); {} when it was never configured."""
+    out = {}
+    try:
+        text = (Path(bdir) / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        if line and not line.startswith(("#", "//")) and "=" in line:
+            key, value = line.split("=", 1)
+            out[key.split(":", 1)[0].strip()] = value.strip()
+    return out
+
+
+CUDA_CACHE_GLOBS = ("CUDA_*", "CUDAToolkit_*")      # FindCUDAToolkit's cached library paths and toolkit folders
+
+
+def toolkit_change_undefs(bdir: Path, defs) -> list:
+    """#5717: FindCUDAToolkit keeps the library paths of the toolkit a folder was first configured with (CUDA_cudart_LIBRARY
+    and about 60 more); a new -DCUDAToolkit_ROOT does not search them again, so after a CUDA update that removed the old
+    toolkit, ninja stopped on the old libcudart.so.  When the toolkit changed - another CUDAToolkit_ROOT than the cached one,
+    or a cached CUDA path that is gone - the configure drops those entries (-U, before the new -D) and CMake detects the CUDA
+    compiler again; the compiled objects stay, so only what changed is rebuilt.  [] for an unchanged or a new folder."""
+    cache = cmake_cache_entries(bdir)
+    if not cache:
+        return []
+    want = next((str(d).split("=", 1)[1] for d in defs if str(d).startswith("-DCUDAToolkit_ROOT=")), None)
+    had = cache.get("CUDAToolkit_ROOT")
+    moved = bool(want and had) and Path(had) != Path(want)
+    gone = any(not Path(part).exists()
+               for name, value in cache.items() if name.startswith(("CUDA_", "CUDAToolkit_"))
+               for part in value.split(";")
+               if part and not part.endswith("-NOTFOUND") and Path(part).is_absolute())
+    if not (moved or gone):
+        return []
+    for f in (Path(bdir) / "CMakeFiles").glob("*/CMakeCUDACompiler.cmake"):
+        f.unlink(missing_ok=True)
+    return [f"-U{g}" for g in CUDA_CACHE_GLOBS]
+
+
 def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     acquisition.require("a compile (cmake)")
     cmake, ninja = ensure_build_tools()
     fresh_if_other_generator(bdir)
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
-            "-DCMAKE_BUILD_TYPE=Release", *defs]
+            *toolkit_change_undefs(bdir, defs), "-DCMAKE_BUILD_TYPE=Release", *defs]
     build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
     # the same command then gets past it (issue #45); a second attempt only compiles what is still missing.
@@ -6328,8 +6568,8 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
             run(build)
 
 
-ENGINE_SOURCES = ("CMakeLists.txt", "cmake", "src", "include", "third_party/ggml")
-VISION_SOURCES = ("tools/vision",)
+ENGINE_SOURCES = ("CMakeLists.txt", "cmake", "src", "include", "third_party/ggml", "third_party/strata-ggml")
+VISION_SOURCES = ("tools/vision", "third_party/strata-llama")
 
 
 def source_hash(parts) -> str:
@@ -6447,8 +6687,11 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             if local and (eng / EXE).exists() else "  Compiling the Strata engine for your GPU (10-20 minutes, once) ...")
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
+                     # without llama.cpp's MMQ, also in a build folder configured before (its cache says ON); ARM64 (DGX Spark):
+                     # not measured without MMQ, kept as in 0.2.13
+                     "-DSTRATA_MMQ=" + ("ON" if is_arm64() else "OFF"),
                      f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
+                     f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), *ggml_defs(llama),
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
@@ -6463,7 +6706,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             (eng / KQ_LIB).unlink()
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
-        defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
+        defs = [f"-DLLAMA_DIR={vision_llama(llama)}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
                 "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
         if vision == "gpu":
             defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
@@ -6489,7 +6732,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
 DATA_ITEMS = ("models", "packs", "mtp")
 
 
-LOW_RAM_HEADROOM_GB = 10   # RAM beside the experts: the OS, the engine's other buffers, the server
+LOW_RAM_HEADROOM_GB = 10   # RAM beside the experts (GiB, as ram_gb() counts): the OS, the engine's other buffers, the server
 RESIDENT_ENGINE = (0, 1, 30)   # the first engine with --resident-experts (the low-RAM mode's resident variant)
 RESIDENT_SPLIT_ENGINE = (0, 1, 40)   # #642: the first engine that runs it on a layer split
 
@@ -6504,7 +6747,13 @@ def resident_split() -> bool:
 def low_ram_needed(model, ram) -> bool:
     """The model's experts do not fit this PC's RAM with room left for the rest: they are then mapped from the pack's
     experts.bin instead of copied into RAM (the low-RAM mode)."""
-    return ram < MODELS[model]["arena_gb"] + LOW_RAM_HEADROOM_GB
+    return ram_short_of_arena(ram, MODELS[model]["arena_gb"])
+
+
+def ram_short_of_arena(ram_gib, arena_gb, headroom_gib=LOW_RAM_HEADROOM_GB) -> bool:
+    """True when `ram_gib` (GiB, as ram_gb() returns it) is less than an expert arena of `arena_gb` (GB of 10^9
+    bytes, as MODELS gives it) plus the headroom (GiB): both sides counted in GiB."""
+    return ram_gib < arena_gb * 1e9 / 2**30 + headroom_gib
 
 
 #: The draft layer (MTP) takes about 1 GB of graphics memory: its 786 MiB of files plus the draft head's ~218 MiB
@@ -7354,6 +7603,84 @@ def mmproj_beside(gguf_dir, name: str, size: int | None = None):
     return None
 
 
+# A picture reader the person may already have instead of the pinned one: Unsloth's mmproj-F16.gguf for Flash-Next (the same vision tower in F16;
+# lane 14: 58 of 72 answers word for word with the pinned BF16 file on the same card, none of the differences wrong about the picture; embeddings 0.9998
+# mean / 0.998 worst).  Accepted ONLY when it is already there, with this size and this SHA-256 (Unsloth rev 38bb39ee97821de2c9009abb7e93950eec396e66),
+# and only when no pinned file is found: pinned name -> (file name, bytes, sha256).  It is never downloaded.
+ALT_READERS = {MMPROJ: ("mmproj-F16.gguf", 904004000, "1f7b7f0b984cf065c604360c29c8098362ed61b290db0ff12c6f360bb1a8a980")}
+_ALT_MARK = re.compile(r"alt-reader sha256 ([0-9a-f]{64})")
+
+
+def alt_reader_places(pinned: str, models_dir, roots, gguf_dir) -> list:
+    """Where the alternative reader of `pinned` is looked for: the same places as the pinned one (the data folder's models/, an earlier install's
+    models/, and a person's own GGUF folder: beside the shards, the folder above and that folder's models/)."""
+    alt = ALT_READERS.get(pinned)
+    if alt is None:
+        return []
+    places = [Path(models_dir) / alt[0]] + [Path(r) / "models" / alt[0] for r in roots or []]
+    if gguf_dir:
+        base = Path(gguf_dir)
+        places += [base / alt[0], base.parent / alt[0], base.parent / "models" / alt[0]]
+    return places
+
+
+def accepted_alt_reader(pinned: str, places, *, start: bool = True):
+    """The first file in `places` that is the alternative reader of `pinned` (name, size and SHA-256 all as pinned in ALT_READERS), else None. Anything
+    else with that name is ignored (never deleted, never renamed). The SHA-256 (0.9 GB, a few seconds) is remembered in a mark in Strata's own
+    marks/ folder, never beside the person's file; the mark is keyed by the real path, size, modification time and change time
+    (_alt_reader_mark), so a file that was replaced, also in place with its size and modification time kept, is hashed again. start=True is
+    the setup run (says what it does, writes the mark); start=False is the plan (the same answer, says nothing, writes nothing)."""
+    alt = ALT_READERS.get(pinned)
+    if alt is None:
+        return None
+    name, size, sha = alt
+    for p in places:
+        p = Path(p)
+        try:
+            if p.name != name or not p.is_file() or p.stat().st_size != size:
+                continue                                   # absent, another name or another size: ignored exactly as before
+        except OSError:
+            continue
+        digest = None
+        kept = _alt_reader_mark(p)
+        try:
+            found = _ALT_MARK.match(kept.read_text(encoding="utf-8", errors="replace")) if kept is not None and kept.exists() else None
+            digest = found.group(1) if found else None
+        except OSError:
+            digest = None
+        if digest is None:
+            if start:
+                say(f"  checking {p.name} (SHA-256, {size / 1e9:.1f} GB) ...")
+            digest = _hash_file(p, size)
+            if start and kept is not None:
+                try:
+                    kept.parent.mkdir(parents=True, exist_ok=True)
+                    kept.write_text(f"alt-reader sha256 {digest}\n", encoding="utf-8")
+                except OSError:
+                    pass                                   # (not remembered: the next run hashes again; nothing else changes)
+        if digest == sha:
+            return p
+        if start:
+            say(f"  note: {p} has the name of Unsloth's picture reader but is a different file, so it is not used. "
+                "The picture reader is downloaded (0.9 GB).")
+    return None
+
+
+def resolve_reader(pinned: str, mmproj: Path, models_dir, roots, gguf_dir, size):
+    """Which picture reader this run uses: (kind, path). `mmproj` is where the pinned file would be (the data folder's models/, or an earlier
+    install's copy when there is one). kind "fetch": the pinned file at `mmproj` (it exists, or it is downloaded); "near": the pinned file in the
+    person's own folder (mmproj_beside); "alt": a verified Unsloth mmproj-F16.gguf the person already has (only when no pinned file is anywhere)."""
+    if mmproj.exists():
+        return "fetch", mmproj
+    near = mmproj_beside(gguf_dir, pinned, size)
+    if near is not None:
+        return "near", near
+    alt = accepted_alt_reader(pinned, alt_reader_places(pinned, models_dir, roots, gguf_dir), start=True)
+    if alt is not None:
+        return "alt", alt
+    return "fetch", mmproj
+
+
 def share_sibling_file(dst: Path, parent: Path, name: str, size: int) -> bool:
     """A shared file that sits in another model's folder under `parent` (parent/<model folder>/<name>; Qwen3.6 keeps its picture file beside each size) is made
     available at `dst` without the network: a hard link, else a copy.  Only a file of the pinned `size`; its SHA-256 is checked by the caller's download(), as for
@@ -7866,7 +8193,7 @@ OLD_DRAFT_VOCABS = {"369151522226a5edaa5f12cfd1e2ae7db8f4fbdbd222f3dcf327dced959
 
 
 DRAFT_VOCABS = {"cjk": "draft_vocab.bin", "en": "draft_vocab_en.bin", "cyrillic": "draft_vocab_cyrillic.bin",
-                "fr": "draft_vocab_fr.bin"}
+                "fr": "draft_vocab_fr.bin", "latin": "draft_vocab_latin.bin"}
 
 
 def saved_draft_vocab(cfg_path: Path) -> str | None:
@@ -7904,7 +8231,7 @@ def vision_tokens(asked: int | None, vision: str, earlier: Path | None) -> int:
     return asked
 
 
-DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "fr": 151, "en": 133}   # the draft head's VRAM per subset (IQ3_S: the largest)
+DRAFT_VOCAB_MIB = {"cjk": 348, "cyrillic": 193, "fr": 151, "en": 133, "latin": 203}   # the draft head's VRAM per subset (IQ3_S: the largest)
 SMALL_DRAFT_VRAM_GB = 14   # #474: below this the default subset's head can be what does not fit
 
 
@@ -8073,10 +8400,15 @@ def arg_after(args, flag):
 
 
 def bare_auto_is_32768(gpu, args, env) -> bool:
-    """Round 0212 (owner 11-03): the engine gives a bare `--prefill auto` a 32768-token ceiling on one NVIDIA card of compute capability 8.0 or up
-    (generate.cpp, nv_chunk.hpp); STRATA_NV_CHUNK=0 or STRATA_DEFAULTS=026 (the config's env or this process's) keep 8192, and a layer split reads 8192-token chunks."""
+    """Round 0212 (owner 11-03): the engine gives a bare `--prefill auto` a 32768-token ceiling on one NVIDIA card of compute capability 8.0 or up, and on
+    7.0 (Volta; include/strata/core/nv_chunk.hpp `nv_chunk_card_ok`, called from generate.cpp); Turing (7.5) and Pascal (6.x) keep 8192.  STRATA_NV_CHUNK=0
+    or STRATA_DEFAULTS=026 (the config's env or this process's) keep 8192, and a layer split reads 8192-token chunks.  `gpu` is the one card the config
+    runs on (the engine sees only the cards CUDA_VISIBLE_DEVICES names, so for a mixed PC the lowest of those decides, which is this card)."""
     arch = str((gpu or {}).get("arch", ""))
-    if not arch.isdigit() or len(arch) < 2 or int(arch[:-1]) < 8:
+    if not arch.isdigit() or len(arch) < 2:
+        return False
+    major, minor = int(arch[:-1]), int(arch[-1])     # "70" -> 7.0, "86" -> 8.6, "120" -> 12.0
+    if not (major >= 8 or (major == 7 and minor == 0)):
         return False
     if any(a in (args or []) for a in ("--gpus", "--layer-split")):
         return False
@@ -8168,7 +8500,8 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
     """The draft layer's token subset in the MTP folder: `cjk` (data/draft_vocab.bin, since 0.1.27, #137), `en`
     (data/draft_vocab_en.bin, the English/code subset before it: ~110 MiB less VRAM, English answers 1-2% faster) or
     `cyrillic` (data/draft_vocab_cyrillic.bin: English/code and the whole Cyrillic script, for Ukrainian, Russian,
-    Bulgarian, Serbian... answers) or `fr` (data/draft_vocab_fr.bin: English/code and the tokens of French text, #597).
+    Bulgarian, Serbian... answers) or `fr` (data/draft_vocab_fr.bin: English/code and the tokens of French text, #597) or `latin` (data/draft_vocab_latin.bin: English/code and
+    the tokens of German, Spanish, French and Polish text).
     Copied when missing or when a shipped subset other than the chosen one is there; a subset made by hand is kept."""
     new, dst = ROOT / "data" / DRAFT_VOCABS.get(choice, "draft_vocab.bin"), rt / "draft_vocab.bin"
     if not new.exists() or not rt.is_dir():
@@ -8181,7 +8514,8 @@ def refresh_draft_vocab(rt: Path, choice: str = "cjk") -> None:
             return
         ok("draft layer: the token subset " + {"cjk": "with Chinese, Japanese and Korean",
                                                "cyrillic": "with the Cyrillic script",
-                                               "fr": "for French"}.get(choice,
+                                               "fr": "for French",
+                                               "latin": "with the Latin-script languages"}.get(choice,
                                                                                           "for English and code (less VRAM)"))
     shutil.copyfile(new, dst)
 
@@ -8236,7 +8570,7 @@ def ensure_engine_for(cards, cfg_path: Path, cfg: dict, yes: bool) -> dict:
     main = gpu_info(cards[0]["index"])
     archs = sorted(set(arch_numbers(meta.get("archs"))) | {int(g["arch"]) for g in cards})
     vision = meta.get("vision") or ("gpu" if (eng / VEXE).exists() else "none")
-    build_engine({**main, "archs": archs}, vision, yes, get_llama_cpp(), toolkit=tk)
+    build_engine({**main, "archs": archs}, vision, yes, llama_override(), toolkit=tk)
     dirs = json.loads(info.read_text(encoding="utf-8")).get("cuda_dirs") or []
     cfg["lib_dirs"] = dirs + [d for d in cfg.get("lib_dirs") or [] if d not in dirs]
     write_config(cfg_path, cfg)
@@ -8251,7 +8585,7 @@ def get_cuda12_engine(url_base, gpu, vision, yes, build=False) -> Path:
         pip_cuda_libs(12)
         if vision != "none" and not (eng / VEXE).exists():
             eng = None
-    return eng if eng is not None else build_engine(gpu, vision, yes, get_llama_cpp(), toolkit=12)
+    return eng if eng is not None else build_engine(gpu, vision, yes, llama_override(), toolkit=12)
 
 
 def engine_lib_dirs(eng: Path, toolkit=13) -> list:
@@ -8373,6 +8707,79 @@ def sycl_setup(argv) -> int:
     return subprocess.call([sys.executable, str(script), *rest])
 
 
+def intel_control_setup(a) -> int:
+    """`--backend sycl` in the app's CONTROL mode (tools/strata_mcp.py passes it for an Intel Arc PC): what the Terminal does for an Arc
+    (strata_cli/launch/runner.py adopt_prepared_files): the pack from the model's GGUF files (`--prepare-pack`'s step), then the run config
+    (strata_cli/launch/adopt.py), the engine named as the component. Nothing is downloaded, nothing is compiled; Intel
+    cards do not download models, so the files must be on the computer (--gguf-dir, or <data folder>/models/<tag>). The older `--backend sycl`
+    (a source build with oneAPI, sycl/setup_intel.py) is sycl_setup(), for a checkout; the app's bundle has no sycl/ folder."""
+    from strata_cli.launch import adopt
+    from strata_control import intel_app
+    say("Strata on an Intel Arc card (the SYCL engine)")
+    step(1, "checking this computer")
+    if not intel_app.supported_here():
+        fail("the Intel Arc engine runs on Linux only", "there is no Windows or Mac Intel engine yet")
+    family = a.family or "qwen"
+    if family not in FAMILIES or not intel_app.can_set_up(family, FAMILIES[family]):
+        fail(f"cannot set up {family} for an Intel Arc card", "choose a Qwen3.8-Flash-Next, Swift, Coder, Gyro or Unsloth size")
+    fam, model = FAMILIES[family], a.model
+    if not model:
+        fail("an Intel Arc setup needs --model, e.g. --model Q2_0")
+    data, _elsewhere = data_folder_for(a)
+    tag = fam["tag"] + model
+    if a.gguf_dir:
+        model_dir = Path(a.gguf_dir)
+    else:
+        model_dir = (Path(a.models_dir) if a.models_dir else data / "models") / tag
+    if model_dir.is_file():
+        model_dir = model_dir.parent
+    shards = intel_app.model_files_in(model_dir, family, fam)
+    if not shards:
+        fail(intel_app.NO_DOWNLOAD)
+    ok(f"model files: {model_dir} ({len(shards)} file{'s' if len(shards) != 1 else ''})")
+    cards = intel_app.arc_cards()
+    vram = max((float(c.get("vram_gb") or 0) for c in cards), default=0.0)
+    ok("graphics card: " + (", ".join(f"{c['name']} ({c['vram_gb']:g} GB)" for c in cards) or "an Intel Arc"))
+    if a.check:
+        return 0
+    SHAPE_ENGINE.clear()
+    if fam.get("shape"):                               # a feed model of its own shape: its own engine component, fetched from the signed feed (strata_control/shape_engine.py)
+        SHAPE_ENGINE["shape"], SHAPE_ENGINE["title"] = fam["shape"], fam.get("title")
+        shape_engine_fetch(a)
+    step(2, "preparing the model for this graphics card")
+    pack = data / "packs" / tag.lower()
+    if not ((pack / "experts.bin").exists() or ((pack / "index.txt").exists() and (pack / "tokenizer" / "vocab.json").exists())):
+        a.gguf_dir, a.prepare_pack = str(model_dir), str(pack)
+        rc = prepare_pack_only(a)
+        if rc:
+            return rc
+    else:
+        ok(f"model already prepared: {pack}")
+    step(3, "writing the run settings")
+    notes: list = []
+    cfg, problems = adopt.plan(family=family, model=model, model_dir=model_dir, data_dir=data, src=ROOT, context=a.context or 32768, kv=a.kv,
+                               model_name=f"{fam.get('name', family)}-{model.lower()}", family_def=fam, log=home() / f"strata-{tag.lower()}.log",
+                               backend="sycl", vram_gb=vram, notes=notes, pack_name=tag.lower())
+    if cfg is None:
+        fail("Strata cannot start this model on the Intel Arc card yet: " + "; ".join(problems))
+    if a.port:
+        cfg["port"] = a.port
+    if a.host:
+        cfg["host"] = a.host
+    if a.api_key:
+        cfg["api_key"] = a.api_key
+    if a.browser is not None:
+        cfg["open_browser"] = a.browser
+    cfg_path = home() / f"strata-{tag.lower()}.json"
+    write_setup_config(cfg_path, cfg)
+    for n in notes:
+        say("  " + n)
+    ok(f"run settings: {cfg_path.name}")
+    say()
+    say("All set.")
+    return 0
+
+
 def control_engine_step(gpu, vision):
     """Step 4 in the app: the engine is the component folder's package (strata_control/engine_component.py), found if it is
     there and never fetched or built. A model can be downloaded and prepared before the engine is installed; the run config
@@ -8433,7 +8840,7 @@ def shape_engine_step(a, gpu, vision):
     separate component next to the Strata engine (shape_engine_fetch); the run config names it ("component:strata-q4-lite") and every start looks it up.
     Returns what engine_step returns."""
     shape = SHAPE_ENGINE["shape"]
-    llama = llama_cpp_if_here() if CONTROL else get_llama_cpp()
+    llama = llama_cpp_if_here()
     found = shape_engine_fetch(a)
     if found is None:
         return llama, home() / "engine", {"version": "99.0.0", "source": "local", "component": "missing"}, [], gpu, "none"
@@ -8453,7 +8860,7 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
         return shape_engine_step(a, gpu, vision)
     if CONTROL:
         return control_engine_step(gpu, vision)
-    llama = get_llama_cpp()
+    llama = llama_override()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py, ggml, mtmd)")
     if hip and WIN:                                    # AMD on Windows: the ready-made HIP engine (no compiler)
         eng = None if a.build else get_prebuilt_hip(a.prebuilt, gpu)
@@ -8537,15 +8944,28 @@ def feed_models_setup(feed: str | None = None, fetch: bool = True) -> None:
             source = update_cmd._feed_source(argparse.Namespace(feed=feed), home())
         except Exception:                              # noqa: BLE001 - no feed address: the cached list only
             source = None
-    loaded = feed_models.load(source, fetch=source is not None)
+    # the read is optional (the last verified list stays): no failure sentence, but a server that does not answer is named after 5 s (W1)
+    loaded = feed_models.load(source, fetch=source is not None, say=lambda line: say(f"  {line} ..."))
     if loaded.models:
         feed_models.apply(_SetupTables(), loaded.models, feed_engine_families())
 
 
-def own_path_context(fam: dict, vram_gb: float) -> int:
-    """The recommended context for an own-path family: its KV cache (VRAM) beside the dense weights and the most-used
-    experts - 32K up to 16 GB, 64K up to 24 GB, 128K above."""
-    return 131072                                      # 128K on every card (owner, 2026-11-01)
+def own_path_contexts() -> list:
+    """The context sizes the own-path menu offers: up to the model's trained 262,144 (no rope scaling on this path yet)."""
+    return [c for c in CONTEXTS if c <= 262144]
+
+
+def own_path_context(fam: dict, vram_gb: float, model: str | None = None) -> int:
+    """The recommended context for an own-path family: 128K (owner, 2026-11-01), or on a card where 128K does not fit the largest
+    size that does (#5715, strata_control/own_path_fit.py; the smallest when none fits).  A recommendation only: any size can be chosen."""
+    from strata_control import own_path_fit
+    return own_path_fit.recommended(own_path_fit.inputs(fam.get("name"), model), vram_gb, own_path_contexts())
+
+
+def own_path_context_warning(fam: dict, model: str, vram_gb: float, ctx: int) -> str | None:
+    """The sentence said when the chosen context does not fit the card (#5715); None when it fits or cannot be said."""
+    from strata_control import own_path_fit
+    return own_path_fit.warning(own_path_fit.inputs(fam.get("name"), model), vram_gb, ctx, own_path_contexts())
 
 
 def own_path_size(fam: dict, ram: float) -> str:
@@ -8694,11 +9114,11 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
         warn(f"installing {model} with {ram:.0f} GB of RAM, as you chose")
     ok(f"size: {model}")
     tag = fam["tag"] + model
-    rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0))
+    rec_ctx = own_path_context(fam, gpu.get("vram_gb", 0.0), model)
     if a.context:
         ctx = a.context
     else:
-        ctxs = [c for c in CONTEXTS if c <= 262144]   # the model's trained length; no rope scaling on this path yet
+        ctxs = own_path_contexts()                     # the model's trained length; no rope scaling on this path yet
         say()
         say("  Context length = how much text the model can see at once. Its cache takes "
             f"{fam['kv_bytes_per_token'] * 32768 / 2**30:.1f} GB of VRAM per 32K tokens, room the experts would use:")
@@ -8709,6 +9129,9 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     if ctx > 262144:
         warn(f"{ctx // 1024}K is past {fam['title']}'s trained 262,144 positions and this engine path has no rope "
              "scaling yet: kept as you chose, but answers past 256K are untested")
+    too_big = own_path_context_warning(fam, model, float(gpu.get("vram_gb", 0.0)), ctx)
+    if too_big:                                        # #5715: said before the start; the choice is kept (recommend, never force)
+        warn(too_big)
     ok(f"context: {ctx} tokens")
     vision = own_path_vision(a, fam, gpu, hip)
     ok("images: " + {"none": "off", "gpu": "on", "cpu": "on (encoder on the CPU)"}[vision])
@@ -8804,7 +9227,7 @@ def install_own_path(a, family, gpu, hip, amd, cuda_tk, multi, port, ram, adopte
     pack = data / "packs" / tag.lower()            # only the tokenizer: the engine reads the GGUF itself
     if not (pack / "tokenizer" / "vocab.json").exists():
         run([sys.executable, str(ROOT / "tools" / "strata_tokenizer.py"), "--gguf", str(gguf), "--out", str(pack)],
-            env=dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py")))
+            env=dict(os.environ, **gguf_py_env()))
     ok(f"tokenizer: {pack / 'tokenizer'}")
 
     step(7, "writing the start script")
@@ -9817,9 +10240,9 @@ def prepare_pack_only(a) -> int:
         fail(*problem)
     pack = Path(a.prepare_pack)
     step(1, "preparing the model for this graphics card")
-    llama = get_llama_cpp()
+    llama = llama_override()
     ok(f"llama.cpp {LLAMA_CPP_COMMIT[:7]} (gguf-py)")
-    env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    env = dict(os.environ, **gguf_py_env())
     if not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists():
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(files[0]), "--out", str(pack),
              *fam.get("pack_args", [])], env=env)
@@ -10030,18 +10453,16 @@ def mac_control_setup(a) -> int:
         mmproj = Path(models_root) / fam["mmproj"]
         if not mmproj.exists():                        # an earlier install's copy (the same file for every family)
             mmproj = find_in(roots, f"models/{fam['mmproj']}") or mmproj
-        near = None if mmproj.exists() else mmproj_beside(a.gguf_dir, fam["mmproj"], (ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
-        if near is not None:
-            mmproj = near
-        elif not (mmproj.exists() and done(mmproj)):
+        kind, mmproj = resolve_reader(fam["mmproj"], mmproj, models_root, roots, a.gguf_dir, (ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
+        if kind == "fetch" and not (mmproj.exists() and done(mmproj)):
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam["mmproj"] in ISTA_FILES:
+        if fam["mmproj"] in ISTA_FILES and kind != "alt":       # (a verified Unsloth F16 file was checked against its own pin)
             verify_sha256(mmproj, *ISTA_FILES[fam["mmproj"]])
-        ok(f"vision encoder: {mmproj}")
+        ok(f"vision encoder: {mmproj}" + (" (Unsloth's mmproj-F16.gguf, SHA-256 checked)" if kind == "alt" else ""))
 
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
-    env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    env = dict(os.environ, **gguf_py_env())
     shards = [files[0], files[0]] if family == "gyro" else files      # Gyro: one file, the model and its n-gram table
     pack_todo = not (pack / "native_experts.txt").exists() or not (pack / "tokenizer" / "vocab.json").exists()
     prep_lock = mac_prepare_lock(native) if repacked and (pack_todo or not (native.exists() and done(native))) else None
@@ -10076,9 +10497,11 @@ def mac_control_setup(a) -> int:
         use_mtp = False
     if use_mtp and not (mtp / "mtp-q2_0.gguf").exists():
         say("  The MTP draft layer (speculative decoding) comes from the original Qwen checkpoint: only its ~5 GB of MTP tensors are downloaded.")
-        fetch_mtp(mtp, env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
-             "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
+        if fetch_mtp(mtp, env) is False:                   # offline: the model starts without the layer
+            use_mtp = False
+        else:
+            run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
+                 "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
     if use_mtp:
         rt.mkdir(parents=True, exist_ok=True)          # the Metal engine reads mtp-q2_0.gguf beside it (no rt pack)
         refresh_draft_vocab(rt, a.draft_vocab or "cjk")
@@ -10147,6 +10570,11 @@ def mac_dsv41_setup(a) -> int:
 
 
 def main() -> int:
+    try:                                               # the engine programs setup runs start no debugger on a user's machine (strata_control/childenv.py)
+        from strata_control.childenv import quiet_crash_env
+        quiet_crash_env()
+    except Exception:
+        pass
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()
@@ -10196,6 +10624,10 @@ def main() -> int:
     ap.add_argument("--image-backend", choices=["cuda", "hip", "vulkan", "cpu"],
                     help=argparse.SUPPRESS)
     ap.add_argument("--image-native", choices=["on", "off"],
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--image-noise", choices=["on", "off"],
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--image-vae", choices=["on", "off"],
                     help=argparse.SUPPRESS)
     ap.add_argument("--image-gpu-policy", choices=["auto", "keep", "shrink", "unload"],
                     help=argparse.SUPPRESS)
@@ -10270,8 +10702,12 @@ def main() -> int:
     ap.add_argument("--draft-vocab", choices=list(DRAFT_VOCABS),
                     help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
-                         "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
-                         "code and French (French answers: 18%% more drafts accepted)")
+                         "and the Cyrillic script (Russian: 26%% more tokens a second), fr = English, "
+                         "code and French (French answers: 18%% more drafts accepted), latin = English, code and "
+                         "the Latin-script languages (German, Spanish, French, Polish: 8-12%% more tokens a "
+                         "second). Without this setting Strata picks cyrillic or latin by itself from the "
+                         "languages of this computer, and keeps the default when one of them is Chinese, "
+                         "Japanese or Korean")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
                     help="read the model's experts from one file in its folder instead of copying them all into RAM "
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
@@ -10312,6 +10748,8 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if getattr(a, "gguf_dir", None):                   # the person's own files: their finish marks go to Strata's marks/, never beside them
+        own_files_in(a.gguf_dir)
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES and a.family not in MULTI_FILE_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in {**PREVIEW_FAMILIES, **MULTI_FILE_FAMILIES}.items()
                                                               if a.model in d["models"]))
@@ -10325,7 +10763,9 @@ def main() -> int:
         if a.family in MULTI_FILE_FAMILIES:            # DeepSeek-V4.1-Flash: its own engine package, the generic DeepSeek install
             return mac_dsv41_setup(a)
         return mac_control_setup(a)
-    if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
+    if a.backend == "sycl":                            # Intel Arc: the app / Terminal's installer mode prepares the files and writes the config; a checkout builds from source
+        if CONTROL:
+            return intel_control_setup(a)
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
@@ -10728,6 +11168,7 @@ def main() -> int:
     ok(f"model: {fam['title']}")
     if fam.get("feed") and fam.get("drafter") == "none" and a.mtp is None:
         a.mtp = "off"                                  # the feed says this model has no draft layer: the Flash-Next one (fetched below for every qwen4exp model) is not its own
+        a.feed_no_drafter = True                       # and no drafter at its starts either: the run config says "drafting": "off" (setup_config; APP-LIN 0.2.14)
         say("  The model list says this model has no draft layer (MTP), so none is fetched or used.")
     if fam.get("ready") and nvfp4_cpu_note(avx2, avx512):   # #2347: a note (the AVX2 rows work), not a refusal
         warn(nvfp4_cpu_note(avx2, avx512))
@@ -11111,11 +11552,15 @@ def main() -> int:
             verify_sha256(s, *fam_pin(fam, s), own=bool(a.gguf_dir))
     ok("model files present")
     if vision != "none":
-        if near is None:                              # an owned picture file beside the GGUF is used in place
+        # the person's own folder (or the one above it) has the pinned picture file: used where it is ('near'); a verified Unsloth mmproj-F16.gguf they
+        # already have is used when no pinned file is anywhere ('alt'); else the pinned file is downloaded
+        kind, mmproj = resolve_reader(fam["mmproj"], mmproj, a.models_dir, roots, a.gguf_dir,
+                                      (fam.get("mmproj_sha256") or ISTA_FILES.get(fam["mmproj"]) or (None,))[0])
+        if kind == "fetch":
             download(fam["mmproj_hf"] + fam["mmproj"], mmproj, "vision encoder")
-        if fam.get("mmproj_sha256"):                   # the NVFP4 family pins it by size and SHA-256 too
+        if fam.get("mmproj_sha256") and kind != "alt":   # the NVFP4 family pins it by size and SHA-256 too
             verify_sha256(mmproj, *fam["mmproj_sha256"])
-        ok(f"vision encoder: {mmproj}")
+        ok(f"vision encoder: {mmproj}" + (" (Unsloth's mmproj-F16.gguf, SHA-256 checked)" if kind == "alt" else ""))
         if vision == "cpu" and "BF16" in mmproj.name:       # a tip only (recommend, never force; #625)
             say("       tip: on the CPU a Q8_0 copy of this encoder is a third smaller and about as exact (embedding "
                 "cosine 0.999 vs BF16); see 'A Q8_0 encoder' in docs/DETAILS.md")
@@ -11123,7 +11568,7 @@ def main() -> int:
     # ---- 6. the pack and the MTP draft layer
     step(6, "preparing the model for Strata")
     pack = find_in(roots, f"packs/{tag.lower()}") or data / "packs" / tag.lower()
-    env = dict(os.environ, STRATA_GGUF_PY=str(llama / "gguf-py"))
+    env = dict(os.environ, **gguf_py_env())
     prepared = bool(ready and MODELS[model].get("prepare"))
     if prepared and not prepared_done(model, models_dir):
         say("  NVIDIA's checkpoint is turned into a Strata pack on this PC (once; 20-40 minutes, reads the 102 GB, writes about")
@@ -11171,11 +11616,11 @@ def main() -> int:
     elif corrupt or not (rt / "experts.bin").exists():
         say("  The MTP draft layer (speculative decoding, ~2x faster output) comes from the original Qwen checkpoint:")
         say("  only its ~5 GB of MTP tensors are downloaded.")
-        fetch_mtp(mtp, env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
-             "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
-        run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
-            env=env)
+        if fetch_mtp(mtp, env) is not False:               # (False: offline, nothing to pack)
+            run([sys.executable, str(ROOT / "tools" / "mtp_pack.py"), "--src", str(mtp), "--experts", "q2_0",
+                 "--out", str(mtp / "mtp-q2_0.gguf")], env=env)
+            run([sys.executable, str(ROOT / "tools" / "mtp_rt.py"), "--gguf", str(mtp / "mtp-q2_0.gguf"), "--out", str(rt)],
+                env=env)
     # a setup run again without --draft-vocab keeps the subset this model's config chose before (cyrillic, fr, en)
     draft_vocab = a.draft_vocab or saved_draft_vocab(home() / f"strata-{tag.lower()}.json")
     if (rt / "experts.bin").exists():

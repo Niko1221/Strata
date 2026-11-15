@@ -2,11 +2,14 @@
 // keeps every slot left exactly as it was (same address, same bytes); a grow maps them again at the same addresses.
 // Uniform and sized slots.  Needs a CUDA device with virtual memory management (exits 77 without one).
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/expert_cache_refuse.hpp"
+#include "strata/core/residency_trim.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -92,10 +95,50 @@ int main() {
         c.close();
         if (c.valid() || c.slots() != 0) return fail("close");
     }
+    // The hook skips one call; it does not establish recoverability of real driver errors.
+    // Hakua fails closed after either refusal until explicit cleanup and reopen.
+    // Separate caches exercise release 9 and unmap 6 from the same 12-segment state.
+    for (int refusal = 0; refusal < 2; ++refusal) {
+        strata::core::ExpertCache c;
+        c.set_segment_bytes(kSeg);
+        std::string err;
+        if (!c.open(kSlots, 4, 64, kBlob, err) || !fill(c, 0, kSlots, kBlob)) return fail("refusal: open", err);
+        std::vector<int32_t> res((size_t) kSlots);
+        for (int64_t i = 0; i < kSlots; ++i) res[(size_t) i] = (int32_t) i;   // expert i in slot i
+        auto release9 = +[](const char* call, int64_t seg) {
+            return seg == 9 && std::string(call) == "release";
+        };
+        auto unmap6 = +[](const char* call, int64_t seg) {
+            return seg == 6 && std::string(call) == "unmap";
+        };
+        strata::core::ec_test::refuse_segment_call = refusal == 0 ? release9 : unmap6;
+        const bool ok = c.shrink(30ll << 20, err);
+        strata::core::ec_test::refuse_segment_call = nullptr;
+        if (ok || err.find("cleanup pending") == std::string::npos || c.valid() || c.slots() != 0 || c.mapped_bytes() != -1)
+            return fail("refusal: fail-closed ownership", err);
+        const auto& read_only = c;
+        if (c.device_slot(0) != nullptr || read_only.device_slot(0) != nullptr)
+            return fail("refusal: device access is still exposed");
+        if (c.grow(1ll << 40, err) || c.shrink(0, err)) return fail("refusal: resizing was not blocked");
+        std::vector<std::pair<int32_t, int32_t>> ev;
+        if (strata::core::evict_slots_past(res, c.slots(), ev) != kSlots || ev.size() != kSlots ||
+            res.front() != strata::core::kNotResident || res.back() != strata::core::kNotResident)
+            return fail("refusal: residency must be cleared before reload");
+        c.close();
+        if (c.valid() || c.mapped_bytes() != 0) return fail("refusal: close");
+        if (!c.open(kSlots, 4, 64, kBlob, err) || !fill(c, 0, kSlots, kBlob) || !check(c, kSlots, kBlob))
+            return fail("refusal: explicit reopen", err);
+        if (!c.shrink(30ll << 20, err) || c.slots() != 32 || !check(c, 32, kBlob))
+            return fail("refusal: shrink after reopen", err);
+        if (!c.grow(1ll << 40, err) || !fill(c, 32, kSlots, kBlob) || !check(c, kSlots, kBlob))
+            return fail("refusal: grow after reopen", err);
+        c.close();
+    }
     // the default (no segment size): one allocation, shrink refused
     strata::core::ExpertCache d;
     std::string err;
     if (!d.open(8, 2, 4, kBlob, err) || d.segmented() || d.shrink(0, err)) return fail("unsegmented", err);
-    std::puts("expert cache segments: shrink gives VRAM back and keeps the slots, grow maps them again");
+    std::puts("expert cache segments: shrink gives VRAM back and keeps the slots, grow maps them again, a refused shrink "
+              "requires cleanup and reopen");
     return 0;
 }

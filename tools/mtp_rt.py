@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _paths import add_gguf_py  # noqa: E402
+from _paths import gguf_lib  # noqa: E402
 
 H, FF, NE = 2560, 640, 512
 BLOB = 3 * (H * FF * 18 // 64)
@@ -61,8 +61,7 @@ def main() -> int:
     ap.add_argument("--gguf", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
-    add_gguf_py()
-    import gguf
+    gguf = gguf_lib()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     r = gguf.GGUFReader(a.gguf)

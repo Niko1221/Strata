@@ -44,7 +44,7 @@ from gguf_writer import dequantize_q2_0  # noqa: E402
 SUFFIXES = (".attn_qkv.weight", ".attn_gate.weight", ".ssm_out.weight", ".attn_q.weight", ".attn_k.weight",
             ".attn_v.weight", ".attn_output.weight", ".ffn_gate_shexp.weight", ".ffn_up_shexp.weight",
             ".ffn_down_shexp.weight")
-Q2_0 = 42   # GSQ's 2-bit type: gguf-py has no member for it
+Q2_0 = 42   # GSQ's 2-bit type (gguf-py's quants cannot dequantize it; tools/gguf_writer.py can)
 
 
 def is_target(name: str) -> bool:
@@ -135,9 +135,9 @@ def main() -> int:
     a = ap.parse_args()
     # Import/help must work before optional GGUF conversion dependencies exist.
     global GGUFReader, QT, dequantize, quantize
-    _paths.add_gguf_py()
-    from gguf import GGUFReader, GGMLQuantizationType as QT
-    from gguf.quants import dequantize, quantize
+    lib = _paths.gguf_lib()
+    GGUFReader, QT = lib.GGUFReader, lib.GGMLQuantizationType
+    dequantize, quantize = lib.quants.dequantize, lib.quants.quantize
     out = a.out_dir.resolve()
     shards = shards_of(a.shard.resolve())
     if out == shards[0].parent:

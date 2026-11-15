@@ -46,6 +46,7 @@ function fixture({ layout = 'own', vision = null, arch = undefined, onFetch = nu
   const args = ['--pack', pack, '--native', gguf, '--ple-gguf', gguf.replace('00001', '00002'), '--mtp', mtp, '--max-context', '8192'];
   const config = { exe: 'component:strata-engine', tokenizer: join(pack, 'tokenizer'), args, model_name: 'qwen3.8-flash-next-iq3_s', port: 8080, ...(arch ? { arch } : {}),
     ...(vision ? { vision: { exe: join(root, 'engine', 'strata-vision'), mmproj, model: gguf, gpu: false, max_tokens: 300 } } : {}) };
+  if(arch==='deepseek41'){config.exe=join(install,'strata-dsv41.exe');writeFileSync(config.exe,'inert dedicated-engine fixture; Control start is mocked');}
   writeFileSync(configPath, JSON.stringify(config));
   const settingsFile = process.env.STRATA_SETTINGS_FILE;
   writeFileSync(settingsFile, JSON.stringify({ data_dir: join(root, 'host-owned', 'Strata-data'), data_dir_at: 1700000000 }));

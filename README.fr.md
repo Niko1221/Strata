@@ -1,147 +1,58 @@
-# Strata · Hakua
+# Hakua / Strata
 
-<!-- stable-059 -->
-## Version stable 0.5.9
+[English](README.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Polski](README.pl.md) · [Português](README.pt-BR.md) · [简体中文](README.zh-CN.md)
 
-Surveille la mémoire disponible pendant le chargement et la génération des modèles locaux sous Windows. La recherche autorise uniquement la recherche web et la lecture des pages, puis rédige sans outils. Les audits CSV calculent les écarts selon des règles fixes ; un contrôle réussi ne nécessite aucune preuve supplémentaire.
+IA locale sous Windows pour discuter, utiliser des agents et rechercher avec des sources. Hakua est le fork de Niko1221/Strata maintenu indépendamment par zapabob, sans approbation annoncée du projet d’origine.
 
-[Windows NSIS](https://github.com/zapabob/Strata/releases/download/v0.5.9/Strata-0.5.9-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.9/Strata-0.5.9-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.5.9/SHA256SUMS.txt) · [Verification](_docs/2026-11-13_stable-059-workflow-safety_Codex.md)
+## Version et téléchargements
 
-L’application, Terminal, Control et le moteur natif sont tous en version 0.5.9 ; RustXNG reste en 0.31.1 Full. Le document lié confirme la publication, les huit workflows CI requis, les workflows avec un modèle réel, la réinstallation et la vérification de tous les téléchargements publics. La qualité générale des réponses, l’inférence sur toute la fenêtre de contexte et la concurrence GPU ne sont pas certifiées (releaseQualified=false). Les anciennes versions et les remerciements aux projets amont sont conservés ci-dessous.
+<!-- release-060-candidate -->
+Ce code est le candidat d’intégration 0.6.0. Application, Terminal, Control et sources du moteur natif portent 0.6.0. Les vérifications de compilation, d’installation et de publication sont en cours ; le numéro ne prouve pas la disponibilité des fichiers. La [version 0.5.9](https://github.com/zapabob/Strata/releases/tag/v0.5.9) vérifiée est conservée. Le compte rendu de livraison précise le statut réel de 0.6.0.
 
+[0.6.0](https://github.com/zapabob/Strata/releases/tag/v0.6.0) · [Strata-0.6.0-windows-x64-setup.exe](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.6.0/Strata-0.6.0-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.6.0/SHA256SUMS.txt)
 
-<!-- stable-058 -->
-## Ancienne version stable 0.5.8
+## Installation et mise à jour
 
-Corrige les tests étendus de contexte, de résumé et de limitation des recherches. Chaque test possède son propre profil et le sous-processus agent reçoit l’environnement choisi. La CI vérifie aussi les traductions, les tests par plateforme et les versions indépendantes de l’application, de Control et du moteur.
+Utilisez l’installeur NSIS Windows x64 de ce fork. Il s’installe par utilisateur avec ses propres Node, Python et Control, sans outils de développement système. Le moteur CUDA signé est un composant distinct. Le tar.7z doit contenir le même installeur, les composants, les instructions et les sommes de contrôle, sans poids de modèles ni données personnelles. Extraire 7z puis tar et vérifier BUNDLE-SHA256SUMS.txt.
 
-[Windows NSIS](https://github.com/zapabob/Strata/releases/download/v0.5.8/Strata-0.5.8-windows-x64-setup.exe) · [tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.8/Strata-0.5.8-windows-x64.tar.7z) · [SHA256SUMS](https://github.com/zapabob/Strata/releases/download/v0.5.8/SHA256SUMS.txt) · [0.5.8 verification](_docs/2026-11-11_stable-058-context-ci_Codex.md)
+Terminez les requêtes, déchargez les modèles, sauvegardez les données et quittez aussi l’icône de notification. Réinstallez dans le dossier existant. Conservez modèles, conversations, mémoire, outils, clés et autorisations. Importez le moteur compressé avec l’option de fichier existant, puis chargez un modèle compatible ou un GGUF local. Le nom du modèle ne suffit pas à établir sa compatibilité. [Installation et retour arrière](docs/HAKUA_INSTALL.md).
 
-RustXNG 0.31.1 Full / app, Terminal, native engine and Control 0.5.8. Native model quality remains unqualified (`releaseQualified=false`). Previous releases and their measurements follow below.
+## Fonctions conservées
 
+`/btw` lance un véritable sous-agent sans outils pour une question annexe, avec son propre arrêt. `/research` et `/deepresearch` recueillent des sources. La recherche peut utiliser RustXNG Full fourni. Les requêtes sont transmises aux fournisseurs externes activés ; la recherche n’est donc pas entièrement hors ligne. Le nombre de sources ne garantit pas l’exactitude.
 
-<!-- skills-057 -->
-## Version stable 0.5.7
+L’apprentissage des compétences de travail et leur application automatique sont deux options distinctes, désactivées dans les nouveaux profils. Préférences, compétences privées modifiables, révisions et annulation sont conservées. Les opérations sur fichiers, l’historique et la mémoire délimités, les chemins PrismML/TurboQuant compatibles, la mémoire d’experts bornée, l’intégrité des packs et les diagnostics restent présents. [Compétences](docs/WORKFLOW_SKILLS.md) · [Recherche](docs/BROWSER_SEARCH.md).
 
-`/btw` délègue à un vrai sous-agent sans outils, sous une session parente distincte. La conversation principale et son arrêt restent indépendants. La page Compétences permet d’activer séparément l’apprentissage de SKILL.md à partir du travail terminé et l’application automatique des instructions correspondantes. Modifications manuelles, espace de travail et autorisations sont respectés.
+## Intégration officielle et compatibilité
 
-[Installateur](https://github.com/zapabob/Strata/releases/download/v0.5.7/Strata-0.5.7-windows-x64-setup.exe) · [Archive tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.7/Strata-0.5.7-windows-x64.tar.7z) · [Installation et utilisation](docs/WORKFLOW_SKILLS.md)
+La référence officielle est [09b6038869](https://github.com/Niko1221/Strata/commit/09b603886925994d0d4461857b01321ef3aa431c), génération 0.2.14 / moteur 0.1.60 : réseau, choix du brouillonneur, noyaux de prompts, mémoire et correctifs de plateforme. Les versions du fork sont indépendantes. Les chemins DeepSeek supprimés sont conservés comme extension ; sans exécutable dédié, le chargement doit être refusé. Ce paquet Windows ne valide ni entrée native d’images, ni distribution d’un moteur natif DeepSeek, ni inférence Linux/Mac.
 
-RustXNG 0.31.1 Full / native 0.5.5 / Control 0.5.6. [0.5.7 delivery status](_docs/2026-11-11_stable-057-release_Codex.md). Stable / GitHub Latest: 0.5.7.
+## Protection et limites des mesures
 
+Les seuils restent à 3 GiB de RAM disponible, 4 GiB de marge d’engagement mémoire, au moins 768 MiB de réserve GPU et des minimums de disque. La protection RAM Windows surveille chargement et génération. 32 Go de RAM et 16 Go de VRAM ne garantissent pas tout modèle ou contexte. Fenêtre complète, qualité générale et concurrence GPU restent non qualifiées : releaseQualified=false. L’installeur n’a pas de signature Windows Authenticode ; signatures de composants et de flux sont distinctes. Les [mesures historiques](docs/HAKUA_RELEASE.md) gardent leurs versions d’origine.
 
-## Aperçu précédent 0.5.6-local.1
+## Documentation et développement
 
-`/btw <question>` ouvre une réponse séparée pendant la discussion principale. `/deepresearch <sujet>` associe plusieurs recherches et lectures de pages, en signalant les preuves insuffisantes. Dans Paramètres → Outils → Recherche web, choisissez **RustXNG Full**, sans clé.
-
-[Programme d’installation Windows](https://github.com/zapabob/Strata/releases/download/v0.5.6-local.1/Strata-0.5.6-local.1-windows-x64-setup.exe) · [Paquet tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.6-local.1/Strata-0.5.6-local.1-windows-x64.tar.7z) · [SHA256SUMS.txt](https://github.com/zapabob/Strata/releases/download/v0.5.6-local.1/SHA256SUMS.txt).
-
-Le moteur natif 0.5.5 et Control 0.5.6 restent inchangés. L’installation, WebView2 et de vraies recherches RustXNG ont été vérifiés ; les réponses du modèle dans les tests d’interface utilisent une API de test isolée. La qualité des modèles et l’exécution GPU simultanée ne sont pas qualifiées. L’EXE n’a pas de signature Windows ; la version stable reste 0.5.1. [Vérifications actuelles](_docs/2026-11-11_btw-deepresearch-rustxng_Codex.md). Les paquets et mesures 0.5.5 et 0.5.1 ci-dessous concernent les versions précédentes.
-
-[Installation rapide](INSTALL.md) · [Recherche et navigateur](docs/BROWSER_SEARCH.md)
-
-## Aperçu 0.5.5-local.1 — sources officielles 0.2.13
-
-[Installeur Windows](https://github.com/zapabob/Strata/releases/download/v0.5.5-local.1/Strata-0.5.5-local.1-windows-x64-setup.exe) ·
-[Paquet tar.7z complet](https://github.com/zapabob/Strata/releases/download/v0.5.5-local.1/Strata-0.5.5-local.1-windows-x64.tar.7z) ·
-[Sommes et publication](https://github.com/zapabob/Strata/releases/tag/v0.5.5-local.1).
-Windows x64 / CUDA sm_120 ; testé sur RTX 5060 Ti 16 Go / RAM 32 Go.
-La vérification CUDA passe sans violation ; les essais installés de conversation, agent et dossiers passent.
-La qualité générale reste non qualifiée : **releaseQualified=false**. Le délai historique de Prism054 reste documenté.
-Importez le tar.gz signé du moteur de cet aperçu depuis l’écran de préparation.
-[Guide actuel](docs/HAKUA_INSTALL.md) · [Périmètre des essais](docs/HAKUA_RELEASE.md).
-
-## Version stable 0.5.1 — ancien guide et mesures
-
-Les versions, téléchargements et mesures ci-dessous concernent 0.5.1.
-GitHub Latest et le flux par défaut restent sur cette version stable.
-
-La version 0.5.1 charge les modèles sur demande et corrige le démarrage de Qwen3.6 natif. Les modèles existants et les paquets d’experts vérifiés sont conservés.
-
-Modèles locaux, discussion, outils et mémoire Hakua facultative. Il s’agit du [fork zapabob](https://github.com/zapabob/Strata) de [Niko1221/Strata](https://github.com/Niko1221/Strata).
-
-[English](README.md) · [日本語](README.ja.md) · [简体中文](README.zh-CN.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md) · [Polski](README.pl.md)
-
-## Version Windows
-
-Qwen3.6 natif a atteint READY en 41,250 secondes avec une capacité de 4096 cellules et a réussi six tests courts du cache privé. Les entrées complètes de 98K/131K et la qualité du modèle en FP16/NVFP4 ne sont pas validées. Consultez les [résultats et limites](docs/HAKUA_RELEASE.md).
-
-Cette version vise Windows x64 CUDA sm_120. Les vérifications locales ont utilisé une RTX 5060 Ti avec 16 Go de VRAM et 32 Go de RAM. Consultez les [résultats et limites restantes](docs/HAKUA_RELEASE.md) avant l’installation.
-
-**0.5.1** se met à jour manuellement et ne possède pas de signature de code Windows. [Version](https://github.com/zapabob/Strata/releases/tag/v0.5.1) · [Installation](docs/HAKUA_INSTALL.md) · [Vérifications et limites](docs/HAKUA_RELEASE.md).
-
-1. Téléchargez [l’installateur](https://github.com/zapabob/Strata/releases/download/v0.5.1/Strata-0.5.1-windows-x64-setup.exe) et comparez son empreinte à [SHA256SUMS.txt](https://github.com/zapabob/Strata/releases/download/v0.5.1/SHA256SUMS.txt).
-2. Quittez Strata, y compris son icône de notification, puis lancez l’installation. Conservez modèles et données personnelles hors du dossier de l’application.
-3. Installez le composant CUDA signé depuis l’écran de préparation, via le flux latest ou le fichier inclus `strata-engine-0.5.1-windows-x86_64-cuda-cuda13.tar.gz`.
-4. Choisissez un modèle adapté ou **Use a local GGUF** pour vos fichiers existants. Node et Python sont inclus ; aucun interpréteur système ni compilateur n’est nécessaire.
-
-Les versions suivent [SemVer 2.0.0](https://semver.org/) : application `0.5.1`, moteur natif `0.5.1`; Control `0.5.1` ; les environnements PrismML/TurboQuant inchangés restent en `0.4.0`. Le dossier habituel de l’application est `%LOCALAPPDATA%\Programs\Strata` sur C:, indépendamment des modèles. Une installation existante peut conserver un autre emplacement.
-
-L’[archive tar.7z](https://github.com/zapabob/Strata/releases/download/v0.5.1/Strata-0.5.1-windows-x64.tar.7z) contient le même installateur NSIS, le composant CUDA signé, Control, les sommes de contrôle et les instructions. Les modèles et données personnelles sont exclus. Publication avec `v0.5.1`, l’alias de tag `latest` et GitHub Latest.
-
-## Réutiliser les modèles présents
-
-Pour un GGUF fractionné, sélectionnez une partie : Strata vérifie l’ensemble. Les poids importés restent à leur emplacement. Un nom générique tel que `Hf` est remplacé à l’affichage par le nom du fichier. Vos noms personnalisés sont conservés après vérification et redémarrage.
-
-Les réglages d’un modèle local enregistré restent accessibles pendant le chargement des autres listes de modèles.
-
-Avant de préparer un modèle du catalogue, Strata recherche un ensemble local compatible dans le dossier choisi et ses sous-dossiers, avec une exploration limitée. Un résultat valide unique est réutilisé ; plusieurs résultats imposent une sélection explicite. Les téléchargements habituels conservent leurs contrôles d’intégrité et leur reprise. Le moteur et les couches de brouillon facultatives sont traités séparément.
-
-Les modèles Qwen/Swift natifs peuvent nécessiter une conversion initiale en pack. La progression affiche les couches terminées lorsque le convertisseur les fournit. La reprise d’un pack à faible consommation mémoire tient compte de l’espace déjà alloué au fichier temporaire. Les GGUF Hikari/PQ2_0 compatibles utilisent PrismML via **Load with Strata**, sans conversion native Q2_0. Pour les GGUF ordinaires compatibles, TurboQuant propose K=`FP16` et V=`TURBO2/3/4`, puis un rechargement. Voir les [moteurs locaux](docs/LOCAL_LLAMA_BACKENDS.md).
-
-## Cache privé et mémoire
-
-Le nouveau mode Qwen3.6 conserve le cache dans une même conversation authentifiée. Une autre conversation ou un autre utilisateur ne le réutilise pas. Changement de conversation, annulation, erreur ou cinq minutes d’inactivité effacent le cache privé. Sans identifiant de conversation, aucune réutilisation n’est effectuée.
-
-Les deux branches de refus avant démarrage du Host ont été supprimées. Le serveur vérifie la capacité de cache privé dans la réponse INFO du moteur actif, y compris pour les compilations locales compatibles. Une seule requête est traitée à la fois ; les caches partagés restent désactivés. Le mapped expert pack reste facultatif. Consultez les mesures et vérifications encore ouvertes dans le [compte rendu de version](docs/HAKUA_RELEASE.md).
-
-Ouvrez **Hakua memory** dans la barre latérale. La lecture et la sauvegarde demandent des choix distincts à chaque tour. PrismML/TurboQuant redémarre son serveur avec authentification et caches privés ; terminez les requêtes en cours auparavant. [Guide](serve/MEMORY_HARNESS.md).
-
-## Composants et limites
-
-Application/Host : `0.5.1` ; moteur natif : `0.5.1`; Control `0.5.1` ; Node : `24.22.2` ; CPython : `3.12.15` ; Hakua-memory : `0.3.5`. Référence amont : `5d37280d` / `0.2.11`.
-
-0.5.1 intègre la version amont 0.2.11 et les corrections jusqu’à `5d37280d` : fichiers par conversation, reprise des réponses actives, corrections IME et du moteur de rendu, nouveaux modèles, isolation des flux et Pillow 13. La mémoire Hakua, la réutilisation des GGUF locaux et les caches privés Qwen3.6 sont conservés. La nouvelle compilation CUDA est vérifiée séparément ; les mesures de 0.4.1 ne qualifient pas ses nouveaux réglages par défaut. La génération native sur toute la fenêtre reste non qualifiée. Voir les [vérifications et la publication](docs/HAKUA_RELEASE.md).
-
-Les vérifications Windows x64 portent sur une RTX 5060 Ti, CUDA sm_120 et 32 Go de RAM. Les autres GPU et systèmes, les images natives et un moteur natif DeepSeek distinct ne sont pas qualifiés. L’ancienne allocation hôte Qwen3.6 peut demander environ 18,7 Gio plus une réserve ; 32 Go ne garantissent pas le démarrage. Une réponse courte avec un contexte de 131 072 tokens ne valide ni la pleine fenêtre ni sa qualité. Les modes K de TurboQuant restent désactivés après des échecs aux essais de qualité. Spin(8), Triality, Query-v3 et Bonsai restent expérimentaux et facultatifs. Performances et besoins dépendent du modèle et de l’ordinateur.
-
-## 96K–128K avec 16 Go de VRAM
-
-L’éditeur propose 96K (98 304) et 128K (131 072). Sur le PC testé, équipé d’une RTX 5060 Ti de 16 Go et de 32 Go de RAM, Qwen3.6 UD-Q4_K_XL avec PrismML, un cache K/V Q8 et 28 couches MoE sur le CPU a traité 130 792 tokens sans troncature et retrouvé les trois codes éloignés. Cette requête a pris environ 29 minutes ; elle ne garantit ni la qualité générale ni la vitesse d’autres modèles. Voir les [réglages et résultats en contexte complet](docs/WINDOWS_16GB_CONTEXT.md).
-
-## Développement
-
-[Modèles](docs/AI_REFERENCE.md) · [Compilation](packaging/README.md) · [Contribution](CONTRIBUTING.md) · [Sécurité](SECURITY.md)
+[Install](docs/HAKUA_INSTALL.md) · [Release evidence](docs/HAKUA_RELEASE.md) · [API and hardware](docs/AI_REFERENCE.md) · [Terminal](docs/TERMINAL.md) · [Source build](docs/SOURCE_INSTALL.md) · [Packaging](packaging/README.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License](LICENSE)
 
 ```sh
-python -m pytest tests/terminal tests/test_hakua_hermes_memory_stack.py
-python -m unittest discover -s serve -p 'test_*.py'
-npm --prefix apps/host test
-npm --prefix apps/host run typecheck
+python -m pytest tests/terminal
 ```
 
-Strata est sous licence MIT. Les poids, Hakua-memory et les dépendances conservent leurs licences et notices. Le petit vecteur de contrôle facultatif est désactivé par défaut et relève de la [Qwen Community License 1.0](data/experimental-speed-projection/LICENSE).
+```sh
+cd apps/host
+npm test
+npm run build
+```
 
-## Soutiens du projet Strata d’origine
+### Niko1221/Strata — upstream Terminal reference
 
-Merci à toutes les personnes qui soutiennent Strata.
+```sh
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
 
-<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
-<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
-<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
-<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
-<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
-<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
-<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
-<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
-<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
-<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
-<!-- supporters:end -->
+```powershell
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+```
 
-## Remerciements
-
-Nous remercions les développeurs de [Strata](https://github.com/Niko1221/Strata) pour leur travail attentif sur l’inférence locale et une application de bureau accessible. Ce fork repose sur leur contribution considérable.
-
-Nous saluons également [llama.cpp](https://github.com/ggml-org/llama.cpp) et ses contributeurs, qui rendent l’inférence en C/C++ accessible aux développeurs et aux utilisateurs, ainsi que [RustXNG](https://github.com/sahenjp/RustXNG) pour son service ouvert de recherche et de collecte de sources destiné à l’IA locale. Leur travail technique et leur maintenance continue méritent notre reconnaissance.
-
-Les intégrations et modifications de ce fork sont maintenues indépendamment. Ces remerciements n’impliquent aucune approbation par les projets cités.
+[Niko1221/Strata](https://github.com/Niko1221/Strata) · [Hermes Agent](https://github.com/NousResearch/hermes-agent) · [Sources et mentions tierces](third_party/)

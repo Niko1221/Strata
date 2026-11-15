@@ -219,7 +219,8 @@ for(const family of ['qwen','swift','coder','unsloth','gyro','deepseek41'])test(
   try{
     f.catalog.families[0].family=family;
     const path=join(f.repo,'strata-iq2_xs.json');
-    const original={exe:'strata-q36.exe',model_name:'Qwen3.6-looking label',parallel:1,args:['--max-context','256']};
+    const original={exe:family==='deepseek41'?join(f.repo,'strata-dsv41.exe'):'strata-q36.exe',model_name:'Qwen3.6-looking label',parallel:1,args:['--max-context','256']};
+    if(family==='deepseek41')writeFileSync(original.exe,'inert dedicated-engine fixture; Control start is mocked');
     writeFileSync(path,JSON.stringify(original));await f.control.refresh(true);
     const done=await finishJob(f.control,f.control.operation('load',{model:'iq2_xs',resourceProfile:'work',contextChosen:true}).id);
     assert.equal(done.state,'done',done.error);

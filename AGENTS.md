@@ -20,6 +20,11 @@ The original user profile is normally running with its settings and prior skills
 preserved, learning and auto-application enabled, RustXNG Full and no loaded model.
 See _docs/2026-11-13_stable-059-workflow-safety_Codex.md for exact scope and evidence.
 
+Keep upstream Niko1221 0.2.14 at
+09b603886925994d0d4461857b01321ef3aa431c (upstream engine 0.1.60;
+fork versions remain independent). The 0.6.0 integration is a source candidate;
+do not claim its build, installation or publication before checking its receipts.
+
 ## Historical 0.5.8 records
 
 Hakua app, Terminal, Control and native engine 0.5.8 were installed and formally
@@ -120,7 +125,7 @@ preserving provider/key/approval choices. Normal startup passed unloaded/no-debu
 Public search sites and broad autonomous-search/model quality remain unqualified;
 releaseQualified=false. The historical054 Prism timeout's backend cause is not
 established. The old054 sources85a78234/7bb24974, twelve findings and all assets
-remain unchanged. Keep upstream Niko1221 0.2.13 at
+remain unchanged. Historical upstream reference: Niko1221 0.2.13 at
 f33c8c30588ff00e24b6b63bad0bf6a14da19081 (upstream engine0.1.59; independent versions).
 New repair/build records are _docs/2026-11-10_release-055-repair_OpenCode.md and
 _docs/2026-11-10_install-sidebar-web_OpenCode.md; publication/readback is tracked
@@ -151,7 +156,7 @@ Strata has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
   not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
-  `Strata-0.2.13-windows-x64-setup.exe`, `Strata-0.2.13-linux-x86_64.AppImage`, `Strata-0.2.13-macos-arm64.dmg`.
+  `Strata-0.2.14-windows-x64-setup.exe`, `Strata-0.2.14-linux-x86_64.AppImage`, `Strata-0.2.14-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
@@ -170,8 +175,8 @@ short version is:
 1. Install the Terminal. It needs no administrator rights.
 
    ```sh
-   curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh                  # Linux, Mac
-   irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex                         # Windows PowerShell
+   curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh                  # Linux, Mac
+   irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex                         # Windows PowerShell
    ```
 
    On Windows, open a new terminal afterwards so that `strata` is on the PATH.

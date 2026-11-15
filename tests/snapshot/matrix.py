@@ -75,6 +75,9 @@ MODEL_SETS: tuple[ModelSet, ...] = (
              ("DeepSeek-V4.1-Flash-IQ2_XXS-00001-of-00004.gguf",), multi_file=True),
 )
 
+# Qwen drafting controls do not apply to the retained DeepSeek DSpark path.
+QWEN_MODEL_SETS: tuple[ModelSet, ...] = tuple(s for s in MODEL_SETS if s.family in ("qwen", "unsloth"))
+
 #: setup is listed so the table has its row; see driver.drive_setup for why it is not driven today.
 ENTRY_POINTS = ("setup", "launch", "app_plain", "app_models")
 

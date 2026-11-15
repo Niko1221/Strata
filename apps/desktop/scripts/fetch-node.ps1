@@ -8,7 +8,7 @@
 #   ... -File fetch-node.ps1 -Check                  # verify what is already installed
 #   ... -File fetch-node.ps1 -FromFile node.zip      # verify and install a zip you already have (offline)
 #
-# The Node version must satisfy the App Host's own engines.node (>= 24.22.2).
+# The Node version must satisfy the App Host's own engines.node (>= 24.22.3).
 [CmdletBinding()]
 param(
     [switch]$Check,
@@ -17,11 +17,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$NodeVersion = if ($env:STRATA_NODE_VERSION) { $env:STRATA_NODE_VERSION } else { '24.22.2' }
-if ($NodeVersion -ne '24.22.2') { throw 'Node version has no recorded checksum; update both fetch scripts before installing it.' }
+$NodeVersion = if ($env:STRATA_NODE_VERSION) { $env:STRATA_NODE_VERSION } else { '24.22.3' }
+if ($NodeVersion -ne '24.22.3') { throw 'Node version has no recorded checksum; update both fetch scripts before installing it.' }
 $Target = 'win-x64'
-# SHA-256 of node-v24.22.2-win-x64.zip from nodejs.org's SHASUMS256.txt; keep equal to fetch-node.sh.
-$Expected = 'ca1bff5d8ead13c9f2ea404a176db46bd430704d5b5113734049fa365e7799e2'
+# SHA-256 of node-v24.22.3-win-x64.zip from nodejs.org's SHASUMS256.txt; keep equal to fetch-node.sh.
+$Expected = 'e612af99f626ab415ea225af6bce5c971feb448cb5cae250bb1c3fa50c5f7d9f'
 if (-not $Dest) { $Dest = Join-Path $PSScriptRoot '..\src-tauri\resources\node' }
 $Installed = Join-Path $Dest 'node.exe'
 

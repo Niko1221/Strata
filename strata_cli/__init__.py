@@ -9,7 +9,7 @@ SCHEMA_VERSION = 1
 #: two equal, except for a Terminal-only release such as 0.2.3.1 or 0.2.4, whose app stays 0.2.3). On the Hakua fork this matches
 #: repository-root ``VERSION`` (product SemVer). `version()` below is the Control build number, which the engine-compatibility
 #: checks compare, so it stays numeric. CONTROL_VERSION owns it in a source checkout; archives carry it in VERSION.
-PRODUCT_VERSION = "0.5.9"
+PRODUCT_VERSION = "0.6.0"
 
 _BUILD_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 

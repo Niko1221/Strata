@@ -1,7 +1,7 @@
 {
   "name": "strata",
   "private": true,
-  "version": "0.5.9",
+  "version": "0.6.0",
   "type": "module",
   "description": "Strata \u2014 local AI, tuned to one model. Web shell + engine host.",
   "scripts": {
@@ -44,7 +44,7 @@
     "vite": "^6.0.7"
   },
   "engines": {
-    "node": ">=24.22.2"
+    "node": ">=24.22.3"
   },
   "allowScripts": {
     "esbuild@0.25.12": true

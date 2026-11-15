@@ -35,6 +35,13 @@ test('language switching translates static and formatted UI without changing sup
 });
 const size=(id,model)=>({id,model,download_gb:4,ram_needed_gb:8,about:'',installed:false});
 const family=(id,title,images,sizes)=>({family:id,title,images,sizes,about:'',experimental:false});
+
+test('an unavailable dedicated DeepSeek runtime retains its family, version and reason',()=>{
+ const ds={...family('deepseek41','DeepSeek-V4.1-Flash',false,[size('deepseek41-ist','IST-DAS-2.00bpw')]),available:false,unavailable_reason:'Dedicated engine missing'};
+ const group=nativeCatalogModels([ds]).find(f=>f.family==='deepseek41');
+ assert.equal(group.available,false);assert.equal(group.unavailable_reason,ds.unavailable_reason);
+ assert.equal(group.sizes[0].id,'deepseek41-ist');assert.equal(group.sizes[0].sourceFamily,'deepseek41');
+});
 test('only the two requested display families exist; engine IDs and per-version capabilities survive grouping',()=>{
  setTranslationLanguage('en');
  const raw=[family('qwen','Qwen3.8-Flash-Next',true,[size('q2_0','Q2_0')]),family('swift','Swift 1.5',false,[size('swift-iq2_xs','IQ2_XS')]),family('coder','Coder',false,[size('coder-iq1_m','IQ1_M')]),family('unsloth','Unsloth',true,[size('unsloth-ud-q4_k_xl','UD-Q4_K_XL')])];

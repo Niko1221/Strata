@@ -91,6 +91,7 @@
      "int8"
     ],
     "env_set": {
+     "GGML_NO_BACKTRACE": "1",
      "STRATA_REQUIRE_Q36_KV": "0",
      "STRATA_REQUIRE_Q36_PRIVATE_CACHE": "0"
     },
@@ -214,6 +215,7 @@
      "0"
     ],
     "env_set": {
+     "GGML_NO_BACKTRACE": "1",
      "STRATA_REQUIRE_Q36_KV": "0",
      "STRATA_REQUIRE_Q36_PRIVATE_CACHE": "0"
     },
@@ -338,6 +340,7 @@
      "0"
     ],
     "env_set": {
+     "GGML_NO_BACKTRACE": "1",
      "STRATA_REQUIRE_Q36_KV": "0",
      "STRATA_REQUIRE_Q36_PRIVATE_CACHE": "0"
     },

@@ -18,7 +18,7 @@ const controlVersion=read(join(root,'CONTROL_VERSION')).trim();
 if(!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(controlVersion))throw new Error('Invalid Control release version');
 verifyHost(join(root,'apps/host'));
 const uiBuild=json(join(root,'apps/host/dist/release-build.json'));
-if(uiBuild.recipe?.nodeVersion!=='24.22.2'||uiBuild.recipe?.publicPackage!==true||uiBuild.recipe?.publicAssetCommit!=='03f11e2d6adc319ea21e9a1d5820a99cd3767257')throw new Error('Rebuild with the public-package assets and system-font policy');
+if(uiBuild.recipe?.nodeVersion!=='24.22.3'||uiBuild.recipe?.publicPackage!==true||uiBuild.recipe?.publicAssetCommit!=='03f11e2d6adc319ea21e9a1d5820a99cd3767257')throw new Error('Rebuild with the public-package assets and system-font policy');
 if(Object.keys(uiBuild.assets).some(name=>/gtwalsheim/i.test(name)))throw new Error('Unqualified supplied font in the release UI');
 for(const name of ['icon.png','icon.ico'])if(sha256(join(root,'apps/desktop/src-tauri/icons',name))!==uiBuild.recipe.publicAssets?.[name])throw new Error('Stage the approved public shell icon before bundling');
 const nsis=json(join(root,'apps/desktop/src-tauri/tauri.conf.json')).bundle?.windows?.nsis;
@@ -64,11 +64,11 @@ if(process.platform==='win32') {
  if(searchSource.version!==RUSTXNG_VERSION || searchSource.profile!=='full' || searchSource.sourceCommit!=='a8ba33d8c9ceed91236f3abf029254d0f84995bb' || sha256(join(search,'rustxng.exe'))!==RUSTXNG_SHA256)throw new Error('Stage the pinned RustXNG Full distribution');
  for(const name of ['LICENSE','NOTICE','corresponding-source.tar.gz'])if(!searchSource.files?.[name] || sha256(join(search,name))!==searchSource.files[name].sha256)throw new Error('RustXNG source or attribution changed: '+name);
  const node=join(resources,'node/node.exe');
- if(sha256(join(resources,'node/LICENSE'))!=='ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9')throw new Error('Stage the official Node 24.22.2 licence');
- // nodejs.org/dist/v24.22.2/SHASUMS256.txt: win-x64/node.exe.
- if(sha256(node)!=='1c331340fa6cac5e4294725959070a143fa0507195a78ad77eed7943f719aac9')throw new Error('Stage the verified Node 24.22.2 Windows runtime');
+ if(sha256(join(resources,'node/LICENSE'))!=='ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9')throw new Error('Stage the official Node 24.22.3 licence');
+ // nodejs.org/dist/v24.22.3/SHASUMS256.txt: win-x64/node.exe.
+ if(sha256(node)!=='86fc4785327db5f5c7558dc6156c543b433c313e813a222e088086222ab4afa6')throw new Error('Stage the verified Node 24.22.3 Windows runtime');
  const nodeProbe=spawnSync(node,['--version'],{encoding:'utf8',timeout:15000,windowsHide:true});
- if(nodeProbe.status!==0||nodeProbe.stdout.trim()!=='v24.22.2')throw new Error('Bundled Node runtime version mismatch');
+ if(nodeProbe.status!==0||nodeProbe.stdout.trim()!=='v24.22.3')throw new Error('Bundled Node runtime version mismatch');
  for(const choice of Object.keys(LOCAL_BACKENDS)) {
   const binary=findLocalBackend(choice,{installRoot:resources});
   const manifest=await verifyLocalBackend(binary,choice);

@@ -353,6 +353,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(vmm_test PRIVATE strata_engine)
     add_test(NAME vmm_test COMMAND vmm_test)
     set_tests_properties(vmm_test PROPERTIES TIMEOUT 60)
+    # the elastic K/V's pools when the expert cache cannot give them slots: they grow from new VRAM to a long prompt's
+    # cells and to the whole context, every mapped cell writable (GPU with virtual memory; skips with 77 without one)
+    add_executable(kv_grow_refused_test tests/core/kv_grow_refused_test.cpp)
+    target_link_libraries(kv_grow_refused_test PRIVATE strata_engine)
+    add_test(NAME kv_grow_refused_test COMMAND kv_grow_refused_test)
+    set_tests_properties(kv_grow_refused_test PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     # The resident RAM mode with a layer split: the copy keeps each stage's lend region, and the experts the
     # prompt path borrows are served from RAM (the file source reads none of them).  The device calls are
     # wrapped - conversation_transfer_test's pattern - and `pin = false` keeps the copy pageable, so this
@@ -397,6 +403,16 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(native_dense_ple_key_test PRIVATE strata_engine)
     add_test(NAME native_dense_ple_key_test COMMAND native_dense_ple_key_test)
     set_tests_properties(native_dense_ple_key_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    # a layer split prices a later stage's projections (with the Q8_0 hyper-connection rows) as `load` allocates them
+    add_executable(native_dense_price_test tests/core/native_dense_price_test.cpp)
+    target_link_libraries(native_dense_price_test PRIVATE strata_engine)
+    add_test(NAME native_dense_price_test COMMAND native_dense_price_test)
+    set_tests_properties(native_dense_price_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    # which GGUFs carry the hyper-connection projections as Q8_0 and the default rule STRATA_HC_Q8 follows from it (no device needed)
+    add_executable(native_dense_hc_default_test tests/core/native_dense_hc_default_test.cpp)
+    target_link_libraries(native_dense_hc_default_test PRIVATE strata_engine)
+    add_test(NAME native_dense_hc_default_test COMMAND native_dense_hc_default_test)
+    set_tests_properties(native_dense_hc_default_test PROPERTIES TIMEOUT 60)
     # #369: per-layer admission on a sized (native pack) cache starts each layer in its own range
     add_executable(expert_cache_per_layer_test tests/core/expert_cache_per_layer_test.cpp)
     target_link_libraries(expert_cache_per_layer_test PRIVATE strata_engine)
@@ -406,6 +422,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(expert_cache_segmented_test PRIVATE strata_engine)
     add_test(NAME expert_cache_segmented_test COMMAND expert_cache_segmented_test)
     set_tests_properties(expert_cache_segmented_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    # #5708: a failed free-memory query is said with its error, not passed off as "0.00 GiB free" (no device: no GPU needed)
+    add_executable(device_free_error_test tests/core/device_free_error_test.cpp)
+    target_link_libraries(device_free_error_test PRIVATE strata_engine)
+    add_test(NAME device_free_error_test COMMAND device_free_error_test)
+    set_tests_properties(device_free_error_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60
+                         ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1;HIP_VISIBLE_DEVICES=-1")
     # STRATA_MMQ_DIRECT: slot_guard / slot_room / slot_tail on the uniform and the sized cache, and the default
     # (no guard) sized layout unchanged
     add_executable(expert_cache_slot_guard_test tests/core/expert_cache_slot_guard_test.cpp)
@@ -473,6 +495,17 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
 
     add_executable(tune_rocblas tools/hip/tune_rocblas.cpp)
     target_link_libraries(tune_rocblas PRIVATE hip::host roc::rocblas)
+  endif()
+
+  # the prompt path's K/V append under KV streaming, both ways (the kernel's own stores to the host copy against the
+  # staging pool's DMA, core/kv_host_dma.hpp): host copies, a read-back on another stream and the VRAM slots byte-equal
+  # (GPU, synthetic, no model; skips with 77 without a GPU).  CUDA only: HIP keeps the kernel's stores by default.
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA)
+    add_executable(kv_host_dma_parity src/prefill/kv_host_dma_parity.cpp)
+    target_include_directories(kv_host_dma_parity PRIVATE ${_strata_gpu_include_directories})
+    target_link_libraries(kv_host_dma_parity PRIVATE strata_prefill strata_kernels ${_strata_gpu_runtime_target})
+    add_test(NAME kv_host_dma_parity COMMAND kv_host_dma_parity)
+    set_tests_properties(kv_host_dma_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 
   # DFlash2 drafter tools (not built by default: cmake --build <dir> --target dflash2_parity dflash2_gemm_bench dflash2_attn_bench): the drafter against
@@ -1104,6 +1137,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(native_grouped_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  # native_expert_i8 (our own int8 dot-product tile kernels, research, off by default) against native_expert_grouped (GPU, synthetic, no model)
+  add_executable(native_i8_parity src/kernels/native_i8_parity.cpp)
+  target_include_directories(native_i8_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(native_i8_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME native_i8_parity COMMAND native_i8_parity)
+  set_tests_properties(native_i8_parity PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
   add_executable(mmvf_rows_parity src/kernels/mmvf_rows_parity.cpp)
   target_include_directories(mmvf_rows_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(mmvf_rows_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -1418,6 +1457,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(platform_memory_test src/platform/memory_test.cpp)
   target_link_libraries(platform_memory_test PRIVATE strata_core ${_strata_gpu_runtime_target})
   add_test(NAME platform_memory_test COMMAND platform_memory_test)
+  set_tests_properties(platform_memory_test PROPERTIES SKIP_RETURN_CODE 77)   # the system refused to lock the region (small memory-lock limit): skipped, with the reason printed
 
   # The pinned-memory headroom (pin_budget.hpp) against a simulated ceiling; skips without a GPU.
   add_executable(pin_budget_test src/core/pin_budget_test.cpp)

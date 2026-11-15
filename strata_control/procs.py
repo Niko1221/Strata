@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from strata_control.private_files import private_mkdir as _private_mkdir
 import json
+import math
 import os
 import signal
 import subprocess
@@ -355,6 +356,63 @@ def end_leftovers(profile: str | None = None, *, grace: float = 8.0, settle: flo
 
 # ---------------------------------------------------------------------------- engines older versions left
 
+def _short_name(path: str) -> str | None:
+    """The 8.3 name Windows gives the file at `path` (None where there is none or it cannot be read)."""
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(32768)
+        n = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, len(buf))
+        return os.path.basename(buf.value) if 0 < n < len(buf) else None
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _name_may_be(name: str, base: str, short: str | None) -> bool:
+    """Could a process whose image name is `name` be the engine file `base`?  Loose on purpose (same_file decides): the same name in
+    any case, the file's own 8.3 name, or any 8.3-looking name (STEM~N.EXT) whose stem starts the engine's name."""
+    n = name.lower()
+    if n == base or (short is not None and n == short):
+        return True
+    stem = n.split("~", 1)[0] if "~" in n else ""
+    return bool(stem) and base.replace(" ", "").startswith(stem)
+
+
+def _engine_candidates(engine_exe: str):
+    """psutil processes (with info pid, ppid, cmdline, create_time) that could be `engine_exe`.
+
+    Windows: reading a command line costs 30-150 ms for each protected process that refuses it (svchost, lsass ...): over 250 processes
+    that was 4-9 s at every server start. So the names come first (cheap) and only a process whose image name can be the engine's
+    file is read in full; a process whose name cannot be read is read in full as before. Elsewhere every process is read, as before
+    (a Linux name is the 15-character comm and can be a link's name)."""
+    full = ["pid", "ppid", "cmdline", "create_time"]
+    if not WINDOWS:
+        yield from psutil.process_iter(full)
+        return
+    import ntpath                                       # Windows path rules (os.path there; named so the tests can run elsewhere)
+    base = ntpath.basename(str(engine_exe)).lower()
+    short = (_short_name(engine_exe) or "").lower() or None
+    for p in psutil.process_iter(["pid", "name"]):
+        name = p.info.get("name")
+        if name and not _name_may_be(name, base, short):
+            continue
+        try:
+            p.info = p.as_dict(attrs=full)
+        except (psutil.Error, OSError):
+            continue
+        yield p
+
+
+def _known_creation_time(value: object) -> float | None:
+    """A denied/invalid psutil field cannot establish which process started first."""
+    if type(value) not in (int, float):
+        return None
+    try:
+        stamp = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return stamp if math.isfinite(stamp) and stamp > 0 else None
+
+
 def orphans_of(engine_exe: str) -> list[Ident]:
     """Processes that are exactly this engine executable, running ``--serve``, whose parent no longer exists.
 
@@ -370,25 +428,31 @@ def orphans_of(engine_exe: str) -> list[Ident]:
     except psutil.Error:
         pass
     found = []
-    # Windows command-line reads can wait on unrelated processes. Query that
-    # information only after the executable identity matches; the full identity
-    # and live-parent checks below still govern whether anything may be ended.
-    for p in psutil.process_iter(["pid"]):
+    for p in _engine_candidates(engine_exe):
         try:
             if p.pid in mine or not same_file(p.exe(), engine_exe):
                 continue
-            cmd = p.cmdline() or []
+            cmd = p.info.get("cmdline") or []
             if "--serve" not in cmd:
                 continue
-            parent = p.ppid()
+            parent = p.info.get("ppid")
+            child_started = _known_creation_time(p.info.get("create_time"))
+            # as_dict substitutes None for denied fields. Unknown ownership is
+            # not evidence of an orphan, even when identity can later be read.
+            if type(parent) is not int or not 0 <= parent <= 0xFFFFFFFF or child_started is None:
+                continue
             if parent in mine:
                 continue                              # started by this server (or by a process above it)
             if parent and parent != 1:
                 try:
                     q = psutil.Process(parent)
                     adopted = q.name().lower() in INIT_NAMES      # an init that adopts orphans did not start it
-                    if not adopted and q.create_time() <= p.create_time() + 1.0                             and q.status() != psutil.STATUS_ZOMBIE:
-                        continue                      # a live parent started it: not an orphan
+                    if not adopted:
+                        parent_started = _known_creation_time(q.create_time())
+                        if parent_started is None:
+                            continue
+                        if parent_started <= child_started + 1.0 and q.status() != psutil.STATUS_ZOMBIE:
+                            continue                  # a live parent started it: not an orphan
                 except psutil.NoSuchProcess:
                     pass
             ident = identify(p.pid)

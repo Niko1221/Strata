@@ -36,6 +36,16 @@ def build(parent: Path, version: str, key: dict, padding: int = 0) -> Path:
     return folder
 
 
+class FeedCompatibilityInputs(unittest.TestCase):
+    def test_frozen_and_local_inputs_cannot_silently_override_each_other(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "not-written"
+            with self.assertRaisesRegex(SystemExit, "either local DeepSeek entries or a frozen"):
+                feed_tool.build_feed(target, key={}, sequence=1,
+                                     dsv41_dir=Path(folder), dsv41_member={"packages": []})
+            self.assertFalse(target.exists())
+
+
 class Dsv41Engine(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="strata-dsv41-eng-")
@@ -98,12 +108,10 @@ class Dsv41Engine(unittest.TestCase):
         name = next((self.release / "dsv41").glob("*.tar.gz")).name
         self.server.cut[name] = 800_000
         lines = []
-        self.assertIsNone(self.install(lines))                       # the connection broke part-way: said plainly, the partial file is kept
-        self.assertIn("resumes", " ".join(lines))
-        exe = self.install(lines)                                    # the next try continues from the byte it reached
-        self.assertIsNotNone(exe, lines)
-        ranges = [r for r in self.server.requests if r[1].endswith(".tar.gz") and r[2] and r[2] != "bytes=0-"]
-        self.assertTrue(ranges, self.server.requests)
+        exe = self.install(lines)                                    # the connection broke part-way: the same run continues from the byte it reached
+        self.assertIsNotNone(exe, lines)                             # (the network rule: resumed while bytes come, strata_control/netpolicy.py)
+        ranges = [r[2] for r in self.server.requests if r[1].endswith(".tar.gz")]
+        self.assertEqual(ranges, [None, "bytes=800000-"], "exactly one more request, from the byte the cut reached: no byte twice")
         self.assertEqual(self.tree(self.eng), self.before)
 
     def test_no_package_for_this_pc_is_a_plain_line_not_a_crash(self):

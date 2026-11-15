@@ -33,9 +33,39 @@ class ReleaseManifest(unittest.TestCase):
         m = copy.deepcopy(rm.load())
         m["product_version"] = "0.2.99"
         m["tag"] = "v0.2.99"
+        m.pop("terminal_version", None)                             # the Terminal then has to say the product version
         problems = "\n".join(rm.check(m))
         self.assertIn("strata_cli/__init__.py says", problems)
         self.assertIn("asset list has no Strata-0.2.99-windows-x64-setup.exe", problems)
+
+    def test_a_control_only_hotfix_is_allowed_and_a_drifting_control_is_not(self):
+        """0.2.13.1: the Terminal and Control are one hotfix part ahead of the app and the engines; nothing else may differ.
+        Written so it holds for a release with a hotfix part (0.2.13.1) and without one (0.2.14)."""
+        m = rm.load()
+        self.assertEqual(rm.check(m), [])
+        wrong = copy.deepcopy(m)
+        wrong["control_version"] = m["engine_version"] + ".9"       # the manifest names a Control hotfix the source does not have
+        problems = "\n".join(rm.check(wrong))
+        # The fork has a separate CONTROL_VERSION; native CMake is the engine,
+        # not Control. Keep the upstream Terminal hotfix check below as well.
+        self.assertIn("CONTROL_VERSION says", problems)
+        wrong = copy.deepcopy(m)
+        wrong["engine_version"] = "0.1.58"                          # engines two builds behind Control: not a hotfix
+        self.assertIn("CMakeLists.txt (engine) says", "\n".join(rm.check(wrong)))
+        wrong = copy.deepcopy(m)
+        wrong["terminal_version"] = m["product_version"] + ".9"     # the manifest names a Terminal the source does not say
+        terminal = rm.code_versions()["strata_cli/__init__.py"][0]
+        self.assertIn("strata_cli/__init__.py says %s" % terminal, "\n".join(rm.check(wrong)))
+
+    def test_fork_control_and_native_versions_are_independent(self):
+        from unittest.mock import patch
+        manifest = copy.deepcopy(rm.load())
+        self.assertIn("upstream", manifest)
+        manifest["control_version"] += ".1"
+        versions = rm.code_versions()
+        versions["CONTROL_VERSION"] = (manifest["control_version"], "control_version")
+        with patch.object(rm, "code_versions", return_value=versions):
+            self.assertEqual(rm.check(manifest), [])
 
     def test_installer_names_in_the_manifest_asset_list(self):
         m = rm.load()

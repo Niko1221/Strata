@@ -300,6 +300,7 @@ test('packaged: a model id with dots (DeepSeek) is listed, loaded from its run c
   const id = 'deepseek-v4.1-flash-ist-das-2.00bpw';
   const f = packagedFixture({ ids: [id] });
   try {
+    mkdirSync(join(f.install,'engine-dsv41'),{recursive:true});writeFileSync(join(f.install,'engine-dsv41','strata-dsv41'),'inert engine fixture');
     writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', '--eos', '1'], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
     const state = await f.native.refresh(true);
     assert.deepEqual(state.installed.models.map(m => m.model), [id], 'listed (the install finished but the app used to show nothing)');
@@ -330,6 +331,7 @@ test('packaged: the Speed choice of DeepSeek passes --experts 5 or 6 only when c
   const run = async (values, extraArgs = [], engine = '0.1.50-windows-x86_64-cuda-cuda13') => {
     const f = packagedFixture({ ids: [id] });
     try {
+      mkdirSync(join(f.install,'engine-dsv41',engine),{recursive:true});writeFileSync(join(f.install,'engine-dsv41',engine,'strata-dsv41'),'inert engine fixture');
       writeFileSync(join(f.install, `strata-${id}.json`), JSON.stringify({ exe: join(f.install, 'engine-dsv41', engine, 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack'), '--max-context', '8192', ...extraArgs], model_name: 'deepseek-v4.1-flash', port: 8080 }));
       await f.native.refresh(true);
       const capability = f.native.settings(id).capabilities.dsExperts;
@@ -836,6 +838,7 @@ test('packaged: a big model is waited for by its size, inside the ceiling of the
 test('packaged: a run config that names a longer engine wait is honoured, and never shortened by the app', async () => {
   const f = packagedFixture({ ids: ['deepseek-v4.1-flash-ist-das-2.00bpw'], cliStartWait: 'runtime' });
   try {
+    mkdirSync(join(f.install,'engine-dsv41'),{recursive:true});writeFileSync(join(f.install,'engine-dsv41','strata-dsv41'),'inert engine fixture');
     writeFileSync(join(f.install, 'strata-deepseek-v4.1-flash-ist-das-2.00bpw.json'), JSON.stringify({ exe: join(f.install, 'engine-dsv41', 'strata-dsv41'), arch: 'deepseek41', tokenizer: join(f.install, 'tok'), args: ['--pack', join(f.install, 'pack')], model_name: 'deepseek-v4.1-flash', port: 8080, engine_ready_s: 3600 }));
     await f.native.refresh(true);
     const job = await finish(f.native, f.native.operation('load', { model: 'deepseek-v4.1-flash-ist-das-2.00bpw' }).id);
