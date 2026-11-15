@@ -1,17 +1,19 @@
 # Official 0.2.14 integration in the Hakua fork
 
 The 0.6.0 source candidate integrates official Strata through
-[09b603886925994d0d4461857b01321ef3aa431c](https://github.com/Niko1221/Strata/commit/09b603886925994d0d4461857b01321ef3aa431c).
+[baf16363b4403ef0ed4f538f5d5ed11c43fb9535](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535).
 The official release is [v0.2.14](https://github.com/Niko1221/Strata/releases/tag/v0.2.14),
-published on 2026-11-16 JST. Official app/Terminal 0.2.14 and Control/engine
-0.1.60 are separate from this fork's 0.6.0 numbering. Some official platform
+published on 2026-11-16 JST. The same release later received the Terminal
+0.2.14.1 / Control 0.1.60.1 drafter fixes. App 0.2.14 and engine 0.1.60
+remain independent from these and from this fork's 0.6.0 numbering. Some official platform
 components retain 0.1.59; the complete API asset inventory is preserved in the
 integration evidence. A source version does not prove a package was built,
 installed or published.
 
 The fork input is 6f13c7555a7d50289f0e3587ab780627c65a8000. Its merge base with
 official source is f33c8c30588ff00e24b6b63bad0bf6a14da19081. The frozen intake
-contains 900 official-only commits and 447 fork-only commits. Python scripts
+initially contained 900 official-only commits and 447 fork-only commits, followed
+by seven additional official fixes before the source cut. Python scripts
 orchestrate three-way merges from immutable blobs. Line-ending normalization
 prevents CRLF from turning a small semantic conflict into a whole-file choice.
 

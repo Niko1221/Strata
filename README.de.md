@@ -25,7 +25,7 @@ Das Lernen von Workflow-Skills und deren automatische Anwendung sind getrennte O
 
 ## Originalprojekt und Kompatibilität
 
-Grundlage ist der offizielle Commit [09b6038869](https://github.com/Niko1221/Strata/commit/09b603886925994d0d4461857b01321ef3aa431c) aus der Generation 0.2.14 / Engine 0.1.60: Netzwerk, Drafting-Auswahl, Prompt-Kernel, Speicherverwaltung und Plattformkorrekturen. Fork-Versionen sind unabhängig. Entfernte DeepSeek-Pfade bleiben als Erweiterung erhalten; ohne passende dedizierte Laufzeit muss das Laden scheitern. Dieses Windows-Paket belegt weder native Bildeingabe noch eine ausgelieferte native DeepSeek-Engine oder geprüfte Linux-/Mac-Inferenz.
+Grundlage ist der offizielle Commit [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535) aus der Generation 0.2.14 / Engine 0.1.60: Netzwerk, Drafting-Auswahl, Prompt-Kernel, Speicherverwaltung und Plattformkorrekturen. Fork-Versionen sind unabhängig. Entfernte DeepSeek-Pfade bleiben als Erweiterung erhalten; ohne passende dedizierte Laufzeit muss das Laden scheitern. Dieses Windows-Paket belegt weder native Bildeingabe noch eine ausgelieferte native DeepSeek-Engine oder geprüfte Linux-/Mac-Inferenz.
 
 ## Schutz und Messgrenzen
 

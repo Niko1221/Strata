@@ -1,0 +1,31 @@
+diff --git a/.github/workflows/metal-build.yml b/.github/workflows/metal-build.yml
+index 14371e2c6..1499b5f54 100644
+--- a/.github/workflows/metal-build.yml
++++ b/.github/workflows/metal-build.yml
+@@ -22,7 +22,8 @@ jobs:
+   metal-link:
+     # the macOS 26 SDK: metal/src/mtl_rt.mm names MTLGPUFamilyMetal4 (and MTLCompileOptions.mathMode, macOS 15) behind @available,
+     # which is a run-time check; the names must still be in the SDK the engine is compiled against
+-    runs-on: macos-26
++    # Match backends.yml: use the Intel pool to cross-compile genuine arm64 targets.
++    runs-on: macos-26-intel
+     timeout-minutes: 45
+     env:
+       # metal/setup_mac.py's metal-cpp pin (ggml is the vendored third_party/strata-ggml)
+@@ -40,5 +41,14 @@ jobs:
+       - name: Configure
+         run: |
+           cmake -S metal -B build-metal -G Ninja -DCMAKE_BUILD_TYPE=Release \
+-            -DMETAL_CPP_DIR="$PWD/_mcpp/metal-cpp"      - name: Build and link the engine
+-        run: cmake --build build-metal --target strata
++            -DCMAKE_OSX_ARCHITECTURES=arm64 -DGGML_NATIVE=OFF \
++            -DCMAKE_C_FLAGS=-mcpu=apple-m1 -DCMAKE_CXX_FLAGS=-mcpu=apple-m1 -DCMAKE_OBJCXX_FLAGS=-mcpu=apple-m1 \
++            -DMETAL_CPP_DIR="$PWD/_mcpp/metal-cpp"
++      - name: Build and link strata and strata_ds4
++        run: cmake --build build-metal --target strata strata_ds4 --parallel 5
++      - name: Verify both targets are arm64 Mach-O
++        run: |
++          for target in strata strata_ds4; do
++            file "build-metal/$target"
++            test "$(lipo -archs "build-metal/$target")" = arm64
++          done

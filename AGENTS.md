@@ -21,9 +21,11 @@ preserved, learning and auto-application enabled, RustXNG Full and no loaded mod
 See _docs/2026-11-13_stable-059-workflow-safety_Codex.md for exact scope and evidence.
 
 Keep upstream Niko1221 0.2.14 at
-09b603886925994d0d4461857b01321ef3aa431c (upstream engine 0.1.60;
-fork versions remain independent). The 0.6.0 integration is a source candidate;
-do not claim its build, installation or publication before checking its receipts.
+baf16363b4403ef0ed4f538f5d5ed11c43fb9535 (upstream engine 0.1.60;
+fork versions remain independent). Source candidate: Hakua product version 0.6.0;
+app, Terminal, Control and native engine 0.6.0. Do not claim its build,
+installation or publication before checking its receipts. Current installed and
+published stable remains 0.5.9 until the standard overwrite and public readback pass.
 
 ## Historical 0.5.8 records
 

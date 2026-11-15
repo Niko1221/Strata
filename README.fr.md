@@ -25,7 +25,7 @@ L’apprentissage des compétences de travail et leur application automatique so
 
 ## Intégration officielle et compatibilité
 
-La référence officielle est [09b6038869](https://github.com/Niko1221/Strata/commit/09b603886925994d0d4461857b01321ef3aa431c), génération 0.2.14 / moteur 0.1.60 : réseau, choix du brouillonneur, noyaux de prompts, mémoire et correctifs de plateforme. Les versions du fork sont indépendantes. Les chemins DeepSeek supprimés sont conservés comme extension ; sans exécutable dédié, le chargement doit être refusé. Ce paquet Windows ne valide ni entrée native d’images, ni distribution d’un moteur natif DeepSeek, ni inférence Linux/Mac.
+La référence officielle est [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535), génération 0.2.14 / moteur 0.1.60 : réseau, choix du brouillonneur, noyaux de prompts, mémoire et correctifs de plateforme. Les versions du fork sont indépendantes. Les chemins DeepSeek supprimés sont conservés comme extension ; sans exécutable dédié, le chargement doit être refusé. Ce paquet Windows ne valide ni entrée native d’images, ni distribution d’un moteur natif DeepSeek, ni inférence Linux/Mac.
 
 ## Protection et limites des mesures
 

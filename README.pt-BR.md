@@ -25,7 +25,7 @@ Aprendizado de habilidades e aplicação automática são opções separadas, am
 
 ## Integração oficial e compatibilidade
 
-A referência oficial é [09b6038869](https://github.com/Niko1221/Strata/commit/09b603886925994d0d4461857b01321ef3aa431c), geração 0.2.14 / motor 0.1.60: rede, escolha de rascunhador, kernels de prompts, memória e correções de plataforma. As versões do fork são independentes. Caminhos DeepSeek removidos são mantidos como extensão; sem o executável dedicado, a carga deve ser bloqueada. Este pacote Windows não valida entrada nativa de imagens, distribuição de motor nativo DeepSeek ou inferência Linux/Mac.
+A referência oficial é [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535), geração 0.2.14 / motor 0.1.60: rede, escolha de rascunhador, kernels de prompts, memória e correções de plataforma. As versões do fork são independentes. Caminhos DeepSeek removidos são mantidos como extensão; sem o executável dedicado, a carga deve ser bloqueada. Este pacote Windows não valida entrada nativa de imagens, distribuição de motor nativo DeepSeek ou inferência Linux/Mac.
 
 ## Proteção e limites medidos
 

@@ -14,6 +14,16 @@ codex/upstream-sync-20261116. Primary main remains at the frozen fork input.
 The merge is uncommitted. All original conflict paths have semantic resolutions;
 snapshot data came from real fixture drivers, not manual JSON selection.
 
+The first reviewed integration was committed as
+394234d911fc2056af7a9bb2b38df75f94bf0a6a with the fork and original official
+inputs as parents. Final source-cut checking found seven more official commits
+through baf16363b4403ef0ed4f538f5d5ed11c43fb9535. A second Python-orchestrated
+three-way intake covers their twelve files, including Mac Drafting Off avoiding
+draft downloads, once-only offline notices and accurate preparation progress.
+Fork versions stay 0.6.0. Official Terminal 0.2.14.1 and Control 0.1.60.1 are
+recorded independently from app 0.2.14 and engine 0.1.60. The refreshed official
+release API contains 39 assets; the earlier 36-asset snapshot remains historical.
+
 The authoritative local evidence root is
 H:/Strata/evidence/upstream-sync-20261116. Each guarded command has its own
 immutable receipt and hashed receipts/NAME.command.txt output. The source
@@ -32,6 +42,10 @@ Strix comparison has a separate six-case passing correction; this does not
 convert the historical full run to a pass. The orphan-process review finding
 was corrected fail-closed and its 32-case focused run passed. Independent
 scoped spec and quality re-review approved Task 1.
+
+The subsequent complete snapshot-final-v3 run passed all 60 tests in
+1328.28 seconds, with no skips and a drained owned Job. It finished before
+the additional seven-commit source intake; that intake has separate regressions.
 
 Host: updated Vite typecheck and sealed production build passed. The selected
 32-file run has 285 passes and one environment failure; the latter was repaired
@@ -72,6 +86,18 @@ free VRAM were 14,409/11,795 MiB against the unchanged 768 MiB reserve.
 Independent spec and quality review approved the correction slice. Complete
 engine executable relinking and authoritative build binding subsequently passed.
 Compiler code-page warnings remain recorded.
+
+The final nine-case serial GPU replay passed all nine, with minimum free VRAM
+10,481 MiB against the unchanged reserve. Both executable version/help probes
+passed all four checks. Compute Sanitizer reported zero errors for both KV
+lifecycle cases, and Spin8 first-use/full synthetic checks passed. These are
+compiled capability and numerical checks, not model-quality measurements.
+
+The final default CUDA resource check failed on three Q36 specializations:
+NVFP4 STACK 32, IQ2_S STACK 24 and IQ2_XS STACK 24, each against the unchanged
+16-byte limit, with LOCAL zero. Those exact Q36 formats are outside the existing
+six-pair Q36 fixture. The finding remains open pending a bounded correction and
+explicit coverage; no limit or default baseline is relaxed.
 
 The segmented-cache error contract intentionally remains fail-closed: a driver
 error blocks further serving until successful cleanup and reopen. Accurate
@@ -148,3 +174,11 @@ inputs at this stage. Their ZIP SHA-256 is
 d8f5e93a9ef282ca715092e30cb9e7dd87297f96d89ea0ecf04926066a4b0b94.
 No attached prototype source was executed or integrated into this release.
 Its externally reported checks are not local verification evidence.
+
+The later mathematical supplement remains in the same separately ordered scope.
+Its ZIP SHA-256 is
+8657f353a5a782e9ababe940f32da9780bed0e52fead7135d1128eb3cfc8872f.
+The supplied CPU script and claimed results have not been executed or adopted
+as local verification. The document separates memory/ownership transformations,
+floating-point order changes and approximations; these distinctions will be
+assessed against the updated source after this release.

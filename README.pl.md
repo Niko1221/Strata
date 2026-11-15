@@ -25,7 +25,7 @@ Uczenie umiejętności i automatyczne stosowanie to osobne opcje, obie wyłączo
 
 ## Integracja oficjalnego projektu
 
-Punktem odniesienia jest oficjalny commit [09b6038869](https://github.com/Niko1221/Strata/commit/09b603886925994d0d4461857b01321ef3aa431c), generacja 0.2.14 / silnik 0.1.60: sieć, wybór modelu pomocniczego, jądra promptów, pamięć i poprawki platform. Numeracja forka jest niezależna. Usunięte ścieżki DeepSeek pozostają rozszerzeniem; brak dedykowanego środowiska ma blokować ładowanie. Pakiet Windows nie potwierdza natywnego wejścia obrazu, dystrybucji silnika DeepSeek ani sprawdzonej inferencji Linux/Mac.
+Punktem odniesienia jest oficjalny commit [baf16363b4](https://github.com/Niko1221/Strata/commit/baf16363b4403ef0ed4f538f5d5ed11c43fb9535), generacja 0.2.14 / silnik 0.1.60: sieć, wybór modelu pomocniczego, jądra promptów, pamięć i poprawki platform. Numeracja forka jest niezależna. Usunięte ścieżki DeepSeek pozostają rozszerzeniem; brak dedykowanego środowiska ma blokować ładowanie. Pakiet Windows nie potwierdza natywnego wejścia obrazu, dystrybucji silnika DeepSeek ani sprawdzonej inferencji Linux/Mac.
 
 ## Ochrona i ograniczenia pomiarów
 
