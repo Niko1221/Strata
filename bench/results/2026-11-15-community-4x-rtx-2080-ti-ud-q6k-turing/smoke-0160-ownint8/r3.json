@@ -1,0 +1,2060 @@
+{
+  "schema_version": 1,
+  "kind": "strata.serving.benchmark",
+  "run_id": "5aca44d47518416191c83c82debfe036",
+  "suite": "serving-smoke",
+  "started_at": "2026-11-15T22:09:25+00:00",
+  "finished_at": "2026-11-15T22:09:30+00:00",
+  "server_root": "http://127.0.0.1:8080",
+  "condition": "ownint8-280w-r3",
+  "environment": {
+    "model_context": 524288,
+    "slots_effective": 2,
+    "groups": 2,
+    "max_queue": null,
+    "queue_timeout_s": null,
+    "selected_devices": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "stages": [
+      {
+        "stage": 0,
+        "layer_start": 0,
+        "layer_end": 9,
+        "engine_ordinal": 0,
+        "device_index": 0
+      },
+      {
+        "stage": 1,
+        "layer_start": 10,
+        "layer_end": 22,
+        "engine_ordinal": 1,
+        "device_index": 1
+      },
+      {
+        "stage": 2,
+        "layer_start": 23,
+        "layer_end": 34,
+        "engine_ordinal": 2,
+        "device_index": 2
+      },
+      {
+        "stage": 3,
+        "layer_start": 35,
+        "layer_end": 47,
+        "engine_ordinal": 3,
+        "device_index": 3
+      }
+    ],
+    "devices": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 2080 Ti",
+        "mem_total": 23622320128
+      },
+      {
+        "index": 1,
+        "name": "NVIDIA GeForce RTX 2080 Ti",
+        "mem_total": 23622320128
+      },
+      {
+        "index": 2,
+        "name": "NVIDIA GeForce RTX 2080 Ti",
+        "mem_total": 23622320128
+      },
+      {
+        "index": 3,
+        "name": "NVIDIA GeForce RTX 2080 Ti",
+        "mem_total": 23622320128
+      }
+    ],
+    "source": "server_telemetry; driver, engine binary and model artifact hashes not attested"
+  },
+  "profile_identity": {
+    "profile": "unsloth-ud-q6_k_xl-yarn512k",
+    "revision": "996d33aebd01012e",
+    "source_config": "<home>/Strata/strata-unsloth-ud-q6_k_xl-yarn512k.json",
+    "source_sha256": "45fe73f512c29622781bb330d4ba671ca83f007fab6ca2776f10fd06af023429",
+    "model_name": "qwen3.8-flash-next-unsloth-ud-q6_k_xl",
+    "gpu": [
+      0,
+      1,
+      2,
+      3
+    ]
+  },
+  "profile_running_match": "unverified",
+  "profile_running_check": null,
+  "instance_id": "479019449897492fb58f3121f23b15fe",
+  "model_id": "qwen3.8-flash-next-unsloth-ud-q6_k_xl",
+  "planned_phases": [
+    "warmup",
+    "serial",
+    "mixed"
+  ],
+  "before": {
+    "at": 1794780570.6024,
+    "instance_id": "479019449897492fb58f3121f23b15fe",
+    "active": 0,
+    "queued": 0,
+    "waiting": 0,
+    "occupied_slots": 0,
+    "slots_effective": 2,
+    "groups": 2,
+    "admission_reserved": 0,
+    "admission_rejected": 0,
+    "admission_limit": null,
+    "max_queue": null,
+    "queue_timeout_s": null,
+    "queue_timeouts": 0,
+    "client_disconnect_cancels": 0,
+    "answer_tok_s": null,
+    "devices": [
+      {
+        "index": 0,
+        "mem_used": 23073259520,
+        "mem_total": 23622320128,
+        "util": 37
+      },
+      {
+        "index": 1,
+        "mem_used": 22977052672,
+        "mem_total": 23622320128,
+        "util": 45
+      },
+      {
+        "index": 2,
+        "mem_used": 22977052672,
+        "mem_total": 23622320128,
+        "util": 41
+      },
+      {
+        "index": 3,
+        "mem_used": 22983344128,
+        "mem_total": 23622320128,
+        "util": 54
+      }
+    ]
+  },
+  "after": {
+    "at": 1794780570.6024067,
+    "instance_id": "479019449897492fb58f3121f23b15fe",
+    "active": 0,
+    "queued": 0,
+    "waiting": 0,
+    "occupied_slots": 0,
+    "slots_effective": 2,
+    "groups": 2,
+    "admission_reserved": 0,
+    "admission_rejected": 0,
+    "admission_limit": null,
+    "max_queue": null,
+    "queue_timeout_s": null,
+    "queue_timeouts": 0,
+    "client_disconnect_cancels": 0,
+    "answer_tok_s": null,
+    "devices": [
+      {
+        "index": 0,
+        "mem_used": 23073259520,
+        "mem_total": 23622320128,
+        "util": 40
+      },
+      {
+        "index": 1,
+        "mem_used": 22977052672,
+        "mem_total": 23622320128,
+        "util": 50
+      },
+      {
+        "index": 2,
+        "mem_used": 22977052672,
+        "mem_total": 23622320128,
+        "util": 47
+      },
+      {
+        "index": 3,
+        "mem_used": 22983344128,
+        "mem_total": 23622320128,
+        "util": 62
+      }
+    ]
+  },
+  "phases": [
+    {
+      "kind": "warmup",
+      "requested": 1,
+      "client_workers": 1,
+      "passed": true,
+      "duration_s": 0.6486,
+      "requests": [
+        {
+          "label": "short",
+          "prompt_sha256": "3d53cc1546ebbf2a43d6fb44e534b0d9a8f6d1b56f8b94ce4764a3ad5ab75e8d",
+          "prompt_characters": 66,
+          "max_tokens": 32,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 0.6481,
+          "ttft_s": 0.0924,
+          "completion_tokens": 32
+        }
+      ],
+      "telemetry_samples": [
+        {
+          "at": 1794780565.2929487,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 45
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 41
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780565.304246,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 45
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 41
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780565.4651577,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 4.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 45
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 41
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780565.6279209,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 40.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780565.7927706,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 57.2,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780565.9526405,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        }
+      ],
+      "telemetry_sample_errors": 0,
+      "telemetry_samples_omitted": 0,
+      "summary": {
+        "successful": 1,
+        "launch_spread_s": null,
+        "failed": 0,
+        "expected_overload": 0,
+        "admission_full": 0,
+        "queue_wait_timeout": 0,
+        "admission_rejected_delta": 0,
+        "queue_timeouts_delta": 0,
+        "p50_latency_s": 0.6481,
+        "p95_latency_s": 0.6481,
+        "p50_ttft_s": 0.0924,
+        "p95_ttft_s": 0.0924,
+        "output_tokens": 32,
+        "output_tok_s": 49.335,
+        "peak_active": 1,
+        "peak_queued": 0,
+        "peak_waiting": 0,
+        "peak_occupied_slots": 0,
+        "peak_groups": 2,
+        "peak_admission_rejected": 0
+      }
+    },
+    {
+      "kind": "serial",
+      "requested": 2,
+      "client_workers": 1,
+      "passed": true,
+      "duration_s": 1.3081,
+      "requests": [
+        {
+          "label": "short",
+          "prompt_sha256": "3d53cc1546ebbf2a43d6fb44e534b0d9a8f6d1b56f8b94ce4764a3ad5ab75e8d",
+          "prompt_characters": 66,
+          "max_tokens": 32,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 0.6134,
+          "ttft_s": 0.091,
+          "completion_tokens": 32
+        },
+        {
+          "label": "short",
+          "prompt_sha256": "3d53cc1546ebbf2a43d6fb44e534b0d9a8f6d1b56f8b94ce4764a3ad5ab75e8d",
+          "prompt_characters": 66,
+          "max_tokens": 32,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 0.6941,
+          "ttft_s": 0.1022,
+          "completion_tokens": 32
+        }
+      ],
+      "telemetry_samples": [
+        {
+          "at": 1794780565.9654737,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780565.9776952,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780566.139739,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 16.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780566.3018696,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 72.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780566.470556,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 64.1,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780566.6315598,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 35
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 30
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780566.7929652,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 16.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780566.961771,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 64.7,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.1258643,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 1,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 1,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 56.7,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.2861407,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        }
+      ],
+      "telemetry_sample_errors": 0,
+      "telemetry_samples_omitted": 0,
+      "summary": {
+        "successful": 2,
+        "launch_spread_s": null,
+        "failed": 0,
+        "expected_overload": 0,
+        "admission_full": 0,
+        "queue_wait_timeout": 0,
+        "admission_rejected_delta": 0,
+        "queue_timeouts_delta": 0,
+        "p50_latency_s": 0.6134,
+        "p95_latency_s": 0.6941,
+        "p50_ttft_s": 0.091,
+        "p95_ttft_s": 0.1022,
+        "output_tokens": 64,
+        "output_tok_s": 48.925,
+        "peak_active": 1,
+        "peak_queued": 0,
+        "peak_waiting": 0,
+        "peak_occupied_slots": 0,
+        "peak_groups": 2,
+        "peak_admission_rejected": 0
+      }
+    },
+    {
+      "kind": "mixed",
+      "requested": 4,
+      "client_workers": 4,
+      "passed": true,
+      "duration_s": 3.2769,
+      "requests": [
+        {
+          "label": "long",
+          "prompt_sha256": "6622abee09204b4f53f219b21d2bc819e9f6d83c91c975024b5fb6f0691d051a",
+          "prompt_characters": 1824,
+          "max_tokens": 96,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 2.3259,
+          "ttft_s": 0.1642,
+          "completion_tokens": 96
+        },
+        {
+          "label": "long",
+          "prompt_sha256": "6622abee09204b4f53f219b21d2bc819e9f6d83c91c975024b5fb6f0691d051a",
+          "prompt_characters": 1824,
+          "max_tokens": 96,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 2.5221,
+          "ttft_s": 0.3274,
+          "completion_tokens": 96
+        },
+        {
+          "label": "short",
+          "prompt_sha256": "3d53cc1546ebbf2a43d6fb44e534b0d9a8f6d1b56f8b94ce4764a3ad5ab75e8d",
+          "prompt_characters": 66,
+          "max_tokens": 32,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 3.2418,
+          "ttft_s": 2.4812,
+          "completion_tokens": 32
+        },
+        {
+          "label": "short",
+          "prompt_sha256": "3d53cc1546ebbf2a43d6fb44e534b0d9a8f6d1b56f8b94ce4764a3ad5ab75e8d",
+          "prompt_characters": 66,
+          "max_tokens": 32,
+          "status": 200,
+          "ok": true,
+          "error_code": null,
+          "latency_s": 3.275,
+          "ttft_s": 2.6192,
+          "completion_tokens": 32
+        }
+      ],
+      "telemetry_samples": [
+        {
+          "at": 1794780567.299105,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.313629,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.477107,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 3,
+          "occupied_slots": 1,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.6499166,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.8191004,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 19
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 22
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 33
+            }
+          ]
+        },
+        {
+          "at": 1794780567.9914768,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780568.1637514,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780568.3333213,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780568.502662,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780568.6714134,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780568.8404813,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780569.009894,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 18
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 24
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 20
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 27
+            }
+          ]
+        },
+        {
+          "at": 1794780569.1794882,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780569.3494864,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780569.5187426,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 4,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 4,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780569.6891057,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 3,
+          "queued": 0,
+          "waiting": 1,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 3,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780569.8575554,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 2,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 2,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780570.026249,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 2,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 2,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 48.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780570.1951087,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 2,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 2,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 79.9,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 37
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 34
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 54
+            }
+          ]
+        },
+        {
+          "at": 1794780570.3630543,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 2,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 2,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 85.0,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 50
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 47
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 62
+            }
+          ]
+        },
+        {
+          "at": 1794780570.5310059,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 2,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 2,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 2,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": 87.8,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 50
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 47
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 62
+            }
+          ]
+        },
+        {
+          "at": 1794780570.588447,
+          "instance_id": "479019449897492fb58f3121f23b15fe",
+          "active": 0,
+          "queued": 0,
+          "waiting": 0,
+          "occupied_slots": 0,
+          "slots_effective": 2,
+          "groups": 2,
+          "admission_reserved": 0,
+          "admission_rejected": 0,
+          "admission_limit": null,
+          "max_queue": null,
+          "queue_timeout_s": null,
+          "queue_timeouts": 0,
+          "client_disconnect_cancels": 0,
+          "answer_tok_s": null,
+          "devices": [
+            {
+              "index": 0,
+              "mem_used": 23073259520,
+              "mem_total": 23622320128,
+              "util": 40
+            },
+            {
+              "index": 1,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 50
+            },
+            {
+              "index": 2,
+              "mem_used": 22977052672,
+              "mem_total": 23622320128,
+              "util": 47
+            },
+            {
+              "index": 3,
+              "mem_used": 22983344128,
+              "mem_total": 23622320128,
+              "util": 62
+            }
+          ]
+        }
+      ],
+      "telemetry_sample_errors": 0,
+      "telemetry_samples_omitted": 0,
+      "summary": {
+        "successful": 4,
+        "launch_spread_s": null,
+        "failed": 0,
+        "expected_overload": 0,
+        "admission_full": 0,
+        "queue_wait_timeout": 0,
+        "admission_rejected_delta": 0,
+        "queue_timeouts_delta": 0,
+        "p50_latency_s": 2.5221,
+        "p95_latency_s": 3.275,
+        "p50_ttft_s": 0.3274,
+        "p95_ttft_s": 2.6192,
+        "output_tokens": 256,
+        "output_tok_s": 78.123,
+        "peak_active": 4,
+        "peak_queued": 0,
+        "peak_waiting": 3,
+        "peak_occupied_slots": 2,
+        "peak_groups": 2,
+        "peak_admission_rejected": 0
+      }
+    }
+  ],
+  "successful": true,
+  "cancelled": false,
+  "limitations": [
+    "client-observed timings; no synchronized backend clock",
+    "missing telemetry samples are not zero",
+    "no engine batch-window or stage mapping measurement",
+    "condition is operator-supplied; monitor attachment is not verified",
+    "environment fields come from server telemetry, not hardware attestation",
+    "selected local profile is not authenticated as the running instance's config",
+    "driver and model artifact hashes not verified by this suite"
+  ]
+}

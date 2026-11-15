@@ -73,6 +73,13 @@ and their limits. Report what you actually measured and label estimates separate
   IQ2_XS with adaptive cache E4/S24: 48.23 accepted-decode tok/s (median of 5) on a modified, locally built engine (not an official release; source commit and hashes in provenance.json, steps in REPRODUCE.md).
 - [2026-10-12: Radeon 780M (gfx1103), Ryzen 7 8745HS, 60 GB RAM, GTT 50 GiB](../bench/results/2026-10-12-community-gfx1103/README.md):
   the gfx1103 port (native dot4, the gfx11 WMMA kernels, the exact speed switches and a calibrated hipBLASLt table), hand-built on ROCm 10.1, Q2_0 + MTP at 32K: prompts 90 tok/s plain, 186 with the table, 277 with the WMMA opt-ins (4K), decode 13.1 -> 14.3 tok/s; zero GPU resets.
+- [2026-11-15: 4x RTX 2080 Ti 22 GB (sm_75), Xeon E5-2699 v4, 121 GiB RAM](../bench/results/2026-11-15-community-4x-rtx-2080-ti-ud-q6k-turing/README.md):
+  source builds of 0.1.60.1 (`baf16363b`, v0.2.14.1) with `-DSTRATA_MMQ=OFF` (the 0.2.14 default, Strata's own prompt kernels)
+  and with `-DSTRATA_MMQ=ON`, against the 0.1.59 prebuilt package; Unsloth UD-Q6_K_XL (Q6_K gate/up, Q8_0 down), 524,288-token
+  context, 280 W power limit, `--parallel 2`. Long-suite medians of 5: prompt 486.0 / 926.6 / 1231.5 tok/s with the default build
+  against 725.0 / 1280.9 / 1642.2 with MMQ on and 589.5 / 1099.3 / 1439.9 on 0.1.59, at 4K / 16K / 32K fresh tokens; short chat
+  decode 52.2 / 51.5 against 43.2 tok/s. So the 0.2.14 prompt path costs 15-18% prefill on this sm_75 box, and the same source with
+  MMQ reads prompts 14-23% faster than 0.1.59. Vision not exercised; speed only, no quality check.
 
 ## Run the standard benchmark
 
