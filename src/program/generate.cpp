@@ -1252,6 +1252,9 @@ void usage() {
                  "                       of RAM each; 0 = read every prompt from the start)\n"
                  "  --conversation-cache-mib N  --serve: RAM budget for parked conversations (default: sized from the free RAM, up to 8192; 0 = off)\n"
                  "  --conversation-cache-slots N  --serve: at most N parked conversations (default 4)\n"
+                 "  --expert-support GU,D,N_EMBD,N_FF  print whether this engine has GPU kernels for experts of these\n"
+                 "                       ggml types (gate/up, down) and sizes - 'supported' (exit 0) or 'unsupported'\n"
+                 "                       (exit 3) - and exit; no GPU needed (tools/install uses it to check a GGUF)\n"
                  "  --conversation-cache-min-free-mib N  --serve: RAM floor (under MemAvailable, the cgroup limits and\n"
                  "                       --memory-limit-mib) when parking, saving or restoring a session (default 2560)\n"
                  "  --memory-limit-mib N  --serve: the total RAM (MiB) this engine's container or cgroup may use, when\n"
@@ -3673,6 +3676,19 @@ int main(int argc, char** argv) {
         bool parsed = true;
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--gpu") { (void) next("--gpu"); }   // applied at startup, before any CUDA call
+        else if (a == "--expert-support") {
+            // The same check the expert layout load runs below, without a pack or a GPU: the installer asks it
+            // for every (gate/up, down, size) combination of a GGUF before it prepares anything.
+            std::vector<int64_t> v;
+            std::string e;
+            if (!parse_i64_list(next("--expert-support"), v, e) || v.size() != 4) {
+                std::fprintf(stderr, "--expert-support wants GU,D,N_EMBD,N_FF (ggml type ids and sizes)\n");
+                return 2;
+            }
+            const bool ok = strata::kernels::native_expert_supported((int) v[0], (int) v[1], v[2], v[3]);
+            std::printf("%s\n", ok ? "supported" : "unsupported");
+            return ok ? 0 : 3;
+        }
         else if (a == "--pack") o.pack = next("--pack");
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }
