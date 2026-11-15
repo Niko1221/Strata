@@ -12,6 +12,14 @@ Opt-in, in the run config:
 
 or `serve/server.py --replicas 2`.  Nothing changes without it.
 
+Two cards of different makes.  An entry may add "backend" ("cuda" or "hip") and "exe" (the engine program of that
+replica), so a CUDA engine and a HIP engine can serve behind the same server: a PC with an NVIDIA card and an AMD
+card.  Each replica's "gpus" are numbered as ITS OWN backend numbers the cards (nvidia-smi for CUDA, HIP for AMD),
+so card 0 of a CUDA replica and card 0 of a HIP replica are two different cards.  The two engines never exchange a
+session (each keeps its own conversations), so nothing of the session file is shared between the backends: this is
+the same arrangement as two separate servers, behind one front.  The two engine builds must be of the same Strata
+version (they serve the same model files); nothing checks it, the owner of the PC does.
+
 Routing.  Each request goes to the replica with the lowest cost, cost = prompt tokens the replica would have to read
 again (it holds the start of a conversation in its cache) + LOAD_TOKENS for every request already running there.  A
 conversation's next turn therefore goes back to its replica, until that replica is so much busier than another that
@@ -71,14 +79,23 @@ def gpu_groups(cfg: dict) -> list[list[int]]:
         n = len(cards) // spec
         return [cards[i * n:(i + 1) * n] for i in range(spec)]
     groups = []
+    backends = []
     for e in spec:
+        entry = e if isinstance(e, dict) else {}
         g = e.get("gpus") if isinstance(e, dict) else e
         groups.append(_cards(g))
+        # a replica may name its own backend; its cards are numbered as that backend numbers them
+        backends.append(str(entry.get("backend") or cfg.get("backend") or "cuda"))
     if any(not g for g in groups):
         raise ReplicaConfigError('every replica needs its cards: {"gpus": [0, 1]}')
-    flat = [c for g in groups for c in g]
-    if len(set(flat)) != len(flat):
-        raise ReplicaConfigError(f"a card is in two replicas: {groups}")
+    # the cards of two replicas of the SAME backend are the same cards; two replicas of different backends number
+    # their cards apart (card 0 of a CUDA replica and card 0 of a HIP replica are two different cards)
+    seen = set()
+    for g, b in zip(groups, backends):
+        for c in g:
+            if (b, c) in seen:
+                raise ReplicaConfigError(f"a card is in two replicas: {groups}")
+            seen.add((b, c))
     if len(groups) < 2:
         return []
     return groups
@@ -264,6 +281,10 @@ def replica_cfg(cfg: dict, i: int, gpus: list[int]) -> dict:
         c["env"] = {**(c.get("env") or {}), **{str(k): str(v) for k, v in entry["env"].items()}}
     if entry.get("args"):
         c["args"] = list(c["args"]) + [str(x) for x in entry["args"]]
+    if entry.get("backend"):
+        c["backend"] = str(entry["backend"])     # this replica's own card family (cuda or hip)
+    if entry.get("exe"):
+        c["exe"] = str(entry["exe"])             # this replica's own engine program
     return c
 
 
