@@ -789,8 +789,8 @@ _PREFIX_BARE_OPEN = re.compile(r"<tool_call>\s*<function=\s*(tools|functions|def
 _MISSPELT_OPEN = re.compile(r"<tool-?call>(\s*)<function=(\s*[^<>\s]+\s*)>")
 _MISSPELT_PART = re.compile(r"<tool-?call>\s*<function=[^<>]{0,80}$|<tool-?call>\s*(?:<(?:f(?:u(?:n(?:c(?:t(?:i(?:o(?:n)?)?)?)?)?)?)?)?)?$")
 _LOOSE_PART = re.compile(r"<\s*(?:function[ \t]*[=:]?\s*|=\s*)?[A-Za-z0-9_.\-]*\s*$")
-# Claude's call dialect inside the wrapper: `<tool_call><invoke name="NAME"><parameter name="K">V</parameter></invoke>`.  A Qwen
-# model that has seen it writes it instead of `<function=NAME>`; the engine's tool-name constraint arms on `<function=`, so it
+# The XML `<invoke>` form of a call inside the wrapper: `<tool_call><invoke name="NAME"><parameter name="K">V</parameter></invoke>`.
+# A model that has seen it writes it instead of `<function=NAME>`; the engine's tool-name constraint arms on `<function=`, so it
 # never sees this form and the call used to leak into the answer as text (finish_reason stop).
 _INVOKE_OPEN = re.compile(r'<invoke\s+name\s*=\s*"([^"<>\s]+)"\s*>')
 _INVOKE_PART = re.compile(r'<invoke(?:\s+(?:n(?:a(?:m(?:e(?:\s*(?:=\s*"?[^"<>\s]*"?)?)?)?)?)?)?)?\s*$')
@@ -802,7 +802,7 @@ _FCALLS_OPEN = re.compile(r'<function_calls>(\s*)(<invoke\s+name\s*=\s*"([^"<>\s
 
 
 def invoke_to_function(name: str, body: str) -> str:
-    """The body of a Claude-dialect call (what follows its `<invoke name="NAME">`, up to `</invoke>`) -> the template's
+    """The body of an `<invoke>` call (what follows its `<invoke name="NAME">`, up to `</invoke>`) -> the template's
     `<function=NAME>\\n<parameter=K>\\nV\\n</parameter>...</function>`, which parse_tool_call reads.  A value ends at the
     `</parameter>` that is followed by the next `<parameter name=` or by the end of the body, so a value may itself hold
     `</parameter>`, `</invoke>` or a parameter tag (the structural walk call_end does for the template's own form)."""
@@ -987,7 +987,7 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
 
 
 PARAM_START = "<parameter="
-PARAM_NAMED = re.compile(r'<parameter\s+name\s*=\s*"([^"<>]*)"\s*>')      # the same tag in Anthropic's spelling
+PARAM_NAMED = re.compile(r'<parameter\s+name\s*=\s*"([^"<>]*)"\s*>')      # the same tag with the name as an attribute
 
 
 def function_end(text: str) -> int:
@@ -1019,7 +1019,7 @@ def function_end(text: str) -> int:
             if end < 0:
                 return -1
             pos += m.end() + end + len(PARAM_END)
-        elif s.startswith("{") and "{" not in text[gt + 1:pos]:     # Llama/Groq: one JSON object as the whole body
+        elif s.startswith("{") and "{" not in text[gt + 1:pos]:     # one JSON object as the whole body
             try:
                 _obj, used = json.JSONDecoder().raw_decode(s)
             except ValueError:
@@ -1216,7 +1216,7 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
     args = {}
     whole = rest
     if PARAM_START not in rest and "<parameter" in rest:
-        # Anthropic's attribute spelling inside the Qwen tag: `<function=T><parameter name="k">v</parameter>`
+        # The name-as-attribute spelling inside the `<function=T>` tag: `<function=T><parameter name="k">v</parameter>`
         rest = PARAM_NAMED.sub(lambda m: PARAM_START + m.group(1) + ">", rest)
     while "<parameter=" in rest:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
@@ -1235,7 +1235,7 @@ def parse_tool_call(body: str, schema: dict | None = None, notes: list | None = 
         if tail.endswith(FUNC_END):
             tail = tail[:-len(FUNC_END)].strip()
         if tail.startswith("{"):
-            # Llama/Groq spelling: `<function=T>{"k": "v"}</function>`
+            # JSON-object body: `<function=T>{"k": "v"}</function>`
             try:
                 obj = json.loads(tail)
             except ValueError:
@@ -1324,9 +1324,9 @@ class OutputParser:
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
         self.recover = recover
-        self.invoke = ("", "")       # the Claude-dialect call being read: (its declared name, the opener as the model wrote it)
+        self.invoke = ("", "")       # the `<invoke>` call being read: (its declared name, the opener as the model wrote it)
         self.fwrap = ""              # `<function_calls>` rewritten to `<tool_call>` and not yet read by the invoke branch
-        self.iwrap = CALL_START      # the wrapper of the Claude-dialect call being read, as the model wrote it
+        self.iwrap = CALL_START      # the wrapper of the `<invoke>` call being read, as the model wrote it
         self.bare = False            # the call being read opened with <function= alone (no <tool_call> around it)
         self.batch = False           # the call being finished is followed by another in the same wrapper
         self._final = False          # #4701: the turn has ended: a call held for what might follow it is decided now
@@ -1383,7 +1383,7 @@ class OutputParser:
         return None
 
     def _invoke_open(self, after: str):
-        """recover: `after` (text after a `<tool_call>`, whitespace dropped) opens a Claude-dialect call of a declared tool ->
+        """recover: `after` (text after a `<tool_call>`, whitespace dropped) opens an `<invoke>` call of a declared tool ->
         (declared name, the opener's text); "wait" while it may still become one; None otherwise."""
         m = _INVOKE_OPEN.match(after)
         if m:
@@ -1643,7 +1643,7 @@ class OutputParser:
                     self.sp += len("</function>")
                     self.ss = "function_done"
                 elif stripped.startswith("{") and self.sfirst:
-                    # Llama/Groq spelling `<function=T>{"k": "v"}</function>`: the object is one piece, streamed when whole
+                    # JSON-object body `<function=T>{"k": "v"}</function>`: the object is one piece, streamed when whole
                     try:
                         obj, used = json.JSONDecoder().raw_decode(stripped)
                     except ValueError:
@@ -1797,7 +1797,7 @@ class OutputParser:
         return held
 
     def _fcalls(self, fresh: int) -> str:
-        """recover: Anthropic's `<function_calls>` wrapper directly before `<invoke name="DECLARED">` is `<tool_call>` (the
+        """recover: a `<function_calls>` wrapper directly before `<invoke name="DECLARED">` is `<tool_call>` (the
         `<invoke>` branch of the content state then reads the call, and takes the wrapper's `</function_calls>` as its
         closer).  Any other follower leaves the text as it was.  Returns the tail of a wrapper still arriving."""
         if not self.recover or self.state != "content":
@@ -2112,7 +2112,7 @@ class OutputParser:
                 self.buf = self.buf[i + len(CALL_END):]
                 self.state, self.lead = "content", call is not None
             elif self.state == "invoke":
-                # recover: `<invoke name="NAME">...</invoke>` (Claude's dialect) inside the wrapper, held whole.  Its `</invoke>`
+                # recover: `<invoke name="NAME">...</invoke>` (the XML `<invoke>` form) inside the wrapper, held whole.  Its `</invoke>`
                 # is the end where what follows is nothing (the turn's end: the model stops right after it), the wrapper's
                 # closer or another call; a `</invoke>` followed by anything else is part of a value.
                 name, opener = self.invoke

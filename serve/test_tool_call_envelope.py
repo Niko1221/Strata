@@ -87,7 +87,7 @@ BASH = [{"name": "Bash", "parameters": {"properties": {"command": {"type": "stri
                                          "required": ["command"]}},
         {"name": "Read", "parameters": {"properties": {"file_path": {"type": "string"}}, "required": ["file_path"]}}]
 
-# A reply seen in the wild: prose cut mid-word, then Claude's `<invoke name=...>` dialect inside a `<tool_call>`, ended by
+# A reply seen in the wild: prose cut mid-word, then the XML `<invoke name=...>` form inside a `<tool_call>`, ended by
 # the stop token right after `</invoke>` (no `</tool_call>`).
 INVOKE_REPLY = ('Waiting for the bu<tool_call>\n<invoke name="Bash">\n'
                 '<parameter name="command">sleep 1; tail -3 "build.log"</parameter>\n'
@@ -95,7 +95,7 @@ INVOKE_REPLY = ('Waiting for the bu<tool_call>\n<invoke name="Bash">\n'
 
 
 class InvokeDialect(unittest.TestCase):
-    """A call written in Claude's `<invoke name="NAME"><parameter name="K">V</parameter></invoke>` form inside the `<tool_call>`
+    """A call written in the XML `<invoke name="NAME"><parameter name="K">V</parameter></invoke>` form inside the `<tool_call>`
     wrapper is the call.  The engine's tool-name constraint cannot help here (it arms on `<function=`), and without this the whole
     call leaked into the answer with finish_reason stop, so the agent stopped and the user saw raw XML."""
 
@@ -136,7 +136,7 @@ class InvokeDialect(unittest.TestCase):
     def test_prose_and_code_are_not_a_call(self):
         for raw in ('Write <tool_call><invoke name="Bash"> to call it.\n```\n<tool_call>\n<invoke name="Bash">\n'
                     '<parameter name="command">ls</parameter>\n</invoke>\n```',
-                    "The <invoke tag is Claude's."):
+                    "The <invoke tag opens a call."):
             with self.subTest(raw=raw[:30]):
                 evs, p = run(raw, 3, recover=True, tools=BASH)
                 self.assertEqual(calls(evs), [])
@@ -189,7 +189,7 @@ def streamed_args(evs):
 
 
 class MoreDialects(unittest.TestCase):
-    """The other spellings Qwen3.x models are seen to write for a call (Llama/Groq JSON body, Anthropic's parameter attribute inside
+    """The other spellings a model is seen to write for a call (a JSON-object body, a `name=` attribute on the parameter inside
     `<function=>`, `<function_calls>` with a batch of `<invoke>`s).  Each is the call, and a streaming client sees the same arguments."""
 
     WIDTHS = (0, 1, 2, 3, 7, 16)
