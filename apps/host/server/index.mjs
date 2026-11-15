@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { autostartModel } from './autostart.mjs';
 import { engineProgressMark } from './agent/engine-progress.mjs';
 import './system-ca.mjs';        // #3722: the operating system's certificates, before any HTTPS request
 import { createCloudflare } from './cloudflare.mjs';
@@ -257,7 +258,8 @@ function runtimeState(){
   return runtimeModels.state();
 }
 
-const startupModelId = process.env.STRATA_REAL_ENGINE === '1' ? (store.get().loaded ?? store.get().current) : null;
+/* A remembered DeepSeek model (Strata 0.2.13 and earlier) is not started and is not cleared: server/autostart.mjs logs the refusal and writes nothing. */
+const startupModelId = autostartModel(store.get());
 if (startupModelId) {
   monitor.setModel(startupModelId);
   const lastId = startupModelId;
@@ -1346,7 +1348,7 @@ async function api(req, res, path, method, url) {
     if (engine && !engine.usable && !bundledEngineSettled) engine.notice = 'The engine that came with the app is being set up. This takes a minute the first time.';
     return json(res, 200, {
       packaged: process.env.STRATA_PACKAGED === '1',
-      control: CONTROL ? { dir: CONTROL.dir, python: CONTROL.python, version: control.version, bundle: CONTROL.bundle } : null,
+      control: control ? { dir: control.control.dir, python: control.control.python, version: control.version, bundle: control.control.bundle } : null,   // control.control: the Control in use now (a first-run update can switch it)
       engine,
       engineSetup: !bundledEngineSettled,
       componentsDir: componentsDirectory(),

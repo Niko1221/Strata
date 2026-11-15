@@ -18,7 +18,7 @@ strata launch --status
 **I cannot find `START-HERE.bat` or `SETUP.bat`.**
 Open the installed Strata app, or run `strata launch`. Those wrappers are in the source repository and are not the
 startup path for the app. For a fresh desktop install, download the one installer for your system
-(`Strata-0.2.13-windows-x64-setup.exe`, `Strata-0.2.13-linux-x86_64.AppImage` or `Strata-0.2.13-macos-arm64.dmg`), not a
+(`Strata-0.2.14-windows-x64-setup.exe`, `Strata-0.2.14-linux-x86_64.AppImage` or `Strata-0.2.14-macos-arm64.dmg`), not a
 `strata-engine-…` archive.
 
 **`strata` is not found.**
@@ -114,8 +114,7 @@ Report it with the CPU model.
 Large models need time to check files, prepare packs and fill memory. A first launch can take many minutes; there is
 no fixed startup time. The engine reads 34-55 GB into RAM, and the second start is faster while the files are in the OS
 cache. Watch progress and the engine log. If memory pressure is high, close memory-heavy programs and try a
-smaller model or context. DeepSeek V4.1-Flash needs 46 GB of RAM at least ([model page](MODELS.md#deepseek-v41-flash));
-`strata launch --plan --family deepseek41 --model ist-das-2.00bpw` shows what your computer is missing.
+smaller model or context.
 Started from Task Scheduler, a start can be 24x slower: see [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
 On Linux the engine asks the kernel to read the model files ahead (a cold start went from ~920 s to 70 s on one PC);
 `STRATA_READ_AHEAD=0` turns that off. With transparent huge pages on `always`, the arena does not ask for `MADV_HUGEPAGE`
@@ -259,7 +258,7 @@ from 100 to 14 tok/s with only a few hundred slots too many. Use `--expert-cache
 
 **A low-RAM PC (about 32 GB) stalls with `--resident-budget-gib N` (#649).**
 The budget is pinned (locked) in RAM, which leaves the OS and the CPU workers little room. `STRATA_RESIDENT_PIN=0` keeps
-it pageable; a smaller budget works too.
+it pageable (also the RAM copy the engine makes on its own when the expert arena does not fit); a smaller budget works too.
 
 **Decode got slower in 0.1.40 on a 32 GB PC with `--resident-budget-gib N`, and the drive is read hard (#1194, #1116, #1085).**
 The start line "the file tier reads unbuffered" means the experts outside the RAM copy are read straight from the drive.
@@ -324,7 +323,8 @@ in order, one at a time, and tell us what changed:
    in a source checkout) and restart. The prompt path then waits for the GPU after each step and logs any step over 250 ms, so the log names
    the step. It is slower; use it to diagnose, then take it out.
 3. **`"STRATA_KV_HOST_DMA": "1"`** in the same `"env"` block: no GPU kernel writes the RAM copy of the K/V during a
-   prompt, it is copied by DMA instead. Same answers.
+   prompt, it is copied by DMA instead. Same answers. On AMD and Intel Arc this is off until you set it. NVIDIA cards do it by
+   default; setting it to `"0"` there goes back to the earlier way of writing.
 4. **No KV streaming:** run setup again and pick 32K context (or remove `--kv-resident` and its number from
    `"args"` in the JSON, with a context that fits the VRAM).
 5. **A smaller prompt chunk:** change `--prefill` in `"args"` (for example `--prefill 512`): each GPU launch then does

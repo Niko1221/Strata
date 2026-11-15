@@ -31,6 +31,8 @@ FAMILY_PREFIX = "qwen4exp_"
 SHAPE_RE = re.compile(r"[a-z][a-z0-9_]{1,21}[a-z0-9]")                    # q4_lite, q4_mid: the geometry header's name (include/strata/core/geometries/<name>.hpp)
 #: component ids that already mean something else; a shape never becomes one of them
 RESERVED = frozenset({"strata-engine", "strata-dsv41", "strata-control", "strata-vision", "strata-device", "strata-terminal", "strata-app", "strata-drafter"})
+#: The reason, inside WORDS["start_failed"]'s "...did not start correctly ({why})", when a shape engine cannot say its shape (owner, 11-09)
+NO_SHAPE_ANSWER = "it does not say which model shape it was built for"
 KEEP_VERSIONS = 2                                                           # the installed shape engine and the one before it
 #: What a person reads in the lines below where "{model}" stands: the model's title ("Q4 Lite Shape"), not the geometry's name (q4_lite). One switch: False puts the geometry
 #: name back everywhere (the owner decides; `strata components engine` and the JSON always name the shape).
@@ -194,7 +196,7 @@ def status(components: Path | None = None) -> list[dict]:
 def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> tuple[bool, str]:
     """The new engine starts: ``strata --version`` runs, loads its libraries and names itself (it needs no graphics card and no model). The package's own folders go on the
     library path first, as the start path does. With `shape`, ``strata --geometry`` (engine 0.2.13 and later) must name that shape: an engine compiled for another geometry than
-    the signed manifest says is refused here, not at its first load. An engine from before the flag (it exits non-zero or prints nothing) is accepted, as before."""
+    the signed manifest says is refused here, not at its first load, and so is one that cannot answer the flag (NO_SHAPE_ANSWER, owner 11-09)."""
     import subprocess
     env = dict(os.environ)
     var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
@@ -217,15 +219,16 @@ def _test_start(exe: Path, timeout: float = 120.0, shape: str | None = None) -> 
 
 
 def check_geometry(exe: Path, shape: str, env: dict | None = None, timeout: float = 60.0) -> tuple[bool, str]:
-    """Does ``strata --geometry`` name `shape`? (True, "") when it does, or when the engine has no such flag (an older engine); (False, plain reason) when it names another."""
+    """Does ``strata --geometry`` name `shape`? (True, "") when it does; (False, plain reason) when it names another, or names none: every engine of a model shape is built
+    after the flag existed (0.2.13, and the Intel engine since 0.2.14), so one that cannot say its shape is refused (owner, 11-09). The Strata engine is never asked."""
     import subprocess
     try:
         done = subprocess.run([str(exe), "--geometry"], capture_output=True, text=True, errors="replace", timeout=timeout, cwd=str(Path(exe).parent), env=env)
     except (OSError, subprocess.SubprocessError):
-        return True, ""
+        return False, NO_SHAPE_ANSWER
     named = ((done.stdout or "").strip().splitlines() or [""])[0].strip()
     if done.returncode != 0 or not named or named.startswith("strata") or " " in named:
-        return True, ""                                   # an engine from before the flag
+        return False, NO_SHAPE_ANSWER                     # an engine that does not know the flag (or answers something else)
     if named != shape:
         return False, f"it was built for a different model shape ({named})"
     return True, ""
@@ -242,12 +245,12 @@ def choose(feed, shape: str, hardware: dict, title: str | None = None):
 
 def _prune(shape_root: Path, shape: str, keep_name: str) -> list[str]:
     """Keep the newest `KEEP_VERSIONS` packages of the shape; remove the older ones unless a running engine uses them."""
-    from strata_control import dsv41_paths, longpath
+    from strata_control import folder_use, longpath
     found, _ = ec.scan(shape_root, component_id(shape))
     ordered = sorted(found, key=lambda item: (ec._version_key(item.version), item.root.name), reverse=True)
     removed = []
     for item in ordered[KEEP_VERSIONS:]:
-        if item.root.name == keep_name or dsv41_paths.in_use(item.root):
+        if item.root.name == keep_name or folder_use.in_use(item.root):
             continue
         shutil.rmtree(longpath.long_path(item.root), ignore_errors=True)
         removed.append(item.root.name)
@@ -311,10 +314,12 @@ def update_one(ctx, feed, shape: str, *, install_missing: bool = True, title: st
 
 
 def ensure(shape: str, source: str, *, components: Path | None = None, hardware: dict | None = None, emit: Callable[[str], None] = print, cancel=None,
-           quiet_when_current: bool = True, title: str | None = None) -> Path | None:
+           quiet_when_current: bool = True, title: str | None = None, automatic: bool = False) -> Path | None:
     """The engine of `shape` is installed and up to date, from the signed feed at `source` (a URL or a folder). Returns its program, or None with one plain line through `emit` when
     there is none (not in the feed, nothing for this PC, the feed cannot be read). A newer package is fetched only when the feed can be read; an installed one keeps running when it
-    cannot. This is what setup and `strata launch` call when a model of that shape is chosen."""
+    cannot. This is what setup and `strata launch` call when a model of that shape is chosen.  `automatic` (`strata launch`): with an engine installed,
+    the check for a newer one is a read nobody asked for, so a feed host that refused within the last hours is not asked again (netpolicy rule 4b);
+    without one the feed is always read."""
     from strata_control import acquisition, feed as feedmod, signing, updater
     components = Path(components) if components else ec.components_dir()
     hw = hardware or updater.detect_hardware()
@@ -324,6 +329,7 @@ def ensure(shape: str, source: str, *, components: Path | None = None, hardware:
         emit(WORDS["fetching"].format(model=name))
     ctx = updater.Context(components=components, source=source, trusted=signing.load_trusted_keys(), hardware=hw, cancel=cancel,
                           feed_timeout=5.0 if have else 30.0,           # an installed engine: a launch must not wait long for a feed that is not there
+                          automatic=bool(automatic and have),
                           emit=lambda event: emit(event["message"]) if event.get("event") == "phase" and event.get("message") and event.get("phase") != "feed" else None)
     try:
         with updater.update_lock(components):

@@ -42,14 +42,11 @@ runs are not supported. Use the [package table](#ready-made-packages) to match y
 Strix Point (890M / 880M, gfx1150) and Krackan (860M / 840M, gfx1152) are named and not supported by setup. RDNA1
 (gfx1012) builds by hand: [OLDER_GPUS.md](OLDER_GPUS.md#amd-building-gfx906-and-gfx1012).
 
-DeepSeek V4.1-Flash runs on the Radeon AI PRO R9700 on Linux, in the app and in the Terminal. The RX 9070 (gfx1200) engine package
-carries it but it is untested. Details: [MODELS.md](MODELS.md#deepseek-v41-flash).
-
 <a id="ready-made-packages-023"></a>
 ## Ready-made packages
 
 The Terminal one-liner and `strata update` pick the package whose GPU code covers the card. The app installer
-(`Strata-0.2.13-windows-x64-setup.exe`, `Strata-0.2.13-linux-x86_64.AppImage`) has no engine inside: on its first start the app
+(`Strata-0.2.14-windows-x64-setup.exe`, `Strata-0.2.14-linux-x86_64.AppImage`) has no engine inside: on its first start the app
 downloads the matching package for the card. You can also press **Update engine** in Settings (or run `strata update`).
 
 | Package (variant) | OS | GPU code inside | ROCm |
@@ -131,7 +128,7 @@ reused. The Monitor shows the card's load, VRAM, temperature and power from Linu
 
 ## Windows
 
-Install the [app](INSTALL.md) (`Strata-0.2.13-windows-x64-setup.exe` from the
+Install the [app](INSTALL.md) (`Strata-0.2.14-windows-x64-setup.exe` from the
 [release page](https://github.com/Niko1221/Strata/releases/latest); it downloads the engine for the card), or
 install the [Terminal](INSTALL.md#the-terminal) and run `strata launch`. You need Windows 10 or 11 (64-bit), a supported card
 and a current AMD driver. No ROCm or HIP SDK, no compiler, no admin rights. `START-HERE.bat --backend hip` is a
@@ -300,7 +297,7 @@ them in the server config's `env`, or in the shell.
 | Switch | Cards | Default | Effect |
 | --- | --- | --- | --- |
 | `STRATA_HIP_WMMA` | gfx12; gfx11 on request | gfx12 Linux: on with int8 KV. Windows and gfx11: `=1` | QSA prompt attention on the matrix cores. `=0` off; `=auto` takes it only for batches of `STRATA_HIP_WMMA_MIN_Q` (64) or more queries. Not bitwise: greedy text can differ from about token 50 on. |
-| `STRATA_PF_FUSED` | gfx12 native IQ packs | gfx12 Linux: on for IQ3_S, IQ3_XXS and Q2_0 gate/up. IQ2 formats and Windows: `=1` | Prompt experts on int8 matrix-core kernels instead of MMQ. `=0` keeps MMQ; `STRATA_PF_FUSED_NATIVE=0` keeps MMQ with the flag set. |
+| `STRATA_PF_FUSED` | gfx12 native IQ packs; integrated gfx11 | gfx12 Linux: on for IQ3_S, IQ3_XXS and Q2_0 gate/up. Integrated gfx11 on Linux (Radeon 780M / 760M gfx1103, 890M / 880M gfx1150, Strix Halo gfx1151): on. IQ2 formats on gfx12, discrete gfx11 and Windows (the Strix Halo on Windows has it in its own set): `=1` | Prompt experts on int8 matrix-core kernels instead of MMQ. `=0` keeps MMQ; `STRATA_PF_FUSED_NATIVE=0` keeps MMQ with the flag set. Radeon 780M, Q2_0: prompt x1.30 at 2K tokens and x1.13 at 8K, no change at 300 and 1,000 tokens; forced-token KL against the FP16 path (24 prompts of 2,048 tokens, 64 tokens each) 0.0060 against 0.0054 for MMQ (ratio 1.10, 95% CI 0.93 to 1.37). The 890M / 880M and Strix Halo take it by the same rule and were not run. |
 | `STRATA_SCORES_THREAD` | gfx12, gfx1100 | gfx12: on; gfx1100: `=1` | Exact long-prompt QSA scorer (below). `=0` off. |
 | `STRATA_SELECT_WMMA=1` | gfx12 | Off | Matrix-core block scorer for the QSA top-k; selects slightly differently |
 | `STRATA_HC_Q8` | gfx12, gfx1151 | On | 8-bit hyper-connection weights; `=0` restores the bf16 read ([below](#strix-halo-8-bit-hyper-connection-weights-default-on-gfx1151)) |
@@ -512,7 +509,7 @@ kernels for FP16-in / FP16-out GEMMs only; the prompt path's FP16-in / FP32-out 
 
 | Switch | Effect |
 | --- | --- |
-| `STRATA_HIP_PROMPT_F16=1` | Runs the 16-bit prompt GEMMs FP16 in and out (the engine prints a tip on gfx103x). `STRATA_F16_RANGE=1` prints, per prompt, the largest value that entered or left FP16 (FP16 ends at 65504); `STRATA_DBG_NAN=1` counts non-finite FP16 outputs. Checks: [2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md). |
+| `STRATA_HIP_PROMPT_F16=1` | Runs the 16-bit prompt GEMMs FP16 in and out (the engine prints a tip on gfx103x). On by default on a Radeon 780M (gfx1103) under Linux; `=0` turns it off there; every other card needs `=1`. Radeon 780M, Q2_0, prompt x1.11 / x1.15 / x1.19 / x1.25 at 300 / 1,000 / 2,048 / 8,192 tokens (x1.11 / x1.15 / x1.63 / x1.45 beside `STRATA_PF_FUSED=1`); forced-token KL against the FP16 path 0.00593 against 0.00543 for MMQ (24 prompts, 64 tokens each, ratio 1.09, 95% CI 0.97 to 1.23). On a Radeon AI PRO R9700 (gfx1201) the dense GEMMs are slower with it (x0.70 to x0.72), so it stays opt-in there. `STRATA_F16_RANGE=1` prints, per prompt, the largest value that entered or left FP16 (FP16 ends at 65504); `STRATA_DBG_NAN=1` counts non-finite FP16 outputs. Checks: [2026-10-04-rdna2-fp16-prompt](../bench/results/2026-10-04-rdna2-fp16-prompt/README.md). |
 | `STRATA_RDNA2_SGEMM=1` | Widens both GEMM inputs to FP32 (exact) and runs SGEMM, no 65504 limit. `=all` forces it on any AMD card. With `STRATA_HIP_PROMPT_F16=1` the FP16 route runs first and SGEMM takes the products it leaves. Slower than the FP16 route. |
 | `STRATA_ROCBLAS_TUNING=<file or dir>` | A rocBLAS solution table for the FP16 route; setup points the engine at the directory when a table for the architecture exists. The log says `rocBLAS tuning enabled (... rows ...)` or why not. See [rocBLAS table](#rocblas-table-gfx103x). |
 | `STRATA_SELECT_SIMT=1` | QSA block scores on the FP32 tiled scorer instead of the warp kernel; helps long prompts (128K: +7.4%). Not bitwise the warp kernel. [Data](../bench/results/2026-10-07-rdna2-qsa-select-simt/README.md). |

@@ -262,16 +262,33 @@ class ReadOnlyModelFolderMark(unittest.TestCase):
 class OfflineStart(unittest.TestCase):
     """0.2.10: a PC with every file and no internet starts a model that is already prepared."""
 
-    def test_the_llama_cpp_source_is_not_fetched_until_a_model_is_prepared(self):
+    def test_preparing_a_model_never_fetches_llama_cpp(self):
+        """OWN-1B/2B: the preparation tools have their own GGUF code (tools/strata_gguf.py), so neither starting a prepared model nor running a
+        preparation tool reaches github.com, and the tools are not told to use gguf-py unless the user set STRATA_GGUF_PY."""
+        fetched = []
+        env = {k: v for k, v in os.environ.items() if k not in ("STRATA_GGUF_PY", "STRATA_GGML_DIR")}
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(setup, "get_llama_cpp", lambda: fetched.append(1)):
+            self.assertIsNone(setup.llama_cpp_if_here(), "no override tree by default")
+            self.assertEqual(setup.gguf_py_dir(), setup.ROOT / "third_party" / "strata-gguf-py")
+            self.assertTrue((setup.gguf_py_dir() / "gguf").is_dir())
+            self.assertEqual(setup.gguf_py_env(), {}, "the tools use their own GGUF code by default")
+            with mock.patch.object(setup.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)), \
+                    mock.patch.object(setup.acquisition, "require", lambda *a, **k: None), mock.patch.object(setup, "CONTROL", False):
+                setup.run([sys.executable, "tools/x.py"], env=dict(os.environ, **setup.gguf_py_env()))
+            self.assertEqual(fetched, [], "nothing is downloaded")
+
+    def test_the_overrides_are_kept(self):
+        """STRATA_GGUF_PY and STRATA_GGML_DIR still name another copy (kept for two releases)."""
         with tempfile.TemporaryDirectory() as tmp:
-            fetched = []
-            with mock.patch.object(setup, "home", lambda: Path(tmp)), mock.patch.object(setup, "get_llama_cpp", lambda: fetched.append(1)):
-                path = setup.llama_cpp_if_here()
-                self.assertEqual(path, Path(tmp) / "third_party" / "llama.cpp")
-                self.assertEqual(fetched, [], "starting a prepared model does not reach github.com")
-                with mock.patch.object(setup.subprocess, "run", lambda *a, **k: mock.Mock(returncode=0)),                         mock.patch.object(setup.acquisition, "require", lambda *a, **k: None), mock.patch.object(setup, "CONTROL", False):
-                    setup.run([sys.executable, "tools/x.py"], env=dict(os.environ, STRATA_GGUF_PY=str(path / "gguf-py")))
-                self.assertEqual(fetched, [1], "a preparation tool needs it: fetched then")
+            (Path(tmp) / "gguf").mkdir()
+            (Path(tmp) / "ggml").mkdir()
+            (Path(tmp) / "ggml" / "CMakeLists.txt").write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"STRATA_GGUF_PY": tmp, "STRATA_GGML_DIR": tmp}):
+                self.assertEqual(setup.gguf_py_dir(), Path(tmp))
+                self.assertEqual(setup.gguf_py_env(), {"STRATA_GGUF_PY": tmp}, "the override is passed on to the tools")
+                self.assertEqual(setup.llama_override(), Path(tmp))
+                self.assertEqual(setup.ggml_defs(setup.llama_override()), [f"-DSTRATA_GGML_DIR={tmp}"])
+            self.assertEqual(setup.ggml_defs(None), [], "nothing is passed by default")
 
     def test_a_pinned_file_copied_in_by_hand_is_checked_here_without_the_network(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -283,13 +300,6 @@ class OfflineStart(unittest.TestCase):
             self.assertTrue(setup.done(f))
             self.assertIn("sha256 " + "a" * 64, setup.mark_text(f))
 
-    def test_every_shared_deepseek_file_has_a_pin_so_a_copy_made_by_hand_never_needs_the_network(self):
-        """The final boston gate stopped on "cannot reach huggingface.co" at a shared file (the drafter, the metadata shard) that was already
-        in the shared folder with no finish mark: the pin is what lets download() check it here."""
-        for name, base in setup.DSV41_SHARED.items():
-            pin = setup.file_pin(base + name)
-            self.assertIsNotNone(pin, name)
-            self.assertEqual(tuple(pin), tuple(setup.DSV41_ALL_FILES[name]), name)
 
 
 class VsRange(unittest.TestCase):
@@ -453,7 +463,10 @@ class HipVision(unittest.TestCase):
                 (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
 
             with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                    mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, False)), \
                     mock.patch.object(setup, "source_hash", lambda paths: vsrc if paths == setup.VISION_SOURCES else src):
+                # an AVX2 CPU whatever the box has: on one without AVX2 (or one whose CPU flags cannot be read) the engine itself
+                # would be rebuilt with an ISA floor
                 quiet(setup.build_engine_hip, {"arch": "gfx1201"}, "llama", vision)
             return built, json.loads((eng / "BUILD.json").read_text()), (eng / setup.VEXE).exists()
 
@@ -677,7 +690,8 @@ class CudaVision(unittest.TestCase):
                         mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
                         mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
                         mock.patch.object(setup, "gpus", lambda: []), \
-                        mock.patch.object(setup, "source_version", lambda: "test"):      # no real card of the box (#4662)
+                        mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, False)), \
+                        mock.patch.object(setup, "source_version", lambda: "test"):      # no real card of the box (#4662), an AVX2 CPU
                     quiet(setup.build_engine, {"arch": "86"}, vision, True, "llama")
                 self.assertEqual([t for t, _ in built], ["strata-vision"])
                 self.assertIn("-DSTRATA_PORTABLE=OFF", built[0][1])

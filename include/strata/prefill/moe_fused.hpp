@@ -26,8 +26,15 @@ namespace strata::prefill::fused {
 constexpr int kTileRows = 64;
 /// The compiled geometry's widths the expert kernels are written for: the hidden width (the K of gate/up, the rows of
 /// down), the expert width (the K of down, half the rows of gate/up) and the gate/up rows.  Flash-Next: 2560, 640, 1280.
+#if defined(STRATA_FUSED_GEO_N_EMBD) && defined(STRATA_FUSED_GEO_N_FF)
+// a second copy of the kernels for another model family's shape in the same binary (src/prefill/moe_fused_iq_q36.cu
+// compiles moe_fused_iq.cu again for Qwen3.6, 2048 / 512, in its own namespace); every other file takes the compiled geometry
+constexpr int kMoeEmbd = STRATA_FUSED_GEO_N_EMBD;
+constexpr int kMoeFF = STRATA_FUSED_GEO_N_FF;
+#else
 constexpr int kMoeEmbd = (int) strata::core::kCompiledGeometry.n_embd;
 constexpr int kMoeFF = (int) strata::core::kCompiledGeometry.n_ff;
+#endif
 constexpr int kMoeGuRows = 2 * kMoeFF;
 /// Experts per launch: their blob pointers travel in the launch's parameters (1 KB).
 constexpr int kMaxBatch = 128;
@@ -65,6 +72,11 @@ void quantize_act(const float* x, int64_t rows, int64_t cols, void* xa, void* st
 /// `src[row]` = its token (i / k).  The order of the rows within an expert is not fixed; no output depends on it.
 void group(const int32_t* ids, int64_t n, int k, int n_expert, void* scratch, int32_t* slot, int32_t* src,
            void* stream);
+/// The tables of one GATHERED group (the layer-major walk's): its experts get the local indices 0..n_expert-1, expert e
+/// the rows [bounds[e], bounds[e + 1]) of the group (`bounds` on the device, n_expert + 1 ints, bounds[0] = 0, rows
+/// sorted by expert).  The row's token is the caller's (`src` of experts_native); the outputs go to the group's rows.
+/// `scratch`: group_bytes(bounds[n_expert], n_expert).
+void group_bounds(const int32_t* bounds, int n_expert, void* scratch, void* stream);
 
 /// Experts [e0, e1) of one layer (e1 - e0 <= kMaxBatch); blob[e - e0]: the Strata Q2_0 blob of expert e on the
 /// device (16-byte aligned), read only for an expert with rows.

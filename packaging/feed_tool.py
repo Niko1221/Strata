@@ -37,6 +37,8 @@ import stat
 import sys
 import tarfile
 import zipfile
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,6 +124,45 @@ def _mode(path: Path, rel: str, entrypoint: str | None) -> int:
         return 0o644
 
 
+GZIP_BLOCK = 4 << 20        # bytes of the tar per gzip member when several threads compress (_parallel_gzip)
+
+
+def gzip_threads() -> int:
+    """How many threads compress a tar.gz: 1 (the single-stream gzip, byte for byte as before) unless STRATA_PACK_THREADS asks for more. OPT-IN
+    (coordinator 11-10): a threaded archive is several gzip members, and every published client that unpacks a package must be shown to read
+    those before this may become the default."""
+    raw = os.environ.get("STRATA_PACK_THREADS", "").strip()
+    if raw.isdigit() and int(raw) >= 1:
+        return min(int(raw), 64)
+    return 1
+
+
+def _parallel_gzip(src: Path, dst: Path, threads: int, level: int = 9) -> None:
+    """`src` (a plain tar) gzipped into `dst` by `threads` threads: GZIP_BLOCK-sized pieces, each a complete gzip member (RFC 1952 allows several in one
+    file; Python's tarfile and gzip, GNU tar / gzip and bsdtar read them as one stream). zlib releases the GIL while it compresses, so the pieces run in
+    parallel. The header carries no file name and mtime 0, so the same tar always gives the same bytes."""
+    def one(block: bytes) -> bytes:
+        c = zlib.compressobj(level, zlib.DEFLATED, 31)       # wbits 31: a gzip member (header, deflate, crc32 + size trailer)
+        return c.compress(block) + c.flush()
+
+    def blocks():
+        with src.open("rb") as f:
+            while True:
+                block = f.read(GZIP_BLOCK)
+                if not block:
+                    return
+                yield block
+
+    with dst.open("wb") as out, ThreadPoolExecutor(max_workers=threads) as pool:
+        pending = []
+        for block in blocks():                               # at most 2 x threads blocks in memory
+            pending.append(pool.submit(one, block))
+            if len(pending) >= 2 * threads:
+                out.write(pending.pop(0).result())
+        for fut in pending:
+            out.write(fut.result())
+
+
 def _write_archive(files: list[tuple[str, Path]], archive: Path, fmt: str, entrypoint: str | None) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "zip":
@@ -129,7 +170,19 @@ def _write_archive(files: list[tuple[str, Path]], archive: Path, fmt: str, entry
             for rel, path in files:
                 zf.write(path, rel)
         return
-    mode = {"tar.gz": "w:gz", "tar.xz": "w:xz"}[fmt]
+    threads = gzip_threads() if fmt == "tar.gz" else 1
+    if threads > 1:                                          # the tar first (uncompressed, beside the archive), then the parallel gzip
+        plain = archive.with_name(archive.name + ".tar-part")
+        try:
+            _write_tar(files, plain, "w", entrypoint)
+            _parallel_gzip(plain, archive, threads)
+        finally:
+            plain.unlink(missing_ok=True)
+        return
+    _write_tar(files, archive, {"tar.gz": "w:gz", "tar.xz": "w:xz"}[fmt], entrypoint)
+
+
+def _write_tar(files: list[tuple[str, Path]], archive: Path, mode: str, entrypoint: str | None) -> None:
     with tarfile.open(archive, mode) as tar:
         for rel, path in files:
             info = tar.gettarinfo(str(path), arcname=rel)
@@ -170,7 +223,7 @@ def pack_engine(folder: Path, out: Path, fmt: str = "tar.gz", *, url_prefix: str
         prefix = component.id
     files = _tree(folder)
     installed = sum(p.stat().st_size for _, p in files)
-    name = f"{prefix}-{folder.name}.{fmt}"        # prefix strata-dsv41 for the separate DeepSeek engine packages
+    name = f"{prefix}-{folder.name}.{fmt}"
     archive = Path(out) / name
     _write_archive(files, archive, fmt, component.entrypoint)
     entry = {"version": component.version, "platform": component.platform, "backend": component.backend,
@@ -223,10 +276,38 @@ def model_files(paths: list[Path], repo_dir: str = "") -> list[dict]:
     return out
 
 
+DSV41_BASE_EXAMPLE = "https://github.com/Niko1221/Strata/releases/download/<DSV41-TAG>/"
+
+
+def carried_dsv41(previous_feed: Path, base: str) -> dict:
+    """The ``dsv41`` member of a published feed, frozen (owner 11-11, "Keep frozen"): Strata 0.2.13 and earlier read it to keep their DeepSeek
+    engine; this Strata never does.  Every entry is kept as it was, except a relative ``url`` (a flat release asset, resolved against the feed's
+    own release): it becomes ``base`` + url, the release that really holds the archive, because the new feed sits in a newer release that does
+    not.  Absolute https URLs are what those Controls accept (strata_control/transfer.py resolve_ref since 0.2.7).  ``base`` must be a real https
+    release folder: the placeholder in DSV41_BASE_EXAMPLE stops the build."""
+    if not isinstance(base, str) or not base.startswith("https://") or "<" in base or ">" in base or not base.endswith("/"):
+        raise SystemExit(f"--carry-dsv41-base must be the https folder of the release that holds the DeepSeek archives, ending in '/' "
+                         f"(like {DSV41_BASE_EXAMPLE} with the tag filled in), not {base!r}")
+    doc = json.loads(Path(previous_feed).read_text(encoding="utf-8"))
+    member = doc.get("dsv41") if isinstance(doc, dict) else None
+    if not isinstance(member, dict) or not isinstance(member.get("packages"), list) or not member["packages"]:
+        raise SystemExit(f"{previous_feed} has no dsv41 packages to carry over")
+    packages = []
+    for item in member["packages"]:
+        item = dict(item)
+        url = str(item.get("url") or "")
+        if not url or url.startswith(("http://", "file:")) or ".." in url.split("/"):
+            raise SystemExit(f"{previous_feed}: a dsv41 entry has an unusable url {url!r}")
+        if not url.startswith("https://"):
+            item["url"] = base + url.rsplit("/", 1)[-1]          # (a local test feed's "dsv41/<name>": the release asset is the bare name)
+        packages.append(item)
+    return {"packages": packages}
+
+
 def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", engine_dir: Path | None = None,
                control_dir: Path | None = None, app_json: Path | None = None, expires_days: int | None = None,
-               now: dt.datetime | None = None, dsv41_dir: Path | None = None, drafters_dir: Path | None = None, models_dir: Path | None = None,
-               shapes_dir: Path | None = None) -> dict:
+               now: dt.datetime | None = None, drafters_dir: Path | None = None, models_dir: Path | None = None,
+               shapes_dir: Path | None = None, dsv41_member: dict | None = None) -> dict:
     now = now or dt.datetime.now(dt.timezone.utc)
     install_manifest = ""
     document: dict = {"schema_version": feedmod.SCHEMA_VERSION, "feed": "strata-updates", "channel": channel,
@@ -235,9 +316,8 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     if engine_dir:
         document["engine"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
                                            for p in sorted(Path(engine_dir).glob("*.entry.json"))]}
-    if dsv41_dir:
-        document["dsv41"] = {"packages": [json.loads(p.read_text(encoding="utf-8"))
-                                          for p in sorted(Path(dsv41_dir).glob("*.entry.json"))]}
+    if dsv41_member:                              # the frozen DeepSeek engine packages of Strata 0.2.13 and earlier (carried_dsv41)
+        document["dsv41"] = dsv41_member
     if shapes_dir:                                # the engines of model shapes (feed member shape_engines): each entry must name a shape
         entries = []
         for p in sorted(Path(shapes_dir).glob("*.entry.json")):
@@ -378,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
     pe.add_argument("--out", type=Path, required=True)
     pe.add_argument("--format", choices=feedmod.FORMATS, default="tar.gz")
     pe.add_argument("--url-prefix", default="engine/", help='where the archive sits relative to the feed ("" for flat GitHub release assets)')
-    pe.add_argument("--prefix", default="strata-engine", help="archive name prefix (strata-dsv41 for the DeepSeek engine packages)")
+    pe.add_argument("--prefix", default="strata-engine", help="archive name prefix")
     pd = sub.add_parser("pack-drafter", help="a DFlash2 drafter file as a feed entry (feed member drafters)")
     pd.add_argument("pack", type=Path)
     pd.add_argument("--out", type=Path, required=True)
@@ -403,7 +483,10 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--sequence", type=int, required=True)
     bf.add_argument("--channel", default="stable")
     bf.add_argument("--engine", type=Path)
-    bf.add_argument("--dsv41", type=Path, help="folder of the DeepSeek engine packages' .entry.json files (feed member dsv41)")
+    bf.add_argument("--carry-dsv41", type=Path, metavar="PREVIOUS-FEED",
+                    help="the last published strata-feed.json: its dsv41 member (the DeepSeek engine of Strata 0.2.13 and earlier) is carried over, frozen")
+    bf.add_argument("--carry-dsv41-base", metavar="URL", help="the https folder of the release that holds those archives, e.g. " + DSV41_BASE_EXAMPLE)
+    bf.add_argument("--no-dsv41-carry", action="store_true", help="build the feed without the frozen DeepSeek member (a test feed, or the owner's choice)")
     bf.add_argument("--shapes", type=Path, help="folder of the model-shape engines' .entry.json files (feed member shape_engines; pack-engine writes them for a package made with package_engine.py --shape)")
     bf.add_argument("--models", type=Path, help="folder of the models' <id>.entry.json files (feed member models: the model list setup and the screens show after the built-in ones)")
     bf.add_argument("--drafters", type=Path, help="folder of the DFlash2 drafters' .entry.json files (feed member drafters; pack-drafter writes them)")
@@ -442,10 +525,15 @@ def main(argv: list[str] | None = None) -> int:
         entry = pack_control(a.folder, a.out, version=a.version, platform=a.platform, fmt=a.format, url_prefix=a.url_prefix)
         print(json.dumps({k: entry[k] for k in ("version", "platform", "size", "sha256")}, indent=1))
     elif a.cmd == "build-feed":
+        if bool(a.carry_dsv41) == bool(a.no_dsv41_carry):
+            raise SystemExit("build-feed: say what happens to the frozen DeepSeek member: --carry-dsv41 <the last strata-feed.json> --carry-dsv41-base "
+                             f"{DSV41_BASE_EXAMPLE} (with the tag of the release that holds the archives), or --no-dsv41-carry")
+        member = carried_dsv41(a.carry_dsv41, a.carry_dsv41_base) if a.carry_dsv41 else None
         doc = build_feed(a.out, key=_load_key(a.key), sequence=a.sequence, channel=a.channel, engine_dir=a.engine,
-                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, dsv41_dir=a.dsv41, drafters_dir=a.drafters, models_dir=a.models, shapes_dir=a.shapes)
+                         control_dir=a.control, app_json=a.app_json, expires_days=a.expires_days, drafters_dir=a.drafters, models_dir=a.models, shapes_dir=a.shapes,
+                         dsv41_member=member)
         print(f"wrote {a.out / feedmod.FEED_NAME} (+ .sig); engines {len((doc.get('engine') or {}).get('packages', []))}, "
-              f"deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, shape engines {len((doc.get('shape_engines') or {}).get('packages', []))}, drafters {len((doc.get('drafters') or {}).get('packages', []))}, models {len((doc.get('models') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
+              f"frozen deepseek engines {len((doc.get('dsv41') or {}).get('packages', []))}, shape engines {len((doc.get('shape_engines') or {}).get('packages', []))}, drafters {len((doc.get('drafters') or {}).get('packages', []))}, models {len((doc.get('models') or {}).get('packages', []))}, control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
     elif a.cmd == "set-app-platform":
         url = a.url or f"https://github.com/Niko1221/Strata/releases/latest/download/{a.archive.name}"
         entry = set_app_platform(a.app_json, target=a.target, archive=a.archive, signature_file=a.sig, url=url, version=a.version,
