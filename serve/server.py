@@ -6198,8 +6198,11 @@ class Service:
         stop_list = stop_strings(sampling)
         stops = StopMatcher(stop_list) if stop_list else None
 
+        emitted = []                                    # STRATA_LOG_RAW: the tool calls this request sent out
+
         def cut(evs):
             """The events with the answer's text cut at a stop string (OpenAI stop, Anthropic stop_sequences)."""
+            emitted.extend(ev.call for ev in evs if ev.kind == "tool_call")
             if stops is None:
                 return evs
             out = []
@@ -6680,6 +6683,7 @@ class Service:
                 Path(emb).unlink(missing_ok=True)
         for ev in cut(parser.finish(finish)):
             yield "event", ev
+        log_raw_request(self.tok, raw_ids, emitted)     # after finish(): a call it completes is sent out too
         if parser.rescued or parser.refused:
             self.totals["tool_calls_from_reasoning"] = self.totals.get("tool_calls_from_reasoning", 0) + parser.rescued
             print(f"[strata] tool calls inside the thinking: {parser.rescued} read as calls, {parser.refused} kept as "
@@ -6814,6 +6818,20 @@ def prefill_leg_stats(earlier: list[dict], last: dict, prompt_tokens: int) -> di
         fresh = max(0, prompt_tokens - int(total.get("reused") or 0))
         total["prompt_read"] = min(fresh, sum(int(leg["prompt_read"]) for leg in legs))
     return total
+
+
+RAW_LOG_DIR = Path.home() / ".cache/pai/strata-raw"
+
+
+def log_raw_request(tok, raw_ids, calls):
+    """STRATA_LOG_RAW=1: one JSON line per finished request - the model's raw text and the tool calls sent out."""
+    if not os.environ.get("STRATA_LOG_RAW") or not raw_ids:
+        return
+    line = {"id": uuid.uuid4().hex[:12], "at": int(time.time()), "raw_text": tok.decode(raw_ids),
+            "emitted_tool_calls": [{"name": c.name, "arguments": c.arguments} for c in calls]}
+    RAW_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(RAW_LOG_DIR / f"raw-{os.getpid()}.jsonl", "a") as f:
+        f.write(json.dumps(line) + "\n")
 
 
 def _debug_req(api, req, messages, tools, max_new, thinking, prompt_tokens):
@@ -7119,8 +7137,6 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             c["choices"][0]["logprobs"] = {key: got}
         return c
     calls = 0
-    streamed = {}                                  # tool call id -> index, for calls sent piece by piece
-    finished = set()                               # ... and the ones whose final tool_call came (#211)
     answered_done = False                          # the run's own end (its "done" event) arrived
     born = getattr(svc.engine, "gen", None)        # the engine process this request is on (read again with every event: a start inside the run is its own)
     for kind, x in run if run is not None else svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True):
@@ -7140,25 +7156,14 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                 yield with_lp(chunk({"reasoning_content": ev.text}), "reasoning_content")
             elif ev.kind == "content" and ev.text:
                 yield with_lp(chunk({"content": ev.text}), "content")
-            elif ev.kind == "tool_start":
-                streamed[ev.call.id] = calls
-                calls += 1
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
-                                             "function": {"name": ev.call.name, "arguments": ""}}]})
-            elif ev.kind == "tool_args":
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
-            elif ev.kind == "tool_call" and ev.call.id in streamed:
-                finished.add(ev.call.id)
-            elif ev.kind == "tool_call":
+            elif ev.kind == "tool_call":     # sent once, whole, when the parser has finalised it
                 yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
                                              "function": {"name": ev.call.name,
                                                           "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
                 calls += 1
         else:
             answered_done = True
-            # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
-            whole = calls and streamed.keys() <= finished
-            finish = "tool_calls" if whole and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
+            finish = "tool_calls" if calls and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
             last = chunk({}, finish)
             pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
@@ -7350,7 +7355,6 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     def close():
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
-    streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True,
                            deferred=deferred):
         if kind == "ping":
@@ -7358,19 +7362,11 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             continue
         if kind == "event":
             ev: Event = x
-            if ev.kind == "tool_args":
-                yield "content_block_delta", {"type": "content_block_delta", "index": index,
-                                              "delta": {"type": "input_json_delta", "partial_json": ev.text}}
+            if ev.kind in ("tool_start", "tool_args"):
+                continue                            # a call is sent once, whole, when the parser has finalised it
+            want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use"}[ev.kind]
+            if ev.kind != "tool_call" and not ev.text:
                 continue
-            if ev.kind == "tool_call" and ev.call.id in streamed:
-                finished.add(ev.call.id)
-                continue
-            want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
-            if ev.kind not in ("tool_call", "tool_start") and not ev.text:
-                continue
-            if ev.kind == "tool_start":
-                streamed.add(ev.call.id)
-                used_tool = True
             if open_kind != want or want == "tool_use":
                 if open_kind is not None:
                     yield close()
@@ -7387,8 +7383,6 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             elif want == "text":
                 yield "content_block_delta", {"type": "content_block_delta", "index": index,
                                               "delta": {"type": "text_delta", "text": ev.text}}
-            elif ev.kind == "tool_start":
-                pass                                # its input follows as tool_args pieces
             else:
                 used_tool = True
                 yield "content_block_delta", {"type": "content_block_delta", "index": index, "delta": {
@@ -7397,7 +7391,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             if open_kind is not None:
                 yield close()
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
-                "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
+                "tool_use" if used_tool and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
             # the final counts (message_start could only say the whole prompt): what was read now stays for the next
             # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)

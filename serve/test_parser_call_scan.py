@@ -9,7 +9,7 @@ from serve import frontend
 
 class ReferenceParser(frontend.OutputParser):
     def _wrapped_call_end(self):
-        return frontend.call_end(self.buf, self._final)
+        return frontend.call_end(self.buf, self.schemas, self._final)
 
 
 def events_without_ids(events):
