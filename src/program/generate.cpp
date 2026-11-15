@@ -26,6 +26,7 @@
 #include "strata/core/batch_telemetry.hpp"
 #include "strata/core/dma_batch.hpp"
 #include "strata/program/adaptive_range.hpp"
+#include "strata/program/adaptive_slots.hpp"
 #include "strata/core/run_manifest.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
@@ -856,6 +857,11 @@ struct Options {
     /// sent as `BGEN <slot> <max_new> ...` reads its prompt and its first token through the usual path, then
     /// continues in slot <slot> of the batch windows (`BT <slot> <id>` lines, then `BDONE <slot> ...`).
     int batch = 0;
+    /// --parallel-recycle-after (opt-in, --serve, one NVIDIA GPU with --vram-elastic): --batch N is a cap.  The engine
+    /// starts with NO batch slot session (the rest of the VRAM is expert cache); it grows for a BGEN and shrinks
+    /// between requests, moves the other slots' VRAM to the cache (idle) or takes it back (more requests).
+    int parallel_recycle_after = 0;   ///< --parallel-recycle-after S: 0 = off; >0 = adaptive slots, idle keeps no batch session
+                                  ///< slot after S idle seconds (the rest of the VRAM is expert cache meanwhile)
     /// With an explicit --layer-split, every GPU loads only its own layers' dense weights instead of the whole
     /// model's: the VRAM they took goes back to the expert cache (opt-in)
     bool trim_stage_weights = false;
@@ -1123,10 +1129,15 @@ void usage() {
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"
                  "  --vram-elastic       --serve (#533, opt-in, NVIDIA): the expert cache in segments (--vram-segment-mib,\n"
                  "                       default 512), so the command `VRAM <reserve_mib>` (the server's POST /v1/vram) can\n"
-                 "                       give VRAM back to other programs between requests and take it back later\n"
+                 "                       give VRAM back to other programs between requests and take it back later;\n"
+                 "                       --parallel-recycle-after S>0 turns it on by itself (512 MiB segments)\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
+                 "  --parallel-recycle-after S  --serve, one NVIDIA GPU: 0 = off (default); S>0 = --batch N is a cap and\n"
+                 "                       --vram-elastic is implied (512 MiB segments, --vram-segment-mib): idle keeps NO\n"
+                 "                       batch slot session (the whole VRAM is expert cache, as for one request), sessions\n"
+                 "                       are created on BGEN and all are freed after S idle seconds; docs/BATCHING.md\n"
                  "  --batch-mtp          --batch (opt-in, needs --mtp and --spec): each slot also verifies one MTP proposal per\n"
                  "                       window (STRATA_BATCH_MTP=1 does the same); works on one GPU and on a layer split (the\n"
                  "                       slot drafters sit on the last stage's GPU; not with --batch-groups); needs VRAM per slot\n"
@@ -3582,6 +3593,18 @@ int main(int argc, char** argv) {
         else if (a == "--spec") o.spec = std::atoi(next("--spec"));
         else if (a == "--batch") o.batch = std::atoi(next("--batch"));
         else if (a == "--slots") o.batch = std::atoi(next("--slots"));   // the same as --batch
+        else if (a == "--parallel-recycle-after") {
+            // Space-separated form only, like the other engine options (--batch N, --spec N): there is no `=S` spelling
+            // and no hard-coded offset for one.  A value that is not a number of seconds leaves the feature off, with a
+            // warning (a silent 0 would look like a working flag).
+            const char* value = next("--parallel-recycle-after");
+            o.parallel_recycle_after = strata::program::adaptive_slots::parse_seconds(value);
+            if (o.parallel_recycle_after < 0) {
+                std::fprintf(stderr, "strata generate: WARNING: --parallel-recycle-after: '%s' is not a number of seconds; "
+                                     "the feature is off\n", value);
+                o.parallel_recycle_after = 0;
+            }
+        }
         else if (a == "--trim-stage-weights") o.trim_stage_weights = true;
         else if (a == "--batch-groups") {
             const char* bgv = next("--batch-groups");
@@ -6936,6 +6959,10 @@ int main(int argc, char** argv) {
         return n;
     };
     std::vector<std::vector<std::unique_ptr<strata::core::SessionState>>> bslot_ss;
+    std::vector<std::vector<void*>> bslot_bufs;   // the DEVICE arena each slot session was carved from (freed with it)
+    int64_t bslot_bytes0 = 0;                     // one slot session's bytes (single GPU)
+    int slot_reserved = 0;                        // sessions actually allocated (adaptive: starts at 0, grows on BGEN, shrinks to 0 when idle)
+    int adaptive_solo_tail_rank = 0;              // tail-skip rank for the solo (0-session) adaptive state; 0 during batch windows
     if (o.batch != 0) {
         const int cap = strata::kernels::kVerifyMaxT;
         const char* off = !o.serve ? "it needs --serve" : o.batch < 2 ? "it needs 2 or more slots"
@@ -6981,9 +7008,66 @@ int main(int argc, char** argv) {
                              "one group\n", o.batch_groups, o.batch);
         o.batch_groups = 1;
     }
+    // #533: --vram-elastic's final word.  It is decided HERE, before the batch slot sessions are sized, because
+    // --parallel-recycle-after depends on it and may imply it; the cache below only applies the decision.  Nothing it
+    // reads changes in between: --serve, the final layer-split decision and the helper caches are all settled by now.
+    auto vram_elastic_veto = [&]() -> const char* {
+        bool remote[3] = {false, false, false};
+        for (size_t r = 0; r < 3; ++r) remote[r] = o.expert_cache_remote[r] > 0;
+#if defined(STRATA_USE_HIP)
+        constexpr bool hip = true;
+#else
+        constexpr bool hip = false;
+#endif
+        return strata::program::adaptive_slots::vram_elastic_veto(o.serve, multi_gpu, remote, o.vram_segment_mib >= 64, hip);
+    };
+    const bool vram_elastic_explicit = o.vram_elastic;
+    bool vram_elastic_implied = false;   // (only the adaptive feature asked for it: a fallback takes it back)
+    if (o.vram_elastic) {
+        const char* why = vram_elastic_veto();
+        if (why != nullptr) {
+            std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
+            o.vram_elastic = false;
+        }
+    }
+    if (o.parallel_recycle_after > 0) {
+        const char* why = nullptr;
+        if (!o.serve) why = "it needs --serve";
+        else if (o.batch < 2) why = "it needs --batch 2 or more";
+        else if (!stages.empty()) why = "it needs one GPU (no --layer-split)";
+        else if (batch_mtp) why = "not with --batch-mtp/DFlash2 slot drafts";
+        else if (o.kv_grow) why = "not with --kv-grow (the elastic K/V moves the same slots)";
+        else if (o.peer_device >= 1) why = "not with --peer-device";
+        else if (nib::any_on()) why = "not with STRATA_EXPERT_NIBBLE=1 (its 4-bit slots are not GGUF blobs a grow can refill)";
+        // --expert-cache 0 means auto here (see the profile block above), so it is not a reason to refuse.
+        else if (!strata::core::ExpertCache::segmented_supported())
+            why = "the driver or this GPU offers no virtual memory management (the segmented expert cache)";
+        else if (!o.vram_elastic) {
+            // UX: the adaptive feature needs a segmented cache, and asking for the feature is enough.  The segments
+            // stay 512 MiB unless --vram-segment-mib says otherwise.  Where --vram-elastic cannot work, the old
+            // refusal still stands (and is why the feature is left off).
+            const char* veto = vram_elastic_veto();
+            if (strata::program::adaptive_slots::implies_vram_elastic(o.parallel_recycle_after, vram_elastic_explicit, veto)) {
+                o.vram_elastic = true;
+                vram_elastic_implied = true;
+                std::fprintf(stderr, "strata generate: --vram-elastic is on: implied by --parallel-recycle-after "
+                                     "(%lld MiB segments%s)\n", (long long) o.vram_segment_mib,
+                             o.vram_segment_mib == 512 ? ", the default" : "");
+            } else {
+                if (!vram_elastic_explicit && veto != nullptr)
+                    std::fprintf(stderr, "strata generate: --vram-elastic cannot be implied by --parallel-recycle-after: %s\n", veto);
+                why = "it needs --vram-elastic (the expert cache must be segmented to grow back)";
+            }
+        }
+        if (why != nullptr) {
+            std::fprintf(stderr, "strata generate: WARNING: --parallel-recycle-after is off: %s\n", why);
+            o.parallel_recycle_after = 0;
+        }
+    }
     if (o.batch > 0) {
         bslot_ss.resize(1 + stages.size());
-        int fit = o.batch;   // the slots every stage could carve
+        bslot_bufs.resize(1 + stages.size());
+        int fit = (o.parallel_recycle_after > 0) ? 0 : o.batch;   // adaptive: NO session while idle; --batch is the cap
         uint64_t bytes0 = 0;
         for (size_t k = 0; k < bslot_ss.size(); ++k) {
             const int dev = k == 0 ? 0 : stages[k - 1]->dev;
@@ -6991,7 +7075,7 @@ int main(int argc, char** argv) {
             const int64_t hi = k == 0 ? (multi_gpu ? split_at[0] : -1) : stages[k - 1]->le;
             const strata::core::OnDevice on_k(dev);
             const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
-            if (k == 0) bytes0 = bytes;
+            if (k == 0) { bytes0 = bytes; bslot_bytes0 = (int64_t) bytes; }
             for (int b = 0; b < fit; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
@@ -7008,6 +7092,7 @@ int main(int argc, char** argv) {
                 }
                 strata::core::session_zero(*u, g, nullptr, nullptr);
                 bslot_ss[k].push_back(std::move(u));
+                bslot_bufs[k].push_back(buf);
             }
             cudaDeviceSynchronize();
             size_t fb = 0, tb = 0;
@@ -7015,18 +7100,108 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: --batch: %d slot sessions on CUDA%d (%.2f GiB each); %.2f GiB free\n",
                          (int) bslot_ss[k].size(), dev, (double) bytes / 1073741824.0, (double) fb / 1073741824.0);
         }
-        for (auto& v : bslot_ss) if ((int) v.size() > fit) v.resize((size_t) fit);   // the same count on every stage
-        if (fit < 2) {
+        for (size_t k = 0; k < bslot_ss.size(); ++k) {   // the same count on every stage
+            if ((int) bslot_ss[k].size() <= fit) continue;
+            const int dev = k == 0 ? 0 : stages[k - 1]->dev;
+            const strata::core::OnDevice on_k(dev);
+            for (size_t b = (size_t) fit; b < bslot_ss[k].size(); ++b)
+                strata::core::session_free(g, *bslot_ss[k][b], bslot_bufs[k][b]);
+            bslot_ss[k].resize((size_t) fit);
+            bslot_bufs[k].resize((size_t) fit);
+        }
+        if (fit < o.batch) strata::core::session_register_rope(g, ss);   // a freed slot's table registration went with it (#280)
+        if (o.parallel_recycle_after > 0) {
+            const int n = slots_in_windows(o.batch);   // the slots the cap asks for still fit a window's rows
+            if (n < o.batch) {
+                std::fprintf(stderr, "strata generate: --parallel-recycle-after: a batch window holds at most %d rows, so %d slots\n",
+                             (int) strata::kernels::kVerifyMaxT, n);
+                o.batch = n;
+            }
+            resolve_groups_auto();
+            if (o.batch_groups > 1) {
+                std::fprintf(stderr, "strata generate: WARNING: --parallel-recycle-after: --batch-groups %d needs a layer split; one group\n",
+                             o.batch_groups);
+                o.batch_groups = 1;
+            }
+            // The base rule when the sessions cannot fit: the adaptive tier promises MULTIPLE slots, so the canary
+            // carves TWO (one used to pass while every concurrent request then answered ERR).  If not even two slot
+            // sessions can be carved here, no grow will ever hold a second request, and INFO would advertise
+            // batch_slots=<cap> while every BGEN beyond the first answered ERR.  Try two, exactly as the static
+            // --batch path tries its slots, then fall back to --batch off with the reason.
+            bool two_fit = true;
+            {
+                std::unique_ptr<strata::core::SessionState> u[2];
+                void* buf[2] = {nullptr, nullptr};
+                bool inited[2] = {false, false};
+                for (int c = 0; c < 2; ++c) {
+                    u[c] = std::make_unique<strata::core::SessionState>();
+                    if (cudaMalloc(&buf[c], (size_t) bslot_bytes0) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        two_fit = false;
+                        break;
+                    }
+                    if (strata::core::session_init(g, o.max_context, K, buf[c], *u[c], 0, -1) == 0) {
+                        (void) cudaGetLastError();
+                        two_fit = false;
+                        break;
+                    }
+                    inited[c] = true;
+                }
+                if (two_fit)
+                    for (int c = 0; c < 2; ++c) strata::core::session_zero(*u[c], g, nullptr, nullptr);
+                if (two_fit) (void) cudaDeviceSynchronize();   // the zeroing is async on the default stream: it must land before the free
+                for (int c = 0; c < 2; ++c) {
+                    if (inited[c]) strata::core::session_free(g, *u[c], buf[c]);
+                    else if (buf[c] != nullptr) (void) cudaFree(buf[c]);
+                }
+                strata::core::session_register_rope(g, ss);   // the canary's own registration went with it (#280)
+            }
+            if (!two_fit) {
+                size_t fb = 0, tb = 0;
+                cudaMemGetInfo(&fb, &tb);
+                std::fprintf(stderr, "strata generate: WARNING: --batch is off: not two slot sessions fit (%.2f GiB "
+                                     "each, %.2f GiB free); --parallel-recycle-after is off too, so INFO keeps no "
+                                     "batch_slots= field instead of the server getting BGEN errors\n",
+                             (double) bslot_bytes0 / 1073741824.0, (double) fb / 1073741824.0);
+                o.parallel_recycle_after = 0;
+                if (vram_elastic_implied) o.vram_elastic = false;   // the feature is off: back to the plain start
+                bslot_ss.clear();
+                bslot_bufs.clear();
+                o.batch = 0;
+            } else {
+                slot_reserved = (int) (bslot_ss.empty() ? 0 : bslot_ss[0].size());
+                std::fprintf(stderr, "strata generate: --parallel-recycle-after: --batch %d is the cap, %d slot session%s reserved "
+                                     "(%.2f GiB each); idle keeps NO batch session, so the whole VRAM is expert cache until a "
+                                     "request needs more slots\n", o.batch, slot_reserved, slot_reserved == 1 ? "" : "s",
+                             (double) bslot_bytes0 / 1073741824.0);
+            }
+        } else if (fit < 2) {
             std::fprintf(stderr, "strata generate: WARNING: --batch is off: not two slot sessions fit (a smaller "
                                  "--max-context or KV streaming, --kv-resident, makes them smaller)\n");
+            for (size_t k = 0; k < bslot_ss.size(); ++k) {   // the sessions that did fit: their arena too, not just the unique_ptr
+                const int dev = k == 0 ? 0 : stages[k - 1]->dev;
+                const strata::core::OnDevice on_k(dev);
+                for (size_t b = 0; b < bslot_ss[k].size(); ++b)
+                    strata::core::session_free(g, *bslot_ss[k][b], bslot_bufs[k][b]);
+            }
             bslot_ss.clear();
+            bslot_bufs.clear();
+            strata::core::session_register_rope(g, ss);   // a freed slot's registration went with it (#280)
             o.batch = 0;
         } else {
             const int n = slots_in_windows(fit);   // (the slots that fit are held to kVerifyMaxT rows per group too)
             if (n < fit) {
                 std::fprintf(stderr, "strata generate: WARNING: --batch: %d slot sessions fit, and a batch window holds "
                                      "at most %d rows, so %d slots\n", fit, (int) strata::kernels::kVerifyMaxT, n);
-                for (auto& v : bslot_ss) v.resize((size_t) n);
+                for (size_t k = 0; k < bslot_ss.size(); ++k) {   // the slots cut here: free their arena, not only the unique_ptr
+                    const int dev = k == 0 ? 0 : stages[k - 1]->dev;
+                    const strata::core::OnDevice on_k(dev);
+                    for (size_t b = (size_t) n; b < bslot_ss[k].size(); ++b)
+                        strata::core::session_free(g, *bslot_ss[k][b], bslot_bufs[k][b]);
+                    bslot_ss[k].resize((size_t) n);
+                    bslot_bufs[k].resize((size_t) n);
+                }
+                strata::core::session_register_rope(g, ss);   // a freed slot's table registration went with it (#280)
                 fit = n;
             }
             o.batch = fit;
@@ -8290,24 +8465,10 @@ int main(int argc, char** argv) {
     // 3 GiB kept free; STRATA_PF_W16_CACHE_MIB=0 turns it off, =N is an explicit budget.
     if (o.batch >= 2) strata::prefill::Gemm::set_w16_auto_default(true);
 #endif
-    // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  One GPU,
-    // no helper caches, serve mode: anything else keeps the one cudaMalloc, said once.
-    if (o.vram_elastic) {
-        const char* why = !o.serve ? "it works between requests of --serve"
-                        : multi_gpu ? "a layer split has a cache per GPU"
-                        : std::any_of(o.expert_cache_remote.begin(), o.expert_cache_remote.end(),
-                                      [](int n) { return n > 0; }) ? "the helper caches on other GPUs"
-                        : o.vram_segment_mib < 64 ? "--vram-segment-mib is below 64" : nullptr;
-#if defined(STRATA_USE_HIP)
-        if (why == nullptr) why = "it is NVIDIA-only for now";
-#endif
-        if (why != nullptr) {
-            std::fprintf(stderr, "strata generate: --vram-elastic is off: %s\n", why);
-            o.vram_elastic = false;
-        } else {
-            xcache.set_segment_bytes(o.vram_segment_mib << 20);
-        }
-    }
+    // #533: --vram-elastic: the cache in physical segments (the VRAM command resizes it between requests).  Its
+    // conditions were decided above, before the batch slot sessions were sized (--parallel-recycle-after reads the
+    // decision, and may imply it); here the cache is only told the segment size it was decided with.
+    if (o.vram_elastic) xcache.set_segment_bytes(o.vram_segment_mib << 20);
     // STRATA_MMQ_DIRECT: the guard after each sized slot (kept across the retry loop's close/open)
     xcache.set_slot_guard(slot_guard);
     if (slot_guard > 0 && o.expert_cache > 0) {
@@ -11837,7 +11998,7 @@ int main(int argc, char** argv) {
                 for (auto& u : bslot_ss[k]) ptrs.push_back(u.get());
                 strata::core::Verifier& vk = k == 0 ? ver : stages[k - 1]->ver;
                 const strata::core::OnDevice on_k(k == 0 ? 0 : stages[k - 1]->dev);
-                if (!vk.init_slots(ptrs, err)) {
+                if (!ptrs.empty() && !vk.init_slots(ptrs, err)) {   // adaptive idle: no batch slot yet; resize_slots builds them
                     std::fprintf(stderr, "strata serve: --batch, stage %zu: %s\n", k + 1, err.c_str());
                     return 1;
                 }
@@ -12803,7 +12964,8 @@ int main(int argc, char** argv) {
                 for (const auto& f : strata::kernels::cpu::expert_layout().fmt)
                     nvfp4_experts = nvfp4_experts || f.gu_type == strata::kernels::cpu::kNvfp4Type ||
                                     f.d_type == strata::kernels::cpu::kNvfp4Type;
-            const bool tail_default_path = tse == nullptr && !all_experts_resident && !nearly_all_cached && o.batch == 0 &&
+            const bool tail_default_path = tse == nullptr && !all_experts_resident && !nearly_all_cached &&
+                                           (o.batch == 0 || o.parallel_recycle_after > 0) &&
                                            decode_defaults_arch_ok() &&
                                            o.peer_device < 0;
             const bool tail_default_ok = tail_default_path && !nvfp4_experts;
@@ -12815,6 +12977,7 @@ int main(int argc, char** argv) {
                                      "few are missed and skipping them costs more draft acceptance than it saves; "
                                      "STRATA_ROUTE_TAIL_SKIP=7 turns it on\n", 100.0 * (double) cached_experts / (double) host_res.size());
             if (tail_default_ok) strata::core::set_tail_skip_rank(7);
+            if (o.parallel_recycle_after > 0) adaptive_solo_tail_rank = strata::core::tail_skip_rank();
             if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON%s: a missed expert that every token of a verify window routes at rank %d or "
                                      "lower is skipped (+10..20%% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); "
@@ -12824,7 +12987,8 @@ int main(int argc, char** argv) {
         if (o.adapt_every > 0 && o.adapt_swaps > 0 && !all_experts_resident)
             drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
         PcieAuto pcie_auto;
-        if (o.pcie_frac_auto && !all_experts_resident && o.batch == 0 && o.peer_device < 0 && (n_stages == 1 || pcie_auto_split_ok())) {
+        if (o.pcie_frac_auto && !all_experts_resident && (o.batch == 0 || o.parallel_recycle_after > 0) && o.peer_device < 0 &&
+            (n_stages == 1 || pcie_auto_split_ok())) {
             const auto& pl = strata::kernels::cpu::expert_layout();
             double sum = 0.0;
             for (int64_t l = 0; l < g.n_layers; ++l) sum += (double) pl.blob_bytes(l);
@@ -12837,6 +13001,7 @@ int main(int argc, char** argv) {
         // rate, on both parities' routing (the pipelined loop's second verifier).
         auto pcie_auto_step = [&](double& req_pcie_frac) {
             if (!pcie_auto.on) return;
+            if (o.parallel_recycle_after > 0 && slot_reserved > 0) return;   // batch windows mix requests; refine on solo ones only
             double tc_us = 0.0, rate = 0.0;
             const double nf = req_pcie_frac == o.pcie_frac
                                   ? pcie_auto.window(drive.d.ms_run, drive.d.multi_misses, o.pcie_frac, &tc_us, &rate)
@@ -13837,6 +14002,17 @@ int main(int argc, char** argv) {
             in_lines.pop_front();
             return true;
         };
+        // --parallel-recycle-after: the same wait with a timeout, so the idle shrink runs while no request arrives
+        // (1 = a line, 0 = the timeout, -1 = end of input)
+        auto next_line_wait = [&](std::string& out, int ms) -> int {
+            std::unique_lock<std::mutex> lk(in_mu);
+            if (!in_cv.wait_for(lk, std::chrono::milliseconds(ms), [&] { return !in_lines.empty() || in_eof; }))
+                return 0;
+            if (in_lines.empty()) return -1;
+            out = std::move(in_lines.front());
+            in_lines.pop_front();
+            return 1;
+        };
         sp.should_stop = [&] { return stop_req.load(); };
         // 149-prefetch STRATA_RAM_ADAPT2: the prompt's routing seeds the RAM policy with a limited weight
         // (STRATA_RAM_ADAPT_PROMPT_W, default 0.25: an expert every prompt token routes to counts like ~5 decode routings),
@@ -13987,7 +14163,9 @@ int main(int argc, char** argv) {
                         strata::prefill::Prefill::pipe_setting(),
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
-                                       " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
+                                       " batch_groups=" + std::to_string(o.batch_groups) +
+                                       (o.parallel_recycle_after > 0
+                                            ? " parallel_recycle_after=" + std::to_string(o.parallel_recycle_after) : "")).c_str() : "");
             if (strata::core::manifest::enabled()) {   // STRATA_MANIFEST: engine choice and budgets (a diagnostic; off by default)
                 auto& M = strata::core::manifest::instance();
                 M.engine("version", STRATA_VERSION);
@@ -14155,6 +14333,8 @@ int main(int argc, char** argv) {
         // again and puts each slot's expert back (or, when the adaptive tier already brought that one back, the
         // most-routed missing expert of the same layer); the adaptive tier carries on from there.
         std::vector<std::pair<int32_t, int32_t>> vram_evicted;   // (residency index, slot) the shrinks took
+        int64_t vram_reserve_mib_now = o.vram_reserve_mib;       // #533: what `VRAM <reserve>` last asked to keep free (the idle shrink honours it)
+        bool vram_reserve_commanded = false;                     // a `VRAM <n>` with an explicit n was applied; bare VRAM (start reserve) clears it
         const int64_t chunk_full = o.prefill_chunk;              // the loan's chunk with the whole cache
         auto relend = [&]() {   // the prompt path's loan: the end of the slots left, its chunk as large as fits
             if (pf_parts.empty() || pf_parts[0].first < 0) return;
@@ -14214,6 +14394,7 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < host_res.size(); ++i)
                     if (host_res[i] >= live) {
                         vram_evicted.emplace_back((int32_t) i, host_res[i]);
+                        xcache.forget_resident((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // the slot is unmapped: the table must not name it
                         host_res[i] = strata::core::kNotResident;
                     }
                 res_upload();
@@ -14245,6 +14426,7 @@ int main(int argc, char** argv) {
                         return false;
                     }
                     srcp->note_async_read(b, nullptr);   // #1237: the queued copy reads a stage buffer; it is not recycled under it
+                    xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
                     host_res[(size_t) pick] = slot;
                 }
                 vram_evicted.swap(keep_out);
@@ -14259,6 +14441,8 @@ int main(int argc, char** argv) {
                          (double) xcache.mapped_bytes() / 1073741824.0, (double) xcache.full_bytes() / 1073741824.0,
                          (long long) (free_b >> 20), (long long) o.prefill_chunk,
                          std::chrono::duration<double, std::milli>(Clock::now() - t0).count(), note.c_str());
+            vram_reserve_mib_now = (int64_t) reserve;   // applied: the idle shrink grows the cache back only as far as this leaves room
+            vram_reserve_commanded = !bare;            // an explicit reserve is respected by the idle shrink; a bare `VRAM` restores the start's
             std::printf("VRAM reserve_mib=%lld expert_slots=%lld expert_slots_full=%lld expert_cache_mib=%lld "
                         "expert_cache_full_mib=%lld vram_free_mib=%lld prompt_chunk=%lld\n", reserve,
                         (long long) xcache.slots(), (long long) xcache.full_slots(),
@@ -14299,6 +14483,232 @@ int main(int argc, char** argv) {
             ConvCheckpoint::PromptPlan partial_plan;   ///< --prefill-pipe: the segment it stopped in, read on in its chunks
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
+
+        // ---- adaptive slots (--parallel-recycle-after S): resize the slot sessions between requests, one GPU,
+        // --vram-elastic (the cache is segmented).  The engine grows for a BGEN and shrinks back after S idle seconds.
+        // The verifier's batch layout cannot always be rebuilt after a failed resize.  If restoring the previous
+        // count fails too, slots_ is empty while slot_reserved still names live sessions: any later slot access is
+        // undefined behaviour.  A refill retry would succeed in practice, but the engine must never guess here - it
+        // stops, and the server starts it again (the same policy as the watchdog).
+        auto verifier_restore_or_stop = [&](const std::vector<strata::core::SessionState*>& old, const char* when) {
+            std::string e2;
+            if (ver.resize_slots(old, e2)) return;
+            std::fprintf(stderr, "strata serve: adaptive slots: the verifier could not be restored after %s (%s); "
+                                 "stopping the engine so the server restarts it\n", when, e2.c_str());
+            std::fflush(stderr);
+            std::fflush(stdout);
+            std::_Exit(1);   // no static destructors / CUDA teardown: a hang here would leave the server waiting (see the watchdog note)
+        };
+        auto adaptive_resize = [&](int n, std::string& e) -> bool {
+            // A failed resize can free the slot session whose RoPE table was last registered (#280): every exit from
+            // here - a failure before the shrink, a rollback after it, or the success path - puts the main session's
+            // table back, so STRATA_ROPE_TABLE=1 keeps reading a live table.
+            struct RopeRestore {
+                const strata::core::ModelGeometry& g;
+                const strata::core::SessionState& s;
+                ~RopeRestore() { strata::core::session_register_rope(g, s); }
+            } rope_restore{g, ss};
+            if (!(o.parallel_recycle_after > 0)) { e = "adaptive slots are off (--parallel-recycle-after)"; return false; }
+            if (n < 0 || n > o.batch) { e = "adaptive slots: n out of range"; return false; }
+            if (!stages.empty()) { e = "adaptive slots: one GPU only (no --layer-split)"; return false; }
+            if (!xcache.segmented()) { e = "adaptive slots need --vram-elastic"; return false; }
+            if (o.batch_groups > 1) { e = "adaptive slots: not with --batch-groups"; return false; }
+            for (const PfPart& p : pf_parts)
+                if (!p.lent.empty()) { e = "adaptive slots: a prompt's loan is still out"; return false; }
+            if (!ver.wait_commit(e)) return false;
+            adapt_quiesce();
+            if (cudaDeviceSynchronize() != cudaSuccess) { e = std::string("adaptive slots: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+            const int before = slot_reserved;
+            const auto t0 = Clock::now();
+            if (n < slot_reserved) {   // today only the idle shrink (n == 0) takes this branch; the loop keeps a partial shrink safe
+                std::vector<strata::core::SessionState*> ptrs, old;
+                for (int b = 0; b < (int) n; ++b) ptrs.push_back(bslot_ss[0][(size_t) b].get());
+                for (int b = 0; b < slot_reserved; ++b) old.push_back(bslot_ss[0][(size_t) b].get());
+                if (!ver.resize_slots(ptrs, e)) {                  // the verifier drops the old batch buffers/graphs
+                    verifier_restore_or_stop(old, "a failed shrink");   // (exits if even the old count cannot be rebuilt)
+                    return false;                                  // the sessions are untouched: the old layout is back
+                }
+                int64_t freed = 0;
+                for (int b = slot_reserved - 1; b >= (int) n; --b) {
+                    strata::core::session_free(g, *bslot_ss[0][(size_t) b], bslot_bufs[0][(size_t) b]);
+                    bslot_ss[0].pop_back();
+                    bslot_bufs[0].pop_back();
+                    bs[(size_t) b] = BSlot{};   // a freed session holds no cached conversation
+                    freed += bslot_bytes0;
+                }
+                slot_reserved = (int) n;
+                if (freed > 0 && xcache.mapped_bytes() < xcache.full_bytes()) {
+                    // Grow back only as far as the VRAM reserve allows: a `VRAM <reserve>` command asked the cache
+                    // to leave that much free, and the idle shrink must not take it back.  The sessions' arena and
+                    // the verifier's batch buffers freed here count too, so the room is MEASURED, not assumed.
+                    // The segments are rounded to the allocation granularity, so mapped + segment can land a little
+                    // above full_bytes(); grow()'s "mapped + segment <= want" rule would then leave the last
+                    // (partial) segment unmapped for good (measured: 5637 of 5837 slots after 4 -> 1).  When the
+                    // whole cache fits in the room, ask for every remaining segment; otherwise keep `want` exact so
+                    // the reserve is not eaten into.
+                    // Grow back only as far as the measured room allows: a `VRAM <reserve>` command keeps that
+                    // much free, and segment rounding can leave the last segment unmapped when the room is just
+                    // under one segment (measured: 6349 of 6593 slots after 4 -> 0; harmless, the next BGEN grow
+                    // still works).  Asking for INT64_MAX here was tried and the idle shrink could take the
+                    // engine down, so this path stays measured and conservative.
+                    size_t fb = 0, tb = 0;
+                    cudaMemGetInfo(&fb, &tb);
+                    const int64_t room = (int64_t) fb - (vram_reserve_mib_now << 20);
+                    const int64_t want_exact = xcache.mapped_bytes() + std::max<int64_t>(room, 0);
+                    const int64_t want = want_exact >= xcache.full_bytes() ? std::numeric_limits<int64_t>::max() : want_exact;
+                    std::string gerr;
+                    if (!xcache.grow(want, gerr)) std::fprintf(stderr, "strata serve: adaptive slots: %s\n", gerr.c_str());
+                    const int64_t live = xcache.slots();
+                    std::string ferr;
+                    std::vector<std::pair<int32_t, int32_t>> keep_out;
+                    for (const auto& [i, slot] : vram_evicted) {
+                        if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
+                        const int64_t layer = i / g.n_expert;
+                        int64_t pick = i;
+                        if (host_res[(size_t) i] >= 0) {   // back already: the layer's most-routed missing expert
+                            pick = -1;
+                            float best = -1.0f;
+                            for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                                const size_t j = (size_t) (layer * g.n_expert + ex);
+                                if (host_res[j] >= 0) continue;
+                                const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
+                                if (u > best) { best = u; pick = (int64_t) j; }
+                            }
+                        }
+                        if (pick < 0) continue;
+                        const uint8_t* bl = srcp->blob_stable(layer, pick % g.n_expert);
+                        if (bl == nullptr || !xcache.fill_slot_queued(slot, bl, ferr,
+                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
+                            std::fprintf(stderr, "strata serve: adaptive slots: refilling the cache failed: %s\n", ferr.c_str());
+                            break;
+                        }
+                        srcp->note_async_read(bl, nullptr);
+                        xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
+                        host_res[(size_t) pick] = slot;
+                    }
+                    vram_evicted.swap(keep_out);
+                    (void) xcache.sync_queued(ferr);
+                    res_upload();
+                }
+                relend();
+            } else if (n > slot_reserved) {
+                // A grow first unmaps the cache's tail (the slots those experts were in become zero pages once the
+                // segments are mapped again).  If the grow then fails and is rolled back, put every evicted expert
+                // back into its slot - the same refill the VRAM command and the idle shrink do - so no slot the
+                // residency table names can stay a zero page.  A slot the rollback could not map stays evicted and
+                // already forgotten in the cache's table, so it is a CPU miss, not a silent wrong answer.
+                auto refill_evicted = [&]() {
+                    const int64_t live = xcache.slots();
+                    std::string ferr;
+                    std::vector<std::pair<int32_t, int32_t>> keep_out;
+                    for (const auto& [i, slot] : vram_evicted) {
+                        if (slot >= live) { keep_out.emplace_back(i, slot); continue; }
+                        const int64_t layer = i / g.n_expert;
+                        int64_t pick = i;
+                        if (host_res[(size_t) i] >= 0) {   // back already: the layer's most-routed missing expert
+                            pick = -1;
+                            float best = -1.0f;
+                            for (int64_t ex = 0; ex < g.n_expert; ++ex) {
+                                const size_t j = (size_t) (layer * g.n_expert + ex);
+                                if (host_res[j] >= 0) continue;
+                                const float u = drive.d.usage.empty() ? 0.0f : drive.d.usage[j];
+                                if (u > best) { best = u; pick = (int64_t) j; }
+                            }
+                        }
+                        if (pick < 0) continue;
+                        const uint8_t* bl = srcp->blob_stable(layer, pick % g.n_expert);
+                        if (bl == nullptr || !xcache.fill_slot_queued(slot, bl, ferr,
+                                (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
+                            std::fprintf(stderr, "strata serve: adaptive slots: refilling the rolled-back cache failed: %s\n",
+                                         ferr.c_str());
+                            break;
+                        }
+                        srcp->note_async_read(bl, nullptr);
+                        xcache.mark_resident(layer, (int64_t) (pick % g.n_expert), slot);
+                        host_res[(size_t) pick] = slot;
+                    }
+                    vram_evicted.swap(keep_out);
+                    (void) xcache.sync_queued(ferr);
+                    res_upload();
+                };
+                const int64_t need = (bslot_bytes0 + (int64_t) (64 << 20)) * (int64_t) (n - slot_reserved);   // session + verifier batch arena
+                const int64_t floor_slots = std::min<int64_t>(xcache.full_slots(),
+                    g_lend_keep + (pf_parts.empty() || pf_parts[0].first < 0 ? 0 : part_slots(pf_parts[0], 256)));
+                int64_t keep = xcache.mapped_bytes() - need;
+                if (keep < xcache.bytes_of(floor_slots)) keep = xcache.bytes_of(floor_slots);
+                if (xcache.mapped_bytes() - keep < need) {
+                    char b[192];
+                    std::snprintf(b, sizeof b, "adaptive slots: not enough VRAM for %ld more slot session(s): need %lld MiB, "
+                                               "the cache can give %lld MiB", (long) ((long) n - (long) slot_reserved),
+                                  (long long) (need >> 20), (long long) ((xcache.mapped_bytes() - keep) >> 20));
+                    e = b;
+                    return false;
+                }
+                if (!xcache.shrink(keep, e)) return false;
+                const int64_t live = xcache.slots();
+                for (size_t i = 0; i < host_res.size(); ++i)
+                    if (host_res[i] >= live) {
+                        vram_evicted.emplace_back((int32_t) i, host_res[i]);
+                        xcache.forget_resident((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);   // the slot is unmapped: the table must not name it
+                        host_res[i] = strata::core::kNotResident;
+                    }
+                res_upload();
+                bool ok = true;
+                for (int b = slot_reserved; b < (int) n && ok; ++b) {
+                    auto u = std::make_unique<strata::core::SessionState>();
+                    void* buf = nullptr;
+                    if (cudaMalloc(&buf, (size_t) bslot_bytes0) != cudaSuccess ||
+                        strata::core::session_init(g, o.max_context, K, buf, *u, 0, -1) == 0) {
+                        (void) cudaGetLastError();
+                        if (buf != nullptr) (void) cudaFree(buf);
+                        ok = false;
+                        break;
+                    }
+                    strata::core::session_zero(*u, g, nullptr, nullptr);
+                    bslot_ss[0].push_back(std::move(u));
+                    bslot_bufs[0].push_back(buf);
+                }
+                (void) cudaDeviceSynchronize();   // the new sessions' zeroing must land before the first batch window uses them
+                if (!ok) {
+                    for (size_t k = (size_t) slot_reserved; k < bslot_ss[0].size(); ++k)
+                        strata::core::session_free(g, *bslot_ss[0][k], bslot_bufs[0][k]);
+                    bslot_ss[0].resize((size_t) slot_reserved);
+                    bslot_bufs[0].resize((size_t) slot_reserved);
+                    std::string gerr;
+                    (void) xcache.grow(std::min<int64_t>(xcache.full_bytes(), xcache.mapped_bytes() + need), gerr);
+                    refill_evicted();
+                    e = "adaptive slots: a new slot session does not fit";
+                    return false;
+                }
+                std::vector<strata::core::SessionState*> ptrs;
+                for (auto& u : bslot_ss[0]) ptrs.push_back(u.get());
+                if (!ver.resize_slots(ptrs, e)) {
+                    for (size_t k = (size_t) slot_reserved; k < bslot_ss[0].size(); ++k)
+                        strata::core::session_free(g, *bslot_ss[0][k], bslot_bufs[0][k]);
+                    bslot_ss[0].resize((size_t) slot_reserved);
+                    bslot_bufs[0].resize((size_t) slot_reserved);
+                    std::vector<strata::core::SessionState*> old;   // the layout that was decoding: put it back
+                    for (auto& u : bslot_ss[0]) old.push_back(u.get());
+                    verifier_restore_or_stop(old, "a failed grow");
+                    std::string gerr;
+                    (void) xcache.grow(std::min<int64_t>(xcache.full_bytes(), xcache.mapped_bytes() + need), gerr);
+                    refill_evicted();
+                    return false;
+                }
+                slot_reserved = (int) n;
+                relend();
+            }
+            size_t free_b = 0, total_b = 0;
+            cudaMemGetInfo(&free_b, &total_b);
+            std::fprintf(stderr, "strata serve: adaptive slots: %d -> %d of %d slots; the expert cache %lld of %lld slots "
+                                 "(%.2f of %.2f GiB), %lld MiB free, in %.0f ms\n", before, slot_reserved, o.batch,
+                         (long long) xcache.slots(), (long long) xcache.full_slots(),
+                         (double) xcache.mapped_bytes() / 1073741824.0, (double) xcache.full_bytes() / 1073741824.0,
+                         (long long) (free_b >> 20), std::chrono::duration<double, std::milli>(Clock::now() - t0).count());
+            if (o.parallel_recycle_after > 0)
+                strata::core::set_tail_skip_rank(slot_reserved == 0 ? adaptive_solo_tail_rank : 0);
+            return true;
+        };
         // STRATA_BATCH_DF2_DEFER=0: every round drafts for every slot, spare rows or not (the first measurement's behaviour, for the A/B)
         // STRATA_BATCH_DF2_CONF=P (default: --draft-conf, else 0.35; 0 off): a slot's draft rows stop where the product of the selector's probabilities falls below P;
         // STRATA_BATCH_DF2_MAXX=N: at most N draft rows a slot and window (default kDrafts)
@@ -15414,6 +15824,32 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return pmtp_settle();
         };
+        // --parallel-recycle-after: how many slots the BGEN lines already queued behind this one need, so one grow
+        // covers the whole burst instead of one 1.7-2.3 s resize per slot
+        auto pending_bgen_need = [&]() -> int {
+            int need = 0;
+            std::lock_guard<std::mutex> lk(in_mu);
+            for (const auto& l : in_lines) {
+                const size_t off = l.rfind("BGENI ", 0) == 0 ? 6 : (l.rfind("BGEN ", 0) == 0 ? 5 : 0);
+                if (off == 0) continue;
+                const long slot = std::strtol(l.c_str() + off, nullptr, 10);
+                if (slot >= 0 && slot < (long) o.batch) need = std::max(need, (int) slot + 1);
+            }
+            return need;
+        };
+        // --parallel-recycle-after: the BCO co-reads waiting for this BGEN need sessions too.  The grow must cover
+        // them, or co_run would name a slot above slot_reserved (the crash the audit found: serve sends BCO before
+        // BGEN, and the BGEN that arrives after an idle shrink only grew for itself).
+        auto pending_co_need = [&]() -> int {
+            int need = 0;
+            for (const std::vector<CoReq>* v : {&co_pending, &co_set})
+                for (const CoReq& c : *v)
+                    if (c.slot >= 0 && c.slot < o.batch) need = std::max(need, c.slot + 1);
+            return need;
+        };
+        Clock::time_point adaptive_idle_t0 = Clock::now();   // --parallel-recycle-after: when the engine went idle
+        bool adaptive_idle_armed = false;
+        bool adaptive_shrink_failing = false;                // an idle shrink failed: back off S seconds and say it once
         for (;;) {
             line_drain_ms = 0.0;
             strata::core::manifest::instance().flush_if_dirty("request");   // STRATA_MANIFEST: what the last request added (a no-op when off)
@@ -15441,6 +15877,35 @@ int main(int argc, char** argv) {
                         std::fflush(stderr);
                     }
                 }
+            } else if (o.parallel_recycle_after > 0) {
+                if (!adaptive_idle_armed) { adaptive_idle_t0 = Clock::now(); adaptive_idle_armed = true; }
+                const int ar = next_line_wait(line, 500);
+                if (ar < 0) break;
+                if (ar == 0) {
+                    const auto idle_s = std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - adaptive_idle_t0).count();
+                    if (slot_reserved > 0 && !batch_on() && idle_s >= o.parallel_recycle_after) {
+                        std::string aerr;
+                        if (!adaptive_resize(0, aerr) && !aerr.empty()) {
+                            // A failed shrink used to retry every 500 ms, re-running the whole resize and filling the
+                            // log.  Wait at least S more seconds (a future idle_t0 satisfies `idle_s >= S` only then)
+                            // and say it once per streak.
+                            if (!adaptive_shrink_failing)
+                                std::fprintf(stderr, "strata serve: adaptive idle shrink: %s (retrying in %d s)\n",
+                                             aerr.c_str(), o.parallel_recycle_after);
+                            adaptive_shrink_failing = true;
+                            adaptive_idle_t0 = Clock::now() + std::chrono::seconds(o.parallel_recycle_after);
+                        } else {
+                            // every slot session is gone: a BCO that named one of them must not be co-read (the
+                            // prompt's BGEN grows for it again and reads it normally).  co_set is last request's.
+                            co_pending.clear();
+                            co_set.clear();
+                            adaptive_idle_armed = false;
+                            adaptive_shrink_failing = false;
+                        }
+                    }
+                    continue;
+                }
+                adaptive_idle_armed = false;
             } else if (!next_line(line)) {
                 break;
             }
@@ -15493,8 +15958,27 @@ int main(int argc, char** argv) {
                 const long b = std::strtol(line.c_str() + (bimg ? 6 : 5), &e1, 10);
                 char* e2 = nullptr;
                 const long long mn = std::strtoll(e1, &e2, 10);
+                // Validate before growing: `BGEN 0 0` (or a slot above the cap, or a busy slot) must be refused at
+                // once, not after a 1.8-2.3 s cache+session resize.
                 if (bs.empty() || b < 0 || b >= (long) bs.size() || bs[(size_t) b].active || mn < 1 || e2 == e1) {
                     std::printf("ERR BGEN: no such free slot (--batch %d) or a bad max_new\n", o.batch);
+                    std::fflush(stdout);
+                    continue;
+                }
+                if ((o.parallel_recycle_after > 0) && (int) b >= slot_reserved) {
+                    // the engine grows for this request, for the BGEN lines already queued behind it (one cache resize
+                    // per burst) and for the BCO co-reads waiting for it, so none of them names an unreserved slot
+                    int want = strata::program::adaptive_slots::grow_target((int) b, pending_bgen_need(), pending_co_need(), o.batch);
+                    if (want <= slot_reserved) want = std::min(slot_reserved + 1, o.batch);
+                    std::string aerr;
+                    if (!adaptive_resize(want, aerr)) {
+                        std::printf("ERR BGEN: %s\n", aerr.c_str());
+                        std::fflush(stdout);
+                        continue;
+                    }
+                }
+                if ((o.parallel_recycle_after > 0) && (int) b >= slot_reserved) {
+                    std::printf("ERR BGEN: no such free slot (--batch %d): the resize did not reserve it\n", o.batch);
                     std::fflush(stdout);
                     continue;
                 }
@@ -17278,8 +17762,10 @@ int main(int argc, char** argv) {
                     segs.push_back(lead);
                     std::vector<const CoReq*> used;
                     for (const CoReq& c : co_set) {
-                        if (c.slot < 0 || c.slot >= (int) bs.size() || c.slot == admit_slot || bs[(size_t) c.slot].active ||
-                            bs[(size_t) c.slot].partial)
+                        // the slot must have a SESSION (slot_reserved), not merely fit the cap: BCO can arrive
+                        // before the BGEN that grows for it, and an idle shrink frees sessions behind its back
+                        if (!strata::program::adaptive_slots::co_slot_ok(c.slot, o.parallel_recycle_after > 0 ? slot_reserved : (int) bs.size()) ||
+                            c.slot == admit_slot || bs[(size_t) c.slot].active || bs[(size_t) c.slot].partial)
                             continue;
                         bool dup = false;
                         for (const CoReq* u : used) dup = dup || u->slot == c.slot;

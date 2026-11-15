@@ -271,6 +271,12 @@ struct QsaState {
     /// copy and give back the overlap the doorbell protocol exists for.
     int32_t* host_step = nullptr;    ///< (kStepCount + 1,) pinned; final element is attention status
     int32_t* host_pos = nullptr;     ///< (n_head,) pinned
+    void* host_base = nullptr;       ///< a streamed state's pinned K/V copy: what `kv_host_alloc` returned (freed by qsa_state_free_host)
+    /// How `host_base` was allocated, recorded at allocation time: true = anonymous mmap + cudaHostRegister (freed
+    /// with cudaHostUnregister + munmap, POSIX only), false = cudaHostAlloc (freed with cudaFreeHost).  Never probe
+    /// the kind with cudaHostUnregister at free time: a refusal there means "not registered", which is not the same
+    /// question, and on Windows munmap does not exist.
+    bool host_registered = false;
 };
 
 /// Plan v0.3 P7: the RoPE cos/sin table (max_cells x n_rot/2 x 2 floats, 64 MiB at 262K) is identical in every
@@ -332,6 +338,9 @@ void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* i
 /// Zeroes the pools AND the indexer, so a fresh sequence matches the reference's own `zeros()`.  The KV pool
 /// matters even for cells that are never attended, because `kv_gather` reads whatever the selection names.
 void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream);
+/// Frees a state's pinned host memory: the fixed staging (`host_step`/`host_pos`) and, for a streamed state, its
+/// pinned K/V copy (`host_base`).  The device arena `qsa_state_init` carved is the caller's (`session_free` frees it).
+void qsa_state_free_host(const ModelGeometry& g, QsaState& st);
 
 // ================================ PER-STAGE TIMING, DEBUG ONLY ================================
 //

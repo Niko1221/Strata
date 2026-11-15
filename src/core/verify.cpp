@@ -723,7 +723,7 @@ Verifier::~Verifier() {
     for (auto& kv : commit_bm_)
         if (kv.second) cudaGraphExecDestroy(kv.second);
     if (arena_b_) cudaFree(arena_b_);
-    if (h_commitb_) cudaFreeHost(h_commitb_);
+    if (h_commitb_) strata::core::pin_free(h_commitb_);
     for (auto* m : {&save_bm_, &dcommit_bm_})
         for (auto& kv : *m)
             if (kv.second) cudaGraphExecDestroy(kv.second);
@@ -738,7 +738,7 @@ Verifier::~Verifier() {
     if (tap_scratch_) cudaFree(tap_scratch_);
     if (h_tap_) cudaFreeHost(h_tap_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
-    for (float* b : slot_bias_dev_) if (b) cudaFree(b);
+    for (float* b : slot_settings_.bias_dev) if (b) cudaFree(b);
     if (slot_hist_d_) cudaFree(slot_hist_d_);
     if (cs_ && cs_ != ext_stream_) cudaStreamDestroy(cs_);   // set_stream: the stage's stream, shared, not ours
     if (sh_cs_) cudaStreamDestroy(sh_cs_);
@@ -3967,9 +3967,7 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
 #if defined(STRATA_GPU_METAL)
     // the Metal window keeps each slot's running state itself (metal/src/engine/window.cpp): none of the CUDA batch buffers
     slots_ = slots;
-    slot_sp_.assign(slots.size(), sampling_);
-    slot_bias_dev_.assign(slots.size(), nullptr);
-    slot_tail_.assign(slots.size(), {});
+    slot_settings_.reset(slots.size(), sampling_);   // greedy until set_slot_sampling
     if (metal_ == nullptr || !strata::metal_engine::window_init_slots(metal_, slots, err)) {
         if (err.empty()) err = "verify: the Metal window is not up";
         return false;
@@ -3994,11 +3992,51 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     commitb_ = (int32_t*) d;
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
-    slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
-    slot_bias_dev_.assign(slots.size(), nullptr);
-    slot_tail_.assign(slots.size(), {});
+    slot_settings_.reset(slots.size(), sampling_);   // greedy until set_slot_sampling
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))%s\n", (long long) S,
                  (long long) lb_, (long long) le_, g_batch_self_commit ? ", one-row windows keep their rows" : "");
+    return true;
+}
+
+bool Verifier::resize_slots(const std::vector<SessionState*>& slots, std::string& err) {
+    const OnDevice on_device(device_);
+    // #adaptive-slots: the slots that survive this resize keep the request settings admission gave them.  With three
+    // requests decoding, growing to four used to re-assign every entry from the global sampling, so slots 0..2 lost
+    // their temperature/penalties/logit bias.  Save the prefix, free only the bias arrays of the slots being dropped.
+    const SlotSettings<strata::kernels::SamplerParams> saved = slot_settings_;
+    const std::vector<float*> dropped = slot_settings_.dropped_biases(slots.size());
+    // the batch graphs name the buffers below: destroy them first (mirror of ~Verifier)
+    for (auto& kv : exec_bm_) if (kv.second) cudaGraphExecDestroy(kv.second);
+    for (auto& kv : commit_bm_) if (kv.second) cudaGraphExecDestroy(kv.second);
+    for (auto& kv : save_bm_) if (kv.second) cudaGraphExecDestroy(kv.second);
+    for (auto& kv : dcommit_bm_) if (kv.second) cudaGraphExecDestroy(kv.second);
+    exec_bm_.clear(); commit_bm_.clear(); save_bm_.clear(); dcommit_bm_.clear();
+    bm_used_.clear();   // the layouts the LRU named are gone too
+    last_batch_ = false;   // no batch window survives this resize
+    if (arena_b_) { (void) cudaFree(arena_b_); arena_b_ = nullptr; }
+    if (h_commitb_) { strata::core::pin_free(h_commitb_); h_commitb_ = nullptr; }
+    m_commitb_ = nullptr;
+    commitb_ = nullptr;
+    tail_snap_b_ = nullptr;
+    slots_.clear();
+    slot_settings_.clear();
+    batch_rec_ = false;
+    row_base_ = 0;
+    // The dropped slots' bias arrays stay alive until the new layout exists.  Freeing them here and then failing
+    // init_slots lost them for the rollback resize (the rollback re-adds slots whose settings were gone).  Success
+    // frees them below; an empty resize frees them now.
+    if (slots.empty()) {
+        for (float* b : dropped) if (b) (void) cudaFree(b);   // (after the graphs that name them are gone)
+        return true;   // --parallel-recycle-after: idle keeps no batch slot; init_slots builds on the first grow
+    }
+    if (!init_slots(slots, err)) {
+        // keep all the requests' settings for the rollback resize that follows a failed grow/shrink: nothing here
+        // was dropped for good, so restoring the whole table is safe.
+        slot_settings_ = saved;
+        return false;
+    }
+    slot_settings_.restore_prefix(saved);
+    for (float* b : dropped) if (b) (void) cudaFree(b);   // only now: init_slots succeeded, these slots are gone
     return true;
 }
 
@@ -4861,18 +4899,23 @@ bool Verifier::commit_slot_prefixes(const int* keep, std::string& err) {
 bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std::string& err) {
     if (next_ && !next_->set_slot_logit_bias(slot, bias, err)) return false;
     if (le_ >= 0 && le_ < g_->n_layers) return true;
-    if (slot < 0 || slot >= (int) slot_bias_dev_.size()) return true;
+    if (slot < 0 || slot >= (int) slot_settings_.bias_dev.size()) return true;
     const OnDevice on_device(device_);
-    if (bias.empty()) { slot_bias_dev_[(size_t) slot] = nullptr; slot_sp_[(size_t) slot].logit_bias = nullptr; return true; }
+    if (bias.empty()) {   // the request clears it: give the slot's old device array back first (the slot is reused)
+        if (slot_settings_.bias_dev[(size_t) slot] != nullptr) (void) cudaFree(slot_settings_.bias_dev[(size_t) slot]);
+        slot_settings_.bias_dev[(size_t) slot] = nullptr;
+        slot_settings_.sp[(size_t) slot].logit_bias = nullptr;
+        return true;
+    }
     if (bias.size() != (size_t) n_vocab_) { err = "logit_bias vocabulary size mismatch"; return false; }
     const size_t bytes = bias.size() * sizeof(float);
-    if (slot_bias_dev_[(size_t) slot] == nullptr) {
+    if (slot_settings_.bias_dev[(size_t) slot] == nullptr) {
         float* d = nullptr;
         if (cudaMalloc((void**) &d, bytes) != cudaSuccess) { err = "cannot allocate the slot's logit_bias"; return false; }
-        slot_bias_dev_[(size_t) slot] = d;
+        slot_settings_.bias_dev[(size_t) slot] = d;
     }
-    if (cudaMemcpy(slot_bias_dev_[(size_t) slot], bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "cannot upload the slot's logit_bias"; return false; }
-    slot_sp_[(size_t) slot].logit_bias = slot_bias_dev_[(size_t) slot];
+    if (cudaMemcpy(slot_settings_.bias_dev[(size_t) slot], bias.data(), bytes, cudaMemcpyHostToDevice) != cudaSuccess) { err = "cannot upload the slot's logit_bias"; return false; }
+    slot_settings_.sp[(size_t) slot].logit_bias = slot_settings_.bias_dev[(size_t) slot];
     return true;
 }
 
@@ -4882,7 +4925,7 @@ bool Verifier::set_slot_logit_bias(int slot, const std::vector<float>& bias, std
 int Verifier::slot_row_draw(int S, int t, strata::kernels::SamplerParams& sp, const int32_t*& hist, int& hlen, std::vector<int32_t>& hrows,
                             std::string& err) {
     constexpr int kSlotHistMax = 4096;   // serve's kPenaltyWindowCap
-    sp = slot_sp_[(size_t) last_rows_[t]];
+    sp = slot_settings_.sp[(size_t) last_rows_[t]];
     const bool pen = sp.penalty_last_n > 0 && (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f);
     const bool bias = sp.logit_bias != nullptr;
     hist = nullptr;
@@ -4892,7 +4935,7 @@ int Verifier::slot_row_draw(int S, int t, strata::kernels::SamplerParams& sp, co
     if (!pen) { sp.penalty_last_n = 0; return 1; }
     std::vector<const int32_t*> tails(slots_.size(), nullptr);
     std::vector<int64_t> n_tails(slots_.size(), 0);
-    for (size_t b = 0; b < slots_.size() && b < slot_tail_.size(); ++b) { tails[b] = slot_tail_[b].data(); n_tails[b] = (int64_t) slot_tail_[b].size(); }
+    for (size_t b = 0; b < slots_.size() && b < slot_settings_.tail.size(); ++b) { tails[b] = slot_settings_.tail[b].data(); n_tails[b] = (int64_t) slot_settings_.tail[b].size(); }
     hlen = std::min(sp.penalty_last_n, kSlotHistMax);
     const size_t need = (size_t) S * (size_t) hlen;
     hrows.assign(need, -1);
