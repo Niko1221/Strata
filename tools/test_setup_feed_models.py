@@ -63,6 +63,11 @@ def own_path(**kw):
     return m
 
 
+# setup.main() on a Mac runs the Metal installer (metal/setup_mac.py): the command-line tests below are about the PC flow, so on macOS
+# they run it as on Linux (on Linux and Windows this is the platform they already have)
+LINUX_PC = "linux" if sys.platform == "darwin" else sys.platform
+
+
 def fresh_setup(name="setup_under_test"):
     """setup.py loaded again under its own name, so a test's registrations never reach another test."""
     spec = importlib.util.spec_from_file_location(name, ROOT / "setup.py")
@@ -364,6 +369,7 @@ class RefusalsAndOffline(Base):
         feed = self.signed_feed("f", 1, [own_path()])
         argv = ["setup.py", "--family", "qwen35-test", "--feed", feed, "--yes"]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(self.setup, "feed_engine_families", lambda: {"qwen4exp"}), \
+                mock.patch.object(self.setup.sys, "platform", LINUX_PC), \
                 contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit) as stop:
             self.setup.main()
         self.assertNotEqual(stop.exception.code, 0)
@@ -373,6 +379,7 @@ class RefusalsAndOffline(Base):
         feed = self.signed_feed("f", 1, [own_path()])
         argv = ["setup.py", "--family", "qwen35-test", "--model", "UD-Q4", "--feed", feed, "--check"]
         with mock.patch.object(sys, "argv", argv), mock.patch.object(self.setup, "feed_engine_families", lambda: {"qwen4exp", "qwen35moe"}), \
+                mock.patch.object(self.setup.sys, "platform", LINUX_PC), \
                 mock.patch.object(self.setup, "gather_hardware", side_effect=SystemExit(77), create=True), contextlib.redirect_stdout(io.StringIO()):
             try:
                 self.setup.main()
@@ -400,6 +407,10 @@ class TerminalAndApp(Base):
     def table(self, ram=64.0):
         import strata_mcp as M
         s = M.Strata(ROOT)
+        # the PC these tests describe, not the box they run on (p1006's real Arc card sent install_plan down the Intel path)
+        s._hardware = lambda: {"os": "TestOS 1", "ram_gb": ram, "cpu": {"name": "Fake CPU", "cores": 12, "avx2": True, "avx512": False},
+                               "gpus": [{"index": 0, "name": "NVIDIA GeForce RTX 5070", "vram_gb": 11.9, "arch": "120", "vendor": "nvidia",
+                                         "problem": None, "usable": True}]}
         return s, s.model_table({"ram_gb": ram, "gpus": [{"index": 0, "name": "x", "vram_gb": 12.0, "usable": True}]})
 
     def test_without_a_list_the_table_is_the_same(self):

@@ -29,3 +29,6 @@ docker/compose/* text eol=lf
 # vendored KaTeX (serve/web/vendor): the files are hashed byte for byte (PROVENANCE.json), never convert their line endings.
 serve/web/vendor/** -text
 third_party/strata-ggml/** text eol=lf
+
+# chat templates are read and hashed byte for byte (the served prompt, tools/test_qwen4_intake): LF wherever the repository is cloned
+*.jinja text eol=lf

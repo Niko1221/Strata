@@ -200,7 +200,7 @@ def proc_identity(pid) -> str | None:
         finally:
             _k32.CloseHandle(h)
     stat = Path(f"/proc/{pid}/stat")
-    if Path("/proc/self/stat").exists():
+    if _has_proc():
         try:
             fields = stat.read_text().rsplit(")", 1)[1].split()
         except (OSError, IndexError):
@@ -208,11 +208,30 @@ def proc_identity(pid) -> str | None:
         if fields[0] in ("Z", "X"):                     # a zombie has ended
             return None
         return f"linux:{fields[19]}"                    # field 22 of stat: the start time in clock ticks
-    try:                                                # elsewhere (no /proc): alive, without a start time
+    state = _ps_state(pid)                              # elsewhere (macOS: no /proc): ps says whether it runs; a zombie (an ended child
+    if state is not None:                               # not reaped yet) answers kill(pid, 0) but has ended (lane 8, a Mac install that "ran" for ever)
+        return "pid" if state and not state.startswith("Z") else None
+    try:                                                # no ps either: alive, without a start time
         os.kill(pid, 0)
         return "pid"
     except OSError:
         return None
+
+
+def _has_proc() -> bool:
+    return Path("/proc/self/stat").exists()
+
+
+def _ps_state(pid: int) -> str | None:
+    """The process state letter(s) ps reports for the process ("S", "R+", "Z" ...), "" when no such process runs, None when ps cannot be asked."""
+    try:
+        done = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = done.stdout.strip()
+    if done.returncode != 0 and not out:
+        return ""                                       # ps: no such process
+    return out
 
 
 def proc_alive(pid, ident) -> bool:
@@ -606,7 +625,16 @@ class Strata:
         return {"about": d["models"][model]["about"], "download_gb": round(size_gb, 1), "ram_gb": d["models"][model]["ram_gb"],
                 # the routed experts are ~93% of the file (setup.own_path_parallel_fits_all); the dense part and buffers ~1 GB more
                 "arena_gb": round(size_gb * 0.93, 1), "vision": bool(d.get("vision", True)),
-                "engine": OWN_PATH_ENGINE, "families": (family,)}
+                "engine": OWN_PATH_ENGINE, "families": (family,), "context_fit": self.own_context_fit(d, model)}
+
+    @staticmethod
+    def own_context_fit(fam: dict, model) -> dict | None:
+        """Which context fits a card for this own-path size (#5715): strata_control/own_path_fit.py's inputs, the figures the app's estimate uses."""
+        try:
+            from strata_control import own_path_fit
+            return own_path_fit.inputs(fam.get("name"), model)
+        except ImportError:
+            return None
 
     def sizes_of(self, models, family) -> list:
         """The family's sizes as setup lists them: an experimental one last (never the default)."""
@@ -1021,6 +1049,19 @@ class Strata:
             mark_display(nv + amd, nvidia_display_active() if nv else {}, windows_desktop_adapters() if WIN and amd else [])
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
+        try:                                            # the reserve setup writes for this chip when a run config names none (strata_control/setup_config.py UMA_WIN_RESERVE_MIB, G16):
+            # the app's Load uses it on a one-card run whose config has no reserve of setup's, so the app and `strata launch` start the same engine line (QAGUI-STRIX 11-09).
+            # The same condition as setup_config.config_for: Windows, the HIP engine (an AMD card), unified memory, gfx1151 exactly (gfx_arch_is: "gfx1151" or "gfx1151:...").
+            if WIN and amd:
+                if str(self.src) not in sys.path:
+                    sys.path.insert(0, str(self.src))
+                from strata_control import setup_config
+                for g in amd:
+                    arch = str(g.get("arch") or "")
+                    if g.get("uma") and (arch == "gfx1151" or arch.startswith("gfx1151:")):
+                        g["setup_reserve_mib"] = setup_config.UMA_WIN_RESERVE_MIB
+        except Exception:                               # noqa: BLE001 - an older Control folder: no field, the app keeps its own floor
+            pass
         arc = []
         if not WIN:                                     # an Intel Arc (Linux, the SYCL engine): only a PC with no usable NVIDIA or AMD card gets one (strata_control/intel_app.py)
             try:
@@ -1383,6 +1424,9 @@ class Strata:
                               # with the update step when the installed one is older. None: any engine that setup accepts.
                               "engine_min": ".".join(map(str, d["engine"])) if d.get("engine") else None,
                               "memory_gb": memory_gb, "fit_gb": fit_gb,
+                              # Qwen3.6: the conversation memory per token and what the card holds before it (strata_control/own_path_fit.py,
+                              # #5715): the app's context estimate and its warning use these; absent for every other model
+                              **({"context_fit": d["context_fit"]} if d.get("context_fit") else {}),
                               "on_this_pc": verdict, "installed": tag in have, "id": tag,
                               # DeepSeek only: does the engine's `--experts auto` give 5 here? (strata_control/dsv41_fit.py rdna4_faster: one RDNA4 card, or
                               # several holding half of the experts); the app's Speed label says so. None: the app's own rules (16 GiB, integrated) decide.
@@ -2414,6 +2458,9 @@ class Tools:
             usable = s.engine_gpus(hw)
             vram = max((g["vram_gb"] for g in usable), default=12)
             context = 131072                          # 128K on every card (owner, 2026-11-01; strata_control/default_context.py)
+            own = (getattr(s.setup_module(), "OWN_PATH_FAMILIES", None) or {}).get(family)
+            if own:                                   # Qwen3.6: the largest size that fits the card when 128K does not (#5715, setup's own rule)
+                context = s.setup_module().own_path_context(own, max((g["vram_gb"] for g in usable), default=0.0), model)
         if vision in ("yes", "gpu", "cpu") and md.get("vision", families[family].get("vision")) is False:
             raise ToolError(f"images are not available with {families[family]['title']} {model} yet: use vision=no")
         if vision is None:
@@ -2431,11 +2478,11 @@ class Tools:
             from strata_control import intel_app
             if mac or not intel_app.supported_here() or not any(g.get("vendor") == "intel" for g in hw.get("gpus", [])):
                 raise ToolError("no Intel Arc card Strata can use was found in this computer (the Intel Arc engine runs on Linux)")
-            if md.get("multi_file") or family not in intel_app.families():
+            if md.get("multi_file") or not intel_app.can_set_up(family, families[family]):
                 raise ToolError(f"{families[family]['title']} {model} can't be set up for an Intel Arc card yet; "
                                 "the Qwen3.8-Flash-Next, Swift, Coder, Gyro and Unsloth sizes can")
             backend, vision = "sycl", "no"                  # pictures stay off on an Arc (strata_cli/launch/adopt.py)
-            if not gguf_dir and not intel_app.model_files_in(have_dir, family):
+            if not gguf_dir and not intel_app.model_files_in(have_dir, family, families[family]):
                 raise ToolError(intel_app.NO_DOWNLOAD)
         partly = (have_dir.is_dir() and any(have_dir.glob("*.gguf*"))) or bool(gguf_dir)   # a local folder: nothing to download
         need = (8 if partly else md["download_gb"] + 8) + (1 if vision in ("yes", "gpu", "cpu") else 0)             + (s.mac().repacked_gb(model) if mac and s.mac() else 0)       # a Mac repacks Unsloth's shards into one file for the GPU (mac_fit.repacked_gb)
