@@ -167,6 +167,16 @@ class Masks(unittest.TestCase):
         self.assertIsNone(C.format_of({}))
         self.assertIsNone(C.format_of({"text": {"format": {"type": "text"}}}))
         self.assertEqual(C.format_of({"text": {"format": TEXT_FMT}})["json_schema"]["schema"], SCHEMA)
+        # Anthropic's output_config.format: normalised to the OpenAI wrapper form with a synthesised name
+        self.assertEqual(C.format_of({"output_config": {"format": {"type": "json_schema", "schema": SCHEMA}}}),
+                         {"type": "json_schema", "json_schema": {"name": "output", "schema": SCHEMA}})
+        self.assertIsNone(C.format_of({"output_config": {}}))
+        self.assertIsNone(C.format_of({"output_config": {"format": {}}}))
+        self.assertIsNone(C.format_of({"output_config": {"format": {"type": "text"}}}))
+        # response_format wins: output_config is read only when response_format is None
+        self.assertEqual(C.format_of({"response_format": {"type": "json_object"},
+                                      "output_config": {"format": {"type": "json_schema", "schema": SCHEMA}}}),
+                         {"type": "json_object"})
         self.assertEqual(json.loads(self.replay('ok {"a": [1]}', rf={"type": "json_object"})[1]), {"a": [1]})
 
 

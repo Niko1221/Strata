@@ -139,8 +139,9 @@ class Vocab:
 
 # ------------------------------------------------------------------------------------------------ the grammar
 def format_of(sampling: dict):
-    """The request's JSON format from its sampling dict (the request itself): chat's response_format, or the
-    Responses API's text.format.  None: plain text (nothing to constrain)."""
+    """The request's JSON format from its sampling dict (the request itself): chat's response_format, the
+    Responses API's text.format, or the Anthropic route's output_config.format.  None: plain text (nothing to
+    constrain)."""
     rf = sampling.get("response_format")
     if rf is None and isinstance(sampling.get("text"), dict):
         fmt = sampling["text"].get("format")
@@ -148,6 +149,13 @@ def format_of(sampling: dict):
             rf = {"type": "json_schema", "json_schema": {k: fmt[k] for k in ("name", "schema", "strict") if k in fmt}}
         elif isinstance(fmt, dict) and fmt.get("type") == "json_object":
             rf = {"type": "json_object"}
+    if rf is None and isinstance(sampling.get("output_config"), dict):
+        # Anthropic's native carrier (what tool-eval-bench --format anthropic sends): output_config.format is
+        # {"type": "json_schema", "schema": S}.  The mask reads json_schema.schema only, so the wrapper's name
+        # is synthesised ("output") and strict is ignored; a schema-less or non-json_schema format stays None.
+        fmt = sampling["output_config"].get("format")
+        if isinstance(fmt, dict) and fmt.get("type") == "json_schema":
+            rf = {"type": "json_schema", "json_schema": {"name": "output", "schema": fmt.get("schema")}}
     if not isinstance(rf, dict) or rf.get("type") not in ("json_object", "json_schema"):
         return None
     return rf

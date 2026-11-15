@@ -7659,7 +7659,36 @@ def structured_chunks(chunks, validator):
 
 
 # ------------------------------------------------------------------------------------------------ Anthropic
-def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, force=None, deferred=False):
+def anthropic_output_format(req: dict):
+    """The schema'd output an Anthropic request asks for, in the shape prepare_format reads.
+
+    The native carrier is `output_config.format` (what tool-eval-bench --format anthropic sends): its json_schema
+    format, read as {"type": "json_schema", "schema": S}.  A text format, a missing type or no format at all -
+    an output_config carrying only the thinking effort - asks for nothing; a format that is not an object or names
+    another type is malformed, a 400 like the chat route answers for a broken response_format.  A gateway client
+    may instead send OpenAI's `response_format`, read when the request carries no output_config at all.
+    prepare_format wants the OpenAI wrapper (its name is required; the grammar reads only the schema), so the
+    bare Anthropic schema is synthesized into one; Anthropic's `strict` is ignored."""
+    oc = req.get("output_config")
+    if oc is None:
+        return req.get("response_format")
+    if not isinstance(oc, dict):
+        raise ValueError("output_config must be an object")
+    fmt = oc.get("format")
+    if fmt is None:
+        return None
+    if not isinstance(fmt, dict):
+        raise ValueError("output_config.format must be an object")
+    kind = fmt.get("type")
+    if kind == "json_schema":
+        return {"type": "json_schema", "json_schema": {"name": "output", "schema": fmt.get("schema")}}
+    if kind in ("text", None):
+        return None
+    raise ValueError("output_config.format.type must be text or json_schema")
+
+
+def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, cancel, force=None, deferred=False,
+                     validator=None):
     mid = "msg_" + uuid.uuid4().hex[:24]
     yield "message_start", {"type": "message_start", "message": {
         "id": mid, "type": "message", "role": "assistant", "model": svc.model_for(req), "content": [],
@@ -7670,6 +7699,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
         return ("content_block_stop", {"type": "content_block_stop", "index": index})
 
     streamed, finished = set(), set()              # calls sent piece by piece; those whose final tool_call came (#211)
+    held = []                                      # the answer's text while a schema is in force: it leaves validated
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force, declared_only=True,
                            deferred=deferred):
         if kind == "ping":
@@ -7686,6 +7716,9 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
                 continue
             want = {"reasoning": "thinking", "content": "text", "tool_call": "tool_use", "tool_start": "tool_use"}[ev.kind]
             if ev.kind not in ("tool_call", "tool_start") and not ev.text:
+                continue
+            if want == "text" and validator is not None:
+                held.append(ev.text)               # the schema is in force: the text leaves at the turn's end, not here
                 continue
             if ev.kind == "tool_start":
                 streamed.add(ev.call.id)
@@ -7718,6 +7751,21 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             stop = "stop_sequence" if x.get("stop_sequence") is not None else \
                 "tool_use" if used_tool and streamed <= finished and x["finish"] == "stop" else \
                 {"stop": "end_turn", "length": "max_tokens", "cancel": "end_turn"}[x["finish"]]
+            if validator is not None:
+                # a turn that ends in a call is not an answer (#782): its held text goes out as written.  An answer
+                # goes out validated: validated_json raises on a turn cut short (finish != stop) and on an answer
+                # that is not the JSON the schema describes, so the route answers 502 / the error event instead, and
+                # no text block went out before it.  A passing answer leaves as the canonical JSON, one delta.
+                text = "".join(held)
+                if stop != "tool_use":
+                    text = validated_json(text, validator, x["finish"])
+                if text:
+                    index += 1
+                    yield "content_block_start", {"type": "content_block_start", "index": index,
+                                                  "content_block": {"type": "text", "text": ""}}
+                    yield "content_block_delta", {"type": "content_block_delta", "index": index,
+                                                  "delta": {"type": "text_delta", "text": text}}
+                    yield close()
             # the final counts (message_start could only say the whole prompt): what was read now stays for the next
             # request, a cache write; input_tokens keeps the last token, as 0 makes Claude Code count the prompt twice (#1013)
             reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
@@ -9151,13 +9199,20 @@ def make_handler(svc: Service):
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
 
         def _anthropic(self, req):
-            svc.load()
+            fmt = anthropic_output_format(req)             # the client's own carrier, before the shared settings fill in
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
             self._no_local_images(messages)
             callable_tools, deferred = anthropic_tools(req)     # #4663: the deferred tools are callable, unlisted
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = callable_tools = None
+            # tools and a schema'd output together are allowed, as the chat and Responses routes allow them (#782):
+            # the schema is for the final answer and a turn that ends in a call is not an answer, so the call goes
+            # out as written and only the answer's text is held and validated.  prepare_format runs before svc.load(),
+            # as on the chat route: a malformed format is a 400 before the model is loaded.
+            has_tools = bool(callable_tools or req.get("strata_mcp"))
+            messages, validator = prepare_format(fmt, messages, with_tools=has_tools)
+            svc.load()
             force = svc.force_text(forced_call(req.get("tool_choice"), tools))        # "any" / {"type": "tool", "name": N}
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
@@ -9171,7 +9226,7 @@ def make_handler(svc: Service):
                 raise ValueError(e.anthropic_text()) from None       # #4838: Anthropic's own wording first, Strata's sentence after it
             _debug_req("anthropic", req, messages, tools, max_new, thinking, len(ids))
             events = anthropic_events(svc, req, ids, thinking, callable_tools, max_new, cancel, force=force,
-                                      deferred=deferred)
+                                      deferred=deferred, validator=validator)
             events = self._capture(events, "anthropic")
             if not req.get("stream"):
                 return self._json(200, anthropic_collect(events))
@@ -9191,6 +9246,10 @@ def make_handler(svc: Service):
                 events.close()
             except EngineDied as e:                          # mid-stream: Anthropic's error event
                 err = {"type": "error", "error": {"type": "api_error", "message": died_note(e)}}
+                self._note(error=err["error"])
+                self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
+            except StructuredOutputError as e:               # the held answer failed its schema: the error event
+                err = {"type": "error", "error": {"type": "structured_output_failed", "message": str(e)}}
                 self._note(error=err["error"])
                 self.wfile.write(b"event: error\ndata: " + json.dumps(err).encode() + b"\n\n")
             except QueueWaitExpired as e:
