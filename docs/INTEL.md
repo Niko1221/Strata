@@ -161,7 +161,12 @@ with Coder IQ1_M 1,024 MiB fits all 12,288 experts with 2 GB of VRAM free.
   `libze_loader.so.1`, through ctypes), and load from the DRM clients the process can see in `/proc/<pid>/fdinfo` (xe counts
   engine cycles per client). None of it needs root and none of it needs a helper service: `xpu-smi stats` reads the same
   sysman API as a normal user. The load is the engine's own, not the card's share across other users' processes, which would
-  need root to read; a reading no source can give shows as a dash rather than a zero. A run config may name
+  need root to read; a reading no source can give shows as a dash rather than a zero. PCIe traffic is the one reading with a
+  precondition: sysman reports the counters only when the caller can read `/sys/class/intel_pmt/telem*/telem`, which the kernel
+  creates 0440 root:root. `sycl/tools/99-intel-pmt-telemetry.rules` hands those nodes to the `render` group (install lines are
+  in the file); a container must then carry that group in, which docker does with
+  `--group-add $(getent group render | cut -d: -f3)` and rootless podman needs `--group-add=keep-groups` for, because
+  `--userns=keep-id` drops supplementary groups. Without it the graph dashes and nothing else changes. A run config may name
   a `model_switcher`; the web app's header then gets a Model menu.
 - **Logprobs.** `/v1/chat/completions` takes `"logprobs": true` and `"top_logprobs": 0..20` through `server_intel.py`, streamed
   or not. Not on `/v1/completions` or the Anthropic endpoint.

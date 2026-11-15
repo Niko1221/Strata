@@ -1,0 +1,17 @@
+# Intel PMT telemetry: let the render group read /sys/class/intel_pmt/telemN/telem, which the kernel creates
+# 0440 root:root.  Level Zero sysman takes the card's PCIe traffic counters from those nodes, so without this
+# Strata's Monitor shows a dash for PCIe traffic.  Load, VRAM, temperature, power and the link need none of it.
+#
+# Install (root, once):
+#   sudo install -m 755 sycl/tools/intel-pmt-perms.sh        /usr/local/sbin/
+#   sudo install -m 644 sycl/tools/99-intel-pmt-telemetry.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=intel_pmt
+#
+# The helper exists because udev cannot set the owner or mode of a sysfs attribute itself (GROUP=/MODE= are
+# ignored on sysfs), and the node appears after device_add, so the write has to wait for it.  Crashlog blobs
+# under the same subsystem are left alone on purpose: they can contain GPU state dumps.
+#
+# The group must exist (`render` on Debian, Ubuntu, Fedora and Arch).  Set PMT_GROUP=... in the helper if your
+# system names it differently, and pass that group into a container (`--group-add=keep-groups` with rootless
+# podman, `--group-add $(getent group render | cut -d: -f3)` with docker).
+SUBSYSTEM=="intel_pmt", KERNEL=="telem[0-9]*", ACTION=="add|change", RUN+="/usr/local/sbin/intel-pmt-perms.sh %k"

@@ -11,6 +11,10 @@ helper service running outside it:
   keeps one fdinfo entry per client, so a container sees the engine it runs and nothing else.  The card-wide load
   across other users' processes would need root; this reading says so in the Monitor instead of guessing.
 - Temperature, power and the PCIe link: sysfs (hwmon and the PCI path), which everyone can read.
+- PCIe traffic: sysman's PCIe counters, which Intel PMT backs with /sys/class/intel_pmt/telem*/telem. That node
+  ships 0440, so the reading needs a udev rule granting it to a group the caller is in (`render`), and a container
+  needs --group-add=keep-groups to carry that group across the user namespace. Without it sysman answers
+  INSUFFICIENT_PERMISSIONS and this reports None, never a zero.
 
 A reading that no source can give is None, never a zero: the Monitor shows a dash rather than a made-up number.
 """
@@ -48,6 +52,15 @@ class _ZesMemState(ctypes.Structure):    # zes_mem_state_t
                 ("free", ctypes.c_uint64), ("size", ctypes.c_uint64)]
 
 
+class _ZesSpeed(ctypes.Structure):       # zes_pci_speed_t
+    _fields_ = [("gen", ctypes.c_int32), ("width", ctypes.c_int32), ("maxBandwidth", ctypes.c_int64)]
+
+
+class _ZesPciStats(ctypes.Structure):    # zes_pci_stats_t: monotonic counters, timestamp in microseconds
+    _fields_ = [("timestamp", ctypes.c_uint64), ("replayCounter", ctypes.c_uint64), ("packetCounter", ctypes.c_uint64),
+                ("rxCounter", ctypes.c_uint64), ("txCounter", ctypes.c_uint64), ("speed", _ZesSpeed)]
+
+
 class _Zes:
     """The card's VRAM through Level Zero's management API (sysman), matched to the card by its PCI address, so a
     machine with two Intel cards reports the one this reader was asked for.  Runs as the calling user."""
@@ -55,7 +68,7 @@ class _Zes:
     STYPE_PCI_PROPERTIES, STYPE_MEM_STATE = 0x2, 0x1E
 
     def __init__(self, pci):
-        self.lib, self.mems = None, []
+        self.lib, self.mems, self.dev = None, [], None
         try:
             self.lib = ctypes.CDLL("libze_loader.so.1")
             if self.lib.zesInit(ctypes.c_uint32(0)) != 0:
@@ -78,6 +91,7 @@ class _Zes:
                     a = props.address
                     if f"{a.domain:04x}:{a.bus:02x}:{a.device:02x}.{a.function:x}" != pci:
                         continue
+                    self.dev = ctypes.c_void_p(dev)
                     k = ctypes.c_uint32(0)
                     if self.lib.zesDeviceEnumMemoryModules(ctypes.c_void_p(dev), ctypes.byref(k), None) != 0:
                         continue
@@ -103,6 +117,23 @@ class _Zes:
             total += st.size
         return (total - free, total) if total else (None, None)
 
+    def pci_stats(self):
+        """(rx bytes, tx bytes, timestamp us) of the card's PCIe link, or None.
+
+        The counters come from Intel PMT telemetry, which ships /sys/class/intel_pmt/telem*/telem as 0440; when that
+        file is group-readable by the caller (a udev rule granting it to `render`, plus --group-add=keep-groups in
+        the container) sysman returns them, and otherwise the call fails with INSUFFICIENT_PERMISSIONS and this
+        returns None, so the Monitor shows a dash instead of a flat zero."""
+        if self.lib is None or self.dev is None:
+            return None
+        st = _ZesPciStats()
+        try:
+            if self.lib.zesDevicePciGetStats(self.dev, ctypes.byref(st)) != 0:
+                return None
+        except (OSError, AttributeError):
+            return None
+        return st.rxCounter, st.txCounter, st.timestamp
+
 
 class _XeGpu:
     """The Intel Arc readings in NVML's shape: VRAM from sysman, load from the DRM clients this process can see,
@@ -127,6 +158,7 @@ class _XeGpu:
             self.zes = _Zes(self.pci)
         self._cycles = {}                       # client id -> (busy cycles, total cycles) of the last read
         self._e = None                          # (t, card energy uJ) for power
+        self._pci = None                        # (rx bytes, tx bytes, ts us) of the last read, for the traffic rate
 
     def ok(self):
         return self.dev is not None and sys.platform.startswith("linux")
@@ -233,5 +265,11 @@ class _XeGpu:
             cap = self._rd(f"{self.hwmon}/power1_cap")
             out["power_limit"] = int(cap) / 1e6 if cap and cap.isdigit() and int(cap) > 0 else None
         out["pcie_gen"], out["pcie_gen_max"], out["pcie_width"] = self._link()
-        out["pcie_rx_mb"] = out["pcie_tx_mb"] = None    # no PCIe traffic counters without the PMT permission
+        out["pcie_rx_mb"] = out["pcie_tx_mb"] = None
+        st = self.zes.pci_stats() if self.zes else None
+        prev, self._pci = self._pci, st
+        if st and prev and st[2] > prev[2] and st[0] >= prev[0] and st[1] >= prev[1]:
+            dt = (st[2] - prev[2]) / 1e6
+            out["pcie_rx_mb"] = (st[0] - prev[0]) / dt / 2**20
+            out["pcie_tx_mb"] = (st[1] - prev[1]) / dt / 2**20
         return out
