@@ -514,6 +514,8 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 - With `"stream": true` everything arrives as it is made: thinking, answer and tool calls (the tool's name first, then its
   arguments piece by piece). While the model reads a long prompt the stream sends keep-alives. The server window prints progress
   every 15 s and `GET /status` says what it is doing. Closing the connection or pressing stop in your app stops the model.
+  While a long prompt is read the stop takes effect between two layers, on every card of a layer split
+  (`STRATA_STOP_LAYERS=0`, `STRATA_STOP_STAGES=0`: only before each 8192-token chunk and only on the first card, as before).
 - A tool call counts only when it names a tool the request declared. A namespaced tool (`mcp__filesystem.write_file`) is
   that call when the model writes `mcp__filesystem__write_file`, `mcp__filesystem=write_file`, `mcp__filesystem_write_file`,
   or the bare member (`write_file`) and exactly one declared tool has that member. A name with `__` in it (`mcp__playwright__browser_navigate`)
