@@ -1344,6 +1344,8 @@ void usage() {
                  "                       and the LM head, so it is NOT the GPU floor (R0.3, Memory/ERRORS.md A4)\n"
                  "  --gpu-only-full      MEASURE: replay pre+post for all 48 layers plus the LM head, no pool.\n"
                  "                       THE TRUE PER-TOKEN GPU FLOOR.  Quote this one, not --graph-only.\n"
+                 "  --system-probe       print every GPU's host->device GB/s, which GPU pairs have P2P, and RAM read\n"
+                 "                       GB/s over all threads (the installer's --system-check), then exit\n"
                  "  --stats              print the per-stage breakdown\n"
                  "  --spec-follow PATH   benchmarks: emit this continuation (token ids) instead of the argmax and\n"
                  "                       accept the drafts that match it, so speculation settings compare on the\n"
@@ -3530,6 +3532,56 @@ static void exit_if_gpu_fatal(const std::string& err) {
     }
 }
 
+// --- fork: the installer's --system-check backend (PCIe/P2P/RAM), CUDA-only like its helpers ------------
+#if !defined(STRATA_HIP_GFX906) && !defined(STRATA_GPU_METAL)
+int system_probe() {
+    int n = 0;
+    if (cudaGetDeviceCount(&n) != cudaSuccess) { cudaGetLastError(); n = 0; }
+    for (int d = 0; d < n; ++d) {
+        if (cudaSetDevice(d) != cudaSuccess) { cudaGetLastError(); continue; }
+        std::printf("pcie %d %.1f\n", d, probe_pcie_h2d_gbps());
+    }
+    for (int a = 0; a < n; ++a)
+        for (int b = 0; b < n; ++b)
+            if (a != b) {
+                int ok = 0;
+                cudaDeviceCanAccessPeer(&ok, a, b);
+                std::printf("p2p %d %d %d\n", a, b, ok);
+            }
+    // RAM: 4 GiB (well past any cache), touched first, then read by every hardware thread at once; the best of
+    // three passes
+    constexpr size_t kBytes = 4ull << 30;
+    std::vector<uint64_t> buf(kBytes / 8);
+    const unsigned threads = std::max(1u, std::thread::hardware_concurrency());
+    const size_t per = buf.size() / threads;
+    std::vector<uint64_t> sums(threads);
+    auto pass = [&](bool write) {
+        std::vector<std::thread> pool;
+        for (unsigned t = 0; t < threads; ++t)
+            pool.emplace_back([&, t] {
+                uint64_t* p = buf.data() + t * per;
+                uint64_t acc = 0;
+                if (write) for (size_t i = 0; i < per; ++i) p[i] = i ^ t;
+                else for (size_t i = 0; i < per; i += 4) acc += p[i] + p[i + 1] + p[i + 2] + p[i + 3];
+                sums[t] = acc;
+            });
+        for (auto& th : pool) th.join();
+    };
+    pass(true);
+    double best = 0.0;
+    for (int r = 0; r < 3; ++r) {
+        const auto t0 = std::chrono::steady_clock::now();
+        pass(false);
+        const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        best = std::max(best, (double) (per * threads * 8) / s / 1e9);
+    }
+    uint64_t keep = 0;
+    for (uint64_t v : sums) keep ^= v;
+    std::printf("ram_read %.1f %u %llu\n", best, threads, (unsigned long long) (keep & 1));
+    return 0;
+}
+#endif  // !STRATA_HIP_GFX906 && !STRATA_GPU_METAL
+
 #if defined(STRATA_USE_HIP) && defined(_WIN32)
 static int engine_main(int argc, char** argv) {   // main() is at the end of this file (#3431)
 #else
@@ -4043,6 +4095,7 @@ int main(int argc, char** argv) {
             if (const char* v = std::getenv("STRATA_RESIDENT_HEADROOM_GIB"); v != nullptr && std::atof(v) >= 0.0)
                 o.resident_headroom = (uint64_t) (std::atof(v) * 1073741824.0);
         }
+        else if (a == "--system-probe") return system_probe();
         else if (a == "--stats") o.stats = true;
         else if (a == "--shared-late") o.shared_late = true;
         else if (a == "--keep-canonical") o.keep_canonical = true;
