@@ -326,6 +326,36 @@ The embeddings match the CPU reader's (cosine 0.9959 to 0.9999 over 8 pictures).
 "STRATA 42") was answered correctly by both readers 10 of 10; two pictures in one request, a picture kept in a second turn's history,
 and text requests after the pictures all answered, with no GPU fault in the kernel log.
 
+## Pictures on a Windows Intel iGPU (Vulkan)
+
+A Windows PC that serves the text model on a discrete NVIDIA card can read pictures on the Intel iGPU instead: `tools/vision`
+builds `strata-vision-vk` with ggml's Vulkan backend (`STRATA_VISION_VULKAN=ON`), and the reader then lives beside the engine
+instead of on it. The program without `--gpu` is the CPU reader it falls back on. `setup --vision gpu` compiles it on a PC
+whose card is Intel (it needs the Vulkan SDK: the headers, `glslc` and the loader); `--vision cpu` stays the default, as for
+every other card ([MODELS.md](MODELS.md#the-versions)).
+
+The server starts it with the first new picture and stops it after `vision.elastic_idle_s` seconds without one. That reader is
+`vision.elastic_ram` (the server sets it for a `strata-vision-vk`): it makes no `POST /v1/vram`, so the expert cache is neither
+asked for the reader's room nor grown back afterwards, and the engine keeps every expert slot it had (measured: 13,940 slots and
+a 1.3 GiB file tier, against 13,038 and 2.8 GiB with the CUDA reader on the V100).
+
+Two settings are part of that reader and the server passes both for a `strata-vision-vk`: `--flash-attn off` (with flash
+attention a 1,024-token picture took 41 s instead of 10.8 s: the FA path falls back to the CPU) and `GGML_VK_DISABLE_F16=1` (f16
+accumulation left 24 embedding rows below cosine 0.99, 0.63 at the lowest; fp32 leaves 5, 0.9588 at the lowest, for 8.8 s
+against 10.8 s). `--no-warmup` skips the 2,048x2,048 warm-up that costs 12-14 s at every restart of an on-demand reader;
+without it a restart is 12 s, with it 1.3-2.1 s.
+
+If the NVIDIA card also exposes Vulkan to the reader, the reader would see two GPUs; `vision.vk_visible_devices` (the reader's
+`GGML_VK_VISIBLE_DEVICES`) names the one card it may use. In TCC the V100 is not a Vulkan device at all, so on the measured PC
+the iGPU is the only one.
+
+> **Measured on:** Core Ultra 5 125H (Arc Graphics, Meteor Lake), Tesla V100-PCIE-32GB in TCC for the text model,
+> Qwen3.8-Flash-Next IQ3_XXS, 250K context, engine 0.1.58. One 60K chat per reader: picture turns 6.5/5.6/5.6 s (CPU
+> 7.6/7.8/8.0 s), startup 28.1 s, expert cache 13,940 slots, file tier 1.3 GiB, V100 VRAM 0 MiB throughout, needle 4/4 and
+> checks 10/10. Single process: 640x480/300 tokens 2.4 s (CPU 5.29 s), 1512x1512/1024 tokens 10.8 s (CPU 24.8 s), embeddings
+> against the CPU reader mean cosine 0.99996 and 0.99973. Any Intel iGPU with Vulkan 1.2 is the build's target (ggml-vulkan
+> picks the device; nothing here is specific to Meteor Lake), but only this chip has run it.
+
 ## The SYCL port (`sycl/`)
 
 **Layout.** `sycl/src` and `sycl/include` mirror the tree and hold only the files the port changes; `sycl/CMakeLists.txt` takes every

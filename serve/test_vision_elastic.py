@@ -152,6 +152,47 @@ class Elastic(unittest.TestCase):
         self.assertEqual(Vision({**base, "max_tokens": 16384, "elastic_mib": 2500}, lazy=True).elastic_mib, 2500)
         self.assertEqual(Vision({**base, "max_tokens": 1024, "elastic_mib": 5000}, lazy=True).elastic_mib, 5000)
 
+    def test_an_elastic_ram_reader_never_asks_the_engine_for_room(self):
+        """The Windows iGPU reader runs on its own device (vision section's "elastic_ram"): the expert cache is neither asked for the
+        encoder's share nor grown back, so no POST /v1/vram is made at all."""
+        self.vision.elastic_ram = True
+        self.picture()
+        self.assertEqual(self.engine.calls, [])
+        self.assertEqual(self.vision.starts, 1)
+        self.assertFalse(self.svc.vision_held)
+        self.svc.last_image_at = time.time() - 61
+        self.assertEqual(self.svc._vision_idle_down(), "down")
+        self.assertEqual(self.vision.unloads, 1)
+        self.assertFalse(self.svc.vision_held)
+        self.assertEqual(self.engine.calls, [])
+
+    def test_an_elastic_ram_reader_stops_after_the_turn_that_ended(self):
+        self.vision.elastic_ram = True
+        self.picture()
+        self.svc.last_image_at = 0
+        self.svc._vision_idle_after_turn()
+        self.assertFalse(self.vision.up)
+        self.assertFalse(self.svc.vision_held)
+
+    def test_a_picture_already_encoded_does_not_refresh_the_idle_timer(self):
+        """A client resends the pictures of its history every turn: they are encoded already (all_cached), so the idle timer must not
+        move - otherwise the reader never stops while the chat is open."""
+        self.vision.elastic_ram = True
+        self.picture()
+        first = self.svc.last_image_at
+        self.vision.all_cached = lambda sources: True                  # the same picture: nothing to encode, nothing to start
+        time.sleep(0.01)
+        self.picture()
+        self.assertEqual(self.svc.last_image_at, first)
+        self.svc.last_image_at = first - 61                            # 61 s after that picture: the reader stops
+        self.assertEqual(self.svc._vision_idle_down(), "down")
+        self.assertFalse(self.vision.up)
+
+    def test_elastic_ram_makes_the_reader_elastic(self):
+        v = Vision({"exe": "strata-vision-vk", "mmproj": "m", "model": "t", "elastic_ram": True}, lazy=True)
+        self.assertTrue(v.elastic and v.elastic_ram and not v.alive())
+        self.assertFalse(Vision({"exe": "e", "mmproj": "m", "model": "t"}, lazy=True).elastic_ram)
+
 
 class OnDemandReader(unittest.TestCase):
     """The reader that starts with the first picture: no room on the card -> the CPU reader reads it, the cache grows back at once,

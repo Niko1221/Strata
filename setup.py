@@ -797,6 +797,7 @@ VISION = {"gpu": {"max_tokens": 1024, "reserve_mib": 700},
 EXE = "strata.exe" if WIN else "strata"
 VEXE = "strata-vision.exe" if WIN else "strata-vision"
 HVEXE = "strata-vision-hip.exe" if WIN else "strata-vision-hip"     # AMD: the picture reader on the GPU (tools/vision, STRATA_VISION_HIP)
+VKEXE = "strata-vision-vk.exe" if WIN else "strata-vision-vk"       # Windows iGPU: the reader on Vulkan (tools/vision, STRATA_VISION_VULKAN)
 # MODEL-UPDATE Phase 1: the K-quant prompt kernels (Unsloth's UD-Q4/Q5/Q6_K_XL experts) are a library next to the CUDA
 # engine, opened only for those models; an engine without it runs them on the FP16 prompt path
 KQ_LIB = "strata_kq.dll" if WIN else "libstrata_kq.so"
@@ -5262,6 +5263,47 @@ def build_vision_cpu(eng: Path, stamp: Path, meta: dict, llama, vsrc) -> Path:
     return eng
 
 
+def intel_igpu() -> bool:
+    """Windows: an Intel graphics adapter (the built-in GPU) beside the card that serves the model.  The Vulkan picture reader
+    (tools/vision, STRATA_VISION_VULKAN) runs there and leaves the card's VRAM to the experts."""
+    if not WIN:
+        return False
+    return "intel" in out(["powershell", "-NoProfile", "-Command",
+                           "Get-CimInstance Win32_VideoController | ForEach-Object Name"]).lower()
+
+
+def build_vision_vulkan(eng: Path, llama, vsrc, vision: str) -> Path:
+    """Windows: the picture reader on an Intel iGPU (tools/vision, STRATA_VISION_VULKAN, ggml's Vulkan backend), output
+    strata-vision-vk beside the engine.  The same program without --gpu is the CPU reader it falls back on, so no second
+    file is needed.  --vision gpu on an Intel PC builds it (the default stays the CPU reader); a build that fails leaves
+    the CPU reader, and pictures still work (a few seconds each)."""
+    if vision != "gpu":
+        return eng
+    if WIN and not os.environ.get("VULKAN_SDK"):
+        fail("compiling the picture reader for your Intel iGPU needs the Vulkan SDK",
+             "install it from https://vulkan.lunarg.com/sdk/home#windows, open a new window and run setup again "
+             "(or --vision cpu)")
+    say("  Compiling the picture reader for your Intel iGPU (Vulkan; a few minutes, once) ...")
+    defs = [f"-DLLAMA_DIR={vision_llama(llama)}", "-DSTRATA_VISION_VULKAN=ON", "-DSTRATA_PORTABLE=OFF"]
+    sdk = os.environ.get("VULKAN_SDK")
+    if sdk:                                     # the headers, the loader library and glslc are in the SDK's Include/Lib/Bin
+        p = Path(sdk)
+        defs += [f"-DVulkan_INCLUDE_DIR={p / 'Include'}" if WIN else f"-DVulkan_INCLUDE_DIR={p / 'include'}",
+                 f"-DVulkan_LIBRARY={p / 'Lib' / 'vulkan-1.lib'}" if WIN else f"-DVulkan_LIBRARY={p / 'lib' / 'libvulkan.so'}",
+                 f"-DVulkan_GLSLC_EXECUTABLE={p / 'Bin' / 'glslc.exe'}" if WIN else f"-DVulkan_GLSLC_EXECUTABLE={p / 'bin' / 'glslc'}"]
+    try:
+        cmake_build(ROOT / "tools" / "vision", ROOT / "build-vision-vk", "strata-vision", defs,
+                    find_vcvars() if WIN else None, "build-vision-vk.bat" if WIN else "")
+        shutil.copy2(ROOT / "build-vision-vk" / "bin" / VKEXE, eng / VKEXE)
+    except SystemExit:
+        raise
+    except Exception as e:                               # noqa: BLE001 - the CPU reader is there; pictures work without the iGPU one
+        warn(f"the iGPU picture reader did not compile ({e}): pictures are read on the CPU")
+        return eng
+    ok(f"picture reader (iGPU, Vulkan): {eng / VKEXE}")
+    return eng
+
+
 # ------------------------------------------------------------------------------------------------ image generation
 IMAGE_ENGINE = ROOT / "engine-image"           # sd-cli for Qwen-Image-2.1-Turbo (tools/image/qimage.py), --images
 
@@ -6341,7 +6383,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
         (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
-    vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
+    vision_ok = not want_vision or (((eng / VEXE).exists() or (eng / VKEXE).exists()) and (not local or meta.get("vision_src") == vsrc))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
@@ -6375,15 +6417,18 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         elif (eng / KQ_LIB).exists():                     # an older one of another build would only be refused
             (eng / KQ_LIB).unlink()
     if not vision_ok:
-        say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
-        defs = [f"-DLLAMA_DIR={vision_llama(llama)}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
-                "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
-        if vision == "gpu":
-            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
-                     *toolkit_root_defs(nvcc)]
-        cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
-                    "build-vision-cuda12.bat" if t12 else "build-vision.bat")
-        shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
+        if vision == "gpu" and WIN and intel_igpu():
+            build_vision_vulkan(eng, llama, vsrc, vision)
+        else:
+            say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
+            defs = [f"-DLLAMA_DIR={vision_llama(llama)}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
+                    "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
+            if vision == "gpu":
+                defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+                         *toolkit_root_defs(nvcc)]
+            cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
+                        "build-vision-cuda12.bat" if t12 else "build-vision.bat")
+            shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
     stamp.write_text(json.dumps({"source": "local", "version": source_version(), "archs": archs,

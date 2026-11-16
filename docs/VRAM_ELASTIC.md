@@ -120,6 +120,13 @@ UD-Q4_K_XL: 7,959 slots on demand, 7,943 with the reader on the card, 8,411 with
 in 4.9 s, 1,480 MiB). It releases its VRAM when idle (30,585 to 32,098 MiB while it runs, back to 30,618 after 120 s). `"elastic": true` in the vision section asks for it. Not by default with a layer split, batch slots,
 `--kv-grow` or `--peer-device`.
 
+A reader that lives off the engine's card takes the same route with `"elastic_ram": true` (Windows: the Intel iGPU through Vulkan,
+`strata-vision-vk`): it starts with the first new picture and stops after `"elastic_idle_s"` without one, and it never makes a
+`POST /v1/vram` - the expert cache is neither asked for its room nor grown back, because the reader's memory is not the engine's
+card. The server sets this key for a `strata-vision-vk`; `"elastic_mib"` is then not used. Measured on Core Ultra 5 125H (Arc
+Graphics) beside a V100: expert cache 13,940 slots and file tier 1.3 GiB, the same as with the CPU reader
+([INTEL.md](INTEL.md#pictures-on-a-windows-intel-igpu-vulkan)).
+
 With `"vram_elastic": true` as well (opt-in) the expert cache gives the room instead of the reserve:
 
 - **A picture's turn** (the same FIFO turn an encode always takes): if the encoder is not running, the engine's

@@ -307,5 +307,66 @@ class Fallback(unittest.TestCase):
         self.assertNotIn("--gpu", started[0])
 
 
+class VulkanReader(unittest.TestCase):
+    """The Windows iGPU reader: strata-vision-vk (tools/vision, STRATA_VISION_VULKAN, ggml's Vulkan backend).  Opt-in like the
+    SYCL one: the default stays the CPU reader, and the program without --gpu is its own CPU fallback."""
+
+    def test_an_intel_pc_gets_the_vulkan_reader_when_it_is_asked_for(self):
+        r = VR.choose(folder("strata-vision-vk.exe"), "gpu", windows=True)
+        self.assertEqual((r.mode, r.exe.name, r.cpu_exe), ("gpu", "strata-vision-vk.exe", None))
+        self.assertTrue(VR.vision_section(r, {"mmproj": "m", "model": "t"})["gpu"])
+        self.assertEqual(VR.default_mode(32, "intel"), "cpu")                 # nothing asked: the CPU reader, unchanged
+
+    def test_the_vulkan_program_without_gpu_is_its_own_cpu_fallback(self):
+        sec = {"exe": "/e/strata-vision-vk", "gpu": True, "mmproj": "m", "model": "t", "max_tokens": 1024}
+        cpu = VR.cpu_fallback(sec, same_program=True)
+        self.assertEqual((Path(cpu["exe"]).name, cpu["gpu"], cpu["max_tokens"]), ("strata-vision-vk", False, 1024))
+        self.assertIsNone(VR.cpu_fallback({"exe": "/e/strata-vision-vk", "gpu": False}, same_program=True))
+
+    def test_the_name_is_platform_specific(self):
+        self.assertEqual(VR.choose(folder("strata-vision-vk.exe"), "gpu", windows=False).mode, "none")   # a Windows name on Linux
+        self.assertEqual(VR.choose(folder("strata-vision-vk"), "gpu", windows=False).exe.name, "strata-vision-vk")
+
+
+class VulkanServer(unittest.TestCase):
+    def test_reader_args_carry_flash_attn_and_no_warmup(self):
+        args = server.Vision.reader_args({"exe": "/e/strata-vision-vk", "mmproj": "/m/mm.gguf", "model": "/m/t.gguf",
+                                          "gpu": True, "flash_attn": "off", "warmup": False, "max_tokens": 1024})
+        self.assertIn("--gpu", args)
+        self.assertEqual(args[args.index("--flash-attn") + 1], "off")
+        self.assertIn("--no-warmup", args)
+        # defaults of the Windows iGPU reader: flash attention off, and no warm-up while it starts on demand
+        auto = server.Vision.reader_args({"exe": "/e/strata-vision-vk", "mmproj": "/m/mm.gguf", "model": "/m/t.gguf",
+                                          "gpu": True, "elastic": True})
+        self.assertEqual(auto[auto.index("--flash-attn") + 1], "off")
+        self.assertIn("--no-warmup", auto)
+        resident = server.Vision.reader_args({"exe": "/e/strata-vision-vk", "mmproj": "/m/mm.gguf", "model": "/m/t.gguf",
+                                              "gpu": True})
+        self.assertEqual(resident[resident.index("--flash-attn") + 1], "off")   # off whatever the lifecycle
+        self.assertNotIn("--no-warmup", resident)
+        other = server.Vision.reader_args({"exe": "/e/strata-vision", "mmproj": "/m/mm.gguf", "model": "/m/t.gguf", "gpu": True})
+        self.assertNotIn("--flash-attn", other)
+        self.assertNotIn("--no-warmup", other)
+
+    def test_vision_env_shows_the_igpu_and_turns_f16_off(self):
+        cfg = {"vision": {"exe": "C:/e/strata-vision-vk.exe", "vk_visible_devices": 1}}
+        env = server.vision_env(cfg, {})
+        self.assertEqual(env["GGML_VK_VISIBLE_DEVICES"], "1")
+        self.assertEqual(env["GGML_VK_DISABLE_F16"], "1")               # 24 embedding rows go below cosine 0.99 with f16 on an Intel iGPU
+        off = server.vision_env({"vision": {"exe": "strata-vision-vk", "disable_f16": False}}, {})
+        self.assertNotIn("GGML_VK_DISABLE_F16", off)
+        self.assertNotIn("GGML_VK_VISIBLE_DEVICES", off)
+
+    def test_the_igpu_reader_is_on_demand_and_never_asks_the_engine_for_vram(self):
+        cfg = {"backend": "cuda", "vision": {"exe": "strata-vision-vk", "gpu": True, "mmproj": "m", "model": "t"}}
+        out = server.apply_vision_defaults(cfg)
+        self.assertTrue(out["vision"]["elastic"])
+        self.assertTrue(out["vision"]["elastic_ram"])
+        self.assertEqual(out["vision"]["elastic_idle_s"], 30)          # 30 s without a new picture, as measured
+        self.assertNotIn("vram_elastic", out)
+        asked = server.apply_vision_defaults({**cfg, "vision": {**cfg["vision"], "elastic_idle_s": 45}})
+        self.assertEqual(asked["vision"]["elastic_idle_s"], 45)        # a value that is there is the person's
+
+
 if __name__ == "__main__":
     unittest.main()
