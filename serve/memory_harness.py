@@ -287,7 +287,7 @@ def from_config(config, *, accepted_keys=()):
     return Harness(config["users"], accepted_keys)
 
 
-def require_private_engine(config, args, *, slot_save_path=None, batch_trace=False):
+def require_private_engine(config, args, *, slot_save_path=None, batch_trace=False, dense_reset_required=False):
     """Refuse opt-in memory when the native engine may retain shared sessions."""
     if not isinstance(config, dict) or config.get("enabled") is not True:
         return
@@ -295,13 +295,17 @@ def require_private_engine(config, args, *, slot_save_path=None, batch_trace=Fal
         raise ValueError("hakua_harness requires slot save/restore to be disabled")
     if batch_trace:
         raise ValueError("hakua_harness requires STRATA_BATCH_TRACE to be disabled")
+    if dense_reset_required:
+        # The caller requires the actual resident child's whole-request reset receipt
+        # before accepting READY. No persistence or prefix-reuse flag is invented.
+        return
     for flag in ("--prompt-cache", "--conversation-cache-mib"):
         positions = [i for i, arg in enumerate(args) if arg == flag]
         if len(positions) != 1 or positions[0] + 1 >= len(args) or args[positions[0] + 1] != "0":
             raise ValueError("hakua_harness requires explicit " + flag + " 0")
 
 
-def configure_harness(config, accepted_keys, *, engine_argv=None, slot_save_path=None, batch_trace=False):
+def configure_harness(config, accepted_keys, *, engine_argv=None, slot_save_path=None, batch_trace=False, dense_reset_required=False):
     """Validate and build the harness before any GPU or engine load.
 
     Returns None when memory is disabled. Raises ValueError for false keys,
@@ -315,7 +319,7 @@ def configure_harness(config, accepted_keys, *, engine_argv=None, slot_save_path
     if not keys:
         raise ValueError("hakua_harness requires an existing server API key")
     require_private_engine(config, list(engine_argv or ()),
-                           slot_save_path=slot_save_path, batch_trace=batch_trace)
+                           slot_save_path=slot_save_path, batch_trace=batch_trace, dense_reset_required=dense_reset_required)
     return from_config(config, accepted_keys=keys)
 
 

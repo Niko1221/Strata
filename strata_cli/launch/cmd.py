@@ -90,7 +90,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                    help="with --data-dir: move the models you already have into the new folder. Without it nothing is moved: your models stay "
                         "where they are and stay usable, and the new folder gets the new downloads")
     g.add_argument("--context", type=_context, metavar="SIZE", help="how much text it remembers at once: 32k, 64k, 128k, 256k or a number of tokens (DeepSeek-V4.1-Flash: up to 512k and 1m)")
-    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="conversation memory format: int8 (default), q4_0 (half the memory), k8v4, fp16")
+    g.add_argument("--kv", type=_choice("a memory format", S.KV_MODES), metavar="FORMAT", help="family-supported KV; dense native: auto, f16, k8v4, spin8_k8v4, f16_turbo2/3/4")
+    g.add_argument("--output-language", choices=("ja", "model-default"), help="owned dense native output language preference")
     g.add_argument("--vision", type=_choice("a picture setting", S.VISION_MODES), metavar="off|on|gpu|cpu",
                    help="let the model read pictures. Default: on when the model can read pictures and the engine has the picture reader. "
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
@@ -213,6 +214,8 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
     from strata_cli.launch import store
     notices: list[str] = []
     s = store.load(a.preset) if a.preset else S.LaunchSettings()
+    if getattr(a, "output_language", None) is not None:
+        s.output_language = a.output_language
     if a.preset:
         s.name = s.name or a.preset
     if getattr(a, "dsv41_package", None):
@@ -371,6 +374,19 @@ def _broken_nvidia_note(comp) -> str | None:
 def apply_defaults(s: S.LaunchSettings, catalog) -> tuple[S.LaunchSettings, list[S.Notice]]:
     """Fill what was left open with the recommendation for this computer, and collect warnings (never errors for a bad fit)."""
     notices: list[S.Notice] = []
+    if s.family == "qwen38_dense":
+        from strata_control.qwen38_dense import KV
+        if s.parallel not in (None, 1) or s.vision not in (None, "off") or s.drafting not in (None, "off") or s.mtp == "on" or s.kv is not None and s.kv not in KV:
+            notices.append(S.Notice("error", "Dense native requires one text session, drafting off and a supported dense KV format."))
+        if s.access != "local" and not s.api_key and not s.no_key:
+            from strata_cli.launch import access
+            s.api_key = access.kept_key(s.name or "local default") or access.new_key()
+        notices += S.check_access(s)
+        return s, notices
+    if s.output_language is not None:
+        notices.append(S.Notice("error", "--output-language requires a supported dense native local GGUF."))
+    if s.kv in ("auto", "f16", "spin8_k8v4", "f16_turbo2", "f16_turbo3", "f16_turbo4"):
+        notices.append(S.Notice("error", "This KV format requires a supported dense native local GGUF."))
     comp = catalog.computer()
     hw = comp.raw
     if not (s.family and s.model) and not s.model_path:

@@ -139,6 +139,7 @@ def parser() -> argparse.ArgumentParser:
     components_engine.add_argument("--components-dir", default=None,
                                    help="the component folder (default: STRATA_COMPONENTS_DIR or the per-user folder)")
     components_engine.add_argument("--full", action="store_true", help="hash every file, not only the entrypoint")
+    components_engine.add_argument("--native-runner", choices=("qwen38_dense",))
     components_engine.add_argument("--output", choices=("human", "json"), default="human")
     from strata_cli import update_cmd
     update_parsers = update_cmd.add_parsers(sp, components_sp)
@@ -160,8 +161,14 @@ def parser() -> argparse.ArgumentParser:
     models_inspect.add_argument("--output", choices=("human", "json"), default="human")
     models_import = models_sp.add_parser("import", help="preview an existing GGUF file set without adopting it")
     models_import.add_argument("path", metavar="PATH")
-    models_import.add_argument("--plan", action="store_true", required=True,
+    models_import_mode = models_import.add_mutually_exclusive_group(required=True)
+    models_import_mode.add_argument("--plan", action="store_true",
                                help="inspect only; adoption requires a qualified model workflow")
+    models_import_mode.add_argument("--native-dense", action="store_true", help="register a local dense Qwen3.8-27B native trial without copying weights")
+    models_import.add_argument("--install-dir")
+    models_import.add_argument("--context", type=int)
+    models_import.add_argument("--kv", choices=("auto", "f16", "k8v4", "spin8_k8v4", "f16_turbo2", "f16_turbo3", "f16_turbo4"))
+    models_import.add_argument("--output-language", choices=("ja", "model-default"))
     models_import.add_argument("--output", choices=("human", "json"), default="human")
     models_move = models_sp.add_parser("move", help="move the model files (models, packs, mtp) to another folder: copied, checked, then the old copies removed")
     models_move.add_argument("to", metavar="NEW_FOLDER", nargs="?", help="not needed with --resume, --leave or --status")
@@ -556,6 +563,11 @@ def _source(ref: str) -> tuple[Path, dict | None, str | None, dict]:
 def _models(a: argparse.Namespace) -> int:
     from strata_control import models
     if a.models_command == "import":
+        if a.native_dense:
+            from strata_control.qwen38_dense import register
+            result = register(a.path, directory=models.resolve_install(a.install_dir)[0] if a.install_dir else None,
+                              context=a.context, kv=a.kv, language=a.output_language)
+            return _success(result, machine=a.output == "json", human=f"Registered native trial {result['model']}: {result['config']}. Native load and quality remain unverified.")
         result = models.plan_import(a.path)
         if result["issues"]:
             if a.output == "json":
@@ -2050,6 +2062,12 @@ def _components_engine(a: argparse.Namespace) -> int:
     root = Path(a.components_dir) if a.components_dir else None
     try:
         report = engine_component.status(root, backend=a.backend, full=a.full)
+        if getattr(a, "native_runner", None) and report["usable"]:
+            try:
+                helper = engine_component.expand("component:strata-engine", {"backend": a.backend or "cuda", "native_runner": a.native_runner}, root=root)
+                report["engine"] = {**report["engine"], "exe": helper, "native_runner": a.native_runner}
+            except engine_component.EngineMissing as exc:
+                report.update(usable=False, notice=str(exc))
     except engine_component.ComponentProblem as exc:
         return _error(str(exc), 2, a.output == "json")
     code = 0 if report["usable"] else 5

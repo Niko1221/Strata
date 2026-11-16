@@ -1182,6 +1182,7 @@ class StrataEngine:
         # Proof and READY admission must describe the same captured start.
         args = list(args)
         env = dict(os.environ if env is None else env)
+        dense_reset_required = env.get("STRATA_REQUIRE_DENSE_SESSION_RESET") == "1"
         admission = native_admission_from_env(env, args)
         # retry_args: the arguments to start again with, once, when this start ends before the engine is ready (an Auto start that picked DFlash2: mtp_retry_args)
         # retry_vram_args: the same start with no drafter (nodraft_retry_args), used instead when the engine ended because a card ran out of memory: swapping DFlash2 for
@@ -1190,8 +1191,9 @@ class StrataEngine:
         # the all-cards split engine (sFNX, strata-split-N[-arch]): its GEN parser accepts fewer keys than Strata's engine (tests/split/test_split_gen_keys.py pins them)
         self.split_engine = os.path.basename(str(exe)).startswith("strata-split")
         self.session_save_reclaim = '--session-save-reclaim' in args
-        paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
-        self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
+        paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack", "--model", "--output-language")}
+        self.model_path = paths.get("--model") or paths.get("--native") or paths.get("--pack", "pack/full")
+        self.output_language = paths.get("--output-language", "model-default")
         self.log_path = log
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
@@ -1386,6 +1388,22 @@ class StrataEngine:
                 tail += "\n  (those are the launcher's own lines: the engine itself wrote nothing)"
             raise EngineDied(why + (f" (see {log})" if log else "") + note +
                              start_failure_hint(log, log_start) + tail)
+        if dense_reset_required and not (self.info.get("engine") == "qwen38_dense" and self.info.get("session_reset") == "every_request" and self.info.get("prefix") == 0 and self.info.get("private_kv") == "unsupported"):
+            self.proc.kill()
+            self.proc.wait(timeout=5)
+            self.proc.stdin.close()
+            self.proc.stdout.close()
+            if log:
+                self.log.close()
+            raise EngineDied("dense native did not confirm required whole-request session reset")
+        if self.output_language == "ja" and (self.info.get("output_language") != "ja" or self.info.get("orthography") != "ja-finite-v1"):
+            self.proc.kill()
+            self.proc.wait(timeout=5)
+            self.proc.stdin.close()
+            self.proc.stdout.close()
+            if log:
+                self.log.close()
+            raise EngineDied("native engine did not confirm Japanese decoder constraints")
         if not private_cache.capability_confirmed(self.info, admission.private_cache):
             self.proc.kill()
             self.proc.wait(timeout=5)
@@ -2947,8 +2965,17 @@ class StrataEngine:
             scope = getattr(cancel, "_strata_cache_scope", None)
             if scope:
                 rid_key += f" cache_scope={scope}"
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key} {embeddings}" if embeddings else \
-            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}{rid_key}"
+        if getattr(self, "info", {}).get("engine") == "qwen38_dense":
+            from serve.output_language import dense_sampling_keys
+            if embeddings or prefill_only:
+                raise ValueError("dense native does not support image input or reusable prefill")
+            keys = dense_sampling_keys(sampling or {})
+        else:
+            keys = self.sampling_keys(sampling or {})
+        head = f"GENI {int(max_new)}{keys}{rid_key} {embeddings}" if embeddings else f"GEN {int(max_new)}{keys}{rid_key}"
+        if getattr(self, "output_language", "model-default") == "ja":
+            from serve.output_language import protocol_exceptions
+            head += protocol_exceptions((sampling or {}).get("_ja_literal_exceptions", "0"))
         if prefill_only:                                 # split serving (serve/split.py): read the prompt, make no token
             if embeddings or int(max_new) != 0:
                 raise ValueError("prefill_only is a text prompt and max_new 0")
@@ -4171,6 +4198,19 @@ def nodraft_retry_args(cfg: dict, exe: str | None, extra: list[str] | None = Non
     return alt if alt != first + list(extra or []) else None
 
 
+def dense_tokenizer(model_file: Path):
+    """Original, bounded embedded tokenizer/template; no borrowed template or fetch."""
+    from strata_control.gguf_preflight import inspect_metadata
+    from tools.gguf_reader import GGUFFile
+    import strata_tokenizer as ST
+    inspect_metadata(model_file)
+    tok = ST.Tokenizer.from_gguf(model_file)
+    template = GGUFFile(model_file).metadata.get("tokenizer.chat_template")
+    if not isinstance(template, str) or not template or len(template.encode("utf-8")) > 1024 * 1024:
+        raise ValueError("dense native model requires its original bounded embedded chat template")
+    return tok, template
+
+
 def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
@@ -4179,6 +4219,11 @@ def engine_args(cfg: dict, exe: str | None = None, *, announce: bool = True) -> 
     and without leaving a note for the next engine start (the retry arguments of mtp_retry_args)."""
     # "user_args" (strata_control/user_args.py): the options the person set by hand, over the generated ones at every start,
     # so a setup run or the app rewriting "args" cannot undo them (#3216 #3215 #3270)
+    if cfg.get("arch") == "qwen38_dense":
+        from strata_control.qwen38_dense import arguments
+        return arguments(cfg)
+    if cfg.get("output_language") not in (None, "", "model-default"):
+        raise ValueError("output language decoder profile is unsupported by this native adapter")
     args = native_merged_args(cfg)
     # "drafting": auto | mtp | dflash2 | off (strata_control/drafting.py; the Models screen and `strata launch --drafting` write it): which drafter
     # guesses ahead. ONE drafter per run: DFlash2 alone (no --mtp, --draft-fallback none) or the MTP alone (no DFlash2 option). Auto is DFlash2 where the engine
@@ -6524,6 +6569,9 @@ class Service:
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
         empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
+        if getattr(self.engine, "output_language", "model-default") == "ja":
+            from serve.output_language import instruct
+            messages = instruct(messages)
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -6631,6 +6679,9 @@ class Service:
                         part.update(type="text", text=f"[image omitted: {why}]")
                     else:
                         part["source"] = str(image)
+        if cancel is not None and getattr(self.engine, "output_language", "model-default") == "ja":
+            from serve.output_language import literal_exceptions
+            cancel._strata_ja_literals = literal_exceptions(messages, tools)
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = encoded_ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -6946,6 +6997,8 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        if getattr(self.engine, "output_language", "model-default") == "ja":
+            sampling = {**(sampling or {}), "_ja_literal_exceptions": getattr(cancel, "_strata_ja_literals", "0")}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         if thinking and not budget and self.answer_room and max_new and max_new >= ANSWER_ROOM_MIN_CAP:
@@ -11001,9 +11054,19 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
     tok = ByteTokenizer()
     tcfg = {}
     tpath = Path(a.tokenizer)
-    if a.engine == "strata" and not (tpath / "vocab.json").exists():
+    embedded_template = None
+    dense_native = a.engine == "strata" and cfg.get("arch") == "qwen38_dense"
+    if dense_native:
+        from strata_control.qwen38_dense import arguments
+        dense_args = arguments(cfg)
+        model_file = Path(dense_args[dense_args.index("--model") + 1])
+        try:
+            tok, embedded_template = dense_tokenizer(model_file)
+        except ValueError as exc:
+            ap.error(str(exc))
+    if a.engine == "strata" and not dense_native and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
-    if (tpath / "vocab.json").exists():
+    if not dense_native and (tpath / "vocab.json").exists():
         import strata_tokenizer as ST
         vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
         tokens = [None] * len(vocab)
@@ -11051,13 +11114,15 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                 cfg.get("hakua_harness"), key_list(preflight_api_key),
                 engine_argv=engine_args(cfg),
                 slot_save_path=a.slot_save_path or cfg.get("slot_save_path"),
-                batch_trace=_BTRACE)
+                batch_trace=_BTRACE, dense_reset_required=dense_native)
         except ValueError as e:
             ap.error(str(e))
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
         env = child_env(cfg, offline=a.offline)
+        if dense_native:
+            env["STRATA_REQUIRE_DENSE_SESSION_RESET"] = "1"
         configure_batch_telemetry_env(env, cfg, a.batch_telemetry)
         sampling_defaults = sampling_defaults_from_config(cfg)
         if sampling_defaults:
@@ -11159,7 +11224,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
         if swapped:
             print("[strata] this pack's chat template spells the tool-call block differently from the V4.1 model's; "
                   "using the V4.1 template so tool calls come back as real calls", flush=True)
-    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+    svc = Service(engine, tok, ChatTemplate(None, source=embedded_template) if dense_native else ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False),

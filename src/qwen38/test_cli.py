@@ -29,6 +29,10 @@ def check(label, args, expected, contains=''):
     print('PASS', label)
 check('help', ['--help'], True, 'own-native')
 check('version', ['--version'], True, 'own-native')
+check('language help', ['--help'], True, '--output-language ja|model-default')
+check('invalid language', ['--model', 'missing.gguf', '--output-language', 'zh', '--inspect'], False, 'output language must be')
+check('Japanese forced diagnostics rejected', ['--model', 'missing.gguf', '--output-language', 'ja', '--tokens', '1', '--force', '2'], False, 'constraints off')
+check('Japanese logits diagnostics rejected', ['--model', 'missing.gguf', '--output-language', 'ja', '--tokens', '1', '--dump-full-logits', 'unused.bin'], False, 'constraints off')
 for opt in ('--vision', '--shift', '--snapshot', '--graph', '--prompt'):
     check('unsupported '+opt, [opt], False, 'unsupported option')
 check('invalid context', ['--ctx-size', '0'], False)

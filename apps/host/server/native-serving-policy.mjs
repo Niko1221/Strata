@@ -4,7 +4,8 @@ import { q36KvFields, parseQ36KvCapabilities, verifiedQ36MemoryCapability } from
 import { q36MemoryRequest } from './q36-run-contract.mjs';
 
 const Q38_FAMILIES = new Set(['qwen', 'swift', 'coder', 'unsloth', 'gyro']);
-const RUNTIME_ARCH = {q38:'qwen4exp',q36:'qwen35moe',deepseek41:'deepseek41'};
+const RUNTIME_ARCH = {q38:'qwen4exp',q38dense:'qwen38_dense',q36:'qwen35moe',deepseek41:'deepseek41'};
+export const DENSE_KV = ['auto','f16','k8v4','spin8_k8v4','f16_turbo2','f16_turbo3','f16_turbo4'];
 export const ORDINARY_KV = ['fp16', 'int8', 'q4_0', 'k8v4'];
 export const SERVING_FLAGS = {
   q36_memory: ['--q36-memory'],
@@ -15,16 +16,16 @@ const present = value => value !== undefined && value !== null && value !== '';
 export function nativeServingPolicy(config = {}, family = null, capability = null, memoryCapability = null) {
   // The saved architecture wins over the catalog; neither executable nor model filename is consulted.
   const identity = config.arch || config.family || family;
-  const id = identity === 'qwen35moe' || identity === 'qwen36' ? 'q36' : identity === 'deepseek41' ? 'deepseek41'
+  const id = identity === 'qwen38_dense' ? 'q38dense' : identity === 'qwen35moe' || identity === 'qwen36' ? 'q36' : identity === 'deepseek41' ? 'deepseek41'
     : identity === 'qwen4exp' || Q38_FAMILIES.has(identity) ? 'q38' : 'unknown';
   const { binarySha256, ...marker } = capability ?? {};
   const kvCapability = id === 'q36' && /^[a-f0-9]{64}$/.test(binarySha256 ?? '') &&
     parseQ36KvCapabilities(`Q36_KV_CAPABILITIES ${JSON.stringify(marker)}`) ? capability : null;
-  const note = id === 'q38' ? 'Ordinary Qwen3.8 serving uses --kv. Independent K/V formats and Spin(8) capsules cannot serve requests.'
+  const note = id === 'q38dense' ? 'Dense native uses original GGUF weights and one text session. Long-window quality and latency remain unqualified; native admission preserves requested context.' : id === 'q38' ? 'Ordinary Qwen3.8 serving uses --kv. Independent K/V formats and Spin(8) capsules cannot serve requests.'
     : id === 'q36' ? 'Qwen3.6 uses negotiated FP32/FP16 storage. Unknown engines retain the legacy FP32 path. Spin(8) serving is unavailable.'
     : id === 'deepseek41' ? 'DeepSeek uses its own packed FP8 window and FP4 latent/index cache, not generic Qwen KV or Spin(8) controls.'
     : 'The serving adapter is unknown. Generic KV and Spin(8) choices are unavailable.';
-  return { id, runtimeArch: RUNTIME_ARCH[id] ?? null, ordinaryKv: id === 'q38' ? [...ORDINARY_KV] : [], note, kvCapability,
+  return { id, runtimeArch: RUNTIME_ARCH[id] ?? null, ordinaryKv: id === 'q38dense' ? [...DENSE_KV] : id === 'q38' ? [...ORDINARY_KV] : [], note, kvCapability,
     memoryCapability: id === 'q36' ? verifiedQ36MemoryCapability(memoryCapability) : null };
 }
 
@@ -68,8 +69,9 @@ export function servingSettingsIssues(config, policy, { negotiating = false, mem
       reject('q36_memory', 'the retained run expectation does not match this engine or mode. Load the model again to create a new run.');
   }
   const combined = options(args, ['--kv']);
-  if (combined.length && (policy.id !== 'q38' || combined.some(o => o.malformed) || !ORDINARY_KV.includes(combined.at(-1).value)))
+  if (combined.length && (!['q38','q38dense'].includes(policy.id) || combined.some(o => o.malformed) || !policy.ordinaryKv.includes(combined.at(-1).value)))
     reject('kv', 'ordinary --kv is unsupported or has an unknown format.');
+  for(const field of ['output_language','dense_kv'])if(present(config[field])&&policy.id!=='q38dense')reject(field,'only supported by dense native.');
   if (policy.id === 'deepseek41') {
     for (const field of ['mtp', 'batchMtp', 'drafting']) if (present(config[field])) reject(field, 'this is a Qwen serving control.');
   } else if (present(config.ds_experts)) reject('ds_experts', 'this is a DeepSeek routing control.');
@@ -85,6 +87,8 @@ export function servingSettingsView(config, policy, fields) {
     servingPolicy: { id: policy.id, ordinaryKv: policy.ordinaryKv, note: policy.note },
     settingsIssues: servingSettingsIssues(config, policy),
     fields: projected.map(field => {
+      if(['output_language','dense_kv'].includes(field.id))return {...field,supported:policy.id==='q38dense',...(policy.id!=='q38dense'?{choices:[],unavailableReason:policy.note}:{})};
+      if(policy.id==='q38dense'&&['mtp','drafting','batchMtp','parallel','ds_experts','refusal_direction_removal','vram_reserve_mib','gpu_layers','kv_resident'].includes(field.id))return {...field,supported:false,choices:[],unavailableReason:policy.note};
       const blocked = field.id in SERVING_FLAGS && (policy.id !== 'q36' || field.id.startsWith('spin8_')) ||
         policy.id === 'deepseek41' && ['mtp', 'batchMtp', 'drafting'].includes(field.id) || field.id === 'ds_experts' && policy.id !== 'deepseek41';
       // UI uses this actual adapter decision, not forModel's historical filename test.
@@ -119,6 +123,7 @@ export function applyOrdinaryKv(config, kv, policy) {
   if (kv === undefined) return config;
   if (!policy.ordinaryKv.includes(kv)) throw Object.assign(new Error(`kv: choose a supported ordinary serving format. ${policy.note}`), { code: 'unsupported_serving_setting' });
   const next = { ...config, args: setFlag(config.args, '--kv', kv) };
+  if(policy.id==='q38dense')next.dense_kv=kv;
   // An explicit current choice replaces an older explicit choice, not unrelated user arguments.
   if (Array.isArray(config[USER_KEY])) next[USER_KEY] = setFlag(removeFlags(config[USER_KEY], ['--kv']), '--kv', kv);
   if (Array.isArray(config.args_written)) next.args_written = setFlag(config.args_written, '--kv', kv);

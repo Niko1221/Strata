@@ -1,5 +1,6 @@
 /** Native Strata control plane. All user actions are explicit; opening the UI only reads state. */
 import {createRunObservation,requestedFromNativeConfig,observationEnabled} from './lifecycle-observation.mjs';
+import {denseConfig,denseRunConfig} from './q38-dense-contract.mjs';
 import {missingFilesError,missingNames} from './missing-files.mjs';
 import {deepseekRuntime} from './deepseek-runtime.mjs';
 import {configureDesktopMemory,privateMemoryArgs} from './hakua-desktop.mjs';
@@ -356,6 +357,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
   return {memoryKnown:true,memoryCapability:verifiedQ36MemoryCapability(known.memoryCapability,exe?q36FileSha256(exe):null)};
  }
  function servingConfig(args,config,{kvCapability=null,memoryCapability=null,negotiating=false,memoryKnown=false}={}){
+  if(denseConfig(config))return denseRunConfig(config,{...args,values:validateNativeSettings(args.values??{})});
   const policy=policyFor(args.model,config,kvCapability,snapshot.catalog,memoryCapability);
   const next=applyOrdinaryKv(applyServingPatch(config,validateNativeSettings(args.values??{})),args.kv,policy);
   assertServingSettings(next,policy,{negotiating,memoryKnown});
@@ -379,7 +381,7 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function startAdmission(args,config,dedicatedExe=null){
   let exe=dedicatedExe,binarySha256=null;
   // DeepSeek has its own checked executable; generic Qwen availability says nothing about it.
-  if(!exe&&packaged){const engine=await control.engine();if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));exe=engine.engine?.exe??null;}
+  if(!exe&&packaged){const engine=await control.engine(denseConfig(config)?{backend:'cuda',nativeRunner:'qwen38_dense'}:{});if(!engine.usable)throw new Error(ENGINE_NOT_RECOGNISED+(engine.notice?` ${engine.notice}`:''));exe=engine.engine?.exe??null;}
   else if(!exe&&typeof config.exe==='string')exe=resolve(config.cwd??repo(),config.exe);
   if(exe)binarySha256=q36FileSha256(exe);
   const {kvCapability=null,memoryCapability=null}=q36Config(config,args.model)?await probeQ36For(args.model,exe):{};
@@ -475,6 +477,13 @@ export function createNativeControl({directory,requests=()=>[],changed=()=>{},sp
  async function watchInstall(job,current){job.summary=current.step??'Resuming preparation status…';job.result={install:current};while(job.state==='running'){await new Promise(r=>setTimeout(r,1500));const result=await tool('strata_install');job.summary=result.summary;job.result=result;emit();if(!result.install?.running){if(result.install?.exit_code!==0)throw new Error(result.install?.error??'Preparation did not finish. Retry to reuse completed files.');return {summary:'Model preparation complete. Load it from Models.'};}}}
  function externalRunning(){return Array.isArray(snapshot.external)?snapshot.external.filter(s=>![...instances.values()].some(i=>i.port===s.port)):[];}
  async function install(job,args){
+  if(args.family==='qwen38_dense'){
+   const registered=await control.importDense(args.gguf_dir,{installDir:installRoot(),context:args.context,kv:args.kv,outputLanguage:args.values?.output_language});
+   if(job.state!=='running')return;
+   await refresh(true);
+   if(args.loadAfter)return loadEngine(job,{model:registered.model,values:args.values});
+   return {summary:'Dense native model registered; loading and quality remain unverified.',result:registered};
+  }
   if(ready)await ready.catch(()=>{});
   if(job.state!=='running')return;
   await preflightInstall(args);
@@ -610,6 +619,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   return Math.trunc(Math.max(300,Math.min(ceiling,Math.max(ready,sized))));
  }
  function buildConfig(args,config,drafter=null,trusted={}){
+  if(denseConfig(config))return {cfg:denseRunConfig(config,args),resources:null,visionPreferences:{},parallelChoice:{explicit:true},parallelNote:null,dsNote:null,q36Note:null};
   config=servingConfig(args,config,trusted);
   /* `visionUnavailable`: this engine has no picture reader, so the run goes without pictures but nothing is saved: the model's own setting stays what the person had (it used to save "off", and the model stayed off after the engine got the reader). */
   const noReader=args.visionUnavailable===true;
@@ -674,6 +684,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
  /* The engines this Load is about to unload (the load below unloads every instance unless it adds one beside them): their graphics memory is given back before the new engine starts, so Control must not count it as busy memory when it asks whether the all-cards split engine fits (`--engines-unloading`; the Terminal does the same, Runner.card_probe). A model added beside the others (`multiple`) keeps their memory busy. */
  function unloadsRunning(args){return instances.size>0&&args?.multiple!==true;}
  async function draftPlan(args,configFile,{noSplit=false}={}){
+  if(denseConfig(checkedSettingsConfig(readFileSync(configFile,'utf8'))))return null;
   if(!packaged||typeof control.draftingPlan!=='function')return null;
   const asked=args.values?.drafting;
   try{return await withPlanFile(args,configFile,planFile=>control.draftingPlan({configPath:planFile,...(asked===undefined?{}:{mode:asked===null?'auto':asked}),...(noSplit?{noSplit:true}:{}),...(unloadsRunning(args)?{unloading:true}:{})}));}catch{return null;}
@@ -812,7 +823,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   const trusted=await startAdmission(args,config,runtime?.exe),{exe:trustedEngineExe}=trusted;
   if(job.state!=='running')return;
   /* Read pictures is on and the picture files are not here: the Load fetches those files (about 0.9 GB, once) and nothing else of the model, then goes on. No internet: the model loads without pictures and the page says so. */
-  let picturesNote=null;{const got=await ensurePictures(job,args,configFile,config,{missing:entry.picturesMissing===true});if(job.state!=='running')return;config=got.config;args=got.args;picturesNote=got.note;}
+  let picturesNote=null;if(!denseConfig(config)){const got=await ensurePictures(job,args,configFile,config,{missing:entry.picturesMissing===true});if(job.state!=='running')return;config=got.config;args=got.args;picturesNote=got.note;}
   /* One drafter per run (strata_control/drafting.py): switching to the MTP on a model set up for DFlash2 fetches the layer once, here; DFlash2 is fetched below. */
   let drafts=await draftPlan(args,configFile),noSplit=false;
   if(drafts?.mtp_needed===true&&(args.values?.drafting!==undefined||(drafts.split===true||args.firstLoad===true)&&(config.drafting==null||String(config.drafting).toLowerCase()==='auto'))){/* firstLoad: the load right after a setup (Prepare and load), whose plan listed the layer: Auto meaning the MTP on this card fetches it, as the Models screen does (QAGUI 0213) *//* the Models screen's own Load carries the choice; a plain Auto load fetches the layer too when Control says the all-cards split engine will take the start (it runs the MTP and nothing else): the same as the Terminal */await installMtpLayer(job,args,config);if(job.state!=='running')return;await refresh(true);config=checkedSettingsConfig(readFileSync(recordFile(args.model).path,'utf8'));drafts=await draftPlan(args,configFile);
@@ -827,7 +838,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
   // Only the generated runtime config changes; keep the saved spelling intact.
   if(runtime?.exe)cfg.exe=runtime.exe;
   let parallelNote=chosenNote;
-  await prepareDrafter(job,args,cfg,configFile,drafts,{noSplit});if(job.state!=='running')return;
+  if(!denseConfig(cfg))await prepareDrafter(job,args,cfg,configFile,drafts,{noSplit});if(job.state!=='running')return;
  /* The server negotiates private-cache support with the running engine. */
   const wantPrivateMemory=packaged&&hakuaChatbotEnabled()&&!ownEngine(cfg,args.model);
  const memoryAccess=configureDesktopMemory(cfg,{enabled:wantPrivateMemory,directory});
@@ -928,7 +939,7 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
        Both changes ride on the same single try, with the plain sentence of the memory change when there is one.
        Qwen3.6 is excluded: saferStart already returns null for it, and dropping parallel would still change the
        launch contract (configDigest) after the person asked for the same settings. Refuse and report the first stop. */
-    const allowed=args.retrySafer!==false&&job.state==='running'&&!ownEngine(config,args.model)&&!q36Config(cfg,args.model);
+    const allowed=args.retrySafer!==false&&job.state==='running'&&!denseConfig(cfg)&&!ownEngine(config,args.model)&&!q36Config(cfg,args.model);
     const safer=allowed?saferStart(cfg,snapshot.hardware,modelArena(args.model),said):null;
     const dropParallel=allowed&&cfg.parallel>1&&!parallelChoice?.explicit;
     if(!safer&&!dropParallel){instance.status='error';instance.error=said;emit();throw startFailure(error,said);}
@@ -1178,7 +1189,8 @@ return {summary:result.summary??'Deleted',removed:result.plan?.gb??null};}
    // Guided tune/calibration consume saved settings, not load-only value overrides.
    const startArgs=kind==='tune'?{model:args.model}:kind==='calibrate'?{model:args.model??snapshot.installed?.models?.[0]?.model}:kind==='autotune'||kind==='recheck'?tuningRunArgs(args):args;
    const refusal=engineRefusal(snapshot.catalog,startArgs.model,snapshot.engineInfo);if(refusal)throw new Error(refusal);
-   if(kind==='install')installSettings(args);
+   if(kind==='install'&&args.family!=='qwen38_dense')installSettings(args);
+   else if(kind==='install') {if(!packaged||!args.gguf_dir)throw new Error('Choose a local dense GGUF in the packaged app.');}
    else {const found=captureStart(startArgs);if(kind==='load')captured=found;}
   }
   if(kind==='restart-models')for(const old of stoppedForUpdate?.instances??[])captureStart({model:old.model},old.configPath);

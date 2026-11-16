@@ -12,6 +12,7 @@
 #include "weight_arena.hpp"
 #include "layer_fence.hpp"
 #include "startup.cuh"
+#include "sampler.hpp"
 #include <memory>
 #include <cstdio>
 #include <fstream>
@@ -35,6 +36,8 @@ static void gpu_resources(size_t need=0,const std::string& stage="execution",con
 struct Stream {cudaStream_t s=nullptr;Stream(){Q::ck(cudaStreamCreate(&s));}~Stream(){if(s)cudaStreamDestroy(s);}};
 struct Weight {Q::WeightSpan b;int type=0,n=0,rows=0;};
 struct Engine {
+    std::unique_ptr<Q::Orthography> orthography;
+    bool japanese=false;
     strata::GgufFile file;Q::Admission admission;int ctx;Stream stream;
     std::unique_ptr<Q::WeightArena> weight_arena;
     std::map<std::string,Weight> weights;std::vector<Q::RecurrentState> states;
@@ -45,7 +48,14 @@ struct Engine {
     uint64_t cache_bytes=0,scratch_bytes=0;size_t emb_stride=0;const strata::TensorInfo* embedding=nullptr;
     int position=0;
     bool conservative=false;
-    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false):file(path,Q::retained_metadata(),true),admission(Q::inspect(file)),ctx(context),conservative(reference){
+    Engine(const std::string& path,int context,const Q::KvConfig& config,bool reference=false,bool ja=false):file(path,Q::retained_metadata(),true,65536,64*1024*1024),admission(Q::inspect(file)),ctx(context),conservative(reference){
+        japanese=ja;
+        if(ja){strata::GgufFile vocabulary(path,{"tokenizer.ggml.tokens","tokenizer.ggml.token_type"},true,248320);
+            const auto* ts=vocabulary.get("tokenizer.ggml.tokens");const auto* ty=vocabulary.get("tokenizer.ggml.token_type");
+            Q::require(ts&&ty&&ts->items.size()==248320&&ty->items.size()==248320,"language profile requires complete GGUF tokens/types");
+            std::vector<std::string> tokens;std::vector<int> types;for(size_t i=0;i<ts->items.size();++i){tokens.push_back(ts->items[i].s);types.push_back(int(ty->items[i].u));}
+            orthography=std::make_unique<Q::Orthography>(tokens,types);
+        }
         Q::host_resources();Q::ck(cudaSetDevice(0));cudaDeviceProp prop{};Q::ck(cudaGetDeviceProperties(&prop,0));
         Q::require(prop.major==12&&prop.minor==0,"this build requires CUDA SM120 device 0");
         size_t before_preload=0,after_preload=0,preload_total=0;
@@ -172,20 +182,11 @@ static void option(Sampling& s,const std::string& key,const std::string& v,int c
     else if(key=="seed"){size_t n=0;Q::require(!v.empty()&&v[0]!='-',"invalid seed");s.seed=std::stoull(v,&n);Q::require(n==v.size()&&s.seed<=UINT32_MAX,"invalid seed");}
     else throw std::runtime_error("unsupported GEN key: "+key);
 }
-static int sample(std::vector<float> lg,const Sampling& s,const std::vector<int32_t>& hist,std::mt19937_64& rng){
-    strata::qwen35::apply_penalties(lg,s,hist);if(s.temperature<=0)return int(std::max_element(lg.begin(),lg.end())-lg.begin());
-    // top_k=0 retains the entire vocabulary; never silently replace it by 64.
-    std::vector<int> ix(lg.size());std::iota(ix.begin(),ix.end(),0);size_t count=s.top_k?std::min(size_t(s.top_k),ix.size()):ix.size();
-    std::partial_sort(ix.begin(),ix.begin()+count,ix.end(),[&](int a,int b){return lg[a]>lg[b]||(lg[a]==lg[b]&&a<b);});ix.resize(count);
-    std::vector<double> p(count);double total=0;for(size_t i=0;i<count;++i)total+=(p[i]=std::exp((double(lg[ix[i]])-lg[ix[0]])/s.temperature));
-    size_t keep=count;double c=0;for(size_t i=0;i<count;++i){if(p[i]<s.min_p*p[0]){keep=i;break;}c+=p[i]/total;if(c>=s.top_p){keep=i+1;break;}}
-    keep=std::max(size_t(1),keep);double mass=std::accumulate(p.begin(),p.begin()+keep,0.0);double r=std::uniform_real_distribution<double>(0,mass)(rng);
-    for(size_t i=0;i<keep;++i)if((r-=p[i])<=0)return ix[i];return ix[keep-1];
-}
 static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling sampling,std::atomic<bool>& stop,
-                Q38Protocol* protocol=nullptr,const std::vector<int32_t>& force={},const std::string& dump=""){
+                Q38Protocol* protocol=nullptr,const std::vector<int32_t>& force={},const std::string& dump="",uint64_t exceptions=0){
     Q::require(!prompt.empty()&&prompt.size()<=size_t(e.ctx)&&size_t(count)<=size_t(e.ctx)-prompt.size(),"request exceeds explicit context capacity");
     Q::require(force.empty()||force.size()+1==size_t(count),"force requires one more logits row than forced tokens");
+    if(e.orthography)e.orthography->reset(e.japanese,exceptions);
     e.reset();auto start=Clock::now(),prefill=start;int produced=0;size_t read=0;const char* finish="length";
     std::ofstream out;if(!dump.empty()){out.open(dump,std::ios::binary|std::ios::trunc);Q::require(bool(out),"cannot open logits output");}
     std::mt19937_64 rng(sampling.seed);auto hist=strata::qwen35::penalty_history_start(prompt,false);
@@ -193,13 +194,14 @@ static void run(Engine& e,const std::vector<int32_t>& prompt,int count,Sampling 
         for(size_t i=0;i<prompt.size();++i){if(stop.load())throw Cancelled{};e.step(prompt[i],stop,i+1==prompt.size());++read;if(protocol){std::printf("PP %zu %zu\n",read,prompt.size());std::fflush(stdout);}}
         prefill=Clock::now();
         for(int i=0;i<count;++i){if(stop.load())throw Cancelled{};auto lg=e.read_logits();if(out.is_open()){out.write(reinterpret_cast<const char*>(lg.data()),lg.size()*4);Q::require(bool(out),"logits write failed");}
-            int token=size_t(i)<force.size()?force[i]:sample(lg,sampling,hist,rng);++produced;hist.push_back(token);
+            int token=size_t(i)<force.size()?force[i]:Q::sample(lg,sampling,hist,rng,e.orthography.get());if(e.orthography)e.orthography->accept(token);++produced;hist.push_back(token);
             if(protocol)std::printf("T %d\n",token);else std::printf("%s%d",i?",":"",token);std::fflush(stdout);
             if(force.empty()&&(token==e.admission.eos||token==248044)){finish="eos";break;}
             if(i+1<count)e.step(token,stop,true);
         }
     }catch(const Cancelled&){finish="cancel";if(read<prompt.size())prefill=Clock::now();}
-    catch(...){e.reset();throw;}
+    catch(...){if(e.orthography)e.orthography->reset(false);e.reset();throw;}
+    if(e.orthography)e.orthography->reset(false);
     e.reset();auto end=Clock::now();double pp=std::chrono::duration<double,std::milli>(prefill-start).count(),tg=std::chrono::duration<double,std::milli>(end-prefill).count();
     auto publish=[&](bool cancelled){if(cancelled)finish="cancel";if(protocol){auto line=q38_format_done(produced,prompt.size(),pp,tg,finish,read);std::fwrite(line.data(),1,line.size(),stdout);}else std::puts("");std::fflush(stdout);};
     if(protocol)protocol->finish(publish);else publish(stop.load());
@@ -212,16 +214,18 @@ static void serve(Engine& e){
     }state.end_input();});
     // All INFO values are fixed ASCII tokens or numbers, never file metadata.
     const auto& c=e.kv->config();
+    std::printf("INFO output_language=%s orthography=%s session_reset=every_request private_kv=unsupported\n",e.japanese?"ja":"model-default",e.japanese?Q::orthography_version:"off");
     std::printf("INFO backend=strata_native_cuda engine=qwen38_dense weight_runtime=strata cuda_arch=120 context=%d sampling=strata_cpu weights=original_gpu embedding=host_mmap_row_upload kv=%s kv_k=%s kv_v=%s kv_requested=%s kv_selection_reason=%s kv_required_with_reserve=%llu kv_available_at_admission=%llu kv_reserve=%llu spin8_view=%s spin8_profile_sha256=%s spin8_matrix_sha256=%s recurrent=f32 weight_bytes=%llu cache_bytes=%llu kv_payload_bytes=%llu kv_scratch_bytes=%llu kv_coefficient_bytes=%llu prefix=0 graph=0 batch=1 drafting=off\nREADY %d stop\n",e.ctx,c.name(),c.key_format(),c.value_format(),e.kv_selection.requested.c_str(),e.kv_selection.reason.c_str(),(unsigned long long)e.kv_selection.required,(unsigned long long)e.kv_selection.available,(unsigned long long)e.kv_selection.reserve,c.view_name(),c.profile_sha.c_str(),c.matrix_sha.c_str(),(unsigned long long)e.admission.gpu_weights,(unsigned long long)e.cache_bytes,(unsigned long long)e.kv->persistent_bytes(),(unsigned long long)e.kv->scratch_bytes(),(unsigned long long)e.kv->coefficient_bytes(),e.ctx);std::fflush(stdout);
     Q38Protocol::Event ev{};
     while(state.next(ev)){
         if(ev.kind!=Q38Protocol::Kind::command){state.finish_reply([&]{std::puts(ev.kind==Q38Protocol::Kind::busy?"ERR single session is busy":"ERR input queue full");std::fflush(stdout);});continue;}
         if(ev.line=="QUIT")break;bool generation=ev.line.rfind("GEN ",0)==0;bool fatal=false;
         try{std::istringstream in(ev.line);std::string cmd,num,part;in>>cmd>>num;Q::require(cmd=="GEN"&&!num.empty(),"expected GEN max_new token_ids; unsupported feature");int count=integer(num,0,e.ctx);Sampling s;
-            while(in>>part&&part.find('=')!=std::string::npos){size_t eq=part.find('=');option(s,part.substr(0,eq),part.substr(eq+1),e.ctx);part.clear();}
+            uint64_t exceptions=0;bool seen_exceptions=false;
+            while(in>>part&&part.find('=')!=std::string::npos){size_t eq=part.find('=');if(part.substr(0,eq)=="ja_allow"){Q::require(e.japanese&&!seen_exceptions,"ja_allow requires Japanese profile and must occur once");exceptions=Q::language_exceptions(part.substr(eq+1));seen_exceptions=true;}else option(s,part.substr(0,eq),part.substr(eq+1),e.ctx);part.clear();}
             Q::require(!part.empty(),"missing token IDs");std::string extra;Q::require(!(in>>extra),"extra GEN argument");
             if(s.last_n==0&&(s.repeat!=1||s.freq!=0||s.present!=0))s.last_n=std::min(64,e.ctx);
-            run(e,ids(part),count,s,state.stop_flag(),&state);
+            run(e,ids(part),count,s,state.stop_flag(),&state,{},"",exceptions);
         }catch(const std::exception& ex){try{e.reset();}catch(...){fatal=true;}if(dynamic_cast<const Q::ResourceError*>(&ex))fatal=true;
             auto reply=[&]{std::string msg=ex.what();for(char& c:msg)if(c=='\n'||c=='\r')c=' ';std::printf("ERR %s\n",msg.c_str());std::fflush(stdout);};
             if(generation)state.finish([&](bool){reply();});else state.finish_reply(reply);
@@ -231,20 +235,23 @@ static void serve(Engine& e){
     if(reader.joinable()){if(!state.input_ended())CancelSynchronousIo(reader.native_handle());reader.join();}
 }
 int main(int argc,char** argv){try{
-    std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile;int ctx=4096,count=32;bool resident=false,inspection=false,conservative=false;Sampling sampling;
+    std::string model,tokens,forced,dump,kv_mode="auto",spin_view,spin_profile,language="model-default";int ctx=4096,count=32;bool resident=false,inspection=false,conservative=false;Sampling sampling;
     for(int i=1;i<argc;++i){std::string a=argv[i];auto value=[&](){Q::require(i+1<argc,"missing option value");return std::string(argv[++i]);};
-        if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version\nFP32 recurrent state, sequential prefill; no vision/prefix/shift/speculation/graph.");return 0;}
+        if(a=="--help"||a=="-h"){std::puts("strata-q38 own-native CUDA SM120\n--model FILE --ctx-size N (4096) --serve\n--tokens IDS --n N [--force IDS] [--dump-full-logits FILE]\n--kv auto|f16|k8v4|spin8_k8v4|f16_turbo2|f16_turbo3|f16_turbo4 (auto default)\nAuto order: f16, f16_turbo4, spin8_k8v4; context and weights unchanged.\n--spin8-view vector|plus|minus --spin8-profile FILE (compiled reference default)\n--output-language ja|model-default (standalone default: model-default)\n--conservative-sync (diagnostic reference execution)\n--inspect (CPU only) --version\nFP32 recurrent state, sequential prefill; no vision/prefix/shift/speculation/graph.");return 0;}
         if(a=="--version"){std::puts("strata-q38 own-native 0.6.0-dev CUDA13 SM120");return 0;}
         if(a=="--model")model=value();else if(a=="--ctx-size")ctx=integer(value(),1,262144);else if(a=="--tokens")tokens=value();else if(a=="--n")count=integer(value(),0,262144);
         else if(a=="--force")forced=value();else if(a=="--dump-full-logits")dump=value();else if(a=="--serve")resident=true;else if(a=="--inspect")inspection=true;
         else if(a=="--kv")kv_mode=value();else if(a=="--spin8-view")spin_view=value();else if(a=="--spin8-profile")spin_profile=value();
         else if(a=="--conservative-sync")conservative=true;
+        else if(a=="--output-language")language=value();
         else if(a=="--seed")option(sampling,"seed",value(),ctx);else if(a=="--temperature")option(sampling,"temperature",value(),ctx);else throw std::runtime_error("unsupported option: "+a);
     }
     Q::require(!model.empty(),"--model is required");
+    bool japanese=Q::japanese_profile(language);Q::require(!japanese||(forced.empty()&&dump.empty()),"forced/logit diagnostics require --output-language model-default (constraints off)");
     const auto kv_config=Q::KvConfig::admit(kv_mode,spin_view,spin_profile);
     if(inspection){strata::GgufFile f(model,Q::retained_metadata(),true);auto a=Q::inspect(f);std::printf("GGUF own-native qwen35 dense layers=64 tensors=%zu nextn_ignored=%d gpu_weight_bytes=%llu host_embedding_bytes=%llu folded=%zu inverse_embedding=%d grouped_gdn=%d\n",f.tensors().size(),a.nextn,(unsigned long long)a.gpu_weights,(unsigned long long)a.embedding_bytes,a.folded.size(),a.inverse_embedding,a.grouped_gdn);return 0;}
     Q::require(resident!=!tokens.empty(),"choose exactly one of --serve or --tokens");Q::require(!resident||(forced.empty()&&dump.empty()),"force/logits are standalone options");
     auto prompt=tokens.empty()?std::vector<int32_t>{}:ids(tokens);auto force=forced.empty()?std::vector<int32_t>{}:ids(forced);if(!force.empty())count=int(force.size()+1);
-    Q::host_resources();Engine e(model,ctx,kv_config,conservative);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
+    if(!forced.empty()||!dump.empty())std::fprintf(stderr,"diagnostic output_language=model-default orthography=off\n");
+    Q::host_resources();Engine e(model,ctx,kv_config,conservative,japanese);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
 }catch(const std::exception& e){std::fprintf(stderr,"strata-q38: %s\n",e.what());return 1;}}

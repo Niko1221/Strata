@@ -24,6 +24,7 @@ SCALAR_BYTES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
                 10: 8, 11: 8, 12: 8}
 CAPTURE_STRINGS = {"general.architecture", "tokenizer.ggml.model", "clip.projector_type"}
 PRESENCE_KEYS = {"tokenizer.ggml.tokens", "tokenizer.ggml.merges"}
+Q38_DIMENSIONS = {"block_count", "embedding_length", "feed_forward_length", "attention.head_count", "attention.head_count_kv", "attention.key_length", "attention.value_length", "ssm.state_size", "ssm.group_count", "ssm.time_step_rank", "ssm.inner_size", "nextn_predict_layers", "expert_count"}
 
 
 class _Reader:
@@ -128,7 +129,7 @@ def inspect_metadata(path: Path) -> dict:
                 value_type = reader.u32()
                 if key in CAPTURE_STRINGS and value_type != 8:
                     raise ProfileError("GGUF architecture or tokenizer model is not a string", 5)
-                value = reader.value(value_type, capture=key in CAPTURE_STRINGS or
+                value = reader.value(value_type, capture=key in CAPTURE_STRINGS or key.startswith("qwen35.") and key[7:] in Q38_DIMENSIONS or
                                      key == "general.alignment")
                 if key in CAPTURE_STRINGS:
                     found[key] = value
@@ -137,6 +138,10 @@ def inspect_metadata(path: Path) -> dict:
                         value[0] == 8 and value[1] > 0
                 elif key == "general.alignment":
                     found[key] = value
+                elif key.startswith("qwen35.") and key[7:] in Q38_DIMENSIONS:
+                    found[key] = value
+                elif key.startswith("split."):
+                    found["split"] = True
             alignment = found.get("general.alignment", 32)
             if type(alignment) is not int or not 1 <= alignment <= 4096 or \
                     alignment & (alignment - 1):
@@ -180,6 +185,8 @@ def inspect_metadata(path: Path) -> dict:
             if tensors == 1 and details.st_size - (data_start + required_payload_bytes) >= 64:
                 raise ProfileError("single-tensor GGUF shard has unexplained trailing bytes", 5)
             return {"architecture": found.get("general.architecture"),
+                    "dense_dimensions": {k[7:]: v for k, v in found.items() if k.startswith("qwen35.")},
+                    "split": found.get("split", False),
                     "projector_type": found.get("clip.projector_type"),
                     "tokenizer_model": found.get("tokenizer.ggml.model"),
                     "tokenizer_tokens_present": found.get("tokenizer.ggml.tokens") is True,

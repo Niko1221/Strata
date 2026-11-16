@@ -295,7 +295,7 @@ class Cursor {
 public:
     Cursor(const uint8_t* base, size_t size) : base_(base), size_(size) {}
     void need(size_t n) const {
-        if (pos_ + n > size_) throw std::runtime_error("GGUF: unexpected end of file in header");
+        if (n > size_ - pos_) throw std::runtime_error("GGUF: unexpected end of file or bounded header limit");
     }
     template <class T> T read() {
         need(sizeof(T));
@@ -399,9 +399,12 @@ public:
     // Opt-in complete scalar arrays for operation metadata. Existing readers
     // retain their 64-item sampling behavior; explicitly selected arrays cap at 65536.
     explicit GgufFile(const std::string& path, std::set<std::string> retain_arrays = {},
-                      bool reject_duplicate_metadata = false)
+                      bool reject_duplicate_metadata = false, uint64_t retained_array_limit = 65536,
+                      size_t header_byte_limit = SIZE_MAX)
         : path_(path), retain_arrays_(std::move(retain_arrays)),
-          reject_duplicate_metadata_(reject_duplicate_metadata) {
+          reject_duplicate_metadata_(reject_duplicate_metadata), retained_array_limit_(retained_array_limit), header_byte_limit_(header_byte_limit) {
+        if (retained_array_limit_ > 262144) throw std::runtime_error("GGUF: retained array limit exceeds 262144");
+        if (retained_array_limit_ > 65536) header_byte_limit_ = std::min<size_t>(header_byte_limit_,64*1024*1024);
         try { open(); }
         catch (...) { close(); throw; }
     }
@@ -481,7 +484,7 @@ private:
     }
 
     void parse() {
-        Cursor c(base_, size_);
+        Cursor c(base_, std::min<size_t>(size_,header_byte_limit_));
         const uint32_t magic = c.read<uint32_t>();
         if (magic != 0x46554747u) throw std::runtime_error("not a GGUF file (bad magic)");
         version_ = c.read<uint32_t>();
@@ -495,9 +498,9 @@ private:
             if (reject_duplicate_metadata_ && meta_.count(key))
                 throw std::runtime_error("GGUF: duplicate metadata key '" + key + "'");
             MetaType t = (MetaType)c.read<uint32_t>();
-            MetaValue value = read_value(c, t, 0, retain_arrays_.count(key) ? 65536 : 64);
-            if (retain_arrays_.count(key) && value.type == MetaType::ARRAY && value.count > 65536)
-                throw std::runtime_error("GGUF: selected metadata array exceeds 65536 items");
+            MetaValue value = read_value(c, t, 0, retain_arrays_.count(key) ? retained_array_limit_ : 64);
+            if (retain_arrays_.count(key) && value.type == MetaType::ARRAY && value.count > retained_array_limit_)
+                throw std::runtime_error("GGUF: selected metadata array exceeds retained item limit");
             meta_.emplace(std::move(key), std::move(value));
         }
         tensors_.reserve((size_t)n_tensors);
@@ -534,6 +537,8 @@ private:
 
     std::string path_;
     std::set<std::string> retain_arrays_;
+    uint64_t retained_array_limit_ = 65536;
+    size_t header_byte_limit_ = SIZE_MAX;
     bool reject_duplicate_metadata_ = false;
     const uint8_t* base_ = nullptr;
     uint64_t size_ = 0, data_start_ = 0, alignment_ = 32;

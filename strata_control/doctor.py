@@ -21,6 +21,7 @@ from strata_control.profiles import read_run_config
 PATH_FLAGS = {
     "--pack": "directory",
     "--native": "file",
+    "--model": "file",
     "--ple-gguf": "file",
     "--expert-profile": "file",
     "--mtp": "directory",
@@ -206,8 +207,11 @@ def inspect(config_path: Path | None, *, profile_id: str | None = None, live: bo
         components[-1]["build_metadata"] = "unavailable"
 
     tokenizer = _location(cfg["tokenizer"], cfg, config_path)
-    for child in ("vocab.json", "merges.txt", "token_type.json"):
-        components.append(_item(f"tokenizer/{child}", tokenizer / child, "file"))
+    if cfg.get("arch") == "qwen38_dense":
+        components.append(_item("embedded GGUF tokenizer", tokenizer, "file"))
+    else:
+        for child in ("vocab.json", "merges.txt", "token_type.json"):
+            components.append(_item(f"tokenizer/{child}", tokenizer / child, "file"))
 
     args = cfg["args"]
     for index, arg in enumerate(args):

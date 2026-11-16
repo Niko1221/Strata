@@ -24,7 +24,7 @@ export const KNOWN_KEYS = new Set([
   'reasoning_effort', 'reasoning_close_retry', 'reasoning_loop_recovery', 'repeat_stop_tokens', 'tool_call_recovery', 'undeclared_tool_calls', 'codex_compaction_cache',
   'codex_thread_titles', 'expert_profile_save', 'expert_profile_save_every', 'images', 'vision', 'mmproj', 'draft_vocab', 'ui_resource_profile',
   'ui_vision_enabled', 'ui_vision_chosen', 'ui_context_chosen', 'component', 'native', 'uma', 'remote_expert_opt', 'diffusion_model', 'llm', 'vae', 'quant', 'type', 'url', 'timeout_s',
-  'hakua_harness',
+  'hakua_harness', 'native_runner', 'split_engine',
 ]);
 
 const BOOLS = new Set(['open_browser', 'prevent_sleep', 'elastic', 'env_to_user', 'gpus_asked', 'batch_telemetry', 'tool_call_recovery', 'reasoning_loop_recovery']);

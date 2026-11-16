@@ -59,7 +59,7 @@ def speed_words(speed: str, default: bool) -> str:
     if speed == "faster":
         return "Faster" + (" (default on this PC)" if default else "")
     return "Full quality" + (" (default on this PC)" if default else "") + ": all 6 experts per word"
-KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
+KV_MODES = ("int8", "q4_0", "k8v4", "fp16", "auto", "f16", "spin8_k8v4", "f16_turbo2", "f16_turbo3", "f16_turbo4")
 DEFAULT_PORT = 8080
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.
@@ -121,6 +121,7 @@ class LaunchSettings:
     gpu_roles: dict[str, str] | None = None    # {"1": "main", "0": "helper", "2": "off"}: a role for every card; None = the recommendation
     context: int | None = None
     kv: str | None = None                      # None = int8 above 8K, as setup
+    output_language: str | None = None         # owned dense only: ja or model-default
     vision: str | None = None                  # None = the default (on when the model can read pictures and the engine has the reader), off | on | gpu | cpu
     parallel: int | None = None                # None = fit to the card
     speed: str | None = None                   # DeepSeek only: None = the default for this PC (faster up to 16 GB of graphics memory); faster | full
@@ -334,7 +335,7 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
     else:
         if s.model_path:
             parts.append(f'--model-path "{s.model_path}"')
-        if s.model:                                   # own files the table recognised say which model they are, so the line stays exact
+        if s.model and s.family != "qwen38_dense":     # dense local files have no remote catalog identifier
             parts.append(f"--model {s.model.lower()}" + (f" --family {s.family}" if s.family and s.family != "qwen" else ""))
         if s.data_dir:
             parts.append(f'--data-dir "{s.data_dir}"')
@@ -342,6 +343,8 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
             parts.append(f"--context {context_label(s.context).lower()}")
         if s.kv:
             parts.append(f"--kv {s.kv}")
+        if s.output_language:
+            parts.append(f"--output-language {s.output_language}")
         if s.vision:
             parts.append(f"--vision {s.vision}")
         if s.parallel:

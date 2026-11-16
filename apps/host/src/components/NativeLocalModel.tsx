@@ -36,6 +36,8 @@ export function NativeLocalModel({ onBack, onAlternative }: { onBack: () => void
     const active = native?.jobs.find(isNativeJobBusy);
     const checking = useRef(false);
     const selection = checked?.preview.candidate_selection;
+    const dense = selection?.family === 'qwen38_dense';
+    const [denseContext,setDenseContext] = useState(''), [denseLanguage,setDenseLanguage] = useState(''), [denseKv,setDenseKv] = useState('');
     const usable = !!checked && checked.preview.file_set_status === 'plausible' && !!selection;
     const version = selection ? nativeCatalogModels(native?.catalog?.families ?? []).flatMap(f => f.sizes).find(s => s.sourceFamily === selection.family && s.model === selection.model) : undefined;
     const family = selection ? nativeCatalogModels(native?.catalog?.families ?? []).find(f => f.sizes.some(s => s.sourceFamily === selection.family && s.model === selection.model)) : undefined;
@@ -45,6 +47,7 @@ export function NativeLocalModel({ onBack, onAlternative }: { onBack: () => void
         setPending(true);
         setError('');
         setChecked(null);
+        setDenseContext(''); setDenseLanguage(''); setDenseKv('');
         // Only detach this preview's outcome; global active jobs and diagnostics stay intact.
         setJobId('');
         try {
@@ -68,6 +71,10 @@ export function NativeLocalModel({ onBack, onAlternative }: { onBack: () => void
         setPending(true);
         setError('');
         try {
+            if(dense){
+                const result=await nativeAction<NativeJob>('operations',{kind:'install',args:{family:'qwen38_dense',model:'local',gguf_dir:checked.path,...(denseContext?{context:Number(denseContext)}:{}),...(denseKv?{kv:denseKv}:{}),values:denseLanguage?{output_language:denseLanguage}:{},loadAfter:true}});
+                setJobId(result.id);return;
+            }
             const result = await nativeAction<NativeJob>('operations', { kind: 'install', args: { family: selection.family, model: selection.model, gguf_dir: checked.preview.model_dir ?? checked.path, ...(ownDataFolder ? { data_dir: ownDataFolder } : {}), context: native?.catalog?.recommendation?.context ?? 32768, vision: checked.preview.projectors?.some(p => p.status === 'ok' && p.pinned) && native?.visionReader ? 'yes' : 'no', ...(version && native?.servingPolicies?.[version.id]?.ordinaryKv.includes('int8') ? { kv: 'int8' } : {}), loadAfter: true } });
             setJobId(result.id);
         }
@@ -92,6 +99,12 @@ export function NativeLocalModel({ onBack, onAlternative }: { onBack: () => void
       <p><strong>{tr(version ? catalogVersionLabel(version) : selection?.model ?? '')}</strong> · {tr(selection?.model ?? '')}</p>
       <p className="small muted">{tr("{0} files · {1}", [checked.preview.file_count, sizeGb(checked.preview.total_bytes / 1024 ** 3)])}</p>
       {tr(checked.preview.messages?.map(m => <p className="small muted" key={m}>{tr(m)}</p>))}
+      {dense ? <div className="stack">
+       <label>{tr('Context')}<select aria-label={tr('Context')} className="st-input" value={denseContext} onChange={e=>setDenseContext(e.target.value)}><option value="">Keep saved choice (new model: 4,096)</option>{[4096,8192,32768,65536,98304,131072].map(n=><option key={n} value={n}>{n.toLocaleString()} tokens</option>)}</select></label>
+       <label>{tr('Output language')}<select aria-label={tr('Output language')} className="st-input" value={denseLanguage} onChange={e=>setDenseLanguage(e.target.value)}><option value="">Keep saved choice (new model: 日本語)</option><option value="ja">日本語</option><option value="model-default">Model default</option></select></label>
+       <label>{tr('Conversation memory')}<select aria-label={tr('Conversation memory')} className="st-input" value={denseKv} onChange={e=>setDenseKv(e.target.value)}><option value="">Keep saved choice (new model: auto)</option>{['auto','f16','k8v4','spin8_k8v4','f16_turbo2','f16_turbo3','f16_turbo4'].map(k=><option key={k} value={k}>{k}</option>)}</select></label>
+       <p className="small muted">98,304 / 131,072-token full-input quality and five-minute first response remain unqualified. Native admission keeps the selected context or reports failure. MTP and native private KV persistence are unavailable.</p>
+      </div> : null}
       <div className="native-model-actions"><Btn variant="primary" icon="models" disabled={pending || !!active} onClick={() => void prepare()}>{tr(pending ? 'Checking…' : 'Prepare and load')}</Btn>{tr(selection?.family === 'qwen36' ? <Btn disabled={pending || !!active} onClick={() => onAlternative(checked!.path, 'PrismML')}>{tr("Try with llama-server")}</Btn> : null)}</div>
      </> : strataEngine ? <>
       <h2 className="h3">{tr("Ready for Strata")}</h2>

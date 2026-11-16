@@ -3,6 +3,12 @@
 This page helps you choose a model and check that your computer can run it. It covers
 Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [INSTALL.md](INSTALL.md).
 
+For a local Qwen3.8-27B dense GGUF, see the opt-in
+[dense native trial](QWEN38_DENSE_NATIVE.md). It uses the original file, embedded
+tokenizer/template and Strata's own CUDA runner, with explicit Japanese output
+and KV choices. Full-window quality, long-input latency and release acceptance
+remain separate from metadata preview and source tests.
+
 > **On this page:** [Quick start](#quick-start) · [Pick by memory](#pick-by-memory) ·
 > [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
 > [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Adding or switching models](#adding-or-switching-models) ·

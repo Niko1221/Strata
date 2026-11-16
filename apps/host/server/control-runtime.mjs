@@ -246,8 +246,8 @@ export function createControl({ control = findControl(), env = process.env, run 
       if (result.json?.ok) return result.json;
       throw failure(result, 'The engine could not be deleted.');
     },
-    async engine({ backend = null } = {}) {
-      const result = await call(['components', 'engine', '--output', 'json', ...(backend ? ['--backend', backend] : [])], { timeoutMs: 30_000 });
+    async engine({ backend = null, nativeRunner = null } = {}) {
+      const result = await call(['components', 'engine', '--output', 'json', ...(backend ? ['--backend', backend] : []), ...(nativeRunner ? ['--native-runner', nativeRunner] : [])], { timeoutMs: nativeRunner ? 120_000 : 30_000 });
       if (result.json) return result.json;                  // exit 5 still carries the report and the notice
       throw failure(result, 'The engine check failed.');
     },
@@ -264,6 +264,11 @@ export function createControl({ control = findControl(), env = process.env, run 
       // words ("Strata can't run these files yet"). Only a check that could not run at all is a failure.
       if (result.json?.plan && Array.isArray(result.json.plan.issues)) return result.json.plan;
       throw failure(result, 'The files could not be checked.');
+    },
+    async importDense(path,{installDir,context,kv,outputLanguage}={}) {
+      const result=await call(['models','import',path,'--native-dense','--output','json',...(installDir?['--install-dir',installDir]:[]),...(context!=null?['--context',String(context)]:[]),...(kv?['--kv',kv]:[]),...(outputLanguage?['--output-language',outputLanguage]:[])],{timeoutMs:120_000});
+      if(result.code===0&&result.json?.ok)return result.json;
+      throw failure(result,'The dense native model could not be registered.');
     },
     /** What picking `to` as the models folder means (sizes, free space, which choices are possible, why not): nothing is changed. */
     async planModelsMove(from, to) {

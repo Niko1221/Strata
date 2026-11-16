@@ -791,6 +791,10 @@ class Runner:
 
     # ---- 1. the engine
     def ensure_engine(self) -> None:
+        if self.s.family == "qwen38_dense":
+            from strata_control import engine_component
+            engine_component.expand("component:strata-engine", {"native_runner": "qwen38_dense", "backend": "cuda"})
+            return
         self.warn_wsl_amd()
         if self.multi_file():                                # DeepSeek: its own engine package (setup fetches it); the Strata engine is not used
             self.emit("engine", "DeepSeek runs on its own engine package, so the Strata engine is not downloaded for it.", 100)
@@ -1341,6 +1345,10 @@ class Runner:
     def ensure_model(self) -> Path:
         s, cat = self.s, self.catalog
         self.check_own_files()
+        if s.family == "qwen38_dense":
+            from strata_control.qwen38_dense import register
+            result = register(s.model_path, context=s.context, kv=s.kv, language=getattr(s, "output_language", None))
+            return Path(result["config"])
         self.resolved_vision()
         if not (s.family and s.model):
             raise LaunchError("No model was chosen.", "Choose a model, or use --model NAME (strata launch --help lists them).", 2)
@@ -1675,6 +1683,12 @@ class Runner:
             if given:
                 return
             raise LaunchError(f"These model files cannot be used: {e}.", "Pick the folder with every shard of one model, or a .gguf file of it.", 5) from None
+        if (plan.get("candidate_selection") or {}).get("family") == "qwen38_dense" and not plan.get("issues"):
+            if given and s.family != "qwen38_dense":
+                raise LaunchError("The explicit family conflicts with this dense GGUF.", "Use --model-path without the unrelated family.", 5)
+            s.family, s.model = "qwen38_dense", "local"
+            s.model_path = plan["files"][0]["path"]
+            return
         if given:
             sel = plan.get("candidate_selection") or {}
             if sel.get("family") and sel.get("model") and (sel["family"], sel["model"]) != (s.family, s.model):
@@ -1873,6 +1887,19 @@ class Runner:
     def build_config(self, base_path: Path) -> Path:
         from strata_control import tune_knobs
         base = read_config(base_path)
+        if base.get("arch") == "qwen38_dense":
+            from strata_control.qwen38_dense import arguments
+            cfg = dict(base)
+            cfg.update(host=acc.host_for(self.s.access), port=int(self.s.port), open_browser=False)
+            if self.s.api_key:
+                cfg["api_key"] = self.s.api_key
+            if self.s.parallel not in (None, 1) or self.s.vision not in (None, "off") or self.s.mtp == "on" or self.s.drafting not in (None, "off") or self.s.extra or self.s.gpus not in (None, [], [0], ["0"]):
+                raise LaunchError("Dense native accepts one text session on GPU 0 with drafting off.", "Remove unsupported options; edit only reviewed options in its run configuration.", 2)
+            arguments(cfg)
+            out = launch_dir() / f"{self.name}.json"
+            write_private(out, cfg)
+            self.config_path = out
+            return out
         try:
             previous = read_config(launch_dir() / f"{self.name}.json")
         except (OSError, ValueError):                        # no earlier launch of this name, or an unreadable file: nothing to keep from it
@@ -2680,6 +2707,13 @@ class Runner:
 
     def plan(self) -> dict:
         s = self.s
+        self.check_own_files()
+        if s.family == "qwen38_dense":
+            return {"profile":self.profile,"settings":s.to_dict(with_key=False),"warnings":[],"flags":S.flags_text(s),
+                    "model":{"title":"Qwen3.8-27B dense native trial","family":s.family,"model":"local","own_files":True,"folder":s.model_path},
+                    "download":{"gb":0,"parts":[],"text":"No model or helper downloads. Existing signed native component required."},
+                    "drafting":"Off; MTP tensors are ignored.","steps":["verify signed helper","register original GGUF","start native service"],
+                    "execution_compatibility":"unverified","long_context_quality":"unqualified","would_write":False}
         self.keep_saved_off()                                # the plan names the drafter the start will run
         self.keep_saved_word()
         self.check_own_files()
@@ -3034,9 +3068,10 @@ class Runner:
             self.check_cancel()
             base = self.ensure_model()
             self.check_cancel()
-            self.ensure_drafter(base)
-            base = self.fetch_missing_drafter(base)
-            self.say_mtp_offline(base)
+            if self.s.family != "qwen38_dense":
+                self.ensure_drafter(base)
+                base = self.fetch_missing_drafter(base)
+                self.say_mtp_offline(base)
             self.check_cancel()
             self.check_saved_state_readable()
             self.emit("config", "Writing this launch's settings…")
@@ -3049,7 +3084,8 @@ class Runner:
                 self.emit("done", text, 100, level="warn")
                 return Result(self.profile, [], self.s.api_key, None, self.notices + [text], str(cfg), serving=False,
                               engine_problem=self.engine_problem, final_text=text)
-            self.tune()
+            if self.s.family != "qwen38_dense":
+                self.tune()
             self.check_cancel()
             if not start:
                 return Result(self.profile, [], self.s.api_key, self.tune_word, self.notices, str(cfg))

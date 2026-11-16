@@ -40,6 +40,16 @@ const module = {exports: {}};
 new Function('require', 'module', 'exports', compiled.outputFiles[0].text)(createRequire(import.meta.url), module, module.exports);
 const {telemetry, errorNotice, tr, LANGUAGES, setTranslationLanguage, loadCatalog} = module.exports;
 await Promise.all(LANGUAGES.map(({value}) => loadCatalog(value)));
+test('document language follows the selected UI locale without changing output code points', async () => {
+  const saved=globalThis.document;
+  globalThis.document={documentElement:{lang:'en'}};
+  try {
+    await setTranslationLanguage('ja'); assert.equal(document.documentElement.lang,'ja');
+    const literal='日本語 國 臺灣 𠮷'; assert.equal(tr(literal),literal);
+    await setTranslationLanguage('zh'); assert.equal(document.documentElement.lang,'zh-CN');
+    await setTranslationLanguage('en'); assert.equal(document.documentElement.lang,'en');
+  } finally { if(saved===undefined)delete globalThis.document;else globalThis.document=saved; }
+});
 const text = html => html.replace(/<[^>]*>/g, '').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 
 for (const {value: language} of LANGUAGES) {

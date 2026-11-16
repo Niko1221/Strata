@@ -168,6 +168,26 @@ for(const fail of [false,true]) test(`settings model B ignores model A PATCH ${f
 });
 
 const preview=path=>({path,preview:{file_count:1,total_bytes:1,file_set_status:'plausible',issues:[],candidate_selection:{family:'qwen',model:'B'}}});
+test('dense local controls preserve saved choices and submit explicit long context and language',async t=>{
+    const p=await fixture(t,'local');
+    await p.getByPlaceholder('Full path to the folder or the file').fill('original.gguf');
+    await p.getByRole('button',{name:'Check files',exact:true}).click();
+    const got=preview('original.gguf');got.preview.candidate_selection={family:'qwen38_dense',model:'local'};
+    await settle(p,0,got);
+    await p.getByRole('button',{name:'Prepare and load',exact:true}).click();
+    await p.waitForFunction(()=>window.__actions.length===1);
+    const first=await p.evaluate(()=>window.__actions[0].body.args);
+    assert.equal(first.family,'qwen38_dense');assert.equal(first.gguf_dir,'original.gguf');
+    assert.equal(first.context,undefined);assert.equal(first.kv,undefined);assert.deepEqual(first.values,{});
+    await p.getByLabel('Context',{exact:true}).selectOption('131072');
+    await p.getByLabel('Output language',{exact:true}).selectOption('model-default');
+    await p.getByLabel('Conversation memory',{exact:true}).selectOption('f16_turbo4');
+    await p.getByRole('button',{name:'Prepare and load',exact:true}).click();
+    await p.waitForFunction(()=>window.__actions.length===2);
+    const second=await p.evaluate(()=>window.__actions[1].body.args);
+    assert.equal(second.context,131072);assert.equal(second.kv,'f16_turbo4');assert.equal(second.values.output_language,'model-default');
+    assert.match(await p.locator('main').textContent(),/remain unqualified/);
+});
 for(const terminal of ['error','done']) test(`new file check detaches A ${terminal} result while keeping diagnostics`,async t=>{
     const p=await fixture(t,'local');const input=p.getByPlaceholder('Full path to the folder or the file');await input.fill('A.gguf');await p.getByRole('button',{name:'Check files',exact:true}).click();await settle(p,0,preview('A.gguf'));await p.getByRole('button',{name:'Prepare and load',exact:true}).click();await p.waitForFunction(()=>window.__actions.length===1);
     await p.evaluate(s=>window.__putNative(s),state([job(terminal)]));await p.getByText(terminal==='error'?'A failed':'Operation A',{exact:true}).waitFor();

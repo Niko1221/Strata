@@ -164,7 +164,7 @@ def _missing_parts(report: dict) -> list[dict]:
 
 
 def _summary(model_id: str, path: Path, raw: bytes, cfg: dict, report: dict) -> dict:
-    context = _arg(cfg["args"], "--max-context")
+    context = str(cfg.get("max_context")) if cfg.get("arch") == "qwen38_dense" else _arg(cfg["args"], "--max-context")
     context_tokens = int(context) if isinstance(context, str) and 1 <= len(context) <= 8 and \
         context.isascii() and context.isdecimal() and 1 <= int(context) <= 16_777_216 else None
     backend = cfg.get("backend")
@@ -938,9 +938,17 @@ def plan_import(raw_path: str) -> dict:
     elif projectors:
         messages.extend(p["plain"] for p in projectors)
     candidate = _candidate_selection(shards)
+    dense = metadata is not None and metadata.get("architecture") == "qwen35"
+    if dense:
+        from strata_control.qwen38_dense import preview
+        candidate, reason = preview(metadata, len(shards))
+        if reason:
+            issues.append(reason)
+        else:
+            messages.append("Plausible Qwen3.8-27B native model. Native tensor admission and answer quality remain unverified. Original weights stay in place; MTP is off.")
     if candidate is None and metadata is not None and not issues:
         candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
-    if candidate is None:
+    if candidate is None and not dense:
         candidate = _candidate_by_layout(shards, observed_tensor_count, observed_payload, observed_experts)
         if candidate is not None:
             messages.append(f"These files are not exactly a build Strata has tested; they have the layout of {candidate['family']} "
@@ -974,7 +982,7 @@ def plan_import(raw_path: str) -> dict:
                 "expected_tensor_count": observed_tensor_count,
                 "setup_args_hint": ["--family", "qwen36", "--model", "UD-Q4_K_XL", "--gguf-dir", str(shards[0].parent)],
             }
-        elif arch in ("qwen2", "qwen", "qwen35") and any("flash" in p.name.lower() or "swift" in p.name.lower() for p in shards):
+        elif arch in ("qwen2", "qwen") and any("flash" in p.name.lower() or "swift" in p.name.lower() for p in shards):
             is_swift = any("swift" in p.name.lower() for p in shards)
             fam = "swift" if is_swift else "qwen"
             mod = "IQ2_XS"
@@ -994,7 +1002,7 @@ def plan_import(raw_path: str) -> dict:
     # Leave them to the app's local llama-server path instead of preparing an
     # unrelated Flash-Next pack (which also reports the wrong disk requirement).
     local_runtime = "PrismML" if metadata is not None and {"PQ2_0", "PTQ1_0"} & metadata.get("tensor_types", {}).keys() else None
-    if local_runtime:
+    if local_runtime and not (candidate and candidate.get("family") == "qwen38_dense"):
         candidate = None
         messages.append(
             "These model files run on Strata’s PrismML engine (bundled with the app). "

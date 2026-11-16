@@ -8,7 +8,7 @@ export const DESKTOP_MEMORY_KEY_ENV='STRATA_HAKUA_LOCAL_KEY';
 export function configureDesktopMemory(cfg,{enabled=false,directory,env=process.env}={}) {
   if(!enabled || cfg.hakua_harness!==undefined) return null;
   const identity=desktopMemoryIdentity({directory,env});
-  privateMemoryArgs(cfg);
+  if(cfg.arch!=='qwen38_dense')privateMemoryArgs(cfg);
   cfg.hakua_harness={enabled:true,users:[{principal:'local',key_env:DESKTOP_MEMORY_KEY_ENV,root:identity.profileRoot}]};
   return identity;
 }

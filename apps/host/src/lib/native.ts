@@ -9,7 +9,7 @@ export interface NativeField {id:string;label:string;group:string;/** Legacy hos
 export type Q36MemoryMode = 'legacy' | 'bounded-experts-v1';
 export interface NativeInstance { refusalProjection?: { vectorVerified: boolean; requested: boolean } }
 export interface Q36MemoryReceipt {mode:Q36MemoryMode;cpuStageBytes:number;h2dStageBytes:number;ioScratchBytes:number}
-export interface NativeServingPolicy { id:'q38'|'q36'|'deepseek41'|'unknown'; ordinaryKv:string[]; note:string }
+export interface NativeServingPolicy { id:'q38'|'q38dense'|'q36'|'deepseek41'|'unknown'; ordinaryKv:string[]; note:string }
 export interface NativeJob {id:string;kind:string;guided?:boolean;model?:string;family?:string;state:'running'|'cancelling'|'done'|'error'|'cancelled';startedAt:string;summary:string;error:string|null;details?:string;result:Record<string,any>|null;progress?:Record<string,any>|null;/** An engine update beside a loaded model: which step it is on and the models it concerns (the app words these itself). */step?:'getting-ready'|'stopping'|'stopped';models?:string[]}
 /** Cancellation owns the engine operation until teardown reports a terminal state. */
 export const isNativeJobBusy = (job: Pick<NativeJob, 'state'>): boolean => job.state === 'running' || job.state === 'cancelling';

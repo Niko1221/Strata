@@ -54,7 +54,7 @@ export const validLanguage=(value:unknown):value is Language=>LANGUAGES.some(ite
 export const currentLanguage=()=>language;
 export const localeTag=()=>language==='zh'?'zh-CN':language;
 /** Switch the language `tr` answers in. The strings of a language that is not loaded yet come in a moment later (English until then): wait on the result before drawing, or use `loadCatalog` first. */
-export function setTranslationLanguage(value:Language):Promise<void>{language=value;return loadCatalog(value);}
+export function setTranslationLanguage(value:Language):Promise<void>{language=value;if(typeof document!=='undefined')document.documentElement.lang=localeTag();return loadCatalog(value);}
 /** Resolves when the current language's strings are in. */
 export const translationsReady=()=>loadCatalog(language);
 const escape=(value:string)=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');

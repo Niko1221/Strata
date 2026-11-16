@@ -1219,7 +1219,20 @@ def expand(value: str, cfg: dict | None = None, *, root: Path | None = None, ful
             raise
         except EngineMissing as exc:
             raise shape_engine.ShapeEngineMissing(shape, exc.reason, shape_engine.root(shape, root), problems=exc.problems, title=(cfg or {}).get("shape_title")) from None
-    return str(resolve(root, backend=backend if backend in BACKEND_MATRIX else None, full=full).exe)
+    runner = (cfg or {}).get("native_runner")
+    if runner is not None and runner != "qwen38_dense":
+        raise EngineIntegrityError("unknown dedicated native runner", root)
+    selected = resolve(root, backend=backend if backend in BACKEND_MATRIX else None, full=True if runner else full)
+    if runner:
+        if verify_signature(selected) != "verified":
+            raise EngineIntegrityError("dedicated runner requires a verified signed parent component", selected.root)
+        name = "strata-q38.exe" if selected.platform.startswith("windows-") else "strata-q38"
+        helper = selected.root / name
+        covered = {entry[0] for entry in selected.files}
+        if name not in covered or helper.is_symlink() or not helper.is_file() or helper.resolve().parent != selected.root.resolve():
+            raise EngineIntegrityError("dedicated runner is missing, uncovered or escapes component", selected.root)
+        return str(helper)
+    return str(selected.exe)
 
 
 def status(root: Path | None = None, *, backend: str | None = None, full: bool = False) -> dict:
