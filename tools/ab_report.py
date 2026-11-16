@@ -66,12 +66,12 @@ def _card(results: dict, old: dict, new: dict) -> str:
                                       f'<div class="value">{e(big)}</div><div class="small">{e(small)}</div></div>')
     return f"""<section id="card"><div class="glow"></div>
 <h1>Strata <span class="ver">{e(old['version'])} → {e(new['version'])}</span></h1>
-<p class="sub">{e(results.get('gpu', ''))} · {e(results.get('model', ''))} · default settings · {e(tune)}</p>
+<p class="sub">{e(' · '.join(x for x in (results.get('gpu'), results.get('model'), 'default settings', tune) if x))}</p>
 <div class="main"><div class="dark"><div class="label">Answers, up to</div><div class="big">{_pct(max(gains) if gains else None)}</div>
 <div class="legend"><span class="k old"></span>{e(old['version'])} <span class="k new"></span>{e(new['version'])} <em>decode tok/s, median</em></div>
 {''.join(bars)}</div>
 <div class="tiles">{tile('Long prompt', _pct(_rel(*lp)), f'{_num(lp[0])} → {_num(lp[1])} tok/s prompt')}
-{tile('Setup', f"{_num(old.get('setup_s'))} → {_num(new.get('setup_s'), ' s')}", 'first launch: pack, tuning, start')}
+{tile('Setup', f"{_num(old.get('setup_s'))} → {_num(new.get('setup_s'), ' s')}", 'first launch with one-time downloads and pack builds; oldest version runs first')}
 {tile('Start', f'{_num(_start(old))} → {_num(_start(new), " s")}', 'median restart')}</div></div>
 <div class="foot"><div>{''.join(f'<span class="chip">{e(c)}</span>' for c in chips)}</div><div class="url">github.com/Niko1221/Strata</div></div>
 </section>"""
@@ -159,6 +159,11 @@ def build_html(results: dict) -> str:
     versions = [a["version"] for a in results.get("arms", []) if a.get("status") == "ran"]
     opts = "".join(f'<option{" selected" if pair and v == pair[0]["version"] else ""}>{escape(v)}</option>' for v in versions)
     heads = "".join(f"<th>{h}</th>" for h in ("Version", "Request", "Decode", "Prompt", "Δ Decode", "Setup", "Start", "Status"))
+    if results.get("untouched"):
+        iso = "<p>Real Strata install untouched: no file changed during the run.</p>"
+    else:
+        iso = "<p>Files of the real Strata install changed during the run:</p><ul>" + "".join(
+            f"<li><code>{escape(str(c))}</code></li>" for c in results.get("changed") or []) + "</ul>"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{escape(title)}</title><style>{CSS}</style></head><body>
@@ -167,7 +172,7 @@ def build_html(results: dict) -> str:
 <span> · decode and prompt in tok/s (median over rounds), setup and start in seconds · {escape(str(results.get('created', '')))}</span>
 <table><thead><tr>{heads}</tr></thead><tbody>
 {_rows(results)}
-</tbody></table></main>
+</tbody></table>{iso}</main>
 <script>{JS}</script></body></html>
 """
 
