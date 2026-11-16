@@ -1,0 +1,47 @@
+# Upstream tools CI portability correction — 2026-11-16
+
+## Scope and source
+
+This correction starts at `81ce61689dc1a7398f5039e12d65ac1280d28b05` in the primary Windows checkout. It repairs six concrete Python-tools CI failure groups. It changes test fixtures, the install rehearsal, and the unshipped text-tokenizer test CLI. It does not change the CUDA spill checker, its default 16-byte ceiling, compiler-resource profiles, vendored quantisation overlays, binary tokenizer loading, BPE operations, or production RoPE arithmetic.
+
+The review package is `H:/Strata/private-backups/cleanup-20261116/tools-ci-fix-v1`. It records the baseline diff, raw source SHA-256 values, commands, guard receipts and execution limits. The retained guard requires 3 GiB available RAM, 4 GiB commit headroom, 10 GiB H: free and 5 GiB C: free. Tests run serially; no compiler invocation exceeds the five-job limit. No GPU experiment or product-native build belongs to this correction.
+
+## Corrections and covering checks
+
+`tools/test_check_cuda_spills.py` now launches both demangler test groups through the real Python interpreter. The former shell body in BaselineMain was not Python, and the old Windows decorators hid tests that already had an interpreter adapter. The shared adapter changes only the fixture launch. Real stdin, exit status, empty and malformed output, name counts, known-baseline growth rejection and baseline round-trip checks remain exercised. No production resource exception was added.
+
+`tools/test_strata_gguf.py` explicitly recognises the reader's legacy PTQ1_0 ID 1002 as an alias of canonical ID 143. Both retain the 128-element, 28-byte block geometry. Other canonical type checks, including TQ/TQP and the vendored overlay, remain intact. `tools/test_qimage.py` constructs CRLF fixtures from normalised LF bytes, preventing an already-CRLF Windows checkout from becoming CRCRLF. It still rejects actual source-content changes; production hashing is unchanged.
+
+`src/image/te/qwen2_tok_main.cpp` removes one trailing carriage return from each textual merge record in both text loaders. The GGUF loader and tokenizer implementation are unchanged. `tools/test_te_tokenizer.py` compares all 408 frozen cases under both LF and CRLF, including exact token IDs, float weight bits and refused prompts. The subset-export path is also compared under both line endings.
+
+`tools/test_dit_rope.py` now compiles an independent sd.cpp reference in a separate translation unit beside Strata's implementation, using the same C++17/O2 compiler and runtime math library. The original seven cases compare all position bytes and every float32 table byte on every platform. The unchanged seven historical hashes are an additional glibc check; their exact original compiler/libc versions are unknown, so no version boundary is invented. A mismatch reports first index and bit patterns, changed-element count, maximum absolute difference and ULP distance, and retains both outputs and a JSON diagnostic in a named temporary folder. One-bit mutations and value permutations are rejected by the exact comparator. No tolerance or production-generated expected table is used.
+
+The reference is pinned to leejet/stable-diffusion.cpp commit `2988060a4338a5dcd94721c964a8e87003c1ac8b`. Original `rope.hpp` (Git blob `93e457d4b00b4a1c95bdfc01fd936ee0d876d6d7`, SHA-256 `cb59a65977b358cec0c96fa7fec36ea005a789df49d4fff8a35aed1aed22b5c4`), `qwen_image_2_1.hpp` (blob `1d37d6afebd0cc86a24b55b92587e9b6e15906d8`, SHA-256 `33f776b44e94fc2453a00d3db9760aa16672c1aac7feeaf5e6c0d3f815351fdc`) and the MIT licence are retained in `tools/image/gate/data/sdcpp_rope_2988060`. `PROVENANCE.json` records their URLs, file hashes, extraction markers, line ranges and extracted-byte hashes; the test verifies them before compiling. Arithmetic and position generation are extracted unchanged. The only adapters supply the upstream inline macro and an empty image-slot Tensor whose unsupported operations throw. The reference obtains its own positions from upstream QwenImage21Layout and never consumes Strata positions. A folder-specific LF attribute preserves these source bytes.
+
+`tools/feed_model_install_gate.py` now models each backend's actual install contract. On an actual Darwin interpreter, child PATH commands provide an explicit synthetic Apple Silicon/32 GiB/macOS 15/no-Command-Line-Tools fixture; unexpected queries fail. The real Darwin branch, signature verification, tiny GGUF preparation and EngineMissing resolution still execute. The fixture supplies no engine executable, uses no-start/off-vision, and requires `component:strata-engine`. The component directory starts empty; only the genuine verified model-feed metadata cache `.updates/feed-models.json` may appear. No production OS detector is spoofed or changed.
+
+The F4 assertion decodes the STRP header, every ranked expert and its inverse slot map against the synthetic GGUF's own geometry (1 layer × 8 experts for the small fixture). The F5 assertion requires CUDA's resident-budget argument, or Metal's native/same-file PLE/mmap configuration. Both reject an expert copy, a draft layer or picture reader. The installed GGUF must match the signed-feed file hash. A second setup run must transfer no model bytes, preserve model/profile content and nanosecond modification times, and preserve the run configuration semantically. The local HTTP mirror binds only to 127.0.0.1. Tests cover unknown hardware queries, genuine empty-component rejection without process launch, corrupt profiles, invalid backend settings and idempotency mutations. Existing Intel rejection and Rosetta tests remain unchanged.
+
+## Executed evidence
+
+The receipts are under `H:/Strata/evidence/upstream-sync-20261116/receipts`. Each guard result below confirms its owned Job has zero active processes at completion. All commands use the existing `_docs/upstream-sync-20261116/check.py` wrapper via offline uv/Python 3.12. The private `run_tests.py` adapter only prepends the existing `C:/Program Files/LLVM/bin` to the guarded child PATH and invokes pytest; it installs nothing. The native fixtures used Clang 22.1.8, C++17 and O2 on Windows with non-glibc math.
+
+`tools-ci-red-v1` reproduced three failures before the relevant changes: the canonical/legacy type comparison and both EOL hash fixtures (3 failed). `tools-ci-focused-v1` then passed 84 tests across spill-checker fixtures, GGUF tables, image hashes, tokenizer and RoPE. No cases were skipped; all seven independent RoPE comparisons matched exactly, so no production numerical correction was required.
+
+`tools-ci-feed-v1` passed 46 tests, failed one new assertion, and retained two existing Windows skips. Its failure was in the gate's newly added component-directory assertion: the real signed-feed path legitimately writes `.updates/feed-models.json`. The correction permits that exact metadata file, while still rejecting engine payloads or other component files. The original failure receipt is retained.
+
+`tools-ci-feed-v2` passed 124 tests with two existing skips in 82.98 seconds. Its scope was the real-file feed gate, neutral profile, Mac setup, setup feed models/engine, Terminal feed models/no-drafter and GGUF TQP modules. The skips are the existing `tools/test_setup_mac.py` POSIX `os.kill(pid, 0)` probes at lines 280 and 297; they are not numerical or installer exclusions. The actual Windows real-file installation and second-run idempotency check passed. Mac hardware-command and config-contract tests ran locally; an actual Darwin install is still a hosted-CI obligation.
+
+`tools-ci-native-fixtures-v2` passed 41 tests without skips in 16.86 seconds after the additional subset text-loader test and line-ending preservation. It reran the tokenizer, independent RoPE and spill-checker fixture modules. These overlap the first successful run; the runs must not be summed as distinct tests. Across the final covered modules there are 209 passing tests and the two existing POSIX-only skips. All owned processes are drained. The exact commands, source digests and results are included in `source.json` in the review package.
+
+The invocation prefix was:
+
+```powershell
+uv run --offline --no-project --python C:/Users/downl/AppData/Local/Programs/Python/Python312/python.exe python _docs/upstream-sync-20261116/check.py --seconds 600 <receipt-name> python H:/Strata/private-backups/cleanup-20261116/tools-ci-fix-v1/run_tests.py -q -p no:cacheprovider <test-modules>
+```
+
+Full argv, timings, resource samples and log hashes are retained in each receipt. `git -c core.whitespace=cr-at-eol diff --check` is used because existing source blobs use CRLF; only the new independent oracle folder receives a new LF rule.
+
+## Limits and handoff
+
+These are Windows CPU fixture, tool and real-file installer results. Actual macOS installer execution, macOS/Linux numerical comparisons, the glibc hash assertion and a new exact-source hosted-CI run remain unexecuted locally. The Mac stand-in does not qualify Metal hardware inference. No model weights were downloaded from a public host, and no real-model, image quality, throughput, full-context or concurrent-GPU qualification is claimed. No full tools-suite retry or release action was performed. The parent owns independent review, any source-bound product relink, fresh CI, commit and publication decisions. Existing resource guards and release qualification limits remain unchanged.

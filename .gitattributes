@@ -34,6 +34,9 @@ docker/compose/* text eol=lf
 tools/spin8_*.patch -text
 tools/turboquant_*.patch -text
 
+# Pinned independent RoPE test sources: provenance hashes use their original LF bytes.
+tools/image/gate/data/sdcpp_rope_2988060/** text eol=lf
+
 # This reviewed measurement is also bound byte-for-byte by native-build.json.
 tools/cuda_spill_budgets/cuda13.3-sm120-portable-v0.4.0-upstream-c62.json -text
 

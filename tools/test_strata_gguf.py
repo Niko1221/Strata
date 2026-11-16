@@ -153,7 +153,16 @@ class Tables(unittest.TestCase):
                 self.assertEqual(GR.BLOCK_GEOMETRY[t.name], (bs, ts), t.name)
         for tid, nm in GR.GGML_TYPES.items():
             if nm in SG.GGMLQuantizationType.__members__ and tid not in (41,):
-                self.assertEqual(int(SG.GGMLQuantizationType[nm]), tid, nm)
+                # The header reader also recognises the historical PTQ1_0 ID.
+                canonical = 143 if tid == 1002 and nm == "PTQ1_0" else tid
+                self.assertEqual(int(SG.GGMLQuantizationType[nm]), canonical, nm)
+
+    def test_ptq_legacy_id_and_canonical_geometry(self):
+        self.assertEqual(GR.GGML_TYPES[1002], "PTQ1_0")
+        self.assertEqual(GR.GGML_TYPES[143], "PTQ1_0")
+        self.assertEqual(int(SG.GGMLQuantizationType.PTQ1_0), 143)
+        self.assertEqual(GR.BLOCK_GEOMETRY["PTQ1_0"], (128, 28))
+        self.assertEqual(SG.GGML_QUANT_SIZES[SG.GGMLQuantizationType.PTQ1_0], (128, 28))
 
     def test_the_type_table_matches_gguf_py(self):
         if GGUF is None:

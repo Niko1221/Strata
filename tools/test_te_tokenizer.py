@@ -38,14 +38,20 @@ class TokenizerMatchesSdcpp(unittest.TestCase):
         cls.cases = json.loads((DATA / "te_tok_expected.json").read_text())
         lines = [f"{c['name']} {base64.b64decode(c['prompt_b64']).hex()}" for c in cls.cases]
         (d / "cases.txt").write_text("\n".join(lines) + "\n")
-        r = subprocess.run([str(cls.exe), "run", str(DATA / "te_tok_merges.txt"), str(d / "cases.txt"), str(d / "out.txt")],
-                           capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise AssertionError("run failed:\n" + r.stderr[-4000:])
-        cls.got = {}
-        for line in (d / "out.txt").read_text().splitlines():
-            parts = line.split(" ", 2)
-            cls.got[parts[0]] = parts[1:]
+        lf = (DATA / "te_tok_merges.txt").read_bytes().replace(b"\r\n", b"\n")
+        cls.got_by_eol = {}
+        for eol, contents in (("LF", lf), ("CRLF", lf.replace(b"\n", b"\r\n"))):
+            merges = d / (eol + "-merges.txt")
+            merges.write_bytes(contents)
+            r = subprocess.run([str(cls.exe), "run", str(merges), str(d / "cases.txt"), str(d / "out.txt")],
+                               capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                raise AssertionError(eol + " run failed:\n" + r.stderr[-4000:])
+            got = {}
+            for line in (d / "out.txt").read_text().splitlines():
+                parts = line.split(" ", 2)
+                got[parts[0]] = parts[1:]
+            cls.got_by_eol[eol] = got
 
     @classmethod
     def tearDownClass(cls):
@@ -53,14 +59,21 @@ class TokenizerMatchesSdcpp(unittest.TestCase):
 
     def test_case_set_is_wide(self):
         names = [c["name"] for c in self.cases]
-        self.assertGreaterEqual(len(names), 380)
+        self.assertEqual(len(names), 408)
+        self.assertEqual(len(set(names)), 408)
         for prefix in ("gate_", "long_", "special_", "gguf_literal_", "w_", "u_", "e_", "l_", "x_", "r_"):
             self.assertTrue(any(n.startswith(prefix) for n in names), prefix)
 
     def test_every_case_matches(self):
+        for eol, got in self.got_by_eol.items():
+            with self.subTest(eol=eol):
+                self.check_cases(got)
+
+    def check_cases(self, got):
+        self.assertEqual(set(got), {c["name"] for c in self.cases})
         bad = []
         for c in self.cases:
-            g = self.got.get(c["name"])
+            g = got.get(c["name"])
             if g is None:
                 bad.append((c["name"], "no output"))
                 continue
@@ -84,6 +97,25 @@ class TokenizerMatchesSdcpp(unittest.TestCase):
             elif got_w != want_w:
                 bad.append((c["name"], "weights differ"))
         self.assertEqual(bad, [], f"{len(bad)} of {len(self.cases)} cases differ")
+
+    def test_subset_text_export_accepts_lf_and_crlf(self):
+        # The subset command reads a second textual merge list in rank order.
+        # Reconstruct only known entries; unused ranks are never dereferenced.
+        work = Path(self.tmp.name)
+        lines = (DATA / "te_tok_merges.txt").read_text(encoding="utf-8").splitlines()
+        full = [""] * int(lines[0].split()[1])
+        for line in lines[1:]:
+            rank, merge = line.split("\t", 1)
+            full[int(rank)] = merge
+        lf = ("\n".join(full) + "\n").encode("utf-8")
+        outputs = []
+        for eol, raw in (("LF", lf), ("CRLF", lf.replace(b"\n", b"\r\n"))):
+            merges, dest = work / (eol + "-full.txt"), work / (eol + "-subset.txt")
+            merges.write_bytes(raw)
+            subprocess.run([str(self.exe), "subset", str(work / "LF-merges.txt"), str(work / "cases.txt"),
+                            str(dest), str(merges)], check=True, capture_output=True, timeout=60)
+            outputs.append(dest.read_bytes())
+        self.assertEqual(outputs[0], outputs[1])
 
 
 if __name__ == "__main__":

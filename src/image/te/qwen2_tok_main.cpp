@@ -33,6 +33,7 @@ static std::unique_ptr<Qwen2Tok> load(const std::string& path, std::string* err)
     int n = 0;
     std::vector<std::pair<int, std::string>> ranked;
     while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // textual merge records may use CRLF
         if (line.rfind("n_merges ", 0) == 0) { n = std::stoi(line.substr(9)); continue; }
         const size_t tab = line.find('\t');
         if (tab == std::string::npos) continue;
@@ -88,7 +89,10 @@ int main(int argc, char** argv) {
         if (argc < 6) { std::fprintf(stderr, "subset needs the merges as text (argv 5)\n"); return 2; }
         std::ifstream mt(argv[5], std::ios::binary);
         std::vector<std::string> all;
-        while (std::getline(mt, line)) all.push_back(line);
+        while (std::getline(mt, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            all.push_back(line);
+        }
         out << "n_merges " << all.size() << "\n";
         for (int r : keep) out << r << "\t" << all.at((size_t) r) << "\n";
         std::fprintf(stderr, "%d cases, %zu merges kept of %zu\n", n, keep.size(), all.size());

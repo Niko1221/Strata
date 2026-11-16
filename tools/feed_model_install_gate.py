@@ -34,9 +34,11 @@ import http.server
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -87,6 +89,7 @@ class Mirror:
 
     def __init__(self, root: Path):
         self.root, self.seen = Path(root).resolve(), []
+        self.transfers = []
         outer = self
 
         class H(http.server.BaseHTTPRequestHandler):
@@ -123,6 +126,8 @@ class Mirror:
                 self.end_headers()
                 if head:
                     return
+                transfer = {"path": self.path, "bytes": 0}
+                outer.transfers.append(transfer)
                 with p.open("rb") as f:
                     f.seek(start)
                     left = n
@@ -135,6 +140,7 @@ class Mirror:
                         except OSError:
                             return
                         left -= len(chunk)
+                        transfer["bytes"] += len(chunk)
 
             def do_GET(self):
                 self._serve(False)
@@ -231,6 +237,46 @@ def nvidia_stub_if_needed(env: dict, work: Path, log) -> None:
     log("no NVIDIA card here: a stand-in nvidia-smi (one 24 GB card) is used for setup's step 1")
 
 
+# This is an install-fixture hardware contract, not a claim about the CI runner.
+# Only the actual Darwin setup branch uses it; production detection is unchanged.
+MAC_QUERIES = {
+    ("sysctl", "-n", "machdep.cpu.brand_string"): (0, "Apple M1 Max\n"),
+    ("sysctl", "-n", "hw.memsize"): (0, str(32 * 2 ** 30) + "\n"),
+    ("sysctl", "-n", "hw.optional.arm64"): (0, "1\n"),
+    ("sysctl", "-n", "hw.perflevel0.physicalcpu"): (0, "8\n"),
+    ("sw_vers", "-productVersion"): (0, "15.0\n"),
+    ("xcode-select", "-p"): (1, ""),
+}
+
+
+def mac_fixture_tools(env: dict, work: Path, log) -> Path:
+    """Child-PATH tools for Apple Silicon/32 GiB/macOS 15/no CLT; unknown probes fail.
+
+    The real platform, signature verification, GGUF preparation and EngineMissing
+    resolution still run. The returned Python driver is also testable on Windows.
+    """
+    folder = work / "mac-bin"
+    folder.mkdir()
+    driver = folder / "probe.py"
+    driver.write_text("import json, sys\nfrom pathlib import Path\n"
+        + "queries = " + repr(MAC_QUERIES) + "\n"
+        + "key = tuple(sys.argv[1:])\n"
+        + "with Path(__file__).with_name('queries.jsonl').open('a', encoding='utf-8') as f:\n"
+        + "    f.write(json.dumps(list(key)) + '\\n')\n"
+        + "if key not in queries:\n"
+        + "    print('unexpected synthetic Mac probe: ' + repr(key), file=sys.stderr)\n"
+        + "    raise SystemExit(2)\n"
+        + "code, out = queries[key]\nsys.stdout.write(out)\nraise SystemExit(code)\n", encoding="utf-8")
+    for tool in ("sysctl", "sw_vers", "xcode-select"):
+        wrapper = folder / tool
+        wrapper.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " "
+            + shlex.quote(str(driver)) + " " + tool + ' "$@"\n', encoding="utf-8", newline="\n")
+        wrapper.chmod(0o755)
+    env["PATH"] = str(folder) + os.pathsep + env.get("PATH", "")
+    log("install fixture: synthetic Apple Silicon, 32 GiB, macOS 15, no Command Line Tools; no engine execution")
+    return driver
+
+
 def sandbox_env(work: Path, install: Path, feed: Path, trust: Path, port: int) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("STRATA_", "HF_")) and k not in ("PYTHONPATH", "PYTHONHOME")}
     home = work / "home"
@@ -282,13 +328,25 @@ def check(work: Path, tokenizer_from: str | None, shape: dict, log) -> dict:
     t = time.time()
     make_synthetic(model, shape, tokenizer_from)
     log(f"synthetic file {model.stat().st_size / 1e9:.2f} GB in {time.time() - t:.1f} s")
+    from tools.gguf_reader import GGUFFile
+    metadata = GGUFFile(model).metadata
+    geometry = (int(metadata["qwen4exp.block_count"]), int(metadata["qwen4exp.expert_count"]))
+    if shape is TINY and geometry != (1, 8):
+        raise RuntimeError(f"tiny install fixture has unexpected geometry {geometry}")
     feed = work / "feed"
     trust = build_feed(feed, make_entry(model), work)
     install, data = work / "install", work / "data"
     install.mkdir()
     with Mirror(work / "mirror") as mirror:
         env = sandbox_env(work, install, feed, trust, mirror.port)
-        nvidia_stub_if_needed(env, work, log)
+        backend = "metal" if sys.platform == "darwin" else "cuda"
+        if backend == "metal":
+            mac_fixture_tools(env, work, log)
+        else:
+            nvidia_stub_if_needed(env, work, log)
+        # Deliberately empty: the real resolver must raise EngineMissing. Never
+        # substitute an executable or write a component into the user's install.
+        Path(env["STRATA_COMPONENTS_DIR"]).mkdir()
         t = time.time()
         code, out = run_setup(env, data, [])
         log(f"setup run 1: exit {code} in {time.time() - t:.0f} s")
@@ -318,20 +376,40 @@ def check(work: Path, tokenizer_from: str | None, shape: dict, log) -> dict:
         if config is None:
             problems.append("no run config was written")
         else:
-            problems += config_problems(config, data, install, out)
-        extra = sorted(str(p.relative_to(work)) for p in work.rglob("experts.bin*"))
+            problems += config_problems(config, data, install, out, backend=backend, geometry=geometry)
+            native = argument_value(json.loads(config.read_text(encoding="utf-8-sig"))["args"], "--native")
+            if not native or sha256_of(Path(native)) != sha256_of(model):
+                problems.append("the installed native model does not match the signed feed's file SHA-256")
+        if backend == "metal" and "no Metal engine is installed" not in out:
+            problems.append("the empty component folder did not take the real Metal EngineMissing path")
+        extra = sorted(str(p.relative_to(work)) for p in work.rglob("*")
+                       if p.is_file() and (p.name.startswith("experts.bin") or p.name.endswith(".experts")))
         if extra:                                         # F5: the low-RAM mode copies the experts into a second file
             problems.append("a second copy of the experts was written: " + ", ".join(extra[:3]))
         # run 2: a finished install is left alone and downloads nothing
-        before = len(mirror.seen)
-        mtime = config.stat().st_mtime if config else None
+        before = len(mirror.transfers)
+        snapshots = installed_snapshot(config) if config else None
         t = time.time()
         code2, out2 = run_setup(env, data, [])
         log(f"setup run 2: exit {code2} in {time.time() - t:.0f} s")
         if code2 != 0:
             problems.append(f"the second setup run exited {code2}")
-        if len([p for p in mirror.seen[before:] if "/resolve/" in p and "Range" not in p]) and ("Downloading" in out2):
+        if any(t["bytes"] for t in mirror.transfers[before:]):
             problems.append("the second run downloaded the model again")
+        if config and installed_snapshot(config) != snapshots:
+            problems.append("the second run changed model/profile content or mtime, or semantic run configuration")
+        # The genuine signed model feed persists its verified cache here. That
+        # metadata is expected; no engine payload or executable is permitted.
+        component_root = Path(env["STRATA_COMPONENTS_DIR"])
+        unexpected = [p.relative_to(component_root).as_posix() for p in component_root.rglob("*")
+                      if p.is_file() and p.relative_to(component_root).as_posix() != ".updates/feed-models.json"]
+        if unexpected:
+            problems.append("setup wrote unexpected component files: " + ", ".join(unexpected))
+        if backend == "metal":
+            queries = work / "mac-bin" / "queries.jsonl"
+            seen = [tuple(json.loads(line)) for line in queries.read_text(encoding="utf-8").splitlines()] if queries.exists() else []
+            if not seen or any(query not in MAC_QUERIES for query in seen):
+                problems.append("the Mac hardware fixture received no probes or an unexpected probe")
         for bad in ("Traceback", "KeyError"):
             if bad in out2:
                 problems.append(f"the second run printed {bad!r}")
@@ -346,24 +424,70 @@ def _is_run_config(p: Path) -> bool:
     return isinstance(d, dict) and "args" in d and ("exe" in d or "model_name" in d)
 
 
-def config_problems(config: Path, data: Path, install: Path, out: str) -> list[str]:
+def argument_value(args: list, flag: str) -> str | None:
+    if args.count(flag) != 1:
+        return None
+    i = args.index(flag) + 1
+    return str(args[i]) if i < len(args) and not str(args[i]).startswith("--") else None
+
+
+def profile_problems(path: Path, geometry: tuple[int, int]) -> list[str]:
+    """F4: decode the actual STRP, including all ranks and the inverse slot map."""
+    try:
+        blob = path.read_bytes()
+        layers, experts = geometry
+        n = layers * experts
+        if len(blob) != 24 + 8 * n or blob[:4] != b"STRP":
+            return ["the neutral expert profile has invalid STRP size or magic"]
+        if struct.unpack_from("<5I", blob, 4) != (1, layers, experts, n, n):
+            return ["the neutral expert profile header does not match the model geometry"]
+        pairs = [struct.unpack_from("<HH", blob, 24 + 4 * i) for i in range(n)]
+        expected = [(layer, expert) for expert in range(experts) for layer in range(layers)]
+        slots = struct.unpack_from(f"<{n}i", blob, 24 + 4 * n)
+        if pairs != expected or any(slots[layer * experts + expert] != i for i, (layer, expert) in enumerate(expected)):
+            return ["the neutral expert profile does not rank every model expert once with matching slots"]
+    except OSError as e:
+        return [f"the expert profile cannot be read: {e}"]
+    return []
+
+
+def installed_snapshot(config: Path) -> dict:
+    cfg = json.loads(config.read_text(encoding="utf-8-sig"))
+    files = {}
+    for flag in ("--native", "--expert-profile"):
+        value = argument_value(cfg["args"], flag)
+        if value:
+            path = Path(value)
+            stat = path.stat()
+            files[flag] = (str(path), stat.st_size, stat.st_mtime_ns, sha256_of(path))
+    return {"config": cfg, "files": files}
+
+
+def config_problems(config: Path, data: Path, install: Path, out: str, *, backend: str = "cuda",
+                    geometry: tuple[int, int] | None = None) -> list[str]:
     problems = []
     d = json.loads(config.read_text(encoding="utf-8-sig"))
     args = [str(a) for a in d.get("args", [])]
-    text = " ".join(args)
     if not any(a.endswith(".gguf") or ".gguf" in a for a in args) and "--model" not in args:
         problems.append("the run config names no model file")
-    if "--resident-budget-gib" not in args:               # F5: a feed qwen4exp size is read in place with a RAM budget of its experts
+    if d.get("exe") != "component:strata-engine":
+        problems.append("the run config does not defer engine resolution to component:strata-engine")
+    if "--mtp" in args or d.get("vision") or "--vision" in args:
+        problems.append("the no-draft/off-vision install configured a draft layer or picture reader")
+    if backend == "cuda" and argument_value(args, "--resident-budget-gib") is None:
         problems.append("the run config has no --resident-budget-gib (the RAM budget of the experts)")
-    profiles = [a for a in args if "expert-profile" in a]
-    if not profiles:
+    if backend == "metal":
+        native = argument_value(args, "--native")
+        ple = argument_value(args, "--ple-gguf")
+        if d.get("backend") != "metal" or "--mmap-experts" not in args or not native or native != ple:
+            problems.append("the Metal config must map the signed GGUF in place as both native and PLE")
+    profile = argument_value(args, "--expert-profile")
+    if profile is None:
         problems.append("the run config names no expert profile")
-    else:
-        for pr in profiles:
-            if pr.startswith("--"):
-                continue
-            if not Path(pr).is_file():
-                problems.append(f"the expert profile {pr} is not a file")
+    elif not Path(profile).is_file():
+        problems.append(f"the expert profile {profile} is not a file")
+    elif geometry is not None:
+        problems += profile_problems(Path(profile), geometry)
     return problems
 
 

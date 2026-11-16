@@ -1,0 +1,58 @@
+{
+  "repository": "https://github.com/leejet/stable-diffusion.cpp",
+  "commit": "2988060a4338a5dcd94721c964a8e87003c1ac8b",
+  "license": "MIT; Copyright (c) 2023 leejet; LICENSE retained",
+  "files": [
+    {
+      "file": "rope.hpp",
+      "upstream_path": "src/model/common/rope.hpp",
+      "url": "https://github.com/leejet/stable-diffusion.cpp/blob/2988060a4338a5dcd94721c964a8e87003c1ac8b/src/model/common/rope.hpp",
+      "sha256": "cb59a65977b358cec0c96fa7fec36ea005a789df49d4fff8a35aed1aed22b5c4",
+      "git_blob": "93e457d4b00b4a1c95bdfc01fd936ee0d876d6d7"
+    },
+    {
+      "file": "qwen_image_2_1.hpp",
+      "upstream_path": "src/model/diffusion/qwen_image_2_1.hpp",
+      "url": "https://github.com/leejet/stable-diffusion.cpp/blob/2988060a4338a5dcd94721c964a8e87003c1ac8b/src/model/diffusion/qwen_image_2_1.hpp",
+      "sha256": "33f776b44e94fc2453a00d3db9760aa16672c1aac7feeaf5e6c0d3f815351fdc",
+      "git_blob": "1d37d6afebd0cc86a24b55b92587e9b6e15906d8"
+    },
+    {
+      "file": "LICENSE",
+      "upstream_path": "LICENSE",
+      "url": "https://github.com/leejet/stable-diffusion.cpp/blob/2988060a4338a5dcd94721c964a8e87003c1ac8b/LICENSE",
+      "sha256": "b53fa08f515cb5a6fff7b9fd8fcd0961a4b80df29d74372d25e1f9171aa042ee",
+      "git_blob": "56e1e5a63852c3bcd5ac4fcdfecb7666f5274169"
+    }
+  ],
+  "extracts": [
+    {
+      "file": "rope.hpp",
+      "start": "    enum class EmbedNDLayout",
+      "end": "    // Generate IDs for image patches and text",
+      "first_line": 15,
+      "last_line": 141,
+      "sha256": "b83ec91bc6c5ed8494ce7c92fdc2556d536cde1a88b1a0fef30418be9ac79fd8"
+    },
+    {
+      "file": "rope.hpp",
+      "start": "    __STATIC_INLINE__ std::vector<float> embed_nd(",
+      "end": "    __STATIC_INLINE__ std::vector<float> embed_interleaved_mrope(",
+      "first_line": 226,
+      "last_line": 302,
+      "sha256": "1ab46a74875bf78a12661ff8ee29ebe7026ba774c46b65cc287ef036c14fb7df"
+    },
+    {
+      "file": "qwen_image_2_1.hpp",
+      "start": "    struct QwenImage21Segment {",
+      "end": "    struct QwenImage21PrefixCache {",
+      "first_line": 60,
+      "last_line": 126,
+      "sha256": "7b90f21912fab35879f8ab7fcbc94d6540079072826cb726c9c18b146b13bd22"
+    }
+  ],
+  "scope": "No reference image slots; one output image; batch 1; Matrix layout; theta 10000; axes 16,56,56; circular x/y disabled. Arithmetic and layout bodies are extracted unchanged.",
+  "adapters": "__STATIC_INLINE__ is static inline as upstream src/core/util.h. Empty sd::Tensor adapter has no arithmetic and throws on unexpected indexing.",
+  "finish_rope": "src/model/diffusion/model.hpp finish_rope_pe calls Rope::apply_circular; src/model/common/rope_circular.hpp returns immediately with both circular flags false.",
+  "historical_hashes": "../qi21_rope_sha.json is unchanged. Header documents glibc collection; original exact compiler/libc versions are unknown. Require hashes on glibc, and exact upstream comparison on every platform."
+}

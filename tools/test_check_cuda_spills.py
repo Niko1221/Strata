@@ -8,7 +8,6 @@ import contextlib
 import io
 import json
 import os
-import stat
 import sys
 import tempfile
 import unittest
@@ -259,14 +258,28 @@ class BaselineFile(unittest.TestCase):
                     self.assertEqual(rc, 1, (sm, name, grown))
 
 
-@unittest.skipIf(os.name == "nt", "the stand-in demangler is a #!/bin/sh script; Windows cannot run it as a program (needs a POSIX shell and exec of a shebang file)")
-class BaselineMain(unittest.TestCase):
+class PythonDemangler(unittest.TestCase):
+    def setUp(self):
+        real_run = CS.subprocess.run
+
+        def run_fixture(args, **kwargs):
+            if Path(args[0]).name == "filt.py":
+                args = [sys.executable, *args]
+            return real_run(args, **kwargs)
+
+        launch = mock.patch.object(CS.subprocess, "run", side_effect=run_fixture)
+        launch.start()
+        self.addCleanup(launch.stop)
+
+
+class BaselineMain(PythonDemangler):
     """main(): the --baseline file, the known count over the libraries, a baseline that cannot be read, --print-baseline."""
 
     def setUp(self):
+        super().setUp()
         self.d = tempfile.TemporaryDirectory()
         self.addCleanup(self.d.cleanup)
-        self.filt = demangler(self.d.name, "while read -r n; do echo '%s'; done" % KNOWN_NAME)
+        self.filt = demangler(self.d.name, "import sys\nfor _ in sys.stdin:\n    print(%r)" % KNOWN_NAME)
         self.path = Path(self.d.name, "baseline.json")
         self.path.write_text(json.dumps({"sm_86": {"instances": [
             {"name": KNOWN_KEY, "stack": 48, "local": 0, "reason": CS.KNOWN_REASON}]}}), encoding="utf-8")
@@ -303,24 +316,9 @@ class BaselineMain(unittest.TestCase):
         self.assertIn("2 use stack / local memory, 2 of them known", out)
 
 
-@unittest.skipIf(os.name == "nt", "the stand-in demangler is a #!/bin/sh script; Windows cannot run it as a program (needs a POSIX shell and exec of a shebang file)")
-class Demangling(unittest.TestCase):
+class Demangling(PythonDemangler):
     """A mangled name has no "::", so a kernel the demangler did not translate would read as vendored and be skipped:
     every way the demangler can be absent or wrong must end in 77, never in a pass."""
-
-    def setUp(self):
-        # Windows cannot execute a POSIX shebang. Still exercise a real child
-        # process and its stdin/status/output; only the fixture launch changes.
-        real_run = CS.subprocess.run
-
-        def run_fixture(args, **kwargs):
-            if Path(args[0]).name == "filt.py":
-                args = [sys.executable, *args]
-            return real_run(args, **kwargs)
-
-        launch = mock.patch.object(CS.subprocess, "run", side_effect=run_fixture)
-        launch.start()
-        self.addCleanup(launch.stop)
 
     def test_no_demangler_is_not_a_pass(self):
         rc, out = quiet(CS.demangle, None, [MANGLED])
