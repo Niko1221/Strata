@@ -2,7 +2,7 @@
   "bindings": {
     "compilerKey": "3d02d9aa3a340546a098972927f76942ce6b1bb54348a6699d26fc9dc9195d65",
     "ggmlCommit": "vendored-sha256:00d79121e61703168b5f335234d8b391edd3192560b5bc98216a9c8fe8401af1",
-    "sourceDigest": "8bc0448a35e217052eb0537285c7e38e724f0422a02f33f30554d2fb07d6a848"
+    "sourceDigest": "1c7811ccd9ebe8a853469b468ea196757a6d95332fe030b3e5f8d1512aedeaef"
   },
   "entries": {
     "strata_kernels.lib|dequant_bf16.obj|sm_120|_ZN6strata7kernels48_GLOBAL__N__d9afac2b_15_dequant_bf16_cu_b8976c8914dequant_kernelILi11ENS1_3H16ELb0EEEvPKhxxxxxPT0_": [
@@ -1845,7 +1845,7 @@
     },
     {
       "library": "strata_kq.dll",
-      "sha256": "53ae1df150f2f25f66cf9bc27f29b0f7eff81ad1c3c41c8466a5fe718aad6883"
+      "sha256": "7f42796411387ef9d7d0d9cca8000bf3009bb85990a9f21633c6b10e6bab2bf8"
     }
   ],
   "schema": 1,

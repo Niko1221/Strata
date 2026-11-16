@@ -1,4 +1,4 @@
-"""Synthetic boundary tests; never run production acceptance/GPU/installer phases."""
+"""Boundary tests and read-only frozen captures; never execute production phases."""
 
 from __future__ import annotations
 
@@ -18,6 +18,166 @@ spec = importlib.util.spec_from_file_location("acceptance_test_target", HERE / "
 a = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(a)
 COMMIT = "a" * 40
+CAPTURE = Path("H:/Strata/private-backups/cleanup-20261116/native-c775-profile-v1")
+GPU_CAPTURE = {
+    "gpu_binding": Path("H:/Strata/private-backups/cleanup-20261116/gpu-c775-v1/binding.json"),
+    "gpu_report": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-c775-v1.json"),
+    "gpu_guard": Path("H:/Strata/evidence/upstream-sync-20261116/receipts/gpu-c775-v1.json"),
+    "gpu_junit": Path("H:/Strata/evidence/upstream-sync-20261116/gpu-c775-v1.xml"),
+}
+MEASURED_SOURCE = "1c7811ccd9ebe8a853469b468ea196757a6d95332fe030b3e5f8d1512aedeaef"
+MEASURED_BINARIES = {
+    "strata.exe": "94e13464087b8944665dc226d798df4942cb74199022fed20947101b53d7f99c",
+    "strata-q36.exe": "51d4a189cb6ab53641008a6ecbecd89af6f0a37ec33d45da3515bf4779a77b60",
+}
+
+
+def test_selected_profile_is_complete_actual_capture() -> None:
+    """The reviewed capture includes a newly measured DLL, with no resource growth."""
+    profile = HERE.parents[1] / a.PROFILE
+    expected = "45c1fdb68fbe506c2790643c3295d59aa01f160cd1976ef9031469cd6ce028e5"
+    a.artifact(profile, expected)
+    a.artifact(CAPTURE / "candidate-measurements.json", expected)
+    assert profile.read_bytes() == (CAPTURE / "candidate-measurements.json").read_bytes()
+    comparison = a.release.load(CAPTURE / "comparison.json")
+    a.artifact(
+        CAPTURE / "comparison.json",
+        "fa9154e1f6c2d8738a52956c297ade1f6e08a36d2200e36176cf6b227e0dbfaf",
+    )
+    assert comparison["measuredEntries"] == 451
+    assert (
+        comparison["addedEntries"]
+        == comparison["missingEntries"]
+        == comparison["changedAmounts"]
+        == []
+    )
+    measured = a.release.module(
+        "capture_measured", HERE.parents[1] / "tools/cuda_spill_baseline.py"
+    )
+    bindings = measured.bindings(
+        a.native.PRIMARY,
+        a.native.BUILD / "cuda-spill-build-key.txt",
+        a.native.PRIMARY / "third_party/strata-ggml",
+    )
+    assert bindings == comparison["bindings"]
+    assert len(measured.load(profile, bindings)) == 451
+    libraries = a.compiled_libraries(a.release.load(profile), a.native.BUILD / "Release")
+    assert (
+        libraries["strata_kq.dll"]["sha256"]
+        == "7f42796411387ef9d7d0d9cca8000bf3009bb85990a9f21633c6b10e6bab2bf8"
+    )
+
+
+@pytest.mark.parametrize("field", ("sourceDigest", "compilerKey", "ggmlCommit"))
+def test_selected_profile_rejects_changed_identity(field: str) -> None:
+    measured = a.release.module(
+        "changed_capture_measured", HERE.parents[1] / "tools/cuda_spill_baseline.py"
+    )
+    profile = HERE.parents[1] / a.PROFILE
+    bindings = a.release.load(profile)["bindings"]
+    bindings[field] = "changed"
+    with pytest.raises(ValueError, match="identity changed"):
+        measured.load(profile, bindings)
+
+
+@pytest.mark.parametrize("change", ("none", "stack", "local", "unlisted"))
+def test_selected_profile_rejects_resource_growth(change: str) -> None:
+    """Use an actual recorded entry with the production per-entry checker."""
+    from tools import check_cuda_spills as checker
+    from tools import cuda_spill_baseline as measured
+
+    profile = HERE.parents[1] / a.PROFILE
+    entries = measured.load(profile, a.release.load(profile)["bindings"])
+    key, (stack, local) = next(iter(entries.items()))
+    library, obj, sm, function = key.split("|", 3)
+    if change == "stack":
+        stack += 1
+    elif change == "local":
+        local += 1
+    elif change == "unlisted":
+        function += "_unlisted"
+    rows = [(obj, sm, function, {"STACK": stack, "LOCAL": local})]
+    names = {function: "strata::kernels::capture_boundary_kernel()"}
+    assert checker.check_measured(library, rows, names, entries) == (0 if change == "none" else 1)
+
+
+def frozen_gpu() -> tuple[dict, dict, dict, dict]:
+    """Read immutable already-executed GPU proof; never launch GPU work."""
+    for name, path in GPU_CAPTURE.items():
+        a.artifact(path, a.GPU_PINS[name])
+    a.validate_junit(GPU_CAPTURE["gpu_junit"])
+    for name, digest in MEASURED_BINARIES.items():
+        a.artifact(a.native.BUILD / "Release" / name, digest)
+    return (
+        *(a.release.load(GPU_CAPTURE[name]) for name in ("gpu_binding", "gpu_report", "gpu_guard")),
+        dict(MEASURED_BINARIES),
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "none",
+        "old-source",
+        "strata.exe",
+        "strata-q36.exe",
+        "failed",
+        "undrained",
+        "missing-job",
+        "missing-samples",
+        "ram-admission",
+        "ram-observed",
+        "commit",
+        "H-disk",
+        "C-disk",
+        "vram",
+    ),
+)
+def test_frozen_gpu_capture_and_fail_closed_boundaries(change: str) -> None:
+    binding, report, guard, binaries = frozen_gpu()
+    if change == "old-source":
+        binding["sourceDigest"] = "8bc0448a35e217052eb0537285c7e38e724f0422a02f33f30554d2fb07d6a848"
+    elif change in binaries:
+        binaries[change] = "f" * 64
+    elif change == "failed":
+        guard["passed"] = False
+    elif change == "undrained":
+        guard["run"]["job_active_after"] = 1
+    elif change == "missing-job":
+        guard.pop("run")
+    elif change == "missing-samples":
+        guard["run"]["memory_diagnostics"]["samples"] = 0
+    elif change == "ram-admission":
+        guard["admission"]["available_ram"] = 3 * a.release.GIB - 1
+    elif change == "ram-observed":
+        # This capture's self-described exception has no authenticated outer flag.
+        guard["run"]["memory_diagnostics"]["min_available_ram"] = 3 * a.release.GIB - 1
+    elif change == "commit":
+        guard["run"]["memory_diagnostics"]["min_commit_headroom"] = 4 * a.release.GIB - 1
+    elif change == "H-disk":
+        guard["run"]["memory_diagnostics"]["min_H_free"] = 10 * a.release.GIB - 1
+    elif change == "C-disk":
+        guard["run"]["last_resources"]["C_free"] = 5 * a.release.GIB - 1
+    elif change == "vram":
+        report["minimumFreeMiB"] = 767
+    if change == "none":
+        a.validate_gpu(binding, report, guard, MEASURED_SOURCE, binaries)
+        assert binding["reportSHA256"] == a.GPU_PINS["gpu_report"]
+        assert report["command"][report["command"].index("--parallel") + 1] == "1"
+        assert guard["deadlineSeconds"] == 900
+    else:
+        with pytest.raises(RuntimeError):
+            a.validate_gpu(binding, report, guard, MEASURED_SOURCE, binaries)
+
+
+@pytest.mark.parametrize("name", tuple(GPU_CAPTURE))
+def test_frozen_gpu_input_sha_rejects_changed_bytes(tmp_path: Path, name: str) -> None:
+    original = GPU_CAPTURE[name]
+    a.artifact(original, a.GPU_PINS[name])
+    changed = tmp_path / original.name
+    changed.write_bytes(original.read_bytes() + b" ")
+    with pytest.raises(RuntimeError, match="digest"):
+        a.artifact(changed, a.GPU_PINS[name])
 
 
 def job() -> dict:
