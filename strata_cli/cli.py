@@ -506,6 +506,9 @@ def parser() -> argparse.ArgumentParser:
     code_sessions = code_sp.add_parser("sessions", help="shared harness sessions")
     code_sessions.add_argument("action", choices=("list",))
     code_sessions.add_argument("--output", choices=("human", "json"), default="human")
+    complete = sp.add_parser("complete", help="print a bash/zsh/fish tab-completion script for the strata command")
+    complete.add_argument("--shell", choices=("bash", "zsh", "fish"), default="bash",
+                          help="which shell to print the script for (default bash)")
     for one_shot in (profile_create, profile_list, profile_show, profile_validate, profile_set,
                      profile_source, profile_edit, profile_history, profile_rollback, doctor,
                      components_verify, models_list, models_inspect, models_import, models_move, calibrate,
@@ -2126,6 +2129,18 @@ def _repair_access(a: argparse.Namespace) -> int:
     return 0 if not report["failed"] else 5
 
 
+def _complete(a: argparse.Namespace) -> int:
+    """Print the shell's completion script, generated from parser() itself: one grammar, no shell copy to drift.
+    shtab is optional on purpose - the hash-locked Terminal bundle carries no new package (packaging/README.md)."""
+    try:
+        import shtab
+    except ImportError:
+        return _error("tab completion needs the shtab package, which the Terminal does not bundle: "
+                      "run `pip install shtab` in the Python that runs Strata, then `strata complete` again", 2)
+    sys.stdout.write(shtab.complete(parser(), shell=a.shell))
+    return 0
+
+
 def _run(a: argparse.Namespace) -> int:
     try:
         if a.command == "serve":
@@ -2147,6 +2162,8 @@ def _run(a: argparse.Namespace) -> int:
             return update_cmd.run(a)
         if a.command in ("doctor", "components"):
             return _doctor(a)
+        if a.command == "complete":
+            return _complete(a)
         if a.command == "models":
             return _models(a)
         if a.command == "engine":
