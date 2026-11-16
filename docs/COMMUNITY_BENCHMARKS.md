@@ -142,14 +142,17 @@ The tool is a speed check, not a quality test. For recall and other checks, see 
 checks](#optional-correctness-checks); for A/B tests of two builds use `terminal/tools/ab_engine.py`.
 
 To compare Strata releases, each with its own defaults, give `tools/ab_engine.py` a model and the versions. Stop the
-normal Strata server first. The tool downloads the packages into `~/strata-ab` and never uses or changes your install:
+normal Strata server and close the Strata app first. The tool downloads the packages into `~/strata-ab` and runs each
+version in a fresh home there, so it does not change your models, settings or engines:
 
 ```bash
 python tools/ab_engine.py --model-path /path/to/model.gguf --engines 0.1.55,0.1.56 --rounds 3   # add --tune quick to tune each version once
 ```
 
 It writes `results.json`, `report.html` and `report.png` to `~/strata-ab/runs/<timestamp>/`. The `configs` folder next to
-it can contain the API key of the test home, so do not attach it to an issue. Details: the top of `tools/ab_engine.py`.
+it can contain the API key of the test home, so do not attach it to an issue. Each engine is kept in
+`~/strata-ab/packages` and copied again into each run's home under `~/strata-ab/homes`, so every run adds to the disk use. The tool never deletes anything there;
+delete old homes by hand. Details: the top of `tools/ab_engine.py`.
 
 ## What to record
 
