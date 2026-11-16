@@ -359,6 +359,13 @@ macro(strata_cpu_native_experts)
   # round 0216: a hash per (pair, token count, row range) of the pool's native expert calls, to compare a change switched off and on
   add_executable(cpu_dispatch_dump src/kernels/cpu/cpu_dispatch_dump.cpp)
   target_link_libraries(cpu_dispatch_dump PRIVATE strata_kernels_cpu)
+  # #6085: the smallest run of the pool's rows with STRATA_IQ_FAST set.  On a CPU without AVX-512 the switch must be ignored:
+  # the first version filled its control tables in a static initialiser of iq_avx512.cpp, GCC vectorized it, and an AVX2-only
+  # CPU died before main() whatever the switch said (isa_guard_check below is the static check of the same thing).
+  if(STRATA_BUILD_TESTS)
+    add_test(NAME cpu_dispatch_dump_iq_fast COMMAND ${CMAKE_COMMAND} -E env STRATA_IQ_FAST=1
+             $<TARGET_FILE:cpu_dispatch_dump> --pairs iq3_s/iq4_nl --nt-max 1 --experts 1)
+  endif()
   # round 0216: the CPU pool's part of a decode window replayed without a GPU (per-layer format pairs, calibrated expert and row counts, cold DRAM)
   add_executable(kq_window_bench src/kernels/cpu/kq_window_bench.cpp)
   target_link_libraries(kq_window_bench PRIVATE strata_kernels_cpu)
@@ -529,6 +536,11 @@ if(STRATA_BUILD_TESTS)
       endforeach()
       if(TARGET q2_bitplane_parity)
         set_tests_properties(sde_${_chip}_q2_bitplane_parity PROPERTIES ENVIRONMENT "STRATA_Q2_BITPLANE=1")
+      endif()
+      if(TARGET cpu_dispatch_dump)   # #6085: start-up and one row call with STRATA_IQ_FAST set, on a CPU without AVX-512
+        add_test(NAME sde_${_chip}_cpu_dispatch_dump_iq_fast COMMAND ${STRATA_SDE} -${_chip} --
+                 $<TARGET_FILE:cpu_dispatch_dump> --pairs iq3_s/iq4_nl --nt-max 1 --experts 1)
+        set_tests_properties(sde_${_chip}_cpu_dispatch_dump_iq_fast PROPERTIES ENVIRONMENT "STRATA_IQ_FAST=1" TIMEOUT 900)
       endif()
     endforeach()
   endif()

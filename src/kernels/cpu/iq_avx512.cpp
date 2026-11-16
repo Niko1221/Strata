@@ -31,8 +31,10 @@ namespace strata::kernels::cpu {
 namespace {
 #if defined(_MSC_VER) && !defined(__clang__)
 #define STRATA_IQ512_FORCEINLINE __forceinline   // MSVC leaves it a call otherwise, with the accumulators spilled around it
+#define STRATA_IQ512_NOINLINE __declspec(noinline)
 #else
 #define STRATA_IQ512_FORCEINLINE inline __attribute__((always_inline))
+#define STRATA_IQ512_NOINLINE __attribute__((noinline))
 #endif
 
 inline float h2f(uint16_t h) { return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int) h))); }
@@ -646,7 +648,6 @@ bool fast_cpu_ok() {
     __cpuid_count(7, 0, a, b, c, d);
 #endif
     // AVX512_VBMI (vpermt2b, vpmultishiftqb), AVX512_BITALG (vpopcntb), AVX512_VPOPCNTDQ: Zen 4 / Zen 5, Ice Lake and later
-    // (the callers already require F / BW / VL / VNNI)
     return ((c >> 1) & 1u) != 0 && ((c >> 12) & 1u) != 0 && ((c >> 14) & 1u) != 0;
 }
 
@@ -674,9 +675,9 @@ bool fast_pack(const E* grid, int n, int nval, int bits, uint16_t* out, uint8_t*
     return true;
 }
 
-const bool fast_on = [] {
-    const char* v = std::getenv("STRATA_IQ_FAST");
-    if (v == nullptr || std::atoi(v) == 0 || !fast_cpu_ok()) return false;
+// Its own function, never inlined: this file is compiled for AVX-512 and the compiler vectorizes these loops, so nothing
+// of them may sit in the start-up code below, which every CPU runs (an AVX2-only CPU died there before main()).
+STRATA_IQ512_NOINLINE bool fast_tables_build() {
     uint16_t w18[256], w21[512];
     uint8_t lut21[64];
     if (!fast_pack(iq3xxs_grid, 256, 4, 4, w18, fast_lut18)) return false;
@@ -695,6 +696,15 @@ const bool fast_on = [] {
         fast_hi21[i] = (uint8_t) (w >> 8);
     }
     return true;
+}
+
+// runs at start on every CPU: the variable, then the CPU (cpu_avx512_ok: F / BW / VL / VNNI / VBMI, the zmm state enabled
+// by the OS, the ISA cap), and only then the tables
+const bool fast_on = [] {
+    const char* v = std::getenv("STRATA_IQ_FAST");
+    if (v == nullptr || std::atoi(v) == 0) return false;
+    if (!cpu_avx512_ok() || !fast_cpu_ok()) return false;
+    return fast_tables_build();
 }();
 
 #define FAST_P(k) _mm512_permutex2var_epi16(_mm512_load_si512(T + 2 * (k)), idx, _mm512_load_si512(T + 2 * (k) + 1))
@@ -736,28 +746,31 @@ STRATA_IQ512_FORCEINLINE __m512i fast_blookup9(__m512i idx, __mmask64 k7, __mmas
 
 // chunk j of a block from the 64 low and 64 high code bytes of its indices: each qword gets (lo, hi) of two indices,
 // vpmultishiftqb then puts their eight 4-bit codes in the eight bytes
-alignas(64) uint8_t fast_pair_ctl[4][64];
-alignas(64) uint8_t fast_shift4[64], fast_shift2[64], fast_shift7[32];
-const bool fast_ctl_init = [] {
-    for (int j = 0; j < 4; ++j)
+// Constants of the compiler (constexpr), not filled at start: start-up code of this file runs on every CPU.
+struct FastCtl {
+    uint8_t pair[4][64];
+    uint8_t shift4[64], shift2[64], shift7[32];
+    constexpr FastCtl() : pair{}, shift4{}, shift2{}, shift7{} {
+        for (int j = 0; j < 4; ++j)
+            for (int p = 0; p < 64; ++p) {
+                const int q = p / 8, b = p % 8;
+                pair[j][p] = (uint8_t) (b < 4 ? (16 * j + 2 * q + (b >> 1)) | ((b & 1) << 6) : 0);
+            }
         for (int p = 0; p < 64; ++p) {
-            const int q = p / 8, b = p % 8;
-            fast_pair_ctl[j][p] = (uint8_t) (b < 4 ? (16 * j + 2 * q + (b >> 1)) | ((b & 1) << 6) : 0);
+            shift4[p] = (uint8_t) (4 * (p % 8));
+            shift2[p] = (uint8_t) (2 * (p % 8));
         }
-    for (int p = 0; p < 64; ++p) {
-        fast_shift4[p] = (uint8_t) (4 * (p % 8));
-        fast_shift2[p] = (uint8_t) (2 * (p % 8));
+        for (int p = 0; p < 32; ++p) shift7[p] = (uint8_t) (p % 8 < 4 ? 7 * (p % 8) : 32 + 7 * (p % 8 - 4));
     }
-    for (int p = 0; p < 32; ++p) fast_shift7[p] = (uint8_t) (p % 8 < 4 ? 7 * (p % 8) : 32 + 7 * (p % 8 - 4));
-    return true;
-}();
+};
+alignas(64) constexpr FastCtl fast_ctl;   // every member starts on a 64-byte boundary (256, 320, 384)
 STRATA_IQ512_FORCEINLINE __m512i fast_codes4(__m512i lo, __m512i hi, int j) {
-    const __m512i z = _mm512_permutex2var_epi8(lo, _mm512_load_si512(fast_pair_ctl[j]), hi);
-    return _mm512_and_si512(_mm512_multishift_epi64_epi8(_mm512_load_si512(fast_shift4), z), _mm512_set1_epi8(0x0f));
+    const __m512i z = _mm512_permutex2var_epi8(lo, _mm512_load_si512(fast_ctl.pair[j]), hi);
+    return _mm512_and_si512(_mm512_multishift_epi64_epi8(_mm512_load_si512(fast_ctl.shift4), z), _mm512_set1_epi8(0x0f));
 }
 // 8 words of eight 2-bit codes -> 64 bytes
 STRATA_IQ512_FORCEINLINE __m512i fast_spread2(__m128i w8) {
-    return _mm512_and_si512(_mm512_multishift_epi64_epi8(_mm512_load_si512(fast_shift2), _mm512_cvtepu16_epi64(w8)), _mm512_set1_epi8(3));
+    return _mm512_and_si512(_mm512_multishift_epi64_epi8(_mm512_load_si512(fast_ctl.shift2), _mm512_cvtepu16_epi64(w8)), _mm512_set1_epi8(3));
 }
 
 // word lanes 0-15 -> word 2j, 16-31 -> word 2j + 1   (a chunk whose two halves carry one scale each)
@@ -822,7 +835,7 @@ template <> struct FastFmt<18> {   // IQ3_XXS: d, qs[64] grid bytes, 8 x u32 (4 
         g[3] = _mm512_shuffle_epi8(lut, fast_codes4(lo, hi, 3));
         // the 8 sign / scale words: 4 x 7-bit sign index (+ the parity as bit 7, ksigns_iq2xs) and a 4-bit scale each
         const __m256i v = _mm256_loadu_si256((const __m256i*) (b + 66));
-        const __m256i si = _mm256_and_si256(_mm256_multishift_epi64_epi8(_mm256_load_si256((const __m256i*) fast_shift7), v), _mm256_set1_epi8(0x7f));
+        const __m256i si = _mm256_and_si256(_mm256_multishift_epi64_epi8(_mm256_load_si256((const __m256i*) fast_ctl.shift7), v), _mm256_set1_epi8(0x7f));
         const __m256i sg = _mm256_or_si256(si, _mm256_and_si256(_mm256_slli_epi16(_mm256_popcnt_epi8(si), 7), _mm256_set1_epi8((char) 0x80)));
         m[0] = _cvtu64_mask64((uint64_t) _mm256_extract_epi64(sg, 0));
         m[1] = _cvtu64_mask64((uint64_t) _mm256_extract_epi64(sg, 1));
