@@ -10,8 +10,10 @@
 
 #include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 
 namespace strata::core {
 
@@ -282,6 +284,50 @@ catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
             << ", line:" << __LINE__ << std::endl;
   std::exit(1);
+}
+
+std::string NativeEmbed::auto_bf16_sidecar(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab,
+                                           int* replaced_type) {
+    if (replaced_type) *replaced_type = -1;
+    const char* env = std::getenv("STRATA_AUTO_EMBD_BF16");
+    if (!env || env[0] != '1' || env[1] != '\0') return {};
+    if (shards.empty() || n_embd <= 0 || n_vocab <= 0) return {};
+    try {
+        const std::filesystem::path shard_dir = std::filesystem::path(shards[0]).parent_path();
+        const std::filesystem::path parent_dir = shard_dir / "..";
+        const std::filesystem::path candidates[] = {
+            shard_dir / "token-embd-bf16.gguf",
+            parent_dir / "token-embd-bf16.gguf",
+            parent_dir / "embd" / "token-embd-bf16.gguf",
+        };
+        const strata::GgufModel model(shards);
+        const strata::TensorInfo* t = model.find("token_embd.weight");
+        if (!t || t->type == 0 || t->type == 1 || t->type == 8 || t->type == 30) return {};
+        const uint64_t want_bytes = (uint64_t) n_embd * (uint64_t) n_vocab * 2;
+        for (const auto& c : candidates) {
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(c, ec) || ec) continue;
+            try {
+                const strata::GgufModel sidecar({c.string()});
+                const strata::MetaValue* arch = sidecar.meta().get("general.architecture");
+                if (!arch || arch->s != "strata-embd") continue;
+                size_t at = 0;
+                const strata::TensorInfo* bt = sidecar.find("token_embd.weight", &at);
+                if (!bt || bt->type != 30 || bt->shape.size() != 2 ||
+                    bt->shape[0] != (uint64_t) n_embd || bt->shape[1] != (uint64_t) n_vocab ||
+                    !sidecar.in_bounds(*bt, at) || strata::tensor_payload_bytes(*bt) != want_bytes) {
+                    continue;
+                }
+            } catch (...) {
+                continue;
+            }
+            if (replaced_type) *replaced_type = (int) t->type;
+            return c.string();
+        }
+        return {};
+    } catch (...) {
+        return {};
+    }
 }
 
 void NativeEmbed::gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const {
