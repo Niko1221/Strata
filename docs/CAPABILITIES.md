@@ -1,19 +1,19 @@
 # Which model runs on which hardware
 
-This page is built by `tools/capability_table.py` from [docs/data/capabilities.json](data/capabilities.json) and the package names of release v0.2.14 ([docs/data/release.json](data/release.json)). Do not edit it by hand.
+This page is built by `tools/capability_table.py` from [docs/data/capabilities.json](data/capabilities.json) and the package names of release v0.2.15 ([docs/data/release.json](data/release.json)). Do not edit it by hand.
 
 - **Packaged**: the engine packages in the release for that hardware. Read from the release's file names.
 - **Supported**: what these docs commit to. *untested* means a package exists and nothing is claimed.
 - **Source only**: backend source is retained, but this release has no corresponding package. Earlier packages are not qualified by this table.
 - **Measured**: where numbers for that combination are published. Empty means none are published; it does not mean the combination fails.
 
-App 0.2.14, Terminal 0.2.14.1, Control 0.1.60.1, engines 0.1.60; these packages stay at 0.1.59: Control linux-aarch64; DeepSeek engines linux-aarch64-cuda-cuda13; engines linux-aarch64-cuda-cuda13; these packages stay at 0.1.60: Control linux-x86_64, macos-arm64, windows-x86_64. App, Control and engine versions differ on purpose.
+App and Terminal 0.2.15, Control 0.1.61, engines 0.1.60; these packages stay at 0.1.59: Control linux-aarch64; DeepSeek engines linux-aarch64-cuda-cuda13, linux-x86_64-cuda-cuda13, linux-x86_64-hip-rx9070, macos-arm64-metal, windows-x86_64-cuda-cuda13, windows-x86_64-hip-rdna3; engines linux-aarch64-cuda-cuda13, linux-x86_64-sycl. App, Control and engine versions differ on purpose.
 
 ## At a glance
 
 | Model | NVIDIA on Windows | NVIDIA on Linux | NVIDIA DGX Spark | AMD on Windows | AMD on Linux | Intel Arc on Linux | Apple silicon |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| [Qwen3.8-Flash-Next](#qwen38) | yes | yes | yes | yes | yes | source only | yes |
+| [Qwen3.8-Flash-Next](#qwen38) | yes | yes | yes | yes | yes | untested | yes |
 | [Qwen3.6-35B-A3B](#qwen36) | yes | yes | untested | yes | yes | no | no |
 
 <a id="qwen38"></a>
@@ -29,7 +29,7 @@ Model guide: [MODELS.md](MODELS.md#qwen38-flash-next).
 | NVIDIA DGX Spark | `cuda-cuda13` | supported: GB10 | - | [DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md) |
 | AMD on Windows | `hip-rdna2`, `hip-rdna3`, `hip-rx9070` | supported: RX 6000, 7000 and 9000, Ryzen AI Max | - | [STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md); [AMD_HIP.md](AMD_HIP.md) |
 | AMD on Linux | `hip-halo`, `hip-rx6000`, `hip-rx7900`, `hip-rx9070` | supported: RX 6000, 7000 and 9000, Radeon AI PRO R9700, Ryzen AI Max | RX 6000 is validated differently from the newer cards ([AMD_HIP.md](AMD_HIP.md)). | [AMD_HIP.md](AMD_HIP.md); [STRIX_HALO.md](STRIX_HALO.md) |
-| Intel Arc on Linux | none | source route; no package in this release: Arc A-series and B-series | The backend source remains available ([INTEL_ARC.md](INTEL_ARC.md)); the current official release asset inventory has no SYCL package. Earlier package/API compatibility is not qualified here. | [INTEL_ARC.md](INTEL_ARC.md) (historical upstream measurements) |
+| Intel Arc on Linux | `sycl` | package present, untested: Arc A-series and B-series | The signed v0.2.15 feed carries the v0.2.13 SYCL 0.1.59 package ([INTEL_ARC.md](INTEL_ARC.md)). Its feed metadata and published asset digest agree; the archive was not downloaded or executed here. Current Qwen3.8 compatibility and Arc inference remain unqualified. This is not part of the Hakua Windows CUDA distribution. | [INTEL_ARC.md](INTEL_ARC.md) (historical upstream measurements) |
 | Apple silicon | `metal` | supported: M1 or newer, macOS 15 or newer | - | [MAC.md](MAC.md#measured-m5-max-128-gb) (M5 Max, 128 GB) |
 
 <a id="qwen36"></a>

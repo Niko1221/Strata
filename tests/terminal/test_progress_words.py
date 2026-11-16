@@ -5,6 +5,7 @@ The excerpts are from real setup logs (Gyro-S on the RTX 5070 PC, 2026-10-19) an
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -141,6 +142,55 @@ class StepWords(unittest.TestCase):
         self.assertEqual(W.with_numbers(w, None), "Downloading the model files")
 
 
+def sparse_truncate(stream, size):
+    """Keep real logical sizes without physically zeroing gigabytes on NTFS."""
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        position = stream.tell()
+        stream.flush()
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        control = kernel.DeviceIoControl
+        control.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                            wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        control.restype = wintypes.BOOL
+        returned = wintypes.DWORD()
+        # winioctl.h: CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 49, METHOD_BUFFERED, FILE_SPECIAL_ACCESS).
+        if not control(handle, 0x900C4, None, 0, None, 0,
+                       ctypes.byref(returned), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        move = kernel.SetFilePointerEx
+        move.argtypes = [wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), wintypes.DWORD]
+        move.restype = wintypes.BOOL
+        end = kernel.SetEndOfFile
+        end.argtypes = [wintypes.HANDLE]
+        end.restype = wintypes.BOOL
+        # Python's Windows truncate calls CRT _chsize_s, which writes zeros even on a sparse file.
+        try:
+            if not move(handle, size, None, 0) or not end(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            stream.seek(position)
+    else:
+        stream.truncate(size)
+
+
+def allocated_windows_bytes(path):
+    import ctypes
+    from ctypes import wintypes
+    size = ctypes.WinDLL("kernel32", use_last_error=True).GetCompressedFileSizeW
+    size.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+    size.restype = wintypes.DWORD
+    high = wintypes.DWORD()
+    ctypes.set_last_error(0)
+    low = size(str(path), ctypes.byref(high))
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        raise ctypes.WinError(ctypes.get_last_error())
+    return (high.value << 32) | low
+
+
 class CombinedFigure(unittest.TestCase):
     def test_packing_reports_written_layers_not_download_bytes(self):
         lines = ["=== Step 6: preparing model ===", "> python tools/iq_pack.py --experts-bin",
@@ -165,9 +215,8 @@ class CombinedFigure(unittest.TestCase):
             files = [{"path": str(folder / "m-00001-of-00002.gguf"), "bytes": 1_000_000_000, "role": "model"}]
             prog_ = {"step": "5/7: downloading X", "download": {"file": "m-00001-of-00002.gguf", "done_gb": 0.5, "total_gb": 1.0, "percent": 50}}
             # the .part says 1000 bytes here; make it say 1 GB without writing it
-            import os
             with open(part, "r+b") as f:
-                f.truncate(1_000_000_000)
+                sparse_truncate(f, 1_000_000_000)
             out = strata_mcp.files_progress(prog_, {"total_gb": 1.0}, files)
             self.assertAlmostEqual(out["download"]["done_gb"], 0.5, places=2)
             self.assertEqual(out["download"]["percent"], 50)
@@ -178,6 +227,79 @@ class CombinedFigure(unittest.TestCase):
         out = strata_mcp.combined_progress(p, {"folder": None, "total_gb": 58.5})
         self.assertEqual(out["download"]["file"], "checking files")
         self.assertEqual(out["download"]["percent"], 20)
+
+    @staticmethod
+    def _qwen36_files(folder: Path, reader_done: bool) -> list:
+        """A Qwen3.6 UD-Q4_K_XL install's files (sizes made sparse, nothing written): the model whole, the picture reader whole or as a .part
+        the parallel pieces have already pushed to its full length."""
+        model = folder / "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf"
+        reader = folder / "mmproj-F16.gguf"
+        for path, size in ((model, 22_853_663_008), (reader if reader_done else reader.with_name(reader.name + ".part"), 899_283_584)):
+            with open(path, "wb") as f:
+                sparse_truncate(f, size)
+        return [{"path": str(model), "bytes": 22_853_663_008, "role": "model"},
+                {"path": str(reader), "bytes": 899_283_584, "role": "vision"}]
+
+    def test_sparse_fixtures_keep_actual_logical_sizes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for done in (False, True):
+                files = self._qwen36_files(folder, reader_done=done)
+                for file in files:
+                    path = Path(file["path"])
+                    if file["role"] == "vision" and not done:
+                        path = path.with_name(path.name + ".part")
+                    self.assertEqual(path.stat().st_size, file["bytes"])
+                    if os.name == "nt":
+                        self.assertTrue(path.stat().st_file_attributes & 0x200, "FILE_ATTRIBUTE_SPARSE_FILE required")
+                        self.assertLessEqual(allocated_windows_bytes(path), 1024 * 1024)
+                    with path.open("rb") as stream:
+                        stream.seek(file["bytes"] - 1)
+                        self.assertEqual(stream.read(1), b"\0")
+            part = folder / "one-gigabyte.part"
+            with part.open("wb") as stream:
+                sparse_truncate(stream, 1_000_000_000)
+            self.assertEqual(part.stat().st_size, 1_000_000_000)
+            if os.name == "nt":
+                self.assertTrue(part.stat().st_file_attributes & 0x200, "FILE_ATTRIBUTE_SPARSE_FILE required")
+                self.assertLessEqual(allocated_windows_bytes(part), 1024 * 1024)
+
+    def test_the_picture_reader_counts_by_its_own_figure(self):
+        """DL99: setup names the picture reader "vision encoder" in its progress line, not by its file name, so its .part (filled ahead by
+        the parallel pieces) was counted whole: the bar said 99% while 16-48% of it had arrived (Boston, 2026-11-15)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self._qwen36_files(Path(tmp), reader_done=False)
+            prog_ = {"step": "5/7: downloading Qwen3.6-35B-A3B UD-Q4_K_XL",
+                     "download": {"file": "vision encoder", "done_gb": 0.43, "total_gb": 0.9, "percent": 48}}
+            out = strata_mcp.files_progress(prog_, {"total_gb": 22.9}, files)
+            reader = next(p for p in out["parts"] if p["kind"] == "vision")
+            self.assertAlmostEqual(reader["done_gb"], 0.43, places=2)
+            self.assertEqual(reader["state"], "downloading")
+            self.assertLess(out["download"]["percent"], 99)
+
+    def test_after_the_download_every_file_stays_counted_and_the_figure_is_whole(self):
+        """DL99: from step 6 on the parts were dropped, so the app counted the engine's part alone ("99% · 0.7 / 0.7 GB"). Every file is in:
+        the parts stay, all done (the app's bar is whole), and there is no download figure (setup prepares the files)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            files = self._qwen36_files(Path(tmp), reader_done=True)
+            job = {"folder": tmp, "total_gb": 22.9, "files": files}
+            for lines in (HEAD + STEP5 + STEP6, HEAD + STEP5 + STEP6 + ["=== Step 7: writing the start script ==="]):
+                out = strata_mcp.combined_progress(strata_mcp.install_progress(lines), job)
+                self.assertEqual([(p["kind"], p["state"]) for p in out.get("parts", [])], [("model", "done"), ("vision", "done")])
+                self.assertAlmostEqual(sum(p["done_gb"] for p in out["parts"]), 23.753, places=2)
+                self.assertNotIn("download", out)
+            # the download step itself, every file in: 100
+            out = strata_mcp.combined_progress(strata_mcp.install_progress(HEAD + STEP5 + ["  [ok] vision encoder downloaded"]), job)
+            self.assertEqual(out["download"]["percent"], 100)
+            # while a file is still missing the figure stays below 100
+            Path(files[1]["path"]).rename(files[1]["path"] + ".part")
+            out = strata_mcp.combined_progress(strata_mcp.install_progress(HEAD + STEP5 + [MODEL_PROGRESS]), job)
+            self.assertLessEqual(out["download"]["percent"], 99)
+            # before the download step nothing is counted
+            self.assertNotIn("parts", strata_mcp.combined_progress(strata_mcp.install_progress(HEAD), job))
 
 
 if __name__ == "__main__":

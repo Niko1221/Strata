@@ -67,6 +67,26 @@ class ReleaseManifest(unittest.TestCase):
         with patch.object(rm, "code_versions", return_value=versions):
             self.assertEqual(rm.check(manifest), [])
 
+    def test_a_release_that_carries_its_engines_names_where_they_come_from(self):
+        """0.2.15: Control 0.1.61 and the 0.1.60 engines of v0.2.14 (no engine built). Without "engines_from" Control may not be ahead of
+        the engines; with it, the engines at engine_version must be packages the release offers."""
+        m = copy.deepcopy(rm.load()["upstream"])
+        m["engines_from"] = "v0.2.14"
+        m["control_version"], m["engine_version"] = "0.1.61", "0.1.60"
+        cmake = {"CMakeLists.txt (engine)": ("0.1.61", "engine_version"), "CMakeLists.txt (Control)": ("0.1.61", "control_version")}
+        real = rm.code_versions
+        try:
+            rm.code_versions = lambda: {**real(), **cmake}
+            self.assertNotIn("CMakeLists.txt (engine) says", "\n".join(rm.check(m)))
+            no_from = copy.deepcopy(m)
+            no_from.pop("engines_from")
+            self.assertIn("CMakeLists.txt (engine) says", "\n".join(rm.check(no_from)))
+            gone = copy.deepcopy(m)
+            gone["engine_version"] = "0.1.58"                       # no 0.1.58 engine package in the asset list
+            self.assertIn("CMakeLists.txt (engine) says", "\n".join(rm.check(gone)))
+        finally:
+            rm.code_versions = real
+
     def test_installer_names_in_the_manifest_asset_list(self):
         m = rm.load()
         for name in rm.expand(m):

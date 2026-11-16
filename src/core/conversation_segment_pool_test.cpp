@@ -2,6 +2,7 @@
 #include "strata/core/conversation_segment_pool.hpp"
 #include "strata/core/park_pool_policy.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -9,13 +10,29 @@
 #include <set>
 #include <thread>
 #include <vector>
-#if defined(_WIN32)
+#ifdef _WIN32
 #include <malloc.h>
 #endif
 
 using namespace strata::core;
 
 namespace {
+// 2 MiB aligned memory from the C library: MSVC's C runtime has no std::aligned_alloc (its free cannot release it), so _aligned_malloc there
+void* aligned_2m(size_t bytes) {
+#ifdef _WIN32
+    return _aligned_malloc(bytes, size_t(2) << 20);
+#else
+    return std::aligned_alloc(size_t(2) << 20, bytes);
+#endif
+}
+void aligned_free(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
+
 int checks = 0;
 void check(bool value, const char* description) {
     ++checks;
@@ -31,21 +48,11 @@ struct FakeOs final : SegmentPoolOs {
     void* mem = nullptr;
     void* reserve(size_t bytes) override {
         if (refuse_reserve) return nullptr;
-#if defined(_WIN32)
-        mem = _aligned_malloc(bytes, size_t(2) << 20);
-#else
-        mem = std::aligned_alloc(size_t(2) << 20, bytes);
-#endif
+        mem = aligned_2m(bytes);
         if (mem) { std::memset(mem, 0, bytes); reserved = bytes; }
         return mem;
     }
-    void unreserve(void* base, size_t) override {
-#if defined(_WIN32)
-        _aligned_free(base);
-#else
-        std::free(base);
-#endif
-    }
+    void unreserve(void* base, size_t) override { aligned_free(base); }
     bool commit(void*, size_t) override { ++commits; return !refuse_commit; }
     bool populate(void*, size_t n) override { if (refuse_populate) return false; ++populates; populated_bytes += n; return true; }
     void release(void* p, size_t n) override { ++releases; released_bytes += n; std::memset(p, 0, n); }

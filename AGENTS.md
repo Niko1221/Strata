@@ -20,8 +20,8 @@ The original user profile is normally running with its settings and prior skills
 preserved, learning and auto-application enabled, RustXNG Full and no loaded model.
 See _docs/2026-11-13_stable-059-workflow-safety_Codex.md for exact scope and evidence.
 
-Keep upstream Niko1221 0.2.14 at
-baf16363b4403ef0ed4f538f5d5ed11c43fb9535 (upstream engine 0.1.60;
+Keep upstream Niko1221 0.2.15 at
+c77572806996349b49995e4f98d41b5294d36a21 (upstream engine 0.1.60;
 fork versions remain independent). Source candidate: Hakua product version 0.6.0;
 app, Terminal, Control and native engine 0.6.0. Do not claim its build,
 installation or publication before checking its receipts. Current installed and
@@ -158,7 +158,7 @@ Strata has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
   not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
-  `Strata-0.2.14-windows-x64-setup.exe`, `Strata-0.2.14-linux-x86_64.AppImage`, `Strata-0.2.14-macos-arm64.dmg`.
+  `Strata-0.2.15-windows-x64-setup.exe`, `Strata-0.2.15-linux-x86_64.AppImage`, `Strata-0.2.15-macos-arm64.dmg`.
   The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
   start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves

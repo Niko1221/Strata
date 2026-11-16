@@ -91,7 +91,7 @@ test('explicit backends use their own payload and never pick an old generic engi
  const exe=process.platform==='win32'?'llama-server.exe':'llama-server';
   const generic=join(root,'generic-gguf');mkdirSync(generic);writeFileSync(join(generic,exe),'old generic');
   const automaticEnv={STRATA_LLAMA_SERVER:join(generic,exe)};
-  assert.equal(findBinary({...options,env:automaticEnv,backend:'Automatic'}).path,join(generic,exe));
+  assert.equal(findBinary({...options,env:automaticEnv,backend:'Automatic'}),null);
   assert.equal(localBackendChoice(),'Automatic');
   for(const name of ['other','__proto__','constructor'])assert.throws(()=>localBackendChoice([setting('runtime.backend',name)]));
  assert.equal(findBinary({...options,backend:'TurboQuant'}),null);

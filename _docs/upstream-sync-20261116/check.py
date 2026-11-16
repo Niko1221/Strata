@@ -39,6 +39,8 @@ def main() -> int:
             return proc.wait(timeout=10)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seconds", type=int, default=300)
+    parser.add_argument("--allow-low-ram", action="store_true",
+                        help="Explicit user-authorized operation-only RAM exception; keep commit/disk/Job guards")
     parser.add_argument("name")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -90,6 +92,7 @@ def main() -> int:
          str(BASE / "receipts" / (args.name + ".command.txt")), *command],
         args.seconds,
         env=env,
+        allow_low_ram=args.allow_low_ram,
     )
     log = BASE / "receipts" / (args.name + ".command.txt")
     if log.exists():

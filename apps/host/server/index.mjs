@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { localBackendChoice } from './local-backends.mjs';
 import { engineProgressMark } from './agent/engine-progress.mjs';
 import './system-ca.mjs';        // #3722: the operating system's certificates, before any HTTPS request
 import { createCloudflare } from './cloudflare.mjs';
@@ -1286,11 +1287,10 @@ async function api(req, res, path, method, url) {
     // The plan is only meaningful for a real engine binary, so the panel asks rather than guessing.
     // `available` is false when nothing is installed, which is a state the panel must show honestly
     // instead of offering a plan that cannot be computed.
-    const binary = supervisor.findBinary();
     const status = supervisor.status();
     return json(res, 200, {
-      available: Boolean(binary?.path),
-      path: binary?.path ?? null,
+      available: false,   // the host starts no engine binary of its own (no llama-server)
+      path: null,
       backend: status?.backend ?? null,
       running: Boolean(status?.running),
     });
@@ -1709,6 +1709,9 @@ async function api(req, res, path, method, url) {
       }
       const candidate=models.library().variants.find(v=>v.id===id);if(!candidate||!models.isOnDisk(id)||['loading','downloading','unloading'].includes(candidate.state))return error(res,409,'Download this model before loading it.');
       const loadConfig={ beginner: store.get().beginner, expert: engine.params(), serving: store.get().serving };
+      if (!['PrismML', 'TurboQuant'].includes(localBackendChoice(loadConfig.expert))) {
+        return error(res, 409, 'Strata runs models on its own engine. Choose a verified PrismML or TurboQuant adapter explicitly for this imported model.');
+      }
       try{requireModelKvCompatible(candidate,loadConfig.expert);}catch(err){return error(res,409,err.message);}
       const lib = await models.load(id, {
         hardware: hw,

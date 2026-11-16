@@ -36,7 +36,13 @@ function LegacyChatModelPicker() {
     const trigger = useRef<HTMLButtonElement>(null);
     const running = library?.variants.find(v => v.id === library.loaded);
     const version = library?.variants.find(v => v.id === selected);
-    const groups = library ? pickerGroups(library) : [];
+    const backend = engine?.expert.find(p => p.id === 'runtime.backend')?.value;
+    const explicitAdapter = backend === 'PrismML' || backend === 'TurboQuant';
+    // Returning to a running import needs no new runtime. New loads retain server-side adapter verification.
+    const groups = library ? pickerGroups(library.mode === 'real' ? {
+        ...library, variants: library.variants.filter(v => v.local &&
+            (explicitAdapter || pickerVersionState(v, library.loaded).running)),
+    } : library) : [];
     const installedNative = pickerNativeModels(native?.installed?.models, native?.instances);
     const status = version ? pickerVersionState(version, library?.loaded ?? null) : null;
     const tooBig = !!version && library?.mode === 'real' && versionFit(version, hardware, contextTokens(engine?.beginner.contextLength ?? '32K')).zone === 'too-big';

@@ -1,3 +1,4 @@
+import {verifiedLocalRuntime} from './helpers/verified-local-runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
@@ -10,8 +11,9 @@ import {join} from 'node:path';
 
 test('forced unload waits for actual child exit before publishing stopped', async t => {
   const home=mkdtempSync(join(tmpdir(),'strata-stop-owned-'));
+  const expert=verifiedLocalRuntime(t, home);
   const before={home:process.env.STRATA_HOME,binary:process.env.STRATA_LLAMA_SERVER};
-  process.env.STRATA_HOME=home;process.env.STRATA_LLAMA_SERVER=process.execPath;
+  process.env.STRATA_HOME=home;
   const proc=Object.assign(new EventEmitter(),{pid:424242,exitCode:null,signalCode:null,stdout:new PassThrough(),stderr:new PassThrough()});
   const signals=[];
   proc.kill=signal=>{signals.push(signal);if(signal==='SIGKILL')setTimeout(()=>{proc.signalCode='SIGKILL';proc.emit('exit',null,'SIGKILL');},50);return true;};
@@ -23,7 +25,7 @@ test('forced unload waits for actual child exit before publishing stopped', asyn
     if(before.binary===undefined)delete process.env.STRATA_LLAMA_SERVER;else process.env.STRATA_LLAMA_SERVER=before.binary;
     proc.stdout.destroy();proc.stderr.destroy();rmSync(home,{recursive:true,force:true});});
   const model=join(home,'fixture.gguf');writeFileSync(model,'fixture');
-  await supervisor.start({modelId:'fixture',modelPath:model,config:{beginner:{contextLength:'2k'},expert:[]},hardware:{cpu:{cores:4}}});
+  await supervisor.start({modelId:'fixture',modelPath:model,config:{beginner:{contextLength:'2k'},expert},hardware:{cpu:{cores:4}}});
   t.mock.timers.enable({apis:['setTimeout']});
   let settled=false;const stopped=supervisor.stop().then(value=>{settled=true;return value;});
   t.mock.timers.tick(4001);await new Promise(setImmediate);

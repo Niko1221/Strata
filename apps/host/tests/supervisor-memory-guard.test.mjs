@@ -1,3 +1,4 @@
+import {verifiedLocalRuntime} from './helpers/verified-local-runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
@@ -11,8 +12,9 @@ const GiB = 1024 ** 3;
 
 test('Windows supervisor admission and pressure during both load and generation preserve ownership and errors', { skip: process.platform !== 'win32' }, async t => {
   const dir = mkdtempSync(join(os.tmpdir(), 'strata-physical-guard-'));
+  const expert=verifiedLocalRuntime(t, dir);
   const before = { home: process.env.STRATA_HOME, binary: process.env.STRATA_LLAMA_SERVER };
-  process.env.STRATA_HOME = dir; process.env.STRATA_LLAMA_SERVER = process.execPath;
+  process.env.STRATA_HOME = dir;
   let free = 9 * GiB, pressureOnSpawn = false, proc, kills = 0;
   t.mock.method(os, 'freemem', () => free);
   t.mock.method(cp, 'spawn', () => {
@@ -30,7 +32,7 @@ test('Windows supervisor admission and pressure during both load and generation 
     rmSync(dir, { recursive: true, force: true });
   });
   const modelPath = join(dir, 'fixture.gguf'); writeFileSync(modelPath, 'fixture');
-  const args = { modelId: 'fixture', modelPath, config: { beginner: { contextLength: '2k' }, expert: [] }, hardware: { cpu: { cores: 4 } } };
+  const args = { modelId: 'fixture', modelPath, config: { beginner: { contextLength: '2k' }, expert }, hardware: { cpu: { cores: 4 } } };
   let stoppedOther = false;
   free = 4 * GiB;
   await assert.rejects(supervisor.start({ ...args, beforeStart: () => { stoppedOther = true; } }), /RAM protection/);

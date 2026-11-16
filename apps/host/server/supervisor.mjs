@@ -1,24 +1,17 @@
 /**
- * Engine supervisor.
+ * Engine supervisor: explicit adapter process ownership, status, log ring buffer,
+ * Prometheus metrics and tuning configuration translated into command flags.
  *
- * Owns the inference process: resolves a binary, translates the tuning
- * configuration into real flags, spawns it, waits for health, keeps a log ring
- * buffer, and polls the engine's own Prometheus metrics so the Monitor shows
- * measured numbers rather than guesses.
- *
- * Supported backends, in preference order:
- *   1. llama.cpp `llama-server` (bundled under $STRATA_HOME/engine, or on PATH)
- *   2. any already-running OpenAI-compatible server on localhost
+ * Models normally run on the Strata engine. Only explicitly selected, verified PrismML/TurboQuant adapters use this lifecycle.
  */
 import { CONTEXT_TOKENS } from './catalog.mjs';
 import { randomBytes } from 'node:crypto';
 import { privateLlamaArgs } from './llama-memory-policy.mjs';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { MODELS_DIR } from './store.mjs';
 import { componentsDirectory } from './control-runtime.mjs';
-import { which } from './util.mjs';
 import { buildSpin8Args, probeBackendCapabilities } from './spin8-backend.mjs';
 import { resolveKvSettings, explicitKvEnvironment } from './kv-settings.mjs';
 import {localBackendChoice,findLocalBackend,verifyLocalBackend,requireRuntimeKv} from './local-backends.mjs';
@@ -82,85 +75,24 @@ export function init(hub) {
   hubRef = hub;
 }
 
-/* ------------------------------------------------------------------ binary --- */
-
-export function findBinary({ platform = process.platform, env = process.env, modelsDir = MODELS_DIR, componentsDir = componentsDirectory({ env, platform }), backend='Automatic', installRoot } = {}) {
-  if(backend!=='Automatic')return findLocalBackend(backend,{componentsDir,platform,installRoot});
-  const binaryNames = platform === 'win32' ? ['llama-server.exe', 'llama-server'] : ['llama-server'];
-  const candidates = [];
-
-  if (env.STRATA_LLAMA_SERVER) candidates.push({ path: env.STRATA_LLAMA_SERVER, source: 'STRATA_LLAMA_SERVER' });
-
-  // The app's generic GGUF component is self-contained: its executable and DLLs stay together.
-  // A staged update only becomes active after its pointer is written, as with the Control component.
-  const genericRoot = join(componentsDir, 'generic-gguf');
-  try {
-    const pointer = JSON.parse(readFileSync(join(genericRoot, 'active.json'), 'utf8').replace(/^\uFEFF/, ''));
-    if (typeof pointer?.folder === 'string' && /^[\w.+-]+$/.test(pointer.folder) && !['.', '..'].includes(pointer.folder)) {
-      const activeDir = resolve(genericRoot, pointer.folder);
-      if (dirname(activeDir) === resolve(genericRoot) && dirname(realpathSync(activeDir)) === realpathSync(genericRoot)) {
-        for (const name of binaryNames) candidates.push({ path: join(activeDir, name), source: 'generic-gguf' });
-      }
-    }
-  } catch { /* no activated generic backend */ }
-  for (const name of binaryNames) candidates.push({ path: join(genericRoot, name), source: 'generic-gguf' });
-
-  // A build downloaded into the app's own folder wins over anything on PATH:
-  // it is the version Strata was tested against.
-  try {
-    const engineDir = join(modelsDir, '..', 'engine');
-    if (existsSync(engineDir)) {
-      if (platform === 'win32') {
-        for (const name of binaryNames) candidates.push({ path: join(engineDir, name), source: 'bundled' });
-      }
-      for (const entry of readdirSync(engineDir)) {
-        const dir = join(engineDir, entry);
-        if (!statSync(dir).isDirectory()) continue;
-        for (const name of binaryNames) {
-          const full = join(dir, name);
-          if (existsSync(full)) candidates.push({ path: full, source: 'bundled' });
-          if (platform === 'win32') {
-            candidates.push({ path: join(dir, 'bin', 'Release', name), source: 'bundled' });
-            candidates.push({ path: join(dir, 'bin', name), source: 'bundled' });
-          }
-        }
-      }
-    }
-  } catch {
-    /* ignore unreadable engine dir */
-  }
-
-  for (const name of binaryNames) {
-    candidates.push({ path: `/opt/homebrew/bin/${name}`, source: 'homebrew' });
-    candidates.push({ path: `/usr/local/bin/${name}`, source: 'homebrew' });
-  }
-
-  return candidates.find((c) => existsSync(c.path)) ?? null;
+/* Explicit adapters only: never search environment, PATH, Homebrew or generic GGUF components. */
+export function findBinary({ platform = process.platform, env = process.env, componentsDir = componentsDirectory({ env, platform }), backend = 'Automatic', installRoot } = {}) {
+  if (!['PrismML', 'TurboQuant'].includes(backend)) return null;
+  return findLocalBackend(backend, { componentsDir, platform, installRoot });
 }
 
-export async function resolveBinary({ updateState = true, backend='Automatic' } = {}) {
-  const found = findBinary({backend});
-  if (found) {
-    if (updateState) {
-      state.binary = found.path;
-      state.binarySource = found.source;
-    }
-    return found;
+export async function resolveBinary({ updateState = true, backend = 'Automatic' } = {}) {
+  const found = findBinary({ backend });
+  if (found && updateState) {
+    state.binary = found.path;
+    state.binarySource = found.source;
   }
-  if(backend!=='Automatic')return null;
-  const onPath = await which(process.platform === 'win32' ? 'llama-server.exe' : 'llama-server');
-  if (onPath) {
-    if (updateState) {
-      state.binary = onPath;
-      state.binarySource = 'PATH';
-    }
-    return { path: onPath, source: 'PATH' };
-  }
-  return null;
+  return found;
 }
 
-export async function probeCapabilities({ manifestPath = process.env.STRATA_BONSAI_MANIFEST ?? null } = {}) {
-  const binary = await resolveBinary({ updateState: false });
+export async function probeCapabilities({ backend = 'Automatic', manifestPath = process.env.STRATA_BONSAI_MANIFEST ?? null } = {}) {
+  const binary = await resolveBinary({ updateState: false, backend });
+  if (binary) await verifyLocalBackend(binary, backend);
   return probeBackendCapabilities(binary?.path, { manifestPath });
 }
 
@@ -314,13 +246,13 @@ async function readContextCapacity(port, modelPath, key) {
 /** Validate a selected runtime before an already loaded model is stopped. */
 export async function preflight({config,modelPath}) {
   const backend=localBackendChoice(config?.expert);
+  if(!['PrismML','TurboQuant'].includes(backend))throw new Error('Strata runs models on its own engine. Select a verified PrismML or TurboQuant adapter explicitly.');
   const binary=await resolveBinary({backend,updateState:false});
   if(!binary)throw new Error(`No ${backend==='Automatic'?'llama-server':backend} runtime found. Install the matching local runtime first.`);
   if(!existsSync(modelPath))throw new Error(`Model file missing: ${modelPath}`);
   const kv=resolveKvSettings(config?.expert);
-  const runtime=backend==='Automatic'?null:await verifyLocalBackend(binary,backend);
-  if(runtime)requireRuntimeKv(runtime,kv);
-  else if([kv.k,kv.v].some(type=>type.startsWith('turbo')))throw new Error('Choose the verified TurboQuant llama-server backend before using a TurboQuant K/V cache.');
+  const runtime=await verifyLocalBackend(binary,backend);
+  requireRuntimeKv(runtime,kv);
   return {binary,backend,runtime};
 }
 

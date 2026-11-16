@@ -52,16 +52,31 @@ class CapabilityTable(unittest.TestCase):
                   "assets": ["strata-control-0.1.59.1-linux-x86_64.tar.gz", "strata-engine-0.1.59-linux-x86_64-sycl.tar.gz"]}
         self.assertEqual(ct.versions_line(hotfix), "App and Terminal 0.2.13, Control 0.1.59.1, engines 0.1.59. "
                          "App, Control and engine versions differ on purpose.")
+        carried = {"product_version": "0.2.15", "control_version": "0.1.61", "engine_version": "0.1.60",
+                   "assets": ["strata-control-0.1.61-linux-x86_64.tar.gz", "strata-engine-0.1.60-linux-x86_64-cuda-cuda13.tar.gz"]}
+        self.assertEqual(ct.versions_line(carried), "App and Terminal 0.2.15, Control 0.1.61, engines 0.1.60. "
+                         "App, Control and engine versions differ on purpose.")
+
+    def test_carried_sycl_package_is_present_without_current_hardware_qualification(self):
+        family = next(f for f in self.cap['families'] if f['id'] == 'qwen38')
+        self.assertEqual(family['cells']['intel_linux']['supported'], 'untested')
+        self.assertEqual(ct.packages(self.release, family)['intel_linux'], [('sycl', '0.1.59')])
+        self.assertIn('archive was not downloaded or executed', family['cells']['intel_linux']['limits'])
+        self.assertEqual(ct.validate(self.cap, self.release), [])
 
     def test_source_route_does_not_invent_a_current_package_or_remove_the_backend(self):
-        family = next(f for f in self.cap['families'] if f['id'] == 'qwen38')
+        cap = copy.deepcopy(self.cap)
+        release = copy.deepcopy(self.release)
+        release['upstream']['assets'] = [a for a in release['upstream']['assets'] if '-sycl.' not in a]
+        family = next(f for f in cap['families'] if f['id'] == 'qwen38')
+        family['cells']['intel_linux']['supported'] = 'source-only'
         self.assertEqual(family['cells']['intel_linux']['supported'], 'source-only')
-        self.assertNotIn('intel_linux', ct.packages(self.release, family))
-        self.assertEqual(ct.validate(self.cap, self.release), [])
-        self.assertIn('Source route only, without a package in this release: Intel Arc on Linux', ct.summary(self.cap, family))
-        changed = copy.deepcopy(self.release)
+        self.assertNotIn('intel_linux', ct.packages(release, family))
+        self.assertEqual(ct.validate(cap, release), [])
+        self.assertIn('Source route only, without a package in this release: Intel Arc on Linux', ct.summary(cap, family))
+        changed = copy.deepcopy(release)
         changed['upstream']['assets'].append('strata-engine-0.1.60-linux-x86_64-sycl.tar.gz')
-        self.assertTrue(any('source-only but the release has a package' in p for p in ct.validate(self.cap, changed)))
+        self.assertTrue(any('source-only but the release has a package' in p for p in ct.validate(cap, changed)))
 
     def test_control_only_hotfix_keeps_all_four_actual_versions(self):
         release = {'product_version': '0.2.14', 'terminal_version': '0.2.14.1',

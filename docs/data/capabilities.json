@@ -21,7 +21,7 @@
     "nvidia_spark": {"supported": "yes", "hardware": "GB10", "limits": "", "measured": "[DGX_SPARK_LINUX.md](DGX_SPARK_LINUX.md)"},
     "amd_win": {"supported": "yes", "hardware": "RX 6000, 7000 and 9000, Ryzen AI Max", "limits": "", "measured": "[STRIX_HALO_WINDOWS.md](STRIX_HALO_WINDOWS.md); [AMD_HIP.md](AMD_HIP.md)"},
     "amd_linux": {"supported": "yes", "hardware": "RX 6000, 7000 and 9000, Radeon AI PRO R9700, Ryzen AI Max", "limits": "RX 6000 is validated differently from the newer cards ([AMD_HIP.md](AMD_HIP.md)).", "measured": "[AMD_HIP.md](AMD_HIP.md); [STRIX_HALO.md](STRIX_HALO.md)"},
-    "intel_linux": {"supported": "source-only", "hardware": "Arc A-series and B-series", "limits": "The backend source remains available ([INTEL_ARC.md](INTEL_ARC.md)); the current official release asset inventory has no SYCL package. Earlier package/API compatibility is not qualified here.", "measured": "[INTEL_ARC.md](INTEL_ARC.md) (historical upstream measurements)"},
+    "intel_linux": {"supported": "untested", "hardware": "Arc A-series and B-series", "limits": "The signed v0.2.15 feed carries the v0.2.13 SYCL 0.1.59 package ([INTEL_ARC.md](INTEL_ARC.md)). Its feed metadata and published asset digest agree; the archive was not downloaded or executed here. Current Qwen3.8 compatibility and Arc inference remain unqualified. This is not part of the Hakua Windows CUDA distribution.", "measured": "[INTEL_ARC.md](INTEL_ARC.md) (historical upstream measurements)"},
     "mac": {"supported": "yes", "hardware": "M1 or newer, macOS 15 or newer", "limits": "", "measured": "[MAC.md](MAC.md#measured-m5-max-128-gb) (M5 Max, 128 GB)"}
    }
   },

@@ -44,7 +44,7 @@ test('bad modes and profile paths fail validation without spawning', () => {
   }
 });
 
-test('Windows resolver finds root, version, and CMake bin llama-server.exe paths', () => {
+test('Automatic resolver refuses root, version, CMake, activated generic and environment binaries', () => {
   const base = mkdtempSync(join(tmpdir(), 'strata-bonsai-resolve-'));
   try {
     const engine = join(base, 'engine');
@@ -54,20 +54,20 @@ test('Windows resolver finds root, version, and CMake bin llama-server.exe paths
     mkdirSync(dir, { recursive: true });
     const nested = join(dir, 'llama-server.exe');
     writeFileSync(nested, 'fixture');
-    assert.equal(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }).path, nested);
+    assert.equal(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }), null);
     const root = join(engine, 'llama-server.exe');
     writeFileSync(root, 'fixture');
-    assert.equal(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }).path, root);
+    assert.equal(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }), null);
     const generic=join(componentsDir,'generic-gguf'),activated=join(generic,'v1');mkdirSync(activated,{recursive:true});
     const packaged=join(activated,'llama-server.exe');writeFileSync(packaged,'fixture');
     writeFileSync(join(generic,'active.json'),JSON.stringify({folder:'v1'}));
-    assert.deepEqual(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }),{path:packaged,source:'generic-gguf'});
+    assert.deepEqual(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }),null);
     const outside=join(componentsDir,'llama-server.exe');writeFileSync(outside,'outside fixture');
     for(const folder of ['..','.']){
       writeFileSync(join(generic,'active.json'),JSON.stringify({folder}));
-      assert.equal(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }).path, root,`unsafe active pointer ${folder} is ignored`);
+      assert.equal(findBinary({ platform: 'win32', env: {}, modelsDir, componentsDir }), null,`unsafe active pointer ${folder} is ignored`);
     }
-    assert.equal(findBinary({ platform: 'win32', env: { STRATA_LLAMA_SERVER: nested }, modelsDir, componentsDir }).path, nested);
+    assert.equal(findBinary({ platform: 'win32', env: { STRATA_LLAMA_SERVER: nested }, modelsDir, componentsDir }), null);
   } finally { rmSync(base, { recursive: true, force: true }); }
 });
 
@@ -82,13 +82,13 @@ test('missing binary and ordinary executable never claim Spin8 or verified Bonsa
   assert.equal(ordinary.spin8.available, false);
 });
 
-test('probing an explicitly selected candidate does not rewrite supervisor lifecycle state', async () => {
+test('probing Automatic ignores a generic environment executable and preserves lifecycle state', async () => {
   const prior = process.env.STRATA_LLAMA_SERVER;
   const before = status();
   try {
     process.env.STRATA_LLAMA_SERVER = process.execPath;
     const result = await probeCapabilities({ manifestPath: null });
-    assert.equal(result.available, true);
+    assert.equal(result.available, false);
     assert.deepEqual(status(), before);
   } finally {
     if (prior === undefined) delete process.env.STRATA_LLAMA_SERVER;

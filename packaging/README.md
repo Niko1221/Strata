@@ -1,7 +1,7 @@
 # Strata packaging: targets, recipes and locks
 
 This page is for developers who build the desktop app, Terminal and engine packages.
-Upstream reference: app and Terminal 0.2.14, Control and engines 0.1.60.
+Upstream reference: app and Terminal 0.2.15, Control 0.1.61, engines 0.1.60.
 The Hakua fork uses independent versions; its current source candidate is 0.6.0.
 To install the fork on Windows, use [docs/HAKUA_INSTALL.md](../docs/HAKUA_INSTALL.md).
 The cross-platform recipes below describe upstream builds, not measured Hakua

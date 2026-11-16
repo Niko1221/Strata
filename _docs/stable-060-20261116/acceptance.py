@@ -105,7 +105,7 @@ WORKFLOWS = {
     ),
     "snapshot.yml": (
         "Config snapshot",
-        "3e17cfb268e3c8b938ed3fca6c3a84d083d00e66b759bdf88e0a54a9e03501be",
+        "95461d0adbe24b4fae4e3b307c537bdea82f1d80179cd590997bc55a29564c1b",
         ["ubuntu-24.04", "windows-2022"],
     ),
     "pages.yml": (

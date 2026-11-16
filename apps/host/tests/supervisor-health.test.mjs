@@ -1,3 +1,4 @@
+import {verifiedLocalRuntime} from './helpers/verified-local-runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
@@ -10,8 +11,9 @@ import {join} from 'node:path';
 
 async function fixture(t, health) {
   const home=mkdtempSync(join(tmpdir(),'strata-health-'));
+  const expert=verifiedLocalRuntime(t, home);
   const before={home:process.env.STRATA_HOME,binary:process.env.STRATA_LLAMA_SERVER};
-  process.env.STRATA_HOME=home;process.env.STRATA_LLAMA_SERVER=process.execPath;
+  process.env.STRATA_HOME=home;
   const proc=Object.assign(new EventEmitter(),{pid:424243,exitCode:null,signalCode:null,stdout:new PassThrough(),stderr:new PassThrough()});
   proc.kill=signal=>{if(proc.exitCode!==null)return false;proc.signalCode=signal;proc.emit('exit',null,signal);return true;};
   t.mock.method(childProcess,'spawn',()=>proc);syncBuiltinESMExports();
@@ -22,7 +24,7 @@ async function fixture(t, health) {
     if(before.binary===undefined)delete process.env.STRATA_LLAMA_SERVER;else process.env.STRATA_LLAMA_SERVER=before.binary;
     proc.stdout.destroy();proc.stderr.destroy();rmSync(home,{recursive:true,force:true});});
   const model=join(home,'fixture.gguf');writeFileSync(model,'fixture');
-  return {proc,supervisor,options:{modelId:'fixture',modelPath:model,config:{beginner:{contextLength:'2k'},expert:[]},hardware:{cpu:{cores:4}},timeoutMs:50}};
+  return {proc,supervisor,options:{modelId:'fixture',modelPath:model,config:{beginner:{contextLength:'2k'},expert},hardware:{cpu:{cores:4}},timeoutMs:50}};
 }
 
 test('a ready HTTP response from a child that already exited cannot publish running',async t=>{

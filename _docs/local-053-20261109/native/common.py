@@ -141,9 +141,10 @@ def require_current_job(root: Path) -> None:
             "Internal worker/driver must already be contained in its owning Job")
 
 
-def admit(root: Path) -> dict[str, int]:
+def admit(root: Path, *, allow_low_ram: bool = False) -> dict[str, int]:
+    require(type(allow_low_ram) is bool, "Explicit boolean RAM exception required")
     value = resources(root)
-    for key, floor in (("available_ram", 3 * GIB), ("commit_headroom", 4 * GIB),
+    for key, floor in (("available_ram", 0 if allow_low_ram else 3 * GIB), ("commit_headroom", 4 * GIB),
                        ("H_free", 10 * GIB), ("C_free", 5 * GIB)):
         require(value[key] >= floor, f"Admission refused: {key} below {floor}; coordinate with parent")
     return value
@@ -157,21 +158,34 @@ def passed_run(run: dict[str, Any]) -> bool:
 
 def owned(root: Path, name: str, command: list[str], seconds: int,
           *, env: dict[str, str] | None = None, on_output: Any = None,
-          output_bytes: int = 8 * 1024**2) -> dict[str, Any]:
+          output_bytes: int = 8 * 1024**2, allow_low_ram: bool = False) -> dict[str, Any]:
+    require(type(allow_low_ram) is bool, "Explicit boolean RAM exception required")
     require(re.fullmatch(r"[a-zA-Z0-9_.-]+", name) and 0 < seconds <= 5400, "Invalid owned command budget")
     receipt = BASE / "receipts" / (name + ".json")
     require(not receipt.exists(), f"Retain command receipt: {receipt}")
     row = {"name": name, "command": command, "started": time.time(), "passed": False,
            "deadlineSeconds": seconds, "outputBytes": output_bytes}
+    ram_policy = {"allowLowRam": allow_low_ram, "nominalFloorBytes": 3 * GIB,
+                  "effectiveFloorBytes": 0 if allow_low_ram else 3 * GIB,
+                  "authorization": "user-explicit-2026-11-16-operation-only" if allow_low_ram else None,
+                  "samples": 0, "nominalBreachSamples": 0, "minAvailableBytes": None}
+    row["ramPolicy"] = ram_policy
+    def observe(value):
+        available = value["available_ram"]
+        ram_policy["samples"] += 1
+        ram_policy["nominalBreachSamples"] += int(available < 3 * GIB)
+        previous = ram_policy["minAvailableBytes"]
+        ram_policy["minAvailableBytes"] = available if previous is None else min(previous, available)
+        return value
     save(receipt, row, fresh=True)
     try:
-        row["admission"] = admit(root)
+        row["admission"] = observe(admit(root, allow_low_ram=allow_low_ram))
         _, run_owned = load_helpers(root)
         budget = SimpleNamespace(job_commit_bytes=None, max_processes=64,
-                                 min_available_ram=3 * GIB, min_commit_headroom=4 * GIB,
+                                 min_available_ram=ram_policy["effectiveFloorBytes"], min_commit_headroom=4 * GIB,
                                  min_H_free=10 * GIB, timeout_s=seconds, output_bytes=output_bytes)
         row["run"] = run_owned(command, BASE, env or environment(),
-            BASE / "receipts" / (name + ".txt"), budget, lambda _: resources(root),
+            BASE / "receipts" / (name + ".txt"), budget, lambda _: observe(resources(root)),
             memory_diagnostics=True, on_output=on_output,
             on_tick=lambda: "C_disk_floor" if shutil.disk_usage("C:/").free < 5 * GIB else None)
         row["passed"] = passed_run(row["run"])

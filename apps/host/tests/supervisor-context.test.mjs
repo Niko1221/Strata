@@ -1,3 +1,4 @@
+import {verifiedLocalRuntime} from './helpers/verified-local-runtime.mjs';
 /** Real supervisor/profile flow; only the child and its local HTTP API are fixtures. */
 import './helpers/isolate-profile.mjs';
 import test from 'node:test';
@@ -17,9 +18,10 @@ async function fixture(t) {
   const home = mkdtempSync(join(tmpdir(), 'supervisor-context-'));
   const modelPath = join(home, 'fixture.gguf');
   writeFileSync(modelPath, 'synthetic model; no weights');
+  const expert=verifiedLocalRuntime(t, home);
   const before = { home: process.env.STRATA_HOME, binary: process.env.STRATA_LLAMA_SERVER };
   process.env.STRATA_HOME = home;
-  process.env.STRATA_LLAMA_SERVER = process.execPath;
+
   const children = [], requests = [];
   let props = { model_path: modelPath, default_generation_settings: { n_ctx: 32768 }, total_slots: 1 };
   let pending = null;
@@ -58,7 +60,7 @@ async function fixture(t) {
     rmSync(home, { recursive: true, force: true });
   });
   const start = (contextLength = '32k', parallel = 1) => supervisor.start({ modelId: 'gguf-advertised-262144', modelPath, port,
-    config: { beginner: { contextLength }, expert: [{ id: 'server.parallel', value: parallel }], serving: { apiKey: 'fixture-context-key' } },
+    config: { beginner: { contextLength }, expert: [...expert, { id: 'server.parallel', value: parallel }], serving: { apiKey: 'fixture-context-key' } },
     hardware: { cpu: { cores: 4 } }, runObservation: false });
   return { supervisor, start, requests, children, modelPath, setProps(value) { props = value; },
     setHealth(value) { health = value; },

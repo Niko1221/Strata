@@ -33,8 +33,8 @@ for (const saved of [false, true]) test(`opening the real host leaves a ${saved 
   writeFileSync(join(data, 'state.json'), JSON.stringify(state));
   const port = await freePort();
   let output = '';
-  // Node deliberately rejects llama-server's -m: the real load path can be
-  // observed without GPU use or any access to the person's installed engines.
+  // A generic environment executable must never start, automatically or by
+  // loading an import without an explicitly selected verified adapter.
   const host = spawn(process.execPath, ['server/index.mjs'], {
     cwd: fileURLToPath(new URL('..', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, STRATA_HOME: home, STRATA_MODELS_DIR: join(home, 'models'),
@@ -53,7 +53,7 @@ for (const saved of [false, true]) test(`opening the real host leaves a ${saved 
   assert.ok(up, output);
   await delay(1600); // includes the former 700 ms automatic-load timer
   const library = await get('/api/models');
-  assert.equal(library.current, id, 'keep the model selection');
+  assert.equal(library.current, saved ? id : null, 'preserve an explicit prior selection without inventing a new one');
   assert.equal(library.loaded, null);
   assert.equal(library.engine.status, 'stopped', output);
   assert.equal(library.variants.find(v => v.id === id).state, 'installed');
@@ -63,5 +63,7 @@ for (const saved of [false, true]) test(`opening the real host leaves a ${saved 
     method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(15000),
   });
   const result = await response.json();
-  assert.match(JSON.stringify(result), /bad option: -m/, 'an explicit load still starts the selected backend');
+  assert.equal(response.status, 409);
+  assert.match(result.error, /own engine/, 'an unselected generic backend remains refused on explicit load');
+  assert.doesNotMatch(output, /autostart.*loading|bad option: -m/);
 });
