@@ -12,8 +12,9 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ab_versions import (Busy, Packages, ReleasePair, assert_idle, changed, ensure_packages, isolated_env, list_releases,  # noqa: E402
-                         live_roots, pairs_from_releases, parse_sums, provision_home, resolve_versions, snapshot)
+from ab_versions import (Busy, Packages, ReleasePair, assert_idle, changed, collect_configs, control_command, ensure_packages,  # noqa: E402
+                         isolated_env, launch, list_releases, live_roots, pairs_from_releases, parse_sums, provision_home,
+                         resolve_versions, served_engine, snapshot, version_problem)
 
 
 def a(name):
@@ -348,6 +349,147 @@ class GuardTest(unittest.TestCase):
         self.assertNotIn(self.root, live_roots(self.live_env(), self.root / "models" / "x.gguf"))
         anchor = Path(self.root.anchor)                              # D:/models/x.gguf style: the drive root
         self.assertNotIn(anchor, live_roots(self.live_env(), anchor / "models" / "x.gguf"))
+
+
+FAKE = """import json, os, sys
+from pathlib import Path
+here = Path(__file__).parent
+(here / "args.json").write_text(json.dumps(sys.argv[1:]), encoding="utf-8")
+log = Path(os.environ["HOME"]) / "AppData/Local/Strata/launch/x.engine.log"
+log.parent.mkdir(parents=True, exist_ok=True)
+with log.open("a", encoding="utf-8") as f:
+    f.write("[strata] 2026-11-16 10:00:00 engine started: " + os.environ["FAKE_EXE"] + " --serve --port 1\\n")
+err = here / "stderr.txt"
+if err.exists():
+    sys.stderr.write(err.read_text(encoding="utf-8"))
+code = here / "exit.txt"
+sys.exit(int(code.read_text()) if code.exists() else 0)
+"""
+
+
+def fake_health(status="ok"):
+    return lambda url, timeout=None: io.BytesIO(json.dumps({"status": status}).encode())
+
+
+class LaunchTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.control = self.root / "control"
+        (self.control / "bin").mkdir(parents=True)
+        (self.control / "fake.py").write_text(FAKE, encoding="utf-8")
+        if os.name == "nt":
+            (self.control / "bin" / "strata.cmd").write_text(f'@"{sys.executable}" "%~dp0..\\fake.py" %*\r\n', encoding="utf-8")
+        else:
+            sh = self.control / "bin" / "strata"
+            sh.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/../fake.py" "$@"\n', encoding="utf-8")
+            sh.chmod(0o755)
+        self.exe = self.home / "components" / "engine" / "strata-engine-0.1.55 x" / "strata.exe"
+        self.env = isolated_env(self.home, os.environ) | {"FAKE_EXE": str(self.exe)}
+
+    def run_launch(self, tune=None, model=Path("m.gguf"), health=None):
+        return launch(self.control, self.env, model, self.root / "data", 18090, tune, opener=health or fake_health())
+
+    def args(self):
+        return json.loads((self.control / "args.json").read_text(encoding="utf-8"))
+
+    def test_launch_passes_tune_and_retune(self):
+        r = self.run_launch(tune="quick")
+        self.assertTrue(r.ok, r.reason)
+        args = self.args()
+        self.assertEqual(args[:2], ["launch", "--model-path"])
+        for flag in ("--yes", "--no-tui", "--port", "18090", "--data-dir"):
+            self.assertIn(flag, args)
+        i = args.index("--tune")
+        self.assertEqual(args[i:i + 3], ["--tune", "quick", "--retune"])
+        self.assertEqual(args[args.index("--output") + 1], "json")
+
+    def test_launch_without_tune_has_no_tune_flags(self):
+        self.assertTrue(self.run_launch().ok)
+        self.assertFalse({"--tune", "--retune"} & set(self.args()))
+
+    def test_launch_args_keep_odd_paths(self):
+        odd = r"C:\x\#GIT\Übung dir\m.gguf"
+        self.assertTrue(self.run_launch(model=Path(odd)).ok)
+        args = self.args()
+        self.assertEqual(args[args.index("--model-path") + 1], str(Path(odd)))
+
+    def test_failed_launch_reports_last_line(self):
+        (self.control / "exit.txt").write_text("3")
+        (self.control / "stderr.txt").write_text("usage: strata launch\nunknown flag --vram-elastic\n\n", encoding="utf-8")
+        r = self.run_launch()
+        self.assertFalse(r.ok)
+        self.assertEqual(r.reason, "unknown flag --vram-elastic")
+        self.assertGreaterEqual(r.seconds, 0)
+
+    def test_unhealthy_server_is_not_ok(self):
+        r = self.run_launch(health=fake_health("loading"))
+        self.assertFalse(r.ok)
+        self.assertIn("health", r.reason)
+
+    def test_control_command_prefers_bundled_python(self):
+        if os.name == "nt":
+            self.assertEqual(control_command(self.control), [str(self.control / "bin" / "strata.cmd")])
+            py = self.control / "python" / "python.exe"
+            py.parent.mkdir()
+            py.write_bytes(b"")
+            self.assertEqual(control_command(self.control), [str(py), str(self.control / "strata.py")])
+        else:
+            self.assertEqual(control_command(self.control), [str(self.control / "bin" / "strata")])
+
+    def write_log(self, *exes, name="x.engine.log"):
+        log = self.home / "AppData" / "Local" / "Strata" / "launch" / name
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("".join(f"[strata] 2026-11-16 10:00:0{i} engine started: {e} --serve --ctx 4096\nother\n"
+                               for i, e in enumerate(exes)), encoding="utf-8")
+
+    def test_served_engine_takes_newest_line(self):
+        old = self.home / "components" / "engine" / "old" / "strata.exe"
+        self.write_log(old, self.exe)
+        self.assertEqual(served_engine(self.home), self.exe.parent)
+
+    def test_served_engine_reads_quoted_exe(self):
+        self.write_log(f'"{self.exe}"')
+        self.assertEqual(served_engine(self.home), self.exe.parent)
+
+    def test_version_mismatch_skips(self):
+        pk = Packages("0.1.55", self.root / "strata-engine-0.1.55-windows-x86_64-cuda-cuda13", self.control)
+        self.write_log(self.home / "components" / "engine" / "strata-engine-0.1.56-windows-x86_64-cuda-cuda13" / "strata.exe")
+        msg = version_problem(self.home, pk)
+        self.assertEqual(msg, "served engine strata-engine-0.1.56-windows-x86_64-cuda-cuda13, expected strata-engine-0.1.55-windows-x86_64-cuda-cuda13")
+        self.write_log(self.home / "components" / "engine" / pk.engine_dir.name / "strata.exe")
+        self.assertIsNone(version_problem(self.home, pk))
+
+    def test_version_problem_without_log(self):
+        pk = Packages("0.1.55", self.root / "e", self.control)
+        self.assertIn("expected e", version_problem(self.home, pk))
+
+    def test_collect_configs_keeps_tuned_files_and_never_overwrites(self):
+        launch_dir = self.home / "AppData" / "Local" / "Strata" / "launch"
+        launch_dir.mkdir(parents=True)
+        (launch_dir / "x.json").write_text("{}", encoding="utf-8")
+        (launch_dir / "x.tune.json").write_text('{"tuned": 1}', encoding="utf-8")
+        (launch_dir / "x.engine.log").write_text("log", encoding="utf-8")
+        dest = self.root / "configs"
+        got = collect_configs(self.home, dest)
+        rel = Path("AppData/Local/Strata/launch")
+        self.assertEqual(sorted(p.name for p in got), ["x.json", "x.tune.json"])
+        self.assertFalse((dest / rel / "x.engine.log").exists())
+        (launch_dir / "x.tune.json").write_text('{"tuned": 2}', encoding="utf-8")
+        collect_configs(self.home, dest)
+        self.assertEqual((dest / rel / "x.tune.json").read_text(encoding="utf-8"), '{"tuned": 1}')
+        self.assertEqual((dest / rel / "x.tune.json.1").read_text(encoding="utf-8"), '{"tuned": 2}')
+
+    def test_collect_configs_finds_posix_lowercase_state(self):
+        d = self.home / ".local" / "state" / "strata" / "launch"
+        d.mkdir(parents=True)
+        (d / "x.choices.json").write_text("{}", encoding="utf-8")
+        presets = self.home / ".config" / "strata" / "presets"
+        presets.mkdir(parents=True)
+        (presets / "p.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(sorted(p.name for p in collect_configs(self.home, self.root / "c")), ["p.json", "x.choices.json"])
 
 
 if __name__ == "__main__":
