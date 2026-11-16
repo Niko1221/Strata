@@ -52,7 +52,11 @@ std::vector<float> qi21_rope_table(const std::vector<float>& positions) {
         for (size_t i = 0; i < n; ++i) {
             float* row = out.data() + i * 256 + offset;
             for (size_t j = 0; j < omega.size(); ++j) {
-                const float angle = positions[3 * i + a] * omega[j];
+                // Keep four independent reads of the materialized float, as sd.cpp's
+                // angle matrix does. Combining sin/cos can select a different CRT
+                // implementation (MinGW's x87 sincosf versus UCRT sinf/cosf) and
+                // change the result by one ULP despite identical input bits.
+                const volatile float angle = positions[3 * i + a] * omega[j];
                 row[4 * j] = std::cos(angle);
                 row[4 * j + 1] = -std::sin(angle);
                 row[4 * j + 2] = std::sin(angle);

@@ -175,7 +175,8 @@ class RopeTableMatchesSdcpp(unittest.TestCase):
                         (saved / "delta.json").write_text(json.dumps(dict(case=case, compiler=provenance,
                             positions=differences[0], table=differences[1]), indent=2), encoding="utf-8")
                         print(f"RoPE exact mismatch retained at {saved}")
-                    self.assertEqual(differences, [None, None], f"positions/table: {differences}")
+                    self.assertEqual(differences, [None, None],
+                                     f"positions/table: {differences}; compiler_path={CXX}; {provenance.strip()}")
                     if provenance.startswith("libc=glibc "):
                         self.assertEqual(hashlib.sha256(outputs[0][split:]).hexdigest(), case["sha256"])
 
