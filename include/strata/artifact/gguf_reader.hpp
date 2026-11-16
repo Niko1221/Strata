@@ -333,7 +333,7 @@ struct MetaValue {
     double num() const { return (type == MetaType::F32 || type == MetaType::F64) ? f : (double)u; }
 };
 
-inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
+inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0, uint64_t retain = 64) {
     if (depth > 2) throw std::runtime_error("GGUF: array nesting too deep");
     MetaValue v;
     v.type = t;
@@ -381,10 +381,10 @@ inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
         v.elem = (MetaType)c.read<uint32_t>();
         v.count = c.read<uint64_t>();
         if (v.count > (1u << 24)) throw std::runtime_error("GGUF: implausible array length");
-        v.items.reserve((size_t)std::min<uint64_t>(v.count, 64));
+        v.items.reserve((size_t)std::min<uint64_t>(v.count, retain));
         for (uint64_t i = 0; i < v.count; ++i) {
             MetaValue e = read_value(c, v.elem, depth + 1);
-            if (i < 64) v.items.push_back(std::move(e)); // keep a sample; the count is what matters
+            if (i < retain) v.items.push_back(std::move(e)); // default retains the historical 64-item sample
         }
         break;
     }
@@ -396,7 +396,10 @@ inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
 
 class GgufFile {
 public:
-    explicit GgufFile(const std::string& path) : path_(path) {
+    // Opt-in complete scalar arrays for operation metadata. Existing readers
+    // retain their 64-item sampling behavior; explicitly selected arrays cap at 65536.
+    explicit GgufFile(const std::string& path, std::set<std::string> retain_arrays = {})
+        : path_(path), retain_arrays_(std::move(retain_arrays)) {
         try { open(); }
         catch (...) { close(); throw; }
     }
@@ -488,7 +491,10 @@ private:
         for (uint64_t i = 0; i < n_kv; ++i) {
             std::string key = c.str();
             MetaType t = (MetaType)c.read<uint32_t>();
-            meta_.emplace(std::move(key), read_value(c, t));
+            MetaValue value = read_value(c, t, 0, retain_arrays_.count(key) ? 65536 : 64);
+            if (retain_arrays_.count(key) && value.type == MetaType::ARRAY && value.count > 65536)
+                throw std::runtime_error("GGUF: selected metadata array exceeds 65536 items");
+            meta_.emplace(std::move(key), std::move(value));
         }
         tensors_.reserve((size_t)n_tensors);
         // GGUF has no index to arbitrate between two tensors of one name: find() is first-match, so a
@@ -523,6 +529,7 @@ private:
     }
 
     std::string path_;
+    std::set<std::string> retain_arrays_;
     const uint8_t* base_ = nullptr;
     uint64_t size_ = 0, data_start_ = 0, alignment_ = 32;
     uint32_t version_ = 0;
