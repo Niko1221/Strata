@@ -144,6 +144,15 @@ start): reader on the card 8,079 expert slots and 99.7-102.9 tok/s; on demand wi
 4 pairs of 5, median ratio 0.978), so the shrinking cache is not the default. On demand inside a 2,048 MiB reserve (the default): 20,623 slots against
 20,627 with the reader on the card (48 GB card), VRAM in use between pictures 1,350 MiB lower.
 
+## With `--replicas` (per-replica resize and elastic vision)
+
+Under `"replicas"` (`parallel = 1` per replica, without `--batch`), each replica owns its GPU cache and resizes independently:
+
+- **`POST /v1/vram`** accepts an optional `"replica"` field: an integer replica index (`0`, `1`, ...), a non-empty list of indices (`[0, 1]`), or `null` / omitted to apply to all replicas.
+- Only the targeted replica(s) pause new routing and drain their running request (`ModelBusy` 409 on timeout); untouched replicas keep serving. If a multi-replica resize fails mid-way, already-resized replicas roll back to their prior reserves.
+- The response includes `"replicas": [...]` (plus top-level figures when targeting one replica). `/v1/status` reports per-replica figures under `vram.replicas` (`vram.elastic` is `true` only when every replica is elastic), and `/metrics` reports `engine.vram_replicas`.
+- **Elastic vision on one GPU:** when the image encoder shares a GPU with one replica (for example `r0` on GPU 0 while `r1` runs on GPU 1), starting and stopping the elastic encoder shrinks, pauses, and restores only the replica(s) on the encoder's GPU — `r1` keeps serving uninterrupted and does not lose expert cache. Explicit `POST /v1/vram` reserves continue to stack with `"elastic_mib"` per replica.
+
 ## What to build on
 
 For automation: treat only `200` with `status: "ok"` as a call that ran, then check `vram_free_mib >= reserve_mib`

@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest import mock
@@ -431,6 +432,233 @@ class SharedArena(unittest.TestCase):
             r.__dict__["arena_file"] = str(f)
             r.close()
             self.assertFalse(f.exists())
+
+
+class ReplicaVramResize(unittest.TestCase):
+    """Per-replica POST /v1/vram: targeting, status/metrics views, pause/drain, rollback, and error codes."""
+
+    def _make_engine_cls(self):
+        class _VramGate(FakeEngine):
+            def __init__(self, name: str = "r", *, elastic=True, batch=0, vram_free=1500):
+                super().__init__(n=batch)
+                self.name = name
+                self.log_path = None
+                self.calls = []
+                self.elastic = elastic
+                self.reserves = []
+                self.full_mib = 18000
+                self.unloaded = False
+                self.info = {
+                    "expert_slots": 900,
+                    "expert_cache_mib": self.full_mib,
+                    "vram_free_mib": vram_free,
+                    "vram_elastic": int(elastic),
+                }
+
+            def death_note(self):
+                return "the test replica ended"
+
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                self.calls.append(list(ids))
+                self.last = {"replica": self.name, "generated": len(self.calls)}
+                yield 7
+
+            def unload(self):
+                self.unloaded = True
+                self.up = False
+
+            def restart(self, tries=3):
+                self.unloaded = False
+                self.up = True
+
+            def vram(self, reserve_mib, timeout=120.0):
+                if not self.elastic:
+                    raise ValueError("this engine cannot resize its VRAM use (needs --vram-elastic)")
+                self.reserves.append(reserve_mib)
+                eff = 2048 if reserve_mib is None else reserve_mib
+                cache = max(0, self.full_mib - max(0, eff - 1500))
+                slots = cache // 20
+                out = {
+                    "expert_slots": slots,
+                    "expert_cache_mib": cache,
+                    "expert_cache_full_mib": self.full_mib,
+                    "vram_free_mib": eff,
+                }
+                self.info.update({k: out[k] for k in ("expert_slots", "expert_cache_mib", "vram_free_mib")})
+                self.info["vram"] = dict(out)
+                return out
+
+        return _VramGate
+
+    def _start(self, *, elastic=(True, True), batch=(0, 0)):
+        cls = self._make_engine_cls()
+        self.children = [cls(f"r{i}", elastic=elastic[i], batch=batch[i]) for i in range(len(elastic))]
+        self.engine = ReplicaEngine(self.children)
+        self.tok = ByteTokenizer()
+        self.svc = Service(self.engine, self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        self.httpd = serve(self.svc, port=0)
+        self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+
+    def tearDown(self):
+        if getattr(self, "httpd", None):
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+    def _req(self, method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"} if data is not None else {}
+        req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, json.loads(e.read().decode())
+
+    def test_targeted_and_global_resize_and_status_metrics_views(self):
+        self._start()
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": 2500, "replica": 0})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["replica"], 0)
+        self.assertEqual(self.children[0].reserves, [2500])
+        self.assertEqual(self.children[1].reserves, [])
+
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": 3200, "replica": [1]})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["replica"], 1)
+        self.assertEqual(self.children[0].reserves, [2500])
+        self.assertEqual(self.children[1].reserves, [3200])
+
+        _, st = self._req("GET", "/v1/status")
+        self.assertTrue(st["vram"]["elastic"])
+        self.assertEqual(len(st["vram"]["replicas"]), 2)
+        self.assertEqual(st["vram"]["replicas"][0]["vram_free_mib"], 2500)
+        self.assertEqual(st["vram"]["replicas"][1]["vram_free_mib"], 3200)
+        self.assertEqual(st["vram"]["replicas"][0]["reserve_mib"], 2500)
+        self.assertEqual(st["vram"]["replicas"][1]["reserve_mib"], 3200)
+        self.assertEqual(st["vram"]["vram_free_mib"], 5700)
+        _, m = self._req("GET", "/metrics")
+        # existing replica_view row shape stays unchanged
+        self.assertEqual(set(m["live"]["replicas"][0].keys()), {"replica", "alive", "running", "routed", "batch"})
+        self.assertEqual(len(m["engine"]["vram_replicas"]), 2)
+        self.assertEqual(m["engine"]["vram_replicas"][0]["vram_free_mib"], 2500)
+        self.assertEqual(m["engine"]["vram_replicas"][1]["vram_free_mib"], 3200)
+
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": 1000})
+        self.assertEqual(code, 200, body)
+        self.assertEqual([r["replica"] for r in body["replicas"]], [0, 1])
+        self.assertEqual(self.children[0].reserves[-1], 1000)
+        self.assertEqual(self.children[1].reserves[-1], 1000)
+
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": None, "replica": 0})
+        self.assertEqual(code, 200, body)
+        self.assertIsNone(self.children[0].reserves[-1])
+        self.assertEqual(self.children[1].reserves[-1], 1000)
+
+    def test_invalid_replica_selector_and_solo_rejected_with_400(self):
+        self._start()
+        for bad in (2, -1, [], True, "0", [0, 5]):
+            code, body = self._req("POST", "/v1/vram", {"reserve_mib": 1000, "replica": bad})
+            self.assertEqual(code, 400, (bad, body))
+        self.assertEqual(self.children[0].reserves, [])
+        self.assertEqual(self.children[1].reserves, [])
+
+        cls = self._make_engine_cls()
+        solo_svc = Service(cls("solo"), self.tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        with self.assertRaises(ValueError):
+            solo_svc.vram(1000, replica=0)
+
+    def test_pause_drains_target_and_blocks_new_routes(self):
+        self._start()
+        # Hold replica 0 busy with an active request
+        g0 = self.engine.generate([1, 2], 16, {}, threading.Event())
+        self.assertEqual(next(g0), 7)
+
+        # Replica 1 resizes immediately without waiting for replica 0
+        code, _ = self._req("POST", "/v1/vram", {"reserve_mib": 2100, "replica": 1})
+        self.assertEqual(code, 200)
+
+        # Busy timeout -> 409 ModelBusy while replica 0 still runs
+        self.svc.vram_wait_s = 0.08
+        code, _ = self._req("POST", "/v1/vram", {"reserve_mib": 2600, "replica": 0})
+        self.assertEqual(code, 409)
+        self.svc.vram_wait_s = 10.0
+
+        # Start resize on replica 0 in background: while waiting for g0 to finish, new requests go ONLY to 1
+        res = {}
+
+        def do_resize():
+            res["out"] = self._req("POST", "/v1/vram", {"reserve_mib": 2600, "replica": 0})
+
+        t = threading.Thread(target=do_resize, daemon=True)
+        t.start()
+        deadline = time.monotonic() + 2.0
+        while 0 not in self.engine.paused and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn(0, self.engine.paused)
+
+        # Route a concurrent request: must go to replica 1 while 0 is paused
+        g1 = self.engine.generate([3, 4], 16, {}, threading.Event())
+        self.assertEqual(next(g1), 7)
+        self.assertEqual(self.engine.inflight[1], 1)
+        g1.close()
+
+        # Releasing g0 lets the resize finish
+        g0.close()
+        t.join(timeout=3.0)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(res["out"][0], 200)
+        self.assertEqual(self.children[0].reserves[-1], 2600)
+
+        # Pausing ALL replicas delays route() until unpaused instead of failing EngineDied
+        picked = []
+        with self.engine.pause([0, 1]):
+            rt = threading.Thread(target=lambda: picked.append(self.engine.route([5, 6])), daemon=True)
+            rt.start()
+            time.sleep(0.05)
+            self.assertEqual(picked, [])
+        rt.join(timeout=2.0)
+        self.assertEqual(len(picked), 1)
+        self.assertIn(picked[0], (0, 1))
+        with self.engine.cv:
+            self.engine.inflight[picked[0]] -= 1
+            self.engine.cv.notify_all()
+
+    def test_batch_slots_rejected_and_rollback_on_mixed_elastic_failure(self):
+        self._start(batch=(2, 0))
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": 2200, "replica": 0})
+        self.assertEqual(code, 400, body)
+        self.tearDown()
+        self.httpd = None
+
+        self._start(elastic=(True, False))
+        _, st = self._req("GET", "/v1/status")
+        self.assertFalse(st["vram"]["elastic"])
+        self.assertTrue(st["vram"]["replicas"][0]["elastic"])
+        self.assertFalse(st["vram"]["replicas"][1]["elastic"])
+
+        # Establish prior explicit reserve on replica 0
+        code, _ = self._req("POST", "/v1/vram", {"reserve_mib": 1900, "replica": 0})
+        self.assertEqual(code, 200)
+        # Global resize hits failure on replica 1 -> rolls replica 0 back to 1900
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": 3000})
+        self.assertEqual(code, 400, body)
+        self.assertEqual(self.children[0].reserves, [1900, 3000, 1900])
+        self.assertEqual(self.svc.vram_reserve_by_replica[0], 1900)
+        self.assertNotIn(1, self.svc.vram_reserve_by_replica)
+
+    def test_unloaded_per_replica_reserve_reapplied_only_to_target_on_restart(self):
+        self._start()
+        self.svc.unload()
+        code, body = self._req("POST", "/v1/vram", {"reserve_mib": 2400, "replica": 1})
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["status"], "not loaded")
+        self.assertEqual(self.children[0].reserves, [])
+        self.assertEqual(self.children[1].reserves, [])
+        self.svc.ensure_loaded()
+        self.assertEqual(self.children[0].reserves, [])
+        self.assertEqual(self.children[1].reserves, [2400])
 
 
 if __name__ == "__main__":

@@ -1563,7 +1563,7 @@ class StrataEngine:
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
                     out[k] = int(v) if v.lstrip("-").isdigit() else v
-                self.info.update({k: out[k] for k in ("expert_slots", "vram_free_mib") if k in out})
+                self.info.update({k: out[k] for k in ("expert_slots", "expert_cache_mib", "vram_free_mib") if k in out})
                 self.info["vram"] = out
                 return out
             if time.time() > deadline:
@@ -3214,6 +3214,8 @@ class Vision:
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
         self.max_tokens = self.token_limit(cfg)
+        self.gpu = bool(cfg.get("gpu"))
+        self.cuda_device = cfg.get("cuda_device")
         self.elastic = cfg.get("elastic") is True
         self.elastic_mib = self.elastic_ask_mib(cfg, self.max_tokens)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
@@ -4952,7 +4954,9 @@ class Service:
         self.before_load_strict = False                  # #1997: refuse (503) whenever it fails
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
         self.vram_reserve_asked = False                  # a POST /v1/vram was made (vram_reserve None is then asked)
+        self.vram_reserve_by_replica = {}                # per-replica POST /v1/vram reserves (replica -> int | None)
         self.vision_held = False                         # an elastic encoder holds VRAM the expert cache gave it
+        self.vision_held_replicas = set()                # replicas shrunk for the running elastic vision encoder
         self.vision_no_shrink = False                    # the engine said its cache never shrinks (no --vram-elastic)
         self.vision_no_shrink_said = False
         self.last_image_at = 0.0                         # when an image turn last ended (the elastic encoder's idle)
@@ -5217,6 +5221,7 @@ class Service:
             print("[strata] the engine is not running but its picture encoder is: stopping the encoder to give its memory back", flush=True)
             vision.unload()
             self.vision_held = False
+            self.vision_held_replicas.clear()
             return True
         except Exception as e:                              # noqa: BLE001 - freeing memory never turns a request into a crash
             print(f"[strata] the picture encoder could not be stopped: {e}", flush=True)
@@ -5234,6 +5239,70 @@ class Service:
         started with, a segment or more below the size it had)."""
         return self.vram_reserve if self.vram_reserve_asked else 0
 
+    def _vision_gpu_devices(self) -> list[int]:
+        """GPU device indices the vision encoder uses, or [] for CPU / no vision."""
+        v = self.vision
+        if v is None or getattr(v, "on_cpu", False) or getattr(v, "gpu", True) is False:
+            return []
+        spawn = getattr(v, "spawn", None)
+        env = spawn[2] if isinstance(spawn, (list, tuple)) and len(spawn) >= 3 and isinstance(spawn[2], dict) else {}
+        raw = (env.get("CUDA_VISIBLE_DEVICES")
+               or env.get("ROCR_VISIBLE_DEVICES")
+               or env.get("HIP_VISIBLE_DEVICES")
+               or getattr(v, "cuda_device", None))
+        if raw is not None:
+            devs = [int(x) for x in str(raw).split(",") if x.strip().isdigit()]
+            if devs:
+                return devs
+        return [int(getattr(self, "gpu_index", 0) or 0)]
+
+    def _vision_replicas(self) -> list[int]:
+        """Replica indices sharing a GPU with the vision encoder (only those shrink/grow or pause for encoding)."""
+        if not self._is_replica_engine():
+            return []
+        devs = set(self._vision_gpu_devices())
+        if not devs:
+            return []
+        groups = getattr(self, "replica_gpu_groups", None) or []
+        if groups:
+            matched = []
+            for k, g in enumerate(groups):
+                if k >= len(self.engine.engines):
+                    continue
+                if isinstance(g, (list, tuple, set)):
+                    g_devs = {int(x) for x in g
+                              if (isinstance(x, int) and not isinstance(x, bool)) or str(x).strip().isdigit()}
+                elif isinstance(g, int) and not isinstance(g, bool):
+                    g_devs = {g}
+                else:
+                    g_devs = {int(x) for x in str(g).split(",") if x.strip().isdigit()}
+                if g_devs & devs:
+                    matched.append(k)
+            return matched
+        return [d for d in sorted(devs) if 0 <= d < len(self.engine.engines)] or [0]
+
+    def _vision_free_vram_mib(self) -> int | None:
+        if self._is_replica_engine():
+            devs = self._vision_gpu_devices()
+            if devs:
+                try:
+                    return self.free_vram_mib(devs[0])
+                except TypeError:
+                    return self.free_vram_mib()
+        return self.free_vram_mib()
+
+    @contextlib.contextmanager
+    def _vision_turn(self, cancel=None):
+        """Serialize image encoding with solo FIFO, and under replicas pause only the replica(s) on the same GPU."""
+        with self._turn(cancel):
+            if self._is_replica_engine() and hasattr(self.engine, "pause"):
+                v_reps = self._vision_replicas()
+                if v_reps and all(not int(getattr(self.engine.engines[k], "batch", 0) or 0) for k in v_reps):
+                    with self.engine.pause(v_reps, wait_s=self.vram_wait_s):
+                        yield
+                    return
+            yield
+
     def _vision_up(self):
         """The image turn's start for an elastic encoder that is not running (the caller holds self.fifo): the expert
         cache first keeps the encoder's elastic_mib of VRAM free on top of the reserve, then the encoder starts (load and
@@ -5242,42 +5311,72 @@ class Service:
         v = self.vision
         if not getattr(v, "elastic", False) or v.alive():
             return
+        is_rep = self._is_replica_engine()
+        v_reps = self._vision_replicas() if is_rep else []
         if hasattr(self.engine, "vram") and self.loaded() and not self.vision_no_shrink:
-            try:
-                out = self.engine.vram((self._engine_reserve() or 0) + v.elastic_mib)
-                self.vision_held = True
-                print(f"[strata] images: the expert cache keeps {v.elastic_mib} MiB free for the image encoder "
-                      f"({out.get('expert_cache_mib')} of {out.get('expert_cache_full_mib')} MiB left)", flush=True)
-            except ValueError as e:
-                self.vision_no_shrink = "--vram-elastic" in str(e)     # an engine that never shrinks: not asked again
-                note = "" if self.vision_no_shrink and self.vision_no_shrink_said else f" ({e})"
-                self.vision_no_shrink_said = True
-                self._vision_room_check(v, note)
-        elif self.vision_no_shrink:
+            if is_rep:
+                for k in v_reps:
+                    if not (0 <= k < len(self.engine.engines) and self.engine.engines[k].alive()):
+                        continue
+                    try:
+                        out = self.engine.vram((self.vram_reserve_for(k) or 0) + v.elastic_mib,
+                                               replica=k, wait_s=self.vram_wait_s)
+                        self.vision_held_replicas.add(k)
+                        self.vision_held = True
+                        print(f"[strata] images: replica {k} expert cache keeps {v.elastic_mib} MiB free for the "
+                              f"image encoder ({out.get('expert_cache_mib')} of {out.get('expert_cache_full_mib')} "
+                              f"MiB left)", flush=True)
+                    except ValueError as e:
+                        self.vision_no_shrink = "--vram-elastic" in str(e)
+                        note = "" if self.vision_no_shrink and self.vision_no_shrink_said else f" ({e})"
+                        self.vision_no_shrink_said = True
+                        self._vision_room_check(v, note)
+                        break
+            else:
+                try:
+                    out = self.engine.vram((self._engine_reserve() or 0) + v.elastic_mib)
+                    self.vision_held = True
+                    print(f"[strata] images: the expert cache keeps {v.elastic_mib} MiB free for the image encoder "
+                          f"({out.get('expert_cache_mib')} of {out.get('expert_cache_full_mib')} MiB left)", flush=True)
+                except ValueError as e:
+                    self.vision_no_shrink = "--vram-elastic" in str(e)     # an engine that never shrinks: not asked again
+                    note = "" if self.vision_no_shrink and self.vision_no_shrink_said else f" ({e})"
+                    self.vision_no_shrink_said = True
+                    self._vision_room_check(v, note)
+        elif self.vision_no_shrink and (not is_rep or v_reps):
             self._vision_room_check(v, "")
         if self.vision_held:
             time.sleep(0.2)          # the driver's free-VRAM counter shows the cache's release a moment later
-        free0, t0 = self.free_vram_mib(), time.time()
+        free0, t0 = self._vision_free_vram_mib(), time.time()
         try:
             v.restart()
         except Exception as e:      # a 503 as for a non-elastic encoder at a load, not a dropped connection
             raise EngineDied(f"the image encoder failed to start: {e}") from e
-        free1 = self.free_vram_mib()
+        free1 = self._vision_free_vram_mib()
         took = f", {free0 - free1} MiB of VRAM" if free0 is not None and free1 is not None else ""
         on_cpu = getattr(v, "on_cpu", False)
         print(f"[strata] images: the image encoder started in {time.time() - t0:.1f} s{', on the CPU' if on_cpu else took}", flush=True)
         if on_cpu and self.vision_held and hasattr(self.engine, "vram") and self.loaded():
             # the CPU reader needs no VRAM: the cache takes back what it made room for
-            try:
-                self.engine.vram(self._engine_reserve())
-            except ValueError as e:
-                print(f"[strata] images: the expert cache did not grow back ({e})", flush=True)
+            if is_rep:
+                for k in sorted(self.vision_held_replicas):
+                    if 0 <= k < len(self.engine.engines) and self.engine.engines[k].alive():
+                        try:
+                            self.engine.vram(self.vram_reserve_for(k), replica=k, wait_s=self.vram_wait_s)
+                        except ValueError as e:
+                            print(f"[strata] images: replica {k} expert cache did not grow back ({e})", flush=True)
+                self.vision_held_replicas.clear()
+            else:
+                try:
+                    self.engine.vram(self._engine_reserve())
+                except ValueError as e:
+                    print(f"[strata] images: the expert cache did not grow back ({e})", flush=True)
             self.vision_held = False
 
     def _vision_room_check(self, v, note: str):
         """The expert cache cannot make room: the GPU reader goes into the VRAM that is free, if that is READER_NEEDS_MIB, else the
         CPU reader reads (a picture is read right either way)."""
-        free = self.free_vram_mib()
+        free = self._vision_free_vram_mib()
         need = min(v.elastic_mib, READER_NEEDS_MIB)
         if free is not None and free < need and getattr(v, "use_cpu", lambda: False)():
             print(f"[strata] images: only {free} MiB of VRAM is free and the GPU reader needs about {need}{note}: this picture is "
@@ -5297,16 +5396,30 @@ class Service:
         if not self.fifo.acquire(blocking=False):
             return "busy"
         try:
+            was_gpu = v.alive() and not getattr(v, "on_cpu", False)
             v.unload()
             back = ""
             if self.vision_held and hasattr(self.engine, "vram") and self.loaded():
-                out = self.engine.vram(self._engine_reserve())
-                back = (f"; the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
-                        f"{out.get('expert_cache_full_mib')} MiB)")
+                if was_gpu:
+                    time.sleep(0.2)      # the driver's free-VRAM counter shows the encoder's release a moment later
+                if self._is_replica_engine():
+                    parts = []
+                    for k in sorted(self.vision_held_replicas):
+                        if 0 <= k < len(self.engine.engines) and self.engine.engines[k].alive():
+                            out = self.engine.vram(self.vram_reserve_for(k), replica=k, wait_s=self.vram_wait_s)
+                            parts.append(f"r{k}: {out.get('expert_cache_mib')} of {out.get('expert_cache_full_mib')} MiB")
+                    if parts:
+                        back = f"; the expert cache took its VRAM back ({', '.join(parts)})"
+                    self.vision_held_replicas.clear()
+                else:
+                    out = self.engine.vram(self._engine_reserve())
+                    back = (f"; the expert cache took its VRAM back ({out.get('expert_cache_mib')} of "
+                            f"{out.get('expert_cache_full_mib')} MiB)")
             # also when the cache never made room (a layer split, an engine without --vram-elastic): the stop happened
             print(f"[strata] images: the image encoder stopped after {v.elastic_idle_s:g} s without a picture{back}",
                   flush=True)
             self.vision_held = False
+            self.vision_held_replicas.clear()
             return "down"
         finally:
             self.fifo.release()
@@ -5327,12 +5440,13 @@ class Service:
                     print(f"[strata] images: stopping the idle image encoder: {e}", flush=True)
         threading.Thread(target=loop, daemon=True).start()
 
-    def free_vram_mib(self) -> int | None:
-        """Free VRAM on the engine's (first) GPU, from the backend's reader - NVML, the amdgpu sysfs files (#301) or
-        IOKit on macOS (Metal backend); None when it can't be read (then nothing is refused)."""
+    def free_vram_mib(self, gpu_index: int | None = None) -> int | None:
+        """Free VRAM on the engine's (first) GPU, or `gpu_index` when passed, from the backend's reader - NVML, the
+        amdgpu sysfs files (#301) or IOKit on macOS (Metal backend); None when it can't be read (then nothing is refused)."""
         try:
             from serve.telemetry import gpu_reader
-            g = gpu_reader(int(getattr(self, "gpu_index", 0) or 0), amd=getattr(self, "backend", None) == "hip")
+            idx = int(getattr(self, "gpu_index", 0) or 0) if gpu_index is None else int(gpu_index)
+            g = gpu_reader(idx, amd=getattr(self, "backend", None) == "hip")
             if not g.ok():
                 return None
             r = g.read()
@@ -5456,21 +5570,56 @@ class Service:
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
-        if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
-            try:
-                self.engine.vram(self.vram_reserve)
-            except (ValueError, EngineDied) as e:
-                print(f"[strata] the VRAM reserve ({self.vram_reserve} MiB) was not applied: {e}", flush=True)
+        if not self._is_replica_engine():
+            if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
+                try:
+                    self.engine.vram(self.vram_reserve)
+                except (ValueError, EngineDied) as e:
+                    print(f"[strata] the VRAM reserve ({self.vram_reserve} MiB) was not applied: {e}", flush=True)
 
     vram_wait_s = 300.0                                  # #533: how long POST /v1/vram waits for a running request
 
-    def vram(self, reserve_mib: int | None) -> dict:
+    def _is_replica_engine(self) -> bool:
+        engines = getattr(self.engine, "engines", None)
+        return isinstance(engines, (list, tuple)) and len(engines) > 1
+
+    def vram_reserve_for(self, replica: int) -> int | None:
+        """The VRAM reserve to keep outside an elastic encoder's turn for one replica (None: start's, 0: full)."""
+        return self.vram_reserve_by_replica[replica] if replica in self.vram_reserve_by_replica else 0
+
+    def vram(self, reserve_mib: int | None, replica=None) -> dict:
         """#533, POST /v1/vram: keep `reserve_mib` of VRAM free for other programs (None: the reserve the engine
         started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
         engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
-        An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+        An unloaded engine applies it when it loads.  Under replicas, `replica` selects one index, a list, or all
+        (None).  -> {"status": ..., and the engine's figures}."""
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
+        if self._is_replica_engine():
+            targets = self.engine.normalize_replicas(replica)
+            vision_mib = self.vision.elastic_mib if self.vision is not None else 0
+            eff = {
+                k: (reserve_mib or 0) + vision_mib if k in self.vision_held_replicas else reserve_mib
+                for k in targets
+            }
+            if not self.fifo.acquire(timeout=self.vram_wait_s):
+                raise ModelBusy("a request is still running; try again when it has finished")
+            try:
+                out = self.engine.vram(eff, replica=targets, wait_s=self.vram_wait_s)
+                for k in targets:
+                    self.vram_reserve_by_replica[k] = reserve_mib
+                if out.get("status") == "ok":
+                    for row in out.get("replicas") or ():
+                        if row.get("status") == "ok":
+                            print(f"[strata] replica {row.get('replica')} VRAM: {row.get('vram_free_mib')} MiB free, "
+                                  f"expert cache {row.get('expert_cache_mib')} of {row.get('expert_cache_full_mib')} MiB "
+                                  f"({row.get('expert_slots')} experts)", flush=True)
+                return out
+            finally:
+                self.fifo.release()
+
+        if replica is not None:
+            raise ValueError("replica: this server is not running with replicas")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
             raise ModelBusy("a request is still running; try again when it has finished")
         # parallel requests do not hold the fifo: the engine's control lines (a prompt being admitted) are taken too,
@@ -5588,6 +5737,14 @@ class Service:
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
             self.vision_held = False
+            if self._is_replica_engine():
+                self.vision_held_replicas.clear()
+                reserves = getattr(self.engine, "reserves", None)
+                asked = getattr(self.engine, "reserves_asked", None)
+                if isinstance(reserves, list) and isinstance(asked, list):
+                    for k in range(len(reserves)):
+                        asked[k] = k in self.vram_reserve_by_replica
+                        reserves[k] = self.vram_reserve_by_replica.get(k)
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
@@ -5779,6 +5936,8 @@ class Service:
             live["split_serve"] = self.engine.split_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
+        if self._is_replica_engine() and hasattr(self.engine, "vram_view"):
+            engine["vram_replicas"] = self.engine.vram_view()
         if getattr(self.vision, "cpu_note", None):         # the card had no room for the picture reader: the Terminal says so in its summary
             engine["vision_note"] = self.vision.cpu_note
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
@@ -5864,8 +6023,10 @@ class Service:
                          "in_flight": running + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
-            "vram": dict((getattr(self.engine, "info", {}) or {}).get("vram") or {},
-                         elastic=bool((getattr(self.engine, "info", {}) or {}).get("vram_elastic"))),
+            "vram": (self.engine.vram_summary()
+                     if self._is_replica_engine() and hasattr(self.engine, "vram_summary")
+                     else dict((getattr(self.engine, "info", {}) or {}).get("vram") or {},
+                               elastic=bool((getattr(self.engine, "info", {}) or {}).get("vram_elastic")))),
             "machine": {
                 "at": int(time.time()),
                 "gpu": {"name": static.get("gpu_name"), "used_mib": scaled(hw.get("gpu_mem_used"), 2 ** 20),
@@ -5947,7 +6108,7 @@ class Service:
                             raise ValueError("offline mode cannot download an image URL")
                         if src.startswith(("http://", "https://")):
                             src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
-                        with self._turn(cancel):  # the encoder takes its turn with the requests (see below)
+                        with self._vision_turn(cancel):  # the encoder takes its turn with the requests (see below)
                             self._vision_up()         # an elastic encoder is not running until a picture needs it
                             self.vision.encode(src)
                     except (ValueError, OSError, RuntimeError) as e:    # RuntimeError: the encoder did not start
@@ -6014,7 +6175,7 @@ class Service:
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
             # same FIFO as the requests.
-            with self._turn(cancel):
+            with self._vision_turn(cancel):
                 if not (hasattr(self.vision, "all_cached") and self.vision.all_cached(images)):
                     self._vision_up()
                 try:
@@ -8316,7 +8477,8 @@ def make_handler(svc: Service):
                     if r is not None and (isinstance(r, bool) or not isinstance(r, int) or r < 0):
                         raise ValueError("reserve_mib: a whole number of MiB (0 or more), or null for the start's")
                     try:
-                        self._json(200, svc.vram(r))
+                        out = svc.vram(r, replica=req["replica"]) if "replica" in req else svc.vram(r)
+                        self._json(200, out)
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
