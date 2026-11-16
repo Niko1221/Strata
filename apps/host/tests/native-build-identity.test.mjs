@@ -72,8 +72,8 @@ test('Q38 requires covered helper, portable provenance, embedded profile, notice
  writeFileSync(join(root,'src/qwen38/LICENSE-formats.txt'),'format licence');writeFileSync(join(root,'tqcodec/DIALECT_LICENSE.txt'),'dialect licence');
  const stage=join(root,'stage');mkdirSync(stage);
  for(const [name,text] of Object.entries({'strata.exe':'legacy','strata-q38.exe':'q38','required.dll':'runtime','LICENSE-q38-formats.txt':'format licence','LICENSE-turbo-dialects.txt':'dialect licence'}))writeFileSync(join(stage,name),text);
- const record={schema:1,version:'0.6.0',entrypoint:'strata-q38.exe',sourceCommit:'6ee425434c98277555332c7934e1ac51436eb198',sha256:sha256(join(stage,'strata-q38.exe')),sources:q38Sources(root),releaseQualified:false,
- recipe:{cudaArchs:'120',cudaRuntime:'static',runtimeImplementation:'Strata-owned',embeddedProfileSHA256:sha256(profile),compilerManifestSHA256:'40851d465307d73a8c3844222112be5bfab87ca23c070923539c3bab53be4fcb'},
+ const record={schema:1,version:'0.6.0',entrypoint:'strata-q38.exe',sourceCommit:'8b0b3c74514d26e5ca73496f0b268d66a0cb99a5',sha256:sha256(join(stage,'strata-q38.exe')),sources:q38Sources(root),releaseQualified:false,
+ recipe:{cudaArchs:'120',cudaRuntime:'static',runtimeImplementation:'Strata-owned',embeddedProfileSHA256:sha256(profile),compilerManifestSHA256:'49a0fa93e8c25d2a1e7cbf2f0fe3f5c6367bacdcfd3b7680d7d0b895a4b22be4'},
  imports:['required.dll'],requiredLibraries:['required.dll'],runtimeLibraries:{'required.dll':sha256(join(stage,'required.dll'))},notices:Object.fromEntries(['LICENSE-q38-formats.txt','LICENSE-turbo-dialects.txt'].map(name=>[name,sha256(join(stage,name))]))};
  const names=['strata.exe','strata-q38.exe','required.dll','LICENSE-q38-formats.txt','LICENSE-turbo-dialects.txt','q38-build.json'];
  const manifest={id:'strata-engine',version:'0.6.0',entrypoint:'strata.exe',files:[]};
@@ -83,7 +83,7 @@ test('Q38 requires covered helper, portable provenance, embedded profile, notice
   manifest.files=manifest.files.filter(entry=>entry.path!==member);assert.throws(()=>verifyQ38Build(stage,root,manifest),/Uncovered|Missing/);save();
  }
  record.version='0.5.9';save();assert.throws(()=>verifyQ38Build(stage,root,manifest),/identity/);record.version='0.6.0';save();
- record.sourceCommit='b'.repeat(40);save();assert.throws(()=>verifyQ38Build(stage,root,manifest),/identity/);record.sourceCommit='6ee425434c98277555332c7934e1ac51436eb198';save();
+ record.sourceCommit='b'.repeat(40);save();assert.throws(()=>verifyQ38Build(stage,root,manifest),/identity/);record.sourceCommit='8b0b3c74514d26e5ca73496f0b268d66a0cb99a5';save();
  writeFileSync(source,'changed source');assert.throws(()=>verifyQ38Build(stage,root,manifest),/source bytes/);writeFileSync(source,'owned CUDA');
  writeFileSync(profile,'different profile');assert.throws(()=>verifyQ38Build(stage,root,manifest),/source bytes/);writeFileSync(profile,'fixed profile');
  writeFileSync(join(stage,'required.dll'),'substituted runtime');assert.throws(()=>verifyEngine(stage,'0.6.0'),/Changed engine payload/);writeFileSync(join(stage,'required.dll'),'runtime');

@@ -34,10 +34,10 @@ export function q38Sources(root) {
 /** A distinct portable record binds the already compiled helper, never the app commit. */
 export function verifyQ38Build(folder,root,manifest) {
   const record=JSON.parse(readFileSync(join(folder,'q38-build.json'),'utf8'));
-  if(record.schema!==1||record.version!==manifest.version||record.entrypoint!=='strata-q38.exe'||record.sourceCommit!=='6ee425434c98277555332c7934e1ac51436eb198'||record.sha256!==sha256(join(folder,record.entrypoint))||record.releaseQualified!==false)throw new Error('Stale Q38 build identity');
+  if(record.schema!==1||record.version!==manifest.version||record.entrypoint!=='strata-q38.exe'||record.sourceCommit!=='8b0b3c74514d26e5ca73496f0b268d66a0cb99a5'||record.sha256!==sha256(join(folder,record.entrypoint))||record.releaseQualified!==false)throw new Error('Stale Q38 build identity');
   if(JSON.stringify(record.sources)!==JSON.stringify(q38Sources(root)))throw new Error('Q38 compiled source bytes changed');
   const recipe=record.recipe;
-  if(recipe?.cudaArchs!=='120'||recipe.cudaRuntime!=='static'||recipe.runtimeImplementation!=='Strata-owned'||recipe.embeddedProfileSHA256!==sha256(join(root,'data/spin8/reference.profile'))||recipe.compilerManifestSHA256!=='40851d465307d73a8c3844222112be5bfab87ca23c070923539c3bab53be4fcb')throw new Error('Changed Q38 build recipe/profile');
+  if(recipe?.cudaArchs!=='120'||recipe.cudaRuntime!=='static'||recipe.runtimeImplementation!=='Strata-owned'||recipe.embeddedProfileSHA256!==sha256(join(root,'data/spin8/reference.profile'))||recipe.compilerManifestSHA256!=='49a0fa93e8c25d2a1e7cbf2f0fe3f5c6367bacdcfd3b7680d7d0b895a4b22be4')throw new Error('Changed Q38 build recipe/profile');
   const members=new Set(manifest.files?.map(entry=>entry.path.toLowerCase())??[]);
   for(const name of ['strata-q38.exe','q38-build.json',...Object.keys(record.notices??{})])if(!members.has(name.toLowerCase()))throw new Error('Uncovered Q38 package member: '+name);
   if(!Array.isArray(record.requiredLibraries)||!record.requiredLibraries.length||!Array.isArray(record.imports)||record.imports.some(name=>/llama|ggml/i.test(name)))throw new Error('Invalid Q38 runtime closure');

@@ -12,15 +12,15 @@ import shutil
 import sys
 from typing import Any
 
-EVIDENCE = Path("H:/Strata/evidence/native-dense-own-cuda13-20261117")
+EVIDENCE = Path("H:/Strata/evidence/native-dense-final-060-20261117")
 REDIST = Path(
     "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT"
 )
-COMMIT = "6ee425434c98277555332c7934e1ac51436eb198"
-EXECUTABLE_SHA256 = "706867da2b9ad1a1debf09b0ac2f02ce3921412382e167ff4d1211efb7012af7"
+COMMIT = "8b0b3c74514d26e5ca73496f0b268d66a0cb99a5"
+EXECUTABLE_SHA256 = "426e8caf4813ab4c1a7802c3e5595f9aa899abcc0f11b7cb4917c5fcccf383b6"
 MANIFESTS = {
-    "language-build-manifest.json": "7204b8c66d84ebd7fff932fd4b71fdd1a1d6ef4cf2acddf9f4f3f6433324a0b1",
-    "BUILD_MANIFEST-language-full-r1.json": "40851d465307d73a8c3844222112be5bfab87ca23c070923539c3bab53be4fcb",
+    "final-build-manifest.json": "4b05ea823da3606f311a2d1702f532278b56e35c7069f8f50565f58d78c07b2c",
+    "BUILD_MANIFEST-final-full-r1.json": "49a0fa93e8c25d2a1e7cbf2f0fe3f5c6367bacdcfd3b7680d7d0b895a4b22be4",
 }
 NOTICES = {
     "src/qwen38/LICENSE-formats.txt": "LICENSE-q38-formats.txt",
@@ -39,13 +39,13 @@ def stage(release: Any, root: Path, destination: Path) -> dict:
     for name, expected in MANIFESTS.items():
         release.no_links(EVIDENCE / name)
         release.require(release.sha(EVIDENCE / name) == expected, "Frozen Q38 manifest changed")
-    language = release.load(EVIDENCE / "language-build-manifest.json")
-    full = release.load(EVIDENCE / "BUILD_MANIFEST-language-full-r1.json")
+    language = release.load(EVIDENCE / "final-build-manifest.json")
+    full = release.load(EVIDENCE / "BUILD_MANIFEST-final-full-r1.json")
     release.require(
         language["sourceCommit"] == full["source_commit"] == COMMIT
         and full["clean_worktree"] is True
         and not full["missing_observed_paths"]
-        and full["compiled_read_dependency_count"] == 624,
+        and full["compiled_read_dependency_count"] == 628,
         "Q38 compiler source closure is not the reviewed build",
     )
     source_hashes = {}
@@ -66,13 +66,13 @@ def stage(release: Any, root: Path, destination: Path) -> dict:
             "Q38 source bytes changed: " + name,
         )
         source_hashes[name] = entry["sha256"]
-    release.require(len(source_hashes) == 385, "Incomplete Q38 native closure")
+    release.require(len(source_hashes) == 387, "Incomplete Q38 native closure")
     for entry in language["buildConfiguration"]:
         path = Path(entry["path"])
         release.no_links(path)
         release.require(release.sha(path) == entry["sha256"], "Frozen Q38 configuration changed")
     # Verify the successful native build/fixtures, retaining unrelated failed UI attempts.
-    for name in ("q38-language-build-final", "q38-language-ctest-final", "q38-language-cli-final"):
+    for name in ("q38-final-build-r1", "q38-final-ctest-r1", "q38-final-cli-r1", "q38-final-version-r1"):
         row = next(r for r in language["receipts"] if r["name"] == name)
         path = Path(row["path"])
         release.no_links(path)
@@ -144,8 +144,8 @@ def stage(release: Any, root: Path, destination: Path) -> dict:
             "generatedProfileSHA256": language["buildConfiguration"][1]["sha256"],
             "codecSourcePins": CODECS,
             "runtimeImplementation": "Strata-owned",
-            "compilerManifestSHA256": MANIFESTS["BUILD_MANIFEST-language-full-r1.json"],
-            "languageManifestSHA256": MANIFESTS["language-build-manifest.json"],
+            "compilerManifestSHA256": MANIFESTS["BUILD_MANIFEST-final-full-r1.json"],
+            "languageManifestSHA256": MANIFESTS["final-build-manifest.json"],
         },
         "imports": imports,
         "requiredLibraries": required,

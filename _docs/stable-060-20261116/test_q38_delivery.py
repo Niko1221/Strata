@@ -71,8 +71,11 @@ CMAKE_HOME_DIRECTORY:INTERNAL=C:/work
         with tempfile.TemporaryDirectory() as temp:
             record = native.Q38.stage(native.release, native.PRIMARY, Path(temp))
             self.assertEqual(record["sourceCommit"], native.Q38.COMMIT)
-            self.assertEqual(len(record["sources"]), 385)
+            self.assertEqual(len(record["sources"]), 387)
             self.assertEqual(record["sha256"], native.Q38.EXECUTABLE_SHA256)
+            output = native.release.command([Path(temp) / "strata-q38.exe", "--version"], timeout=20)
+            self.assertEqual(output.strip(), "strata-q38 own-native 0.6.0 CUDA13 SM120")
+            native.validate_version(output)
             self.assertEqual(
                 record["requiredLibraries"],
                 ["MSVCP140.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll"],
@@ -153,7 +156,7 @@ CMAKE_HOME_DIRECTORY:INTERNAL=C:/work
         native = module("native-input")
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root / "language-build-manifest.json").write_text("{}")
+            (root / "final-build-manifest.json").write_text("{}")
             with patch.object(native.Q38, "EVIDENCE", root), self.assertRaisesRegex(
                 RuntimeError, "manifest changed"
             ):

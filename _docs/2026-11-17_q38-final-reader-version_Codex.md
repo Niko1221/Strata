@@ -34,9 +34,55 @@ existing project-specific owned-Job check.py wrapper and its pinned interpreter
 (the custom-wrapper exception), without dependency changes. Every command retains
 the 3 GiB RAM, 4 GiB commit, H 10 GiB/C 5 GiB disk floors and five compiler jobs.
 
-Fresh clean-source compilation, full existing Q38 numerical/codec/KV/language
-CTest, CLI admission, provenance rebinding and root-owned legacy recapture follow
-this source commit. No new model-quality claim is made here. Historical Japanese
+Fresh clean-source compilation is bound to source commit
+`8b0b3c74514d26e5ca73496f0b268d66a0cb99a5`. The actual `--clean-first` build under
+`H:/Strata/evidence/native-dense-final-060-20261117/build` passed with CUDA
+13.3.73, MSVC 14.44.35207, SM120 and five jobs. All fourteen CTest groups passed
+in 16.36 seconds, including the five reader cases and existing numerical, codec,
+KV, language and protocol checks. CPU CLI/admission passed all 54 cases. The
+separate actual `--version` probe passed. Build/CTest/CLI/version guard receipts
+are `q38-final-build-r1`, `q38-final-ctest-r1`, `q38-final-cli-r1` and
+`q38-final-version-r1`; all report native exit 0, Job active-after 0, no dropped
+output and zero RAM-floor breaches. Minimum build RAM was 11139133440 bytes.
+
+The 665600-byte executable has SHA-256
+`426e8caf4813ab4c1a7802c3e5595f9aa899abcc0f11b7cb4917c5fcccf383b6`.
+The new `final-build-manifest.json` binds 387 native source entries and hashes to
+`4b05ea823da3606f311a2d1702f532278b56e35c7069f8f50565f58d78c07b2c`.
+`BUILD_MANIFEST-final-full-r1.json` binds 1253 files including 628 observed compiler
+read dependencies, no missing observed paths, compiler tools, SDK/static-library
+inputs, generated profile/configuration bytes, and retained guard receipts. Its
+SHA-256 is `49a0fa93e8c25d2a1e7cbf2f0fe3f5c6367bacdcfd3b7680d7d0b895a4b22be4`.
+Both manifests and inventory scripts are under that fresh H evidence directory.
+The previous 6ee/706867da executable and its manifests were not overwritten.
+
+The packaging adapter and Node verifier select those actual build identities.
+The current binding commit is deliberately not substituted for compiled source A.
+The delivery regression stages the actual PE/CRT payload, executes its version
+probe through the production validator, and verifies its portable record with
+the actual Node consumer. Focused delivery Python tests passed 23/23 and Node
+identity tests passed 4/4 (`q38-final-delivery-python-r1` and
+`q38-final-delivery-node-r1`). The separate legacy source/resource/GPU binding
+still needs the root-owned fresh measurements before its selection is updated.
+
+Exact commands are retained in each named receipt's `command` array and adjacent
+`.command.txt`. The final command shapes were `cmake --build <build> --config
+Release --parallel 5 --clean-first`, `ctest --test-dir <build> -C Release
+--output-on-failure -V -j 1`, `python src/qwen38/test_cli.py <exe> <build>`, and
+`<exe> --version`, all through the existing guarded check.py wrapper. The two
+freeze scripts only read/hash source and write new manifests after all build
+commands drained; they use the metadata-inspection Python exception.
+
+Self-review-event: type=qa_defect scope=q38-native-shutdown category=qa-coverage.
+The prior tests covered protocol state but not the input thread's pre-read gap,
+and mock version output hid the real runner spelling. The narrow prevention is
+the deterministic production pipe test and actual staged-PE version test above.
+agent-self-review-evolution was applied in review-only mode; no governance or
+resource policy was rewritten. TypeScript SOP applies to the Node verifier pins.
+Historical whole-file Black drift and external NVIDIA C4819 warnings are retained;
+this record does not claim a warning-free build or repository-wide lint pass.
+
+No new model-quality claim is made here. Historical Japanese
 Soya 4/4 and PQ 2/4 remain attributed to compiled 6ee42543. Full-window performance,
 general quality and GPU concurrency stay unqualified; releaseQualified=false.
 The allocation diagnostic Minor and existing vendor/formatting warnings remain
