@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 import subprocess
@@ -49,6 +50,7 @@ class Boundaries(unittest.TestCase):
         self.delivery.PRIVATE = self.root / "private"
         self.delivery.USER_ROOTS = (self.root / "user", self.root / "absent")
         self.windows_root = os.environ.get("SYSTEMROOT", "C:/Windows")
+        self.git_exe = shutil.which("git")
         env = patch.dict(os.environ, {}, clear=True)
         env.start()
         self.addCleanup(env.stop)
@@ -116,6 +118,7 @@ class Boundaries(unittest.TestCase):
             (base / "LICENSE").write_bytes(licence)
             self.write(base / "PROVENANCE.json", document)
         blobs = {}
+        blob_bytes = {}
         tracked = {}
         for path in self.release.ROOT.rglob("*"):
             if path.is_file():
@@ -123,6 +126,7 @@ class Boundaries(unittest.TestCase):
                 blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
                 tracked[path.relative_to(self.release.ROOT).as_posix()] = blob
                 blobs[blob] = len(data)
+                blob_bytes[blob] = data
 
         def git(*args):
             if args[0] == "ls-files":
@@ -143,7 +147,89 @@ class Boundaries(unittest.TestCase):
             handle = patch.object(self.release, name, side_effect=replacement)
             handle.start()
             self.addCleanup(handle.stop)
+        canonical = patch.object(self.delivery, "canonical_blob", side_effect=lambda blob: blob_bytes[blob])
+        canonical.start()
+        self.addCleanup(canonical.stop)
         return tracked, git, vector_name
+
+    def test_real_git_crlf_provenance_checkout_and_strict_other_bytes(self):
+        real_git, real_blob = self.release.git, self.delivery.canonical_blob
+        self.fixture_control_data()
+        source = self.release.ROOT / self.delivery.CONTROL_PROVENANCE
+        installed = self.delivery.APP / "control" / self.delivery.CONTROL_PROVENANCE
+        canonical = (json.dumps(json.loads(source.read_text()), indent=2) + "\n").encode()
+        source.write_bytes(canonical)
+        (self.release.ROOT / ".gitattributes").write_bytes(
+            b"*.bin -text\n*.gguf -text\nLICENSE -text\n*.json text\n"
+        )
+        env = {
+            "PATH": str(Path(self.git_exe).parent),
+            "SYSTEMROOT": self.windows_root,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+        }
+
+        def git(*args):
+            return subprocess.run(
+                [self.git_exe, "-C", str(self.release.ROOT), *args],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ).stdout
+
+        with patch.dict(os.environ, env), patch.object(
+            self.release, "git", side_effect=real_git
+        ), patch.object(self.delivery, "canonical_blob", side_effect=real_blob):
+            git("init", "-q")
+            git("config", "core.autocrlf", "true")
+            git("config", "user.name", "Synthetic fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            git("add", "--", ".")
+            git("-c", "commit.gpgsign=false", "-c", "core.hooksPath=NUL", "commit", "-qm", "fixture")
+            self.commit = git("rev-parse", "HEAD").decode().strip()
+            # Only this synthetic source file is removed, to force a real checkout.
+            source.unlink()
+            git("checkout", "--", self.delivery.CONTROL_PROVENANCE)
+            physical = source.read_bytes()
+            self.assertEqual(physical, canonical.replace(b"\n", b"\r\n"))
+            self.assertNotEqual(len(physical), len(canonical))
+            installed.write_bytes(physical)
+            admitted = self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+            self.assertEqual(len(admitted), 11)
+            vector = next(row for row in admitted.values() if row["role"] == "controlvector")
+            self.assertEqual(vector["provenance"]["bytes"], len(physical))
+            self.assertEqual(vector["provenance"]["sha256"], hashlib.sha256(physical).hexdigest())
+            self.assertEqual(git("status", "--porcelain"), b"")
+            installed.write_bytes(canonical)
+            with self.assertRaisesRegex(RuntimeError, "before hashing"):
+                self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+            installed.write_bytes(physical)
+            for altered in (
+                physical.replace(b'"schema": 1', b'"schema": 2'),
+                physical + b"\r\n",
+                physical.replace(b"\r\n", b"\r"),
+                physical.replace(b"  ", b"\t", 1),
+            ):
+                with self.subTest(mutation=hashlib.sha256(altered).hexdigest()[:8]):
+                    source.write_bytes(altered)
+                    installed.write_bytes(altered)
+                    with self.assertRaisesRegex(RuntimeError, "beyond CRLF"):
+                        self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+            source.write_bytes(physical)
+            installed.write_bytes(physical)
+            for relative in ("data/draft_vocab.bin", "data/experimental-speed-projection/LICENSE"):
+                path = self.release.ROOT / relative
+                actual = self.delivery.APP / "control" / relative
+                original = path.read_bytes()
+                with self.subTest(relative=relative):
+                    path.write_bytes(original + b"\r\n")
+                    actual.write_bytes(original + b"\r\n")
+                    with self.assertRaisesRegex(RuntimeError, "Reviewed source size differs"):
+                        self.delivery.reject_app_weights(self.delivery.APP, self.commit)
+                path.write_bytes(original)
+                actual.write_bytes(original)
+            self.assertEqual(len(self.delivery.reject_app_weights(self.delivery.APP, self.commit)), 11)
 
     def test_eleven_named_control_roles_copy_identical_bytes(self):
         self.fixture_control_data()

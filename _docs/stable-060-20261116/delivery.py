@@ -51,6 +51,7 @@ SHIPPED_CONTROL_DATA = {
     "control/data/experimental-speed-projection/Qwen3.8-Flash-Next-experimental-speed-projection.gguf": "controlvector",
 }
 SHIPPED_DATA_LIMIT = 1024**2
+CONTROL_PROVENANCE = "data/experimental-speed-projection/PROVENANCE.json"
 QA_CHECKS = {
     "installed-host-shell-renderer-identity",
     "btw-typed-during-main-stream",
@@ -320,8 +321,30 @@ def source_metadata(relative: str, commit: str) -> tuple[Path, int, str]:
     )
     blob = release.git("rev-parse", commit + ":" + relative)
     release.require(re.fullmatch(r"[a-f0-9]{40}", blob), "Reviewed component blob absent")
-    release.require(int(release.git("cat-file", "-s", blob)) == size, "Reviewed source size differs")
+    canonical_size = int(release.git("cat-file", "-s", blob))
+    release.require(0 < canonical_size <= SHIPPED_DATA_LIMIT, "Reviewed blob exceeds bounded size")
+    release.require(canonical_size == size or relative == CONTROL_PROVENANCE, "Reviewed source size differs")
     return source, size, blob
+
+
+def canonical_blob(blob: str) -> bytes:
+    """Read the bounded raw Git object, without text decoding, filters or smudge."""
+    size = int(release.git("cat-file", "-s", blob))
+    release.require(0 < size <= SHIPPED_DATA_LIMIT, "Reviewed blob exceeds bounded size")
+    result = subprocess.run(
+        ["git", "-C", str(release.ROOT), "cat-file", "blob", blob],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ).stdout
+    release.require(
+        len(result) == size
+        and hashlib.sha1(b"blob " + str(size).encode("ascii") + b"\0" + result).hexdigest() == blob,
+        "Canonical Git blob identity differs",
+    )
+    return result
 
 
 def bounded_component_match(actual: Path, relative: str, commit: str) -> dict:
@@ -337,6 +360,15 @@ def bounded_component_match(actual: Path, relative: str, commit: str) -> dict:
         return item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns
 
     before = (identity(source), identity(actual))
+    if relative == CONTROL_PROVENANCE:
+        canonical = canonical_blob(blob)
+        with source.open("rb") as stream:
+            physical = stream.read(SHIPPED_DATA_LIMIT + 1)
+        release.require(
+            len(physical) == size
+            and (physical == canonical or physical.replace(b"\r\n", b"\n") == canonical),
+            "Provenance differs beyond CRLF checkout conversion",
+        )
     release.require(release.git("hash-object", "--", str(source)) == blob, "Tracked component source changed")
     expected = release.sha(source)
     release.require(release.sha(actual) == expected, "Known component bytes differ; copy refused")
