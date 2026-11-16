@@ -11,6 +11,7 @@ namespace strata::metal_engine { void missing(const char* name); }
 namespace strata::kernels::cpu {
 
 bool iq512_gather_on() noexcept { return false; }
+bool iq512_fast_on() noexcept { return false; }
 bool iq512x_supported(int) noexcept { return false; }
 void iq512x_rows(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int) {
     strata::metal_engine::missing("strata::kernels::cpu::iq512x_rows");

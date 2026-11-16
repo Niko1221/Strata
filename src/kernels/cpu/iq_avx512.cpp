@@ -29,6 +29,11 @@
 
 namespace strata::kernels::cpu {
 namespace {
+#if defined(_MSC_VER) && !defined(__clang__)
+#define STRATA_IQ512_FORCEINLINE __forceinline   // MSVC leaves it a call otherwise, with the accumulators spilled around it
+#else
+#define STRATA_IQ512_FORCEINLINE inline __attribute__((always_inline))
+#endif
 
 inline float h2f(uint16_t h) { return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int) h))); }
 inline uint32_t u32(const uint8_t* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
@@ -615,8 +620,360 @@ void rows_m_nt(int nt, const uint8_t* w, size_t rb, int n, const void* const* ac
 
 }  // namespace
 
+// ---- STRATA_IQ_FAST=1 (opt-in): the gate/up rows of IQ3_XXS (18), IQ3_S (21) and IQ2_S (22) with a 256-value block decoded
+// at once and no scalar table lookup.  The entries of these grids hold few distinct byte values (IQ3_S: odd 1..15; IQ3_XXS:
+// 8 values; IQ2_S: 3 values), so an entry packs into one 16-bit word of 4-bit or 2-bit codes and a whole grid into 8 / 16 /
+// 32 zmm registers: the indices of a block are looked up by vpermt2b / vpermt2w (128 / 64 entries each) and a blend tree on
+// the upper index bits, the codes are spread to bytes by vpmultishiftqb and mapped to the values by one vpshufb.  The scales of the four chunks of
+// a block come from one small vector by vpermw, the IQ3_XXS sign masks from popcounts (as FmtX<18>).  The decoded
+// magnitudes, sign masks and scales are bit for bit those of Fmt<TY>::decode, and the sums are those of row_dot (several
+// tokens) or row_dot_x (one token, the order of ggml-cpu): the rows are bitwise the default kernels' rows.
+// Why: MSVC assembles the 8 or 16 scalar lookups of a chunk with ~90 instructions and spills around them; a GTX 1080 Ti
+// box with a Ryzen 5 9600X spends a third of a decode window in these rows, compute-bound.
+namespace {
+
+alignas(64) uint16_t fast_t22[1024];                                        // IQ2_S: a word of eight 2-bit codes an entry
+alignas(64) uint8_t fast_lo18[256], fast_hi18[256], fast_lo21[512], fast_hi21[512];   // IQ3: two bytes of two 4-bit codes an entry
+alignas(64) uint8_t fast_lut18[64], fast_lut22[64];
+
+bool fast_cpu_ok() {
+#if defined(_MSC_VER)
+    int r[4];
+    __cpuidex(r, 7, 0);
+    const unsigned c = (unsigned) r[2];
+#else
+    unsigned a, b, c, d;
+    __cpuid_count(7, 0, a, b, c, d);
+#endif
+    // AVX512_VBMI (vpermt2b, vpmultishiftqb), AVX512_BITALG (vpopcntb), AVX512_VPOPCNTDQ: Zen 4 / Zen 5, Ice Lake and later
+    // (the callers already require F / BW / VL / VNNI)
+    return ((c >> 1) & 1u) != 0 && ((c >> 12) & 1u) != 0 && ((c >> 14) & 1u) != 0;
+}
+
+// entries of `nval` bytes each -> words of `bits`-bit codes into `out`, the distinct byte values (sorted) into `lut`;
+// false when the grid holds more distinct values than the codes can name (another ggml: the default kernels then stay)
+template <typename E>
+bool fast_pack(const E* grid, int n, int nval, int bits, uint16_t* out, uint8_t* lut) {
+    bool seen[256] = {};
+    for (int i = 0; i < n; ++i)
+        for (int k = 0; k < nval; ++k) seen[(uint8_t) (grid[i] >> (8 * k))] = true;
+    uint8_t code[256] = {};
+    int nc = 0;
+    for (int v = 0; v < 256; ++v)
+        if (seen[v]) {
+            if (nc >= (1 << bits) || nc >= 16) return false;
+            code[v] = (uint8_t) nc;
+            for (int lane = 0; lane < 4; ++lane) lut[16 * lane + nc] = (uint8_t) v;
+            ++nc;
+        }
+    for (int i = 0; i < n; ++i) {
+        uint16_t w = 0;
+        for (int k = 0; k < nval; ++k) w = (uint16_t) (w | (code[(uint8_t) (grid[i] >> (8 * k))] << (bits * k)));
+        out[i] = w;
+    }
+    return true;
+}
+
+const bool fast_on = [] {
+    const char* v = std::getenv("STRATA_IQ_FAST");
+    if (v == nullptr || std::atoi(v) == 0 || !fast_cpu_ok()) return false;
+    uint16_t w18[256], w21[512];
+    uint8_t lut21[64];
+    if (!fast_pack(iq3xxs_grid, 256, 4, 4, w18, fast_lut18)) return false;
+    if (!fast_pack(iq2s_grid, 1024, 8, 2, fast_t22, fast_lut22)) return false;
+    if (!fast_pack(iq3s_grid, 512, 4, 4, w21, lut21)) return false;
+    for (int i = 0; i < 256; ++i) { fast_lo18[i] = (uint8_t) w18[i]; fast_hi18[i] = (uint8_t) (w18[i] >> 8); }
+    // IQ3_S: the values themselves as the codes (odd 1..15), so no vpshufb after the lookup
+    for (int i = 0; i < 512; ++i) {
+        uint16_t w = 0;
+        for (int k = 0; k < 4; ++k) {
+            const uint32_t b = (iq3s_grid[i] >> (8 * k)) & 0xff;
+            if (b > 15) return false;
+            w = (uint16_t) (w | (b << (4 * k)));
+        }
+        fast_lo21[i] = (uint8_t) w;
+        fast_hi21[i] = (uint8_t) (w >> 8);
+    }
+    return true;
+}();
+
+#define FAST_P(k) _mm512_permutex2var_epi16(_mm512_load_si512(T + 2 * (k)), idx, _mm512_load_si512(T + 2 * (k) + 1))
+// 32 word indices -> 32 table words (IQ2_S: 1024 entries, two 512-entry halves)
+STRATA_IQ512_FORCEINLINE __m512i fast_lookup9(__m512i idx, const uint16_t* tbl) {
+    const __m512i* T = (const __m512i*) tbl;
+    const __mmask32 k6 = _mm512_test_epi16_mask(idx, _mm512_set1_epi16(64));
+    const __mmask32 k7 = _mm512_test_epi16_mask(idx, _mm512_set1_epi16(128));
+    const __mmask32 k8 = _mm512_test_epi16_mask(idx, _mm512_set1_epi16(256));
+    const __m512i a0 = _mm512_mask_blend_epi16(k6, FAST_P(0), FAST_P(1));
+    const __m512i a1 = _mm512_mask_blend_epi16(k6, FAST_P(2), FAST_P(3));
+    const __m512i a2 = _mm512_mask_blend_epi16(k6, FAST_P(4), FAST_P(5));
+    const __m512i a3 = _mm512_mask_blend_epi16(k6, FAST_P(6), FAST_P(7));
+    const __m512i b0 = _mm512_mask_blend_epi16(k7, a0, a1);
+    const __m512i b1 = _mm512_mask_blend_epi16(k7, a2, a3);
+    return _mm512_mask_blend_epi16(k8, b0, b1);
+}
+STRATA_IQ512_FORCEINLINE __m512i fast_lookup10(__m512i idx, const uint16_t* tbl) {
+    const __m512i lo = fast_lookup9(idx, tbl);
+    const __m512i hi = fast_lookup9(idx, tbl + 512);
+    return _mm512_mask_blend_epi16(_mm512_test_epi16_mask(idx, _mm512_set1_epi16(512)), lo, hi);
+}
+#undef FAST_P
+
+// 64 byte indices (bit 8 of each in `k8`) -> 64 table bytes; the table holds 256 (two pairs) or 512 (four pairs) entries.
+// vpermt2b reads index bits 0-6 (bit 6 picks the second table of the pair), bit 7 and `k8` pick the pair.
+#define FAST_PB(k) _mm512_permutex2var_epi8(_mm512_load_si512(T + 2 * (k)), idx, _mm512_load_si512(T + 2 * (k) + 1))
+STRATA_IQ512_FORCEINLINE __m512i fast_blookup8(__m512i idx, __mmask64 k7, const uint8_t* tbl) {
+    const __m512i* T = (const __m512i*) tbl;
+    return _mm512_mask_blend_epi8(k7, FAST_PB(0), FAST_PB(1));
+}
+STRATA_IQ512_FORCEINLINE __m512i fast_blookup9(__m512i idx, __mmask64 k7, __mmask64 k8, const uint8_t* tbl) {
+    const __m512i* T = (const __m512i*) tbl;
+    const __m512i a0 = _mm512_mask_blend_epi8(k7, FAST_PB(0), FAST_PB(1));
+    const __m512i a1 = _mm512_mask_blend_epi8(k7, FAST_PB(2), FAST_PB(3));
+    return _mm512_mask_blend_epi8(k8, a0, a1);
+}
+#undef FAST_PB
+
+// chunk j of a block from the 64 low and 64 high code bytes of its indices: each qword gets (lo, hi) of two indices,
+// vpmultishiftqb then puts their eight 4-bit codes in the eight bytes
+alignas(64) uint8_t fast_pair_ctl[4][64];
+alignas(64) uint8_t fast_shift4[64], fast_shift2[64], fast_shift7[32];
+const bool fast_ctl_init = [] {
+    for (int j = 0; j < 4; ++j)
+        for (int p = 0; p < 64; ++p) {
+            const int q = p / 8, b = p % 8;
+            fast_pair_ctl[j][p] = (uint8_t) (b < 4 ? (16 * j + 2 * q + (b >> 1)) | ((b & 1) << 6) : 0);
+        }
+    for (int p = 0; p < 64; ++p) {
+        fast_shift4[p] = (uint8_t) (4 * (p % 8));
+        fast_shift2[p] = (uint8_t) (2 * (p % 8));
+    }
+    for (int p = 0; p < 32; ++p) fast_shift7[p] = (uint8_t) (p % 8 < 4 ? 7 * (p % 8) : 32 + 7 * (p % 8 - 4));
+    return true;
+}();
+STRATA_IQ512_FORCEINLINE __m512i fast_codes4(__m512i lo, __m512i hi, int j) {
+    const __m512i z = _mm512_permutex2var_epi8(lo, _mm512_load_si512(fast_pair_ctl[j]), hi);
+    return _mm512_and_si512(_mm512_multishift_epi64_epi8(_mm512_load_si512(fast_shift4), z), _mm512_set1_epi8(0x0f));
+}
+// 8 words of eight 2-bit codes -> 64 bytes
+STRATA_IQ512_FORCEINLINE __m512i fast_spread2(__m128i w8) {
+    return _mm512_and_si512(_mm512_multishift_epi64_epi8(_mm512_load_si512(fast_shift2), _mm512_cvtepu16_epi64(w8)), _mm512_set1_epi8(3));
+}
+
+// word lanes 0-15 -> word 2j, 16-31 -> word 2j + 1   (a chunk whose two halves carry one scale each)
+alignas(64) const uint16_t fast_sc2[4][32] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+    {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3},
+    {4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5},
+    {6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7}};
+// word lanes 0-7 -> 4j, 8-15 -> 4j + 1, 16-23 -> 4j + 2, 24-31 -> 4j + 3   (IQ2_S: four scales a chunk)
+alignas(64) const uint16_t fast_sc4[4][32] = {
+    {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3},
+    {4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7},
+    {8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9, 10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11},
+    {12, 12, 12, 12, 12, 12, 12, 12, 13, 13, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15}};
+alignas(32) const uint8_t fast_qh_shuf[32] = {0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7};
+alignas(64) const uint16_t fast_qh_shift[32] = {0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6};
+
+// 2 * nibble + 1 as words: the low nibble of byte i at word 2i, the high nibble at word 2i + 1 (8 bytes -> 16 words)
+STRATA_IQ512_FORCEINLINE __m256i fast_nibble_scales(__m128i bytes) {
+    const __m128i m4 = _mm_set1_epi8(0x0f);
+    const __m128i lo = _mm_and_si128(bytes, m4), hi = _mm_and_si128(_mm_srli_epi16(bytes, 4), m4);
+    const __m256i w = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(lo, hi));
+    return _mm256_or_si256(_mm256_add_epi16(w, w), _mm256_set1_epi16(1));
+}
+
+template <int TY> struct FastFmt;
+
+template <> struct FastFmt<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
+    static constexpr int bytes = 110;
+    static constexpr float K = 1.0f;
+    static STRATA_IQ512_FORCEINLINE void decode_block(const uint8_t* b, __m512i* g, __mmask64* m, __m512i* sc) {
+        const __m512i idx = _mm512_loadu_si512((const void*) (b + 2));
+        const __mmask64 k7 = _mm512_movepi8_mask(idx), k8 = _cvtu64_mask64(u64(b + 66));
+        const __m512i lo = fast_blookup9(idx, k7, k8, fast_lo21), hi = fast_blookup9(idx, k7, k8, fast_hi21);
+        g[0] = fast_codes4(lo, hi, 0);
+        g[1] = fast_codes4(lo, hi, 1);
+        g[2] = fast_codes4(lo, hi, 2);
+        g[3] = fast_codes4(lo, hi, 3);
+        m[0] = _cvtu64_mask64(u64(b + 74));
+        m[1] = _cvtu64_mask64(u64(b + 82));
+        m[2] = _cvtu64_mask64(u64(b + 90));
+        m[3] = _cvtu64_mask64(u64(b + 98));
+        const __m512i s = _mm512_broadcast_i64x4(fast_nibble_scales(_mm_cvtsi32_si128((int) u32(b + 106))));
+        sc[0] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[0]), s);
+        sc[1] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[1]), s);
+        sc[2] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[2]), s);
+        sc[3] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[3]), s);
+    }
+};
+
+template <> struct FastFmt<18> {   // IQ3_XXS: d, qs[64] grid bytes, 8 x u32 (4 x 7-bit sign index + 4-bit scale)
+    static constexpr int bytes = 98;
+    static constexpr float K = 0.25f;
+    static STRATA_IQ512_FORCEINLINE void decode_block(const uint8_t* b, __m512i* g, __mmask64* m, __m512i* sc) {
+        const __m512i idx = _mm512_loadu_si512((const void*) (b + 2));
+        const __mmask64 k7 = _mm512_movepi8_mask(idx);
+        const __m512i lo = fast_blookup8(idx, k7, fast_lo18), hi = fast_blookup8(idx, k7, fast_hi18);
+        const __m512i lut = _mm512_load_si512(fast_lut18);
+        g[0] = _mm512_shuffle_epi8(lut, fast_codes4(lo, hi, 0));
+        g[1] = _mm512_shuffle_epi8(lut, fast_codes4(lo, hi, 1));
+        g[2] = _mm512_shuffle_epi8(lut, fast_codes4(lo, hi, 2));
+        g[3] = _mm512_shuffle_epi8(lut, fast_codes4(lo, hi, 3));
+        // the 8 sign / scale words: 4 x 7-bit sign index (+ the parity as bit 7, ksigns_iq2xs) and a 4-bit scale each
+        const __m256i v = _mm256_loadu_si256((const __m256i*) (b + 66));
+        const __m256i si = _mm256_and_si256(_mm256_multishift_epi64_epi8(_mm256_load_si256((const __m256i*) fast_shift7), v), _mm256_set1_epi8(0x7f));
+        const __m256i sg = _mm256_or_si256(si, _mm256_and_si256(_mm256_slli_epi16(_mm256_popcnt_epi8(si), 7), _mm256_set1_epi8((char) 0x80)));
+        m[0] = _cvtu64_mask64((uint64_t) _mm256_extract_epi64(sg, 0));
+        m[1] = _cvtu64_mask64((uint64_t) _mm256_extract_epi64(sg, 1));
+        m[2] = _cvtu64_mask64((uint64_t) _mm256_extract_epi64(sg, 2));
+        m[3] = _cvtu64_mask64((uint64_t) _mm256_extract_epi64(sg, 3));
+        const __m256i s32 = _mm256_srli_epi32(v, 28);
+        const __m128i s16 = _mm256_cvtepi32_epi16(_mm256_or_si256(_mm256_add_epi32(s32, s32), _mm256_set1_epi32(1)));
+        const __m512i s = _mm512_broadcast_i32x4(s16);
+        sc[0] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[0]), s);
+        sc[1] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[1]), s);
+        sc[2] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[2]), s);
+        sc[3] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc2[3]), s);
+    }
+};
+
+template <> struct FastFmt<22> {   // IQ2_S: d, qs[64] (32 grid bytes, 32 sign bytes), qh[8], scales[8]
+    static constexpr int bytes = 82;
+    static constexpr float K = 0.125f;
+    static STRATA_IQ512_FORCEINLINE void decode_block(const uint8_t* b, __m512i* g, __mmask64* m, __m512i* sc) {
+        // the 10-bit indices: the grid byte plus two bits of qh (index i: bits 2 (i % 4) and 2 (i % 4) + 1 of qh[i / 4])
+        const __m256i hq = _mm256_shuffle_epi8(_mm256_broadcastq_epi64(_mm_loadl_epi64((const __m128i*) (b + 66))),
+                                               _mm256_load_si256((const __m256i*) fast_qh_shuf));
+        const __m512i hi = _mm512_and_si512(_mm512_srlv_epi16(_mm512_cvtepu8_epi16(hq), _mm512_load_si512(fast_qh_shift)),
+                                            _mm512_set1_epi16(3));
+        const __m512i idx = _mm512_or_si512(_mm512_cvtepu8_epi16(_mm256_loadu_si256((const __m256i*) (b + 2))), _mm512_slli_epi16(hi, 8));
+        const __m512i w = fast_lookup10(idx, fast_t22);
+        const __m512i lut = _mm512_load_si512(fast_lut22);
+        g[0] = _mm512_shuffle_epi8(lut, fast_spread2(_mm512_castsi512_si128(w)));
+        g[1] = _mm512_shuffle_epi8(lut, fast_spread2(_mm512_extracti32x4_epi32(w, 1)));
+        g[2] = _mm512_shuffle_epi8(lut, fast_spread2(_mm512_extracti32x4_epi32(w, 2)));
+        g[3] = _mm512_shuffle_epi8(lut, fast_spread2(_mm512_extracti32x4_epi32(w, 3)));
+        m[0] = _cvtu64_mask64(u64(b + 34));
+        m[1] = _cvtu64_mask64(u64(b + 42));
+        m[2] = _cvtu64_mask64(u64(b + 50));
+        m[3] = _cvtu64_mask64(u64(b + 58));
+        const __m512i s = _mm512_broadcast_i64x4(fast_nibble_scales(_mm_loadl_epi64((const __m128i*) (b + 74))));
+        sc[0] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc4[0]), s);
+        sc[1] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc4[1]), s);
+        sc[2] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc4[2]), s);
+        sc[3] = _mm512_permutexvar_epi16(_mm512_load_si512(fast_sc4[3]), s);
+    }
+};
+
+// one block: the integer sums of each token (four vpdpwssd; integers, so the order is free)
+template <int TY, int NT>
+STRATA_IQ512_FORCEINLINE void fast_block(const uint8_t* blk, const block_q8_K* const* y, int i, __m512i* acci) {
+    __m512i g[4], sc[4];
+    __mmask64 m[4];
+    FastFmt<TY>::decode_block(blk, g, m, sc);
+    const __m512i zero = _mm512_setzero_si512();
+    for (int t = 0; t < NT; ++t) {
+        const int8_t* q = y[t][i].qs;
+        const __m512i y0 = _mm512_loadu_si512((const void*) q), y1 = _mm512_loadu_si512((const void*) (q + 64));
+        const __m512i y2 = _mm512_loadu_si512((const void*) (q + 128)), y3 = _mm512_loadu_si512((const void*) (q + 192));
+        __m512i a = _mm512_dpwssd_epi32(zero, _mm512_maddubs_epi16(g[0], _mm512_mask_sub_epi8(y0, m[0], zero, y0)), sc[0]);
+        __m512i c = _mm512_dpwssd_epi32(zero, _mm512_maddubs_epi16(g[1], _mm512_mask_sub_epi8(y1, m[1], zero, y1)), sc[1]);
+        a = _mm512_dpwssd_epi32(a, _mm512_maddubs_epi16(g[2], _mm512_mask_sub_epi8(y2, m[2], zero, y2)), sc[2]);
+        c = _mm512_dpwssd_epi32(c, _mm512_maddubs_epi16(g[3], _mm512_mask_sub_epi8(y3, m[3], zero, y3)), sc[3]);
+        acci[t] = _mm512_add_epi32(a, c);
+    }
+}
+
+// several tokens: the sums of row_dot<TY, NT> (16 float lanes, _mm512_reduce_add_ps)
+template <int TY, int NT>
+inline void fast_row(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    __m512 accf[NT];
+    for (int t = 0; t < NT; ++t) accf[t] = _mm512_setzero_ps();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * FastFmt<TY>::bytes;
+        if (prefetch_ahead > 0) {
+            const uint8_t* ahead = blk + (size_t) prefetch_ahead;
+            _mm_prefetch((const char*) ahead, _MM_HINT_T0);
+            _mm_prefetch((const char*) ahead + 64, _MM_HINT_T0);
+        }
+        __m512i acci[NT];
+        fast_block<TY, NT>(blk, y, i, acci);
+        const float dx = h2f(u16(blk)) * FastFmt<TY>::K;
+        for (int t = 0; t < NT; ++t)
+            accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+    }
+    for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(accf[t]);
+}
+
+// one token in the order of ggml-cpu: the sums of row_dot_x<TY, 1>
+template <int TY>
+inline float fast_row_x(const uint8_t* row, int nblocks, const block_q8_K* y) {
+    __m256 accf = _mm256_setzero_ps();
+    const block_q8_K* yp[1] = {y};
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * FastFmt<TY>::bytes;
+        if (prefetch_ahead > 0) {
+            const uint8_t* ahead = blk + (size_t) prefetch_ahead;
+            _mm_prefetch((const char*) ahead, _MM_HINT_T0);
+            _mm_prefetch((const char*) ahead + 64, _MM_HINT_T0);
+        }
+        __m512i acci[1];
+        fast_block<TY, 1>(blk, yp, i, acci);
+        const float dx = h2f(u16(blk));
+        const __m256i folded = _mm256_add_epi32(_mm512_castsi512_si256(acci[0]), _mm512_extracti64x4_epi64(acci[0], 1));
+        accf = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[i].d), _mm256_cvtepi32_ps(folded), accf);
+    }
+    __m128 s = _mm_add_ps(_mm256_extractf128_ps(accf, 1), _mm256_castps256_ps128(accf));
+    s = _mm_add_ps(s, _mm_movehl_ps(s, s));
+    s = _mm_add_ss(s, _mm_movehdup_ps(s));
+    return FastFmt<TY>::K * _mm_cvtss_f32(s);
+}
+
+template <int TY, int NT>
+void fast_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff, int r0, int r1) {
+    const block_q8_K* y[NT];
+    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    const int nb = n / QK_K;
+    float g[NT], u[NT];
+    for (int r = r0; r < r1; ++r) {
+        fast_row<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
+        fast_row<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+    }
+}
+
+template <int TY>
+void fast_gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff, int r0, int r1) {
+    for (int t0 = 0; t0 < nt; t0 += 4) {   // the sums of a token do not depend on the group it is computed in
+        switch (nt - t0 < 4 ? nt - t0 : 4) {
+            case 1: fast_gu_rows<TY, 1>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+            case 2: fast_gu_rows<TY, 2>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+            case 3: fast_gu_rows<TY, 3>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+            default: fast_gu_rows<TY, 4>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+        }
+    }
+}
+
+template <int TY>
+void fast_rows_x1(const uint8_t* w, size_t row_bytes, int n, const void* act, float* out, int r0, int r1) {
+    for (int r = r0; r < r1; ++r) out[r] = fast_row_x<TY>(w + (size_t) r * row_bytes, n / QK_K, (const block_q8_K*) act);
+}
+
+}  // namespace
+
+bool iq512_fast_on() noexcept { return fast_on; }
+
 void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
                    float* const* ff, int r0, int r1) {
+    if (fast_on) {
+        switch (type) {
+            case 18: fast_gu_rows_nt<18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            case 21: fast_gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            case 22: fast_gu_rows_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            default: break;
+        }
+    }
     switch (type) {
         case 16: gu_rows_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         case 17: gu_rows_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
@@ -665,7 +1022,7 @@ static bool has_vpopcnt() {
     return ok;
 }
 
-bool iq512_gather_on() noexcept { return gather; }
+bool iq512_gather_on() noexcept { return gather || fast_on; }   // either one makes the 512-bit exact rows worth it for a lone token
 
 bool iq512x_supported(int type) noexcept {
     return has_vpopcnt() && (type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 29);
@@ -673,6 +1030,14 @@ bool iq512x_supported(int type) noexcept {
 
 void iq512x_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                  int r0, int r1) {
+    if (fast_on && nt == 1) {
+        switch (type) {
+            case 18: fast_rows_x1<18>(w, row_bytes, n, act[0], out[0], r0, r1); return;
+            case 21: fast_rows_x1<21>(w, row_bytes, n, act[0], out[0], r0, r1); return;
+            case 22: fast_rows_x1<22>(w, row_bytes, n, act[0], out[0], r0, r1); return;
+            default: break;
+        }
+    }
     switch (type) {
         case 16: dot_rows_x_nt<16>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 17: dot_rows_x_nt<17>(nt, w, row_bytes, n, act, out, r0, r1); break;
