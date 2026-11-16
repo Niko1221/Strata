@@ -86,7 +86,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         rows = 8192;
         if (!std::getenv("FNX_PF_ROWS") && !std::getenv("FNX_PF_PASS")) {
             size_t free_min = SIZE_MAX, kv_max = 0, arena_max = 0;
-            for (int c = 0; c < NCARD; ++c) {
+            for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
                 ck(cudaSetDevice(m.cards[c].dev), "cudaSetDevice");
                 size_t fr = 0, tot = 0;
                 ck(cudaMemGetInfo(&fr, &tot), "cudaMemGetInfo");
@@ -96,6 +96,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
                 arena_max = std::max(arena_max, arena_c);
                 kv_max = std::max(kv_max, (size_t) n_pages * kvp_page(c) * sizeof(uint16_t));
             }
+#if defined(FNX_DISTRIBUTED)
+            free_min = distributed::minimum(free_min);
+            kv_max = UINT64_MAX - distributed::minimum(UINT64_MAX - kv_max);
+#endif
             const size_t margin = kv_max + (PF_MARGIN_MIB << 20);
             const PfPick pick = pf_pick(free_min, margin);
             rows = pick.rows;
@@ -115,6 +119,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
     }
     pf_jobs_ = pf_c_ * TOPK / PF_JOB + NEXP;   // jobs of up to PF_JOB pairs per expert, at most
     set_prompt_rows(pf_c_);
+#if defined(FNX_DISTRIBUTED)
+    // The chosen prompt chunk sets the raw-key ring size used by each lane's block.
+    n_pages = ctx_pages + (std::max(lanes, 1) - 1) * lane_block_pages();
+#endif
     // FNX_PEER (AMD only; hip/peer_policy.hpp has the rules: 0 host exchange, 1 try the peer push, unset the build's default): every directed pair is probed at start
     // (kernel stores into the peer, a full read-back compare on both sides, a flag round trip); any failure leaves the host exchange for the whole run with one line.
     // FNX_PEER_PARTS: 1 the window sums, 2 the attention merge, 3 both (the default)
@@ -123,7 +131,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
 #if FNX_HIP
     {
         std::vector<int> devs;
-        for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) devs.push_back(m.cards[c].dev);
         const PeerDecision pd = peer_decide(std::getenv("FNX_PEER"), PEER_DEFAULT_ON, [&](std::string& why) { return peer_enable_and_probe(devs, why); });
         if (!pd.line.empty()) std::fprintf(stderr, "fnx: %s\n", pd.line.c_str());
         peer_on = pd.use;
@@ -151,7 +159,8 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         return p;
     };
 #endif
-    for (int c = 0; c < NCARD; ++c) {
+    cb_.resize(NCARD, nullptr);
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         const CardW& w = m.cards[c];
         CardBuf* b = new CardBuf();
         b->dev = w.dev;
@@ -276,8 +285,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->ctl = dalloc<int>(2);
         b->ring.card = c;
         // sized for fp32 words (two per pair); fp16 pairs use the first half of each slot row's room
-        b->ring.in = hxalloc<unsigned long long>(ring_in_words(MAXT));
-        b->ring.ag = hxalloc<unsigned long long>(ring_ag_words(MAXT));
+        if (!distributed::enabled()) {
+            b->ring.in = hxalloc<unsigned long long>(ring_in_words(MAXT));
+            b->ring.ag = hxalloc<unsigned long long>(ring_ag_words(MAXT));
+        }
         b->ring.f32 = ring_f32();
         b->ring.err = dalloc<unsigned>(1);
         b->att_ring.card = c;
@@ -286,16 +297,21 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->att_ring.in = peer_on && (peer_parts & 2) ? (unsigned long long*) pxalloc(att_ring_words() * sizeof(unsigned long long))
                                                      : hxalloc<unsigned long long>(att_ring_words());
 #else
+#if defined(FNX_DISTRIBUTED)
+        b->att_ring.network = dalloc<float>(NCARD * attn_network_floats(attn_rows()));
+#else
         b->att_ring.in = hxalloc<unsigned long long>(att_ring_words());
 #endif
+#endif
         b->att_ring.err = b->ring.err;
-        cb_.push_back(b);
+        cb_[c] = b;
     }
+    if (!distributed::enabled()) {
     // every link carries a probe's stores before the ring's (src/peer_probe.hpp): one that drops them stops the engine
     // here, named, instead of in the first window's ring; a slow one is said and the engine goes on
     std::fprintf(stderr, "fnx: HOSTRING build: the cards exchange through page-locked host memory; peer access is never enabled, "
                          "no peer probe, IOMMU and BAR1 checks skipped\n");
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         cb_[c]->ring.next_in = cb_[(c + 1) % NCARD]->ring.in;
         cb_[c]->ring.next_ag = cb_[(c + 1) % NCARD]->ring.ag;
         cb_[c]->att_ring.next_in = cb_[(c + 1) % NCARD]->att_ring.in;
@@ -310,8 +326,11 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         for (int d = 0; d < NCARD; ++d) cb_[c]->ring.peer_pk[d] = cb_[d]->ring.pk;
         cb_[c]->ring.peer = onehop && cb_[c]->ring.pk != nullptr;
     }
-    if (NCARD > 2 && env_int("FNX_ONEHOP", 1) != 0 && cb_[0]->ring.f32)
+    if (NCARD > 2 && env_int("FNX_ONEHOP", 1) != 0 && cb_[distributed::first_card()]->ring.f32)
         std::fprintf(stderr, "fnx: FNX_RING_F32: the one-hop sum carries fp16 words only, the rings stay\n");
+    } else {
+        std::fprintf(stderr, "fnx: distributed MPI/NCCL exchange, rank %d of %d\n", distributed::first_card(), NCARD);
+    }
     // the prompt path's buffers now, so the arena below is sized from what is left after them
     prefill_alloc();
     // FNX_ARENA: the pool's own pages are those, or as many as every card's free VRAM holds beside the arena pool's
@@ -331,7 +350,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         for (int round = 0;; ++round) {
             int more = 0;
             size_t short_mib = 0;
-            for (int c = 0; c < NCARD; ++c) {
+            for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
                 const ExpertCache& ec = m.cards[c].ec;
                 if (ec.arena_pool < 0) throw std::runtime_error("FNX_ARENA: card " + std::to_string(c) + " has no arena pool");
                 ck(cudaSetDevice(m.cards[c].dev), "cudaSetDevice");
@@ -355,7 +374,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             m.place_experts();
         }
         prefill_stages();
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             const ExpertCache& ec = m.cards[c].ec;
             if (ec.arena_pool < 0) throw std::runtime_error("FNX_ARENA: card " + std::to_string(c) + " has no arena pool");
             ck(cudaSetDevice(m.cards[c].dev), "cudaSetDevice");
@@ -378,7 +397,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         }
         arena_base_ = arena_w_ = n_pages;
         arena_cap_ = INT32_MAX;
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             const ExpertCache& ec = m.cards[c].ec;
             const int p = ec.arena_pool, keep = EXPERT_WINDOW_SLOTS;
             const size_t page = kvp_page(c) * sizeof(uint16_t);
@@ -388,7 +407,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
     } else {
         prefill_stages();
     }
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf* b = cb_[c];
         ck(cudaSetDevice(b->dev), "cudaSetDevice");
         // the K/V pool and lane 0's page table (pages taken as it grows); with an arena the pool is its start and
@@ -433,12 +452,12 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             b->lanes.push_back(L);
         }
     }
-    for (CardBuf* b : cb_) { ck(cudaSetDevice(b->dev), "set"); ck(cudaDeviceSynchronize(), "init sync"); }
+    for (CardBuf* b : cb_) if (b) { ck(cudaSetDevice(b->dev), "set"); ck(cudaDeviceSynchronize(), "init sync"); }
     lanes_.emplace_back();
-    for (int i = m.arena ? arena_base_ : cb_[0]->n_pages; i-- > 0;) free_pages_.push_back(i);   // taken from the back: low pages first
+    for (int i = m.arena ? arena_base_ : cb_[distributed::first_card()]->n_pages; i-- > 0;) free_pages_.push_back(i);   // taken from the back: low pages first
     if (m.arena) {
         std::string per;
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             const ExpertCache& ec = m.cards[c].ec;
             const int p = ec.arena_pool;
             char buf[96];
@@ -458,16 +477,18 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
 }
 
 void Engine::clear_rings() {
-    for (CardBuf* b : cb_) { ck(cudaSetDevice(b->dev), "set"); ck(cudaDeviceSynchronize(), "ring clear sync"); }
-    for (int c = 0; c < NCARD; ++c) {
+    for (CardBuf* b : cb_) if (b) { ck(cudaSetDevice(b->dev), "set"); ck(cudaDeviceSynchronize(), "ring clear sync"); }
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         ck(cudaSetDevice(b.dev), "set");
+        if (!distributed::enabled()) {
         ck(cudaMemset(b.ring.in, 0, ring_in_words(MAXT) * sizeof(unsigned long long)), "ring clear");
         ck(cudaMemset(b.ring.ag, 0, ring_ag_words(MAXT) * sizeof(unsigned long long)), "ring clear");
         ck(cudaMemset(b.att_ring.in, 0, att_ring_words() * sizeof(unsigned long long)), "ring clear");
+        }
         if (!pf_.empty()) pf_clear_ring(c);
     }
-    for (CardBuf* b : cb_) { ck(cudaSetDevice(b->dev), "set"); ck(cudaDeviceSynchronize(), "ring clear sync"); }
+    for (CardBuf* b : cb_) if (b) { ck(cudaSetDevice(b->dev), "set"); ck(cudaDeviceSynchronize(), "ring clear sync"); }
     std::fprintf(stderr, "fnx: ring tags reached %u: the rings' buffers cleared, tags start again\n", tag_max_);
     tag_max_ = 1;
 }
@@ -543,7 +564,7 @@ int Engine::arena_slots_for(int c, int w) const {
 std::vector<int> Engine::arena_lent() const {
     std::vector<int> v;
     if (arena_cap_)
-        for (int c = 0; c < NCARD; ++c) v.push_back(arena_slots_for(c, arena_w_));
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) v.push_back(arena_slots_for(c, arena_w_));
     return v;
 }
 
@@ -593,7 +614,7 @@ void Engine::arena_set(int w) {
     if (w == arena_w_) return;
     if (w < arena_base_ || w > arena_cap_) throw std::runtime_error("arena: top " + std::to_string(w) + " outside its range");
     const auto t0 = std::chrono::steady_clock::now();
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const ExpertCache& ec = m_.cards[c].ec;
         ck(cudaSetDevice(b.dev), "set");
@@ -608,7 +629,7 @@ void Engine::arena_set(int w) {
         for (int pg = arena_w_; pg < w; ++pg) free_pages_.push_back(pg);
         // zeroed: they held expert weights, and the draft layer reads K/V it never wrote (batched windows skip it), which
         // as int8 rows and scales could be inf or NaN (the own pages only ever held finite K/V or zeros)
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             const size_t page = kvp_page(c) * sizeof(uint16_t);
             ck(cudaMemset((char*) cb_[c]->pool + (size_t) arena_w_ * page, 0, (size_t) (w - arena_w_) * page), "arena: zero");
@@ -623,7 +644,7 @@ void Engine::arena_set(int w) {
     const std::vector<int> now = arena_lent();
     std::string per;
     double gib = 0;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         const ExpertCache& ec = m_.cards[c].ec;
         per += (c ? " / " : "") + std::to_string(now[(size_t) c]);
         gib = std::max(gib, (double) now[(size_t) c] * ec.slot_bytes[ec.arena_pool] / (1ull << 30));
@@ -659,16 +680,20 @@ void Engine::ensure_pages(int n_pos) { ensure_pages_of(cur_, n_pos); }
 void Engine::ensure_pages_of(int lane, int n_pos) {
     LaneHost& L = lanes_[(size_t) lane];
     const int need = n_pos / KVP_POS + 1;   // the page of position n_pos too: a block's pooled key can sit one page on
-    if (need > cb_[0]->n_pages) throw Refused("context full: " + std::to_string(n_pos) + " positions");
+    if (need > cb_[distributed::first_card()]->n_pages) throw Refused("context full: " + std::to_string(n_pos) + " positions");
     const size_t had = L.pages.size();
     // with an arena, slots lent for what the free pages lack: at least ARENA_STEP pages at a time
     if (const int short_by = need - (int) had - (int) free_pages_.size(); short_by > 0 && arena_w_ < arena_cap_)
         arena_set(std::min(arena_cap_, arena_w_ + std::max(short_by, ARENA_STEP)));
-    if (const int short_by = need - (int) had - (int) free_pages_.size(); short_by > 0 && on_pool_short && !in_pool_short_ && pending_.empty()) {
+    if (const int short_by = need - (int) had - (int) free_pages_.size(); short_by > 0 && (on_pool_short || distributed::enabled()) && !in_pool_short_ && pending_.empty()) {
         const int was = cur_;
         in_pool_short_ = true;
         try {
+#if defined(FNX_DISTRIBUTED)
+            distributed::callback([&] { if (on_pool_short) on_pool_short(lane, short_by); });
+#else
             on_pool_short(lane, short_by);
+#endif
         } catch (...) {
             in_pool_short_ = false;
             throw;
@@ -685,7 +710,7 @@ void Engine::ensure_pages_of(int lane, int n_pos) {
         free_pages_.pop_back();
     }
     if (L.pages.size() == had) return;
-    for (CardBuf* b : cb_) {
+    for (CardBuf* b : cb_) if (b) {
         ck(cudaSetDevice(b->dev), "set");
         ck(cudaMemcpy(b->lanes[(size_t) lane].pt + had, L.pages.data() + had, (L.pages.size() - had) * sizeof(int), cudaMemcpyHostToDevice),
            "page table");
@@ -693,7 +718,7 @@ void Engine::ensure_pages_of(int lane, int n_pos) {
 }
 
 std::vector<unsigned long long> Engine::probe_counts() const {
-    const CardBuf& b = *cb_[0];
+    const CardBuf& b = *cb_[distributed::first_card()];
     if (!b.probe_cnt) return {};
     std::vector<unsigned long long> v(7);
     ck(cudaSetDevice(b.dev), "set");
@@ -702,7 +727,7 @@ std::vector<unsigned long long> Engine::probe_counts() const {
 }
 
 std::vector<unsigned> Engine::route_counts() const {
-    const CardBuf& b = *cb_[0];
+    const CardBuf& b = *cb_[distributed::first_card()];
     if (!b.route_cnt) return {};
     std::vector<unsigned> v((size_t) 2 * NL * NEXP);
     ck(cudaSetDevice(b.dev), "set");
@@ -711,7 +736,7 @@ std::vector<unsigned> Engine::route_counts() const {
 }
 
 std::vector<unsigned> Engine::route_trace(size_t from) const {
-    const CardBuf& b = *cb_[0];
+    const CardBuf& b = *cb_[distributed::first_card()];
     if (!b.route_trace) return {};
     unsigned long long n = 0;
     ck(cudaSetDevice(b.dev), "set");
@@ -726,7 +751,7 @@ std::vector<unsigned> Engine::route_trace(size_t from) const {
 
 std::vector<int> Engine::graph_key(const std::vector<int>& lanes) const {
     std::vector<int> k(lanes);
-    for (int l : lanes) k.push_back(cb_[0]->lanes[(size_t) l].mrope != nullptr);
+    for (int l : lanes) k.push_back(cb_[distributed::first_card()]->lanes[(size_t) l].mrope != nullptr);
     k.push_back(cache_live());
     return k;
 }
@@ -748,6 +773,7 @@ int Engine::lane_block_pages() const {
 }
 
 int Engine::add_lane() {
+    FNX_CALL(add_lane);
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("add_lane: a window is not committed");
     const size_t ring_bytes = (size_t) qsa_ring_rows() * 128 * sizeof(uint16_t);
     auto page_bytes = [](int c) { return kvp_page(c) * sizeof(uint16_t); };
@@ -775,7 +801,7 @@ int Engine::add_lane() {
     h.block0 = start;
     h.block_n = n;
     lanes_.push_back(h);
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const CardW& w = m_.cards[c];
         ck(cudaSetDevice(b.dev), "set");
@@ -983,7 +1009,7 @@ void Engine::enqueue(int T, bool dumps) {
     const float eps = m_.eps;
     int call = 0;
     auto each = [&](auto&& f) {
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c]);
         }
@@ -1030,16 +1056,16 @@ void Engine::enqueue(int T, bool dumps) {
             ring_sum(b.ring, b.bo_a, T, (const unsigned*) (b.ctl + 1), call, b.st);
         });
         ++call;
-        dd("hc_mixed", l, cb_[0]->mixed, N);
-        dd("mixer_out", l, cb_[0]->bo_a, N);
+        dd("hc_mixed", l, cb_[distributed::first_card()]->mixed, N);
+        dd("mixer_out", l, cb_[distributed::first_card()]->bo_a, N);
         // ---- FFN half
         each([&](int, CardBuf& b, const CardW& w) { ffn_half(T, call, b, w, w.L[l], b.R, b.ctl); });
         df2_tap_window(l, T);
         ++call;
-        dd("ffn_mixed", l, cb_[0]->mixed, N);
-        dd("ffn_out", l, cb_[0]->bo_f, N);
-        dd("R_pending", l, cb_[0]->R, D);
-        dd("inj_ffn", l, cb_[0]->inj_f, HC);
+        dd("ffn_mixed", l, cb_[distributed::first_card()]->mixed, N);
+        dd("ffn_out", l, cb_[distributed::first_card()]->bo_f, N);
+        dd("R_pending", l, cb_[distributed::first_card()]->R, D);
+        dd("inj_ffn", l, cb_[distributed::first_card()]->inj_f, HC);
     }
     // ---- head: the final mixer (no injection) with the last write folded in, then this card's vocabulary
     each([&](int c, CardBuf& b, const CardW& w) {
@@ -1047,7 +1073,7 @@ void Engine::enqueue(int T, bool dumps) {
         dense(w.out, b.xq, b.head_logits, b, T);
         argmax(b.head_logits, w.v1 - w.v0, T, w.v0, b.best_v, b.best_i, b.am_keys, b.ring.err, b.st);
     });
-    dd("result_norm", -1, cb_[0]->mixed, N);
+    dd("result_norm", -1, cb_[distributed::first_card()]->mixed, N);
 }
 
 // enqueue()'s layers for a window of one row per lane (row r: lanes[r]): the shared work over all rows, the
@@ -1058,7 +1084,7 @@ void Engine::enqueue_batch(const std::vector<int>& lanes) {
     const float eps = m_.eps;
     int call = 0;
     auto each = [&](auto&& f) {
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c]);
         }
@@ -1137,7 +1163,7 @@ void Engine::enqueue_rows(const std::vector<int>& lanes, const std::vector<int>&
     const float eps = m_.eps;
     int call = 0;
     auto each = [&](auto&& f) {
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c]);
         }
@@ -1221,13 +1247,13 @@ namespace fnx {
 // DFlash2 (df2_bridge.hpp): the drafter's card taps the window's rows after the FFN half of the tapped layers, inside the window's graph
 void Engine::df2_tap_window(int l, int T) {
     if (!df2_ || df2_slot_[(size_t) l] < 0) return;
-    CardBuf& b = *cb_[0];
+    CardBuf& b = *cb_[distributed::first_card()];
     ck(cudaSetDevice(b.dev), "set");
     df2::Bridge::tap(b.R, b.bo_f, b.inj_f, T, df2_slot_[(size_t) l], df2_tapw_, (int64_t) df2::kTaps * df2::kNEmbd, b.st);
 }
 
 void Engine::df2_attach(df2::Bridge& br) {
-    if (br.device() != cb_[0]->dev) throw std::runtime_error("df2_attach: the drafter is not on the first card");
+    if (br.device() != cb_[distributed::first_card()]->dev) throw std::runtime_error("df2_attach: the drafter is not on the first card");
     if (br.lanes() < (int) lanes_.size()) throw std::runtime_error("df2_attach: fewer drafters than lanes");
     if (br.tap_layers().size() != (size_t) df2::kTaps) throw std::runtime_error("df2_attach: the pack taps " + std::to_string(br.tap_layers().size()) + " layers, the engine expects " + std::to_string(df2::kTaps));
     df2_slot_.assign((size_t) NL, -1);
@@ -1236,7 +1262,7 @@ void Engine::df2_attach(df2::Bridge& br) {
         if (l < 0 || l >= NL - 1) throw std::runtime_error("df2_attach: tapped layer " + std::to_string(l) + " is outside the model");
         df2_slot_[(size_t) l] = (int) i;
     }
-    ck(cudaSetDevice(cb_[0]->dev), "set");
+    ck(cudaSetDevice(cb_[distributed::first_card()]->dev), "set");
     df2_tapw_ = dalloc<float>((size_t) MAXT * df2::kTaps * df2::kNEmbd);
     df2_lane_.assign((size_t) br.lanes(), Df2Lane{});
     df2_ = &br;
@@ -1249,7 +1275,7 @@ void Engine::df2_attach(df2::Bridge&) { throw std::runtime_error("this engine wa
 void Engine::mtp_attach(const Mtp& mtp) {
     if (mtp.cards.size() != (size_t) NCARD) throw std::runtime_error("mtp_attach: the draft layer is not on every card");
     mtp_ = &mtp;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const CardW& w = m_.cards[c];
         const MtpCard& mc = mtp.cards[c];
@@ -1316,7 +1342,7 @@ void Engine::mtp_attach(const Mtp& mtp) {
 // layer, then the final mixer and this card's draft head rows
 void Engine::mtp_enqueue(int T) {
     const float eps = m_.eps;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const CardW& w = m_.cards[c];
         const MtpCard& mc = mtp_->cards[c];
@@ -1336,12 +1362,12 @@ void Engine::mtp_enqueue(int T) {
         attention(T, b, w, L, b.mtp_kc, b.mtp_vc, b.mtp_ctl, b.mtp_qsa_ring, b.mtp_qsa_pooled, 128);
         ring_sum(b.ring, b.bo_a, T, (const unsigned*) (b.mtp_ctl + 1), 0, b.st);
     }
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         ck(cudaSetDevice(b.dev), "set");
         ffn_half(T, 1, b, m_.cards[c], mtp_->cards[c].L, b.mtp_R, b.mtp_ctl);
     }
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const MtpCard& mc = mtp_->cards[c];
         ck(cudaSetDevice(b.dev), "set");
@@ -1360,7 +1386,7 @@ void Engine::mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T) {
     const int nl = (int) reqs.size(), mp = max_ctx_ / 4;
     std::vector<int> off((size_t) nl);
     for (int i = 0, o = 0; i < nl; ++i) off[(size_t) i] = o, o += reqs[(size_t) i].T;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const CardW& w = m_.cards[c];
         const MtpCard& mc = mtp_->cards[c];
@@ -1400,12 +1426,12 @@ void Engine::mtp_enqueue_lanes(const std::vector<DraftReq>& reqs, int T) {
         dense(L.wo, b.xq, b.bo_a, b, T);
         ring_sum(b.ring, b.bo_a, T, (const unsigned*) (b.mtp_ctl + 1), 0, b.st);
     }
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         ck(cudaSetDevice(b.dev), "set");
         ffn_half(T, 1, b, m_.cards[c], mtp_->cards[c].L, b.mtp_R, b.mtp_ctl);
     }
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const MtpCard& mc = mtp_->cards[c];
         ck(cudaSetDevice(b.dev), "set");

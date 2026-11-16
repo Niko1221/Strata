@@ -9,6 +9,7 @@
 // over the chunk's final residuals in windows of MAXT rows).
 #include "pf_common.cuh"
 #include "engine.hpp"
+#include "control.hpp"
 #include "engine_impl.hpp"
 #include "env.hpp"
 #include "pf_ring_plan.hpp"
@@ -723,6 +724,10 @@ __global__ void k_pfr_addend(float* __restrict__ x, const float* __restrict__ pa
 void pf_ring(Engine::Pf& p, int g, float* x, int C, const RingMoe* m, unsigned* err, cudaStream_t s, bool own_out = false) {
     const unsigned seq = ++p.seq;
     if (m) k_pfr_addend<<<grid_for((size_t) C * N), 256, 0, s>>>(x, m->part, m->topw, m->logits, C);
+#if defined(FNX_DISTRIBUTED)
+    distributed::sum(x, size_t(C) * N, s);
+    return;
+#endif
 #if FNX_HIP
     if (p.rccl) {
         const RcclApi& api = *(const RcclApi*) p.rc_api;
@@ -772,6 +777,12 @@ void pf_attn_send(Engine::Pf& p, int set, int g, int C, int r0, int nr, int i, u
 // a prompt chunk's attention and the sends of its exchange (buffer set `set`): each piece of the rows' partials goes to
 // its heads' cards (on st2) while the next piece is computed
 void pf_attn_start(Engine::Pf& p, CardBuf& b, uint16_t* kc, uint16_t* vc, int g, int C, int set, cudaStream_t s) {
+#if defined(FNX_DISTRIBUTED)
+    attn_prompt(p.qg, kc, vc, b.pg, p.ctl, p.cells, p.ncells, g, C, 0, C, p.apart[set], s);
+    const size_t block = attn_prompt_block_floats(C);
+    distributed::exchange(p.apart[set], p.arecv_dev[set], block, 0, block, s);
+    return;
+#endif
     const unsigned seq = p.att_seq[set] = ++p.seq;
     const int n = p.att_pieces;
     for (int i = 0; i < n; ++i) {
@@ -800,6 +811,10 @@ void pf_attn_start(Engine::Pf& p, CardBuf& b, uint16_t* kc, uint16_t* vc, int g,
 // its merge into att once the other cards' pieces are here and this card's sends are done; qg must still be the
 // chunk's (the merge reads its gates)
 void pf_attn_finish(Engine::Pf& p, int g, int C, int set, cudaStream_t s) {
+#if defined(FNX_DISTRIBUTED)
+    attn_prompt_merge(p.apart[set] + size_t(g) * attn_prompt_block_floats(C), p.arecv_dev[set], p.qg, p.att, C, g, s);
+    return;
+#endif
     if (p.attn_dma) {
         ckc(cudaStreamWaitEvent(s, p.ev_r[set], 0), "attn recv join");
         ckc(cudaStreamWaitEvent(s, p.ev_j[set], 0), "attn join");
@@ -831,16 +846,18 @@ void Engine::pf_clear_ring(int c) {
 
 void Engine::pf_seq_reset(unsigned start) {
     // every card idle first: a card's stream writes its numbers into the next cards' flags
-    for (CardBuf* b : cb_) { ckc(cudaSetDevice(b->dev), "set"); ckc(cudaDeviceSynchronize(), "prompt sequence reset sync"); }
-    for (int c = 0; c < NCARD; ++c) {
+    for (CardBuf* b : cb_) if (b) { ckc(cudaSetDevice(b->dev), "set"); ckc(cudaDeviceSynchronize(), "prompt sequence reset sync"); }
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         Pf& p = *pf_[(size_t) c];
         if (p.att_pend >= 0) throw std::runtime_error("prefill: sequence numbers restarted with an attention merge pending");
         ckc(cudaSetDevice(p.dev), "set");
+        if (!distributed::enabled()) {
         ckc(cudaMemset(p.ring_ce.flags, 0, 2 * PF_RING_STEPS * sizeof(unsigned)), "prompt ring flags");
 #if FNX_HIP
         if (p.a2a_flag) ckc(cudaMemset(p.a2a_flag, 0, NCARD * sizeof(unsigned)), "small-chunk sum flags");
 #endif
         for (unsigned* f : p.aflags) ckc(cudaMemset(f, 0, ATT_FLAG_ROWS * ATT_PIECES_MAX * sizeof(unsigned)), "attention exchange flags");
+        }
         if (p.hcs) {
             for (unsigned* f : p.hg_flags) std::memset(f, 0, 8 * sizeof(unsigned));
             std::memset(p.rg_flags, 0, 16 * sizeof(unsigned));
@@ -848,13 +865,13 @@ void Engine::pf_seq_reset(unsigned start) {
         }
         p.seq = p.att_seq[0] = p.att_seq[1] = start;
     }
-    for (CardBuf* b : cb_) { ckc(cudaSetDevice(b->dev), "set"); ckc(cudaDeviceSynchronize(), "prompt sequence reset sync"); }
+    for (CardBuf* b : cb_) if (b) { ckc(cudaSetDevice(b->dev), "set"); ckc(cudaDeviceSynchronize(), "prompt sequence reset sync"); }
 }
 
 void Engine::prefill_alloc() {
     if (!pf_.empty()) throw std::runtime_error("prefill_alloc: the prompt path's buffers exist already");
     pf_.resize(NCARD);
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const CardW& w = m_.cards[c];
         ckc(cudaSetDevice(b.dev), "set");
@@ -964,7 +981,7 @@ void Engine::prefill_alloc() {
         p->jobs_dn = palloc<BigJob>(pf_jobs_);
         p->ple_emb = palloc<float>((size_t) pf_c_ * N);
         p->ctl = palloc<int>((size_t) (1 + (pf_c_ / MAXT)) * 2);
-        p->ring_sm = env_int("FNX_PF_RING_SM", 0) != 0;   // strata-split: the chunk sums go through host memory on the copy engines; FNX_PF_RING_SM=1 is the GPU-thread ring (slower, kept as the fallback path)
+        p->ring_sm = !distributed::enabled() && env_int("FNX_PF_RING_SM", 0) != 0;   // strata-split: the chunk sums go through host memory on the copy engines; FNX_PF_RING_SM=1 is the GPU-thread ring (slower, kept as the fallback path)
         p->ring = b.ring;
         if (p->ring_sm) {   // ~140 MB a card at 1,024 rows a chunk
             p->ring.f32 = false;   // HOSTRING: the prompt path's sums are fp16 on every count; FNX_RING_F32 is the decode ring's
@@ -973,7 +990,7 @@ void Engine::prefill_alloc() {
             p->ring.ag = hpalloc<unsigned long long>(ring_ag_words(pf_c_));
             p->ring.flags = hpalloc<unsigned>(ring_flag_words());
         }
-        {
+        if (!distributed::enabled()) {
             PfRing& r = p->ring_ce;
             const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD * N;   // a card's share of the rows
             r.send = palloc<__half>(share);
@@ -1021,8 +1038,8 @@ void Engine::prefill_alloc() {
 #endif
         p->attn_dec = env_flag("FNX_PF_ATTN_DEC");
         p->apart[1] = palloc<float>(NCARD * attn_prompt_block_floats(pf_c_));   // set 0 is in the attention phase's region
-        for (int s = 0; s < 2; ++s) {
-            p->arecv[s] = hpalloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
+        if (!distributed::enabled()) for (int s = 0; s < 2; ++s) {
+            p->arecv[s] = hpalloc<float>(std::max(1, NCARD - 1) * attn_prompt_block_floats(pf_c_));
             p->aflags[s] = hpalloc<unsigned>(ATT_FLAG_ROWS * ATT_PIECES_MAX);   // [slot][piece]
         }
         if (const char* ap = std::getenv("FNX_PF_ATT_PIECES")) {
@@ -1047,9 +1064,9 @@ void Engine::prefill_alloc() {
 #else
         p->attn_dma = env_int("FNX_PFX_ATTN_DMA", 1) != 0;   // on by default (3.3-5.6% on 32K and 62.9K IQ3_S prompts, bit-identical logits); FNX_PFX_ATTN_DMA=0 turns it off
 #endif
-        if (p->attn_dma) {
+        if (distributed::enabled() || p->attn_dma) {
             for (int s2 = 0; s2 < 2; ++s2) {
-                p->arecv_dev[s2] = palloc<float>((NCARD - 1) * attn_prompt_block_floats(pf_c_));
+                p->arecv_dev[s2] = palloc<float>(std::max(1, NCARD - 1) * attn_prompt_block_floats(pf_c_));
                 ckc(cudaEventCreateWithFlags(&p->ev_r[s2], cudaEventDisableTiming), "event");
                 own_event(p->ev_r[s2]);
                 ckc(cudaEventCreateWithFlags(&p->ev_m[s2], cudaEventDisableTiming), "event");
@@ -1064,7 +1081,7 @@ void Engine::prefill_alloc() {
             // the hyper-connection split (below) wants 4 chunks to a pass: a chunk's swap and sum then hide behind the other chunks' work (2: no gain)
             bool hcs_wanted = false;
 #if !FNX_HIP
-            hcs_wanted = NCARD == 2 && !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0 && env_int("FNX_PF_HCSPLIT", 1) != 0;
+            hcs_wanted = !distributed::enabled() && NCARD == 2 && !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0 && env_int("FNX_PF_HCSPLIT", 1) != 0;
 #endif
             const long long pass = env_int("FNX_PF_PASS", pf_pass_pick_ > 0 ? pf_pass_pick_ : (w.ec.n_slots || hcs_wanted ? 4 : 2));   // with an ExpertCache, staging amortizes over more
             if (pass < 1 || pass > PF_PASS) throw std::runtime_error("FNX_PF_PASS: 1 to " + std::to_string(PF_PASS) + ", got " + std::to_string(pass));
@@ -1077,7 +1094,7 @@ void Engine::prefill_alloc() {
                 p->boak[k] = palloc<float>((size_t) pf_c_ * N);
                 p->injak[k] = palloc<float>((size_t) pf_c_ * HC);
             }
-            p->overlap = !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0;
+            p->overlap = !distributed::enabled() && !p->ring_sm && env_int("FNX_PF_OVERLAP", 1) != 0;
             if (p->overlap) {
                 ckc(cudaStreamCreateWithFlags(&p->ring_st, cudaStreamNonBlocking), "ring stream");
                 own_stream(p->ring_st);
@@ -1146,19 +1163,20 @@ void Engine::prefill_alloc() {
         if (env_flag("FNX_PF_TIMING"))
             std::fprintf(stderr, "prefill buffers on card %d: %zu MiB (%zu MiB free before)\n", c, pf_card_bytes >> 20, free0 >> 20);
     }
+    if (!distributed::enabled()) {
     {   // the hyper-connection split runs on every card or on none; mode 1 needs the calibrated algorithm on every card
         bool all = true, asked = false;
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             asked = asked || pf_[c]->hcs;
             all = all && pf_[c]->hcs && pf_[c]->down_lt;
         }
-        for (int c = 0; c < NCARD; ++c) pf_[c]->hcs = all;
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) pf_[c]->hcs = all;
         if (asked && !all)
             std::fprintf(stderr, "fnx: prompt path: the hyper-connection read stays on both cards (no cublasLt algorithm that gives the same rows at 2048 and 4096 rows on this card)\n");
         else if (all)
-            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read is split between the cards (%s)\n", pf_[0]->hcs_mode == 1 ? "same results as the unsplit read" : "results differ in the last bits");
+            std::fprintf(stderr, "fnx: prompt path: the hyper-connection read is split between the cards (%s)\n", pf_[distributed::first_card()]->hcs_mode == 1 ? "same results as the unsplit read" : "results differ in the last bits");
     }
-    for (int c = 0; c < NCARD; ++c)
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c)
         for (int k = 0; k < NCARD; ++k) {
             for (int s = 0; s < 2; ++s) {
                 pf_[c]->parecv[s][k] = pf_[k]->arecv[s];
@@ -1166,7 +1184,7 @@ void Engine::prefill_alloc() {
             }
             pf_[c]->pdev[k] = pf_[k]->dev;
         }
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         Pf& p = *pf_[c];
         const Pf& n = *pf_[(c + 1) % NCARD];
         p.ring.next_in = n.ring.in;
@@ -1222,6 +1240,7 @@ void Engine::prefill_alloc() {
         { const char* sk = std::getenv("FNX_PF_SEND"); r.send_kernel = sk && std::strcmp(sk, "kernel") == 0; }
         r.plan = r.direct ? pf_ring_plan_direct(NCARD, c) : pf_ring_plan(NCARD, c);
     }
+    }
     // the flags as cudaMalloc left them could hold anything, and a wait passes on any flag >= its number
     const long long seq0 = env_int("FNX_PF_SEQ_START", 0);
     if (seq0 < 0 || seq0 > (long long) UINT32_MAX)
@@ -1245,7 +1264,7 @@ size_t Engine::pf_stage_bytes(int c) const {
 }
 
 void Engine::prefill_stages() {
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         Pf& p = *pf_[c];
         if (p.stage[0]) throw std::runtime_error("prefill_stages: card " + std::to_string(c) + " has its stages already");
         p.stage_bytes = pf_stage_bytes(c);
@@ -1264,7 +1283,7 @@ void Engine::prefill_stages() {
 // the token after the row. As mtp_enqueue up to its attention, every card computing every row (no sums across them)
 void Engine::prefill_draft(int C, int set) {
     const float eps = m_.eps;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         Pf& p = *pf_[c];
         const MtpCard& mc = mtp_->cards[c];
@@ -1298,16 +1317,20 @@ void Engine::prefill_draft(int C, int set) {
 }
 
 void Engine::prefill(const std::vector<int>& tokens, int after) {
+    FNX_CALL(prefill, tokens, after);
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("prefill: a window is not committed");
     if (mtp_ && after < 0) throw std::runtime_error("prefill: the draft layer needs the token after the last row");
-    if (pf_[0]->seq >= PF_SEQ_RESET) {
-        std::fprintf(stderr, "fnx: prompt ring sequence numbers at %u: flags zeroed, numbers from 0 again\n", pf_[0]->seq);
+    if (pf_[distributed::first_card()]->seq >= PF_SEQ_RESET) {
+        std::fprintf(stderr, "fnx: prompt ring sequence numbers at %u: flags zeroed, numbers from 0 again\n", pf_[distributed::first_card()]->seq);
         pf_seq_reset(0);
     }
     // a prompt shorter than FNX_PF_STAGE_ROWS reads the experts in RAM in place, a chunk at a time
-    const bool staging = pf_[0]->stage[0] && (int) tokens.size() >= pf_[0]->stage_rows;
+    const bool staging = pf_[distributed::first_card()]->stage[0] && (int) tokens.size() >= pf_[distributed::first_card()]->stage_rows;
     int K = PF_PASS;
-    for (const Pf* p : pf_) K = std::min(K, p->pass);
+    for (const Pf* p : pf_) if (p) K = std::min(K, p->pass);
+#if defined(FNX_DISTRIBUTED)
+    K = int(distributed::minimum(K));
+#endif
     if (pass_rows_ > 0) K = std::max(1, std::min(K, pass_rows_ / pf_c_));
     for (int k = 0; k < 2 * K; ++k)
         if (!pf_emb_[k]) {
@@ -1337,7 +1360,7 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
 #endif
     // a pass takes K chunks; with the hyper-connection split a short last chunk (not a whole pf_c_ rows) is a pass of its own, so it does not keep the whole chunks
     // before it from being split
-    const bool lone_tail = pf_[0]->hcs;
+    const bool lone_tail = pf_[distributed::first_card()]->hcs;
     const int lone_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);   // fewer whole chunks than this: the tail stays with them (one pass, the chunks hide each other's sums)
     auto chunks_of = [&](size_t i0, int half) {
         std::vector<PfChunk> ch;
@@ -1365,7 +1388,11 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
         size_t e = i;
         for (const PfChunk& c : ch) {
             e += c.tokens.size();
+#if defined(FNX_DISTRIBUTED)
+            distributed::callback([&] { if (on_prefill_chunk) on_prefill_chunk((int) e); });
+#else
             if (on_prefill_chunk) on_prefill_chunk((int) e);
+#endif
         }
         i += cov;
         ch = std::move(next);
@@ -1415,7 +1442,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         const RcclApi* rc = rccl_on_ ? &static_cast<RcclState*>(rccl_.get())->api : nullptr;
         if (rc) rc->GroupStart();
 #endif
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ckc(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c], *pf_[c]);
         }
@@ -1423,7 +1450,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
         if (rc) {   // the group's collectives launch now; what follows each sum on its stream is enqueued after them
             const int r = rc->GroupEnd();
             if (r != RCCL_SUCCESS) throw std::runtime_error(std::string("prefill: ncclGroupEnd: ") + rc->ErrorString(r));
-            for (int c = 0; c < NCARD; ++c) {
+            for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
                 ckc(cudaSetDevice(cb_[c]->dev), "set");
                 for (auto& fn : pf_[c]->post) fn();
                 pf_[c]->post.clear();
@@ -1434,17 +1461,17 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     // the chunk that runs: its rows, groups and buffers
     int C = 0, ng = 0, set = 0;
     // FNX_PF_HCSPLIT: this pass's hyper-connection reads are split between the cards (every chunk of the pass long enough to be worth it)
-    bool hs = pf_[0]->hcs;
+    bool hs = pf_[distributed::first_card()]->hcs;
     static const int hs_full = (int) env_int("FNX_PF_HCSPLIT_FULL", 0);   // 1: every card reads all rows in one call; 2: all rows in two halves (the split's GEMM shapes)
       // debugging: every card reads all the rows (the swap still runs): the answers must equal the unsplit path's
     // fewer than hcs_min chunks in the pass (default 3): the swap and the sum have nothing to hide behind, and the split read is slower than the plain one (6.4K prompt: 1.8 -> 2.3 s)
     static const int hcs_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);
     if ((int) chunks.size() < hcs_min) hs = false;
     for (const PfChunk& ck : chunks)
-        if ((int) ck.tokens.size() < 512 || (pf_[0]->hcs_mode == 1 && (!pf_[0]->down_lt || (int) ck.tokens.size() != 4096))) hs = false;
+        if ((int) ck.tokens.size() < 512 || (pf_[distributed::first_card()]->hcs_mode == 1 && (!pf_[distributed::first_card()]->down_lt || (int) ck.tokens.size() != 4096))) hs = false;
     auto use = [&](int j) {
         C = (int) chunks[(size_t) j].tokens.size(), ng = (C + MAXT - 1) / MAXT, set = chunks[(size_t) j].set;
-        for (Pf* p : pf_) {
+        for (Pf* p : pf_) if (p) {
             p->R = p->Rk[j], p->bo_f = p->bofk[j], p->inj_f = p->injfk[j], p->ctl = p->ctlk[j], p->bo_a = p->boak[j], p->inj_a = p->injak[j];
             if (p->hcs) p->mixed = p->mixedk[hs ? j : 0];
         }
@@ -1809,7 +1836,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             for (int r0 = 0; r0 < C; r0 += MAXT) {
                 const int T = std::min(MAXT, C - r0);
                 std::vector<const float*> src;
-                for (Pf* p : pf_) src.push_back(p->R + (size_t) r0 * D);
+                for (Pf* p : pf_) src.push_back(p ? p->R + (size_t) r0 * D : nullptr);
                 std::vector<int> next(tokens.begin() + r0 + 1, tokens.begin() + r0 + T);
                 next.push_back(r0 + T < C ? tokens[(size_t) (r0 + T)] : chunks[(size_t) j].after);
                 draft_rows(src, T, next, pos0[(size_t) j] + r0);
@@ -1836,7 +1863,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                      std::chrono::duration<double, std::milli>(t_enq - t_pass).count(),
                      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_main).count());
         if (staging)
-            for (int c = 0; c < NCARD; ++c)
+            for (int c = distributed::first_card(); c < distributed::end_card(); ++c)
                 std::fprintf(stderr, "; card %d experts %zu MiB copied in, %zu MiB read in place", c, pf_[c]->staged >> 20, pf_[c]->in_place >> 20);
         std::fprintf(stderr, "\n");
     }

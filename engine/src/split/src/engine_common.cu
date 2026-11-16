@@ -143,9 +143,15 @@ struct CardPool {
 };
 
 void Engine::on_cards(const std::function<void(int)>& f) {
+#if defined(FNX_DISTRIBUTED)
+    const int c = distributed::first_card();
+    ck(cudaSetDevice(cb_[c]->dev), "set");
+    f(c);
+    return;
+#endif
     if (!pool_) {
         std::vector<int> devs;
-        for (CardBuf* b : cb_) devs.push_back(b->dev);
+        for (CardBuf* b : cb_) if (b) devs.push_back(b->dev);
         pool_ = std::make_shared<CardPool>(devs);
     }
     pool_->run(f);
@@ -173,6 +179,7 @@ void Engine::release_pages() {
 }
 
 void Engine::use_lane(int i) {
+    FNX_CALL(use_lane, i);
     if (i < 0 || i >= (int) lanes_.size()) throw std::runtime_error("use_lane: no lane " + std::to_string(i));
     if (i == cur_) return;
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("use_lane: a window is not committed");
@@ -186,10 +193,11 @@ void Engine::use_lane(int i) {
     tag_ = now.tag;
     history_ = std::move(now.history);
     now.history.clear();
-    for (CardBuf* b : cb_) card_lane(*b, b->lanes[(size_t) i]);
+    for (CardBuf* b : cb_) if (b) card_lane(*b, b->lanes[(size_t) i]);
 }
 
 void Engine::set_images(const std::vector<Image>& images) {
+    FNX_CALL(images, images);
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("set_images: a window is not committed");
     int end = 0;
     for (const Image& im : images) {
@@ -205,7 +213,7 @@ void Engine::set_images(const std::vector<Image>& images) {
     L.images = images;
     if (same) return;   // the rows change; the positions do not
     if (images.empty()) {
-        for (CardBuf* b : cb_) b->mrope = b->lanes[(size_t) cur_].mrope = nullptr;
+        for (CardBuf* b : cb_) if (b) b->mrope = b->lanes[(size_t) cur_].mrope = nullptr;
         return;
     }
     std::vector<int> tab((size_t) max_ctx_ * 3);
@@ -226,7 +234,7 @@ void Engine::set_images(const std::vector<Image>& images) {
             ++c;
         }
     }
-    for (CardBuf* b : cb_) {
+    for (CardBuf* b : cb_) if (b) {
         ck(cudaSetDevice(b->dev), "set");
         LaneDev& D = b->lanes[(size_t) cur_];
         if (!D.mrope_buf) D.mrope_buf = dalloc<int>(tab.size());
@@ -258,16 +266,16 @@ void swap_slot(CardBuf& b, int T, CardBuf::GraphEntry& e) {
 }  // namespace
 
 bool Engine::batch_graph_ready(int T, const std::vector<int>& key) {
-    CardBuf& b0 = *cb_[0];
+    CardBuf& b0 = *cb_[distributed::first_card()];
     if (b0.batch_graphs[(size_t) T].exec && b0.batch_graphs[(size_t) T].key == key) {
-        if (precap()) for (CardBuf* b : cb_) b->batch_slot_used[(size_t) T] = ++graph_tick_;
+        if (precap()) for (CardBuf* b : cb_) if (b) b->batch_slot_used[(size_t) T] = ++graph_tick_;
         return true;
     }
     if (!precap()) return false;
     std::vector<CardBuf::GraphEntry>& cache = b0.batch_cache[(size_t) T];
     for (size_t i = 0; i < cache.size(); ++i)
         if (cache[i].key == key) {
-            for (CardBuf* b : cb_) {
+            for (CardBuf* b : cb_) if (b) {
                 swap_slot(*b, T, b->batch_cache[(size_t) T][i]);
                 b->batch_slot_used[(size_t) T] = ++graph_tick_;
             }
@@ -288,19 +296,19 @@ bool Engine::lazy_capture(const std::vector<int>& key) {
 }
 
 void Engine::batch_graph_stash(int T) {
-    if (!precap() || !cb_[0]->batch_graphs[(size_t) T].exec) return;
+    if (!precap() || !cb_[distributed::first_card()]->batch_graphs[(size_t) T].exec) return;
     static const size_t max_graphs = (size_t) std::max<long long>(1, env_int("FNX_PRECAP_GRAPHS", 64));
     size_t total = 0;
-    for (const auto& v : cb_[0]->batch_cache) total += v.size();
+    for (const auto& v : cb_[distributed::first_card()]->batch_cache) total += v.size();
     int vt = -1;
     size_t vi = 0;
     if (total >= max_graphs) {   // the least recently used entry goes; its tables are the next capture's
         unsigned long best = ~0UL;
         for (int t = 0; t <= MAXT; ++t)
-            for (size_t i = 0; i < cb_[0]->batch_cache[(size_t) t].size(); ++i)
-                if (cb_[0]->batch_cache[(size_t) t][i].used < best) best = cb_[0]->batch_cache[(size_t) t][i].used, vt = t, vi = i;
+            for (size_t i = 0; i < cb_[distributed::first_card()]->batch_cache[(size_t) t].size(); ++i)
+                if (cb_[distributed::first_card()]->batch_cache[(size_t) t][i].used < best) best = cb_[distributed::first_card()]->batch_cache[(size_t) t][i].used, vt = t, vi = i;
     }
-    for (CardBuf* b : cb_) {
+    for (CardBuf* b : cb_) if (b) {
         ck(cudaSetDevice(b->dev), "set");
         CardBuf::GraphEntry nu;
         CardBuf::GraphSlot& s = b->batch_graphs[(size_t) T];
@@ -326,6 +334,7 @@ void Engine::batch_graph_stash(int T) {
 }
 
 void Engine::warm_graphs() {
+    FNX_CALL(warm_graphs);
     const int was = cur_;
     warming_ = true;
     std::vector<int> lanes;
@@ -334,11 +343,17 @@ void Engine::warm_graphs() {
     use_lane(0);
     reset();
     // the prompt path's buffers (and cuBLAS's) with a read of two chunks, every lane's rotary table
+#if defined(FNX_DISTRIBUTED)
+    const int warm_rows = std::min(1100, max_ctx_ - 1);
+    std::fprintf(stderr, "fnx: warm: prompt path (%d tokens) ...\n", warm_rows);
+    prefill(std::vector<int>(warm_rows, tok), tok);
+#else
     std::fprintf(stderr, "fnx: warm: prompt path (1100 tokens) ...\n");
     prefill(std::vector<int>(1100, tok), tok);
+#endif
     std::fprintf(stderr, "fnx: warm: prompt path done\n");
     reset();
-    for (CardBuf* b : cb_) {
+    for (CardBuf* b : cb_) if (b) {
         ck(cudaSetDevice(b->dev), "set");
         for (LaneDev& D : b->lanes)
             if (!D.mrope_buf) D.mrope_buf = dalloc<int>((size_t) max_ctx_ * 3);
@@ -372,7 +387,7 @@ void Engine::warm_graphs() {
             }
         if (n_cap) warm_capture_ms = ms_cap / (double) n_cap;
         long total = 0;
-        for (const auto& v : cb_[0]->batch_cache) total += (long) v.size();
+        for (const auto& v : cb_[distributed::first_card()]->batch_cache) total += (long) v.size();
         std::fprintf(stderr, "fnx: warm: precapture done: %lu captures, %.1f ms each, %ld graphs held, %.1f s\n", n_cap, warm_capture_ms, total,
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     } else if (batch_drafts() != BatchDrafts::off)
@@ -392,13 +407,18 @@ void Engine::warm_graphs() {
 }
 
 std::vector<long> Engine::free_vram_mib() const {
-    std::vector<long> v;
-    for (CardBuf* b : cb_) {
+    FNX_CALL(memory);
+    std::vector<long> v(NCARD);
+    int c = distributed::first_card();
+    for (CardBuf* b : cb_) if (b) {
         ck(cudaSetDevice(b->dev), "set");
         size_t f = 0, t = 0;
         ck(cudaMemGetInfo(&f, &t), "cudaMemGetInfo");
-        v.push_back((long) (f >> 20));
+        v[c++] = (long) (f >> 20);
     }
+#if defined(FNX_DISTRIBUTED)
+    distributed::gather_rows(v.data(), sizeof(long), sizeof(long));
+#endif
     return v;
 }
 
@@ -423,7 +443,10 @@ std::vector<std::function<void()>> take_owned() {
 // every card idle, the window graphs destroyed, then what the engine made released, newest first (errors ignored: a
 // destructor must not throw, and the process may be on its way out)
 Engine::~Engine() {
-    for (CardBuf* b : cb_) {
+#if defined(FNX_DISTRIBUTED)
+    distributed::shutdown();
+#endif
+    for (CardBuf* b : cb_) if (b) {
         cudaSetDevice(b->dev);
         cudaDeviceSynchronize();
         for (auto* slots : {&b->win_graphs, &b->mtp_graphs, &b->batch_graphs})
@@ -436,7 +459,7 @@ Engine::~Engine() {
     std::vector<std::function<void()>> o = take_owned();
     for (auto it = o.rbegin(); it != o.rend(); ++it) (*it)();
     cudaGetLastError();
-    for (CardBuf* b : cb_) delete b;
+    for (CardBuf* b : cb_) if (b) delete b;
 }
 
 void Engine::embed_token(int tok, int cell, float* out) const {
@@ -463,13 +486,14 @@ void Engine::embed_token(int tok, int cell, float* out) const {
 void Engine::dump_dev(const std::string& name, int layer, const float* p, int T, int n) {
     if (!dump) return;
     std::vector<float> h((size_t) T * n);
-    ck(cudaSetDevice(cb_[0]->dev), "set");
-    ck(cudaStreamSynchronize(cb_[0]->st), ("dump sync before " + name + " of layer " + std::to_string(layer)).c_str());
+    ck(cudaSetDevice(cb_[distributed::first_card()]->dev), "set");
+    ck(cudaStreamSynchronize(cb_[distributed::first_card()]->st), ("dump sync before " + name + " of layer " + std::to_string(layer)).c_str());
     ck(cudaMemcpy(h.data(), p, h.size() * 4, cudaMemcpyDeviceToHost), "dump copy");
     dump(name, layer, T, n, h);
 }
 
 std::vector<int> Engine::window(const std::vector<int>& tokens) {
+    FNX_CALL(window, tokens);
     std::vector<int> out = verify(tokens);
     commit((int) tokens.size());
     return out;
@@ -482,6 +506,9 @@ size_t Engine::SeqState::total() const {
 }
 
 Engine::SeqState::~SeqState() {
+#if defined(FNX_DISTRIBUTED)
+    distributed::release_state(distributed_id);
+#endif
     for (void* p : host) std::free(p);
 }
 
@@ -562,6 +589,10 @@ void each_card_thread(int n, const std::function<void(int)>& f) {
 }
 
 std::shared_ptr<Engine::SeqState> Engine::save_state(bool kv) {
+#if defined(FNX_DISTRIBUTED)
+    const uint64_t id = distributed::save_id();
+    FNX_CALL(save, kv, id);
+#endif
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("save_state: a window is not committed");
     auto s = std::make_shared<SeqState>();
     s->tokens = history_;
@@ -573,7 +604,7 @@ std::shared_ptr<Engine::SeqState> Engine::save_state(bool kv) {
     s->bytes.assign(NCARD, 0);
     const unsigned half = (tag_ + 1u) & 1u;
     std::vector<std::vector<std::pair<char*, size_t>>> pieces(NCARD);
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         pieces[(size_t) c] = state_pieces(*cb_[c], m_.cards[c], mtp_ != nullptr, pos_, kv, half, lanes_[(size_t) cur_].pages);
         size_t n = 0;
         for (const auto& p : pieces[(size_t) c]) n += p.second;
@@ -583,14 +614,23 @@ std::shared_ptr<Engine::SeqState> Engine::save_state(bool kv) {
                                      " MiB available)");
         s->bytes[c] = n;
     }
+#if defined(FNX_DISTRIBUTED)
+    on_cards([&](int c) {
+#else
     each_card_thread(NCARD, [&](int c) {
+#endif
         ck(cudaSetDevice(cb_[c]->dev), "set");
         stage_copy(*cb_[c], pieces[(size_t) c], (char*) s->host[c], s->bytes[c], true);
     });
+#if defined(FNX_DISTRIBUTED)
+    distributed::gather_rows(s->bytes.data(), sizeof(size_t), sizeof(size_t));
+    distributed::keep_state(s, id);
+#endif
     return s;
 }
 
 void Engine::load_state(const SeqState& s) {
+    FNX_CALL(load, s.distributed_id);
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("load_state: a window is not committed");
     if ((int) s.tokens.size() + 1 > max_ctx_) throw std::runtime_error("load_state: the state does not fit the context");
     if (!s.kv && (history_.size() < s.tokens.size() || !std::equal(s.tokens.begin(), s.tokens.end(), history_.begin())))
@@ -599,13 +639,17 @@ void Engine::load_state(const SeqState& s) {
     if (s.kv) ensure_pages(pos);
     const unsigned half = (tag_ + 1u) & 1u;
     std::vector<std::vector<std::pair<char*, size_t>>> pieces(NCARD);
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         pieces[(size_t) c] = state_pieces(*cb_[c], m_.cards[c], mtp_ != nullptr, pos, s.kv, half, lanes_[(size_t) cur_].pages);
         size_t n = 0;
         for (const auto& p : pieces[(size_t) c]) n += p.second;
         if (n != s.bytes[c]) throw std::runtime_error("load_state: a state saved with another layout");
     }
+#if defined(FNX_DISTRIBUTED)
+    on_cards([&](int c) {
+#else
     each_card_thread(NCARD, [&](int c) {
+#endif
         ck(cudaSetDevice(cb_[c]->dev), "set");
         stage_copy(*cb_[c], pieces[(size_t) c], (char*) s.host[c], s.bytes[c], false);
     });
@@ -624,8 +668,9 @@ void Engine::load_state(const SeqState& s) {
 }
 
 void Engine::reset() {
+    FNX_CALL(reset);
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("reset: a window is not committed");
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         const CardW& w = m_.cards[c];
         ck(cudaSetDevice(b.dev), "set");
@@ -645,6 +690,7 @@ void Engine::reset() {
 }
 
 void Engine::commit(int n) {
+    FNX_CALL(commit, n);
     const int T = (int) pending_.size();
     if (T == 0) throw std::runtime_error("commit: no window to commit");
     if (n < 1 || n > T) throw std::runtime_error("commit: keep 1..T rows");
@@ -655,7 +701,7 @@ void Engine::commit(int n) {
         const unsigned wrote = (tag_ & 1u) ^ 1u;
         constexpr int CJ = 2 * NL + HIST_JOBS;
         if (!h_.commit_jobs) h_.commit_jobs = halloc<CopyJob>((size_t) NCARD * CJ);
-        for (CardBuf* b : cb_)
+        for (CardBuf* b : cb_) if (b)
             if (!b->commit_jobs) {
                 ck(cudaSetDevice(b->dev), "set");
                 b->commit_jobs = dalloc<CopyJob>(CJ);
@@ -690,9 +736,10 @@ void Engine::commit(int n) {
 }
 
 std::vector<float> Engine::last_logits(int T) const {
+    FNX_CALL(logits, T);
     const int vocab = m_.cards[NCARD - 1].v1;
     std::vector<float> out((size_t) T * vocab);
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         const CardW& w = m_.cards[c];
         ck(cudaSetDevice(cb_[c]->dev), "set");
         const int nv = w.v1 - w.v0;
@@ -700,10 +747,20 @@ std::vector<float> Engine::last_logits(int T) const {
             ck(cudaMemcpy(out.data() + (size_t) t * vocab + w.v0, cb_[c]->head_logits + (size_t) t * nv, (size_t) nv * 4,
                           cudaMemcpyDeviceToHost), "logits");
     }
+#if defined(FNX_DISTRIBUTED)
+    std::vector<int> sizes;
+    for (const auto& w : m_.cards) sizes.push_back((w.v1 - w.v0) * sizeof(float));
+    const auto& w = m_.cards[distributed::first_card()];
+    for (int row = 0; row < T; ++row) {
+        float* base = out.data() + size_t(row) * vocab;
+        distributed::gather_host(base + w.v0, sizes[distributed::first_card()], base, sizes);
+    }
+#endif
     return out;
 }
 
 std::vector<std::vector<std::pair<float, int>>> Engine::top_tokens(int T, const Penalties& pen) {
+    FNX_CALL(top_tokens, T, pen);
     if (T < 1 || T > MAXT) throw std::runtime_error("top_tokens: 1..MAXT rows");
     if (!pen.rows.empty() && (int) pen.rows.size() != T) throw std::runtime_error("top_tokens: one penalty list per row");
     if (!tk_.pen_tok) {
@@ -714,7 +771,7 @@ std::vector<std::vector<std::pair<float, int>>> Engine::top_tokens(int T, const 
         tk_.i = halloc<int>((size_t) NCARD * MAXT * TOPK_N);
         tk_.err = halloc<unsigned>(NCARD);
         tk_.par = halloc<float>((size_t) MAXT * 3);
-        for (CardBuf* b : cb_) {
+        for (CardBuf* b : cb_) if (b) {
             ck(cudaSetDevice(b->dev), "set");
             b->tk_pen_tok = dalloc<int>((size_t) MAXT * PEN_CAP);
             b->tk_pen_cnt = dalloc<int>((size_t) MAXT * PEN_CAP);
@@ -757,6 +814,11 @@ std::vector<std::vector<std::pair<float, int>>> Engine::top_tokens(int T, const 
         ck(cudaMemcpyAsync(tk_.err + c, b.tk_err, 4, cudaMemcpyDeviceToHost, b.st), "top err");
         ck(cudaStreamSynchronize(b.st), "top sync");
     });
+#if defined(FNX_DISTRIBUTED)
+    distributed::gather_rows(tk_.v, MAXT * TOPK_N * sizeof(float), T * TOPK_N * sizeof(float));
+    distributed::gather_rows(tk_.i, MAXT * TOPK_N * sizeof(int), T * TOPK_N * sizeof(int));
+    distributed::gather_rows(tk_.err, sizeof(unsigned), sizeof(unsigned));
+#endif
     for (int c = 0; c < NCARD; ++c)
         if (tk_.err[c] & 16u) throw std::runtime_error("top_tokens: the head's logits hold a NaN or inf");
     std::vector<std::vector<std::pair<float, int>>> out(T);
@@ -777,6 +839,7 @@ std::vector<std::vector<std::pair<float, int>>> Engine::top_tokens(int T, const 
 }
 
 std::vector<int> Engine::verify(const std::vector<int>& tokens) {
+    FNX_CALL(verify, tokens);
     const int T = (int) tokens.size();
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("verify: the last window is not committed");
     if (T < 1 || T > MAXT) throw std::runtime_error("window: 1..MAXT tokens");
@@ -797,7 +860,7 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
     embed_into(0, T, pos_, [&](int q) -> int { return q < h0 ? history_[(size_t) q] : tokens[(size_t) (q - h0)]; }, nullptr);
     const auto t1 = std::chrono::steady_clock::now();
     auto each = [&](auto&& f) {
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c]);
         }
@@ -819,12 +882,12 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
     };
     if (dump) {
         each(upload);
-        dump_dev("R0", -1, cb_[0]->R, T, ROW_W);
+        dump_dev("R0", -1, cb_[distributed::first_card()]->R, T, ROW_W);
         enqueue(T, true);
         each(download);
     } else {
         const std::vector<int> key = graph_key({cur_});
-        if (cb_[0]->win_graphs[T].key != key || !cb_[0]->win_graphs[T].exec) {   // capturing queues no work
+        if (cb_[distributed::first_card()]->win_graphs[T].key != key || !cb_[distributed::first_card()]->win_graphs[T].exec) {   // capturing queues no work
             const auto tc = std::chrono::steady_clock::now();
             each([&](int, CardBuf& b, const CardW&) {
                 ck(cudaStreamBeginCapture(b.st, cudaStreamCaptureModeRelaxed), "begin capture");
@@ -857,6 +920,9 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
         gpu_ms = std::max(gpu_ms, ms);
         last_card_ms[c] = ms;
     });
+#if defined(FNX_DISTRIBUTED)
+    err = distributed::results(h_.bv, h_.bi, h_.err, T, T, gpu_ms, last_card_ms);
+#endif
     if (const char* e = window_error(err, false)) throw std::runtime_error(std::string("window: ") + e);
     std::vector<int> out(T);
     for (int t = 0; t < T; ++t) {
@@ -873,6 +939,7 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
 }
 
 std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<int>& tokens) {
+    FNX_CALL(step, lanes, tokens);
     const int T = (int) lanes.size();
     if (T < 1 || T > MAXT || (int) tokens.size() != T) throw std::runtime_error("step: 1..MAXT lanes, a token each");
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("step: the current lane's window is not committed");
@@ -918,7 +985,7 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
     h_.ctl[0] = 0;
     h_.ctl[1] = (int) ring_tag();
     auto each = [&](auto&& f) {
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c]);
         }
@@ -980,6 +1047,9 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
         ck(cudaEventElapsedTime(&ms, b.ev0, b.ev1), "event time");
         gpu_ms = std::max(gpu_ms, ms);
     });
+#if defined(FNX_DISTRIBUTED)
+    err = distributed::results(h_.bv, h_.bi, h_.err, T, T, gpu_ms, last_card_ms);
+#endif
     if (const char* e = window_error(err, false)) throw std::runtime_error(std::string("step: ") + e);
     std::vector<int> out(T);
     for (int r = 0; r < T; ++r) {
@@ -1049,6 +1119,7 @@ RowSegs row_segs(const std::vector<int>& counts) {
 }
 
 std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::vector<int>& counts, const std::vector<int>& tokens) {
+    FNX_CALL(verify_rows, lanes, counts, tokens);
     const int nl = (int) lanes.size();
     if (nl < 1 || (int) counts.size() != nl) throw std::runtime_error("verify_rows: one lane or more, a row count each");
     int T = 0;
@@ -1079,7 +1150,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
         h_.bi = halloc<int>(NCARD * MAXT);
         h_.err = halloc<unsigned>(NCARD);
     }
-    for (CardBuf* b : cb_)
+    for (CardBuf* b : cb_) if (b)
         if (!b->row_pos) {
             ck(cudaSetDevice(b->dev), "set");
             b->row_pos = dalloc<int>(MAXT);
@@ -1110,7 +1181,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     h_.ctl[0] = 0;
     h_.ctl[1] = (int) ring_tag();
     auto each = [&](auto&& f) {
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             ck(cudaSetDevice(cb_[c]->dev), "set");
             f(c, *cb_[c], m_.cards[c]);
         }
@@ -1137,7 +1208,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
         if (!eager) batch_graph_stash(T);
         const auto tc = std::chrono::steady_clock::now();
         auto swap_eager = [&] {   // an eager window reads its tables from the eager set, not the slot's (a held graph points at those)
-            for (CardBuf* b : cb_) {
+            for (CardBuf* b : cb_) if (b) {
                 std::swap(b->lane_rows[(size_t) T], b->eager_tab.lane_rows);
                 std::swap(b->lane_gdn[(size_t) T], b->eager_tab.lane_gdn);
                 std::swap(b->seg_ctl[(size_t) T], b->eager_tab.seg_ctl);
@@ -1276,6 +1347,9 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     cur.history.clear();
     // the window ran: its rows wait for commit_rows even when an error below ends the caller (the lanes' states moved)
     rows_pending_ = RowsWindow{lanes, counts, tokens};
+#if defined(FNX_DISTRIBUTED)
+    err = distributed::results(h_.bv, h_.bi, h_.err, T, T, gpu_ms, last_card_ms);
+#endif
     if (const char* e = window_error(err, false)) throw std::runtime_error(std::string("verify_rows: ") + e);
     std::vector<int> out(T);
     for (int r = 0; r < T; ++r) {
@@ -1299,10 +1373,10 @@ std::vector<std::vector<int>> Engine::held_layouts(const std::vector<int>& lanes
     pre.push_back(-1);
     std::vector<std::vector<int>> out;
     for (int T = (int) lanes.size(); T <= MAXT; ++T) {
-        const CardBuf::GraphSlot& s = cb_[0]->batch_graphs[(size_t) T];
+        const CardBuf::GraphSlot& s = cb_[distributed::first_card()]->batch_graphs[(size_t) T];
         if (s.exec && s.key.size() == pre.size() + lanes.size() && std::equal(pre.begin(), pre.end(), s.key.begin()))
             out.emplace_back(s.key.begin() + (long) pre.size(), s.key.end());
-        for (const CardBuf::GraphEntry& e : cb_[0]->batch_cache[(size_t) T])
+        for (const CardBuf::GraphEntry& e : cb_[distributed::first_card()]->batch_cache[(size_t) T])
             if (e.exec && e.key.size() == pre.size() + lanes.size() && std::equal(pre.begin(), pre.end(), e.key.begin()))
                 out.emplace_back(e.key.begin() + (long) pre.size(), e.key.end());
     }
@@ -1310,6 +1384,7 @@ std::vector<std::vector<int>> Engine::held_layouts(const std::vector<int>& lanes
 }
 
 void Engine::commit_rows(const std::vector<int>& keep) {
+    FNX_CALL(commit_rows, keep);
     const RowsWindow& w = rows_pending_;
     const int nl = (int) w.lanes.size();
     if (nl == 0) throw std::runtime_error("commit_rows: no window to commit");
@@ -1324,7 +1399,7 @@ void Engine::commit_rows(const std::vector<int>& keep) {
         // does (the history half its window wrote: the parity after its tag's)
         constexpr int CJ = 2 * NL + HIST_JOBS;
         if (!h_.rows_commit_jobs) h_.rows_commit_jobs = halloc<CopyJob>((size_t) NCARD * MAXT * CJ);
-        for (CardBuf* b : cb_)
+        for (CardBuf* b : cb_) if (b)
             if (!b->rows_commit_jobs) {
                 ck(cudaSetDevice(b->dev), "set");
                 b->rows_commit_jobs = dalloc<CopyJob>((size_t) MAXT * CJ);
@@ -1372,11 +1447,12 @@ void Engine::commit_rows(const std::vector<int>& keep) {
 
 int Engine::draft(int T, bool from_main, int src_row, const std::vector<int>& tokens, int pos0, const Penalties::Row* pen,
                   bool cands) {
+    FNX_CALL(draft, T, from_main, src_row, tokens, pos0, pen, cands);
     if (!mtp_) throw std::runtime_error("draft: no draft layer attached");
     if (!h_.R0) throw std::runtime_error("draft: no window has run (it drafts from a window's rows)");
     if (src_row < 0 || src_row + T > MAXT) throw std::runtime_error("draft: source rows out of range");
     std::vector<const float*> src;
-    for (CardBuf* b : cb_) src.push_back(draft_src(*b, from_main) + (size_t) src_row * ROW_W);
+    for (CardBuf* b : cb_) src.push_back(b ? draft_src(*b, from_main) + (size_t) src_row * ROW_W : nullptr);
     return draft_rows(src, T, tokens, pos0, pen, cands);
 }
 
@@ -1397,7 +1473,7 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
     if (pen) {
         if ((int) pen->counts.size() > PEN_CAP) throw std::runtime_error("draft: more penalized tokens than " + std::to_string(PEN_CAP));
         h_.mtp_pen_par[0] = pen->repeat, h_.mtp_pen_par[1] = pen->freq, h_.mtp_pen_par[2] = pen->present;
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             const MtpCard& mc = mtp_->cards[c];
             int* hp = h_.mtp_pen + (size_t) c * (1 + 2 * PEN_CAP);
             int k = 0;
@@ -1412,14 +1488,14 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
         for (int c = 0; c < NCARD; ++c) h_.mtp_pen[(size_t) c * (1 + 2 * PEN_CAP)] = 0;
     }
     const std::vector<int> key = graph_key({cur_});
-    if (cb_[0]->mtp_graphs[T].key != key || !cb_[0]->mtp_graphs[T].exec) {   // capturing queues no work
+    if (cb_[distributed::first_card()]->mtp_graphs[T].key != key || !cb_[distributed::first_card()]->mtp_graphs[T].exec) {   // capturing queues no work
         const auto tc = std::chrono::steady_clock::now();
-        for (CardBuf* b : cb_) {
+        for (CardBuf* b : cb_) if (b) {
             ck(cudaSetDevice(b->dev), "set");
             ck(cudaStreamBeginCapture(b->st, cudaStreamCaptureModeRelaxed), "begin capture");
         }
         mtp_enqueue(T);
-        for (CardBuf* b : cb_) {
+        for (CardBuf* b : cb_) if (b) {
             ck(cudaSetDevice(b->dev), "set");
             cudaGraph_t g;
             ck(cudaStreamEndCapture(b->st, &g), "end capture");
@@ -1457,7 +1533,7 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
     });
     unsigned err = 0;
     float gpu_ms = 0.f;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         ck(cudaSetDevice(cb_[c]->dev), "set");
         ck(cudaStreamSynchronize(cb_[c]->st), "draft sync");
         err |= h_.err[c];
@@ -1465,6 +1541,16 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
         ck(cudaEventElapsedTime(&ms, cb_[c]->ev0, cb_[c]->ev1), "event time");
         gpu_ms = std::max(gpu_ms, ms);
     }
+#if defined(FNX_DISTRIBUTED)
+    err = distributed::results(h_.bv, h_.bi, h_.err, 1, 1, gpu_ms, last_card_ms);
+#endif
+#if defined(FNX_DISTRIBUTED)
+    if (cands) {
+        distributed::gather_rows(h_.mtp_tk_v, TOPK_N * sizeof(float), TOPK_N * sizeof(float));
+        distributed::gather_rows(h_.mtp_tk_i, TOPK_N * sizeof(int), TOPK_N * sizeof(int));
+        distributed::gather_rows(h_.mtp_tk_err, sizeof(unsigned), sizeof(unsigned));
+    }
+#endif
     last_draft_gpu_ms = gpu_ms;
     if (const char* e = window_error(err, true)) throw std::runtime_error(std::string("draft: ") + e);
     int best = 0;
@@ -1489,6 +1575,7 @@ int Engine::draft_rows(const std::vector<const float*>& src, int T, const std::v
 
 
 std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
+    FNX_CALL(draft_lanes, reqs);
     if (!mtp_) throw std::runtime_error("draft_lanes: no draft layer attached");
     if (!h_.R0 || !h_.mtp_emb) throw std::runtime_error("draft_lanes: no window has run (it drafts from a window's rows)");
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("draft_lanes: a window is not committed");
@@ -1530,7 +1617,7 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
         if (!pen) continue;
         if ((int) pen->counts.size() > PEN_CAP) throw std::runtime_error("draft_lanes: more penalized tokens than " + std::to_string(PEN_CAP));
         h_.mtp_pen_par_l[3 * i] = pen->repeat, h_.mtp_pen_par_l[3 * i + 1] = pen->freq, h_.mtp_pen_par_l[3 * i + 2] = pen->present;
-        for (int c = 0; c < NCARD; ++c) {
+        for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
             const MtpCard& mc = mtp_->cards[c];
             int* hp = h_.mtp_pen_l + ((size_t) i * NCARD + c) * (1 + 2 * PEN_CAP);
             int k = 0;
@@ -1543,7 +1630,7 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
         }
     }
     last_lane_cands.assign((size_t) nl, {});
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         ck(cudaSetDevice(b.dev), "set");
         std::vector<const int*> rows((size_t) LANE_ROW_COLS * MAXT, nullptr);
@@ -1577,7 +1664,7 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
         ck(cudaEventRecord(b.ev0, b.st), "event");
     }
     mtp_enqueue_lanes(reqs, T);
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         CardBuf& b = *cb_[c];
         ck(cudaSetDevice(b.dev), "set");
         ck(cudaEventRecord(b.ev1, b.st), "event");
@@ -1595,7 +1682,7 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
     }
     unsigned err = 0;
     float gpu_ms = 0.f;
-    for (int c = 0; c < NCARD; ++c) {
+    for (int c = distributed::first_card(); c < distributed::end_card(); ++c) {
         ck(cudaSetDevice(cb_[c]->dev), "set");
         ck(cudaStreamSynchronize(cb_[c]->st), "draft sync");
         err |= h_.err[c];
@@ -1603,6 +1690,16 @@ std::vector<int> Engine::draft_lanes(const std::vector<DraftReq>& reqs) {
         ck(cudaEventElapsedTime(&ms, cb_[c]->ev0, cb_[c]->ev1), "event time");
         gpu_ms = std::max(gpu_ms, ms);
     }
+#if defined(FNX_DISTRIBUTED)
+    err = distributed::results(h_.bv, h_.bi, h_.err, MAXT, T, gpu_ms, last_card_ms);
+#endif
+#if defined(FNX_DISTRIBUTED)
+    for (int i = 0; i < nl; ++i) if (reqs[size_t(i)].cands) {
+        distributed::gather_rows(h_.mtp_tk_v_l + size_t(i) * NCARD * TOPK_N, TOPK_N * sizeof(float), TOPK_N * sizeof(float));
+        distributed::gather_rows(h_.mtp_tk_i_l + size_t(i) * NCARD * TOPK_N, TOPK_N * sizeof(int), TOPK_N * sizeof(int));
+        distributed::gather_rows(h_.mtp_tk_err_l + size_t(i) * NCARD, sizeof(unsigned), sizeof(unsigned));
+    }
+#endif
     last_draft_gpu_ms = gpu_ms;
     if (const char* e = window_error(err, true)) throw std::runtime_error(std::string("draft_lanes: ") + e);
     for (int i = 0; i < nl; ++i) {
@@ -1679,12 +1776,12 @@ void Engine::df2_defer(const Df2Req& r) {
     if (r.used < 1 || r.row0 < 0 || r.row0 + r.used > MAXT) throw std::runtime_error("df2_defer: rows outside the window");
     Df2Lane& L = df2_lane_[(size_t) r.lane];
     if (!L.ring) {
-        ck(cudaSetDevice(cb_[0]->dev), "set");
+        ck(cudaSetDevice(cb_[distributed::first_card()]->dev), "set");
         ck(cudaHostAlloc((void**) &L.ring, (size_t) df2::kRing * df2::kTaps * df2::kNEmbd * sizeof(float), cudaHostAllocPortable | cudaHostAllocMapped), "df2 tap ring");
         own_pinned(L.ring);
     }
     constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
-    ck(cudaSetDevice(cb_[0]->dev), "set");
+    ck(cudaSetDevice(cb_[distributed::first_card()]->dev), "set");
     long pos = r.pos0;
     for (int done = 0; done < r.used;) {
         const int at = (int) (pos % df2::kRing), k = std::min(r.used - done, df2::kRing - at);
@@ -1701,7 +1798,7 @@ void Engine::df2_draft(std::vector<Df2Req>& reqs) {
     if (!df2_) throw std::runtime_error("df2_draft: no DFlash2 attached");
     const auto t0 = std::chrono::steady_clock::now();
     df2::Bridge& B = *df2_;
-    ck(cudaSetDevice(cb_[0]->dev), "set");
+    ck(cudaSetDevice(cb_[distributed::first_card()]->dev), "set");
     constexpr size_t rowf = (size_t) df2::kTaps * df2::kNEmbd;
     std::string err;
     for (Df2Req& r : reqs) {

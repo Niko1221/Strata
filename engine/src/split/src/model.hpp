@@ -58,7 +58,11 @@ constexpr int PLE_LAYER = 1, PLE_ORDERS = 3, PLE_HEADS = 16, PLE_DIM = 160;
 
 namespace fnx {
 
+#if defined(FNX_TP_REFERENCE)
+static_assert(NCARD == 1 && split_check::sound(1), "the one-GPU reference must retain the complete layer geometry");
+#else
 static_assert(ncard_ok(NCARD), "FNX_NCARD: 2, 3, 4, 6 or 8 cards (card_split.hpp, ncard_ok)");
+#endif
 // the widest FF slice a card gets: FF in whole 32-value blocks, the first cards one block wider when they do not divide
 // evenly (card_split.hpp's ff_lo / ff_hi, checked against this in Model::Model): what the down kernels' per-card
 // buffers are sized for. 320 on two cards, 224 on three, 160 on four, 128 on six, 96 on eight
@@ -259,7 +263,10 @@ struct Model {
     // engine's arena and lent to the K/V pool coldest first as it grows (score: the profile's, per byte; higher is hotter)
     bool arena = false;
     std::vector<double> score;           // [NL * NEXP]
-    explicit Model(const std::string& gguf_first_shard, Load how = Load::PLAIN, Store* store = nullptr, const std::string* image = nullptr);
+    // -1: all cards in this process; otherwise load only this global shard onto local CUDA device 0.
+    int local_rank = -1;
+    explicit Model(const std::string& gguf_first_shard, Load how = Load::PLAIN, Store* store = nullptr,
+                   const std::string* image = nullptr, int rank = -1);
     // the residency and arena settings (FNX_EXPERT_RAM_GIB, FNX_ARENA, FNX_EXPERT_PROFILE) read again
     void choose_residency();
     // a worker's routed experts from their host copies: every one in VRAM, or an ExpertCache (with the arena: its

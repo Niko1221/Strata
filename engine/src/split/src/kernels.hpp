@@ -228,12 +228,19 @@ void qsa(const uint16_t* wq, const uint16_t* wk, const float* x, float* y, const
 // words) and the next card's
 struct AttRing {
     int card = 0;
+#if defined(FNX_DISTRIBUTED)
+    float* network = nullptr;
+#endif
     void* in = nullptr;
     void* next_in = nullptr;
     void* peer_in[NCARD] = {};   // every card's `in` (the one-hop merge pushes each owner its partials: set when the engine links the cards)
     bool onehop = false;         // NCARD > 2: the partials go to their owners in one hop instead of NCARD - 1
     unsigned* err = nullptr;
 };
+
+// Network TP exchanges plain softmax partials instead of shared-memory ring words.
+size_t attn_network_floats(int T);
+void attn_network_merge(const float* qg, const float* gathered, float* out, int T, int card, void* st);
 size_t att_ring_words();
 int attn_rows();   // the most rows one attn call takes
 // attention over this card's positions (the K/V cache split by position: block j on card j % NCARD, local index

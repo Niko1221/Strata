@@ -99,10 +99,10 @@ void check_bar1(int dev, const std::string& bdf, const std::string& dir, const c
 // would otherwise take the whole load first and then fail far from the cause, an sm_70 build on 24 GB cards out of
 // memory, a short BAR1 as a ring that never completes. The IOMMU check comes before BAR1's, as it is the one that
 // refuses a card with no sysfs directory: BAR1's would only say it cannot open the file
-void check_cards() {
+void check_cards(int count = NCARD) {
     const bool skip_bar1 = env_flag("FNX_SKIP_BAR1_CHECK");
     if (skip_bar1) std::fprintf(stderr, "fnx: FNX_SKIP_BAR1_CHECK=1: the cards' BAR1 is not checked against their memory\n");
-    for (int dev = 0; dev < NCARD; ++dev) {
+    for (int dev = 0; dev < count; ++dev) {
         cudaDeviceProp prop;
         ck(cudaGetDeviceProperties(&prop, dev), "cudaGetDeviceProperties");
 #if FNX_HIP
@@ -1205,10 +1205,12 @@ Mtp::Mtp(const Model& m, const std::string& dir, const std::string& vocab_file) 
     }
     std::vector<std::thread> th;
     std::vector<std::string> errs(NCARD);
-    for (int c = 0; c < NCARD; ++c)
+    for (int c = 0; c < NCARD; ++c) {
+        if (m.local_rank >= 0 && c != m.local_rank) continue;
         th.emplace_back([&, c] {
             try { load_mtp_card(m, files, m.cards[c], vocab, cards[c]); } catch (const std::exception& e) { errs[c] = e.what(); }
         });
+    }
     for (auto& t : th) t.join();
     for (int c = 0; c < NCARD; ++c)
         if (!errs[c].empty()) {
@@ -1224,7 +1226,11 @@ Mtp::~Mtp() { free_mtp_cards(cards); }
 // the cards (the app's rule, strata_control/split_engine.py, refuses it earlier; this is the same check for a start that skipped the rule). The
 // server then starts the normal layer split. Q2_0 is not listed: the Gguf has already repacked it to Q4_0.
 static void check_supported(const Gguf& g) {
-    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S};
+    const uint32_t ok[] = {T_Q4_K, T_Q5_K, T_Q5_1, T_Q8_0, T_Q4_0, T_IQ4_NL, T_IQ4_XS, T_IQ3_S, T_IQ3_XXS, T_IQ2_S
+#if defined(FNX_DISTRIBUTED)
+        ,T_Q5_0
+#endif
+    };
     for (const auto& kv : g.tensors()) {
         const std::string& n = kv.first;
         if (n.find("_exps.weight") == std::string::npos || n.find("shexp") != std::string::npos) continue;
@@ -1234,18 +1240,26 @@ static void check_supported(const Gguf& g) {
     }
 }
 
-Model::Model(const std::string& path, Load how, Store* store, const std::string* image) : g(path) {
+Model::Model(const std::string& path, Load how, Store* store, const std::string* image, int rank) :
+    g(path), local_rank(rank) {
+    if (rank < -1 || rank >= NCARD) throw std::runtime_error("fnx: local rank is outside the compiled shard count");
+    if (rank >= 0 && how != Load::PLAIN) throw std::runtime_error("fnx: a single-rank load needs Load::PLAIN");
+#if FNX_HIP
+    if (rank >= 0) throw std::runtime_error("fnx: single-rank loading currently supports CUDA only");
+#endif
     // the cards first: reading the embeddings into RAM below takes seconds on a cold cache
     {
         int ndev = 0;
         ck(cudaGetDeviceCount(&ndev), "cudaGetDeviceCount");
         // a build for another count than the cards it is given is a config or build mistake (a 2-card binary on
         // prod's three would serve, slower): CUDA_VISIBLE_DEVICES (the config's "gpu") must name exactly NCARD
-        if (ndev != NCARD)
+        if (rank >= 0 && ndev != 1)
+            throw std::runtime_error("fnx: single-rank loading requires exactly one visible CUDA device");
+        if (rank < 0 && ndev != NCARD)
             throw std::runtime_error("fnx: built for " + std::to_string(NCARD) + " cards (FNX_NCARD), " + std::to_string(ndev) +
                                      " visible: set CUDA_VISIBLE_DEVICES (a config's \"gpu\") to " + std::to_string(NCARD) +
                                      " of them, or build for " + std::to_string(ndev) + " (make FNX_NCARD=" + std::to_string(ndev) + ")");
-        check_cards();
+        check_cards(rank >= 0 ? 1 : NCARD);
     }
     check_supported(g);
 #if FNX_27B
@@ -1387,7 +1401,7 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
     const int vstep = (vocab + NCARD - 1) / NCARD;
     for (int c = 0; c < NCARD; ++c) {
         CardW& cw = cards[c];
-        cw.dev = c;
+        cw.dev = rank >= 0 ? 0 : c;
         cw.k0 = kparts[c][0];
         cw.nk = kparts[c][1];
         cw.vheads = vparts[c];
@@ -1429,10 +1443,11 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
     if (how == Load::PLAIN) choose_residency();   // the holder leaves that to its workers: every expert to a host copy
 #endif
     const auto t0 = std::chrono::steady_clock::now();
-    Stager st(g, stage_groups(g), NCARD);
+    Stager st(g, stage_groups(g), rank >= 0 ? 1 : NCARD);
     std::vector<std::thread> th;
     std::vector<std::string> errs(NCARD);
-    for (int c = 0; c < NCARD; ++c)
+    for (int c = 0; c < NCARD; ++c) {
+        if (rank >= 0 && c != rank) continue;
         th.emplace_back([&, c] {
             try {
                 load_card(st, cards[c], resident, arena ? &score : nullptr, how == Load::HOLD ? store : nullptr,
@@ -1442,6 +1457,7 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
                 st.abort("card " + std::to_string(c) + " failed");   // the other cards wait on groups no one gives back
             }
         });
+    }
     for (auto& t : th) t.join();
     for (int c = 0; c < NCARD; ++c)
         if (!errs[c].empty()) throw std::runtime_error("card " + std::to_string(c) + ": " + errs[c]);
@@ -1510,16 +1526,18 @@ void Model::choose_residency() {
 
 namespace {
 template <typename F>
-void each_card(std::vector<CardW>& cards, F f) {
+void each_card(std::vector<CardW>& cards, F f, int local_rank = -1) {
     std::vector<std::thread> th;
     std::vector<std::string> errs(NCARD);
-    for (int c = 0; c < NCARD; ++c)
+    for (int c = 0; c < NCARD; ++c) {
+        if (local_rank >= 0 && c != local_rank) continue;
         th.emplace_back([&, c] {
             try {
                 ck(cudaSetDevice(cards[c].dev), "cudaSetDevice");
                 f(cards[c]);
             } catch (const std::exception& e) { errs[c] = e.what(); }
         });
+    }
     for (auto& t : th) t.join();
     for (int c = 0; c < NCARD; ++c)
         if (!errs[c].empty()) throw std::runtime_error("card " + std::to_string(c) + ": " + errs[c]);
@@ -1543,7 +1561,7 @@ void Model::place_experts() {
             up.expert_cache(resident, hgu, hdn, arena ? &score : nullptr);
         }
         c.expert_bytes = c.bytes - before;
-    });
+    }, local_rank);
 }
 
 void Model::free_experts() {
@@ -1559,7 +1577,7 @@ void Model::free_experts() {
             L.gu_e.p = L.down_e.p = nullptr;
             L.gu_e.ep = L.down_e.ep = nullptr;
         }
-    });
+    }, local_rank);
 }
 
 // ---------------------------------------------------------------- the holder's tables for a worker
