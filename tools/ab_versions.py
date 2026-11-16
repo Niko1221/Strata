@@ -1,6 +1,6 @@
 """Strata release helpers for ab_engine's versions mode: find engine/control pairs, resolve version specs, and fetch packages.
 
-Packages come only from a download into the bench cache. Nothing is ever read from the real Strata install."""
+Packages come only from a download into the bench cache. No package is taken from the real Strata install."""
 from __future__ import annotations
 
 import fnmatch
@@ -383,8 +383,8 @@ CONFIG_GLOBS = ("*/strata/launch/*.json", "*/strata/tuning/*", "*/strata/presets
 def collect_configs(home: Path, dest: Path) -> list[Path]:
     """Copy every config file under `home` (CONFIG_GLOBS, no logs) to `dest` at its relative path; never overwrites
     (an existing copy gets the next `.1`, `.2` suffix). Returns the copies."""
-    found = {p for p in home.rglob("*") if p.suffix != ".log" and p.is_file()
-             and any(fnmatch.fnmatchcase("/" + p.relative_to(home).as_posix().lower(), pat) for pat in CONFIG_GLOBS)}
+    found = {p for p in home.rglob("*") if p.suffix != ".log"
+             and any(fnmatch.fnmatchcase("/" + p.relative_to(home).as_posix().lower(), pat) for pat in CONFIG_GLOBS) and p.is_file()}
     copies = []
     for src in sorted(found):
         target = dest / src.relative_to(home)
