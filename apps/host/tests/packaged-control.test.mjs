@@ -90,7 +90,7 @@ test('runCli passes the arguments untouched (no shell) and reads JSON', async ()
 
 // ---------------------------------------------------------------------------------- native-control in packaged mode
 
-function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old' } = {}) {
+function packagedFixture({ engineUsable = true, updater = null, repair = false, ids = ['iq2_xs', 'iq3_s'], controlVersion = '0.1.45', extraSizes = [], cliStartWait = 'old', installPoll = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'strata-packaged-test-'));
   const install = join(root, 'install'), data = join(root, 'data');
   mkdirSync(install, { recursive: true });
@@ -170,7 +170,7 @@ function packagedFixture({ engineUsable = true, updater = null, repair = false, 
       else if (message.params.name === 'strata_remove') result = { structuredContent: { summary: 'Deleted', plan: { gb: 1.2 }, failed: [] } };
       else if (message.params.name === 'strata_status') result = { structuredContent: { hardware, recommendation: catalog.recommendation, install: installJob, running: [], summary: 'x' } };
       else if (message.params.arguments?.confirm) { installJob = { running: false, exit_code: 0 }; result = { structuredContent: { summary: 'Install started', plan: { download_gb: 66.4 }, install: { running: true, step: 'downloading' } } }; }
-      else if (message.params.arguments?.cancel === undefined && message.params.arguments?.confirm === undefined) result = { structuredContent: { summary: 'Install finished', install: { running: false, exit_code: 0 } } };
+      else if (message.params.arguments?.cancel === undefined && message.params.arguments?.confirm === undefined) result = { structuredContent: installPoll ?? { summary: 'Install finished', install: { running: false, exit_code: 0 } } };
       else result = { structuredContent: { summary: 'Plan', plan: { title: 'Qwen3.8-Flash-Next Q2_0', download_gb: 66.4, disk_short: null } } };
       queueMicrotask(() => child.stdout.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }) + String.fromCharCode(10))));
     } };
@@ -546,6 +546,80 @@ test('packaged: the install job also fetches the engine through Control (merge o
     assert.equal(job.result.install.engine.state, 'failed');
     assert.doesNotMatch(job.summary, /http|ConnectionReset|bytes/);
   } finally { await g.native.close(); g.cleanup(); }
+});
+
+test('packaged: a model install that fails does not cancel the engine download it started (DL99: a retry would fail the same way again)', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.46' }, download_bytes: 5e8 } };
+  const seen = { finished: false, aborted: null };
+  const f = packagedFixture({ engineUsable: false,
+    installPoll: { summary: 'failed', install: { running: false, exit_code: 1, error: 'this engine (99.0.0) does not run Qwen3.6-35B-A3B yet - update Strata' } },
+    updater: { report, async update(options) {
+      options.onEvent({ event: 'progress', phase: 'download', percent: 40, done: 2e8, total: 5e8 });
+      await new Promise(r => setTimeout(r, 2500));          // longer than the install job's first poll (1.5 s), which reads the failure
+      seen.aborted = options.signal?.aborted === true; seen.finished = true;
+      return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.46' } }] };
+    } } });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'error');
+    assert.match(job.error, /does not run Qwen3\.6-35B-A3B yet/);
+    assert.equal(seen.finished, true, 'the engine download ran to its end before the job ended');
+    assert.equal(seen.aborted, false, 'the engine download was not cancelled');
+    assert.equal(job.result.install.engine.state, 'done');
+  } finally { await f.native.close(); f.cleanup(); }
+});
+
+test('packaged: with no engine on the PC yet, the engine is installed before setup starts (setup takes the picture reader from it; Qwen3.6 came up text-only)', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.60' }, download_bytes: 7e8 } };
+  const seen = { installsWhenEngineDone: null };
+  let f;
+  f = packagedFixture({ engineUsable: false, updater: { report, async update(options) {
+    options.onEvent({ event: 'progress', phase: 'download', percent: 50, done: 3.5e8, total: 7e8 });
+    await new Promise(r => setTimeout(r, 300));
+    seen.installsWhenEngineDone = f.rpc.filter(c => c.name === 'strata_install' && c.arguments.confirm).length;
+    return { ok: true, results: [{ component: 'engine', status: 'updated', installed_after: { version: '0.1.60' } }] };
+  } } });
+  try {
+    await f.native.refresh(true);
+    const job = await finish(f.native, f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(seen.installsWhenEngineDone, 0, 'setup was not started before the engine was in');
+    assert.equal(f.rpc.filter(c => c.name === 'strata_install' && c.arguments.confirm).length, 1);
+    assert.deepEqual(f.calls.filter(c => c[0] === 'update'), [['update', true, false]], 'the engine is fetched once');
+    assert.equal(job.result.install.engine.state, 'done');
+  } finally { await f.native.close(); f.cleanup(); }
+  // an engine that is there already: setup starts at once and the engine step runs beside it, as before
+  const g = packagedFixture({ engineUsable: true, updater: { report: { engine: { status: 'current', installed: { version: '0.1.60' } } }, async update() { throw new Error('not called'); } } });
+  try {
+    await g.native.refresh(true);
+    const job = await finish(g.native, g.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id);
+    assert.equal(job.state, 'done', job.error);
+    assert.equal(g.calls.filter(c => c[0] === 'update').length, 0, 'a current engine is not fetched');
+  } finally { await g.native.close(); g.cleanup(); }
+});
+
+test('packaged: Stop still cancels the engine download of an install', async () => {
+  const report = { engine: { status: 'install', offered: { version: '0.1.46' }, download_bytes: 5e8 } };
+  const seen = { aborted: null };
+  const f = packagedFixture({ engineUsable: false,
+    installPoll: { summary: 'running', install: { running: true, step: '5/7: downloading' } },
+    updater: { report, async update(options) {
+      await new Promise(resolve => { if (options.signal?.aborted) resolve(); else options.signal?.addEventListener('abort', resolve, { once: true }); });
+      seen.aborted = true;
+      throw new Error('stopped');
+    } } });
+  try {
+    await f.native.refresh(true);
+    const id = f.native.operation('install', { family: 'qwen', model: 'Q2_0' }).id;
+    await new Promise(r => setTimeout(r, 300));
+    await f.native.cancel(id);
+    const job = await finish(f.native, id);
+    assert.equal(job.state, 'cancelled');
+    for (let i = 0; i < 100 && seen.aborted === null; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(seen.aborted, true);
+    await new Promise(r => setTimeout(r, 2000));             // the install loop's 1.5 s wait ends and it returns before the folder goes
+  } finally { await f.native.close(); f.cleanup(); }
 });
 
 test('packaged: the app default of several requests at once and the memory retry share ONE second try, never two', async () => {

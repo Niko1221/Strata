@@ -542,6 +542,24 @@ def launch_dir() -> Path:
     return d
 
 
+def launch_name_of(s) -> str:
+    """The name of the launch these settings make (Runner.name): its run config is launch/<name>.json."""
+    return S.slug(s.name or (s.model or "model") + "-" + S.context_label(s.context).lower())
+
+
+def saved_launch_word(name: str) -> str | None:
+    """The Drafting word the launch `name` (Runner.name) was given last time, as its own run config (launch/<name>.json) keeps it: auto | mtp | dflash2 | off,
+    or None when there is none or it cannot be read. The TUI's Drafting step and Runner.keep_saved_word read it."""
+    try:
+        from strata_control import drafting
+        prev = read_config(launch_dir() / f"{name}.json")
+        word = prev.get("drafting") if isinstance(prev, dict) else None
+        word = word.strip().lower() if isinstance(word, str) else None
+        return word if word in drafting.MODES else None
+    except Exception:                                        # noqa: BLE001 - no readable file, no word
+        return None
+
+
 # ----------------------------------------------------------------------------------------------- the runner
 
 
@@ -614,7 +632,7 @@ class Runner:
 
     @property
     def name(self) -> str:
-        return S.slug(self.s.name or (self.s.model or "model") + "-" + S.context_label(self.s.context).lower())
+        return launch_name_of(self.s)
 
     @property
     def profile(self) -> str:
@@ -2381,6 +2399,7 @@ class Runner:
     def plan(self) -> dict:
         s = self.s
         self.keep_saved_off()                                # the plan names the drafter the start will run
+        self.keep_saved_word()
         self.check_own_files()
         warns = [n.line() for n in (*S.check_access(s),)]
         warns += self.preflight_words()
@@ -2479,6 +2498,29 @@ class Runner:
         except Exception:                                    # noqa: BLE001 - an unreadable file keeps the launch as it was
             return
 
+    def keep_saved_word(self) -> None:
+        """A launch without a Drafting word keeps the word this launch was given last time (Auto, MTP or DFlash2; Off is keep_saved_off's and is never touched here).
+        Owner 11-15: a drafter the person chose stays chosen, the way Off does; only a new explicit choice changes it, Auto included. (boxia d3d and l620 C2,
+        0.2.14.1: the restart with no word wrote null where "auto" was, and a chosen MTP or DFlash2 went back to Auto.) The saved word is what the person chose,
+        never the drafter a start fell back to (drafting.decide: a chosen drafter whose file is not here starts the other one when it is on disk and safe on the
+        card, with its note). Not carried over: when the model's installed config holds a Drafting choice of its own (the app's Models screen, a later choice)
+        or has its draft layer switched off with no choice (also later than the launch's word), and for a model with no Drafting choice."""
+        s = self.s
+        if s.drafting is not None:
+            return
+        try:
+            from strata_control import drafting
+            word = saved_launch_word(self.name)
+            if word is None or word == "off" or modelstate.drafting_for_family(word, s.family) is None:
+                return
+            path = self.catalog.installed_config(self.catalog.tag_of(s.family, s.model))
+            installed = read_config(path) if path is not None else {}
+            if isinstance(installed, dict) and (installed.get("drafting") is not None or installed.get("mtp") is False):
+                return
+            s.drafting = drafting.normalize(word)
+        except Exception:                                    # noqa: BLE001 - an unreadable file keeps the launch as it was
+            return
+
     def drafting_plan_line(self) -> str:
         """The drafting line of --plan: what drafts, or why not what was asked for. Nothing is changed or downloaded."""
         from strata_control import drafting
@@ -2501,6 +2543,7 @@ class Runner:
     def run(self, *, start: bool = True) -> Result:
         self.restart_after = start
         self.keep_saved_off()
+        self.keep_saved_word()                               # a restart with no word keeps the saved one (it was written as null before)
         try:
             self.check_own_files()                         # a wrong --model-path is said before the engine is downloaded
             if start:

@@ -1569,7 +1569,8 @@ def files_progress(prog: dict, job: dict, files: list) -> dict:
         except OSError:
             state, have = "waiting", 0
         total = f.get("bytes") or (have if state == "done" else 0)
-        if state == "downloading" and cur_gb and p.name in str(log.get("file", "")):   # the log line names this file
+        named = p.name in str(log.get("file", "")) or (f.get("role") == "vision" and str(log.get("file", "")).startswith("vision encoder"))
+        if state == "downloading" and cur_gb and named:   # the log line names this file (setup calls the picture reader "vision encoder")
             # The .part file is as long as the furthest byte written, which the parallel pieces push to the full size well before the
             # download is done: the pieces setup counts are the truth.
             have = min(have, int(float(log.get("done_gb") or 0) * 1e9)) if have else have
@@ -1597,7 +1598,8 @@ def files_progress(prog: dict, job: dict, files: list) -> dict:
     prog["download"] = {"file": "picture reader" if active and active["kind"] == "vision" else "model files",
                         "done_gb": round(done_gb, 3), "total_gb": round(total_gb, 3),
                         "remaining_gb": round(max(0.0, total_gb - done_gb), 3),
-                        "percent": min(99, int(100 * done_gb / total_gb)) if total_gb else 0}
+                        # 100 only when every file is whole (DL99: the bar stopped at 99% with everything in)
+                        "percent": (100 if all(x["state"] == "done" for x in parts) else min(99, int(100 * done_gb / total_gb))) if total_gb else 0}
     prog["parts"] = parts
     return prog
 
@@ -1639,6 +1641,12 @@ def combined_progress(prog: dict, job: dict) -> dict:
         return prog
     if job.get("files") and step.startswith("5/"):      # the install knows its files: count each of them
         return files_progress(prog, job, job["files"])
+    if job.get("files") and step.startswith(("6/", "7/")):
+        # after the download: no download figure (setup prepares the files), but the parts stay, all whole, so the app's one bar is complete
+        # (DL99: they were dropped and the app counted the engine's part alone, "99% · 0.7 / 0.7 GB")
+        prog = files_progress(prog, job, job["files"])
+        prog.pop("download", None)
+        return prog
     if not folder or not total or not step.startswith("5/"):
         prog.pop("download", None)
         return prog
@@ -1943,6 +1951,8 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
              "drafter": {"type": "string", "enum": ["mtp", "dflash2"],
                          "description": "which drafter this model will use: dflash2 downloads only DFlash2's drafter (a separate step), not the MTP draft layer's ~5 GB; "
                                         "mtp (the default) downloads the draft layer"},
+             "mtp": {"type": "string", "enum": ["on", "off"],
+                     "description": "off = Drafting Off: the MTP draft layer (~5 GB) is not downloaded and the model starts without it (setup --mtp off)"},
              "gguf_dir": {"type": "string", "maxLength": 260,
                           "description": "a folder that already holds this model's GGUF files under their original names: setup "
                                          "checks them (size and SHA-256) and does not download them again"},
@@ -2157,7 +2167,7 @@ class Tools:
 
     def strata_install(self, family=None, model=None, context=None, vision=None, kv=None, gpu=None, gpus=None,
                        backend=None, low_ram=None, port=None, data_dir=None, confirm=False, cancel=False,
-                       gguf_dir=None, drafter=None) -> dict:
+                       gguf_dir=None, drafter=None, mtp=None) -> dict:
         s = self.s
         with s.lock:
             job = s.install_job()
@@ -2190,7 +2200,7 @@ class Tools:
                                 "fix the problem above and call strata_install again with confirm=true (finished "
                                 "steps are skipped)"}
             plan, args = self.install_plan(family, model, context, vision, kv, gpu, gpus, backend, low_ram, port,
-                                           data_dir, gguf_dir, drafter)
+                                           data_dir, gguf_dir, drafter, mtp)
             tracked = s.tracked_server()
             if tracked and not tracked.get("ended"):
                 raise ToolError("Strata is running (started by strata_start): stop it first with strata_stop - setup "
@@ -2204,7 +2214,7 @@ class Tools:
                 raise ToolError(plan["disk_short"])
             return self.launch_install(plan, args)
 
-    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None, drafter=None):
+    def install_plan(self, family, model, context, vision, kv, gpu, gpus, backend, low_ram, port, data_dir, gguf_dir=None, drafter=None, mtp=None):
         s = self.s
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
@@ -2295,6 +2305,8 @@ class Tools:
             args += ["--backend", backend]
         if drafter in ("mtp", "dflash2") and backend != "sycl":      # an Arc runs with no drafter the installer sets up (the Terminal's adopted config has none either)
             args += ["--drafter", drafter]
+        if mtp in ("on", "off"):                                      # the app's Drafting Off: no draft layer is fetched, on a Mac too (setup.py takes --mtp everywhere)
+            args += ["--mtp", mtp]
         fit = None
         ram = hw.get("ram_gb")
         if ram is not None:
