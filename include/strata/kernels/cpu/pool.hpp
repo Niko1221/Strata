@@ -206,6 +206,16 @@ public:
     ExpertPool(const ExpertPool&) = delete;
     ExpertPool& operator=(const ExpertPool&) = delete;
 
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    // Optional cancellable background work on these same workers. Host never drains it.
+    // idle_stop joins all claimed jobs before returning; context stays alive until then.
+    using IdleFn = void (*)(void*, int, int, const std::atomic<bool>&);
+    void idle_start(IdleFn fn, void* ctx);
+    void idle_stop();
+    // Ticket ownership for idle jobs; the NUMA queue only lets the owning node claim it.
+    void idle_partition(int ticket, int& slice, int& rank, int& count) const;
+
+#endif
     int workers() const { return n_; }
     /// What bounded the default worker count (pool_plan.hpp; "" when a count was configured), the physical cores
     /// and logical processors counted - for the start-up line.
@@ -286,6 +296,12 @@ public:
 
 private:
     int phase_tasks(int64_t rows) const;
+#ifdef STRATA_CPU_PREFETCH_AVAILABLE
+    IdleFn idle_fn_ = nullptr;
+    void* idle_ctx_ = nullptr;
+    std::atomic<bool> idle_halt_{true};
+    bool idle_live_ = false;
+#endif
     int tasks_ = 0;
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
