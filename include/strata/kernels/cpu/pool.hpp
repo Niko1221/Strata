@@ -44,6 +44,15 @@
 
 namespace strata::kernels::cpu {
 
+/// How many times a park loop has executed its hot pause stage.  The increment sits in `pool.cpp` inside
+/// `#ifdef STRATA_POOL_PAUSE_COUNT`, which only a test build defines (cmake/backends/cpu.cmake), so a release build
+/// leaves this at zero and pays nothing for it.  It is what turns "a zero spin budget runs no pause stage" (issue
+/// #4624) from something inferred out of CPU time into a number a test reads: `pool_spin_test` asserts it is exactly 0
+/// at a budget of 0, and non-zero at one microsecond, at the built-in 20 ms and above it.  The declaration is
+/// unconditional because the object is one shared counter, not a member: a translation unit that does not define the
+/// macro simply never adds to it.
+inline std::atomic<unsigned long long> strata_pool_pause_count{0};
+
 /// One expert evaluation.  `act` is SHARED and read-only across the whole batch - that sharing is the point
 /// of `s2_expert_vnni_q` and it is what saves 480 redundant activation conversions per token.
 struct ExpertJob {
@@ -280,6 +289,13 @@ public:
     /// also sleep mid-request - which the claim protocol above must survive (issue #29).
     /// `STRATA_POOL_SPIN_US` overrides it (a test knob: a short spin makes the workers sleep constantly).
     static constexpr std::chrono::milliseconds kSpinBeforeSleep{20};
+    /// Whether the park loop runs its hot pause stage before the kernel sleep.  A budget of 0 means none: the worker
+    /// goes to the sleep at once, with no pause, no spin counter and no clock read (issue #4624).  Written as a
+    /// function because the tests assert the budgets it names - 0, one microsecond, the built-in 20 ms and above - and
+    /// the park loop calls exactly this: `pool_spin_test` counts what the stage executed in every build with the tests
+    /// on, and `pool_tasks_test` (registered where the native-expert tests are) asserts it again and prices a park
+    /// (issue #4624).
+    static constexpr bool park_warm_stage(std::chrono::microseconds budget) { return budget.count() != 0; }
     /// A pool wait that sees no completion for this long is a bug; the engine stops with a message instead of
     /// spinning forever, and the server starts it again (issue #29).
     static constexpr std::chrono::seconds kStall{60};
