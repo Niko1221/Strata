@@ -9,6 +9,7 @@
 
 #include "common.cuh"
 #include "mmq.cuh"
+#include "rp_unary.cuh"
 #include "repack-common.cuh"
 
 #include <type_traits>
