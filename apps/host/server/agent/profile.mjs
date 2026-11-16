@@ -337,6 +337,9 @@ export function buildProfile({ local = [], connections = [], gate = true, tools 
     ...(subagentRoutes.length ? [{ insert: [{ id: 'strata-models', name: MODELS_PLUGIN, config: { routes: subagentRoutes } }] }] : []),
     ...(mcp.length || ownRows.length ? [{ insert: [...mcp, ...ownRows] }] : []),
     ...webRows,
+    // This tool is inherited from the Harness host, not the standard preset.
+    // Changing cwd also reloads workspace instructions, so Files off must remove it.
+    ...(tools.off.has('files') ? [{ id: 'tool-working-directory', disabled: true }] : []),
     // The reminder tools would be a second scheduler beside the app's Tasks. The tool groups the person switched off in Settings -> Tools are left out.
     { id: 'preset-standard', name: '@deepseek-ai/dsh-agent-preset', config: standardPreset({ off: tools.off, search: searchOn, proactiveSearch: routes.some(r => r.kind === 'local'), browser: browserRows.length > 0, skillsDir, compaction }) },
     { insert: [{ id: 'preset-strata-btw', name: '@deepseek-ai/dsh-agent-preset', config: { id: 'strata-btw', order: 999,

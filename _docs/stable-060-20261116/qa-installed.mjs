@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 export function isolatedShellEnvironment(home,debugPort){
   const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(STRATA_|DSH_|WEBVIEW2_|HERMES_HOME$)/i.test(key)&&!/(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key)));
   Object.assign(env,{HERMES_HOME:join(home,'.hermes'),STRATA_HOME:home,STRATA_INSTALL_DIR:join(home,'install'),STRATA_COMPONENTS_DIR:join(home,'components'),STRATA_PROFILE_DIR:join(home,'profiles'),STRATA_RUNTIME_DIR:join(home,'runtime'),STRATA_SETTINGS_FILE:join(home,'settings.json'),STRATA_MODELS_DIR:join(home,'models'),STRATA_WORKSPACE:join(home,'workspace'),STRATA_DESKTOP_DATA_DIR:join(home,'desktop'),STRATA_NO_ACQUIRE:'1',STRATA_NO_BUNDLED_ENGINE:'1',STRATA_NO_REPAIR_ACCESS:'1',STRATA_NO_DIALOG:'1',DSH_HOME:join(home,'harness'),APPDATA:join(home,'Roaming'),LOCALAPPDATA:join(home,'Local'),TEMP:join(home,'temp'),TMP:join(home,'temp'),WEBVIEW2_USER_DATA_FOLDER:join(home,'webview'),WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-address=127.0.0.1 --remote-debugging-port=${debugPort}`});
+  env.DSH_AGENTS_HOME=join(home,'.agents');
   return env;
 }
 
@@ -45,7 +46,7 @@ else {assert.equal(dirname(dirname(app)),resolve(out));assert.match(basename(dir
 assert.equal(digest(join(app,'strata-desktop.exe')),contract.nsisShellSHA256);
 assert.equal(JSON.parse(readFileSync(join(app,'harness/rustxng/SOURCE.json'),'utf8')).profile,'full');
 const home=join(work,'qa-home');noLinks(home);mkdirSync(home);
-for(const name of ['.hermes','data','workspace','models','components','profiles','runtime','desktop','Local','Roaming','temp','screenshots'])mkdirSync(join(home,name));
+for(const name of ['.hermes','.agents','data','workspace','models','components','profiles','runtime','desktop','Local','Roaming','temp','screenshots'])mkdirSync(join(home,name));
 for(const name of ['first','second','third'])writeFileSync(join(home,'workspace',name+'.txt'),'PRIVATE_FIXTURE_CONTENT_'+name,{flag:'wx'});
 writeFileSync(join(home,'data/state.json'),JSON.stringify({version:1,setup:{complete:true,flowVersion:2,step:4,history:[]},installed:{},current:null,loaded:null,expert:{'sample.maxTokens':64}}),{flag:'wx'});
 const requests=[];let mainResponse=null,mainClosed=false,mainReleased=false;

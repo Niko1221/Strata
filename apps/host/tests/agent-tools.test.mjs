@@ -114,6 +114,19 @@ test('tool failures are said in plain words with the original text kept after th
 
 // ------------------------------------------------------------------------------------------------- real Harness
 
+test('Files off disables the inherited working-directory tool without changing the default profile', () => {
+  const defaults = buildProfile({});
+  const parse = profile => JSON.parse(profile.patch.split('\n').slice(1).join('\n'));
+  assert.equal(parse(defaults).some(row => row.id === 'tool-working-directory'), false);
+  const tools = {off: new Set(['files']), search: {provider: 'builtin', key: ''}};
+  const off = buildProfile({tools});
+  assert.deepEqual(parse(off).find(row => row.id === 'tool-working-directory'), {id: 'tool-working-directory', disabled: true});
+  assert.notEqual(defaults.toolsSignature, off.toolsSignature);
+  tools.off.clear();
+  assert.equal(buildProfile({tools}).patch, defaults.patch);
+  assert.equal(buildProfile({tools}).toolsSignature, defaults.toolsSignature);
+});
+
 async function rig(t) {
   const worker = await startScriptedWorker({});
   const dir = mkdtempSync(join(tmpdir(), 'strata-tools-'));

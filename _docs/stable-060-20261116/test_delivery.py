@@ -837,7 +837,7 @@ class Boundaries(unittest.TestCase):
             self.delivery.copy_rows(src, dest, {"late-model.gguf": {}}, reject_weights=True)
         self.assertFalse(dest.exists())
 
-    def profile_fixture(self, overrides: dict | None = None) -> dict:
+    def profile_fixture(self, overrides: dict | None = None, *, legacy_agents: bool = False) -> dict:
         env = {
             "USERPROFILE": str(self.root / "user"),
             "APPDATA": str(self.root / "roaming"),
@@ -851,6 +851,7 @@ class Boundaries(unittest.TestCase):
             str(self.root / "host"),
             {"dataDir": str(self.root / "user/.strata/data"), "modelsDir": str(self.root / "models")},
             str(self.root / "workspace"),
+            legacy_agents=legacy_agents,
         )
 
     def test_isolated_self_test_environment_overrides_inherited_soul_home(self) -> None:
@@ -859,12 +860,14 @@ class Boundaries(unittest.TestCase):
             "SYSTEMROOT": self.windows_root,
             "USERPROFILE": str(self.root / "synthetic-user"),
             "HERMES_HOME": str(self.root / "other-soul-home"),
+            "DSH_AGENTS_HOME": str(self.root / "other-agents-home"),
         }
-        with patch.dict(os.environ, inherited), patch.object(
+        with patch.dict(os.environ, inherited, clear=True), patch.object(
             self.delivery.native, "environment", return_value=dict(inherited)
         ):
             isolated = self.delivery.isolated_environment(home)
         self.assertEqual(isolated["HERMES_HOME"], str(home / ".hermes"))
+        self.assertEqual(isolated["DSH_AGENTS_HOME"], str(home / ".agents"))
         self.assertEqual(isolated["USERPROFILE"], inherited["USERPROFILE"])
 
     def test_isolated_shell_environment_overrides_inherited_soul_home(self) -> None:
@@ -877,6 +880,8 @@ class Boundaries(unittest.TestCase):
           const home = process.argv[2];
           const env = isolatedShellEnvironment(home, 12345);
           assert.equal(env.HERMES_HOME, join(home, '.hermes'));
+          assert.equal(env.DSH_AGENTS_HOME, join(home, '.agents'));
+          assert.deepEqual(Object.keys(env).filter(k=>k.toUpperCase()==='DSH_AGENTS_HOME'), ['DSH_AGENTS_HOME']);
           assert.equal(env.USERPROFILE, process.env.USERPROFILE);
           assert.deepEqual(Object.keys(env).filter(k=>k.toUpperCase()==='HERMES_HOME'), ['HERMES_HOME']);
           assert.equal(env.WEBVIEW2_USER_DATA_FOLDER, join(home, 'webview'));
@@ -888,19 +893,86 @@ class Boundaries(unittest.TestCase):
                 "SYSTEMROOT": self.windows_root,
                 "USERPROFILE": str(self.root / "synthetic-user"),
                 "Hermes_Home": str(self.root / "other-soul-home"),
+                "Dsh_Agents_Home": str(self.root / "other-agents-home"),
             },
-            capture_output=True, text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "synthetic shell environment isolated")
         plan = subprocess.run(
             [str(node), str(Path(__file__).with_name("qa-installed.mjs"))],
-            env={"SYSTEMROOT": self.windows_root}, capture_output=True, text=True,
-            timeout=15, creationflags=subprocess.CREATE_NO_WINDOW,
+            env={"SYSTEMROOT": self.windows_root},
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self.assertEqual(plan.returncode, 0, plan.stderr)
         self.assertIs(json.loads(plan.stdout)["execute"], False)
         self.assertFalse((self.root / "qa-home").exists())
+
+    def test_agents_home_identity_uses_sdk_fallback_tilde_and_harness_cwd(self) -> None:
+        default = self.root / "user/.agents"
+        harness_cwd = self.root / "user/.strata/data/agent/run"
+        absent = self.profile_fixture()
+        self.assertIsNone(absent["hostPaths"]["DSH_AGENTS_HOME"])
+        for value, expected in (
+            ("", default),
+            (" \t ", default),
+            ("~", self.root / "user"),
+            ("~/.agents-override", self.root / "user/.agents-override"),
+            ("~\\.agents-override", self.root / "user/.agents-override"),
+            ("relative agents", harness_cwd / "relative agents"),
+            (" relative agents ", harness_cwd / " relative agents "),
+            ("~literal-name", harness_cwd / "~literal-name"),
+            (str(self.root / "owned-agents"), self.root / "owned-agents"),
+        ):
+            with self.subTest(value=value):
+                identity = self.profile_fixture({"DSH_AGENTS_HOME": value})
+                self.assertEqual(
+                    identity["effectiveHost"]["agentsHome"]["lexical"], os.path.normcase(str(expected))
+                )
+                if not value.strip():
+                    self.assertEqual(identity["hostPaths"]["DSH_AGENTS_HOME"], value)
+        changed = self.profile_fixture({"DSH_AGENTS_HOME": str(self.root / "owned-agents")})
+        self.assertNotEqual(absent, changed)
+
+    def test_legacy_agents_home_capture_rejects_a_new_effective_root(self) -> None:
+        for override in (
+            {},
+            {"DSH_AGENTS_HOME": ""},
+            {"DSH_AGENTS_HOME": " \t "},
+            {"DSH_AGENTS_HOME": "~/.agents"},
+            {"DSH_AGENTS_HOME": str(self.root / "user/.agents")},
+        ):
+            with self.subTest(override=override):
+                self.assertEqual(
+                    self.profile_fixture(override, legacy_agents=True), self.profile_fixture(override)
+                )
+        changed = {"DSH_AGENTS_HOME": str(self.root / "different-agents")}
+        with self.assertRaisesRegex(RuntimeError, "Legacy agents-home override"):
+            self.profile_fixture(changed, legacy_agents=True)
+        self.assertEqual(
+            self.profile_fixture(changed)["effectiveHost"]["agentsHome"]["lexical"],
+            os.path.normcase(str(self.root / "different-agents")),
+        )
+
+    def test_original_capture_selects_legacy_agents_semantics_before_choices(self) -> None:
+        args = argparse.Namespace(port=12345, attempt="r1")
+        with patch.object(self.normal, "owned_processes"), patch.object(
+            self.normal, "read_api", return_value={"host": "0.5.9", "shell": "0.5.9"}
+        ), patch.object(
+            self.normal, "profile_identity", side_effect=RuntimeError("legacy refusal")
+        ) as profile, patch.object(
+            self.normal, "choices"
+        ) as choices:
+            with self.assertRaisesRegex(RuntimeError, "legacy refusal"):
+                self.normal.capture(args, self.root)
+        profile.assert_called_once_with(args, "http://127.0.0.1:12345", legacy_agents=True)
+        choices.assert_not_called()
 
     def test_soul_home_identity_preserves_empty_state_and_current_user_paths(self) -> None:
         absent = self.profile_fixture()
@@ -917,7 +989,15 @@ class Boundaries(unittest.TestCase):
             with self.subTest(value=value):
                 identity = self.profile_fixture({"HERMES_HOME": value})["hostPaths"]["HERMES_HOME"]
                 self.assertEqual(identity["lexical"], os.path.normcase(str(expected)))
-        for value in ("~other-user", "bad\0path", "bad\rpath", "bad\npath", "C:relative", "/drive-less", "\\drive-less"):
+        for value in (
+            "~other-user",
+            "bad\0path",
+            "bad\rpath",
+            "bad\npath",
+            "C:relative",
+            "/drive-less",
+            "\\drive-less",
+        ):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 self.profile_fixture({"HERMES_HOME": value})
 
@@ -928,13 +1008,18 @@ class Boundaries(unittest.TestCase):
         with patch.object(
             self.normal, "original_baseline", return_value={"profileIdentity": original}
         ), patch.object(
-            self.normal.delivery, "prior",
+            self.normal.delivery,
+            "prior",
             return_value={"installed": True, "exactPayloadMatch": True, "payload": {}},
         ), patch.object(
             self.normal.delivery, "payload", return_value={}
-        ), patch.object(self.normal, "owned_processes"), patch.object(
+        ), patch.object(
+            self.normal, "owned_processes"
+        ), patch.object(
             self.normal, "profile_identity", return_value=changed
-        ), patch.object(self.normal, "choices") as choices:
+        ), patch.object(
+            self.normal, "choices"
+        ) as choices:
             with self.assertRaisesRegex(RuntimeError, "Original effective profile identity"):
                 self.normal.verify(args, self.root)
         choices.assert_not_called()

@@ -28,6 +28,9 @@ export function agentEnvironment(base = process.env, extra = {}) {
   // The shell and tools the assistant runs for the person are the person's own programs: they get the environment the AppImage was
   // started from, never Strata's bundled libraries and GTK/GIO settings (external-env.mjs). Outside an AppImage this is `base`.
   for (const [k, v] of Object.entries(externalEnvironment(base))) {
+    // Honour this explicit upstream path setting, without inheriting arbitrary
+    // DSH_* configuration. Empty/blank retains the SDK's normal home fallback.
+    if (k === 'DSH_AGENTS_HOME' && typeof v === 'string' && v.trim()) { out[k] = v; continue; }
     if (v === undefined || !KEEP.test(k) || SECRET_NAME.test(k)) continue;
     out[k] = v;
   }

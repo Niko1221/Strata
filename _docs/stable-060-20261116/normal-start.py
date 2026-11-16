@@ -54,6 +54,7 @@ PROFILE_PATH_ENV = (
     "STRATA_APPDIR",
     "STRATA_DIST",
     "DSH_HOME",
+    "DSH_AGENTS_HOME",
     "HERMES_HOME",
     "WEBVIEW2_USER_DATA_FOLDER",
     "XDG_CONFIG_HOME",
@@ -82,7 +83,7 @@ def path_identity(value: str, cwd: str, *, user: str | None = None) -> dict:
     }
 
 
-def filtered_paths(environment: dict, cwd: str) -> dict:
+def filtered_paths(environment: dict, cwd: str, *, agents_cwd: str | None = None) -> dict:
     """Only allowlisted nonsecret path values survive the process boundary."""
     selected = {key: environment.get(key) for key in PROFILE_PATH_ENV}
     # HOMEDRIVE/HOMEPATH are fragments, not independently resolvable paths.
@@ -91,6 +92,8 @@ def filtered_paths(environment: dict, cwd: str) -> dict:
         selected[key] = os.path.normcase(value) if value is not None else None
     for key in set(PROFILE_PATH_ENV) - {"HOMEDRIVE", "HOMEPATH"}:
         value = selected[key]
+        if key == "DSH_AGENTS_HOME" and isinstance(value, str) and not value.strip():
+            continue  # The pinned SDK treats empty/whitespace-only overrides as absent.
         if value:
             if key == "HERMES_HOME":
                 release.require(
@@ -99,10 +102,17 @@ def filtered_paths(environment: dict, cwd: str) -> dict:
                 )
             selected[key] = path_identity(
                 value,
-                cwd,
+                agents_cwd if key == "DSH_AGENTS_HOME" and agents_cwd else cwd,
                 user=(
                     environment.get("USERPROFILE")
-                    if key in {"HERMES_HOME", "STRATA_PROFILE_DIR", "STRATA_RUNTIME_DIR", "STRATA_PRESET_DIR"}
+                    if key
+                    in {
+                        "HERMES_HOME",
+                        "DSH_AGENTS_HOME",
+                        "STRATA_PROFILE_DIR",
+                        "STRATA_RUNTIME_DIR",
+                        "STRATA_PRESET_DIR",
+                    }
                     else None
                 ),
             )
@@ -110,7 +120,14 @@ def filtered_paths(environment: dict, cwd: str) -> dict:
 
 
 def effective_profile(
-    shell_env: dict, host_env: dict, shell_cwd: str, host_cwd: str, app_paths: dict, workspace: str
+    shell_env: dict,
+    host_env: dict,
+    shell_cwd: str,
+    host_cwd: str,
+    app_paths: dict,
+    workspace: str,
+    *,
+    legacy_agents: bool = False,
 ) -> dict:
     """Observe actual host fallback outcomes; derive the remaining Windows path rules."""
     user = host_env.get("USERPROFILE")
@@ -145,6 +162,26 @@ def effective_profile(
         harnessHome=str(Path(data) / "agent/home"),
         skills=str(Path(data) / "skills"),
     )
+    # HarnessProcess starts in data/agent/run. The upstream SDK expands only
+    # current-user tilde prefixes, keeps nonblank whitespace, and falls back to
+    # USERPROFILE/.agents for an absent, empty or whitespace-only override.
+    agents_cwd = str(Path(data) / "agent/run")
+    agents_override = host_env.get("DSH_AGENTS_HOME")
+    host_paths["agentsHome"] = (
+        agents_override
+        if isinstance(agents_override, str) and agents_override.strip()
+        else str(Path(user) / ".agents")
+    )
+    if legacy_agents:
+        # Installed 0.5.9 strips this environment override. Refuse a baseline
+        # whose unchanged environment would select another root in 0.6.0.
+        legacy_root = str(Path(user) / ".agents")
+        release.require(
+            path_identity(host_paths["agentsHome"], agents_cwd, user=user)
+            == path_identity(legacy_root, agents_cwd),
+            "Legacy agents-home override would change the effective instruction root",
+        )
+        host_paths["agentsHome"] = legacy_root
     shell_user = shell_env.get("USERPROFILE")
     release.require(bool(shell_user), "Observed shell USERPROFILE required")
     desktop = shell_env.get("STRATA_DESKTOP_DATA_DIR") or str(
@@ -153,11 +190,13 @@ def effective_profile(
     return {
         "shellCwd": path_identity(shell_cwd, shell_cwd),
         "hostCwd": path_identity(host_cwd, host_cwd),
-        "shellPaths": filtered_paths(shell_env, shell_cwd),
-        "hostPaths": filtered_paths(host_env, host_cwd),
+        "shellPaths": filtered_paths(shell_env, shell_cwd, agents_cwd=agents_cwd),
+        "hostPaths": filtered_paths(host_env, host_cwd, agents_cwd=agents_cwd),
         "effectiveHost": {
             key: path_identity(
-                value, host_cwd, user=user if key in {"profiles", "runtime", "presets"} else None
+                value,
+                agents_cwd if key == "agentsHome" else host_cwd,
+                user=user if key in {"profiles", "runtime", "presets", "agentsHome"} else None,
             )
             for key, value in host_paths.items()
         },
@@ -235,7 +274,7 @@ def owned_processes(args: argparse.Namespace) -> tuple:
     return shell, host
 
 
-def profile_identity(args: argparse.Namespace, base: str) -> dict:
+def profile_identity(args: argparse.Namespace, base: str, *, legacy_agents: bool = False) -> dict:
     shell, host = owned_processes(args)
     # Neither full process environment nor API response is retained or logged.
     shell_env = {key: value for key, value in shell.environ().items() if key in PROFILE_PATH_ENV}
@@ -243,7 +282,9 @@ def profile_identity(args: argparse.Namespace, base: str) -> dict:
     app = read_api(base, "/api/setup")["app"]
     app_paths = {key: app[key] for key in ("dataDir", "modelsDir")}
     workspace = read_api(base, "/api/workspace")["path"]
-    result = effective_profile(shell_env, host_env, shell.cwd(), host.cwd(), app_paths, workspace)
+    result = effective_profile(
+        shell_env, host_env, shell.cwd(), host.cwd(), app_paths, workspace, legacy_agents=legacy_agents
+    )
     owned_processes(args)
     return result
 
@@ -274,10 +315,10 @@ def capture(args: argparse.Namespace, work: Path) -> dict:
         read_api(base, "/api/app/build") == {"host": "0.5.9", "shell": "0.5.9"},
         "Capture requires the original 0.5.9 app",
     )
-    profile = profile_identity(args, base)
+    profile = profile_identity(args, base, legacy_agents=True)
     selected = choices(base)
     release.require(
-        profile_identity(args, base) == profile and choices(base) == selected,
+        profile_identity(args, base, legacy_agents=True) == profile and choices(base) == selected,
         "Original profile changed during capture",
     )
     private = delivery.PRIVATE / ("original-profile-" + args.attempt)
