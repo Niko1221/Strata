@@ -77,8 +77,15 @@ class OwnFileChecks(unittest.TestCase):
         code, text = run(setup.verify_sha256, cut, gguf.stat().st_size, "0" * 64, own=True)
         self.assertEqual(code, 1)
         self.assertIn("your file was left as it is", text)
-        code, text = run(setup.verify_sha256, gguf, gguf.stat().st_size + 96, "0" * 64)          # a download is still checked
-        self.assertEqual(code, 1)
+        code, text = run(setup.verify_sha256, gguf, gguf.stat().st_size + 96, "0" * 64)          # a download of another build (96
+        self.assertEqual(code, 0, text)                                                       # bytes of padding apart): used too
+        self.assertIn("Strata uses it as it is", text)
+        junk = Path(self.tmp.name) / "prattle.gguf"                                            # not a whole GGUF: the old stop, and
+        junk.write_bytes(b"strata" * 100)                                                      # setup never deletes a file here
+        code, text = run(setup.verify_sha256, junk, junk.stat().st_size + 96, "0" * 64)
+        self.assertEqual(code, 1, text)
+        self.assertIn("delete it and run setup again", text)
+        self.assertTrue(junk.exists())
 
     def test_a_matching_own_file_passes(self):
         code, _text = run(setup.verify_sha256, self.file, 800, self.sha, own=True)
