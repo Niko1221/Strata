@@ -398,8 +398,10 @@ class GgufFile {
 public:
     // Opt-in complete scalar arrays for operation metadata. Existing readers
     // retain their 64-item sampling behavior; explicitly selected arrays cap at 65536.
-    explicit GgufFile(const std::string& path, std::set<std::string> retain_arrays = {})
-        : path_(path), retain_arrays_(std::move(retain_arrays)) {
+    explicit GgufFile(const std::string& path, std::set<std::string> retain_arrays = {},
+                      bool reject_duplicate_metadata = false)
+        : path_(path), retain_arrays_(std::move(retain_arrays)),
+          reject_duplicate_metadata_(reject_duplicate_metadata) {
         try { open(); }
         catch (...) { close(); throw; }
     }
@@ -490,6 +492,8 @@ private:
 
         for (uint64_t i = 0; i < n_kv; ++i) {
             std::string key = c.str();
+            if (reject_duplicate_metadata_ && meta_.count(key))
+                throw std::runtime_error("GGUF: duplicate metadata key '" + key + "'");
             MetaType t = (MetaType)c.read<uint32_t>();
             MetaValue value = read_value(c, t, 0, retain_arrays_.count(key) ? 65536 : 64);
             if (retain_arrays_.count(key) && value.type == MetaType::ARRAY && value.count > 65536)
@@ -530,6 +534,7 @@ private:
 
     std::string path_;
     std::set<std::string> retain_arrays_;
+    bool reject_duplicate_metadata_ = false;
     const uint8_t* base_ = nullptr;
     uint64_t size_ = 0, data_start_ = 0, alignment_ = 32;
     uint32_t version_ = 0;

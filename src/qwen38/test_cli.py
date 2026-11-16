@@ -40,6 +40,35 @@ g = GGUFFile(models[0])
 with models[0].open('rb') as f:
     header = f.read(g.data_start)
 with tempfile.TemporaryDirectory(prefix='dense-own-cpu-', dir=evidence) as temp:
+    def string(value):
+        raw=value.encode();return struct.pack('<Q',len(raw))+raw
+    def entry(key, ty, value):
+        return string(key)+struct.pack('<I',ty)+value
+    for array in (False,True):
+        key='prism.hadamard.sign_values' if array else 'prism.hadamard.version'
+        for reverse in (False,True):
+            values=[1,2] if not reverse else [2,1]
+            data=b'GGUF'+struct.pack('<IQQ',3,0,2)
+            for value in values:
+                payload=struct.pack('<IQi',5,1,value) if array else struct.pack('<I',value)
+                data+=entry(key,9 if array else 4,payload)
+            duplicate=Path(temp)/'duplicate.gguf';duplicate.write_bytes(data)
+            check(f'duplicate {key} reverse={reverse}', ['--model',duplicate,'--inspect'],False,'duplicate metadata key')
+    # Append malformed metadata before the existing tensor directory. No
+    # payload is needed: each case must reject before tensor extent admission.
+    first=string(g.tensors[0].name)
+    directory=header.rindex(first)
+    count=struct.unpack_from('<Q',header,16)[0]
+    block_key=string('qwen35.block_count')
+    block_value=header.index(block_key)+len(block_key)+4
+    for nextn, blocks, entries, expected in ((0xffffffff,63,63,'zero or one'),(2,66,64,'zero or one'),(0,64,63,'bad recurrent map'),(1,65,64,'bad recurrent map')):
+        prefix=bytearray(header[:directory]);struct.pack_into('<Q',prefix,16,count+2);struct.pack_into('<I',prefix,block_value,blocks)
+        extra=entry('qwen35.nextn_predict_layers',4,struct.pack('<I',nextn))
+        mapping=bytes(int((i+1)%4!=0) for i in range(entries))
+        extra+=entry('qwen35.attention.recurrent_layers',9,struct.pack('<IQ',7,entries)+mapping)
+        raw=prefix+extra+header[directory:];raw+=bytes((-len(raw))%g.alignment)
+        malformed=Path(temp)/'malformed-map.gguf';malformed.write_bytes(raw)
+        check(f'MTP {nextn} recurrent length {entries}', ['--model',malformed,'--inspect'],False,expected)
     path = Path(temp) / 'synthetic-sparse.gguf'
     with path.open('w+b') as f:
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)

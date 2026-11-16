@@ -94,6 +94,27 @@ static void quit_cancels_active() {
     Q38Protocol p;p.submit("GEN 9 1");next(p);p.submit("QUIT");CHECK(p.stop_flag().load());
     p.finish([](bool stopped){CHECK(stopped);});CHECK(next(p).line=="QUIT");p.finish_reply([]{});p.end_input();
 }
+static void quit_survives_full_queue() {
+    for(bool overflow : {false,true}) {
+        Q38Protocol p;p.submit("GEN 9 1");CHECK(next(p).line=="GEN 9 1");
+        p.submit("GEN 1 2");p.submit("bad");
+        if(overflow)p.submit("over-capacity");
+        p.submit("QUIT");CHECK(p.stop_flag().load());
+        p.submit("GEN 1 3");p.submit("QUIT"); // Cannot enqueue work after termination.
+        p.finish([](bool cancelled){CHECK(cancelled);});
+        CHECK(next(p).kind==Kind::busy);p.finish_reply([]{});
+        CHECK(next(p).line=="bad");p.finish_reply([]{});
+        if(overflow){CHECK(next(p).kind==Kind::overflow);p.finish_reply([]{});}
+        CHECK(next(p).line=="QUIT");p.finish_reply([]{});
+        Event end{};CHECK(!p.next(end)); // No EOF or new input needed to terminate.
+    }
+    Q38Protocol queued;queued.submit("GEN 9 1");queued.submit("bad");queued.submit("overflow");queued.submit("QUIT");
+    CHECK(next(queued).line=="GEN 9 1");CHECK(queued.stop_flag().load());queued.finish([](bool cancelled){CHECK(cancelled);});
+    CHECK(next(queued).line=="bad");queued.finish_reply([]{});
+    CHECK(next(queued).kind==Kind::overflow);queued.finish_reply([]{});
+    CHECK(next(queued).line=="QUIT");queued.finish_reply([]{});
+    Event end{};CHECK(!queued.next(end));
+}
 
 int main(int argc, char **argv) {
     if(argc==2 && std::string(argv[1])=="--emit-done-fixtures") {
@@ -102,6 +123,6 @@ int main(int argc, char **argv) {
                   << q38_format_done(0, 8, 0.0, 0.0, "length", 8);
         return 0;
     }
-    overflow_and_reuse(); terminal_boundary(); reject_until_reply_flushed(); immediate_cancel(); cancellation_before_terminal_publication(); eof_cases(); quit_cancels_active();
+    overflow_and_reuse(); terminal_boundary(); reject_until_reply_flushed(); immediate_cancel(); cancellation_before_terminal_publication(); eof_cases(); quit_cancels_active(); quit_survives_full_queue();
     std::cout << "Q38 protocol ownership, overflow, STOP, EOF and reuse: PASS\n";
 }

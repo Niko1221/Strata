@@ -17,11 +17,19 @@ public:
 
     void submit(std::string line) {
         std::lock_guard<std::mutex> lock(mu_);
+        // QUIT is a terminal control signal, not a bounded queue entry. Drain
+        // earlier replies, then deliver it once; later input cannot postpone it.
+        if (quit_requested_) return;
+        if (line == "QUIT") {
+            quit_requested_ = true;
+            if (phase_ != Phase::idle) stop_.store(true);
+            cv_.notify_one();
+            return;
+        }
         if (line == "STOP") {
             if (phase_ != Phase::idle) stop_.store(true);
             return;
         }
-        if (line == "QUIT" && phase_ != Phase::idle) stop_.store(true);
         // After overflow, coalesce further rejections until that marker has
         // been emitted. This preserves bounded storage and response order.
         if (overflow_ || queue_.size() >= capacity_) {
@@ -48,7 +56,7 @@ public:
 
     bool next(Event &event) {
         std::unique_lock<std::mutex> lock(mu_);
-        cv_.wait(lock, [&] { return eof_ || overflow_ || !queue_.empty(); });
+        cv_.wait(lock, [&] { return eof_ || quit_requested_ || overflow_ || !queue_.empty(); });
         if (!queue_.empty()) {
             event = std::move(queue_.front());
             queue_.pop_front();
@@ -61,6 +69,12 @@ public:
             return true;
         }
         if (overflow_) { overflow_ = false; reply_pending_ = true; event = {Kind::overflow, {}}; return true; }
+        if (quit_requested_ && !quit_delivered_) {
+            quit_delivered_ = true;
+            reply_pending_ = true;
+            event = {Kind::command, "QUIT"};
+            return true;
+        }
         return false;
     }
 
@@ -91,5 +105,6 @@ private:
     bool eof_ = false;
     bool overflow_ = false;
     bool reply_pending_ = false;
+    bool quit_requested_ = false, quit_delivered_ = false;
     std::atomic<bool> stop_{false};
 };

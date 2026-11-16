@@ -40,8 +40,10 @@ inline Admission inspect(const GgufFile& f) {
     require(arch && arch->type == MetaType::STRING && arch->s == "qwen35", "requires dense qwen35 architecture");
     for (const auto& kv : f.metadata()) require(kv.first.rfind("split.",0) != 0, "split GGUF is unsupported");
     require(integer_meta(f,"qwen35.expert_count",true) == 0, "experts are unsupported");
-    a.nextn = int(integer_meta(f,"qwen35.nextn_predict_layers",true));
-    require(a.nextn <= 1 && integer_meta(f,"qwen35.block_count") == 64u+a.nextn, "requires 64 trunk layers plus optional declared MTP");
+    const uint64_t nextn = integer_meta(f,"qwen35.nextn_predict_layers",true);
+    require(nextn <= 1, "requires zero or one declared MTP layer");
+    a.nextn = int(nextn);
+    require(integer_meta(f,"qwen35.block_count") == 64u+nextn, "requires 64 trunk layers plus optional declared MTP");
     for (const auto& kv : std::initializer_list<std::pair<const char*,uint64_t>>{
         {"embedding_length",5120},{"feed_forward_length",17408},{"attention.head_count",24},
         {"attention.head_count_kv",4},{"attention.key_length",256},{"attention.value_length",256},
@@ -63,7 +65,7 @@ inline Admission inspect(const GgufFile& f) {
     a.eps=scalar("attention.layer_norm_rms_epsilon",1e-6f);
     a.rope_base=scalar("rope.freq_base",1e7f);
     if(const auto* r=f.get("qwen35.attention.recurrent_layers")) {
-        require(r->type==MetaType::ARRAY && r->elem==MetaType::BOOL && r->count==64u+a.nextn,"bad recurrent map");
+        require(r->type==MetaType::ARRAY && r->elem==MetaType::BOOL && r->count==64u+nextn && r->items.size()==r->count,"bad recurrent map");
         for(int i=0;i<64;++i) require(bool(r->items[i].u)==((i+1)%4!=0),"wrong recurrent ordering");
         if(a.nextn)require(r->items.size()==65&&!r->items[64].u,"MTP must be attention");
     }

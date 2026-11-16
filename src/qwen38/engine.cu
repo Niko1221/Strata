@@ -31,7 +31,7 @@ struct Engine {
     Q::Buffer x,h,y,qkv,z,al,be,hc,gdn,qg,k,v,q,gate,att,fg,fu,scores,logits,embrow,error;
     uint64_t cache_bytes=0,scratch_bytes=0;size_t emb_stride=0;const strata::TensorInfo* embedding=nullptr;
     int position=0;
-    Engine(const std::string& path,int context):file(path,Q::retained_metadata()),admission(Q::inspect(file)),ctx(context){
+    Engine(const std::string& path,int context):file(path,Q::retained_metadata(),true),admission(Q::inspect(file)),ctx(context){
         Q::host_resources();Q::ck(cudaSetDevice(0));cudaDeviceProp prop{};Q::ck(cudaGetDeviceProperties(&prop,0));
         Q::require(prop.major==12&&prop.minor==0,"this build requires CUDA SM120 device 0");
         cache_bytes=48ull*(10240*3+48*128*128)*4+16ull*2*4*ctx*256*2;
@@ -181,7 +181,7 @@ int main(int argc,char** argv){try{
         else if(a=="--seed")option(sampling,"seed",value(),ctx);else if(a=="--temperature")option(sampling,"temperature",value(),ctx);else throw std::runtime_error("unsupported option: "+a);
     }
     Q::require(!model.empty(),"--model is required");
-    if(inspection){strata::GgufFile f(model,Q::retained_metadata());auto a=Q::inspect(f);std::printf("GGUF own-native qwen35 dense layers=64 tensors=%zu nextn_ignored=%d gpu_weight_bytes=%llu host_embedding_bytes=%llu folded=%zu inverse_embedding=%d grouped_gdn=%d\n",f.tensors().size(),a.nextn,(unsigned long long)a.gpu_weights,(unsigned long long)a.embedding_bytes,a.folded.size(),a.inverse_embedding,a.grouped_gdn);return 0;}
+    if(inspection){strata::GgufFile f(model,Q::retained_metadata(),true);auto a=Q::inspect(f);std::printf("GGUF own-native qwen35 dense layers=64 tensors=%zu nextn_ignored=%d gpu_weight_bytes=%llu host_embedding_bytes=%llu folded=%zu inverse_embedding=%d grouped_gdn=%d\n",f.tensors().size(),a.nextn,(unsigned long long)a.gpu_weights,(unsigned long long)a.embedding_bytes,a.folded.size(),a.inverse_embedding,a.grouped_gdn);return 0;}
     Q::require(resident!=!tokens.empty(),"choose exactly one of --serve or --tokens");Q::require(!resident||(forced.empty()&&dump.empty()),"force/logits are standalone options");
     auto prompt=tokens.empty()?std::vector<int32_t>{}:ids(tokens);auto force=forced.empty()?std::vector<int32_t>{}:ids(forced);if(!force.empty())count=int(force.size()+1);
     Q::host_resources();Engine e(model,ctx);if(resident)serve(e);else{std::atomic<bool> stop{false};run(e,prompt,count,sampling,stop,nullptr,force,dump);}return 0;
