@@ -141,7 +141,7 @@ def run_versions(a: argparse.Namespace) -> int:
     """Each Strata version (engine + control of one release) in its own home under the bench dir, with that release's own defaults."""
     import ab_report
     import ab_versions as av
-    model = Path(a.model_path)
+    model = Path(a.model_path).absolute()                 # live_roots finds the data folder from the parents
     if not model.exists():
         fail(f"--model-path {model} does not exist")
     bench = Path(a.bench_dir).expanduser()
@@ -166,8 +166,8 @@ def run_versions(a: argparse.Namespace) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     data = bench / "data"
     data.mkdir(parents=True, exist_ok=True)
-    arms = {v: {"version": v, "status": "ran", "reason": "", "setup_s": None, "start_s": [], "rows": []} for v in versions}
-    homes, env, pkgs = {}, {}, {}
+    arms = {v: {"version": v, "status": "skipped", "reason": "the run stopped before it", "setup_s": None, "start_s": [], "rows": []} for v in versions}
+    homes, env, pkgs, dead = {}, {}, {}, set()
     code = 0
     out = open(run_dir / "ab_engine.jsonl", "a")
     try:
@@ -177,12 +177,13 @@ def run_versions(a: argparse.Namespace) -> int:
                 pkgs[v] = av.ensure_packages(pairs[v], bench / "packages")
                 env[v] = (av.provision_home(homes[v], pkgs[v]), av.isolated_env(homes[v], os.environ))
             except Exception as e:                                  # noqa: BLE001 - one version that cannot be set up skips, the rest run
-                arms[v].update(status="skipped", reason=f"setup: {e}")
+                arms[v].update(reason=f"setup: {e}")
+                dead.add(v)
         for rnd in range(a.rounds):
             order = versions if rnd % 2 == 0 else versions[::-1]
             for v in order:
                 arm = arms[v]
-                if arm["status"] == "skipped":
+                if v in dead:
                     continue
                 control, venv = env[v]
                 try:
@@ -195,12 +196,14 @@ def run_versions(a: argparse.Namespace) -> int:
                     reason = av.version_problem(homes[v], pkgs[v]) if r.ok else r.reason
                     if reason:
                         arm.update(status="skipped", reason=reason)
+                        dead.add(v)
                         print(f"round {rnd} v{v}: skipped: {reason}", flush=True)
                         continue
                     print(f"round {rnd} v{v}: ready in {r.seconds:.0f} s", flush=True)
                     post(a.port, "Say hi.", 8)                       # warm-up, as the config mode's wait_ready does
                     arm["rows"] += [{k: row[k] for k in ("round", "req", "decode", "prompt", "prompt_n", "n")}
                                     for row in run_requests(a.port, reqs, a.max_new, rnd, f"v{v}", out)]
+                    arm.update(status="ran", reason="")
                 finally:
                     av.stop(control, venv)                           # also after a failed or timed-out start: nothing survives into the next arm
     except KeyboardInterrupt:
