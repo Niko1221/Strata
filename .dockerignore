@@ -10,6 +10,7 @@ __pycache__/
 
 # setup.py outputs and downloads (engine, packs, models, logs)
 /engine/
+/engine-*/
 /build/
 /build*/
 /dist/
