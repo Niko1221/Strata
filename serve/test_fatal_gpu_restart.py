@@ -78,5 +78,107 @@ class FatalGpuRestart(unittest.TestCase):
         self.assertFalse(eng.ended)
 
 
+# #6054: "prefill copy_i32: out of memory".  The engine used to call std::exit(1) there, whose teardown could hang, so the request
+# waited for the 300 s silence watchdog.  Now, under --serve, the engine prints "ERR fatal GPU error: prefill copy_i32: out of memory"
+# and ends at once (src/prefill/kernels.cu, include/strata/core/device_error_exit.hpp).  A stand-in process plays that engine here.
+OOM_ENGINE = (
+    "import sys\n"
+    "sys.stdin.readline()\n"                                   # the GEN line: the prompt read starts
+    "print('prefill copy_i32: out of memory', file=sys.stderr, flush=True)\n"
+    "print('ERR fatal GPU error: prefill copy_i32: out of memory', flush=True)\n"
+    "sys.exit(3)\n")
+OOM_LINE = "ERR fatal GPU error: prefill copy_i32: out of memory"
+
+
+class PrefillOutOfMemory(unittest.TestCase):
+    def engine_on(self, proc, silence_s=300.0):
+        import queue
+        import threading
+        eng = S.StrataEngine.__new__(S.StrataEngine)
+        eng.proc, eng.lines, eng.slot_q, eng.slot_busy = proc, queue.Queue(), [], []
+        eng.can_stop, eng.max_context, eng.silence_s, eng.log_path = False, 4096, silence_s, None
+        eng.last_err = None
+        threading.Thread(target=eng._pump, daemon=True).start()
+        return eng
+
+    def test_the_request_fails_at_once_not_after_the_silence_watchdog(self):
+        import subprocess
+        import threading
+        proc = subprocess.Popen([sys.executable, "-c", OOM_ENGINE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        try:
+            eng = self.engine_on(proc)                        # the watchdog would wait 300 s
+            t0 = time.monotonic()
+            with self.assertRaises(S.EngineDied) as cm:
+                list(eng.generate([1] * 64, 8, {}, threading.Event()))
+            self.assertLess(time.monotonic() - t0, 10)
+            self.assertNotIsInstance(cm.exception, S.EngineSilent)   # the engine's own words, not the watchdog's
+            self.assertIn("ran out of memory", str(cm.exception))
+            self.assertIn("prefill copy_i32: out of memory", str(cm.exception))
+            self.assertIn("--conversation-cache-slots", str(cm.exception))
+            self.assertTrue(cm.exception.restarts)            # the client is told the next request starts it again
+            self.assertEqual(proc.wait(10), 3)
+            self.assertFalse(eng.alive())                     # the next request starts the engine again
+            self.assertIn("ran out of memory", eng.death_note())
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+    def test_an_oom_line_is_an_engine_death_with_memory_words(self):
+        eng = types.SimpleNamespace(last_err=None, ended=False)
+        with self.assertRaises(S.EngineDied) as cm:
+            S.StrataEngine._raise_if_fatal_gpu(eng, OOM_LINE)
+        self.assertIn("ran out of memory", str(cm.exception))
+        self.assertNotIn("GPU reported a fatal error", str(cm.exception))
+        self.assertTrue(eng.ended)
+
+    def test_oom_deaths_do_not_stop_the_restarts(self):
+        svc = stand_in(1, OOM_LINE[4:])
+        svc.FATAL_GPU_MAX, svc.FATAL_GPU_WINDOW_S = S.Service.FATAL_GPU_MAX, S.Service.FATAL_GPU_WINDOW_S
+        for pid in range(1, 6):                               # a restart gives the memory back: never "not started again"
+            svc.engine.proc.pid = pid
+            S.Service._note_fatal_gpu_exit.__get__(svc)(3)
+        self.assertFalse(svc.__dict__.get("_fatal_gpu_times"))
+
+    def http(self, stream):
+        import json
+        import urllib.error
+        import urllib.request
+
+        class OomEngine(S.MockEngine):
+            def generate(self, ids, max_new, sampling, cancel, embeddings=None):
+                S.StrataEngine._raise_if_fatal_gpu(types.SimpleNamespace(last_err=None, ended=False), OOM_LINE)
+                yield from ()
+
+        from serve.frontend import ChatTemplate
+        tok = S.ByteTokenizer()
+        svc = S.Service(OomEngine(tok, "x", max_context=4096), tok,
+                        ChatTemplate(Path(__file__).resolve().parents[1] / "serve/chat_template.jinja"))
+        httpd = S.serve(svc, port=0)
+        try:
+            body = json.dumps({"model": "m", "max_tokens": 8, "stream": stream,
+                               "messages": [{"role": "user", "content": "hi"}]}).encode()
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/v1/chat/completions", data=body,
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return r.status, r.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_a_plain_request_gets_a_503_that_names_the_memory(self):
+        code, text = self.http(stream=False)
+        self.assertEqual(code, 503)
+        self.assertIn("ran out of memory", text)
+
+    def test_a_streamed_request_gets_an_error_event_that_names_the_memory(self):
+        code, text = self.http(stream=True)
+        self.assertIn('"error"', text)
+        self.assertIn("ran out of memory", text)
+
+
 if __name__ == "__main__":
     unittest.main()

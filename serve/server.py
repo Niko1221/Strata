@@ -440,6 +440,19 @@ class EngineDied(RuntimeError):
     restarts = True        # the engine is gone, so the next request starts it again; False for an error raised while the engine is left running (#3961)
 
 
+# #6054: the engine's "ERR fatal GPU error: <check>: out of memory" (a device or pinned allocation failed, for example in a prompt
+# read after the conversation cache had filled the RAM).  The engine ends itself at once, like after any fatal GPU error, but the
+# card is not broken: a restart gives the memory back, so these deaths are not counted toward FATAL_GPU_MAX, and the words name
+# the memory instead of the driver.
+OOM_HINT = ("If it happens again, leave more memory free: fewer parked conversations (--conversation-cache-slots), a higher RAM "
+            "floor (--conversation-cache-min-free-mib), a smaller --max-context, or close other programs.")
+
+
+def is_out_of_memory(err: str | None) -> bool:
+    """#6054: a fatal-GPU-error text that is an allocation failure (CUDA's and HIP's "out of memory")."""
+    return "out of memory" in (err or "").lower()
+
+
 def died_note(e: Exception) -> str:
     """What an API error says about an EngineDied: the cause, and that the next request restarts the engine - only where it really is ended."""
     return f"{e}; the next request restarts it" if getattr(e, "restarts", True) else str(e)
@@ -1403,6 +1416,9 @@ class StrataEngine:
             if "issue #29" in line:
                 return ("The engine stopped itself because it had stopped making progress - a hang it caught. Its log "
                         "line: " + line.strip() + " - please report it at github.com/Niko1221/Strata/issues.")
+        if (self.last_err or "").startswith("fatal GPU error") and is_out_of_memory(self.last_err):   # #6054
+            return ("The engine ran out of memory (" + self.last_err[len("fatal GPU error:"):].strip()[:160] + "), so it ended. The next "
+                    "request starts it again. " + OOM_HINT)
         if (self.last_err or "").startswith("fatal GPU error"):    # #4350: the engine ended itself; the next request starts it again
             return ("The graphics card reported a fatal error (" + self.last_err[len("fatal GPU error:"):].strip()[:160] + "), so the engine "
                     "ended. The next request starts it again. If this repeats, please report it at github.com/Niko1221/Strata/issues "
@@ -1861,7 +1877,10 @@ class StrataEngine:
             return
         self.last_err = text
         self.ended = True
-        raise EngineDied("the GPU reported a fatal error and the engine ended: " + text[len("fatal GPU error:"):].strip()[:200])
+        what = text[len("fatal GPU error:"):].strip()[:200]
+        if is_out_of_memory(text):                       # #6054: an allocation failed; the card is fine
+            raise EngineDied("the engine ran out of memory and ended (" + what + "). " + OOM_HINT)
+        raise EngineDied("the GPU reported a fatal error and the engine ended: " + what)
 
     def _bdone_after_eos(self, slot: int, wait_s: float = 2.0, q=None):
         """#1869: a request in a slot whose consumer left at the stop token has its BDONE right behind it (the engine prints it
@@ -5354,6 +5373,14 @@ class Service:
         if "fatal GPU error" not in why:
             return
         pid = getattr(getattr(self.engine, "proc", None), "pid", None)
+        if is_out_of_memory(why):                        # #6054: not a broken card: a restart gives the memory back, not counted
+            told = self.__dict__.setdefault("_oom_pids", set())
+            if pid not in told:
+                told.add(pid)
+                print(f"[strata] the engine ran out of memory ({why[len('fatal GPU error:'):].strip()[:160]}); it ended "
+                      f"(exit code {code}) and is started again; the request that was running failed and can be sent again. "
+                      + OOM_HINT, flush=True)
+            return
         seen = self.__dict__.setdefault("_fatal_gpu_pids", set())
         times = self.__dict__.setdefault("_fatal_gpu_times", [])
         now = time.time()
