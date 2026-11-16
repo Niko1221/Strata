@@ -1,0 +1,14 @@
+[
+  {
+    "gpu": 0,
+    "peak_core_C": 52.0,
+    "peak_hbm_C": 54.0,
+    "minimum_free_MiB": 4375.0
+  },
+  {
+    "gpu": 1,
+    "peak_core_C": 54.0,
+    "peak_hbm_C": 57.0,
+    "minimum_free_MiB": 235.0
+  }
+]

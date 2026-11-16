@@ -1,0 +1,275 @@
+{
+  "label": "current-manual",
+  "rows": [
+    {
+      "ttft_ms": 276.81,
+      "wall_s": 3.396,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "259",
+          "158.2",
+          "256",
+          "3135",
+          "81.7"
+        ]
+      ],
+      "output_utf8_sha256": "03d941b3494af00ea352c10c216852a03c1f8e084c60cd662f2d765f4e2be38e",
+      "kind": "japanese",
+      "repeat": 0
+    },
+    {
+      "ttft_ms": 275.74,
+      "wall_s": 3.23,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "258",
+          "158.6",
+          "256",
+          "2970",
+          "86.2"
+        ]
+      ],
+      "output_utf8_sha256": "5ddaa59637ace2789e2ba7c0a497325b150392cdd36ba7548c40496f410ff904",
+      "kind": "japanese",
+      "repeat": 1
+    },
+    {
+      "ttft_ms": 276.03,
+      "wall_s": 3.482,
+      "usage": {
+        "prompt_tokens": 41,
+        "completion_tokens": 256,
+        "total_tokens": 297,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "41",
+          "0",
+          "41",
+          "259",
+          "158.5",
+          "256",
+          "3222",
+          "79.5"
+        ]
+      ],
+      "output_utf8_sha256": "85de2f18f3c5dedb5b5d675cf61944049e9b74bb7756b00e8ebfed6a04c43c69",
+      "kind": "japanese",
+      "repeat": 2
+    },
+    {
+      "ttft_ms": 376.22,
+      "wall_s": 2.458,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "359",
+          "164.5",
+          "256",
+          "2097",
+          "122.1"
+        ]
+      ],
+      "output_utf8_sha256": "fde29915d785491d632e43e86d88a84354b3d9aed453ae8eb09c541e36f1d101",
+      "kind": "code",
+      "repeat": 0
+    },
+    {
+      "ttft_ms": 376.42,
+      "wall_s": 2.44,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "359",
+          "164.3",
+          "256",
+          "2079",
+          "123.2"
+        ]
+      ],
+      "output_utf8_sha256": "70020e0688fa8230d5c513b55c342f36d975bf83f45cca021fd871153589025a",
+      "kind": "code",
+      "repeat": 1
+    },
+    {
+      "ttft_ms": 378.57,
+      "wall_s": 2.463,
+      "usage": {
+        "prompt_tokens": 59,
+        "completion_tokens": 256,
+        "total_tokens": 315,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "59",
+          "0",
+          "59",
+          "361",
+          "163.4",
+          "256",
+          "2100",
+          "121.9"
+        ]
+      ],
+      "output_utf8_sha256": "7003adf89c47f3d2a760de8e970cbdc5169bb0911a70e2c02d5530463ca054e4",
+      "kind": "code",
+      "repeat": 2
+    },
+    {
+      "ttft_ms": 2150.84,
+      "wall_s": 2.907,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2132",
+          "727.4",
+          "64",
+          "772",
+          "83.0"
+        ]
+      ],
+      "output_utf8_sha256": "50c88cd4980d5053451c91ab2e19897da511bafa29f5e8c940faabfccaecaeb9",
+      "kind": "long",
+      "repeat": 0
+    },
+    {
+      "ttft_ms": 2124.89,
+      "wall_s": 2.782,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2107",
+          "736.2",
+          "64",
+          "673",
+          "95.1"
+        ]
+      ],
+      "output_utf8_sha256": "e65a56393b34e4e338e6585e9dd25f0da938030ca1089836cab5275dbb357e66",
+      "kind": "long",
+      "repeat": 1
+    },
+    {
+      "ttft_ms": 2124.87,
+      "wall_s": 2.796,
+      "usage": {
+        "prompt_tokens": 1551,
+        "completion_tokens": 64,
+        "total_tokens": 1615,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "1551",
+          "0",
+          "1551",
+          "2107",
+          "736.1",
+          "64",
+          "687",
+          "93.2"
+        ]
+      ],
+      "output_utf8_sha256": "4c14b66c91323138f411809c1470aa8aaafd599a4f1a0010d8cea698a7957332",
+      "kind": "long",
+      "repeat": 2
+    },
+    {
+      "ttft_ms": 10104.4,
+      "wall_s": 10.798,
+      "usage": {
+        "prompt_tokens": 15352,
+        "completion_tokens": 64,
+        "total_tokens": 15416,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "engine_stats": [
+        [
+          "15352",
+          "0",
+          "15352",
+          "10084",
+          "1522.4",
+          "64",
+          "710",
+          "90.2"
+        ]
+      ],
+      "output_utf8_sha256": "429e2e5cd91cdef31c9f2fb098d49235033c751deb413e8bc08e22d073043ab0",
+      "kind": "prefill16k",
+      "repeat": 0
+    }
+  ]
+}

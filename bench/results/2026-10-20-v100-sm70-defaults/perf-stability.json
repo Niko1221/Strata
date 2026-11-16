@@ -1,0 +1,65 @@
+{
+  "rows": [
+    {
+      "label": "pair-0-0",
+      "count_estimate": 32000,
+      "seconds": 44.282,
+      "usage": {
+        "prompt_tokens": 32000,
+        "completion_tokens": 512,
+        "total_tokens": 32512,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "output_utf8_sha256": "db547eb40815ddac5a7bd1d29dc47b23cb4b652a65720ba884fd71c2b7b77c96"
+    },
+    {
+      "label": "pair-0-1",
+      "count_estimate": 32000,
+      "seconds": 44.308,
+      "usage": {
+        "prompt_tokens": 32000,
+        "completion_tokens": 512,
+        "total_tokens": 32512,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "output_utf8_sha256": "2c61909011de33c72c1b3e37a9c026a2e4a475606297e5ffcfa1db2fb94b3ea4"
+    },
+    {
+      "label": "pair-1-0",
+      "count_estimate": 32000,
+      "seconds": 44.288,
+      "usage": {
+        "prompt_tokens": 32000,
+        "completion_tokens": 512,
+        "total_tokens": 32512,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "output_utf8_sha256": "e9e4bfd96be11398203ac825cc7c78034eee69de6ce4e4d68119649d6b20defd"
+    },
+    {
+      "label": "pair-1-1",
+      "count_estimate": 32000,
+      "seconds": 44.314,
+      "usage": {
+        "prompt_tokens": 32000,
+        "completion_tokens": 512,
+        "total_tokens": 32512,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "finish_reason": "length",
+      "output_utf8_sha256": "bbd58734013ac7540cc5c8ef86b655535ca439bd51580c4d7f3086d5b0442e0c"
+    }
+  ],
+  "status": "passed"
+}
