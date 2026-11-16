@@ -197,6 +197,54 @@ void test_live() {
     owned.join();
     late.join();
     pinned.join();
+
+    // release_host_inheritors / restore_host_inheritors (STRATA_ADMIT_OVERLAP: off the host's core for one read only):
+    // a thread the pinned host starts inherits its one CPU, moves off it, and comes back after; one placed elsewhere
+    // meanwhile stays where it was put
+    {
+        CHECK(!enabled());
+        cpu_set_t one;
+        CPU_ZERO(&one);
+        CPU_SET(host, &one);
+        CHECK(sched_setaffinity(0, sizeof one, &one) == 0);   // the host thread, pinned to its core
+        std::atomic<int> tid_a{0}, tid_b{0};
+        std::atomic<bool> stop2{false};
+        auto idle = [&](std::atomic<int>& tid) {
+            tid = tid_of_self();
+            while (!stop2.load()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        };
+        std::thread a([&] { idle(tid_a); });
+        std::thread b([&] { idle(tid_b); });
+        for (int i = 0; i < 500 && (!tid_a || !tid_b); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        CHECK(mask_of(tid_a) == V{host});
+        CHECK(mask_of(tid_b) == V{host});
+        Inheritors m;
+        CHECK(release_host_inheritors(&m) >= 2);
+        CHECK(m.tids.size() >= 2);
+        CHECK(m.host == V{host});
+        CHECK(mask_of(tid_a) != V{host});
+        CHECK(mask_of(tid_a) == m.off);
+        cpu_set_t other;   // somebody places b meanwhile: restore leaves it there
+        CPU_ZERO(&other);
+        CPU_SET(aux_b, &other);
+        CHECK(sched_setaffinity(tid_b, sizeof other, &other) == 0);
+        CHECK(restore_host_inheritors(m) >= 1);
+        CHECK(m.tids.empty());
+        CHECK(mask_of(tid_a) == V{host});
+        CHECK(mask_of(tid_b) == V{aux_b});
+        CHECK(restore_host_inheritors(m) == 0);   // emptied: a second call does nothing
+        Inheritors none;
+        CHECK(release_host_inheritors(nullptr) >= 1);   // (as before: nothing recorded)
+        CHECK(mask_of(tid_a) != V{host});
+        CHECK(restore_host_inheritors(none) == 0);
+        stop2 = true;
+        a.join();
+        b.join();
+        cpu_set_t back;
+        CPU_ZERO(&back);
+        for (int c : allowed) CPU_SET(c, &back);
+        CHECK(sched_setaffinity(0, sizeof back, &back) == 0);
+    }
 }
 #else
 void test_live() { std::printf("aux_cpus_test: live placement is Linux only\n"); }
