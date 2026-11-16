@@ -104,13 +104,17 @@ and the sessions' caches.
 | Every expert in VRAM, 131K context | 512 |
 | `--batch 2..4` | 1024 at most, so the other slots are not held for a whole chunk |
 | `--batch 8` | 512 |
-| Hybrid mode | 2048; 1024 or 512 on a card with 7.5 or 5.5 GiB free |
+| Hybrid mode | 4096 when its buffers take at most a third of the room the expert slots keep; otherwise 2048, or 1024 / 512 on a card with 7.5 / 5.5 GiB free |
 
-In the hybrid mode a bigger chunk takes expert slots (an RTX 3060 at chunk 4096 read prompts 5% faster and decoded 13%
-slower). `--prefill 512` (or `STRATA_Q36_CHUNK=512`) gives the 512 size, and then the text is the base engine's, bit
-for bit. The chunk size changes the GEMM tiles the BLAS picks and with them the last bits of the prompt state. This is
-the size of the llama.cpp CPU-against-HIP difference on the same file, not a quality loss. A prompt shorter than the
-chunk (every chat turn after the first) is one chunk either way.
+In the hybrid mode a bigger chunk takes expert slots, and its buffers grow by 0.5 MiB a token: it is used where a third
+of the slots' room still pays for it. An RTX 4080 SUPER 16 GB (UD-Q4_K_XL, `--mtp 2`) reads a 4096-token prompt at 840
+tok/s with a 2048 chunk and 1,272 with 4096 at 8K context, and decoded 61.8 against 61.9 tok/s; at 32K, 779 and 1,372
+tok/s, 54.1 against 51.7. A 12 GB card keeps 2048 (an RTX 3060 at chunk 4096 read prompts 5% faster and decoded 13%
+slower), and so does a long context, whose K / V takes the same room first. `--prefill 512` (or `STRATA_Q36_CHUNK=512`)
+gives the 512 size, and then the text is the base engine's, bit for bit. The chunk size changes the GEMM tiles the BLAS
+picks and with them the last bits of the prompt state. This is the size of the llama.cpp CPU-against-HIP difference on
+the same file, not a quality loss. A prompt shorter than the chunk (every chat turn after the first) is one chunk
+either way.
 
 ## Speed and exactness
 
