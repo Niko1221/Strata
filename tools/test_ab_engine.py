@@ -103,11 +103,11 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual((arm["version"], arm["status"], arm["reason"], arm["rows"]), ("0.1.55", "skipped", "served engine x, expected y", []))
         self.assertEqual(results["arms"][1]["status"], "ran")
         self.assertIn("served engine x, expected y", ab_report.build_html(results))
-        self.assertEqual([c.args[0] for c in m["launch"].call_args_list].count(self.bench / "homes" / "0.1.55" / "control"), 1)
+        self.assertEqual([c.args[0].parent.parent.name for c in m["launch"].call_args_list].count("0.1.55"), 1)
 
     def test_tune_only_in_first_round(self):
         code, results, m = self.run_tool(["--tune", "quick"])
-        tunes = [(c.args[0].parent.name, c.args[5]) for c in m["launch"].call_args_list]
+        tunes = [(c.args[0].parent.parent.name, c.args[5]) for c in m["launch"].call_args_list]
         self.assertEqual(tunes, [("0.1.55", "quick"), ("0.1.56", "quick"), ("0.1.56", None), ("0.1.55", None)])
         self.assertEqual(results["tune"], "quick")
         self.assertEqual((results["arms"][0]["setup_s"], results["arms"][0]["start_s"]), (12.0, [12.0]))
@@ -141,7 +141,7 @@ class VersionsMode(unittest.TestCase):
         self.assertEqual((results["untouched"], results["changed"]), (False, ["~x"]))
 
     def test_configs_collected_per_version_even_on_failed_launch(self):
-        launch = mock.Mock(side_effect=lambda control, *a, **k: LaunchResult(control.parent.name == "0.1.56", 5.0, "boom"))
+        launch = mock.Mock(side_effect=lambda control, *a, **k: LaunchResult(control.parent.parent.name == "0.1.56", 5.0, "boom"))
         code, results, m = self.run_tool(launch=launch)
         dests = [c.args[1] for c in m["collect_configs"].call_args_list]
         self.assertEqual([d.parent.name for d in dests], ["0.1.55", "0.1.56", "0.1.56"])
@@ -201,8 +201,48 @@ class VersionsMode(unittest.TestCase):
 
     def test_changed_files_are_named_even_when_the_run_crashes(self):
         with mock.patch("builtins.print") as pr, self.assertRaises(RuntimeError):
-            self.run_tool(changed=mock.Mock(return_value=["~x"]), launch=mock.Mock(side_effect=RuntimeError("boom")))
+            self.run_tool(changed=mock.Mock(return_value=["~x"]), write_report=mock.Mock(side_effect=RuntimeError("boom")))
         self.assertTrue(any("~x" in str(c) for c in pr.call_args_list))
+
+    def test_each_run_gets_a_fresh_home(self):
+        homes = []
+        for stamp in ("20261116-120000", "20261116-120001"):
+            fmt = mock.Mock(side_effect=lambda f, *x, s=stamp: s if f == "%Y%m%d-%H%M%S" else "2026-11-16T12:00:00")
+            with mock.patch("time.strftime", fmt):
+                code, results, m = self.run_tool()
+            homes += [c.args[0] for c in m["provision_home"].call_args_list]
+        self.assertEqual(homes, [self.bench / "homes" / v / s for s in ("20261116-120000", "20261116-120001")
+                                 for v in ("0.1.55", "0.1.56")])
+
+    def test_crash_in_one_version_skips_it_and_the_rest_run(self):
+        def launch(control, *a, **k):
+            if control.parent.parent.name == "0.1.55":
+                raise OSError("no such file: strata.cmd")
+            return LaunchResult(True, 12.0)
+
+        code, results, m = self.run_tool(launch=mock.Mock(side_effect=launch))
+        first, second = results["arms"]
+        self.assertEqual((first["status"], first["reason"]), ("skipped", "OSError: no such file: strata.cmd"))
+        self.assertEqual((second["status"], len(second["rows"])), ("ran", 2))
+        self.assertEqual(m["stop"].call_count, 3)                  # 0.1.55 once, 0.1.56 in both rounds
+        self.assertEqual(code, 0)
+
+    def test_crash_after_a_row_keeps_the_row_but_not_ran(self):
+        def answer(port, reqs, max_new, rnd, arm, out, rows):
+            rows.append(dict(ROW, round=rnd, arm=arm))
+            if arm == "v0.1.55":
+                raise TimeoutError("timed out")
+
+        code, results, m = self.run_tool(run_requests=mock.Mock(side_effect=answer))
+        first = results["arms"][0]
+        self.assertEqual((first["status"], first["reason"], len(first["rows"])), ("skipped", "TimeoutError: timed out", 1))
+        self.assertEqual(results["arms"][1]["status"], "ran")
+
+    def test_bench_dir_inside_the_install_is_refused(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit) as cm:
+            self.run_tool(live_roots=mock.Mock(return_value=[self.bench.parent]))
+        self.assertIn("--bench-dir", str(cm.exception))
+        self.assertFalse(self.bench.exists())
 
     def test_old_mode_refuses_versions_flags(self):
         with mock.patch("sys.stderr"):
